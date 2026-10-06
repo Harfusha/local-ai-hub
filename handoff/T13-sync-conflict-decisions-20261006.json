@@ -1,0 +1,352 @@
+{
+  "pinned_master": "ca2f86237b1f8ac9ce4f576a308b65b94a24a69c",
+  "checkpoint": "4aa2edef",
+  "post_materialization_retained_hunks": [
+    "async_jobs.py: submit holds mode-transition lock before manager lock",
+    "async_jobs.py: cancel verifies tenant-owned nonterminal row in BEGIN IMMEDIATE before cancelling timer",
+    "async_jobs.py: close clears release waiters and includes resource-release workers in bounded join"
+  ],
+  "reviews": [
+    {
+      "path": "src/local_ai_hub/app.py",
+      "hunks": 4,
+      "choice": "pinned master",
+      "reason": "Master admission binding, project context and dependency health stay coherent.",
+      "hunk_sha256": [
+        "e9181ebb31d458a36b48eb686d01d03dd7bd8fdf12859bf0fb10141d66b32b46",
+        "840b94e03b427e853a38f95251e7978e8e59adcce374361703fefd7e4c9a9672",
+        "18d7e1f7c0fc8b5dbf529ef24fa605d92dfcea0ca9b50fd30c5fa870976ea960",
+        "00230954b082463696f16f8a4bbebe4c5e8ce5366cbcd435ec3b749b0675b9dc"
+      ]
+    },
+    {
+      "path": "src/local_ai_hub/async_jobs.py",
+      "hunks": 21,
+      "choice": "pinned master",
+      "reason": "Master per-action admission, caller/generated request provenance and delayed dispatch safety.",
+      "hunk_sha256": [
+        "4604f65fd2e6853c27b65f285043b44428294286d10b5a8f54f89d21729e669a",
+        "a189d2afb349cf4682be8555d2760f34144b8fac84a224012495251f79789955",
+        "0838d656c2a02ea0d052faec978363c19857fbcece3d16a335bffdd212ac3b02",
+        "9556b700185bc88302ae6101028a468383cc0aa778c7a96d57cc8129b3e97881",
+        "bc8c894175b97fa2d31c1cb477daec723ab9e5d3741f459c4a317cfe99509a9c",
+        "e5bc4b29af3ea4b3515de8049517338f320bb389f494e50de2510577d5e257ec",
+        "aa6fdda74be766b2cdb779493ebe3ad9ef1df79b096eb355f1a25e3bb006e55e",
+        "bf45823197110a43b6b1a1cc226ec5cd2b2689447c31adef90491f96985fbdce",
+        "837355ed4010b6c50388e7e4b159a4453b101286bfbea4c05669d8f139591062",
+        "18adbd8ee0a22ad1b52963b360117d54c252c3105ce9985e558d63bc30f0fdaf",
+        "77d6d1c991a2dfe84c1ee3bc8a8bb7095dc965a6cd76e30fe9be5a05398350b4",
+        "8d4649686d46fd332b759b6cc6fd218f36fdf222b04a23a936fcd1dafe4e015a",
+        "7b3d65eaa0635dd0a196b96da08fd5102e4cdc6e59eaac767667de40acad7594",
+        "fb69ce577c8738bb1f1c636126eba9c2514ed9cfc9ffa4cb648954e9c8293336",
+        "b219454e7129339feee71a6ee174583c11e8be583afacb7c5e099a01bc0e1b1f",
+        "be886c4bba114400c761f03dd20ebd1650e8ade6b979bf3400fe3ba1b78b5aad",
+        "fc563013121cadaa74c496dea0bcc062160c88812dbf8531c9a11effc68818ef",
+        "d468bf66f8f56cb4e300f18413d7f5fe0c2127cf982dd141a2fa1bd44abf50bc",
+        "f498394b76925adb725d56c490480936111e0ac14984f945e2ce4f2a5fcdc940",
+        "4fe1c0669fda714d3dfd09b35bcb5200b9deb8031d9b624ccf2deedfa3ba71d8",
+        "8541258bb2b7eaa531e67a4e69f38a2a56fa29b12ff3d0026f234a3d0c7f21c7"
+      ]
+    },
+    {
+      "path": "src/local_ai_hub/background_gpu.py",
+      "hunks": 1,
+      "choice": "pinned master",
+      "reason": "Equivalent last-handoff pause checks; preserve master contract.",
+      "hunk_sha256": [
+        "4118f54f101088897ad92deaf30b58970d9f01597fbb223ce8bb74da66a1cd3f"
+      ]
+    },
+    {
+      "path": "src/local_ai_hub/client.py",
+      "hunks": 10,
+      "choice": "pinned master",
+      "reason": "Master cancellation, preflight validation, replay and uncertain coalesced outcomes.",
+      "hunk_sha256": [
+        "f15fd79aa9bee71e054e63e35489bf003f74a2257c5eb4ffe90ffd3e0f051c8b",
+        "aac16349dde885621e161904e8c57672b98444cc5320a8a42f27f8e2ca7e849d",
+        "ccd4bc6c877d3a3098fda1481ed113ff5fc91a8d119379e9734a8bf84e14ab5e",
+        "6195065b3061a18260c74736596caa4b3cfd78aa4b5b6b951cfc4061ff6025c3",
+        "d6f072a9d379dc5422036d3ae5d4cbc18dac1496eb1b6157416a6730e55f4dbe",
+        "56bef1c648136fdc86fb682e68f8200129e88e856fc6aea741fc6f0f4e864ecb",
+        "aea43f4164be8375cb92095d2e46c658630d9a030cc14b9a8dc2563f589b53f1",
+        "56bef1c648136fdc86fb682e68f8200129e88e856fc6aea741fc6f0f4e864ecb",
+        "aea43f4164be8375cb92095d2e46c658630d9a030cc14b9a8dc2563f589b53f1",
+        "eb0f7f85801b716d667bbea38f6ab7bdff5be1f94bd5ad7d2b9d8a2c91f34771"
+      ]
+    },
+    {
+      "path": "src/local_ai_hub/dashboard.py",
+      "hunks": 1,
+      "choice": "pinned master",
+      "reason": "Master activity-mode controls, diagnostic escaping and degraded dependency badge.",
+      "hunk_sha256": [
+        "dab52f1041e59c80b7b27efe3dfbfdc100c8844c44fb5dd3d5b5f5641cc3f294"
+      ]
+    },
+    {
+      "path": "src/local_ai_hub/embeddings.py",
+      "hunks": 1,
+      "choice": "pinned master",
+      "reason": "Master encoder lock, execution-local provenance and model-lifecycle ownership.",
+      "hunk_sha256": [
+        "f890d48c30f723a8cd158af2306e50c40b873387a51bdce50f74149a31b90de7"
+      ]
+    },
+    {
+      "path": "src/local_ai_hub/http_server.py",
+      "hunks": 19,
+      "choice": "pinned master",
+      "reason": "Master audited action authorization, bounded validation, recovery and route dispatch; T14 unchanged.",
+      "hunk_sha256": [
+        "4210f475475d246a7a343f962e85b3a681e453eb06569e7a645e20a401b83dde",
+        "5af289353351de992b25df4f2f3e933a8a1966680e4d7e69b1f831a26aa6c2ac",
+        "92dfa44f2a13d7f5e875592869033e56a3720ba2520220f4e3012c01e58009bc",
+        "43772eb43061131e9371f37f680e17f5579f1d6107c7672b40a83f3ff9ba157a",
+        "0113b859aa5030dd6e811a08b9e9c9272fd2b2b354f9418d438862c248beba26",
+        "67979893c7e8747f34aab8ea2f8293ac4408eaa7252f729c29ea314361e9bfe6",
+        "23978569446a2587ec125d769116458480300776ee3b4331a8c5fc2a87887ad4",
+        "d953f3652d3c508354c39105022b6a740efcca3349edd23e466ef094a3dade9e",
+        "fcf58af4cfa69a4e0a3166e0945c9e4c9da307859ff5163f08bc016f762d8f54",
+        "fea151f080e5e76d735795f53b6b38d93ed53cb7583ee9dcd781533fcafa2032",
+        "aff9949a6b2214a5c3619894da2133f3fc116b5ff46d0054ae9c239a2767282f",
+        "38c06ef714a1905cc0b21ced8721debb6ee99271cc46e845f5bbb2134f1fa3a7",
+        "f7f1b71d7088786e5c19c0c34cbed16457e74cb075519f9c7b6272ab5d963ec1",
+        "00ef4414da447390b0d53da17c876a3259a7774a4d36bb331e2d613b20e89c69",
+        "56af9cf0ce63e58ef177ffca1310142f603cc27e666f98bd0f02eed76ee439e7",
+        "c93d85e768dec2247446bd681984fb2352e0cf12ebac98b356221cccabd316fc",
+        "102b51b9765a56a3e899f7cf0ee38e5251f9c503b357b330a49183eb7b155604",
+        "d070b43f61942f31118599d494de561056472e27ac075ece0d360d3abdd848fc",
+        "04e71a200a337e9617f5222c0b7777f59879a75e04afa2a082109174964495db"
+      ]
+    },
+    {
+      "path": "src/local_ai_hub/llama_cpp.py",
+      "hunks": 2,
+      "choice": "pinned master",
+      "reason": "Master interruptible deadline unload signature matches Ollama caller.",
+      "hunk_sha256": [
+        "f49ddfef4d8133ff1f605cb2adfef9235098c4a78a520d06f3de17627b9071c6",
+        "908caafd65b7fd5f0465ecbc3a358490992a667f63c883f2f2886a5b5a360f60"
+      ]
+    },
+    {
+      "path": "src/local_ai_hub/mcp_server.py",
+      "hunks": 3,
+      "choice": "pinned master",
+      "reason": "Master mode policy, request validation and transcription routing.",
+      "hunk_sha256": [
+        "b57cbbb9fad9d5e982c763c5e21cb655cff2934f5e3908ec8bd834c4ff7e3cdf",
+        "5e6d1485ba3b4cad8d745d312b47e410c58c788a7acc49029a08099e9cf2532e",
+        "22a119e6b5d1a3a49b83d22be79997328405b4682e66775609ceec73d23e6d63"
+      ]
+    },
+    {
+      "path": "src/local_ai_hub/ollama.py",
+      "hunks": 5,
+      "choice": "pinned master",
+      "reason": "Master bounded deadline/cancellation and verified complete loaded-model unload.",
+      "hunk_sha256": [
+        "8d1fdb01b7a873ed513ef0e6e245adda106a5ff869c62ae4259b742472feab3e",
+        "41619043f247cda2a5d88f46231ef39ecb2dd0bcb36df65087907f2d01c9a996",
+        "1cdb5803cc65ae0b39c7f8273a86c0607f3e22665e2206110f1aa3fb3d633a08",
+        "64682711eda5dedf520cac97141e334afd70fe061d159f365a29820f2da5e1c3",
+        "e15d0536a6947345462a783dc5c5588f89d46b2e46c2b663668a6a84cfe37be3"
+      ]
+    },
+    {
+      "path": "src/local_ai_hub/operational_mode.py",
+      "hunks": 3,
+      "choice": "pinned master",
+      "reason": "Master timestamped snapshot schema, bounded cross-process lock and fail-closed state.",
+      "hunk_sha256": [
+        "4804b097f4054232add63c920f6052bd1cb48ace372128ccfe897d1124d379af",
+        "f1bf4bdbee67457a6906b25915679faace0ffe0d2dde482b79038f6edaebff1e",
+        "3683f0f1e8f209c519e0b3a9e18cbc6b8e38ae8d0183dcf851e88d67081707b0"
+      ]
+    },
+    {
+      "path": "src/local_ai_hub/preprocess.py",
+      "hunks": 4,
+      "choice": "pinned master",
+      "reason": "Master background-work gate, Gemini integration and CodeGraph-free phases.",
+      "hunk_sha256": [
+        "9b607e252e366d0ecde77757fd654b48d72b8ae696ac776a61f4413fcf5223ea",
+        "7bb33419685ce07766a990d4da2c922b5542dd4a27f4eb6c45c8c0bb4471b441",
+        "48cbb9c6ff1950f73aff779059fbf23d2103fe58e059f3dd9484576d851241b7",
+        "0f1d8661c1c467e8b0027d966915be2584df879e306ad4ec372e791c172c1e35"
+      ]
+    },
+    {
+      "path": "src/local_ai_hub/process_utils.py",
+      "hunks": 1,
+      "choice": "pinned master",
+      "reason": "Master worktree ownership marker and cancellation/tree cleanup protocol.",
+      "hunk_sha256": [
+        "961c4e8a768bf5c01896f320b5ca31aeb0d65c67cca1a45681cd320b4fd907e1"
+      ]
+    },
+    {
+      "path": "src/local_ai_hub/reranker.py",
+      "hunks": 1,
+      "choice": "pinned master",
+      "reason": "Master lock order and model lifecycle rather than stale candidate release helper.",
+      "hunk_sha256": [
+        "8b5510b38fe2455f6a43927b32f569987d2caf0a061e9fe710fb40b5e2da96b2"
+      ]
+    },
+    {
+      "path": "src/local_ai_hub/services.py",
+      "hunks": 16,
+      "choice": "pinned master",
+      "reason": "Master project routing, trace redaction, inference admission and JSON Whisper validation.",
+      "hunk_sha256": [
+        "9053bd90042949fc22592a2a70ba22e69a0217b9e309bf91302c12799143bc55",
+        "fd05a1d5582d56b6bd011f7943810a53a2a4dc658824d26b34b7549903636f86",
+        "c51df7623febf192126ff305293ea0abcd26f77a7062fb3bed4ba1bf2edcf29d",
+        "2de02f9edfb38678a371194d56ee9c349f0d802884212f884b9c2ee2a2518f69",
+        "b640a1e18036f9e2ed7336eff04221e9494cef43fd0d1f66d9944fd357b0f704",
+        "69d2fa0db14dfe7489a2e6507db02994598a8c0d91bb0c8989e09e68dfd81a6d",
+        "6074c842aa231c43832595d86e6a84eab4b32d392d871649387d9401089d8795",
+        "309cb675f5366ddea4c836719c8df918cdea4138a2b5fa2038a8341af8d56f3a",
+        "c8c710f4d8a8ece70693ff1886fa63d78df377a70657350bf0e5c095c5304165",
+        "af04fbfafd52c4dc5c12a3707f017bde778e78798590e5f6086b02599809faa5",
+        "392084e31969b299466dcc04cca1a67dd17fae7ad0f74dddc752c059e8462111",
+        "1e38ef8788903df1dd68ed0010803d1429d610542ed61356ae33db4549a5189c",
+        "d0cb501fe9ae347a719fe7288c9cdb53084e212b8e25722486163a4f418c901f",
+        "9060c6a7d06d5f9242e5a2f1ddc8792fb2e3e68db1c478048104226d32b7c30a",
+        "ffdcfd4558a0b08950259baf694d494d4b102f7d0f319dc7c38d7790f118976c",
+        "af6ad2c0b389bf3e3f490974d25e89faeb99c6bd6c9f9634bd927a790879752c"
+      ]
+    },
+    {
+      "path": "tests/test_async_coordination_reliability.py",
+      "hunks": 2,
+      "choice": "pinned master",
+      "reason": "Reviewed schema, imports and assertions follow pinned implementation; older tests retained in checkpoint.",
+      "hunk_sha256": [
+        "9092f9e92955baeb36a9f3f44e9f51586fa17602292d71fae410dbe1bd0e7d29",
+        "5221c415911ba6133b46ab2e0d409d7f833390712231e799f58151518923d240"
+      ]
+    },
+    {
+      "path": "tests/test_async_job_reliability_contract.py",
+      "hunks": 3,
+      "choice": "pinned master",
+      "reason": "Reviewed schema, imports and assertions follow pinned implementation; older tests retained in checkpoint.",
+      "hunk_sha256": [
+        "eb140eca5dd0b508a2c2a07c7f896f2a8ea206aca8d673df0d160ed363617bde",
+        "20f3f428b684bb1c143c71652d5d54bd8325d2606e20ecd5b5ceb4f63ae30104",
+        "328f5162cbe184466c1341964603e854d88f898a005e7239025bff012983edc9"
+      ]
+    },
+    {
+      "path": "tests/test_async_jobs.py",
+      "hunks": 6,
+      "choice": "pinned master",
+      "reason": "Reviewed schema, imports and assertions follow pinned implementation; older tests retained in checkpoint.",
+      "hunk_sha256": [
+        "e0d35a771d8ce56a42634abb2af5e19b7669af1540e26a180093479100b2c806",
+        "12a7142266a6c641095c527e35dc20529f462eb96097df8080fd90d501b2cdc8",
+        "c07c6b4d64f646226ea682a0b1503440cbfc2e5941b285a2dd979c5827b16d4e",
+        "e73403791d14607ab252b72dd93c69573c6898b6d38cf847206bd57cd4b755bf",
+        "9e96d9fbc7a76103332210ffc5fff5c21eebbf1dd204f3dd3c923fbd154d4565",
+        "b9dde5daeccbb891c25c59834a2967fba685171268393ee6beb55a0eb077f90f"
+      ]
+    },
+    {
+      "path": "tests/test_conversations.py",
+      "hunks": 1,
+      "choice": "pinned master",
+      "reason": "Reviewed schema, imports and assertions follow pinned implementation; older tests retained in checkpoint.",
+      "hunk_sha256": [
+        "41845fb069ea7b96cc46241ebdc562f4ba510df7a2f6a1d2d7a3f5b7f251ed79"
+      ]
+    },
+    {
+      "path": "tests/test_delivery_policy.py",
+      "hunks": 1,
+      "choice": "pinned master",
+      "reason": "Reviewed schema, imports and assertions follow pinned implementation; older tests retained in checkpoint.",
+      "hunk_sha256": [
+        "bc6eb26cca3e0befa1f9a6152bfae8c1bfb5e1deb17a570ce3fe1a02d80b1f3f"
+      ]
+    },
+    {
+      "path": "tests/test_mcp_agent_routing.py",
+      "hunks": 2,
+      "choice": "pinned master",
+      "reason": "Reviewed schema, imports and assertions follow pinned implementation; older tests retained in checkpoint.",
+      "hunk_sha256": [
+        "19c33ee062f5339705398239a66c52d3201a1112fa4cc62695d3bac68e885dd9",
+        "8fec23b0f0acb954ef851ecad66cda5bbe759598f3b46e899d43eeafefd94317"
+      ]
+    },
+    {
+      "path": "tests/test_ollama_ownership.py",
+      "hunks": 2,
+      "choice": "pinned master",
+      "reason": "Reviewed schema, imports and assertions follow pinned implementation; older tests retained in checkpoint.",
+      "hunk_sha256": [
+        "d380144a97a97d675a2eaf35800ff14c44ead3cf485d4ab58665cb2dd37951cb",
+        "7b2074564ac1b31bb3b308382dacf93a03b40b28c4463e6a3bf76b54f2421e0c"
+      ]
+    },
+    {
+      "path": "tests/test_operational_mode.py",
+      "hunks": 6,
+      "choice": "pinned master",
+      "reason": "Reviewed schema, imports and assertions follow pinned implementation; older tests retained in checkpoint.",
+      "hunk_sha256": [
+        "3cb140574f9c051bc580f1e209a0ba761980f5ec0d52a0b9696da25ed06f55f5",
+        "52793ba5ad8150339321ab94d6b11c6540054165cb182fb7f3423263380cc00f",
+        "67ab89bdb8bc89d70a97ce9462b79130dd5112e59ee51c7249fe7bc35037cd02",
+        "ea61eca44f810b454a20667bd6bf353b1d78d2945e3c0efde13da4f1755412f5",
+        "53f309424b12186cf8c79d08975d26c674e2b67c61dd4ca739fae8e584b6ab10",
+        "e5aac5f3de3bbff8196a717f8ef5fd9ad5431a41391eaaa8a453234786613f7f"
+      ]
+    },
+    {
+      "path": "tests/test_preprocess_operational_mode.py",
+      "hunks": 3,
+      "choice": "pinned master",
+      "reason": "Reviewed schema, imports and assertions follow pinned implementation; older tests retained in checkpoint.",
+      "hunk_sha256": [
+        "2a5348f886deb742eb699bd9cc4d874c97a65596ef4d15ed176b596dd425ba71",
+        "a2a8d05a35de5e2bbc5672fe129d2b91b4cbd1469b406c98edd1aaa5b12d5fb3",
+        "63062c9d9b70d7464eaed2bbc5000537ca86e03035ad8e42690df15b8415fcd7"
+      ]
+    },
+    {
+      "path": "tests/test_t13_gaming_conversation_release_receipt.py",
+      "hunks": 2,
+      "choice": "pinned master",
+      "reason": "Reviewed schema, imports and assertions follow pinned implementation; older tests retained in checkpoint.",
+      "hunk_sha256": [
+        "cad62df59fc5d1eaad4be7d4483afcfb2801c594cf9b7d15320682b61431911e",
+        "7c50dc1eb30608a45bfcd892d65090958ae3d2f0de0e80a2fef28cc7beeae4e3"
+      ]
+    },
+    {
+      "path": "tests/test_whisper_cancellation.py",
+      "hunks": 3,
+      "choice": "pinned master",
+      "reason": "Reviewed schema, imports and assertions follow pinned implementation; older tests retained in checkpoint.",
+      "hunk_sha256": [
+        "14488982fe6b5df05486f3d17786d3a1781544c71d7f909cae39b2a90dff38da",
+        "5295262886864bbfb6170b87a9fcce5353522cb27a2ff0a8cb03a35580e89f6e",
+        "e30372f70df3ea84194293487189d7a7ee1d2df5d2e943319ba745cbbc49549d"
+      ]
+    },
+    {
+      "path": "tools/hubctl.py",
+      "hunks": 2,
+      "choice": "pinned master",
+      "reason": "Master pause=gaming, mode read/admin request and incomplete transition reporting.",
+      "hunk_sha256": [
+        "29d23df04d0d8983d15183d474d1819e0f59689ba3e53fd6f38441d3eff09c14",
+        "37541fdf560e2e6ecac25928a5e45934910f19d1edb5d1c1ab72b50568bd94d6"
+      ]
+    }
+  ]
+}

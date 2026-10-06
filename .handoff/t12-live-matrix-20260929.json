@@ -1,0 +1,1231 @@
+{
+  "schema": "t12-live-matrix/v1",
+  "created_epoch": 1790705170.3113759,
+  "worktree_head": "933c0129079fcc0c894a71fe842cbbb5e6ad7285",
+  "config_path": ".handoff/t12-measured-config.toml",
+  "config_hardware_profile": "balanced",
+  "report": {
+    "run_id": "t12-e74c788804404caa92aba44bbc7436a4",
+    "schema_version": "t12.v1",
+    "status": "incomplete",
+    "live_hardware": true,
+    "contract_passed": false,
+    "accepted": false,
+    "hardware": {
+      "system": "Windows",
+      "release": "11",
+      "machine": "AMD64",
+      "processor": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
+      "cpu_count": 16,
+      "total_memory_bytes": 33520463872,
+      "profile": "balanced",
+      "gpus": [
+        {
+          "name": "NVIDIA GeForce RTX 4060",
+          "vendor": "nvidia",
+          "backend": "cuda"
+        }
+      ],
+      "npus": []
+    },
+    "hardware_profile": "balanced",
+    "corpus": {
+      "corpus_id": "t12-live-quality-v1",
+      "fingerprint": "70a353af4c34fe4760867172d60b48728cd2d21e763a41ea15957f53a980304a",
+      "cases_by_task_role": {
+        "reason": [
+          "reason-latency-triage-01"
+        ],
+        "review": [
+          "review-edge-case-01"
+        ],
+        "compress": [
+          "compress-incident-notes-01"
+        ],
+        "complete": [
+          "complete-empty-mean-01"
+        ],
+        "scaffold": [
+          "scaffold-parser-tests-01"
+        ]
+      }
+    },
+    "task_roles": {
+      "reason": {
+        "status": "partial",
+        "contract_passed": false,
+        "accepted": false,
+        "identity": {
+          "task_role": "reason",
+          "hardware_profile": "balanced",
+          "model_key": "reasoning",
+          "model": "qwen3.5:9b",
+          "model_digest": null,
+          "config_fingerprint": "08b8e63c6f30eba44410390e983f1457dbe816b7319637cdad199f1cd8fd7791",
+          "hardware_fingerprint": "b01c4dbade8c30f25dedd57ceb7d09348a35f1c98e8250c24e7ca6971b535ffe"
+        },
+        "quality": {
+          "status": "not_measured",
+          "corpus_id": "t12-live-quality-v1",
+          "case_ids": [
+            "reason-latency-triage-01"
+          ],
+          "score_pct": null,
+          "sample_count": 0,
+          "quality_floor_pct": 80.0,
+          "passed_count": 0,
+          "evaluator_id": null
+        },
+        "metrics": {
+          "ttft_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "end_to_end_latency_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "tokens_per_second": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "load_duration_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "queue_age_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "queue_wait_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "prefill_tokens": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "vram_budget_bytes": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "vram_required_bytes": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "deadline_queue_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "deadline_model_load_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "deadline_generation_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "peak_vram_bytes": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          }
+        },
+        "events": {
+          "model_load_count": 0,
+          "model_reuse_count": 0,
+          "observed_run_count": 0,
+          "vram_admission_counts": {
+            "admitted": 0,
+            "rejected": 0,
+            "unknown": 0
+          }
+        },
+        "deadline_stage_counts": {},
+        "peak_vram_scope": "unmeasured",
+        "missing_acceptance": [
+          "deadline_generation_ms_missing",
+          "deadline_model_load_ms_missing",
+          "deadline_queue_ms_missing",
+          "deadline_stage_metrics_missing",
+          "end_to_end_latency_ms_missing",
+          "live_quality_scores_missing",
+          "load_duration_ms_missing",
+          "load_reuse_events_missing",
+          "model_digest_missing_or_inconsistent",
+          "peak_vram_bytes_missing",
+          "prefill_tokens_missing",
+          "profile_route_missing_or_mismatched",
+          "profile_runs_incomplete",
+          "quality_diagnostics_missing",
+          "quality_evaluator_identity_missing_or_inconsistent",
+          "queue_age_ms_missing",
+          "queue_wait_ms_missing",
+          "tokens_per_second_missing",
+          "trusted_structured_evaluator_required",
+          "ttft_ms_missing",
+          "vram_budget_bytes_missing",
+          "vram_required_bytes_missing"
+        ],
+        "samples": [
+          {
+            "case_id": "reason-latency-triage-01",
+            "repetition": 0,
+            "status": "failed",
+            "error_type": "runtime_error"
+          },
+          {
+            "case_id": "reason-latency-triage-01",
+            "repetition": 1,
+            "status": "failed",
+            "error_type": "model_unavailable"
+          },
+          {
+            "case_id": "reason-latency-triage-01",
+            "repetition": 2,
+            "status": "failed",
+            "error_type": "model_unavailable"
+          }
+        ]
+      },
+      "review": {
+        "status": "partial",
+        "contract_passed": false,
+        "accepted": false,
+        "identity": {
+          "task_role": "review",
+          "hardware_profile": "balanced",
+          "model_key": "heavy_code",
+          "model": "qwen2.5-coder:7b",
+          "model_digest": null,
+          "config_fingerprint": "11f63c71b1749b60c96559e9c0aa9886dfdf6b6a3d5fecafef256dc792cc4460",
+          "hardware_fingerprint": "b01c4dbade8c30f25dedd57ceb7d09348a35f1c98e8250c24e7ca6971b535ffe"
+        },
+        "quality": {
+          "status": "not_measured",
+          "corpus_id": "t12-live-quality-v1",
+          "case_ids": [
+            "review-edge-case-01"
+          ],
+          "score_pct": null,
+          "sample_count": 0,
+          "quality_floor_pct": 80.0,
+          "passed_count": 0,
+          "evaluator_id": null
+        },
+        "metrics": {
+          "ttft_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "end_to_end_latency_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "tokens_per_second": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "load_duration_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "queue_age_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "queue_wait_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "prefill_tokens": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "vram_budget_bytes": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "vram_required_bytes": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "deadline_queue_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "deadline_model_load_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "deadline_generation_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "peak_vram_bytes": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          }
+        },
+        "events": {
+          "model_load_count": 0,
+          "model_reuse_count": 0,
+          "observed_run_count": 0,
+          "vram_admission_counts": {
+            "admitted": 0,
+            "rejected": 0,
+            "unknown": 0
+          }
+        },
+        "deadline_stage_counts": {},
+        "peak_vram_scope": "unmeasured",
+        "missing_acceptance": [
+          "deadline_generation_ms_missing",
+          "deadline_model_load_ms_missing",
+          "deadline_queue_ms_missing",
+          "deadline_stage_metrics_missing",
+          "end_to_end_latency_ms_missing",
+          "live_quality_scores_missing",
+          "load_duration_ms_missing",
+          "load_reuse_events_missing",
+          "model_digest_missing_or_inconsistent",
+          "peak_vram_bytes_missing",
+          "prefill_tokens_missing",
+          "profile_route_missing_or_mismatched",
+          "profile_runs_incomplete",
+          "quality_diagnostics_missing",
+          "quality_evaluator_identity_missing_or_inconsistent",
+          "queue_age_ms_missing",
+          "queue_wait_ms_missing",
+          "tokens_per_second_missing",
+          "trusted_structured_evaluator_required",
+          "ttft_ms_missing",
+          "vram_budget_bytes_missing",
+          "vram_required_bytes_missing"
+        ],
+        "samples": [
+          {
+            "case_id": "review-edge-case-01",
+            "repetition": 0,
+            "status": "failed",
+            "error_type": "runtime_error"
+          },
+          {
+            "case_id": "review-edge-case-01",
+            "repetition": 1,
+            "status": "failed",
+            "error_type": "model_unavailable"
+          },
+          {
+            "case_id": "review-edge-case-01",
+            "repetition": 2,
+            "status": "failed",
+            "error_type": "model_unavailable"
+          }
+        ]
+      },
+      "compress": {
+        "status": "partial",
+        "contract_passed": false,
+        "accepted": false,
+        "identity": {
+          "task_role": "compress",
+          "hardware_profile": "balanced",
+          "model_key": "fast_code",
+          "model": "qwen2.5-coder:3b",
+          "model_digest": null,
+          "config_fingerprint": "afe6f12285ca368b744dd262b19753cfbf27f1794bc6c9bf4fb99ebb3afa2841",
+          "hardware_fingerprint": "b01c4dbade8c30f25dedd57ceb7d09348a35f1c98e8250c24e7ca6971b535ffe"
+        },
+        "quality": {
+          "status": "not_measured",
+          "corpus_id": "t12-live-quality-v1",
+          "case_ids": [
+            "compress-incident-notes-01"
+          ],
+          "score_pct": null,
+          "sample_count": 0,
+          "quality_floor_pct": 80.0,
+          "passed_count": 0,
+          "evaluator_id": null
+        },
+        "metrics": {
+          "ttft_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "end_to_end_latency_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "tokens_per_second": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "load_duration_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "queue_age_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "queue_wait_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "prefill_tokens": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "vram_budget_bytes": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "vram_required_bytes": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "deadline_queue_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "deadline_model_load_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "deadline_generation_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "peak_vram_bytes": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          }
+        },
+        "events": {
+          "model_load_count": 0,
+          "model_reuse_count": 0,
+          "observed_run_count": 0,
+          "vram_admission_counts": {
+            "admitted": 0,
+            "rejected": 0,
+            "unknown": 0
+          }
+        },
+        "deadline_stage_counts": {},
+        "peak_vram_scope": "unmeasured",
+        "missing_acceptance": [
+          "deadline_generation_ms_missing",
+          "deadline_model_load_ms_missing",
+          "deadline_queue_ms_missing",
+          "deadline_stage_metrics_missing",
+          "end_to_end_latency_ms_missing",
+          "live_quality_scores_missing",
+          "load_duration_ms_missing",
+          "load_reuse_events_missing",
+          "model_digest_missing_or_inconsistent",
+          "peak_vram_bytes_missing",
+          "prefill_tokens_missing",
+          "profile_route_missing_or_mismatched",
+          "profile_runs_incomplete",
+          "quality_diagnostics_missing",
+          "quality_evaluator_identity_missing_or_inconsistent",
+          "queue_age_ms_missing",
+          "queue_wait_ms_missing",
+          "tokens_per_second_missing",
+          "trusted_structured_evaluator_required",
+          "ttft_ms_missing",
+          "vram_budget_bytes_missing",
+          "vram_required_bytes_missing"
+        ],
+        "samples": [
+          {
+            "case_id": "compress-incident-notes-01",
+            "repetition": 0,
+            "status": "failed",
+            "error_type": "runtime_error"
+          },
+          {
+            "case_id": "compress-incident-notes-01",
+            "repetition": 1,
+            "status": "failed",
+            "error_type": "model_unavailable"
+          },
+          {
+            "case_id": "compress-incident-notes-01",
+            "repetition": 2,
+            "status": "failed",
+            "error_type": "model_unavailable"
+          }
+        ]
+      },
+      "complete": {
+        "status": "partial",
+        "contract_passed": false,
+        "accepted": false,
+        "identity": {
+          "task_role": "complete",
+          "hardware_profile": "balanced",
+          "model_key": "fast_code",
+          "model": "qwen2.5-coder:3b",
+          "model_digest": null,
+          "config_fingerprint": "b56f015e59be62f48a910c3bc50caccfcb0316c32aa8e8d7c76d9c26cb6af828",
+          "hardware_fingerprint": "b01c4dbade8c30f25dedd57ceb7d09348a35f1c98e8250c24e7ca6971b535ffe"
+        },
+        "quality": {
+          "status": "not_measured",
+          "corpus_id": "t12-live-quality-v1",
+          "case_ids": [
+            "complete-empty-mean-01"
+          ],
+          "score_pct": null,
+          "sample_count": 0,
+          "quality_floor_pct": 80.0,
+          "passed_count": 0,
+          "evaluator_id": null
+        },
+        "metrics": {
+          "ttft_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "end_to_end_latency_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "tokens_per_second": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "load_duration_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "queue_age_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "queue_wait_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "prefill_tokens": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "vram_budget_bytes": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "vram_required_bytes": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "deadline_queue_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "deadline_model_load_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "deadline_generation_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "peak_vram_bytes": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          }
+        },
+        "events": {
+          "model_load_count": 0,
+          "model_reuse_count": 0,
+          "observed_run_count": 0,
+          "vram_admission_counts": {
+            "admitted": 0,
+            "rejected": 0,
+            "unknown": 0
+          }
+        },
+        "deadline_stage_counts": {},
+        "peak_vram_scope": "unmeasured",
+        "missing_acceptance": [
+          "deadline_generation_ms_missing",
+          "deadline_model_load_ms_missing",
+          "deadline_queue_ms_missing",
+          "deadline_stage_metrics_missing",
+          "end_to_end_latency_ms_missing",
+          "live_quality_scores_missing",
+          "load_duration_ms_missing",
+          "load_reuse_events_missing",
+          "model_digest_missing_or_inconsistent",
+          "peak_vram_bytes_missing",
+          "prefill_tokens_missing",
+          "profile_route_missing_or_mismatched",
+          "profile_runs_incomplete",
+          "quality_diagnostics_missing",
+          "quality_evaluator_identity_missing_or_inconsistent",
+          "queue_age_ms_missing",
+          "queue_wait_ms_missing",
+          "tokens_per_second_missing",
+          "trusted_structured_evaluator_required",
+          "ttft_ms_missing",
+          "vram_budget_bytes_missing",
+          "vram_required_bytes_missing"
+        ],
+        "samples": [
+          {
+            "case_id": "complete-empty-mean-01",
+            "repetition": 0,
+            "status": "failed",
+            "error_type": "model_unavailable"
+          },
+          {
+            "case_id": "complete-empty-mean-01",
+            "repetition": 1,
+            "status": "failed",
+            "error_type": "model_unavailable"
+          },
+          {
+            "case_id": "complete-empty-mean-01",
+            "repetition": 2,
+            "status": "failed",
+            "error_type": "model_unavailable"
+          }
+        ]
+      },
+      "scaffold": {
+        "status": "partial",
+        "contract_passed": false,
+        "accepted": false,
+        "identity": {
+          "task_role": "scaffold",
+          "hardware_profile": "balanced",
+          "model_key": "heavy_code",
+          "model": "qwen2.5-coder:7b",
+          "model_digest": null,
+          "config_fingerprint": "5152c8848c1dac7476073ba8cd81772f550b5c6caee8017f91274e16786d2c14",
+          "hardware_fingerprint": "b01c4dbade8c30f25dedd57ceb7d09348a35f1c98e8250c24e7ca6971b535ffe"
+        },
+        "quality": {
+          "status": "not_measured",
+          "corpus_id": "t12-live-quality-v1",
+          "case_ids": [
+            "scaffold-parser-tests-01"
+          ],
+          "score_pct": null,
+          "sample_count": 0,
+          "quality_floor_pct": 80.0,
+          "passed_count": 0,
+          "evaluator_id": null
+        },
+        "metrics": {
+          "ttft_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "end_to_end_latency_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "tokens_per_second": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "load_duration_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "queue_age_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "queue_wait_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "prefill_tokens": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "vram_budget_bytes": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "vram_required_bytes": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "deadline_queue_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "deadline_model_load_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "deadline_generation_ms": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          },
+          "peak_vram_bytes": {
+            "count": 0,
+            "p50_ms": null,
+            "p95_ms": null,
+            "p99_ms": null,
+            "min_ms": null,
+            "max_ms": null,
+            "mean_ms": null,
+            "throughput_per_second": null
+          }
+        },
+        "events": {
+          "model_load_count": 0,
+          "model_reuse_count": 0,
+          "observed_run_count": 0,
+          "vram_admission_counts": {
+            "admitted": 0,
+            "rejected": 0,
+            "unknown": 0
+          }
+        },
+        "deadline_stage_counts": {},
+        "peak_vram_scope": "unmeasured",
+        "missing_acceptance": [
+          "deadline_generation_ms_missing",
+          "deadline_model_load_ms_missing",
+          "deadline_queue_ms_missing",
+          "deadline_stage_metrics_missing",
+          "end_to_end_latency_ms_missing",
+          "live_quality_scores_missing",
+          "load_duration_ms_missing",
+          "load_reuse_events_missing",
+          "model_digest_missing_or_inconsistent",
+          "peak_vram_bytes_missing",
+          "prefill_tokens_missing",
+          "profile_route_missing_or_mismatched",
+          "profile_runs_incomplete",
+          "quality_diagnostics_missing",
+          "quality_evaluator_identity_missing_or_inconsistent",
+          "queue_age_ms_missing",
+          "queue_wait_ms_missing",
+          "tokens_per_second_missing",
+          "trusted_structured_evaluator_required",
+          "ttft_ms_missing",
+          "vram_budget_bytes_missing",
+          "vram_required_bytes_missing"
+        ],
+        "samples": [
+          {
+            "case_id": "scaffold-parser-tests-01",
+            "repetition": 0,
+            "status": "failed",
+            "error_type": "model_unavailable"
+          },
+          {
+            "case_id": "scaffold-parser-tests-01",
+            "repetition": 1,
+            "status": "failed",
+            "error_type": "model_unavailable"
+          },
+          {
+            "case_id": "scaffold-parser-tests-01",
+            "repetition": 2,
+            "status": "failed",
+            "error_type": "model_unavailable"
+          }
+        ]
+      }
+    },
+    "scenarios": {
+      "scheduler": {
+        "status": "failed",
+        "contract_passed": false,
+        "accepted": false,
+        "live_hardware": true,
+        "error_type": "scenario_measurement_missing",
+        "missing_fields": [
+          "vram_admission",
+          "vram_admission_budget_bytes",
+          "vram_incremental_required_bytes",
+          "vram_required_bytes"
+        ]
+      },
+      "batch": {
+        "status": "measured",
+        "contract_passed": false,
+        "accepted": false,
+        "live_hardware": true,
+        "measurements": {
+          "failure_probe_observed": true,
+          "failure_probe_item_id": "t12-batch-8",
+          "concurrency_limit": 4,
+          "result_item_ids": [
+            "t12-batch-1",
+            "t12-batch-2",
+            "t12-batch-3",
+            "t12-batch-4",
+            "t12-batch-5",
+            "t12-batch-6",
+            "t12-batch-7",
+            "t12-batch-8"
+          ],
+          "partial_failure_count": 8,
+          "max_concurrency": 0,
+          "item_statuses": [
+            "failed",
+            "failed",
+            "failed",
+            "failed",
+            "failed",
+            "failed",
+            "failed",
+            "failed"
+          ],
+          "input_item_ids": [
+            "t12-batch-1",
+            "t12-batch-2",
+            "t12-batch-3",
+            "t12-batch-4",
+            "t12-batch-5",
+            "t12-batch-6",
+            "t12-batch-7",
+            "t12-batch-8"
+          ]
+        },
+        "missing_fields": []
+      },
+      "deadline": {
+        "status": "failed",
+        "contract_passed": false,
+        "accepted": false,
+        "live_hardware": true,
+        "error_type": "scenario_measurement_missing",
+        "missing_fields": [
+          "generation",
+          "model_load"
+        ]
+      },
+      "overload": {
+        "status": "measured",
+        "contract_passed": true,
+        "accepted": true,
+        "live_hardware": true,
+        "measurements": {
+          "queue_depth": 0,
+          "queue_admission": "rejected",
+          "rejected_count": 8,
+          "overloaded": true,
+          "queued_count": 0
+        },
+        "missing_fields": [],
+        "runner_receipt_id": "t12:6cfe108028a272a23e3fdbcbe719ae13aac4eacf54c7a9aa1cbe3d2f07d8791d"
+      },
+      "cancel": {
+        "status": "failed",
+        "contract_passed": false,
+        "accepted": false,
+        "live_hardware": true,
+        "error_type": "scenario_measurement_missing",
+        "missing_fields": [
+          "cancel_to_stop_ms"
+        ]
+      },
+      "fallback": {
+        "status": "failed",
+        "contract_passed": false,
+        "accepted": false,
+        "live_hardware": true,
+        "error_type": "scenario_measurement_missing",
+        "missing_fields": [
+          "fallback_quality_pct"
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "date": "2026-10-04",
+  "scope": "T19 docs-only prompt profile parity repair",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+  "root_writes": false,
+  "patch_path": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\T19-prompt-profile-parity-root-current-20261004-v1.patch",
+  "patch_sha256": "43480ab3da42ecd7a733dcdf5a1f31a366072cc5f903fd36b47cce04b1fa77b7",
+  "changed_paths": [
+    "docs/INSTALL_PROMPT.md",
+    "docs/UPDATE_PROMPT.md"
+  ],
+  "preimage_sha256_raw": {
+    "docs/INSTALL_PROMPT.md": "55037ea931333336908a40befaca633d141e55ff90beb2f909fa4013827a5ce2",
+    "docs/UPDATE_PROMPT.md": "a54522c8ad0bc04749192e89d6a63fcab4660a958ad6c46e99fb73ccd1e62163"
+  },
+  "postimage_sha256_lf": {
+    "docs/INSTALL_PROMPT.md": "519b1e412a4673aa62eb8be5d14bedbca606d0484a2a3f909452c9273feae32a",
+    "docs/UPDATE_PROMPT.md": "0dfd7c962755575c8763bc7a0adf9b68210889962c0eb7c1c0299b92b9c51a1f"
+  },
+  "checks": {
+    "git_apply_check": "PASS (exit 0, --whitespace=error)",
+    "tests": "not run; requires fresh T20 GO after prior one-shot",
+    "root_changed_by_check": false
+  },
+  "notes": [
+    "Summary contract derived from src/local_ai_hub/hardware.py profile_overrides and matches T19 parity selector expected wording.",
+    "T12 generator/AGENTS mismatch not addressed.",
+    "No CodeGraph recommendation or runtime setup behavior changed."
+  ]
+}

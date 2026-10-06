@@ -18,18 +18,134 @@ class VRAMBalancer:
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         self.config = config or {}
         self._lock = threading.RLock()
+        self._condition = threading.Condition(self._lock)
+        self._sampling = False
+        self._sample_wait_timeout_seconds = 3.0
         self._last_status: dict[str, Any] = {}
         self._last_check_time = 0.0
+        self._status_generation = 0
         self._pinned_model: str | None = None
         self._pin_expires: float = 0.0
 
     def status(self, force: bool = False) -> dict[str, Any]:
-        now = time.monotonic()
-        with self._lock:
+        with self._condition:
+            request_generation = self._status_generation
+            now = time.monotonic()
             if not force and self._last_status and (now - self._last_check_time < 2.0):
                 return dict(self._last_status)
 
-            gpu = get_gpu_telemetry()
+            wait_deadline = time.monotonic() + self._sample_wait_timeout_seconds
+            while self._sampling:
+                remaining = wait_deadline - time.monotonic()
+                if remaining <= 0:
+                    return self._sampling_timeout_fallback_locked()
+                self._condition.wait(timeout=remaining)
+                if self._status_generation > request_generation and self._last_status:
+                    return dict(self._last_status)
+                now = time.monotonic()
+                if not force and self._last_status and (now - self._last_check_time < 2.0):
+                    return dict(self._last_status)
+
+            if not self._sampling:
+                if time.monotonic() >= wait_deadline:
+                    return self._sampling_timeout_fallback_locked()
+                self._sampling = True
+                threading.Thread(target=self._sample_gpu_telemetry, daemon=True).start()
+
+            while self._sampling:
+                remaining = wait_deadline - time.monotonic()
+                if remaining <= 0:
+                    return self._sampling_timeout_fallback_locked()
+                self._condition.wait(timeout=remaining)
+                if self._status_generation > request_generation and self._last_status:
+                    return dict(self._last_status)
+            if self._status_generation > request_generation and self._last_status:
+                return dict(self._last_status)
+            if not force and self._last_status and (time.monotonic() - self._last_check_time < 2.0):
+                return dict(self._last_status)
+            return self._sampling_timeout_fallback_locked()
+
+    def _sample_gpu_telemetry(self) -> None:
+        try:
+            # GPU telemetry can invoke bounded subprocess probes. Keep those waits
+            # out of the state lock and status caller so both stay responsive.
+            self._status_from_telemetry(get_gpu_telemetry())
+        except Exception:
+            with self._condition:
+                fallback = self._sampling_timeout_fallback_locked()
+                fallback["telemetry_error"] = "sample_failed"
+                self._last_status = fallback
+                self._last_check_time = time.monotonic()
+                self._status_generation += 1
+        finally:
+            with self._condition:
+                self._sampling = False
+                self._condition.notify_all()
+
+    def _sampling_timeout_fallback_locked(self) -> dict[str, Any]:
+        """Return conservative status when another telemetry probe stalls.
+
+        Caller holds ``_condition``. Never start a duplicate probe after timeout.
+        """
+        now = time.monotonic()
+        if self._last_status:
+            result = dict(self._last_status)
+            result["available"] = False
+            result["pressure_level"] = "unknown"
+            result["context_budget_factor"] = min(
+                0.25, float(result.get("context_budget_factor", 0.25) or 0.25)
+            )
+            result["dynamic_context_tokens"] = max(
+                0, int((result.get("dynamic_context_tokens", 0) or 0) * 0.25)
+            )
+            speculative = result.get("speculative_inference")
+            if isinstance(speculative, dict):
+                result["speculative_inference"] = dict(speculative)
+                result["speculative_inference"]["active"] = False
+                result["speculative_inference"]["strategy"] = "telemetry_unavailable"
+        else:
+            models_cfg = self.config.get("models", {})
+            result = {
+                "available": False,
+                "gpu_name": "GPU",
+                "vendor": "unknown",
+                "vram_total_mb": 0.0,
+                "vram_used_mb": 0.0,
+                "vram_available_mb": 0.0,
+                "vram_used_pct": 0.0,
+                "pressure_level": "unknown",
+                "context_budget_factor": 0.25,
+                "dynamic_context_tokens": 0,
+                "throttle_background": True,
+                "speculative_inference": {
+                    "draft_model": str(models_cfg.get("draft_code", "qwen2.5-coder:3b")),
+                    "target_model": str(models_cfg.get("fast_code", "qwen2.5-coder:1.5b")),
+                    "strategy": "telemetry_unavailable",
+                    "active": False,
+                },
+                "pinned_model": None,
+            }
+        result["available"] = False
+        result["pressure_level"] = "unknown"
+        result["context_budget_factor"] = min(
+            0.25, float(result.get("context_budget_factor", 0.25) or 0.25)
+        )
+        result["throttle_background"] = True
+        result["telemetry_stale"] = True
+        result["telemetry_wait_timed_out"] = True
+        result["telemetry_error"] = "sample_wait_timeout"
+        if self._pinned_model and self._pin_expires > now:
+            result["pinned_model"] = {
+                "model": self._pinned_model,
+                "ttl_remaining_seconds": round(max(0.0, self._pin_expires - now), 1),
+            }
+        else:
+            result["pinned_model"] = None
+        return result
+
+    def _status_from_telemetry(self, gpu: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            now = time.monotonic()
             available = bool(gpu.get("available", False))
             is_integrated = bool(gpu.get("integrated", False)) or bool(gpu.get("shared_memory", False))
             total_mb = float(gpu.get("vram_total_mb", 0) or gpu.get("unified_memory_mb", 0) or 0)
@@ -101,13 +217,25 @@ class VRAMBalancer:
                 self._pinned_model = None
             self._last_status = res
             self._last_check_time = now
+            self._status_generation += 1
             return res
+
+    def sample_vram(self) -> dict[str, Any]:
+        """Take a fresh VRAM snapshot for benchmark measurements."""
+        return dict(self.status(force=True))
+
+    def _invalidate_status_locked(self) -> None:
+        """Invalidate cached pin metadata; caller must hold ``_lock``."""
+        self._last_status = {}
+        self._last_check_time = 0.0
+        self._status_generation += 1
 
     def pin_model(self, model_name: str, ttl_seconds: float = 300.0) -> dict[str, Any]:
         """Pin a warm model in VRAM to prevent cache thrashing."""
         with self._lock:
             self._pinned_model = str(model_name).strip()
             self._pin_expires = time.monotonic() + max(0.001, float(ttl_seconds))
+            self._invalidate_status_locked()
             return {
                 "pinned": True,
                 "model": self._pinned_model,
@@ -119,6 +247,8 @@ class VRAMBalancer:
         with self._lock:
             if self._pinned_model and time.monotonic() < self._pin_expires:
                 return self._pinned_model
+            if self._pinned_model is not None:
+                self._invalidate_status_locked()
             self._pinned_model = None
             return None
 
@@ -127,6 +257,7 @@ class VRAMBalancer:
         with self._lock:
             self._pinned_model = None
             self._pin_expires = 0.0
+            self._invalidate_status_locked()
 
     def should_throttle_background(self) -> bool:
         """Return True if VRAM pressure requires background GPU tasks to pause or downscale."""

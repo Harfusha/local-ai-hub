@@ -1,0 +1,15 @@
+diff --git a/tests/test_agent_memory.py b/tests/test_agent_memory.py
+--- a/tests/test_agent_memory.py
++++ b/tests/test_agent_memory.py
+@@ -581,11 +581,9 @@
+     assert stale.provenance["repository_revision"] == "rev-1"
+     assert stale.provenance["staled_by_revision"] == "rev-2"
+     assert stale.provenance["superseded_metadata"]["status"] == "confirmed"
+-    assert any(event.kind == "memory.staled" for event in store.state_store.events(
+     stream_parts = (AgentScope.REPOSITORY.value, "", "parser")
+     stream_id = "memory:" + "".join(f"{len(part)}:{part}" for part in stream_parts)
+     assert any(event.kind == "memory.staled" for event in store.state_store.events(stream_id=stream_id))
+-    ))
+ 
+ 
+ def test_mark_stale_for_revision_guards_revision_paths_root_and_repeats(store: MemoryStore, tmp_path: Path):

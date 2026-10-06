@@ -1,0 +1,97 @@
+diff --git a/src/local_ai_hub/http_server.py b/src/local_ai_hub/http_server.py
+index 1ec86c1..241751c 100644
+--- a/src/local_ai_hub/http_server.py
++++ b/src/local_ai_hub/http_server.py
+@@ -4969,7 +4969,7 @@ class Handler(BaseHTTPRequestHandler):
+                 if act == "spawn":
+                     self._send(200, APP.services.spawn_daemon(str(payload.get("command", "")), str(payload.get("cwd", ".")), name=str(payload.get("name", "")), env=payload.get("env"))); return
+                 elif act == "stop":
+-                    self._send(200, APP.services.stop_daemon(str(payload.get("daemon_id", "")))); return
++                    self._send(200, APP.services.stop_daemon(str(payload.get("daemon_id", "")), task_id=str(payload.get("task_id", "")))); return
+                 else:
+                     self._send(200, APP.services.daemon_status(payload.get("daemon_id"))); return
+             if path in {"/api/command/lint_fix", "/api/lint_fix"}:
+diff --git a/src/local_ai_hub/services.py b/src/local_ai_hub/services.py
+index 3976393..bd42b1f 100644
+--- a/src/local_ai_hub/services.py
++++ b/src/local_ai_hub/services.py
+@@ -4058,10 +4058,10 @@ class LocalAIServices:
+             return {"success": False, "error": "command broker unavailable"}
+         return self.commands.daemon_status(daemon_id)
+ 
+-    def stop_daemon(self, daemon_id: str) -> dict[str, Any]:
++    def stop_daemon(self, daemon_id: str, *, task_id: str = "") -> dict[str, Any]:
+         if not self.commands:
+             return {"success": False, "error": "command broker unavailable"}
+-        return self.commands.stop_daemon(daemon_id)
++        return self.commands.stop_daemon(daemon_id, task_id=task_id)
+ 
+     def lint_fix(self, root: str, command: str | None = None, paths: list[str] | None = None, tenant: str = "agent", timeout: int | None = None) -> dict[str, Any]:
+         if not self.commands:
+@@ -6547,7 +6547,10 @@ class LocalAIServices:
+         if action == "daemon_status":
+             return self.daemon_status(args.get("daemon_id", args.get("task_id", args.get("command"))))
+         if action == "stop_daemon":
+-            return self.stop_daemon(str(args.get("daemon_id", args.get("task_id", args.get("command", "")))))
++            return self.stop_daemon(
++                str(args.get("daemon_id", args.get("task_id", args.get("command", "")))),
++                task_id=str(args.get("task_id", "")),
++            )
+         if action == "http_probe":
+             exp_status = int(args.get("expected_status", 200)) if str(args.get("expected_status", "")).isdigit() else (int(args.get("task_id", 200)) if str(args.get("task_id", "")).isdigit() else 200)
+             return self.http_probe(str(args.get("url", args.get("command", ""))), expected_status=exp_status, json_path=args.get("json_path", args.get("criterion")), timeout=float(args.get("timeout", 5.0) or 5.0), headers=args.get("headers"))
+diff --git a/tests/test_daemon_lifecycle_hardening.py b/tests/test_daemon_lifecycle_hardening.py
+index 926cdef..51f6d68 100644
+--- a/tests/test_daemon_lifecycle_hardening.py
++++ b/tests/test_daemon_lifecycle_hardening.py
+@@ -731,3 +731,50 @@ def test_restart_reconciliation_rejects_pid_reuse(tmp_path: Path) -> None:
+         assert first.daemon_status(daemon["daemon_id"])["running"] is True
+     finally:
+         first.stop_daemon(daemon["daemon_id"])
++
++
++def test_daemon_stop_task_id_flows_through_service_and_http(monkeypatch: pytest.MonkeyPatch) -> None:
++    from local_ai_hub import http_server
++    from local_ai_hub.services import LocalAIServices
++
++    calls: list[tuple[str, str]] = []
++
++    class BrokerStub:
++        def stop_daemon(self, daemon_id: str, *, task_id: str = "") -> dict[str, Any]:
++            calls.append((daemon_id, task_id))
++            return {"success": True}
++
++    service = object.__new__(LocalAIServices)
++    service.commands = BrokerStub()
++    monkeypatch.setattr(service, "_authorize_command_action", lambda *_args, **_kwargs: None)
++
++    daemon_id = "dmn_" + "a" * 32
++    task_id = "daemon-test"
++    result = service.command(
++        {"action": "stop_daemon", "daemon_id": daemon_id, "task_id": task_id},
++        tenant="agent",
++    )
++    assert result["success"] is True
++    assert calls == [(daemon_id, task_id)]
++
++    handler = http_server.Handler.__new__(http_server.Handler)
++    handler.path = "/api/daemon"
++    handler.headers = {"Content-Type": "application/json"}
++    handler._begin_trace = lambda _path: None
++    handler._require_authorized = lambda: True
++    handler._read_json = lambda: {"action": "stop", "daemon_id": daemon_id, "task_id": task_id}
++    handler._validate_payload = lambda _path, _payload: None
++    handler._tenant = lambda: "agent"
++    handler._agent = lambda: "test-agent"
++    handler._trace_request_id = "daemon-stop-route-test"
++    responses: list[tuple[int, dict[str, Any]]] = []
++    handler._send = lambda status, body: responses.append((status, body))
++    recovery = SimpleNamespace(
++        begin=lambda *_args, **_kwargs: {"claimed": True, "state": "new", "payload_fingerprint": "test"}
++    )
++    monkeypatch.setattr(http_server, "APP", SimpleNamespace(services=service, recovery=recovery))
++
++    handler.do_POST()
++
++    assert responses == [(200, {"success": True})]
++    assert calls == [(daemon_id, task_id), (daemon_id, task_id)]

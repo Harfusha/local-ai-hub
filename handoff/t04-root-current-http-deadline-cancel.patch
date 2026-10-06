@@ -1,0 +1,382 @@
+diff --git a/src/local_ai_hub/client.py b/src/local_ai_hub/client.py
+--- a/src/local_ai_hub/client.py
++++ b/src/local_ai_hub/client.py
+@@ -55,11 +55,16 @@ class _InProcessTransport(Protocol):
+ 
+ 
+ class _TransportFailure(OSError):
+-    """Transport error with evidence whether any request bytes could be sent."""
++    """Transport failed with explicit connect-refusal or uncertain outcome state."""
+ 
+-    def __init__(self, cause: BaseException, *, request_not_sent: bool) -> None:
++    def __init__(self, cause: BaseException, *, request_not_sent: bool, cancelled: bool = False) -> None:
+         super().__init__(str(cause))
+         self.request_not_sent = request_not_sent
++        self.cancelled = cancelled
++
++
++class _SingleflightCancelled(TimeoutError):
++    """A coalesced caller stopped waiting while shared work may still run."""
+ 
+ 
+ _DETACHED_CHILDREN_LOCK = threading.Lock()
+@@ -180,26 +185,58 @@ class HubClient:
+             conn.sock.settimeout(timeout)
+         return conn
+ 
+-    def _pooled_open(self, method: str, path: str, body: bytes | None, headers: dict[str, str], timeout: float) -> bytes:
++    def _pooled_open(
++        self,
++        method: str,
++        path: str,
++        body: bytes | None,
++        headers: dict[str, str],
++        timeout: float,
++        *,
++        cancel_event: threading.Event | None = None,
++    ) -> bytes:
++        if cancel_event is not None and cancel_event.is_set():
++            raise _TransportFailure(TimeoutError("request cancelled"), request_not_sent=True, cancelled=True)
+         conn: http.client.HTTPConnection | None = None
+         original_send: Any = None
+         request_send_started = False
+-        connect_refused_before_write = False
++        deadline_expired = threading.Event()
++        request_cancelled = threading.Event()
++        watchdog_stopped = threading.Event()
+         try:
+             conn = self._connection(timeout)
+             original_send = getattr(conn, "send", None)
+ 
++            deadline = time.monotonic() + max(0.0, timeout)
++
++            def close_on_deadline_or_cancel() -> None:
++                while not watchdog_stopped.is_set():
++                    remaining = deadline - time.monotonic()
++                    if remaining <= 0:
++                        deadline_expired.set()
++                        try:
++                            conn.close()
++                        except Exception:
++                            pass
++                        return
++                    if cancel_event is not None and cancel_event.wait(min(0.05, remaining)):
++                        request_cancelled.set()
++                        try:
++                            conn.close()
++                        except Exception:
++                            pass
++                        return
++                    watchdog_stopped.wait(min(0.05, remaining))
++
++            watchdog = threading.Thread(target=close_on_deadline_or_cancel, daemon=True)
++            watchdog.start()
++
+             def tracked_send(data: Any) -> None:
+-                nonlocal connect_refused_before_write, request_send_started
++                nonlocal request_send_started
++                # Connect before marking the request as potentially written. Once sendall
++                # starts, an OSError may follow a partial write, so outcome is uncertain.
+                 if conn.sock is None:
+-                    try:
+-                        conn.connect()
+-                    except OSError as exc:
+-                        connect_refused_before_write = (
+-                            isinstance(exc, ConnectionRefusedError)
+-                            or getattr(exc, "errno", None) == errno.ECONNREFUSED
+-                        )
+-                        raise
++                    conn.connect()
+                 request_send_started = True
+                 return original_send(data)
+ 
+@@ -208,13 +245,19 @@ class HubClient:
+             conn.request(method, path, body=body, headers=headers)
+             response = conn.getresponse()
+             raw = response.read()
++            if request_cancelled.is_set():
++                raise TimeoutError("request cancelled")
++            if deadline_expired.is_set():
++                raise TimeoutError("request deadline exceeded")
+         except (OSError, http.client.HTTPException) as exc:
+             self._drop_connection()
+             raise _TransportFailure(
+                 exc,
+-                request_not_sent=connect_refused_before_write and not request_send_started,
++                request_not_sent=not request_send_started,
++                cancelled=request_cancelled.is_set(),
+             ) from exc
+         finally:
++            watchdog_stopped.set()
+             if conn is not None and original_send is not None:
+                 conn.send = original_send  # type: ignore[method-assign]
+         if bool(getattr(response, "will_close", False)):
+@@ -225,19 +268,34 @@ class HubClient:
+         return raw
+ 
+     def _open(
+-        self, method: str, path: str, body: bytes | None,
+-        headers: dict[str, str], timeout: float, *,
++        self,
++        method: str,
++        path: str,
++        body: bytes | None,
++        headers: dict[str, str],
++        timeout: float,
++        *,
+         operational_action: str | None = None,
+         requires_heavy_work: bool = True,
++        cancel_event: threading.Event | None = None,
+     ) -> bytes:
+         transport = self._inprocess_transport
+         if transport is not None:
++            if cancel_event is not None and cancel_event.is_set():
++                raise _TransportFailure(TimeoutError("request cancelled"), request_not_sent=True, cancelled=True)
+             return transport.open(
+-                method, path, body, headers, timeout,
++                method,
++                path,
++                body,
++                headers,
++                timeout,
+                 operational_action=operational_action,
+                 requires_heavy_work=requires_heavy_work,
+             )
++        if cancel_event is not None:
++            return self._pooled_open(method, path, body, headers, timeout, cancel_event=cancel_event)
+         return self._pooled_open(method, path, body, headers, timeout)
++
+     @staticmethod
+     def _error_response(exc: HTTPError, request_id: str) -> dict[str, Any]:
+         try:
+@@ -279,6 +337,22 @@ class HubClient:
+             result["retried"] = True
+         return result
+ 
++    @staticmethod
++    def _cancelled_response(request_id: str, *, request_not_sent: bool) -> dict[str, Any]:
++        result: dict[str, Any] = {
++            "success": False,
++            "error": "request cancelled",
++            "cancelled": True,
++            "terminal": True,
++            "retryable": False,
++            "request_id": request_id,
++        }
++        if request_not_sent:
++            result.update({"request_not_sent": True, "outcome_unknown": False})
++        else:
++            result["outcome_unknown"] = True
++        return result
++
+     @staticmethod
+     def _transport_failure_response(
+         request_id: str,
+@@ -303,11 +377,18 @@ class HubClient:
+             return result
+         return HubClient._uncertain_response(request_id, retried=retried)
+ 
+-    def _singleflight(self, key: str, timeout: float, execute: Any, *, request_id: str = "") -> dict[str, Any]:
++    def _singleflight(
++        self,
++        key: str,
++        timeout: float,
++        execute: Any,
++        *,
++        cancel_event: threading.Event | None = None,
++    ) -> dict[str, Any]:
+         with self._flight_lock:
+             flight = self._flights.get(key)
+             if flight is None:
+-                flight = {"event": threading.Event(), "result": None, "error": None, "request_id": request_id}
++                flight = {"event": threading.Event(), "result": None, "error": None}
+                 self._flights[key] = flight
+                 owner = True
+             else:
+@@ -324,10 +405,15 @@ class HubClient:
+             if flight["error"] is not None:
+                 raise flight["error"]
+             return flight["result"]
+-        if not flight["event"].wait(timeout):
+-            error = TimeoutError("coalesced hub request timed out")
+-            error.request_id = flight.get("request_id", request_id)
+-            raise error
++        deadline = time.monotonic() + timeout
++        while True:
++            if cancel_event is not None and cancel_event.is_set():
++                raise _SingleflightCancelled("coalesced hub request cancelled")
++            remaining = deadline - time.monotonic()
++            if remaining <= 0:
++                raise TimeoutError("coalesced hub request timed out")
++            if flight["event"].wait(min(0.05, remaining)):
++                break
+         if flight["error"] is not None:
+             raise flight["error"]
+         result = copy.deepcopy(flight["result"])
+@@ -531,6 +617,7 @@ class HubClient:
+         request_id: str | None = None,
+         operational_action: str | None = None,
+         requires_heavy_work: bool = True,
++        cancel_event: threading.Event | None = None,
+     ) -> dict[str, Any]:
+         if request_id is not None and not self._valid_request_id(request_id):
+             return {
+@@ -547,6 +634,8 @@ class HubClient:
+             return preflight
+         body = json_dumps(clean_payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True, default=str).encode("utf-8")
+         request_id = request_id if request_id is not None else f"req_{uuid.uuid4().hex[:12]}"
++        if cancel_event is not None and cancel_event.is_set():
++            return self._cancelled_response(request_id, request_not_sent=True)
+ 
+         def once(attempt_timeout: float) -> dict[str, Any]:
+             headers = {
+@@ -556,11 +645,16 @@ class HubClient:
+             if self.api_token:
+                 headers["X-LocalAI-Token"] = self.api_token
+             try:
++                open_options = {
++                    "operational_action": operational_action,
++                    "requires_heavy_work": requires_heavy_work,
++                }
++                if cancel_event is not None:
++                    open_options["cancel_event"] = cancel_event
+                 result = json.loads(
+                     self._open(
+                         "POST", path, body, headers, attempt_timeout,
+-                        operational_action=operational_action,
+-                        requires_heavy_work=requires_heavy_work,
++                        **open_options,
+                     ).decode("utf-8")
+                 )
+             except (UnicodeDecodeError, json.JSONDecodeError):
+@@ -573,6 +667,8 @@ class HubClient:
+             duplicate_deadline = time.monotonic() + timeout
+             try:
+                 while True:
++                    if cancel_event is not None and cancel_event.is_set():
++                        return self._cancelled_response(request_id, request_not_sent=True)
+                     remaining = duplicate_deadline - time.monotonic()
+                     if remaining <= 0:
+                         return {
+@@ -594,11 +690,19 @@ class HubClient:
+                             result["retry_timeout"] = True
+                             return result
+                         retry_after = max(0.01, float(result.get("retry_after_seconds", 0.1) or 0.1))
+-                        time.sleep(min(retry_after, remaining))
++                        if cancel_event is not None:
++                            cancel_event.wait(min(retry_after, remaining))
++                        else:
++                            time.sleep(min(retry_after, remaining))
+             except HTTPError as exc:
+                 return self._error_response(exc, request_id)
+             except (URLError, OSError, http.client.HTTPException) as exc:
+                 self._drop_connection()
++                if getattr(exc, "cancelled", False):
++                    return self._cancelled_response(
++                        request_id,
++                        request_not_sent=bool(getattr(exc, "request_not_sent", False)),
++                    )
+                 pre_send_refusal = isinstance(exc, _TransportFailure) and exc.request_not_sent
+                 if replay_safe or (self.auto_start and pre_send_refusal):
+                     remaining = duplicate_deadline - time.monotonic()
+@@ -635,8 +739,12 @@ class HubClient:
+             return execute()
+ 
+         key = f"POST|{self.tenant}|{self.agent}|{path}|{body.decode('utf-8')}"
++        if cancel_event is not None:
++            key += f"|cancel-event|{id(cancel_event)}"
+         try:
+-            return self._singleflight(key, timeout, execute, request_id=request_id)
++            return self._singleflight(key, timeout, execute, request_id=request_id, cancel_event=cancel_event)
++        except _SingleflightCancelled:
++            return self._cancelled_response(request_id, request_not_sent=False)
+         except TimeoutError as exc:
+             return {
+                 "success": False,
+@@ -654,9 +762,12 @@ class HubClient:
+         self, path: str, timeout: float = 15.0, *,
+         operational_action: str | None = None,
+         requires_heavy_work: bool = True,
++        cancel_event: threading.Event | None = None,
+     ) -> dict[str, Any]:
+         timeout = min(self.max_request_timeout, max(0.2, float(timeout)))
+         request_id = f"req_{uuid.uuid4().hex[:12]}"
++        if cancel_event is not None and cancel_event.is_set():
++            return self._cancelled_response(request_id, request_not_sent=True)
+         headers = {
+             "X-LocalAI-Tenant": self.tenant,
+             "X-LocalAI-Agent": self.agent,
+@@ -667,11 +778,16 @@ class HubClient:
+ 
+         def once(attempt_timeout: float) -> dict[str, Any]:
+             try:
++                open_options = {
++                    "operational_action": operational_action,
++                    "requires_heavy_work": requires_heavy_work,
++                }
++                if cancel_event is not None:
++                    open_options["cancel_event"] = cancel_event
+                 result = json.loads(
+                     self._open(
+                         "GET", path, None, headers, attempt_timeout,
+-                        operational_action=operational_action,
+-                        requires_heavy_work=requires_heavy_work,
++                        **open_options,
+                     ).decode("utf-8")
+                 )
+             except (UnicodeDecodeError, json.JSONDecodeError):
+@@ -684,8 +800,13 @@ class HubClient:
+                 return once(timeout)
+             except HTTPError as exc:
+                 return self._error_response(exc, request_id)
+-            except (URLError, OSError, http.client.HTTPException):
++            except (URLError, OSError, http.client.HTTPException) as exc:
+                 self._drop_connection()
++                if getattr(exc, "cancelled", False):
++                    return self._cancelled_response(
++                        request_id,
++                        request_not_sent=bool(getattr(exc, "request_not_sent", False)),
++                    )
+                 remaining = deadline - time.monotonic()
+                 if self._inprocess_transport is not None:
+                     server_ready = remaining > 0
+@@ -707,8 +828,12 @@ class HubClient:
+                 return self._uncertain_response(request_id)
+ 
+         key = f"GET|{self.tenant}|{self.agent}|{path}"
++        if cancel_event is not None:
++            key += f"|cancel-event|{id(cancel_event)}"
+         try:
+-            return self._singleflight(key, timeout, execute, request_id=request_id)
++            return self._singleflight(key, timeout, execute, request_id=request_id, cancel_event=cancel_event)
++        except _SingleflightCancelled:
++            return self._cancelled_response(request_id, request_not_sent=False)
+         except TimeoutError as exc:
+             return {
+                 "success": False,
+@@ -763,6 +888,7 @@ class HubClient:
+         *,
+         request_id: str | None = None,
+         path_hints: Sequence[PathHint | Mapping[str, str]] | None = None,
++        cancel_event: threading.Event | None = None,
+     ) -> dict[str, Any]:
+         clean_payload = dict(payload or {})
+         route = path.lower().split("?", 1)[0]
+@@ -789,8 +915,15 @@ class HubClient:
+                 clean_payload["path_hints"] = records
+         replay_safe = self._post_replay_safe(path, clean_payload)
+         if request_id is None:
+-            return self.request(path, clean_payload, timeout=timeout, replay_safe=replay_safe)
+-        return self.request(path, clean_payload, timeout=timeout, replay_safe=replay_safe, request_id=request_id)
++            return self.request(path, clean_payload, timeout=timeout, replay_safe=replay_safe, cancel_event=cancel_event)
++        return self.request(
++            path,
++            clean_payload,
++            timeout=timeout,
++            replay_safe=replay_safe,
++            request_id=request_id,
++            cancel_event=cancel_event,
++        )
+ 
+     def status(self, detail: str = "brief", scope: str = "process") -> dict[str, Any]:
+         if detail == "agent_state":

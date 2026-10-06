@@ -1,0 +1,28 @@
+{
+  "patch": "t08-memory-context-and-consumer-acceptance-4508A1FAA910BD8E324E6F5EE91E72E452EE9275A9677624EF192112E25831DC.patch",
+  "sha256": "4508A1FAA910BD8E324E6F5EE91E72E452EE9275A9677624EF192112E25831DC",
+  "root_target": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+  "candidate_root": "C:\\Users\\Adam\\.codex\\worktrees\\t08-agent-os\\.local-ai-hub",
+  "candidate_head": "2b33602adef0d030fea66cdcc04ca742c60b2e32",
+  "paths": [
+    "src/local_ai_hub/agent_tasks.py",
+    "src/local_ai_hub/http_server.py",
+    "tests/test_t08_http_memory_context_immutable.py",
+    "tests/test_t08_t13_t12_consumer_overlay.py"
+  ],
+  "scope": "T08 checkpoint memory_context immutability; HTTP error mapping; actual HTTP memory audit and actual T13/T12 consumer interleaving regressions",
+  "root_preimage_sha256": {
+    "src/local_ai_hub/agent_tasks.py": "9DA56C5C50B4E4E1171D358360314010832F32F1F3C22D93FD01CF5D4D24463D",
+    "src/local_ai_hub/http_server.py": "94C44910B04F8909778F926E64D3F857975BAA5738B78979427BACE29AA3EDF3"
+  },
+  "apply_check": "git apply --check against current root working tree passed; unapplied",
+  "joined_candidate_receipt": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t08_http_memory_context_immutable.py tests/test_agent_task_memory_adoption.py tests/test_agent_tasks.py tests/test_t08_t13_t12_consumer_overlay.py -> 38 passed in 16.83s",
+  "other_receipts": [
+    "Before fix, forged empty memory_context HTTP checkpoint returned 200 and overwrote injected bundle.",
+    "Valid identical memory_context preserved; forged changed/new bundle rejects HTTP 400 before event/projection write.",
+    "Completion with empty used_ids and no reason is rejected; nonblank not_used_reason allows completion.",
+    "Two active T12 calls (async delegate + HTTP conversation) keep T13 drain/resource release pending; fake Ollama unload remains uncalled until drain."
+  ],
+  "root_modified": false
+}

@@ -1,0 +1,220 @@
+--- a/tests/test_agent_t08_cache_isolation.py
++++ b/tests/test_agent_t08_cache_isolation.py
+@@ -1,5 +1,7 @@
+ import sqlite3
+ from contextlib import closing
++
++import pytest
+ 
+ from local_ai_hub.agent_events import AgentEvent, AgentStateStore
+ from local_ai_hub.agent_memory import AgentScope, MemoryKind, MemoryRecord, MemoryStore
+@@ -67,3 +69,73 @@
+         ).fetchall() == [(task_id, "cache isolation", "cache-rebuild-probe", 1)]
+     reopened_cache = SQLiteCache(cache_path, "t08-live-state-isolation")
+     assert reopened_cache.get("rebuilt") == {"ready": True}
++
++
++def test_failed_disposable_cache_schema_rebuild_preserves_live_agent_state(
++    tmp_path, monkeypatch
++):
++    state_path = tmp_path / "agent_state.sqlite"
++    cache_path = tmp_path / "cache.sqlite"
++    state_store = AgentStateStore(state_path)
++    task_store = TaskStore(state_store)
++    task_id = "task-cache-schema-failure-preserves-state"
++    task_store.create(
++        GoalContract(
++            goal="preserve state when disposable cache schema rebuild fails",
++            acceptance_criteria=("cache schema failure",),
++        ),
++        ScopeContext(task_id=task_id),
++        task_id=task_id,
++    )
++    event = state_store.append(
++        AgentEvent.create(
++            "stream-cache-schema-failure",
++            "cache.schema_failure.probe",
++            {"preserved": True},
++            idempotency_key="cache-schema-failure-probe",
++        )
++    ).event
++    memory = MemoryRecord.create(
++        kind=MemoryKind.FINDING,
++        scope=AgentScope.TASK,
++        scope_id=task_id,
++        key="cache-schema-failure-probe",
++        value={"preserved": True},
++        source="T08 cache schema failure regression",
++    )
++    MemoryStore(state_store).record(memory, actor="test")
++    receipt = VerificationReceipt.create(
++        task_id,
++        "cache schema failure",
++        passed=True,
++        evidence_id="cache-schema-failure-probe",
++    )
++    VerificationStore(state_store, task_store=task_store).record(receipt)
++    cache_path.write_bytes(b"damaged disposable cache")
++
++    def fail_schema_creation(_cache):
++        raise sqlite3.DatabaseError("injected cache schema failure")
++
++    with monkeypatch.context() as patcher:
++        patcher.setattr(SQLiteCache, "_create_schema", fail_schema_creation)
++        with pytest.raises(sqlite3.DatabaseError, match="injected cache schema failure"):
++            SQLiteCache(cache_path, "t08-live-state-isolation")
++
++    reopened = AgentStateStore(state_path)
++    recovered_task = TaskStore(reopened).get(task_id)
++    assert recovered_task is not None
++    assert reopened.events(event.stream_id) == [event]
++    assert MemoryStore(reopened).get(memory.record_id).value == {"preserved": True}
++    with closing(sqlite3.connect(state_path)) as con:
++        assert con.execute(
++            "SELECT task_id, criterion, evidence_id, passed FROM agent_verification_receipts "
++            "WHERE receipt_id = ?",
++            (receipt.receipt_id,),
++        ).fetchall() == [(task_id, "cache schema failure", "cache-schema-failure-probe", 1)]
++    assert len(list(tmp_path.glob("cache.sqlite.corrupt-*"))) == 1
++
++    rebuilt_cache = SQLiteCache(cache_path, "t08-live-state-isolation")
++    rebuilt_cache.set("rebuilt-after-failure", {"ready": True})
++    assert SQLiteCache(cache_path, "t08-live-state-isolation").get(
++        "rebuilt-after-failure"
++    ) == {"ready": True}
+diff --git a/tests/test_agent_t08_migration_recovery.py b/tests/test_agent_t08_migration_recovery.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_agent_t08_migration_recovery.py
+@@ -0,0 +1,131 @@
++import sqlite3
++from contextlib import closing
++from pathlib import Path
++
++import pytest
++
++from local_ai_hub.agent_events import AgentEvent, AgentStateStore
++from local_ai_hub.agent_identity import AgentScope
++from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStore
++from local_ai_hub.agent_tasks import GoalContract, ScopeContext, TaskStore
++from local_ai_hub.agent_verification import VerificationReceipt, VerificationStore
++
++
++def _seed_durable_state(db_path):
++    state = AgentStateStore(db_path)
++    tasks = TaskStore(state)
++    task = tasks.create(
++        GoalContract(goal="preserve durable state", acceptance_criteria=("migration",)),
++        ScopeContext(task_id="t08-migration-task"),
++        task_id="t08-migration-task",
++    )
++    event = state.append(
++        AgentEvent.create(
++            "t08-migration-stream",
++            "t08.migration.seeded",
++            {"preserve": True},
++            "t08-migration-event",
++        )
++    ).event
++    memory = MemoryRecord.create(
++        kind=MemoryKind.FACT,
++        scope=AgentScope.TASK,
++        scope_id=task.task_id,
++        key="t08-migration-memory",
++        value="preserved memory",
++        source="T08 migration recovery test",
++    )
++    MemoryStore(state).record(memory, actor="test")
++    receipt = VerificationReceipt.create(
++        task_id=task.task_id,
++        criterion="migration",
++        passed=True,
++        evidence_id="t08-migration-evidence",
++    )
++    VerificationStore(state, task_store=tasks).record(receipt)
++    return task, event, memory, receipt
++
++
++def _downgrade_to_unversioned_v0(db_path):
++    with closing(sqlite3.connect(db_path)) as connection:
++        columns = {row[1] for row in connection.execute("PRAGMA table_info(agent_events)")}
++        if "schema_version" in columns:
++            connection.execute("ALTER TABLE agent_events DROP COLUMN schema_version")
++        tables = {
++            row[0]
++            for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")
++        }
++        for table in ("agent_event_schema_versions", "agent_schema_migrations"):
++            if table in tables:
++                connection.execute(f'DROP TABLE "{table}"')
++        connection.execute("PRAGMA user_version=0")
++        connection.commit()
++
++
++def _sqlite_file_snapshot(db_path):
++    paths = (db_path, *[Path(f"{db_path}{suffix}") for suffix in ("-wal", "-shm", "-journal")])
++    return tuple(path.read_bytes() if path.is_file() else None for path in paths)
++
++
++def _assert_rows_exist(connection, task, event, memory, receipt):
++    assert connection.execute(
++        "SELECT task_id FROM agent_tasks_projection WHERE task_id=?", (task.task_id,)
++    ).fetchone() == (task.task_id,)
++    assert connection.execute(
++        "SELECT event_id FROM agent_events WHERE event_id=?", (event.event_id,)
++    ).fetchone() == (event.event_id,)
++    assert connection.execute(
++        "SELECT record_id FROM agent_memory_records WHERE record_id=?", (memory.record_id,)
++    ).fetchone() == (memory.record_id,)
++    assert connection.execute(
++        "SELECT receipt_id FROM agent_verification_receipts WHERE receipt_id=?",
++        (receipt.receipt_id,),
++    ).fetchone() == (receipt.receipt_id,)
++
++
++def test_versioned_migration_backup_restart_preserves_agent_state(tmp_path):
++    db_path = tmp_path / "agent_state.sqlite3"
++    task, event, memory, receipt = _seed_durable_state(db_path)
++    _downgrade_to_unversioned_v0(db_path)
++
++    migrated = AgentStateStore(db_path)
++    assert migrated.events(event.stream_id) == [event]
++    backup_paths = list(tmp_path.glob("agent_state.sqlite3.migration-v0-v1-*.bak"))
++    assert len(backup_paths) == 1
++    with closing(sqlite3.connect(backup_paths[0])) as backup:
++        assert backup.execute("PRAGMA quick_check").fetchone() == ("ok",)
++        assert backup.execute("PRAGMA user_version").fetchone() == (0,)
++        _assert_rows_exist(backup, task, event, memory, receipt)
++
++    with closing(sqlite3.connect(db_path)) as connection:
++        assert connection.execute("PRAGMA user_version").fetchone() == (1,)
++        _assert_rows_exist(connection, task, event, memory, receipt)
++
++    restarted = AgentStateStore(db_path)
++    assert TaskStore(restarted).get(task.task_id).contract.goal == "preserve durable state"
++    assert restarted.events(event.stream_id) == [event]
++    assert MemoryStore(restarted).get(
++        memory.record_id, scope=AgentScope.TASK, scope_id=task.task_id
++    ).value == "preserved memory"
++    with closing(sqlite3.connect(db_path)) as connection:
++        _assert_rows_exist(connection, task, event, memory, receipt)
++
++
++def test_migration_backup_timeout_preserves_durable_state_bytes(tmp_path, monkeypatch):
++    db_path = tmp_path / "agent_state.sqlite3"
++    task, event, memory, receipt = _seed_durable_state(db_path)
++    _downgrade_to_unversioned_v0(db_path)
++    before = _sqlite_file_snapshot(db_path)
++    monkeypatch.setattr(
++        AgentStateStore,
++        "_MIGRATION_BACKUP_TIMEOUT_SECONDS",
++        0.0,
++        raising=False,
++    )
++
++    with pytest.raises(TimeoutError, match="backup time limit"):
++        AgentStateStore(db_path).events(event.stream_id)
++
++    assert _sqlite_file_snapshot(db_path) == before
++    with closing(sqlite3.connect(db_path)) as connection:
++        _assert_rows_exist(connection, task, event, memory, receipt)

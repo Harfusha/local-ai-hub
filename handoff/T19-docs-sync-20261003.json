@@ -1,0 +1,72 @@
+{
+  "date": "2026-10-03",
+  "task": "T19 install/update documentation sync",
+  "worktree": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub",
+  "head": "2b33602adef0d030fea66cdcc04ca742c60b2e32",
+  "root_writes": false,
+  "root_integration": false,
+  "tests_run": false,
+  "install_restart_run": false,
+  "clean_host_cycle": "NOT RUN",
+  "gate": "T20 serial slot not released and T04 source-test blocker not cleared",
+  "modified_paths": [
+    "docs/INSTALL_PROMPT.md",
+    "docs/UPDATE_PROMPT.md",
+    "docs/PYTHON_SDK.md",
+    "docs/T19_CLEAN_HOST_INSTALLER_CYCLE.md",
+    "docs/T19_RELEASE_VALIDATION_RUNBOOK.md"
+  ],
+  "pre_sha256": {
+    "docs/INSTALL_PROMPT.md": "fc520cbe58cf438ee720e2d62add48a9b72e1695d20122ff8f635ca2a93444b1",
+    "docs/UPDATE_PROMPT.md": "c36b08d4ef3aea83fa9624ad24d4148ff62e540f18029ad4559c0ee42cf8185f",
+    "docs/PYTHON_SDK.md": "9ef0136cae929e968ca38b561301f7da495124ecf43ccd3fcc6c07588e6c856f",
+    "docs/T19_CLEAN_HOST_INSTALLER_CYCLE.md": "9e6bd37411ec8fbbe33f249047e7c812eaff618445bcfb9693c674e2b3600b64",
+    "docs/T19_RELEASE_VALIDATION_RUNBOOK.md": "1ceebde91205d2274ac8fc8ee29e30cc644306de1f98e45e368147106ac67a2a"
+  },
+  "post_sha256": {
+    "docs/INSTALL_PROMPT.md": "3f953083bfa668f78c62f9e3b216a8672d46f92bfb6f36604dc5b15fe0b4fe5e",
+    "docs/UPDATE_PROMPT.md": "e163c2a146ce4156465ca0bfa59d54d655422c910292efe4f6c3c95fbffe9e03",
+    "docs/PYTHON_SDK.md": "424b6208a5fc263401d0104128a431d203fd48cd00a36ad12114cc9d042cc250",
+    "docs/T19_CLEAN_HOST_INSTALLER_CYCLE.md": "df49d3d60f56e306cfb0fa8f79d85eb5c4d21a79d46fe45aad44ffa618a7e2db",
+    "docs/T19_RELEASE_VALIDATION_RUNBOOK.md": "30ffac9815df2ae201d71ff1cc79c87642d18a072aff76a2b6b9b80f4b698a39"
+  },
+  "static_checks": {
+    "sdk_public_methods": 42,
+    "sdk_missing_methods": [],
+    "sdk_literal_api_routes": 46,
+    "sdk_missing_routes": [],
+    "pyproject_extras": [
+      "dev",
+      "intel-accelerators",
+      "local-nlp",
+      "performance",
+      "profiling",
+      "token-economy"
+    ],
+    "sdk_missing_extras": [],
+    "intel_extra_exact": true,
+    "sdk_signatures_match": true,
+    "profile_maps_match": true,
+    "health_payload_matches_source": true,
+    "unsupported_ready_instructions_absent": true,
+    "installer_revision_pin_in_wrappers": true,
+    "installer_clean_git_preflight": true,
+    "setup_service_action_branch_verified": true,
+    "path_hints_wrapper_claim_corrected": true,
+    "cross_version_update_baseline_gate_documented": true,
+    "mcp_daemon_skew_gate_documented": true,
+    "script": "inline Python AST/text comparison against T19 source and docs",
+    "exit": 0
+  },
+  "diff_check": {
+    "command": "git diff --check -- docs/INSTALL_PROMPT.md docs/UPDATE_PROMPT.md docs/PYTHON_SDK.md docs/T19_CLEAN_HOST_INSTALLER_CYCLE.md docs/T19_RELEASE_VALIDATION_RUNBOOK.md",
+    "exit": 0,
+    "notes": "Only Git LF-to-CRLF working-copy warnings."
+  },
+  "diagnostics": {
+    "mcp_daemon_skew": "reported by parent task; not independently re-run",
+    "root_status": "v4.0.0 does not establish source revision; current T19 _singleflight accepts request_id",
+    "acceptance": "NOT VERIFIED until process fingerprints match one pinned artifact and tools/call succeeds"
+  },
+  "t12_coordination": "T12 reports profile/routing 41/41 and mock-only runtime/inventory 16/16 on separate T12 worktree; not T19 receipts and no live model/VRAM claim."
+}

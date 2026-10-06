@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "T02 repeated pytest receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "schema_file",
+    "started_utc",
+    "finished_utc",
+    "repo_root",
+    "head",
+    "branch",
+    "python_version",
+    "platform",
+    "working_tree_dirty",
+    "dirty_paths",
+    "inputs_sha256",
+    "attempts_target",
+    "command",
+    "attempts",
+    "reverse_control",
+    "success"
+  ],
+  "properties": {
+    "schema_version": {"const": "t02-pytest-repeat/v1"},
+    "schema_file": {"const": "tools/schemas/t02-pytest-repeat-v1.schema.json"},
+    "started_utc": {"type": "string", "format": "date-time"},
+    "finished_utc": {"type": "string", "format": "date-time"},
+    "repo_root": {"type": "string", "minLength": 1},
+    "head": {"type": "string", "pattern": "^[0-9a-f]{40,64}$"},
+    "branch": {"type": "string", "minLength": 1},
+    "python_version": {"type": "string", "minLength": 1},
+    "platform": {"type": "string", "minLength": 1},
+    "working_tree_dirty": {"type": "boolean"},
+    "dirty_paths": {"type": "array", "items": {"type": "string"}},
+    "inputs_sha256": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+    },
+    "attempts_target": {"type": "integer", "minimum": 1, "maximum": 100},
+    "command": {"$ref": "#/$defs/argv"},
+    "attempts": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/run"},
+      "description": "Array length must equal attempts_target."
+    },
+    "reverse_control": {
+      "oneOf": [{"type": "null"}, {"$ref": "#/$defs/run"}]
+    },
+    "success": {"type": "boolean"}
+  },
+  "$defs": {
+    "argv": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "label",
+        "status",
+        "exit_code",
+        "started_utc",
+        "finished_utc",
+        "duration_seconds",
+        "timeout_seconds",
+        "command",
+        "stdout_file",
+        "stdout_sha256",
+        "stderr_file",
+        "stderr_sha256",
+        "failed_node_ids",
+        "last_output_line"
+      ],
+      "properties": {
+        "label": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+$"},
+        "status": {"enum": ["passed", "failed", "timeout", "spawn_error"]},
+        "exit_code": {"type": "integer"},
+        "started_utc": {"type": "string", "format": "date-time"},
+        "finished_utc": {"type": "string", "format": "date-time"},
+        "duration_seconds": {"type": "number", "minimum": 0},
+        "timeout_seconds": {"type": "number", "exclusiveMinimum": 0},
+        "command": {"$ref": "#/$defs/argv"},
+        "stdout_file": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+\\.stdout\\.log$"},
+        "stdout_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "stderr_file": {"type": "string", "pattern": "^[A-Za-z0-9_.-]+\\.stderr\\.log$"},
+        "stderr_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "failed_node_ids": {"type": "array", "items": {"type": "string"}},
+        "last_output_line": {"type": "string"}
+      }
+    }
+  }
+}

@@ -1,0 +1,34 @@
+--- a/tests/test_agent_crash_recovery.py
++++ b/tests/test_agent_crash_recovery.py
+@@ -5,7 +5,7 @@
+ import sys
+ from contextlib import closing
+ from pathlib import Path
+-from types import ModuleType, SimpleNamespace
++from types import SimpleNamespace
+ 
+ import pytest
+ 
+@@ -328,12 +328,16 @@
+         if key in supported:
+             receipt_kwargs[key] = value
+     verifications.record(VerificationReceipt.create(task_id, "tests", **receipt_kwargs))
+-    project_config = ModuleType("local_ai_hub.project_config")
+-    project_config.resolve_project_context = lambda root, state_dir: SimpleNamespace(
+-        settings=SimpleNamespace(verification_rules={}, commands={}),
+-        config_digest="cfg-test",
+-    )
+-    monkeypatch.setitem(sys.modules, "local_ai_hub.project_config", project_config)
++    from local_ai_hub import project_config
++
++    monkeypatch.setattr(
++        project_config,
++        "resolve_project_context",
++        lambda root, state_dir: SimpleNamespace(
++            settings=SimpleNamespace(verification_rules={}, commands={}),
++            config_digest="cfg-test",
++        ),
++    )
+     tasks.transition(
+         task_id,
+         TaskStatus.ACTIVE,

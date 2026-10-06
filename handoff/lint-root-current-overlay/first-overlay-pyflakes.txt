@@ -1,0 +1,14 @@
+Intermediate owned-overlay check: python -B -m pyflakes <14 absolute owned overlay paths in capture.json order>
+Exit code: 1. Root sweep not rerun. Exact diagnostic stdout from tool result ece2ac:
+C:\Users\Adam\.codex\worktrees\t19-docs-rollout\.local-ai-hub\handoff\lint-root-current-overlay\owned\src\local_ai_hub\benchmark.py:491:9: local variable '_exc' is assigned to but never used
+C:\Users\Adam\.codex\worktrees\t19-docs-rollout\.local-ai-hub\handoff\lint-root-current-overlay\owned\src\local_ai_hub\browser_bridge.py:711:5: local variable '_exc' is assigned to but never used
+C:\Users\Adam\.codex\worktrees\t19-docs-rollout\.local-ai-hub\handoff\lint-root-current-overlay\owned\src\local_ai_hub\client.py:547:13: local variable '_exc' is assigned to but never used
+C:\Users\Adam\.codex\worktrees\t19-docs-rollout\.local-ai-hub\handoff\lint-root-current-overlay\owned\src\local_ai_hub\client.py:549:47: undefined name 'exc'
+C:\Users\Adam\.codex\worktrees\t19-docs-rollout\.local-ai-hub\handoff\lint-root-current-overlay\owned\src\local_ai_hub\client.py:549:75: undefined name 'exc'
+C:\Users\Adam\.codex\worktrees\t19-docs-rollout\.local-ai-hub\handoff\lint-root-current-overlay\owned\src\local_ai_hub\client.py:560:45: undefined name 'exc'
+C:\Users\Adam\.codex\worktrees\t19-docs-rollout\.local-ai-hub\handoff\lint-root-current-overlay\owned\src\local_ai_hub\client.py:567:45: undefined name 'exc'
+C:\Users\Adam\.codex\worktrees\t19-docs-rollout\.local-ai-hub\handoff\lint-root-current-overlay\owned\src\local_ai_hub\client.py:572:69: undefined name 'exc'
+C:\Users\Adam\.codex\worktrees\t19-docs-rollout\.local-ai-hub\handoff\lint-root-current-overlay\owned\src\local_ai_hub\client.py:621:13: local variable 'exc' is assigned to but never used
+C:\Users\Adam\.codex\worktrees\t19-docs-rollout\.local-ai-hub\handoff\lint-root-current-overlay\owned\src\local_ai_hub\deterministic.py:4150:17: local variable '_f_lower' is assigned to but never used
+C:\Users\Adam\.codex\worktrees\t19-docs-rollout\.local-ai-hub\handoff\lint-root-current-overlay\owned\src\local_ai_hub\token_economy.py:96:13: 'json' imported but unused
+C:\Users\Adam\.codex\worktrees\t19-docs-rollout\.local-ai-hub\handoff\lint-root-current-overlay\owned\src\local_ai_hub\repo_tools.py:1213:17: local variable '_relative' is assigned to but never used

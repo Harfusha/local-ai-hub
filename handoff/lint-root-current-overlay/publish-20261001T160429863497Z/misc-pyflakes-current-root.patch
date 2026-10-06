@@ -1,0 +1,175 @@
+--- a/src/local_ai_hub/agent_incidents.py
++++ b/src/local_ai_hub/agent_incidents.py
+@@ -296,7 +296,7 @@
+                             ]
+                             for column, definition in column_definitions:
+                                 if column not in actual_columns:
+-                                    con.execute(f"ALTER" + f" TABLE agent_incidents ADD COLUMN {column} {definition}")
++                                    con.execute("ALTER" + f" TABLE agent_incidents ADD COLUMN {column} {definition}")
+                         con.execute(
+                             """
+                             CREATE TABLE IF NOT EXISTS agent_incidents (
+--- a/src/local_ai_hub/benchmark.py
++++ b/src/local_ai_hub/benchmark.py
+@@ -488,7 +488,7 @@
+                 expected if isinstance(expected, Mapping) else {},
+             ))
+             quality_paths_grounded = not bool(evaluation.get("hallucinated_paths"))
+-        except Exception as exc:
++        except Exception:
+             quality_score_pct = None
+             quality_schema_pass = False
+             quality_expected_match = False
+--- a/src/local_ai_hub/browser_bridge.py
++++ b/src/local_ai_hub/browser_bridge.py
+@@ -708,7 +708,7 @@
+             bundle_id = batch.put_json(bundle, "frontend-review-bundle")
+     except ArtifactBatchCancelled:
+         return _result_error("capture_cancelled", "capture was cancelled during artifact write", status=409)
+-    except Exception as exc:
++    except Exception:
+         return _result_error("artifact_store_error", "browser capture artifact storage failed; retry the request", status=503)
+     return {
+         "success": True,
+--- a/src/local_ai_hub/client.py
++++ b/src/local_ai_hub/client.py
+@@ -618,7 +618,7 @@
+                 return once(timeout)
+             except HTTPError as exc:
+                 return self._error_response(exc, request_id)
+-            except (URLError, OSError, http.client.HTTPException) as exc:
++            except (URLError, OSError, http.client.HTTPException):
+                 self._drop_connection()
+                 remaining = deadline - time.monotonic()
+                 server_ready = self.ensure_server(timeout=remaining) if self.auto_start and remaining > 0 else not self.auto_start
+--- a/src/local_ai_hub/deterministic.py
++++ b/src/local_ai_hub/deterministic.py
+@@ -4147,7 +4147,7 @@
+             # Fallback to repo_tools iter_files which respects .gitignore and ignores Library/node_modules
+             all_files = [str(p.relative_to(resolved_root)).replace("\\", "/") for p in self.repo_tools.iter_files(str(resolved_root))]
+             for rel in all_files:
+-                f_lower = rel.lower()
++                _ = rel.lower()
+                 if is_test_source(rel):
+                     db_test_paths.append(rel)
+                     if len(db_test_paths) >= 50:
+--- a/src/local_ai_hub/generator.py
++++ b/src/local_ai_hub/generator.py
+@@ -9,7 +9,6 @@
+ 
+ from .json_utils import dumps as json_dumps
+ 
+-import json
+ import os
+ from pathlib import Path
+ from typing import Any
+--- a/src/local_ai_hub/pipeline.py
++++ b/src/local_ai_hub/pipeline.py
+@@ -3,7 +3,6 @@
+ from .json_utils import dumps as json_dumps
+ 
+ import copy
+-import json
+ from pathlib import Path
+ from typing import Any
+ 
+--- a/src/local_ai_hub/response_protocol.py
++++ b/src/local_ai_hub/response_protocol.py
+@@ -3,7 +3,6 @@
+ from .json_utils import dumps as json_dumps
+ 
+ import copy
+-import json
+ from typing import Any, Iterable
+ 
+ 
+--- a/src/local_ai_hub/scheduler.py
++++ b/src/local_ai_hub/scheduler.py
+@@ -344,11 +344,11 @@
+             report: dict[str, Any] = {"success": True}
+             metric_budget = [0, 0]
+             missing_metrics: list[str] = []
+-            for field in requested_fields:
+-                if field not in metrics or metrics[field] is None:
+-                    missing_metrics.append(field)
++            for metric_field in requested_fields:
++                if metric_field not in metrics or metrics[metric_field] is None:
++                    missing_metrics.append(metric_field)
+                     continue
+-                report[field] = _bounded_json_copy(metrics[field], metric_budget)
++                report[metric_field] = _bounded_json_copy(metrics[metric_field], metric_budget)
+             if missing_metrics:
+                 return {
+                     "success": False,
+--- a/src/local_ai_hub/supervisor.py
++++ b/src/local_ai_hub/supervisor.py
+@@ -2,7 +2,6 @@
+ 
+ from .json_utils import dumps as json_dumps
+ 
+-import json
+ import os
+ import hashlib
+ import signal
+--- a/src/local_ai_hub/token_economy.py
++++ b/src/local_ai_hub/token_economy.py
+@@ -93,7 +93,6 @@
+         content = sys.stdin.read()
+         lines, words, chars, o200k, cl100k = count_tokens(content)
+         if args.json:
+-            import json
+             print(json_dumps({"source": "stdin", "lines": lines, "words": words, "chars": chars, "tokens_o200k": o200k, "tokens_cl100k": cl100k}, indent=2))
+         elif args.quiet:
+             print(o200k)
+@@ -145,7 +144,6 @@
+                         pass
+ 
+     if args.json:
+-        import json
+         print(json_dumps({
+             "total_files": file_count,
+             "lines": total_lines,
+--- a/src/local_ai_hub/repo_tools.py
++++ b/src/local_ai_hub/repo_tools.py
+@@ -1210,7 +1210,7 @@
+                 break
+             try:
+                 relative_path = path.relative_to(base)
+-                relative = relative_path.as_posix()
++                _ = relative_path.as_posix()
+             except ValueError:
+                 continue
+             key = str(path.resolve(strict=False))
+--- a/tools/benchmark_command_broker.py
++++ b/tools/benchmark_command_broker.py
+@@ -20,7 +20,10 @@
+ import threading
+ import time
+ from pathlib import Path
+-from typing import Any, Callable
++from typing import TYPE_CHECKING, Any, Callable
++
++if TYPE_CHECKING:
++    from local_ai_hub.commands import CommandBroker
+ 
+ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+ 
+--- a/tools/benchmark_surfaces.py
++++ b/tools/benchmark_surfaces.py
+@@ -13,7 +13,7 @@
+ from datetime import datetime, timezone
+ from functools import wraps
+ import hashlib
+-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
++from http.server import ThreadingHTTPServer
+ import json
+ import math
+ import os
+@@ -22,7 +22,6 @@
+ import random
+ import re
+ import shutil
+-import sqlite3
+ import subprocess
+ import sys
+ import socket

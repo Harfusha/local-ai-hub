@@ -1,0 +1,839 @@
+{
+  "root": "C:/Users/Adam/.codex/worktrees/t01-coverage-main-verify/.local-ai-hub",
+  "head": "689165fbe18101feacf5f489847a4890fc27ed1f",
+  "pin": "614a6a50ac2a3e4106270136cb8e584e770c3752",
+  "status": [
+    " M docs/API_COVERAGE.md",
+    " M src/local_ai_hub/mcp_server.py",
+    " M tests/test_reliability_integration.py",
+    " M tests/test_surface_inventory.py",
+    " M tests/test_vision_artifacts.py",
+    " M tools/surface_inventory.py",
+    "?? handoff/T01-API_COVERAGE-root-current-20261001-v2.md",
+    "?? handoff/T01-API_COVERAGE-root-current-20261001-v3.md",
+    "?? handoff/T01-API_COVERAGE-root-current-delta-20261001-v2.patch",
+    "?? handoff/T01-API_COVERAGE-root-current-delta-20261001-v3.patch",
+    "?? handoff/T01-MCP-HTTP-CLI-operation-evidence-20261001-v1.csv",
+    "?? handoff/T01-MCP-HTTP-CLI-operation-evidence-20261001-v1.json",
+    "?? handoff/T01-MCP-context-operation-link-20261001-v1.json",
+    "?? handoff/T01-MCP-context-operation-link-20261001-v1.patch",
+    "?? handoff/T01-T07-bundle-import-targeted-serial-batch-20261003.txt",
+    "?? handoff/T01-T27-http-post-route-contract-20261003.md",
+    "?? handoff/T01-T27-http-post-route-inventory-20261003.csv",
+    "?? handoff/T01-acceptance-matrix-behavior-columns-20261001-v1.json",
+    "?? handoff/T01-acceptance-matrix-behavior-columns-20261001-v1.patch",
+    "?? handoff/T01-alias-source-proof-root-snapshot-20261001.csv",
+    "?? handoff/T01-behavioral-coverage-matrix-root-snapshot-20261001.md",
+    "?? handoff/T01-build-operation-evidence-review-20261001-v1.py",
+    "?? handoff/T01-build-operation-test-link-delta-20261002.py",
+    "?? handoff/T01-build-root-transfer-delta-20261001-v2.py",
+    "?? handoff/T01-check-no-write-root.patch",
+    "?? handoff/T01-check-only-sha-root-current.patch",
+    "?? handoff/T01-check-readonly-drift-test-20261001-v1.json",
+    "?? handoff/T01-check-readonly-drift-test-20261001-v1.patch",
+    "?? handoff/T01-client-batch-to-T20-20261002.md",
+    "?? handoff/T01-command-coord-budget-root-update.patch",
+    "?? handoff/T01-current-operation-selector-evidence-20261002-pre-node-map.csv",
+    "?? handoff/T01-current-operation-selector-evidence-20261002-pre-node-map.json",
+    "?? handoff/T01-current-operation-selector-evidence-20261002.csv",
+    "?? handoff/T01-current-operation-selector-evidence-20261002.json",
+    "?? handoff/T01-current-operation-selector-run-20261002.md",
+    "?? handoff/T01-current-root-handoff-manifest-20261002.json",
+    "?? handoff/T01-events-route-test-correction-20261002.md",
+    "?? handoff/T01-failure-owner-matrix-and-retest-20261003.md",
+    "?? handoff/T01-gap-operation-node-map-20261002.csv",
+    "?? handoff/T01-gap-operation-node-map-20261002.json",
+    "?? handoff/T01-http-urllib-request-link-20261001-v1.json",
+    "?? handoff/T01-http-urllib-request-link-20261001-v1.patch",
+    "?? handoff/T01-http-urllib-request-link-tests-20261001-v1.json",
+    "?? handoff/T01-mcp-accounting-test-contract-root-patch-20261002.json",
+    "?? handoff/T01-mcp-accounting-test-contract-root-patch-20261002.patch",
+    "?? handoff/T01-mcp-coord-gap-handoff-20261002.md",
+    "?? handoff/T01-mcp-coord-pending-selectors-20261002.txt",
+    "?? handoff/T01-next-gap-agent-tasks-get-20261002.md",
+    "?? handoff/T01-operation-acceptance-run-20261002.md",
+    "?? handoff/T01-operation-acceptance-status-20261003.md",
+    "?? handoff/T01-operation-coverage-01-root-adaptation.patch",
+    "?? handoff/T01-operation-coverage-01.patch",
+    "?? handoff/T01-operation-evidence-review-20261001-v1.csv",
+    "?? handoff/T01-operation-evidence-review-20261001-v1.json",
+    "?? handoff/T01-operation-evidence-review-20261001-v2.csv",
+    "?? handoff/T01-operation-level-receipt-task-rollback-20261001.md",
+    "?? handoff/T01-operation-level-receipts-candidate-20261001.csv",
+    "?? handoff/T01-operation-link-precision-20261001-v1.json",
+    "?? handoff/T01-operation-link-precision-20261001-v1.patch",
+    "?? handoff/T01-operation-node-map-review-20261002.md",
+    "?? handoff/T01-operation-owner-behavior-matrix-root-snapshot-20261001.csv",
+    "?? handoff/T01-operation-owners-root-current.patch",
+    "?? handoff/T01-operation-selector-rerun-20261003.txt",
+    "?? handoff/T01-operation-test-link-delta-20261002.csv",
+    "?? handoff/T01-operation-test-link-delta-20261002.json",
+    "?? handoff/T01-operation-unaccepted-MCP-HTTP-CLI-20261003.csv",
+    "?? handoff/T01-owner-followup-status-20261003.md",
+    "?? handoff/T01-owner-release-and-acceptance-20261001-v1.md",
+    "?? handoff/T01-registry-disabled-feature-root-test-20261001.patch",
+    "?? handoff/T01-resume-checkpoint-20261002.md",
+    "?? handoff/T01-root-acceptance-selector-operation-links-20261002.csv",
+    "?? handoff/T01-root-acceptance-selector-operation-links-20261002.json",
+    "?? handoff/T01-root-agent-state-priority-tests.patch",
+    "?? handoff/T01-root-agent-tasks-get-coverage.patch",
+    "?? handoff/T01-root-agent-tasks-get-current.patch",
+    "?? handoff/T01-root-behavior-disposition-tests.patch",
+    "?? handoff/T01-root-behavior-matcher.patch",
+    "?? handoff/T01-root-corrected-API_COVERAGE.md",
+    "?? handoff/T01-root-coverage-doc.patch",
+    "?? handoff/T01-root-current-API_COVERAGE-20261003.patch",
+    "?? handoff/T01-root-current-API_COVERAGE-20261003.receipt.json",
+    "?? handoff/T01-root-current-acceptance-manifest-20261002.json",
+    "?? handoff/T01-root-current-acceptance-selectors-20261002.txt",
+    "?? handoff/T01-root-current-combined-check.patch",
+    "?? handoff/T01-root-current-missing-operation-rows-20261003.csv",
+    "?? handoff/T01-root-current-operation-evidence-manifest-20261002.json",
+    "?? handoff/T01-root-current-operation-patch-receipt-20261003.md",
+    "?? handoff/T01-root-current-operation-selector-inventory-20261003.csv",
+    "?? handoff/T01-root-current-operation-test-additions-20261003.patch",
+    "?? handoff/T01-root-current-owner-coverage-delta-20261001-v3.csv",
+    "?? handoff/T01-root-current-owner-coverage-delta-20261001-v3.md",
+    "?? handoff/T01-root-current-proposed-serial-batch-20261003.txt",
+    "?? handoff/T01-root-current-query-link.patch",
+    "?? handoff/T01-root-current-selector-batch-20261003.txt",
+    "?? handoff/T01-root-current-selector-list-20261002.txt",
+    "?? handoff/T01-root-current-surface-delta-20261001-v2.md",
+    "?? handoff/T01-root-current-surface-delta-20261001-v3.md",
+    "?? handoff/T01-root-current-with-task-rollback-check.patch",
+    "?? handoff/T01-root-current.patch",
+    "?? handoff/T01-root-enum-and-feature-gate-continuation-20261001.md",
+    "?? handoff/T01-root-events-event-page-spy.patch",
+    "?? handoff/T01-root-generator-fix.patch",
+    "?? handoff/T01-root-mcp-coord-current.patch",
+    "?? handoff/T01-root-mcp-coord-gap-selectors.patch",
+    "?? handoff/T01-root-missing-selector-list-20261002.txt",
+    "?? handoff/T01-root-present-selector-list-20261002.txt",
+    "?? handoff/T01-root-registry-operation-coverage-20261001.csv",
+    "?? handoff/T01-root-selector-reconciliation-20261003.md",
+    "?? handoff/T01-root-selector-run-request-20261002.md",
+    "?? handoff/T01-root-stop-daemon-test.patch",
+    "?? handoff/T01-root-transfer-claims-20261001-v2.json",
+    "?? handoff/T01-root-transfer-delta-20261001-v2.csv",
+    "?? handoff/T01-root-transfer-delta-20261001-v2.json",
+    "?? handoff/T01-schema-fallback-root-current.patch",
+    "?? handoff/T01-stale-candidate-coverage-doc.patch",
+    "?? handoff/T01-surface-inventory-dirty.diff",
+    "?? handoff/T01-task-rollback-acceptance-incremental.patch",
+    "?? handoff/T01-test-fixture-repair-20261003.md",
+    "?? handoff/T01-test-fixture-repair-20261003.patch",
+    "?? handoff/T01-uncovered-historical-operation-gaps-20261002.csv",
+    "?? handoff/T01-uncovered-operation-owner-test-plan-20261002.json",
+    "?? handoff/T01-uncovered-operation-owner-test-plan-20261002.md",
+    "?? handoff/T01-unique-unintegrated-tests.patch",
+    "?? handoff/T01-unlinked-MCP-HTTP-owner-gaps-20261001-v1.csv",
+    "?? handoff/T01-unlinked-MCP-HTTP-owner-gaps-20261001-v1.json",
+    "?? handoff/T01-unlinked-MCP-HTTP-owner-gaps-20261001-v2.csv",
+    "?? handoff/T01-unlinked-MCP-HTTP-owner-gaps-20261001-v2.json",
+    "?? handoff/T01-unmapped-operation-dedupe-20261002.csv",
+    "?? handoff/T01-unmapped-operation-dedupe-20261002.json",
+    "?? handoff/T01-unverified-MCP-HTTP-CLI-acceptance-20261002.csv",
+    "?? handoff/T01-unverified-MCP-HTTP-CLI-acceptance-20261002.md",
+    "?? handoff/T01-unverified-high-impact-owner-triage-root-snapshot-20261001.csv",
+    "?? handoff/verify-T01-T27-http-post-inventory-20261003.py",
+    "?? tests/test_client_operation_acceptance.py",
+    "?? tests/test_http_route_operation_acceptance.py",
+    "?? tests/test_hubctl_unlinked_operations.py",
+    "?? tests/test_mcp_command_operation_acceptance.py",
+    "?? tests/test_mcp_coord_operation_acceptance.py",
+    "?? tests/test_rag_work_operation_acceptance.py"
+  ],
+  "tracked_dirty": [
+    {
+      "path": "docs/API_COVERAGE.md",
+      "sha256": "DCFED35E78D49C4047E1315DD88ACEAEFEC7F63D7A829A410D83BA1B00CC74E7"
+    },
+    {
+      "path": "src/local_ai_hub/mcp_server.py",
+      "sha256": "8104895506A3FB0B063C41D42362A9B47367AEAA355E8AEE32DF564FF968E56A"
+    },
+    {
+      "path": "tests/test_reliability_integration.py",
+      "sha256": "00835DB734F05C8023BD6FD0773A24FB2052E28CD69E9446366787836C3DF3AF"
+    },
+    {
+      "path": "tests/test_surface_inventory.py",
+      "sha256": "D6A7C1987BA6089C5E47C39A243FEC97E64B5191EAC3511968E3D11675EE0CF3"
+    },
+    {
+      "path": "tests/test_vision_artifacts.py",
+      "sha256": "E0DDF92A86DD21316BB11539BD7EDBF929EE32D3CBD62241D148E38657B6C881"
+    },
+    {
+      "path": "tools/surface_inventory.py",
+      "sha256": "4EFD106ADA6DA74A312F670875D33D99C2A9BC3116F2069ED981E0F37017ED92"
+    }
+  ],
+  "untracked": [
+    {
+      "path": "handoff/T01-API_COVERAGE-root-current-20261001-v2.md",
+      "sha256": "D31859A72FF029093E4F005903CD188E64A3D229CD4B751C1B5C8034B99EE092",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-API_COVERAGE-root-current-20261001-v3.md",
+      "sha256": "D31859A72FF029093E4F005903CD188E64A3D229CD4B751C1B5C8034B99EE092",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-API_COVERAGE-root-current-delta-20261001-v2.patch",
+      "sha256": "9C286735E17138287B5F559BFC26D29020ECCB263B869794FE6F0FF5E3FFF4BB",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-API_COVERAGE-root-current-delta-20261001-v3.patch",
+      "sha256": "9C286735E17138287B5F559BFC26D29020ECCB263B869794FE6F0FF5E3FFF4BB",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-MCP-HTTP-CLI-operation-evidence-20261001-v1.csv",
+      "sha256": "FCFFFAB03B34FCC517DD94E420682968074A79E6F9FFD95B8B1E7133B5369A08",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-MCP-HTTP-CLI-operation-evidence-20261001-v1.json",
+      "sha256": "8146125E688A1D731D43518F874D35FE35C83DB329FC37EFECE06A237B90C9D8",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-MCP-context-operation-link-20261001-v1.json",
+      "sha256": "E9554CE2B30107CC9DC4D295CFA02D16291C5A2CAAB7D495A40FED6AB402E940",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-MCP-context-operation-link-20261001-v1.patch",
+      "sha256": "E0CCAFC400572D4CA12CDB38387DD149BF1B029D526CB657E141C8ECD9D30632",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-T07-bundle-import-targeted-serial-batch-20261003.txt",
+      "sha256": "F5CE0A6D7E3B201B7CC8964B1154E1404723CE41CBFFD02508EEFCBA34BD7FD2",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-T27-http-post-route-contract-20261003.md",
+      "sha256": "4A38AF86FAF9CA94724084170B51C478DD5DB7DD8FB68623281E2293A2B41379",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-T27-http-post-route-inventory-20261003.csv",
+      "sha256": "B88982C8CB9AC923C5E6F0A47525B55C94A217631D1FD2C674E3A4F2647034B7",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-acceptance-matrix-behavior-columns-20261001-v1.json",
+      "sha256": "57BABFEE2306A426980D488318CC650D65AE7D69AB57A60DCDE94ED65A77B70E",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-acceptance-matrix-behavior-columns-20261001-v1.patch",
+      "sha256": "4D8B6B995DE460E41F8F29A562ADC396DBD41A59D7EC333F976728B4A58BFCCB",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-alias-source-proof-root-snapshot-20261001.csv",
+      "sha256": "074A610FCED0515538A3D17DED4E31A87EB0608FA19CB3E68F31AA893C0155C8",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-behavioral-coverage-matrix-root-snapshot-20261001.md",
+      "sha256": "DEB9CF7DCC2BE9FC63FD5AFEDAFB0DD8ABFCFA5D44F9BAC5CF6472CB5AC28661",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-build-operation-evidence-review-20261001-v1.py",
+      "sha256": "D1774654A87ABF0C0B694E9626193653BD6461F469A07E40776EC8FE59A1414C",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-build-operation-test-link-delta-20261002.py",
+      "sha256": "DEFC4AC0F4E83E0CDC3A94C1A8ADD07E7400F1CE807ACCCD0366B6D9B89F799A",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-build-root-transfer-delta-20261001-v2.py",
+      "sha256": "FB5D5B7E3C3440D42560E568EDCE0B562AB0813A402B512FAF7E7889E6991791",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-check-no-write-root.patch",
+      "sha256": "192F27F079E2B8813221136D2AA67240DA310426284C555A0472F23CB338F741",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-check-only-sha-root-current.patch",
+      "sha256": "55B64FAEB9F02C49C236B8FBFB2C77F7ABB609A534E57BFC6ACB230B8BD8DFB9",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-check-readonly-drift-test-20261001-v1.json",
+      "sha256": "5D241264509F0C5C85BE0394E561A223440CF0C98086F3A86F05B020D1769C32",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-check-readonly-drift-test-20261001-v1.patch",
+      "sha256": "CCFE8833D0D5B331D94116368682B824174F191FF88B233D2A3CE627C9D6EEA9",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-client-batch-to-T20-20261002.md",
+      "sha256": "563515DAD2B13BBEFAD1FBDEB767361FBFD9D60CD6EC6B1517A5089B4E7325CC",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-command-coord-budget-root-update.patch",
+      "sha256": "5046D5B7BE5D3320D8CC02275AFAC95947A4D4C9288D3351E265A3CD03F10A71",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-current-operation-selector-evidence-20261002-pre-node-map.csv",
+      "sha256": "01526A8DD4C29CC19D5B908BD1FA037C36185C69B930E7C0AA117D4DFEC20EAB",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-current-operation-selector-evidence-20261002-pre-node-map.json",
+      "sha256": "CA949D33E809C56CA7E9A393F88642EA44886DBB4F2EE2649352971426522C8D",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-current-operation-selector-evidence-20261002.csv",
+      "sha256": "55AC434FD9FB5566CB8E5F7A17708BB0E35214C5BB98473A72ABAE26053EBF84",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-current-operation-selector-evidence-20261002.json",
+      "sha256": "BFF32CD60D5236779173009498B8259CA8D416F547A70637CA14FCF2ADC82238",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-current-operation-selector-run-20261002.md",
+      "sha256": "26347C513626981E28B5C7FA49506ECC5E79C91888ECDBCAB705D8F7098F7709",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-current-root-handoff-manifest-20261002.json",
+      "sha256": "CCDF084A17CA7F51D173D1FE6F8A04E94410CCDA3EE5EC92120E7F2F4C2AFE1F",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-events-route-test-correction-20261002.md",
+      "sha256": "31284D987DF9324B4EEC3B280D427C8270FD78278474A85FEFED9BA4A1E943E3",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-failure-owner-matrix-and-retest-20261003.md",
+      "sha256": "9BBC8BDF25173A082AB5612CEF9EB281B7A17FE58D7B3F035502D21563AA32E8",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-gap-operation-node-map-20261002.csv",
+      "sha256": "10956A644C573D685E803780B775B71F75406DC8125D377529D2B9F304489A67",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-gap-operation-node-map-20261002.json",
+      "sha256": "D10D49FCE365260595CA94AACD70D5381A3E4E2C012BC2D65B8B27DF688DAD77",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-http-urllib-request-link-20261001-v1.json",
+      "sha256": "98CA760C278BDC8231D09B0C0C67CFD8C909A3F856D68C374E169DDB8929A9B2",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-http-urllib-request-link-20261001-v1.patch",
+      "sha256": "1D7009B8153004E4C74C425921FEA15EE78BEB1BE593EB2150A5D5CAAD9268A1",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-http-urllib-request-link-tests-20261001-v1.json",
+      "sha256": "AC83ECBE455A5398CED44FDDC6A82FE86C89D405E015F1FA152C8DEB6F04A8AC",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-mcp-accounting-test-contract-root-patch-20261002.json",
+      "sha256": "E07708F09035840FDB47C58F9015EEA2F3C0B2AEB06635D494C770408E5A53C4",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-mcp-accounting-test-contract-root-patch-20261002.patch",
+      "sha256": "655D1679F50EC98B6A439B4927CCDBFAC320D8A09A017B3BB831A6DA46CB1682",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-mcp-coord-gap-handoff-20261002.md",
+      "sha256": "567C1F5690BCD861ADD74A9B9248C7270B6F1E32CF43C3D1F679E8B2F3420F5B",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-mcp-coord-pending-selectors-20261002.txt",
+      "sha256": "298D54DE721956E08FAEFABB89811FD00CDD9D24691B474BC61B002CAE7FE4DC",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-next-gap-agent-tasks-get-20261002.md",
+      "sha256": "382F8400A9AEBF5EB27F2216B31078796D4C011AA527CEE71626F5868FC65481",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-operation-acceptance-run-20261002.md",
+      "sha256": "E310281DE3BBE71F9152660BD4F73A9FF803EC7265982844842B6CC6BDDE2F70",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-operation-acceptance-status-20261003.md",
+      "sha256": "3027122C85B2C9A1700097508C63D9F907145E519F3EB2752149F155C01DEE2F",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-operation-coverage-01-root-adaptation.patch",
+      "sha256": "388475C9EDE85AF530CE81C9782C95C02B4D19F99D257B621E4C233D13108404",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-operation-coverage-01.patch",
+      "sha256": "794BD0EF32B99F4085EED7646345C676F6AFBCAEFCED7778B429AD7A7CAB78E9",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-operation-evidence-review-20261001-v1.csv",
+      "sha256": "2223D4341F6DD72703458F19E9C8E8B1A1E4613D98B5E02AD25CEC124E632922",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-operation-evidence-review-20261001-v1.json",
+      "sha256": "AB8D736107DC57EC611D41FE1A4D4CDD8D4A69932910E5E37DCE5E15E00D7412",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-operation-evidence-review-20261001-v2.csv",
+      "sha256": "F71D4BCD89B37877D16C6D5FCEF25F140A79CB9A9ABE0900684FE2EA0C3E0A37",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-operation-level-receipt-task-rollback-20261001.md",
+      "sha256": "16982FE8E2F4051E39F7652FF3D48328C388D9BCAE17C44FD9D9387A0E12F3B7",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-operation-level-receipts-candidate-20261001.csv",
+      "sha256": "78E9F5E7C258B8E63C105CD515CF642C5B67EB4DE43756B66994D4F33665C192",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-operation-link-precision-20261001-v1.json",
+      "sha256": "C1E6513F381F4CFE4E576224DE662FA903596BF14E4F7D638A23B8D47B97FDE6",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-operation-link-precision-20261001-v1.patch",
+      "sha256": "ED74B5A24844445E4356F4ABA30C79206EDBFC91A1A5A3C40B5D4440AD8B9311",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-operation-node-map-review-20261002.md",
+      "sha256": "70586EE2205FEA0E2C1CEF4D8511E667908C24E59E21A940FE9845D7614837E0",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-operation-owner-behavior-matrix-root-snapshot-20261001.csv",
+      "sha256": "CE0FF6DD4A3A16313070FCAEC815032BCB78AA4C368E320C5C3311AC7DAB2FD3",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-operation-owners-root-current.patch",
+      "sha256": "45EC8C3365606FB3C099E435C7F9AB6F1A004AB965C06C6CC2DE6A2E1A70151E",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-operation-selector-rerun-20261003.txt",
+      "sha256": "CD897A5B0872DF7DC8CCDEA70C3EF4A0F6381C13AEFC0D35BD2BCD287D7BBE8E",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-operation-test-link-delta-20261002.csv",
+      "sha256": "10956A644C573D685E803780B775B71F75406DC8125D377529D2B9F304489A67",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-operation-test-link-delta-20261002.json",
+      "sha256": "2CA26C5A3B86CE58A4CB84D4CCC01C03F1EED8A1E7B16B45D844E2448686A957",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-operation-unaccepted-MCP-HTTP-CLI-20261003.csv",
+      "sha256": "D5D8C5D3392986F36E88D11A947A5BF019F14455C20248268E469F8FB04B9574",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-owner-followup-status-20261003.md",
+      "sha256": "0EA2733955B8B3EB3897ADA50D8D3FD5254BDB78B750969F9545B35FD5C591C9",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-owner-release-and-acceptance-20261001-v1.md",
+      "sha256": "0F17830EFE2D6DD0AA9DC6B8571DAE2B1EA3DD91C62DE5D0D4EB1EDC8D0468B3",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-registry-disabled-feature-root-test-20261001.patch",
+      "sha256": "2FCD8C79DAA9BF62273B6D14453B2CA39C101F39225E257E46EE5C1748C6B291",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-resume-checkpoint-20261002.md",
+      "sha256": "161F4A3A12645B003F381105C09740B3CFECFAD94E8C0912AE935FEB182CAA84",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-acceptance-selector-operation-links-20261002.csv",
+      "sha256": "4CA8361154006C740E5BC22FC5730DDA163EFC24269598BEFD5229E7ED37506A",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-acceptance-selector-operation-links-20261002.json",
+      "sha256": "5FF085617F2F53CA4B97B2707387CB18D68F231C0FC4B7C74426D34D4577A1D5",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-agent-state-priority-tests.patch",
+      "sha256": "C40AA83ED4A471290715920003FCF36E4EDDC3ABAFF7DA0B9A1200F977014B1C",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-agent-tasks-get-coverage.patch",
+      "sha256": "7DA92C9203C06C2E6452D05178A4B1F66ED2F9407DA42318212FEE64A1903F89",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-agent-tasks-get-current.patch",
+      "sha256": "9AA6D5A114A5540EFD2B6F2509D5E5171227B013979AF91D1CDE2C2C500546EF",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-behavior-disposition-tests.patch",
+      "sha256": "D9C3B85C9997AC738CF1AB4ACEFE0B6B9A330398EDC7A9D02189F61661FFF179",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-behavior-matcher.patch",
+      "sha256": "A237407593AAE9131CD4265F33EEB88DBB85083D0AD5FBCB371DDEB51FADC769",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-corrected-API_COVERAGE.md",
+      "sha256": "BAE4FF38048635AD00E895B1B0BC5D55F9CD9A742B0A0A6FA0336579FACB21AF",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-coverage-doc.patch",
+      "sha256": "A740F6EA6BA2D6A2C10E2B59CFE6848B225C26FE51A789D11BF3C61F02365893",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-current-API_COVERAGE-20261003.patch",
+      "sha256": "33F3652969ACBB4088BC6BDF06655C9A3AD1AE4E8DFA73D198B13E8CE0E49024",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-current-API_COVERAGE-20261003.receipt.json",
+      "sha256": "5CD71A5200F21964CE108F133B9A2AE505B86CD7ACA72734A0192E8B957AC806",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-current-acceptance-manifest-20261002.json",
+      "sha256": "6ECE84BDB674C6316BFF8DF55C2A55653E1545B15E8B907823107D1C44BFBDAD",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-current-acceptance-selectors-20261002.txt",
+      "sha256": "8A7424BE78606B20607E7ACE2A3F7387C08218D28D0DC72D0A2154027D098336",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-current-combined-check.patch",
+      "sha256": "A3B8D4CE298666130F090CC6DEB874E414B8123E00441753DA2EC09363CB9B89",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-current-missing-operation-rows-20261003.csv",
+      "sha256": "A81D1872E4D48AEB7ADE5FB85EA3276F25DA3B59DD7ACC7CB77D12B9934C577E",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-current-operation-evidence-manifest-20261002.json",
+      "sha256": "3CFBA8883FD2AB3573BA2BDF2E651AE1AA75019C6D9E8BC3CE93AD663576A552",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-current-operation-patch-receipt-20261003.md",
+      "sha256": "67C917979E5959D40DBBC316B9FD63BB215F546A4056EC24AEC8CC53B68FAF68",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-current-operation-selector-inventory-20261003.csv",
+      "sha256": "3971AB5BEACE443CC5897D04E9931A76E8208F0010DB2CC4CF77942B00DDF14F",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-current-operation-test-additions-20261003.patch",
+      "sha256": "AE6A356C2A57B66FA1890BD0975899F8DFE2FA0F8A1A6C6AABD05457C1BA6D07",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-current-owner-coverage-delta-20261001-v3.csv",
+      "sha256": "46AC098221F80FBBB9C4BADC73AA3FA3943B30C3109E7B8E75A41F425C5B978E",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-current-owner-coverage-delta-20261001-v3.md",
+      "sha256": "92CF53A97CF5004FAF34B8CB60D17065CE6DE9E1D36527AD740F356DD3AE9808",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-current-proposed-serial-batch-20261003.txt",
+      "sha256": "CD897A5B0872DF7DC8CCDEA70C3EF4A0F6381C13AEFC0D35BD2BCD287D7BBE8E",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-current-query-link.patch",
+      "sha256": "018ED3E2A047885F4B2D1A5C763AE9A2EB5C1E79873F3F3785F61E6292FFDF8A",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-current-selector-batch-20261003.txt",
+      "sha256": "88C912BDFE141B7DBD4C53085F3EF3C02ACB6F8986D9A663694834984DBD2EA1",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-current-selector-list-20261002.txt",
+      "sha256": "E5F04C4E59A17FEB086D3101658E7EE534AB0F2AB6B3614D6B5081B49E1019C1",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-current-surface-delta-20261001-v2.md",
+      "sha256": "B43A3F6B87E624F477BD2C0B67D7C307525659F4E1B33FCE34C6EB081C656E20",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-current-surface-delta-20261001-v3.md",
+      "sha256": "F9DBAED60DE8FBA78F3BF2CBA90812F96FD144CDFA87E80D7D57C62983C2E1FE",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-current-with-task-rollback-check.patch",
+      "sha256": "54A1BBF47E2DF2019F2541CE29020CB1A6E8D9E26ED7CB01DA1A257A978EADA9",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-current.patch",
+      "sha256": "018ED3E2A047885F4B2D1A5C763AE9A2EB5C1E79873F3F3785F61E6292FFDF8A",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-enum-and-feature-gate-continuation-20261001.md",
+      "sha256": "50E3D365040968FD5293EFB8013CBE8FFA552EF896B77B2920FEBBA9E467B86B",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-events-event-page-spy.patch",
+      "sha256": "218740E2F8D36D9D1E3EB6760C5AD4BB17DBA9F9E01760695A2C158C6115079A",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-generator-fix.patch",
+      "sha256": "08B5D67B25C5CBC955B60091ECDD01DCFEC82B0F60B1F40002E724CD7689E16D",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-mcp-coord-current.patch",
+      "sha256": "AFBC8A1BA91A6076F72C9CCC4F9A86612D0CF46A6E994A6C0D72F52EF92F18CE",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-mcp-coord-gap-selectors.patch",
+      "sha256": "051F5066BC3B1589A78EE1CBE20DD6ED91069712143F67E983061918DA2D0235",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-missing-selector-list-20261002.txt",
+      "sha256": "AB832D5671C506AAEBE6A44C605DF3059298BDACEF08BF5DE2C023B9FC68D08F",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-present-selector-list-20261002.txt",
+      "sha256": "88B8B98E7DA23DA49F17032C3594ABF7F052F1A7241B3A23278BC3938DEAD1EC",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-registry-operation-coverage-20261001.csv",
+      "sha256": "3E45B7A8058E0361E2F0C759BCCB66380A0AF8ABF25CA77819941AEF020837EF",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-selector-reconciliation-20261003.md",
+      "sha256": "1EEF99B6FBE2590A7330AEC928230BC6804CD5A1D10089511943CE825FB79B1B",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-selector-run-request-20261002.md",
+      "sha256": "5636D03567CCEAB4B23ADF6294CDF5DB5C0BFAFA6A6532477297E3ECB919693F",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-stop-daemon-test.patch",
+      "sha256": "2405896A5287D3AD915D7D60A172D067681DE5FD9C1590E1E679AD0766E6DD9D",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-transfer-claims-20261001-v2.json",
+      "sha256": "7C8A239985E8CAF7F000665021F87E2CA9397D3E0286FF3AC65C4F71A6C08CD5",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-transfer-delta-20261001-v2.csv",
+      "sha256": "F9DC3AF249B25F9847476FD53EA2B724CD76EC8BD705B56C749BF1E77A8C6635",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-root-transfer-delta-20261001-v2.json",
+      "sha256": "E8ECBF1FA2499D116D7DBED67E9D3B4CD98EBCE6A7BB805AC9A13E53B34B1E19",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-schema-fallback-root-current.patch",
+      "sha256": "7FAAA5AA5A84D4D5B237799642A04CF3600D7EC9715775E0F9C6926AABCA080D",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-stale-candidate-coverage-doc.patch",
+      "sha256": "97E9735C465535EB68DDA6BE42B08A914C2A697DF937F9C731330586F3FD4673",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-surface-inventory-dirty.diff",
+      "sha256": "0248021E8027573F3A687BE225F052E9DD08BCBBA46F824600E99A670C790CE0",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-task-rollback-acceptance-incremental.patch",
+      "sha256": "A0B1324B3B4F31DAF4CCD94060D8998E3444EB4724EECCD912AB318AEDD78AD3",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-test-fixture-repair-20261003.md",
+      "sha256": "BC37718BAD75EF7A5CC5B7BEC2B43311AED93AC52A2F24AF8453BBC0231C8FAC",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-test-fixture-repair-20261003.patch",
+      "sha256": "C72809E3DAB22648D1352B1DD240F91EE3CC3C05AFBD808BC2940A69DEC40E07",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-uncovered-historical-operation-gaps-20261002.csv",
+      "sha256": "E9A32BE7548A4E758CF5A26D4FEB05D7C2D64E69E6CE4EA1B89577A69CFE9C21",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-uncovered-operation-owner-test-plan-20261002.json",
+      "sha256": "5835CC1A2AE5220E1813C3B6D3E7DE13836253606D04FE4000D8E4CA22ECE1F4",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-uncovered-operation-owner-test-plan-20261002.md",
+      "sha256": "28355F3565DDA50851E43FB831ED76517A86445A448F65EE82532426B2238568",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-unique-unintegrated-tests.patch",
+      "sha256": "EA2C4C225DBA945CB17A90FC3CD25EF4CEEA6C3BF9E195B4BAAD1FADE960A8AB",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-unlinked-MCP-HTTP-owner-gaps-20261001-v1.csv",
+      "sha256": "FCC8EC6DEFCFDE432F8CD1D667F11C94E2A0C892DDB3A5C9CE7FAA93B698B157",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-unlinked-MCP-HTTP-owner-gaps-20261001-v1.json",
+      "sha256": "8CCB430775A60C16FE6337CB8328CEFC125847C0D7F2D2607AEF7183C93CAF27",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-unlinked-MCP-HTTP-owner-gaps-20261001-v2.csv",
+      "sha256": "EF8A777C71E14D8C50204D4E5F38274590862FF61E3B300F0937F3A651B94F51",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-unlinked-MCP-HTTP-owner-gaps-20261001-v2.json",
+      "sha256": "848329C7DC956E53C9564360E9CF29E2172DAB87B490C5CD84577ADF74679BB5",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-unmapped-operation-dedupe-20261002.csv",
+      "sha256": "58A777164745A8A3F65D5570F0E20759EAD1389895967FD5CC183927D8139101",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-unmapped-operation-dedupe-20261002.json",
+      "sha256": "C98CD804BC4C67C95DBB3AFCE370F7DED6B2C1182CD9E31B7D63AD9E388D908E",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-unverified-MCP-HTTP-CLI-acceptance-20261002.csv",
+      "sha256": "5155D714BC16742B5A4DF076F74687D47A5AE16608DE14003DCBB7BE90925F20",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-unverified-MCP-HTTP-CLI-acceptance-20261002.md",
+      "sha256": "27D33A915A5F77EAE12C4CFC336DB5695F8C9C5427E20261829AD5E9169C01A6",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/T01-unverified-high-impact-owner-triage-root-snapshot-20261001.csv",
+      "sha256": "364EE175A5F5CB2BC873ACB33A8A5C16E8717E4D3A80355BCA42CF8C18EE3552",
+      "master_collision": false
+    },
+    {
+      "path": "handoff/verify-T01-T27-http-post-inventory-20261003.py",
+      "sha256": "CFDA63FFCEAC47AF19D657DDE6D3C64F591F7FCDAFD8ADEBEA9D8D557CD9994B",
+      "master_collision": false
+    },
+    {
+      "path": "tests/test_client_operation_acceptance.py",
+      "sha256": "530590EF5F3032CDC1321EB226F85A9CF3012FE631CBC902124A9DD1362132EC",
+      "master_collision": true
+    },
+    {
+      "path": "tests/test_http_route_operation_acceptance.py",
+      "sha256": "57E7A99AFA86A1222716BB4349F3F2D8B17CEE5A4A4B5560B8006C8846E55C62",
+      "master_collision": true
+    },
+    {
+      "path": "tests/test_hubctl_unlinked_operations.py",
+      "sha256": "F2772E2C24289AB6F90A1ECFD7F81D6A557BB54458E94187F24C993AAE9C0C5A",
+      "master_collision": true
+    },
+    {
+      "path": "tests/test_mcp_command_operation_acceptance.py",
+      "sha256": "3A8D13928BD4A9A7258BB5BC14BB068AD04A43C8794EA58AF358FC70E26CC0C7",
+      "master_collision": true
+    },
+    {
+      "path": "tests/test_mcp_coord_operation_acceptance.py",
+      "sha256": "0DAB254C67C8CDED8FA7F0A7FB72A4BE812A2F5DDE540E746B600440247CD4BC",
+      "master_collision": true
+    },
+    {
+      "path": "tests/test_rag_work_operation_acceptance.py",
+      "sha256": "5A32CA2BD3545AF2636CE2BFA653122657D6869D54A46F5B1BE087951325A7D2",
+      "master_collision": true
+    }
+  ]
+}

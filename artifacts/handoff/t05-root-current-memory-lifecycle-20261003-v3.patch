@@ -1,0 +1,1441 @@
+diff --git a/src/local_ai_hub/agent_memory.py b/src/local_ai_hub/agent_memory.py
+index 4dae5a2..a62e504 100644
+--- a/src/local_ai_hub/agent_memory.py
++++ b/src/local_ai_hub/agent_memory.py
+@@ -950,14 +950,68 @@ class MemoryStore:
+         except Exception:
+             pass
+ 
++    def _save_record_mutation(self, record: MemoryRecord, event: AgentEvent) -> MemoryRecord:
++        """Commit a memory projection mutation and event as one durable write."""
++        if not self.state_store.enabled:
++            self._save_record(record)
++            return record
++        self._init_table()
++
++        def _do_mutation() -> MemoryRecord:
++            con = connect_sqlite(self.state_store.db_path, isolation_level=None)
++            try:
++                # Enter publication before BEGIN. The caller-owned transaction
++                # commits the projection and outbox together; publish afterward.
++                with self.state_store.ordered_event_publication(con) as publish:
++                    con.execute("BEGIN IMMEDIATE")
++                    appended = self.state_store.append_in_transaction(
++                        con,
++                        event,
++                        strict_idempotency=False,
++                    )
++                    self._save_record_row(con, record)
++                    con.execute("COMMIT")
++                    publish([appended.event])
++                return record
++            except Exception:
++                if con.in_transaction:
++                    con.execute("ROLLBACK")
++                raise
++            finally:
++                con.close()
++
++        return retry_busy(_do_mutation, retries=5, base_delay_seconds=0.02)
++
+     def promote(
+         self,
+         record_id: str,
+         target_scope: AgentScope,
+         *,
+         approver: str,
++        scope: AgentScope | str | None = None,
++        scope_id: str | None = None,
++        root: str | None = None,
++        repository_id: str | None = None,
++        tenant: str | None = None,
++        task_id: str | None = None,
++        session_id: str | None = None,
++        clone_id: str | None = None,
++        worktree_id: str | None = None,
++        branch: str | None = None,
+     ) -> MemoryRecord:
+-        current = self.get(record_id)
++        current = self.get(
++            record_id,
++            scope=scope,
++            scope_id=scope_id,
++            root=root,
++            repository_id=repository_id,
++            tenant=tenant,
++            task_id=task_id,
++            session_id=session_id,
++            clone_id=clone_id,
++            worktree_id=worktree_id,
++            branch=branch,
++        )
+         if not current:
+             raise KeyError(f"Memory record {record_id} not found")
+ 
+@@ -972,9 +1026,7 @@ class MemoryStore:
+             idempotency_key=f"promote_{record_id}_{target_scope.value}",
+             actor=approver,
+         )
+-        self.state_store.append(event)
+-        self._save_record(promoted)
+-        return promoted
++        return self._save_record_mutation(promoted, event)
+ 
+     def quarantine(
+         self,
+@@ -982,8 +1034,30 @@ class MemoryStore:
+         reason: str,
+         *,
+         actor: str,
++        scope: AgentScope | str | None = None,
++        scope_id: str | None = None,
++        root: str | None = None,
++        repository_id: str | None = None,
++        tenant: str | None = None,
++        task_id: str | None = None,
++        session_id: str | None = None,
++        clone_id: str | None = None,
++        worktree_id: str | None = None,
++        branch: str | None = None,
+     ) -> MemoryRecord:
+-        current = self.get(record_id)
++        current = self.get(
++            record_id,
++            scope=scope,
++            scope_id=scope_id,
++            root=root,
++            repository_id=repository_id,
++            tenant=tenant,
++            task_id=task_id,
++            session_id=session_id,
++            clone_id=clone_id,
++            worktree_id=worktree_id,
++            branch=branch,
++        )
+         if not current:
+             raise KeyError(f"Memory record {record_id} not found")
+ 
+@@ -995,9 +1069,7 @@ class MemoryStore:
+             idempotency_key=f"quar_{record_id}_{int(time.time())}",
+             actor=actor,
+         )
+-        self.state_store.append(event)
+-        self._save_record(quarantined)
+-        return quarantined
++        return self._save_record_mutation(quarantined, event)
+ 
+     @staticmethod
+     def _normalise_path(value: str) -> str:
+diff --git a/src/local_ai_hub/http_server.py b/src/local_ai_hub/http_server.py
+index 042fb08..910c7d4 100644
+--- a/src/local_ai_hub/http_server.py
++++ b/src/local_ai_hub/http_server.py
+@@ -3819,7 +3819,63 @@ class Handler(BaseHTTPRequestHandler):
+                                 limit=limit_val,
+                         )
+                     self._send(200, {"success": True, "records": [r.to_dict() for r in records]}); return
++                def _memory_mutation_identity() -> tuple[dict[str, Any] | None, str | None]:
++                    scope_val = _parse_memory_scope(payload.get("scope"))
++                    scope_id_val = payload.get("scope_id")
++                    requested_root = payload.get("root")
++                    project_identity = self._memory_project_identity(requested_root)
++                    if requested_root and project_identity is None:
++                        return None, "memory project identity could not be resolved"
++                    root_val, repository_id_val = project_identity or (None, None)
++                    tenant_val = self._tenant()
++                    task_id_val = payload.get("task_id")
++                    session_id_val = payload.get("session_id")
++                    clone_id_val = payload.get("clone_id")
++                    worktree_id_val = payload.get("worktree_id")
++                    branch_val = payload.get("branch")
++                    scope_val, scope_id_val, ambiguous_scope = _resolve_memory_scope(
++                        scope_val,
++                        scope_id=scope_id_val,
++                        root=root_val,
++                        repository_id=repository_id_val,
++                        tenant=tenant_val,
++                        task_id=task_id_val,
++                        session_id=session_id_val,
++                        clone_id=clone_id_val,
++                        worktree_id=worktree_id_val,
++                        branch=branch_val,
++                    )
++                    if ambiguous_scope:
++                        return None, "ambiguous memory scope identity"
++                    if not _memory_lookup_has_identity(
++                        scope_id_val,
++                        root_val,
++                        repository_id_val,
++                        tenant_val,
++                        task_id_val,
++                        session_id_val,
++                        clone_id_val,
++                        worktree_id_val,
++                        branch_val,
++                    ) or scope_val is None:
++                        return None, "memory mutation requires explicit scope identity"
++                    return {
++                        "scope": scope_val,
++                        "scope_id": str(scope_id_val) if scope_id_val is not None else None,
++                        "root": str(root_val) if root_val else None,
++                        "repository_id": str(repository_id_val) if repository_id_val else None,
++                        "tenant": str(tenant_val) if tenant_val else None,
++                        "task_id": str(task_id_val) if task_id_val else None,
++                        "session_id": str(session_id_val) if session_id_val else None,
++                        "clone_id": str(clone_id_val) if clone_id_val else None,
++                        "worktree_id": str(worktree_id_val) if worktree_id_val else None,
++                        "branch": str(branch_val) if branch_val else None,
++                    }, None
++
+                 if action == "promote":
++                    identity, identity_error = _memory_mutation_identity()
++                    if identity_error:
++                        self._send(400, {"success": False, "error": identity_error, "terminal": True, "retryable": False}); return
+                     target_scope_str = str(payload.get("target_scope", "")).strip().lower()
+                     target_scope = AgentScope.parse(target_scope_str, default=None)
+                     if not target_scope:
+@@ -3830,6 +3886,7 @@ class Handler(BaseHTTPRequestHandler):
+                             str(payload.get("record_id", "")),
+                             target_scope,
+                             approver=approver,
++                            **(identity or {}),
+                         )
+                         self._send(200, {"success": True, "record": promoted.to_dict()}); return
+                     except ApprovalRequiredError as exc:
+@@ -3837,15 +3894,20 @@ class Handler(BaseHTTPRequestHandler):
+                     except KeyError as exc:
+                         self._send(404, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+                 if action == "quarantine":
++                    identity, identity_error = _memory_mutation_identity()
++                    if identity_error:
++                        self._send(400, {"success": False, "error": identity_error, "terminal": True, "retryable": False}); return
+                     reason = str(payload.get("reason", "manual quarantine"))
+                     try:
+-                        APP.agent_memory.quarantine(
++                        quarantined = APP.agent_memory.quarantine(
+                             str(payload.get("record_id", "")),
+                             reason=reason,
+                             actor=actor,
++                            **(identity or {}),
+                         )
+                     except KeyError as exc:
+                         self._send(404, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
++                    self._send(200, {"success": True, "record": quarantined.to_dict()}); return
+                 if action == "compact":
+                     scope_val = payload.get("scope")
+                     older_than = float(payload.get("older_than_seconds", 0.0))
+diff --git a/src/local_ai_hub/memory.py b/src/local_ai_hub/memory.py
+index b157fe9..f8d4cc8 100644
+--- a/src/local_ai_hub/memory.py
++++ b/src/local_ai_hub/memory.py
+@@ -4,7 +4,9 @@ from .json_utils import dumps as json_dumps
+ 
+ import hashlib
+ import json
++import os
+ import sqlite3
++import tempfile
+ import threading
+ import time
+ from contextlib import closing
+@@ -14,6 +16,8 @@ from typing import Any
+ from .sqlite_support import connect_sqlite, initialize_wal, retry_busy
+ from .process_utils import canonical_root
+ 
++_WORKSPACE_MEMORY_BACKUP_SUFFIX = ".pre-memo-version.bak"
++
+ 
+ class WorkspaceMemoryStore:
+     """Small shared, TTL-bounded handoff memo store for concurrent agents.
+@@ -25,8 +29,10 @@ class WorkspaceMemoryStore:
+     Memos are shared by every local agent using the same canonical workspace and key;
+     the tenant field records provenance and can select deletes, but it does not
+     restrict reads or prove caller identity. A later write replaces the earlier
+-    value (last writer wins). Private identity-scoped memory needs authenticated
+-    identity in every key and access check.
++    value (last writer wins) unless a writer supplies an expected version to reject
++    stale replacement. Compact per-key version rows remain after deletion so stale
++    writers cannot recreate older generations. Private identity-scoped memory needs
++    authenticated identity in every key and access check.
+     """
+ 
+     def __init__(self, state_dir: Path, default_ttl_hours: int = 168, max_value_chars: int = 6000):
+@@ -40,6 +46,60 @@ class WorkspaceMemoryStore:
+ 
+     def _connect(self) -> sqlite3.Connection:
+         return connect_sqlite(self.path, timeout_seconds=0.75)
++    @staticmethod
++    def _database_content_digest(database: sqlite3.Connection) -> bytes:
++        digest = hashlib.sha256()
++        for statement in database.iterdump():
++            digest.update(statement.encode("utf-8"))
++            digest.update(b"\n")
++        return digest.digest()
++
++    def _create_migration_backup(self) -> None:
++        backup_path = self.path.with_name(self.path.name + _WORKSPACE_MEMORY_BACKUP_SUFFIX)
++        if backup_path.exists():
++            if not backup_path.is_file():
++                raise sqlite3.DatabaseError("workspace memory migration backup path is not a file")
++            if not backup_path.is_symlink() and not backup_path.samefile(self.path):
++                with closing(sqlite3.connect(str(backup_path))) as existing:
++                    integrity = existing.execute("PRAGMA integrity_check").fetchone()
++                    if integrity != ("ok",):
++                        raise sqlite3.DatabaseError("workspace memory migration backup integrity check failed")
++                    with closing(sqlite3.connect(str(self.path))) as current:
++                        if self._database_content_digest(existing) == self._database_content_digest(current):
++                            return
++
++        file_descriptor, temporary_name = tempfile.mkstemp(
++            prefix=backup_path.name + ".",
++            suffix=".tmp",
++            dir=str(backup_path.parent),
++        )
++        os.close(file_descriptor)
++        temporary_path = Path(temporary_name)
++        try:
++            with closing(sqlite3.connect(str(self.path))) as source, closing(
++                sqlite3.connect(str(temporary_path))
++            ) as backup:
++                source.backup(backup)
++                backup.commit()
++                integrity = backup.execute("PRAGMA integrity_check").fetchone()
++                snapshot_digest = self._database_content_digest(source)
++                backup_digest = self._database_content_digest(backup)
++            if integrity != ("ok",) or backup_digest != snapshot_digest:
++                raise sqlite3.DatabaseError("workspace memory migration backup verification failed")
++            os.replace(temporary_path, backup_path)
++            with closing(sqlite3.connect(str(backup_path))) as verified:
++                integrity = verified.execute("PRAGMA integrity_check").fetchone()
++                verified_digest = self._database_content_digest(verified)
++            if integrity != ("ok",) or verified_digest != snapshot_digest:
++                raise sqlite3.DatabaseError("workspace memory migration backup verification failed")
++            if backup_path.samefile(self.path):
++                raise sqlite3.DatabaseError("workspace memory migration backup aliases the live database")
++        except BaseException:
++            try:
++                temporary_path.unlink(missing_ok=True)
++            except OSError:
++                pass
++            raise
+ 
+     def _init_db(self) -> None:
+         if self._initialized:
+@@ -50,6 +110,26 @@ class WorkspaceMemoryStore:
+             def _setup() -> None:
+                 with closing(self._connect()) as con:
+                     initialize_wal(con)
++                    con.execute("BEGIN IMMEDIATE")
++                    memo_table_exists = bool(con.execute(
++                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memos'"
++                    ).fetchone())
++                    versions_table_exists = bool(con.execute(
++                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memo_versions'"
++                    ).fetchone())
++                    columns = {str(row[1]) for row in con.execute("PRAGMA table_info(memos)")} if memo_table_exists else set()
++                    missing_generations = False
++                    if memo_table_exists and versions_table_exists:
++                        missing_generations = con.execute(
++                            """SELECT 1 FROM memos AS m
++                               LEFT JOIN memo_versions AS v
++                                 ON v.workspace=m.workspace AND v.memo_key=m.memo_key
++                               WHERE v.memo_key IS NULL LIMIT 1"""
++                        ).fetchone() is not None
++                    if memo_table_exists and (
++                        "version" not in columns or not versions_table_exists or missing_generations
++                    ):
++                        self._create_migration_backup()
+                     con.execute(
+                         """CREATE TABLE IF NOT EXISTS memos (
+                             workspace TEXT NOT NULL,
+@@ -59,9 +139,25 @@ class WorkspaceMemoryStore:
+                             metadata TEXT NOT NULL,
+                             updated_at REAL NOT NULL,
+                             expires_at REAL NOT NULL,
++                            version INTEGER NOT NULL DEFAULT 1,
++                            PRIMARY KEY(workspace, memo_key)
++                        )"""
++                    )
++                    columns = {str(row[1]) for row in con.execute("PRAGMA table_info(memos)")}
++                    if "version" not in columns:
++                        con.execute("ALTER TABLE memos ADD COLUMN version INTEGER NOT NULL DEFAULT 1")
++                    con.execute(
++                        """CREATE TABLE IF NOT EXISTS memo_versions (
++                            workspace TEXT NOT NULL,
++                            memo_key TEXT NOT NULL,
++                            version INTEGER NOT NULL,
+                             PRIMARY KEY(workspace, memo_key)
+                         )"""
+                     )
++                    con.execute(
++                        """INSERT OR IGNORE INTO memo_versions(workspace,memo_key,version)
++                           SELECT workspace,memo_key,version FROM memos"""
++                    )
+                     con.execute("CREATE INDEX IF NOT EXISTS idx_memos_expiry ON memos(expires_at)")
+                     con.commit()
+             retry_busy(_setup, retries=5, base_delay_seconds=0.02)
+@@ -103,6 +199,7 @@ class WorkspaceMemoryStore:
+         *,
+         ttl_seconds: int | None = None,
+         metadata: dict[str, Any] | None = None,
++        expected_version: int | None = None,
+     ) -> dict[str, Any]:
+         workspace = self.workspace_id(root)
+         key = self._clean_key(key)
+@@ -112,21 +209,55 @@ class WorkspaceMemoryStore:
+         value = value.strip()
+         if not value:
+             raise ValueError("memo value must not be empty")
++        if expected_version is not None and (type(expected_version) is not int or expected_version < 0):
++            raise ValueError("memo expected_version must be a non-negative integer")
+         truncated = len(value) > self.max_value_chars
+         if truncated:
+             value = value[: self.max_value_chars] + "\n[... memo truncated ...]"
+         ttl = self.default_ttl if ttl_seconds is None else max(300, min(int(ttl_seconds), 30 * 86400))
+         now = time.time()
+         meta = metadata if isinstance(metadata, dict) else {}
+-        def write() -> None:
++        def write() -> int | dict[str, Any]:
+             with closing(self._connect()) as con:
++                con.execute("BEGIN IMMEDIATE")
+                 self._purge(con)
++                row = con.execute(
++                    "SELECT version FROM memo_versions WHERE workspace=? AND memo_key=?",
++                    (workspace, key),
++                ).fetchone()
++                current_version = int(row[0]) if row else 0
++                if expected_version is not None and current_version != expected_version:
++                    con.rollback()
++                    return {
++                        "success": False,
++                        "error": "memo version conflict",
++                        "version_conflict": True,
++                        "workspace": workspace,
++                        "key": key,
++                        "scope": "workspace-shared",
++                        "expected_version": expected_version,
++                        "current_version": current_version,
++                    }
++                con.execute(
++                    """INSERT INTO memo_versions(workspace,memo_key,version) VALUES(?,?,?)
++                       ON CONFLICT(workspace,memo_key) DO UPDATE SET version=excluded.version""",
++                    (workspace, key, current_version + 1),
++                )
++                version = current_version + 1
+                 con.execute(
+-                    "INSERT OR REPLACE INTO memos(workspace,memo_key,value,tenant,metadata,updated_at,expires_at) VALUES(?,?,?,?,?,?,?)",
+-                    (workspace, key, value, tenant, json_dumps(meta, ensure_ascii=False), now, now + ttl),
++                    """INSERT INTO memos(workspace,memo_key,value,tenant,metadata,updated_at,expires_at,version)
++                       VALUES(?,?,?,?,?,?,?,?)
++                       ON CONFLICT(workspace,memo_key) DO UPDATE SET
++                           value=excluded.value, tenant=excluded.tenant, metadata=excluded.metadata,
++                           updated_at=excluded.updated_at, expires_at=excluded.expires_at,
++                           version=excluded.version""",
++                    (workspace, key, value, tenant, json_dumps(meta, ensure_ascii=False), now, now + ttl, version),
+                 )
+                 con.commit()
+-        retry_busy(write, retries=4)
++                return version
++        result = retry_busy(write, retries=4)
++        if isinstance(result, dict):
++            return result
+         return {
+             "success": True,
+             "workspace": workspace,
+@@ -135,6 +266,7 @@ class WorkspaceMemoryStore:
+             "tenant": tenant,
+             "truncated": truncated,
+             "expires_in_seconds": ttl,
++            "version": result,
+         }
+ 
+     def get(self, root: str, key: str) -> dict[str, Any]:
+@@ -143,13 +275,20 @@ class WorkspaceMemoryStore:
+         now = time.time()
+         def read():
+             with closing(self._connect()) as con:
+-                return con.execute(
+-                    "SELECT value,tenant,metadata,updated_at,expires_at FROM memos WHERE workspace=? AND memo_key=? AND expires_at>?",
++                con.execute("BEGIN")
++                row = con.execute(
++                    "SELECT value,tenant,metadata,updated_at,expires_at,version FROM memos WHERE workspace=? AND memo_key=? AND expires_at>?",
+                     (workspace, key, now),
+                 ).fetchone()
+-        row = retry_busy(read, retries=3)
++                generation = con.execute(
++                    "SELECT version FROM memo_versions WHERE workspace=? AND memo_key=?",
++                    (workspace, key),
++                ).fetchone()
++                con.commit()
++                return row, (int(generation[0]) if generation else 0)
++        row, current_version = retry_busy(read, retries=3)
+         if not row:
+-            return {"success": False, "error": "memo not found", "workspace": workspace, "key": key, "scope": "workspace-shared"}
++            return {"success": False, "error": "memo not found", "workspace": workspace, "key": key, "scope": "workspace-shared", "version": current_version}
+         return {
+             "success": True,
+             "workspace": workspace,
+@@ -160,6 +299,7 @@ class WorkspaceMemoryStore:
+             "metadata": json.loads(row[2] or "{}"),
+             "updated_at": row[3],
+             "expires_at": row[4],
++            "version": int(row[5]),
+         }
+ 
+     def search(self, root: str, query: str = "", limit: int = 12) -> dict[str, Any]:
+@@ -170,7 +310,7 @@ class WorkspaceMemoryStore:
+         def read():
+             with closing(self._connect()) as con:
+                 return con.execute(
+-                    "SELECT memo_key,value,tenant,metadata,updated_at,expires_at FROM memos WHERE workspace=? AND expires_at>? ORDER BY updated_at DESC LIMIT 200",
++                    "SELECT memo_key,value,tenant,metadata,updated_at,expires_at,version FROM memos WHERE workspace=? AND expires_at>? ORDER BY updated_at DESC LIMIT 200",
+                     (workspace, now),
+                 ).fetchall()
+         rows = retry_busy(read, retries=3)
+@@ -184,22 +324,61 @@ class WorkspaceMemoryStore:
+                 "key": row[0], "value": row[1], "tenant": row[2],
+                 "scope": "workspace-shared",
+                 "metadata": json.loads(row[3] or "{}"), "updated_at": row[4], "expires_at": row[5], "score": score,
++                "version": int(row[6]),
+             })
+         items.sort(key=lambda x: (-x["score"], -x["updated_at"]))
+         return {"success": True, "workspace": workspace, "scope": "workspace-shared", "results": items[:limit]}
+ 
+-    def delete(self, root: str, key: str, tenant: str = "") -> dict[str, Any]:
++    def delete(self, root: str, key: str, tenant: str = "", *, scope: str | None = None) -> dict[str, Any]:
+         workspace = self.workspace_id(root)
+         key = self._clean_key(key)
+         if tenant != "":
+             tenant = self._clean_tenant(tenant)
+-        def write() -> int:
++        if scope is not None:
++            if not isinstance(scope, str) or scope.strip().lower() not in {"global", "tenant"}:
++                raise ValueError("memo delete scope must be 'global' or 'tenant'")
++            scope = scope.strip().lower()
++            if scope == "tenant" and not tenant:
++                return {
++                    "success": False,
++                    "error": "tenant is required for tenant-scoped memory delete",
++                    "workspace": workspace,
++                    "key": key,
++                    "scope": "workspace-shared",
++                    "deleted": False,
++                }
++            if scope == "global":
++                tenant = ""
++        def write() -> tuple[int, int]:
+             with closing(self._connect()) as con:
++                con.execute("BEGIN IMMEDIATE")
++                if tenant:
++                    row = con.execute("SELECT version FROM memos WHERE workspace=? AND memo_key=? AND tenant=?", (workspace, key, tenant)).fetchone()
++                else:
++                    row = con.execute("SELECT version FROM memos WHERE workspace=? AND memo_key=?", (workspace, key)).fetchone()
++                if not row:
++                    generation = con.execute(
++                        "SELECT version FROM memo_versions WHERE workspace=? AND memo_key=?",
++                        (workspace, key),
++                    ).fetchone()
++                    con.rollback()
++                    return 0, (int(generation[0]) if generation else 0)
++                current = con.execute(
++                    "SELECT version FROM memo_versions WHERE workspace=? AND memo_key=?",
++                    (workspace, key),
++                ).fetchone()
++                next_version = (int(current[0]) if current else int(row[0])) + 1
+                 if tenant:
+                     cur = con.execute("DELETE FROM memos WHERE workspace=? AND memo_key=? AND tenant=?", (workspace, key, tenant))
+                 else:
+                     cur = con.execute("DELETE FROM memos WHERE workspace=? AND memo_key=?", (workspace, key))
++                if cur.rowcount:
++                    con.execute(
++                        """INSERT INTO memo_versions(workspace,memo_key,version) VALUES(?,?,?)
++                           ON CONFLICT(workspace,memo_key) DO UPDATE SET version=excluded.version""",
++                        (workspace, key, next_version),
++                    )
+                 con.commit()
+-                return int(cur.rowcount or 0)
+-        deleted = retry_busy(write, retries=4)
+-        return {"success": True, "workspace": workspace, "key": key, "scope": "workspace-shared", "deleted": deleted > 0}
++                return int(cur.rowcount or 0), next_version
++        deleted, version = retry_busy(write, retries=4)
++        return {"success": True, "workspace": workspace, "key": key, "scope": "workspace-shared", "deleted": deleted > 0, "version": version}
+diff --git a/tests/test_agent_memory_http_identity.py b/tests/test_agent_memory_http_identity.py new file mode 100644 index 0000000..fc995d5 100644 --- /dev/null +++ b/tests/test_agent_memory_http_identity.py
+@@ -0,0 +1,878 @@
++from __future__ import annotations
++
++import json
++import os
++import sqlite3
++import sys
++import threading
++import types
++import urllib.error
++import urllib.request
++from contextlib import closing
++from pathlib import Path
++from urllib.parse import urlencode
++
++from local_ai_hub import http_server
++from local_ai_hub.agent_identity import AgentScope
++from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStatus
++from local_ai_hub.app import LocalAIApp
++
++
++def test_http_global_memory_identity_ignores_transport_tenant_but_keeps_scope(tmp_path, monkeypatch):
++    state_dir = tmp_path / "state"
++    repo_a = tmp_path / "repo-a"
++    repo_b = tmp_path / "repo-b"
++    state_dir.mkdir()
++    repo_a.mkdir()
++    repo_b.mkdir()
++    config_path = tmp_path / "config.toml"
++    config_path.write_text(
++        f'[server]\nbind = "127.0.0.1"\nport = 39131\nstate_dir = "{state_dir.as_posix()}"\n\n'
++        "[agent_state]\nenabled = true\n",
++        encoding="utf-8",
++    )
++    app = LocalAIApp(str(config_path))
++    project_config = types.ModuleType("local_ai_hub.project_config")
++
++    def resolve_project_context(root, configured_dir):
++        resolved_root = Path(root).expanduser().resolve(strict=True)
++        return types.SimpleNamespace(root=resolved_root, coordination_id=resolved_root.name)
++
++    project_config.resolve_project_context = resolve_project_context
++    monkeypatch.setitem(sys.modules, "local_ai_hub.project_config", project_config)
++    global_record = MemoryRecord.create(
++        kind=MemoryKind.FACT,
++        scope=AgentScope.GLOBAL,
++        key="global-http-tenant",
++        value="shared global value",
++        provenance={"root": str(repo_a), "repository_id": "repo-a"},
++    )
++    app.agent_memory.record(global_record, actor="user")
++    session_record = MemoryRecord.create(
++        kind=MemoryKind.FACT,
++        scope=AgentScope.SESSION,
++        scope_id="session-codex",
++        key="session-http-tenant",
++        value="private session value",
++        provenance={"tenant": "codex"},
++    )
++    app.agent_memory.record(session_record, actor="user")
++    owned_global_record = MemoryRecord.create(
++        kind=MemoryKind.FACT,
++        scope=AgentScope.GLOBAL,
++        key="tenant-owned-global-http",
++        value="private global value",
++        provenance={"root": str(repo_a), "repository_id": "repo-a", "tenant": "owner-tenant"},
++    )
++    app.agent_memory.record(owned_global_record, actor="user")
++
++    previous_app = http_server.APP
++    http_server.APP = app
++    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
++    thread = threading.Thread(target=server.serve_forever, daemon=True)
++    thread.start()
++
++    def post(payload):
++        request = urllib.request.Request(
++            f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/memory",
++            data=json.dumps(payload).encode("utf-8"),
++            headers={
++                "Content-Type": "application/json",
++                "X-LocalAI-Tenant": "codex",
++                "Connection": "close",
++            },
++            method="POST",
++        )
++        try:
++            with urllib.request.urlopen(request) as response:
++                return response.status, json.loads(response.read().decode("utf-8"))
++        except urllib.error.HTTPError as exc:
++            return exc.code, json.loads(exc.read().decode("utf-8"))
++
++    try:
++        global_payload = {
++            "action": "get",
++            "record_id": global_record.record_id,
++            "scope": "global",
++            "root": str(repo_a),
++            "repository_id": "repo-a",
++            "tenant": "codex",
++        }
++        status, found = post(global_payload)
++        assert status == 200
++        assert found["record"]["record_id"] == global_record.record_id
++
++        wrong_root = {**global_payload, "root": str(repo_b)}
++        status, denied_root = post(wrong_root)
++        assert status == 404
++        assert denied_root["success"] is False
++
++        session_payload = {
++            "action": "get",
++            "record_id": session_record.record_id,
++            "scope": "session",
++            "scope_id": "session-codex",
++            "tenant": "other-tenant",
++        }
++        status, denied_tenant = post(session_payload)
++        assert status == 200
++        assert denied_tenant["record"]["record_id"] == session_record.record_id
++
++        owned_global_payload = {
++            "record_id": owned_global_record.record_id,
++            "scope": "global",
++            "root": str(repo_a),
++            "repository_id": "repo-a",
++            "tenant": "codex",
++        }
++        status, denied_owned_global = post({**owned_global_payload, "action": "get"})
++        assert status == 404
++        assert denied_owned_global["success"] is False
++        status, found_owned_global = post({**owned_global_payload, "action": "get", "tenant": "owner-tenant"})
++        assert status == 404
++        assert found_owned_global["success"] is False
++
++        delete_payload = {
++            "action": "delete",
++            "record_id": global_record.record_id,
++            "scope": "global",
++            "root": str(repo_a),
++            "repository_id": "repo-a",
++            "tenant": "codex",
++        }
++        status, denied_delete = post({**delete_payload, "root": str(repo_b)})
++        assert status == 404
++        assert denied_delete["success"] is False
++        assert app.agent_memory.get(
++            global_record.record_id,
++            scope=AgentScope.GLOBAL,
++            root=str(repo_a.resolve()),
++            repository_id="repo-a",
++            tenant="codex",
++            tenant_agnostic_global=True,
++        ) is not None
++
++        original_delete = app.agent_memory.delete
++        rewritten = False
++
++        def reassign_identity_before_delete(*args, **kwargs):
++            nonlocal rewritten
++            if not rewritten and args[0] == global_record.record_id and kwargs.get("root") == str(repo_a):
++                reassigned_provenance = dict(global_record.provenance)
++                reassigned_provenance.update({"root": str(repo_b), "repository_id": "repo-b"})
++                with closing(sqlite3.connect(app.agent_memory.state_store.db_path)) as con:
++                    con.execute(
++                        "UPDATE agent_memory_records SET provenance = ? WHERE record_id = ?",
++                        (json.dumps(reassigned_provenance), global_record.record_id),
++                    )
++                    con.commit()
++                rewritten = True
++            return original_delete(*args, **kwargs)
++
++        monkeypatch.setattr(app.agent_memory, "delete", reassign_identity_before_delete)
++        status, stale_identity_delete = post(delete_payload)
++        assert rewritten is True
++        assert status == 404
++        assert stale_identity_delete["success"] is False
++        monkeypatch.setattr(app.agent_memory, "delete", original_delete)
++        assert app.agent_memory.get(
++            global_record.record_id,
++            scope=AgentScope.GLOBAL,
++            root=str(repo_b.resolve()),
++            repository_id="repo-b",
++            tenant="codex",
++            tenant_agnostic_global=True,
++        ) is not None
++        with closing(sqlite3.connect(app.agent_memory.state_store.db_path)) as con:
++            con.execute(
++                "UPDATE agent_memory_records SET provenance = ? WHERE record_id = ?",
++                (json.dumps(global_record.provenance), global_record.record_id),
++            )
++            con.commit()
++
++        status, deleted = post(delete_payload)
++        assert status == 200
++        assert deleted["deleted"] is True
++        assert app.agent_memory.get(
++            global_record.record_id,
++            scope=AgentScope.GLOBAL,
++            root=str(repo_a.resolve()),
++            repository_id="repo-a",
++            tenant="codex",
++            tenant_agnostic_global=True,
++        ) is None
++    finally:
++        server.shutdown()
++        thread.join(timeout=5)
++        server.server_close()
++        http_server.APP = previous_app
++        app.close()
++
++
++def test_http_memory_get_and_mutations_bind_transport_tenant_and_project_identity(tmp_path, monkeypatch):
++    state_dir = tmp_path / "state"
++    repo_a = tmp_path / "repo-a"
++    state_dir.mkdir()
++    repo_a.mkdir()
++    repo_b = tmp_path / "repo-b"
++    repo_b.mkdir()
++    config_path = tmp_path / "config.toml"
++    config_path.write_text(
++        f'[server]\nbind = "127.0.0.1"\nport = 39132\nstate_dir = "{state_dir.as_posix()}"\n\n'
++        "[agent_state]\nenabled = true\n",
++        encoding="utf-8",
++    )
++    app = LocalAIApp(str(config_path))
++    use_real_store = hasattr(app.agent_memory.state_store, "append_in_transaction")
++    if os.environ.get("T05_OVERLAY_SOURCE"):
++        import local_ai_hub.agent_events as agent_events
++
++        overlay_source = Path(os.environ["T05_OVERLAY_SOURCE"]).resolve()
++        root_source = Path(os.environ["T05_ROOT_SOURCE"]).resolve()
++        assert Path(http_server.__file__).resolve() == overlay_source / "local_ai_hub" / "http_server.py"
++        assert Path(sys.modules["local_ai_hub.agent_memory"].__file__).resolve() == overlay_source / "local_ai_hub" / "agent_memory.py"
++        assert Path(sys.modules["local_ai_hub.app"].__file__).resolve() == root_source / "src" / "local_ai_hub" / "app.py"
++        assert Path(agent_events.__file__).resolve() == root_source / "src" / "local_ai_hub" / "agent_events.py"
++    project_resolutions = []
++    project_config = types.ModuleType("local_ai_hub.project_config")
++
++    def resolve_project_context(root, configured_dir):
++        resolved_root = Path(root).expanduser().resolve(strict=True)
++        resolved_state = Path(configured_dir).expanduser().resolve()
++        project_resolutions.append((resolved_root, resolved_state))
++        return types.SimpleNamespace(
++            root=resolved_root,
++            coordination_id=f"server-{resolved_root.name}",
++        )
++
++    project_config.resolve_project_context = resolve_project_context
++    monkeypatch.setitem(sys.modules, "local_ai_hub.project_config", project_config)
++
++    class MemoryHarness:
++        def __init__(self):
++            self.state_store = types.SimpleNamespace(enabled=True)
++            self.records = []
++
++        def _matches(self, record, filters):
++            if filters.get("record_id") and record.record_id != filters["record_id"]:
++                return False
++            if filters.get("scope") is not None and record.scope is not filters["scope"]:
++                return False
++            if filters.get("scope_id") is not None and record.scope_id != filters["scope_id"]:
++                return False
++            for identity_key in (
++                "root", "repository_id", "tenant", "task_id", "session_id",
++                "clone_id", "worktree_id", "branch",
++            ):
++                expected = filters.get(identity_key)
++                if expected is not None and record.provenance.get(identity_key) != expected:
++                    return False
++            return filters.get("key") is None or record.key == filters["key"]
++
++        def record(self, record, **_kwargs):
++            self.records.append(record)
++            return record
++
++        def find(self, **filters):
++            limit = filters.pop("limit", 100)
++            return [record for record in self.records if self._matches(record, filters)][:limit]
++
++        def get(self, record_id, **filters):
++            matches = self.find(record_id=record_id, limit=1, **filters)
++            return matches[0] if matches else None
++
++        def delete(self, record_id, **filters):
++            record = self.get(record_id, **filters)
++            if record is None:
++                return False
++            self.records.remove(record)
++            return True
++
++        def promote(self, record_id, target_scope, *, approver, **filters):
++            record = self.get(record_id, **filters)
++            if record is None:
++                raise KeyError(record_id)
++            promoted = record.with_scope(target_scope, MemoryStatus.CONFIRMED)
++            self.records.remove(record)
++            self.records.append(promoted)
++            return promoted
++
++        def quarantine(self, record_id, *, reason, actor, **filters):
++            record = self.get(record_id, **filters)
++            if record is None:
++                raise KeyError(record_id)
++            quarantined = record.with_status(MemoryStatus.QUARANTINED, reason=reason)
++            self.records.remove(record)
++            self.records.append(quarantined)
++            return quarantined
++
++    previous_memory = app.agent_memory
++    memory = app.agent_memory if use_real_store else MemoryHarness()
++    app.agent_memory = memory
++
++    def record(key, *, repository_id, tenant, scope=AgentScope.GLOBAL):
++        saved = MemoryRecord.create(
++            kind=MemoryKind.FACT,
++            scope=scope,
++            key=key,
++            value=f"private value for {key}",
++            provenance={
++                "root": str(repo_a),
++                "repository_id": repository_id,
++                "tenant": tenant,
++            },
++        )
++        if use_real_store:
++            return memory.record(saved, actor="user")
++        memory.records.append(saved)
++        return saved
++
++    victim = record("private-tenant-record", repository_id="server-repo-a", tenant="victim")
++    spoofed_repository = record(
++        "private-repository-record", repository_id="client-repository", tenant="attacker"
++    )
++    previous_app = http_server.APP
++    http_server.APP = app
++    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
++    thread = threading.Thread(target=server.serve_forever, daemon=True)
++    thread.start()
++
++    def request(method, *, tenant="attacker", query=None, payload=None):
++        url = f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/memory"
++        if query:
++            url += "?" + urlencode(query)
++        data = json.dumps(payload).encode("utf-8") if payload is not None else None
++        headers = {"X-LocalAI-Tenant": tenant, "Connection": "close"}
++        if data is not None:
++            headers["Content-Type"] = "application/json"
++        call = urllib.request.Request(url, data=data, headers=headers, method=method)
++        try:
++            with urllib.request.urlopen(call) as response:
++                return response.status, json.loads(response.read().decode("utf-8"))
++        except urllib.error.HTTPError as exc:
++            return exc.code, json.loads(exc.read().decode("utf-8"))
++
++    try:
++        status, denied_get = request(
++            "GET",
++            query={
++                "record_id": victim.record_id,
++                "scope": "global",
++                "root": str(repo_a),
++                "repository_id": "server-repo-a",
++                "tenant": "victim",
++            },
++        )
++        assert status == 404
++        assert denied_get["success"] is False
++
++        status, unresolved_project = request(
++            "GET",
++            query={
++                "record_id": victim.record_id,
++                "scope": "global",
++                "root": str(tmp_path / "missing-project"),
++                "repository_id": "server-repo-a",
++                "tenant": "victim",
++            },
++        )
++        assert status == 400
++        assert unresolved_project["success"] is False
++
++        status, denied_find = request(
++            "GET",
++            query={
++                "scope": "global",
++                "root": str(repo_a),
++                "repository_id": "client-repository",
++                "tenant": "attacker",
++                "key": "private-repository-record",
++            },
++        )
++        assert status == 200
++        assert denied_find["records"] == []
++
++        status, denied_post_find = request(
++            "POST",
++            payload={
++                "action": "find",
++                "scope": "global",
++                "root": str(repo_a),
++                "repository_id": "client-repository",
++                "tenant": "attacker",
++                "key": "private-repository-record",
++            },
++        )
++        assert status == 200
++        assert denied_post_find["records"] == []
++
++        status, denied_post_get = request(
++            "POST",
++            payload={
++                "action": "get",
++                "record_id": victim.record_id,
++                "scope": "global",
++                "root": str(repo_a),
++                "repository_id": "server-repo-a",
++                "tenant": "victim",
++            },
++        )
++        assert status == 404
++        assert denied_post_get["success"] is False
++
++        status, created = request(
++            "POST",
++            payload={
++            "action": "record",
++            "root": str(repo_a),
++            "record": {
++                    "kind": "fact",
++                    "scope": "global",
++                    "key": "server-bound-write",
++                    "value": "safe value",
++                    "provenance": {
++                        "root": str(repo_a),
++                        "repository_id": "client-repository",
++                        "tenant": "victim",
++                    },
++                },
++                "root": str(repo_a),
++                "repository_id": "client-repository",
++                "tenant": "victim",
++            },
++        )
++        assert status == 200
++        assert created["record"]["provenance"]["root"] == str(repo_a.resolve())
++        assert created["record"]["provenance"]["repository_id"] == "server-repo-a"
++        assert created["record"]["provenance"]["tenant"] == "attacker"
++        assert created["record"]["provenance"]["discarded_identity_fields"] == [
++            "repository_id",
++            "root",
++            "tenant",
++        ]
++        if use_real_store:
++            with closing(sqlite3.connect(memory.state_store.db_path)) as con:
++                row = con.execute(
++                    "SELECT provenance FROM agent_memory_records WHERE record_id = ?",
++                    (created["record"]["record_id"],),
++                ).fetchone()
++            assert row is not None
++            assert json.loads(row[0]) == created["record"]["provenance"]
++
++        status, nested_root_created = request(
++            "POST",
++            payload={
++                "action": "record",
++                "record": {
++                    "kind": "fact",
++                    "scope": "global",
++                    "key": "nested-root-binding",
++                    "value": "safe nested value",
++                    "provenance": {
++                        "root": str(repo_a),
++                        "repository_id": "client-repository",
++                        "tenant": "victim",
++                    },
++                },
++            },
++        )
++        assert status == 200
++        assert nested_root_created["record"]["provenance"]["root"] == str(repo_a.resolve())
++        assert nested_root_created["record"]["provenance"]["repository_id"] == "server-repo-a"
++        assert nested_root_created["record"]["provenance"]["tenant"] == "attacker"
++        assert nested_root_created["record"]["provenance"]["discarded_identity_fields"] == [
++            "repository_id",
++            "root",
++            "tenant",
++        ]
++
++        status, denied_delete = request(
++            "POST",
++            payload={
++                "action": "delete",
++                "record_id": victim.record_id,
++                "scope": "global",
++                "root": str(repo_b),
++                "repository_id": "server-repo-a",
++                "tenant": "victim",
++            },
++        )
++        assert status == 404
++        assert denied_delete["success"] is False
++        victim_identity = {
++            "scope": AgentScope.GLOBAL,
++            "root": str(repo_a.resolve()),
++            "repository_id": "server-repo-a",
++            "tenant": "victim",
++        }
++        assert memory.get(victim.record_id, **victim_identity) is not None
++
++        status, deleted = request(
++            "POST",
++            payload={
++                "action": "delete",
++                "record_id": victim.record_id,
++                "scope": "global",
++                "root": str(repo_a),
++                "repository_id": "client-repository",
++                "tenant": "victim",
++            },
++        )
++        assert status == 200
++        assert deleted["deleted"] is True
++        assert memory.get(victim.record_id, **victim_identity) is None
++
++        promotable = record(
++            "promote-transport-identity",
++            repository_id="server-repo-a",
++            tenant="attacker",
++            scope=AgentScope.REPOSITORY,
++        )
++        promote_payload = {
++            "action": "promote",
++            "record_id": promotable.record_id,
++            "target_scope": "global",
++            "scope": "repository",
++            "root": str(repo_a),
++            "repository_id": "client-repository",
++            "tenant": "victim",
++            "approver": "user",
++        }
++        status, promoted = request("POST", payload=promote_payload)
++        assert status == 200
++        assert promoted["record"]["scope"] == AgentScope.GLOBAL.value
++        assert promoted["record"]["provenance"]["repository_id"] == "server-repo-a"
++        assert promoted["record"]["provenance"]["tenant"] == "attacker"
++
++        foreign_promotable = record(
++            "foreign-promote-transport-identity",
++            repository_id="server-repo-a",
++            tenant="victim",
++            scope=AgentScope.REPOSITORY,
++        )
++        status, denied_promote = request(
++            "POST",
++            payload={**promote_payload, "record_id": foreign_promotable.record_id},
++        )
++        assert status == 404
++        assert denied_promote["success"] is False
++
++        quarantinable = record(
++            "quarantine-transport-identity",
++            repository_id="server-repo-a",
++            tenant="attacker",
++            scope=AgentScope.REPOSITORY,
++        )
++        quarantine_payload = {
++            "action": "quarantine",
++            "record_id": quarantinable.record_id,
++            "scope": "repository",
++            "root": str(repo_a),
++            "repository_id": "client-repository",
++            "tenant": "victim",
++            "reason": "operator review",
++        }
++        status, quarantined = request("POST", payload=quarantine_payload)
++        assert status == 200
++        assert quarantined["record"]["status"] == MemoryStatus.QUARANTINED.value
++        assert quarantined["record"]["provenance"]["repository_id"] == "server-repo-a"
++        assert quarantined["record"]["provenance"]["tenant"] == "attacker"
++
++        foreign_quarantinable = record(
++            "foreign-quarantine-transport-identity",
++            repository_id="server-repo-a",
++            tenant="victim",
++            scope=AgentScope.REPOSITORY,
++        )
++        status, denied_quarantine = request(
++            "POST",
++            payload={**quarantine_payload, "record_id": foreign_quarantinable.record_id},
++        )
++        assert status == 404
++        assert denied_quarantine["success"] is False
++
++        assert project_resolutions
++        assert all(state == state_dir.resolve() for _, state in project_resolutions)
++    finally:
++        server.shutdown()
++        thread.join(timeout=5)
++        server.server_close()
++        http_server.APP = previous_app
++        app.agent_memory = previous_memory
++        app.close()
++
++
++def test_http_memory_public_identity_blocks_spoofed_origin_and_foreign_queries(tmp_path, monkeypatch):
++    import subprocess
++
++    state_dir = tmp_path / "state"
++    repo_a = tmp_path / "repo-a"
++    repo_b = tmp_path / "repo-b"
++    state_dir.mkdir()
++    repo_a.mkdir()
++    repo_b.mkdir()
++    for repo in (repo_a, repo_b):
++        subprocess.run(["git", "init", "--quiet", str(repo)], check=True, capture_output=True)
++
++    root_source_raw = os.environ.get("T05_ROOT_SOURCE")
++    if root_source_raw:
++        import local_ai_hub
++
++        root_package = Path(root_source_raw).resolve() / "src" / "local_ai_hub"
++        package_paths = [Path(item).resolve() for item in local_ai_hub.__path__]
++        if root_package not in package_paths:
++            local_ai_hub.__path__.append(str(root_package))
++
++    try:
++        from local_ai_hub.project_config import resolve_project_context
++    except ImportError:
++        project_config = types.ModuleType("local_ai_hub.project_config")
++
++        def resolve_project_context(root, configured_dir):
++            resolved_root = Path(root).expanduser().resolve(strict=True)
++            return types.SimpleNamespace(
++                root=resolved_root,
++                coordination_id=f"server-{resolved_root.name}",
++            )
++
++        project_config.resolve_project_context = resolve_project_context
++        monkeypatch.setitem(sys.modules, "local_ai_hub.project_config", project_config)
++
++    config_path = tmp_path / "config.toml"
++    config_path.write_text(
++        f'[server]\nbind = "127.0.0.1"\nport = 39133\nstate_dir = "{state_dir.as_posix()}"\n\n'
++        "[agent_state]\nenabled = true\n",
++        encoding="utf-8",
++    )
++    app = LocalAIApp(str(config_path))
++    if os.environ.get("T05_OVERLAY_SOURCE") and root_source_raw:
++        import local_ai_hub.agent_events as agent_events
++        import local_ai_hub.agent_memory as agent_memory_module
++        import local_ai_hub.project_config as project_config_module
++        import local_ai_hub.sqlite_support as sqlite_support
++        import local_ai_hub.state_paths as state_paths
++
++        overlay_source = Path(os.environ["T05_OVERLAY_SOURCE"]).resolve()
++        root_source = Path(root_source_raw).resolve()
++        assert Path(http_server.__file__).resolve() == overlay_source / "local_ai_hub" / "http_server.py"
++        assert Path(agent_memory_module.__file__).resolve() == overlay_source / "local_ai_hub" / "agent_memory.py"
++        assert Path(sys.modules["local_ai_hub.app"].__file__).resolve() == root_source / "src" / "local_ai_hub" / "app.py"
++        assert Path(agent_events.__file__).resolve() == root_source / "src" / "local_ai_hub" / "agent_events.py"
++        assert Path(project_config_module.__file__).resolve() == root_source / "src" / "local_ai_hub" / "project_config.py"
++        assert Path(sqlite_support.__file__).resolve() == root_source / "src" / "local_ai_hub" / "sqlite_support.py"
++        assert Path(state_paths.__file__).resolve() == root_source / "src" / "local_ai_hub" / "state_paths.py"
++        assert hasattr(app.agent_memory.state_store, "append_in_transaction")
++        assert hasattr(app.agent_memory.state_store, "ordered_event_publication")
++
++    repo_a_id = resolve_project_context(repo_a, state_dir).coordination_id
++    legacy = MemoryRecord.create(
++        kind=MemoryKind.FACT,
++        scope=AgentScope.GLOBAL,
++        key="http-exact-root-legacy",
++        value="legacy root record",
++        provenance={"root": str(repo_a.resolve()), "repository_id": repo_a_id},
++    )
++    tenant_owned = MemoryRecord.create(
++        kind=MemoryKind.FACT,
++        scope=AgentScope.GLOBAL,
++        key="http-tenant-owned-global",
++        value="tenant-owned record",
++        provenance={"root": str(repo_a.resolve()), "repository_id": repo_a_id, "tenant": "tenant-a"},
++    )
++    app.agent_memory.record(legacy, actor="user")
++    app.agent_memory.record(tenant_owned, actor="user")
++
++    previous_app = http_server.APP
++    http_server.APP = app
++    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
++    thread = threading.Thread(target=server.serve_forever, daemon=True)
++    thread.start()
++
++    def request(method, *, params=None, payload=None, tenant="tenant-a"):
++        path = "/api/agent-state/memory"
++        if params:
++            path += "?" + urlencode(params)
++        data = json.dumps(payload).encode("utf-8") if payload is not None else None
++        headers = {"X-LocalAI-Tenant": tenant, "Connection": "close"}
++        if data is not None:
++            headers["Content-Type"] = "application/json"
++        req = urllib.request.Request(
++            f"http://127.0.0.1:{server.server_address[1]}{path}",
++            data=data,
++            headers=headers,
++            method=method,
++        )
++        try:
++            with urllib.request.urlopen(req) as response:
++                return response.status, json.loads(response.read().decode("utf-8"))
++        except urllib.error.HTTPError as exc:
++            return exc.code, json.loads(exc.read().decode("utf-8"))
++
++    try:
++        status, hidden_by_tenant = request(
++            "GET",
++            params={
++                "record_id": tenant_owned.record_id,
++                "scope": "global",
++                "root": str(repo_a),
++                "tenant": "tenant-a",
++            },
++            tenant="tenant-b",
++        )
++        assert status == 404
++        assert hidden_by_tenant["success"] is False
++
++        status, hidden_by_root = request(
++            "GET",
++            params={
++                "record_id": tenant_owned.record_id,
++                "scope": "global",
++                "root": str(repo_b),
++            },
++        )
++        assert status == 404
++        assert hidden_by_root["success"] is False
++
++        status, tenant_list = request(
++            "GET",
++            params={
++                "scope": "global",
++                "root": str(repo_a),
++                "key": tenant_owned.key,
++                "tenant": "tenant-a",
++            },
++            tenant="tenant-b",
++        )
++        assert status == 200
++        assert tenant_list["records"] == []
++
++        status, spoofed_query_tenant = request(
++            "GET",
++            params={
++                "scope": "global",
++                "root": str(repo_a),
++                "key": tenant_owned.key,
++                "tenant": "tenant-b",
++            },
++        )
++        assert status == 200
++        assert [item["record_id"] for item in spoofed_query_tenant["records"]] == [tenant_owned.record_id]
++
++        status, hidden_post_get = request(
++            "POST",
++            payload={
++                "action": "get",
++                "record_id": tenant_owned.record_id,
++                "scope": "global",
++                "root": str(repo_a),
++                "tenant": "tenant-a",
++            },
++            tenant="tenant-b",
++        )
++        assert status == 404
++        assert hidden_post_get["success"] is False
++
++        status, post_find = request(
++            "POST",
++            payload={
++                "action": "find",
++                "scope": "global",
++                "root": str(repo_a),
++                "key": tenant_owned.key,
++                "tenant": "tenant-b",
++            },
++        )
++        assert status == 200
++        assert [item["record_id"] for item in post_find["records"]] == [tenant_owned.record_id]
++
++        status, usable_legacy = request(
++            "GET",
++            params={
++                "record_id": legacy.record_id,
++                "scope": "global",
++                "root": str(repo_a),
++            },
++        )
++        assert status == 200
++        assert usable_legacy["record"]["record_id"] == legacy.record_id
++
++        status, rejected_origin = request(
++            "POST",
++            payload={
++                "action": "record",
++                "root": str(repo_a),
++                "record": {
++                    "kind": "fact",
++                    "scope": "repository",
++                    "key": "http-spoofed-origin-must-not-persist",
++                    "value": "spoofed project origin",
++                    "provenance": {
++                        "root": str(repo_b),
++                        "repository_id": "client-controlled-repository",
++                        "tenant": "tenant-b",
++                    },
++                },
++            },
++        )
++        assert status == 200
++        assert rejected_origin["success"] is True
++        saved_id = rejected_origin["record"]["record_id"]
++        with closing(sqlite3.connect(app.agent_memory.state_store.db_path)) as con:
++            persisted = con.execute(
++                "SELECT record_id, provenance FROM agent_memory_records WHERE key = ?",
++                ("http-spoofed-origin-must-not-persist",),
++            ).fetchone()
++        assert persisted is not None
++        assert persisted[0] == saved_id
++        stored_provenance = json.loads(persisted[1])
++        assert stored_provenance["root"] == str(repo_a.resolve())
++        assert stored_provenance["repository_id"] == repo_a_id
++        assert stored_provenance["tenant"] == "tenant-a"
++        assert stored_provenance["discarded_identity_fields"] == ["repository_id", "root", "tenant"]
++
++        status, denied_delete = request(
++            "POST",
++            payload={
++                "action": "delete",
++                "record_id": tenant_owned.record_id,
++                "scope": "global",
++                "root": str(repo_b),
++                "tenant": "tenant-a",
++            },
++        )
++        assert status == 404
++        assert denied_delete["success"] is False
++        assert app.agent_memory.get(
++            tenant_owned.record_id,
++            scope=AgentScope.GLOBAL,
++            root=str(repo_a.resolve()),
++            repository_id=repo_a_id,
++            tenant="tenant-a",
++        ) is not None
++
++        status, authorized_delete = request(
++            "POST",
++            payload={
++                "action": "delete",
++                "record_id": tenant_owned.record_id,
++                "scope": "global",
++                "root": str(repo_a),
++                "tenant": "tenant-a",
++            },
++            tenant="tenant-b",
++        )
++        assert status == 200
++        assert authorized_delete["deleted"] is True
++        assert app.agent_memory.get(
++            tenant_owned.record_id,
++            scope=AgentScope.GLOBAL,
++            root=str(repo_a.resolve()),
++            repository_id=repo_a_id,
++            tenant="tenant-a",
++        ) is None
++    finally:
++        server.shutdown()
++        thread.join(timeout=5)
++        server.server_close()
++        http_server.APP = previous_app
++        app.close()

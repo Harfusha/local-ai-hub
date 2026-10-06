@@ -1,0 +1,38 @@
+--- a/src/local_ai_hub/app.py
++++ b/src/local_ai_hub/app.py
+@@ -494,9 +494,13 @@
+         if action == "delegate":
+             return self.services.delegate(async_payload, tenant)
+         if action == "reason":
+-            return self.services.reason({"problem": async_payload.get("task", ""), "context": async_payload.get("context", ""), "max_tokens": async_payload.get("max_tokens", 1200), "priority": 1}, tenant)
++            reason_payload = dict(async_payload)
++            reason_payload.update({"problem": async_payload.get("task", ""), "context": async_payload.get("context", ""), "max_tokens": async_payload.get("max_tokens", 1200), "priority": 1})
++            return self.services.reason(reason_payload, tenant)
+         if action == "review":
+-            return self.services.review({"code": async_payload.get("context", ""), "instructions": async_payload.get("task", "Report actionable defects only."), "complexity": async_payload.get("complexity", "auto"), "max_tokens": async_payload.get("max_tokens", 1300), "priority": 1}, tenant)
++            review_payload = dict(async_payload)
++            review_payload.update({"code": async_payload.get("context", ""), "instructions": async_payload.get("task", "Report actionable defects only."), "complexity": async_payload.get("complexity", "auto"), "max_tokens": async_payload.get("max_tokens", 1300), "priority": 1})
++            return self.services.review(review_payload, tenant)
+         if action == "review_diff":
+             review_payload = dict(async_payload)
+             review_payload["_async_job"] = True
+@@ -508,7 +512,18 @@
+         if action == "route":
+             return self.services.route_context({"text": async_payload.get("context", ""), "query": async_payload.get("task", "")}, tenant)
+         if action == "batch":
+-            return self.services.batch_delegate({"tasks": async_payload.get("tasks", []), "priority": 1}, tenant)
++            inherited_context = {
++                key: async_payload[key]
++                for key in ("project_context", "project_model_profile", "system_prefix", "root", "cwd")
++                if key in async_payload
++            }
++            tasks = []
++            for raw_task in async_payload.get("tasks", []):
++                task_payload = dict(raw_task) if isinstance(raw_task, dict) else {"task": str(raw_task)}
++                for key, value in inherited_context.items():
++                    task_payload.setdefault(key, value)
++                tasks.append(task_payload)
++            return self.services.batch_delegate({"tasks": tasks, "priority": 1}, tenant)
+         if action == "speculative_lint":
+             return self.services.speculative_lint(async_payload, tenant)
+         return {"success": False, "error": f"unsupported async task action: {action}", "terminal": True, "retryable": False}

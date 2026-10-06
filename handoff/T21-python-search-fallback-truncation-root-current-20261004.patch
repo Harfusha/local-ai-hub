@@ -1,0 +1,28 @@
+diff --git a/src/local_ai_hub/repo_tools.py b/src/local_ai_hub/repo_tools.py
+--- a/src/local_ai_hub/repo_tools.py
++++ b/src/local_ai_hub/repo_tools.py
+@@ -1249,6 +1249,7 @@
+         hits: list[dict[str, Any]] = []
+         scanned = 0
+         python_fallback_scanned: int | None = None
++        python_fallback_truncated = False
+         candidate_engine = "python"
+         project_candidates = (
+             list(self.iter_files(str(base), project_settings=project_settings))
+@@ -1310,6 +1311,8 @@
+                 )
+             for path in (project_candidates if project_candidates is not None else self.iter_files(str(base))):
+                 if python_fallback_scanned >= self.python_fallback_max_files:
++                    # The iterator yielded one unscanned path beyond the cap.
++                    python_fallback_truncated = True
+                     break
+                 scanned += 1
+                 python_fallback_scanned += 1
+@@ -1357,6 +1360,7 @@
+         if python_fallback_scanned is not None:
+             result["python_fallback_files_scanned"] = python_fallback_scanned
+             result["python_fallback_file_limit"] = self.python_fallback_max_files
++            result["python_fallback_truncated"] = python_fallback_truncated
+         if candidate_tokens:
+             # Diagnostic only. Local RG-like filtering is not proof that a cloud
+             # agent would otherwise have paid for the candidate snippets.
