@@ -909,6 +909,9 @@ def collect_inventory(root: Path | str) -> dict[str, Any]:
             if isinstance(prop, dict) and "default" in prop
         } if isinstance(properties, dict) else {}
         input_schema = parameters if isinstance(parameters, dict) else {}
+        operation_metadata = schema.get("x-operation-contract", {})
+        if not isinstance(operation_metadata, dict):
+            operation_metadata = {}
         output_schema = schema.get(
             "outputSchema",
             schema.get("output_schema", "generator omits outputSchema; result shape remains action-dependent"),
@@ -919,19 +922,20 @@ def collect_inventory(root: Path | str) -> dict[str, Any]:
             if dispatch_symbols
             else f"invokes MCP handler {name}; transitive side effects unverified"
         )
-        backend_gate = (source_tool or {}).get("registration_condition") or "generated schema for active configuration"
+        backend_gate = operation_metadata.get("feature_gate") or (source_tool or {}).get("registration_condition") or "generated schema for active configuration"
         mcp_contracts[name] = {
             "request_payload": {"schema": input_schema, "required": list(parameters.get("required", [])) if isinstance(parameters, dict) else [], "defaults": defaults},
             "response_contract": output_schema,
             "status_codes": "not applicable: MCP tool protocol",
-            "timeout": "no timeout is declared in the generated MCP schema; effective caller budget unverified",
-            "operation_side_effects": dispatch_effects,
+            "timeout": operation_metadata.get("timeout", "no timeout is declared in the generated MCP schema; effective caller budget unverified"),
+            "operation_side_effects": operation_metadata.get("actions") or dispatch_effects,
             "backend_availability": f"{backend_gate}; runtime backend health unverified",
             "input_schema": input_schema,
             "output_schema": output_schema,
             "defaults": defaults,
             "required": list(parameters.get("required", [])) if isinstance(parameters, dict) else [],
-            "feature_gate": (source_tool or {}).get("registration_condition"),
+            "feature_gate": backend_gate,
+            "operation_contract": operation_metadata,
             "handler_symbols": (source_tool or {}).get("handler_symbols", []),
             "http_target": (source_tool or {}).get("http_targets") or (
                 "delegated through coordination; no HTTP path detected in handler source"
@@ -1306,8 +1310,25 @@ def _findings(inventory: dict[str, Any]) -> list[dict[str, Any]]:
         )
     for tool_name, actions in inventory["mcp_actions"].items():
         conditional = inventory["conditional_mcp_actions"].get(tool_name, {})
+        tool_contract = inventory["mcp_contracts"].get(tool_name, {})
+        operation_metadata = tool_contract.get("operation_contract", {})
+        action_contracts = operation_metadata.get("actions", {}) if isinstance(operation_metadata, dict) else {}
         for action in actions:
-            gate = conditional.get(action)
+            action_metadata = action_contracts.get(action, {}) if isinstance(action_contracts, dict) else {}
+            gate = conditional.get(action) or (operation_metadata.get("feature_gate") if action_metadata else None)
+            operation_effects = (
+                {
+                    "classification": action_metadata.get("side_effects"),
+                    "idempotent": action_metadata.get("idempotent"),
+                    "retry_safe": action_metadata.get("retry_safe"),
+                    "automatic_replay": action_metadata.get("automatic_replay"),
+                }
+                if action_metadata
+                else tool_contract.get("operation_side_effects", "MCP action dispatch effects unverified")
+            )
+            action_evidence = [inventory["mcp_schema_evidence"].get(tool_name, SOURCE_FILES["generator"])]
+            if action_metadata:
+                action_evidence.append("src/local_ai_hub/operation_contracts.py:OPERATION_CONTRACTS")
             findings.append(
                 {
                     "surface": f"MCP action {tool_name}",
@@ -1318,23 +1339,28 @@ def _findings(inventory: dict[str, Any]) -> list[dict[str, Any]]:
                     "contract": {
                         "action": action,
                         "request_payload": {"action": action, "schema": inventory["mcp_contracts"].get(tool_name, {}).get("input_schema", {}).get("properties", {}).get("action", {})},
-                        "response_contract": inventory["mcp_contracts"].get(tool_name, {}).get("output_schema", "not declared"),
+                        "response_contract": tool_contract.get("output_schema", "not declared"),
                         "status_codes": "not applicable: MCP tool protocol",
-                        "timeout": inventory["mcp_contracts"].get(tool_name, {}).get("timeout", "not statically identified"),
-                        "operation_side_effects": inventory["mcp_contracts"].get(tool_name, {}).get("operation_side_effects", "MCP action dispatch effects unverified"),
+                        "timeout": tool_contract.get("timeout", "not statically identified"),
+                        "operation_side_effects": operation_effects,
+                        "idempotent": action_metadata.get("idempotent"),
+                        "retry_safe": action_metadata.get("retry_safe"),
+                        "automatic_replay": action_metadata.get("automatic_replay"),
+                        "required_fields": list(action_metadata.get("required", [])),
+                        "projection": operation_metadata.get("projection") if action_metadata else None,
                         "backend_availability": (
                             f"conditional feature gate {gate}; runtime backend health unverified"
                             if gate
                             else inventory["mcp_contracts"].get(tool_name, {}).get("backend_availability", "runtime backend health unverified")
                         ),
                         "feature_gates": [gate] if gate else [],
-                        "input_property_schema": inventory["mcp_contracts"].get(tool_name, {}).get("input_schema", {}).get("properties", {}).get("action", {}),
-                        "required": inventory["mcp_contracts"].get(tool_name, {}).get("required", []),
-                        "http_target": inventory["mcp_contracts"].get(tool_name, {}).get("http_target", "not statically identified"),
+                        "input_property_schema": tool_contract.get("input_schema", {}).get("properties", {}).get("action", {}),
+                        "required": tool_contract.get("required", []),
+                        "http_target": tool_contract.get("http_target", "not statically identified"),
                     },
                     "acceptance": "Generated MCP JSON schema action enum advertises this action.",
                     "evidence_status": "conditional" if gate else "confirmed",
-                    "evidence": [inventory["mcp_schema_evidence"].get(tool_name, SOURCE_FILES["generator"])],
+                    "evidence": action_evidence,
                 }
             )
     for tool_name, actions in inventory["conditional_mcp_actions"].items():

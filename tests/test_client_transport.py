@@ -5,6 +5,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from urllib.error import HTTPError, URLError
 from io import BytesIO
+import pytest
 
 from local_ai_hub import client as client_module
 from local_ai_hub.client import HubClient
@@ -18,6 +19,107 @@ def _client(tmp_path):
         encoding="utf-8",
     )
     return HubClient(config_path=str(config), auto_start=False)
+
+
+def test_auto_start_timeout_terminates_and_reaps_only_its_child(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    client.startup_wait = 0.05
+    client.startup_poll = 0.01
+    launched = []
+    terminated = []
+
+    class Child:
+        pid = 43210
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            self.returncode = -15
+            return self.returncode
+
+    child = Child()
+    monkeypatch.setattr(client, "_online", lambda _timeout=None: False)
+    monkeypatch.setattr(client_module, "find_listening_pid", lambda _port: None)
+    monkeypatch.setattr(client_module.subprocess, "Popen", lambda *_args, **_kwargs: launched.append(child) or child)
+    monkeypatch.setattr(client_module, "_retain_detached_child", lambda process: None)
+    monkeypatch.setattr(
+        client_module,
+        "terminate_tree",
+        lambda pid, **_kwargs: terminated.append(pid) or True,
+    )
+
+    assert client.ensure_server(timeout=0.05) is False
+    assert launched == [child]
+    assert terminated == [child.pid]
+    assert child.returncode is not None
+    assert not (tmp_path / "state" / "hub.start.lock").exists()
+
+
+def test_concurrent_auto_start_callers_share_one_child(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    client.startup_wait = 0.5
+    client.startup_poll = 0.01
+    launched = []
+    ready_at = []
+
+    class Child:
+        pid = 43211
+
+        def poll(self):
+            return None
+
+    child = Child()
+
+    def launch(*_args, **_kwargs):
+        launched.append(child)
+        ready_at.append(time.monotonic() + 0.05)
+        return child
+
+    monkeypatch.setattr(client, "_online", lambda _timeout=None: bool(ready_at and time.monotonic() >= ready_at[0]))
+    monkeypatch.setattr(client_module, "find_listening_pid", lambda _port: None)
+    monkeypatch.setattr(client_module.subprocess, "Popen", launch)
+    monkeypatch.setattr(client_module, "_retain_detached_child", lambda _process: None)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _index: client.ensure_server(timeout=0.5), range(2)))
+
+    assert results == [True, True]
+    assert launched == [child]
+    assert not (tmp_path / "state" / "hub.start.lock").exists()
+
+
+def test_auto_start_leaves_preexisting_server_alone(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    monkeypatch.setattr(client, "_online", lambda _timeout=None: True)
+    monkeypatch.setattr(client_module.subprocess, "Popen", lambda *_args, **_kwargs: pytest.fail("must not spawn"))
+    monkeypatch.setattr(client_module, "terminate_tree", lambda *_args, **_kwargs: pytest.fail("must not terminate"))
+
+    assert client.ensure_server(timeout=0.5) is True
+
+
+def test_auto_start_timeout_keeps_child_that_already_owns_listener(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    client.startup_wait = 0.05
+    client.startup_poll = 0.01
+    terminated = []
+
+    class Child:
+        pid = 43212
+
+        def poll(self):
+            return None
+
+    child = Child()
+    monkeypatch.setattr(client, "_online", lambda _timeout=None: False)
+    monkeypatch.setattr(client_module, "find_listening_pid", lambda _port: child.pid)
+    monkeypatch.setattr(client_module.subprocess, "Popen", lambda *_args, **_kwargs: child)
+    monkeypatch.setattr(client_module, "_retain_detached_child", lambda _process: None)
+    monkeypatch.setattr(client_module, "terminate_tree", lambda pid, **_kwargs: terminated.append(pid) or True)
+
+    assert client.ensure_server(timeout=0.05) is False
+    assert terminated == []
 
 
 def test_client_reuses_one_http11_connection_for_sequential_requests(tmp_path, monkeypatch):

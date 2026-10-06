@@ -10,6 +10,10 @@ import mcp.types as t
 from local_ai_hub.token_accounting import json_tokens
 
 
+def test_fallback_used_is_protected_reliability_metadata() -> None:
+    assert "fallback_used" in local_ai_mcp._RELIABILITY_PROTECTED_KEYS
+
+
 def test_python_direct_invocation_returns_dict() -> None:
     res = local_ai_mcp.local_ai_status()
     assert isinstance(res, dict)
@@ -101,8 +105,9 @@ def test_local_ai_repo_context_forwards_guarded_pack_fields(monkeypatch) -> None
     )
 
     assert result["success"] is True
-    assert len(calls) == 1
-    path, payload, _ = calls[0]
+    context_calls = [call for call in calls if call[0] == "/api/context/pack"]
+    assert len(context_calls) == 1
+    path, payload, _ = context_calls[0]
     assert path == "/api/context/pack"
     assert payload == {
         "root": str(Path("C:/repo")),
@@ -146,6 +151,7 @@ def test_local_ai_repo_non_context_actions_ignore_guard_fields(monkeypatch) -> N
         action="search",
         root="C:/repo",
         query="route",
+        path_hints=[{"path": "src", "purpose": "repository_search", "scope": "repo_search"}],
         task_id="task-1",
         phase="review",
         guarded=True,
@@ -156,7 +162,10 @@ def test_local_ai_repo_non_context_actions_ignore_guard_fields(monkeypatch) -> N
 
     assert calls == [(
         "/api/search",
-        {"root": str(Path("C:/repo")), "query": "route", "top_k": 12, "enrich": False},
+        {
+            "root": str(Path("C:/repo")), "query": "route", "top_k": 12, "enrich": False,
+            "path_hints": [{"path": "src", "purpose": "repository_search", "scope": "repo_search"}],
+        },
         120.0,
     )]
 

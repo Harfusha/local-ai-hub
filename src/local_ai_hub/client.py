@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
-from .process_utils import find_listening_pid, pid_alive
+from .process_utils import find_listening_pid, pid_alive, terminate_tree
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -311,7 +311,21 @@ class HubClient:
                 if self._online(remaining()):
                     return True
                 time.sleep(min(self.startup_poll, remaining()))
-            return self._online(remaining())
+            if self._online(remaining()):
+                return True
+            # Only clean up the child created by this startup attempt. A listener
+            # means another caller may already be using the service while its
+            # health endpoint is still warming, so leave that process alone.
+            if process.poll() is None and not find_listening_pid(int(self.config.get("server", {}).get("port", 11435))):
+                try:
+                    terminate_tree(process.pid, process_group=process.pid, grace_seconds=1.0)
+                finally:
+                    try:
+                        process.wait(timeout=1.0)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=1.0)
+            return False
         finally:
             lock_path.unlink(missing_ok=True)
 

@@ -332,7 +332,11 @@ class RecoveryJournal:
                 if current is None or current.get("state") != "running":
                     if current is None:
                         return None
-                    return {key: current[key] for key in ("state", "status_code", "response", "outcome_unknown") if key in current}
+                    return {
+                        key: current[key]
+                        for key in ("state", "status_code", "response", "outcome_unknown", "error")
+                        if key in current
+                    }
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return {key: current[key] for key in ("state", "status_code", "response", "outcome_unknown") if key in current}

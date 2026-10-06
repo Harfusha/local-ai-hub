@@ -4,6 +4,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import get_args
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
@@ -17,6 +19,8 @@ from local_ai_hub.operation_contracts import (
     operation_metadata,
     operation_output_schema,
     operation_parameters_schema,
+    operation_tool_output_schema,
+    operation_tool_input_schema,
     validate_operation_arguments,
     validate_operation_output,
 )
@@ -396,11 +400,17 @@ def test_repo_search_timeout_respects_120_second_protocol_limit(monkeypatch):
     monkeypatch.setattr(local_ai_mcp, "MCP_CFG", {"quick_timeout_seconds": 180})
     monkeypatch.setattr(local_ai_mcp, "_client_root", lambda root: root)
 
-    local_ai_mcp._local_ai_repo_impl(action="search", root="C:/repo", query="needle")
+    local_ai_mcp._local_ai_repo_impl(
+        action="search", root="C:/repo", query="needle",
+        path_hints=[{"path": "src", "purpose": "repository_search", "scope": "repo_search"}],
+    )
 
     assert captured == {
         "path": "/api/search",
-        "payload": {"root": "C:/repo", "query": "needle", "top_k": 12, "enrich": False},
+        "payload": {
+            "root": "C:/repo", "query": "needle", "top_k": 12, "enrich": False,
+            "path_hints": [{"path": "src", "purpose": "repository_search", "scope": "repo_search"}],
+        },
         "timeout": 120,
     }
 
@@ -510,8 +520,8 @@ def test_runtime_validation_enforces_registered_schema_constraints():
         "local_ai_artifact", "list", {"response_profile": "unregistered"}
     ) == "response_profile must be one of minimal, compact, standard, debug, delta for action='list'"
     assert validate_operation_arguments(
-        "local_ai_task", "reason", {"quality_pass": "true"}
-    ) == "quality_pass must be boolean or null for action='reason'"
+        "local_ai_task", "evaluation_record", {"quality_pass": "true"}
+    ) == "quality_pass must be boolean or null for action='evaluation_record'"
 
 
 def test_mcp_compaction_preserves_reliability_evidence_and_cancel_metadata(monkeypatch):
@@ -605,9 +615,331 @@ def test_action_metadata_exposes_consistent_input_and_output_schemas():
             assert input_schema["properties"][selector]["enum"] == [action]
             assert input_schema["required"] == [selector, *action_metadata["required"]]
             assert output_schema["type"] == "object"
-            assert output_schema["additionalProperties"] is True
+            assert output_schema["additionalProperties"] is False
             assert output_schema["title"] == f"{tool}.{action} result"
             assert generated["x-operation-contract"]["actions"][action] == action_metadata
+
+
+def test_status_adoption_fields_are_registered_and_validated_as_a_pair():
+    parameters = operation_parameters_schema("local_ai_status")
+    properties = parameters["properties"]
+
+    assert properties["adoption_signal"]["enum"] == ["", "bypassed"]
+    assert properties["target_tool"]["enum"] == list(OPERATION_CONTRACTS)
+    assert properties["target_action"]["type"] == "string"
+    assert validate_operation_arguments(
+        "local_ai_status",
+        "brief",
+        {
+            "detail": "brief",
+            "adoption_signal": "bypassed",
+            "target_tool": "local_ai_repo",
+            "target_action": "search",
+        },
+    ) is None
+    assert validate_operation_arguments(
+        "local_ai_status", "brief", {"detail": "brief", "target_tool": "local_ai_repo"}
+    ) == "target_tool requires adoption_signal='bypassed'"
+    assert validate_operation_arguments(
+        "local_ai_status",
+        "brief",
+        {
+            "detail": "brief",
+            "adoption_signal": "bypassed",
+            "target_tool": "local_ai_repo",
+            "target_action": "unknown",
+        },
+    ) == "target_action is not supported for target_tool='local_ai_repo'"
+
+
+def test_primary_tool_outputs_publish_distinct_action_shapes():
+    representatives = {
+        "local_ai_repo": ("search", "results"),
+        "local_ai_task": ("submit", "job_id"),
+        "local_ai_rag": ("search", "results"),
+        "local_ai_command": ("run", "exit_code"),
+        "local_ai_coord": ("task_create", "task_id"),
+        "local_ai_work": ("submit", "work_id"),
+    }
+
+    for tool, (action, result_field) in representatives.items():
+        action_schema = operation_output_schema(tool, action)
+        tool_schema = operation_tool_output_schema(tool)
+
+        assert result_field in action_schema["properties"]
+        assert action_schema["x-operation-action"] == action
+        assert tool_schema["anyOf"]
+        assert {branch["x-operation-action"] for branch in tool_schema["anyOf"]} == set(
+            operation_actions(tool)
+        )
+
+
+def test_every_primary_action_publishes_typed_payload_fields():
+    envelope_fields = {
+        "success", "error", "terminal", "retryable", "degraded", "stale",
+        "evidence_ids", "cancelled", "cancel_requested", "cancel_reason",
+    }
+    for tool in (
+        "local_ai_repo", "local_ai_task", "local_ai_rag",
+        "local_ai_command", "local_ai_coord", "local_ai_work",
+    ):
+        for action in operation_actions(tool):
+            schema = operation_output_schema(tool, action)
+            payload_fields = set(schema["properties"]) - envelope_fields
+            assert payload_fields, f"{tool}.{action} has only a generic response envelope"
+            assert schema["x-operation-action"] == action
+
+
+@pytest.mark.parametrize(
+    ("tool", "action", "field", "expected_schema", "valid_value", "invalid_value"),
+    [
+        ("local_ai_repo", "preprocess_status", "projects", {"type": "array", "items": {"type": "object"}}, [], "bad"),
+        ("local_ai_command", "webhook_replay", "status_code", {"type": "integer"}, 200, "200"),
+        ("local_ai_command", "webhook_replay", "duration_ms", {"type": "number"}, 1.5, "1.5"),
+        ("local_ai_coord", "task_zombie_reap", "reaped", {"type": "array", "items": {"type": "string"}}, ["task-1"], [1]),
+        ("local_ai_coord", "task_zombie_reap", "count", {"type": "integer"}, 1, "1"),
+        ("local_ai_coord", "task_cleanup_worktree", "had_worktree", {"type": "boolean"}, True, 1),
+        ("local_ai_coord", "task_cleanup_worktree", "cleanup", {"type": "object"}, {}, []),
+    ],
+)
+def test_action_output_contracts_type_specialized_dispatch_results(
+    tool, action, field, expected_schema, valid_value, invalid_value
+):
+    schema = operation_output_schema(tool, action)
+    assert schema["properties"][field] == expected_schema
+    assert schema["x-operation-action"] == action
+    assert validate_operation_output(tool, action, {"success": True, field: valid_value}) is None
+    error = validate_operation_output(tool, action, {"success": True, field: invalid_value})
+    assert field in error
+    if tool == "local_ai_command" and action == "webhook_replay":
+        assert validate_operation_output(
+            tool, action, {"success": False, "error": "connection refused"}
+        ) is None
+
+
+def test_action_input_contracts_filter_tool_wide_fields_and_runtime_arguments():
+    search = operation_input_schema("local_ai_repo", "search")
+    batch = operation_input_schema("local_ai_repo", "batch_replace")
+
+    assert {"root", "query", "include_code", "path_hints"} <= set(search["properties"])
+    assert not {"receipt", "edits", "dry_run", "changed_paths"} & set(search["properties"])
+    path_hints = search["properties"]["path_hints"]
+    assert path_hints["type"] == "array"
+    assert path_hints["items"]["required"] == ["path", "purpose", "scope"]
+    assert {"evidence_id", "provenance", "repository_revision", "config_digest", "expires_at"} <= set(
+        path_hints["items"]["properties"]
+    )
+    assert validate_operation_arguments(
+        "local_ai_repo", "search", {
+            "query": "find parser",
+            "path_hints": [{"path": "src", "purpose": "repository_search", "scope": "repo_search"}],
+        }
+    ) is None
+    assert validate_operation_arguments(
+        "local_ai_repo", "search", {"query": "find parser", "path_hints": ["src"]}
+    )
+    assert {"root", "edits", "dry_run"} <= set(batch["properties"])
+    assert "receipt" not in batch["properties"]
+    assert validate_operation_arguments(
+        "local_ai_repo", "search", {"query": "needle", "receipt": {}}
+    ) == "receipt is not valid for action='search'"
+
+
+def test_repo_search_path_hints_schema_declares_bounds():
+    hints = operation_input_schema("local_ai_repo", "search")["properties"]["path_hints"]
+
+    assert hints["maxItems"] == 64
+    assert hints["items"]["properties"]["path"]["maxLength"] == 1024
+
+
+@pytest.mark.parametrize(
+    ("hints", "invalid_field"),
+    [
+        ([{"path": "src", "purpose": "repository_search"}], "scope"),
+        ([{"path": "src", "purpose": "repository_search", "scope": "repo_search", "extra": "x"}], "extra"),
+        ([{"path": "x" * 1025, "purpose": "repository_search", "scope": "repo_search"}], "path"),
+        ([{"path": "src", "purpose": "repository_search", "scope": "repo_search"}] * 65, "path_hints"),
+    ],
+)
+def test_repo_search_path_hints_rejects_invalid_nested_records(hints, invalid_field):
+    error = validate_operation_arguments(
+        "local_ai_repo", "search", {"query": "find parser", "path_hints": hints}
+    )
+
+    assert error is not None
+    assert invalid_field in error
+
+
+def test_task_submit_contract_includes_async_job_payload_arguments():
+    submit = operation_input_schema("local_ai_task", "submit")
+    status = operation_input_schema("local_ai_task", "status")
+
+    assert {"task", "context", "candidate", "complexity", "max_tokens", "tasks", "profile", "root", "workspace"} <= set(submit["properties"])
+    assert {"job_id", "job_action", "timeout_seconds"} <= set(submit["properties"])
+    assert not {"task", "context", "candidate", "tasks", "profile", "workspace"} & set(status["properties"])
+    assert validate_operation_arguments(
+        "local_ai_task",
+        "submit",
+        {"task": "summarize", "context": "brief", "tasks": [], "job_action": "reason"},
+    ) is None
+
+
+def test_coord_contracts_include_handler_consumed_arguments():
+    receipt = operation_input_schema("local_ai_coord", "verify_receipt")
+    completion = operation_input_schema("local_ai_coord", "verify_completion")
+    relation = operation_input_schema("local_ai_coord", "relation_record")
+    sync = operation_input_schema("local_ai_coord", "task_sync")
+
+    assert {"checkpoint", "status", "criterion", "key", "value", "query"} <= set(receipt["properties"])
+    assert {"repository_revision", "task_id", "query", "value", "key"} <= set(completion["properties"])
+    assert {"key", "task_id", "query", "task", "reason", "status", "value", "target_scope", "record", "ttl_seconds", "max_tokens"} <= set(relation["properties"])
+    assert {"key", "task_id", "status", "ttl_seconds", "max_tokens", "record"} <= set(sync["properties"])
+    assert validate_operation_arguments(
+        "local_ai_coord", "verify_receipt",
+        {"task_id": "task-1", "checkpoint": {"task_id": "task-1", "criterion": "check", "passed": True}, "status": "passed"},
+    ) is None
+    assert validate_operation_arguments(
+        "local_ai_coord", "verify_completion", {"task_id": "task-1", "repository_revision": "abc"}
+    ) is None
+    assert validate_operation_arguments(
+        "local_ai_coord", "relation_record", {"key": "source", "value": "target", "reason": "depends_on", "ttl_seconds": 1}
+    ) is None
+    assert validate_operation_arguments(
+        "local_ai_coord", "task_sync", {"status": "import", "record": [{"seq": 1}]}
+    ) is None
+
+
+def test_task_continue_contract_includes_conversation_id():
+    schema = operation_input_schema("local_ai_task", "continue")
+
+    assert "conversation_id" in schema["properties"]
+    assert validate_operation_arguments(
+        "local_ai_task", "continue", {"conversation_id": "conversation-1", "task": "continue"}
+    ) is None
+
+
+def test_coord_decision_and_merge_contracts_include_handler_inputs():
+    assert validate_operation_arguments(
+        "local_ai_coord", "incident_decision",
+        {"fingerprint": {"kind": "timeout"}, "tool_outcome": {"success": False}},
+    ) is None
+    assert validate_operation_arguments(
+        "local_ai_coord", "simulate_merge",
+        {"key": "feature", "task_id": "branch", "value": "source", "target_scope": "main"},
+    ) is None
+
+
+def test_repo_action_contracts_include_handler_inputs():
+    cases = [
+        ("generate_dataset", {"relation": "json"}),
+        ("secret_scan", {"staged": True}),
+        ("complexity", {"include_tests": True}),
+        ("git_diff", {"path": "src/app.py", "max_tokens": 100}),
+        ("mutation_test", {"diff": "diff --git a/a b/a"}),
+    ]
+    for action, arguments in cases:
+        schema = operation_input_schema("local_ai_repo", action)
+        assert set(arguments) <= set(schema["properties"]), action
+        assert validate_operation_arguments("local_ai_repo", action, arguments) is None, action
+
+
+@pytest.mark.parametrize(
+    ("tool", "action", "arguments", "path"),
+    [
+        ("local_ai_task", "batch", {"tasks": [{"options": {"temperature": float("nan")}}]}, "tasks[0].options.temperature"),
+        ("local_ai_coord", "task_sync", {"status": "import", "record": [{"weight": float("inf")}]}, "record[0].weight"),
+    ],
+)
+def test_non_finite_numbers_are_rejected_recursively(tool, action, arguments, path):
+    error = validate_operation_arguments(tool, action, arguments)
+    assert error == f"{path} must be finite for action='{action}'"
+
+
+def test_task_sync_output_contract_describes_export_and_import_deltas():
+    schema = operation_output_schema("local_ai_coord", "task_sync")
+
+    assert {"events", "count", "imported_count", "duplicate_count"} <= set(schema["properties"])
+    assert validate_operation_output(
+        "local_ai_coord", "task_sync", {"success": True, "events": [{"seq": 1}], "count": 1}
+    ) is None
+    assert validate_operation_output(
+        "local_ai_coord", "task_sync", {"success": True, "events": "bad", "count": 1}
+    ) is not None
+
+
+def test_non_finite_numbers_are_rejected_in_untyped_nested_output_fields():
+    error = validate_operation_output(
+        "local_ai_repo", "search", {"results": [{"scores": [float("nan")]}]}
+    )
+    assert error == "result.results[0].scores[0] must be finite for action='search'"
+
+
+def test_every_registered_action_has_a_narrow_input_contract():
+    for tool, contract in OPERATION_CONTRACTS.items():
+        tool_properties = set(operation_parameters_schema(tool)["properties"])
+        feature_properties = set()
+        for fields in contract.get("conditional_properties", {}).values():
+            feature_properties.update(fields)
+        for action in operation_actions(tool):
+            action_contract = contract["actions"][action]
+            schema = operation_input_schema(tool, action)
+            assert action_contract["allowed"] is not None, f"{tool}.{action} has no allowlist"
+            assert set(action_contract["allowed"]) <= tool_properties | feature_properties
+            assert schema["additionalProperties"] is False
+            common = {"extra_fields", contract["selector_field"]}
+            common.update({"max_response_tokens", "response_profile", "reuse_key"})
+            if tool == "local_ai_status":
+                common.add("action")
+            expected = (common | set(action_contract["allowed"])) & tool_properties
+            assert set(schema["properties"]) == expected, f"{tool}.{action} exposes unrelated inputs"
+
+
+def test_live_input_schema_conditions_each_action_on_its_allowed_fields():
+    feature_set = FeatureSet({"features": {"repo": True, "batch_replacement": True}})
+    schema = operation_tool_input_schema("local_ai_repo", feature_set)
+    branches = {
+        row["if"]["properties"]["action"]["const"]: row["then"]
+        for row in schema["allOf"]
+        if row.get("if", {}).get("properties", {}).get("action", {}).get("const")
+    }
+
+    search = branches["search"]
+    batch = branches["batch_replace"]
+    assert search["additionalProperties"] is False
+    assert {"root", "query", "include_code", "path_hints"} <= set(search["properties"])
+    assert not {"receipt", "edits", "dry_run", "changed_paths"} & set(search["properties"])
+    assert {"root", "edits", "dry_run"} <= set(batch["properties"])
+
+
+@pytest.mark.parametrize(
+    ("tool", "action", "result", "field"),
+    [
+        ("local_ai_repo", "search", {"results": "not-an-array"}, "results"),
+        ("local_ai_task", "submit", {"job_id": 42}, "job_id"),
+        ("local_ai_rag", "search", {"results": "not-an-array"}, "results"),
+        ("local_ai_command", "run", {"exit_code": "zero"}, "exit_code"),
+        ("local_ai_coord", "task_create", {"task_id": 42}, "task_id"),
+        ("local_ai_work", "submit", {"work_id": 42}, "work_id"),
+    ],
+)
+def test_all_public_tool_payload_fields_are_runtime_validated(tool, action, result, field):
+    error = validate_operation_output(tool, action, result)
+    assert error is not None
+    assert field in error
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_top_level_numbers_are_rejected(value):
+    error = validate_operation_arguments(
+        "local_ai_task", "delegate", {"task": "summarize", "latency_budget_ms": value}
+    )
+    assert error == "latency_budget_ms must be finite for action='delegate'"
+
+
+def test_output_contract_rejects_non_object_and_non_finite_declared_values():
+    assert "wrong JSON type" in validate_operation_output("local_ai_repo", "search", ["not an object"])
+    error = validate_operation_output("local_ai_repo", "deterministic", {"confidence": float("nan")})
+    assert error is not None and "confidence" in error
 
 
 def test_artifact_list_schema_rejects_fields_used_only_by_get_and_slice():
@@ -617,6 +949,29 @@ def test_artifact_list_schema_rejects_fields_used_only_by_get_and_slice():
     assert validate_operation_arguments(
         "local_ai_artifact", "list", {"artifact_id": "artifact-1"}
     ) == "artifact_id is not valid for action='list'"
+
+
+@pytest.mark.parametrize("action", ["get", "slice"])
+def test_artifact_slice_numeric_bounds_are_published_and_enforced(action):
+    schema = operation_input_schema("local_ai_artifact", action)
+    assert schema["properties"]["offset"]["minimum"] == 0
+    assert schema["properties"]["max_chars"]["minimum"] == 512
+    assert schema["properties"]["max_chars"]["maximum"] == 12000
+
+    base = {"artifact_id": "artifact-1"}
+    assert validate_operation_arguments(
+        "local_ai_artifact", action, {**base, "offset": 0, "max_chars": 512}
+    ) is None
+    assert validate_operation_arguments(
+        "local_ai_artifact", action, {**base, "max_chars": 12000}
+    ) is None
+    assert validate_operation_arguments(
+        "local_ai_artifact", action, {**base, "offset": -1}
+    ) is not None
+    for max_chars in (511, 12001):
+        assert validate_operation_arguments(
+            "local_ai_artifact", action, {**base, "max_chars": max_chars}
+        ) is not None
 
 
 def test_artifact_output_schemas_describe_source_payload_variants():
@@ -653,7 +1008,7 @@ def test_mcp_tools_list_publishes_artifact_output_shape_union():
     )
     output_schema = tool.outputSchema
 
-    assert len(output_schema["anyOf"]) == 2
+    assert len(output_schema["anyOf"]) == 3
     list_action = next(
         shape for shape in output_schema["anyOf"]
         if any("artifacts" in variant.get("properties", {}) for variant in shape["anyOf"])
@@ -712,18 +1067,22 @@ def test_receipt_schema_conditionally_requires_evidence_only_when_passed():
     ) == "receipt.evidence_id is required for passed verification receipts"
 
 
-def test_output_validation_checks_shared_envelope_and_keeps_extra_payloads():
+def test_output_validation_checks_shared_envelope_and_keeps_nested_payloads():
     valid_result = {
         "success": True,
         "terminal": False,
         "retryable": True,
         "error": "temporary",
-        "action_payload": {"count": 3},
+        "results": [{"action_payload": {"count": 3}}],
     }
 
     assert validate_operation_output("local_ai_repo", "search", valid_result) is None
-    assert validate_operation_output("local_ai_repo", "search", "plain text") is None
-    assert validate_operation_output("local_ai_repo", "search", None) is None
+    assert validate_operation_output("local_ai_repo", "search", "plain text") == (
+        "result has the wrong JSON type for action='search'"
+    )
+    assert validate_operation_output("local_ai_repo", "search", None) == (
+        "result has the wrong JSON type for action='search'"
+    )
     assert validate_operation_output(
         "local_ai_repo", "search", {**valid_result, "success": "yes"}
     ) == "success must be boolean for action='search'"
@@ -775,10 +1134,10 @@ def test_status_output_contracts_match_brief_and_cache_projections():
     assert validate_operation_output("local_ai_status", "cache", cache) is None
     assert validate_operation_output(
         "local_ai_status", "brief", {**brief, "queued": "0"}
-    ) == "result does not match a declared output variant for action='brief'"
+    ) == "result.queued has the wrong JSON type for action='brief'"
     assert validate_operation_output(
         "local_ai_status", "cache", {**cache, "context_ledger": []}
-    ) == "result does not match a declared output variant for action='cache'"
+    ) == "result.context_ledger has the wrong JSON type for action='cache'"
 
 
 def test_status_telemetry_contract_types_every_projected_summary_metric():
@@ -807,4 +1166,54 @@ def test_status_telemetry_contract_types_every_projected_summary_metric():
     }
     assert validate_operation_output(
         "local_ai_status", "telemetry", malformed
-    ) == "result does not match a declared output variant for action='telemetry'"
+    ) == "result.summary.net_cloud_token_delta_est has the wrong JSON type for action='telemetry'"
+
+
+def test_status_full_and_agent_state_outputs_have_typed_success_and_failure_shapes():
+    full = {
+        "success": True,
+        "hub_online": True,
+        "version": "1.0",
+        "uptime_seconds": 10,
+        "features": {"status": True},
+        "runtime_stats": {},
+        "capabilities": {},
+    }
+    agent_state = {
+        "success": True,
+        "enabled": False,
+        "active_tasks": [],
+        "tasks_count": 0,
+        "incidents_count": 0,
+        "candidates_count": 0,
+        "status": "healthy",
+    }
+    failure = {"success": False, "error": "status unavailable"}
+
+    for action, payload, typed_fields in (
+        ("full", full, {"hub_online": "boolean", "uptime_seconds": "integer"}),
+        (
+            "agent_state",
+            agent_state,
+            {"enabled": "boolean", "active_tasks": "array", "tasks_count": "integer"},
+        ),
+    ):
+        schema = operation_output_schema("local_ai_status", action)
+        success = next(branch for branch in schema["anyOf"] if branch.get("required"))
+        failure_schema = next(
+            branch for branch in schema["anyOf"]
+            if branch.get("properties", {}).get("success", {}).get("const") is False
+        )
+        assert set(success["required"]) <= payload.keys()
+        assert failure_schema["properties"]["error"] == {"type": "string"}
+        for field, expected_type in typed_fields.items():
+            assert success["properties"][field]["type"] == expected_type
+        assert validate_operation_output("local_ai_status", action, payload) is None
+        assert validate_operation_output("local_ai_status", action, failure) is None
+
+    assert validate_operation_output(
+        "local_ai_status", "full", {**full, "uptime_seconds": "10"}
+    ) == "result.uptime_seconds has the wrong JSON type for action='full'"
+    assert validate_operation_output(
+        "local_ai_status", "agent_state", {**agent_state, "active_tasks": "none"}
+    ) == "result.active_tasks has the wrong JSON type for action='agent_state'"

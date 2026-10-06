@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import socket
@@ -16,6 +17,8 @@ from urllib.parse import urlparse
 from .llama_cpp import LlamaCppRouter
 from .llama_cpp_runtime import LlamaCppManagedRuntime, llama_cpp_backend_selection, llama_cpp_managed_selected
 from .json_utils import dumps as json_dumps
+
+_GAMING_UNLOAD_MAX_TIMEOUT_SECONDS = 5.0
 
 
 def _normalise_keep_alive(payload: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -965,6 +968,152 @@ class OllamaRuntime:
         if ok:
             self._invalidate_loaded_cache()
         return ok
+
+    def unload_configured_models(self, *, timeout_seconds: float = 3.0) -> dict[str, Any]:
+        """Unload configured resident models without starting or loading a backend.
+
+        A single deadline bounds model discovery and all unload requests. Only an
+        explicit backend unload confirmation is reported in ``unloaded``.
+        """
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, (int, float))
+            or not math.isfinite(timeout_seconds)
+            or timeout_seconds <= 0
+        ):
+            raise ValueError("timeout_seconds must be a finite positive number")
+
+        deadline = time.monotonic() + min(float(timeout_seconds), _GAMING_UNLOAD_MAX_TIMEOUT_SECONDS)
+        unloaded: list[str] = []
+        failed: dict[str, str] = {}
+        ollama_enabled = bool(self.config.get("ollama", {}).get("enabled", False))
+        configured_models: set[str] = set()
+        model_config = self.config.get("models", {})
+        if isinstance(model_config, dict):
+            for key, value in model_config.items():
+                if str(key).endswith(("_backend", "_device", "_path", "_url")):
+                    continue
+                if isinstance(value, str) and value.strip():
+                    configured_models.add(value.strip())
+        profiles = self.config.get("ollama_subagents", {}).get("profiles", {})
+        if isinstance(profiles, dict):
+            for profile in profiles.values():
+                if isinstance(profile, dict) and isinstance(profile.get("model"), str) and profile["model"].strip():
+                    configured_models.add(profile["model"].strip())
+        adapter_config = self.config.get("llama_cpp", {}).get("models", {})
+        if isinstance(adapter_config, dict):
+            for model, profile in adapter_config.items():
+                if isinstance(model, str) and model.strip():
+                    configured_models.add(model.strip())
+                if isinstance(profile, dict) and isinstance(profile.get("served_model"), str):
+                    if profile["served_model"].strip():
+                        configured_models.add(profile["served_model"].strip())
+
+        if ollama_enabled:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return {"success": False, "backend_available": False, "unloaded": [], "failed": {"backend": "unload deadline exceeded"}}
+            response = self.request("/api/ps", timeout=remaining)
+            if not isinstance(response, dict) or "error" in response or not isinstance(response.get("models"), list):
+                return {"success": False, "backend_available": False, "unloaded": [], "failed": {"backend": "backend unavailable"}}
+            loaded: list[str] = []
+            for row in response["models"]:
+                if not isinstance(row, dict):
+                    continue
+                model = str(row.get("name", row.get("model", "")) or "").strip()
+                if model in configured_models and model not in loaded:
+                    loaded.append(model)
+            for model in loaded:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    failed[model] = "unload deadline exceeded"
+                    continue
+                try:
+                    result = self.request(
+                        "/api/generate",
+                        {"model": model, "prompt": "", "keep_alive": 0},
+                        timeout=remaining,
+                    )
+                except Exception as exc:
+                    failed[model] = type(exc).__name__
+                    continue
+                if isinstance(result, dict) and "error" not in result and result.get("done_reason") == "unload":
+                    unloaded.append(model)
+                    self._invalidate_loaded_cache()
+                else:
+                    failed[model] = "unload failed or timed out"
+            return {
+                "success": not failed,
+                "backend_available": True,
+                "unloaded": unloaded,
+                "failed": failed,
+            }
+
+        if not isinstance(adapter_config, dict) or not adapter_config:
+            return {"success": True, "backend_available": False, "unloaded": [], "failed": {}}
+
+        router = self.llama_cpp
+        loaded_adapters: list[tuple[str, str, str]] = []
+        healthy_backend = False
+        for model, profile in adapter_config.items():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                failed[str(model)] = "unload deadline exceeded"
+                continue
+            selected = router._entry(str(model))
+            if not selected:
+                continue
+            entry, url = selected
+            alias = str(entry.get("served_model") or model)
+            if not router._healthy(url, min(remaining, 0.6)):
+                failed[str(model)] = "backend unavailable"
+                continue
+            healthy_backend = True
+            try:
+                request = Request(f"{url}/models", headers={"Accept": "application/json"})
+                with urlopen(request, timeout=deadline - time.monotonic()) as response:
+                    body = json.loads(response.read().decode("utf-8", errors="replace") or "{}")
+                raw_rows = body.get("data", []) if isinstance(body, dict) else None
+                if not isinstance(raw_rows, list):
+                    raise ValueError("invalid model status response")
+                rows = {
+                    str(row.get("id")): row
+                    for row in raw_rows
+                    if isinstance(row, dict) and row.get("id")
+                }
+            except Exception:
+                failed[str(model)] = "backend unavailable"
+                continue
+            row = rows.get(alias, {})
+            status = row.get("status", {}) if isinstance(row, dict) else {}
+            if isinstance(status, dict) and str(status.get("value", "")).lower() == "loaded":
+                loaded_adapters.append((str(model), alias, url))
+
+        for model, alias, url in loaded_adapters:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                failed[model] = "unload deadline exceeded"
+                continue
+            try:
+                body = json_dumps({"model": alias}).encode("utf-8")
+                request = Request(f"{url}/models/unload", data=body, headers={"Content-Type": "application/json"})
+                with urlopen(request, timeout=remaining) as response:
+                    result = json.loads(response.read().decode("utf-8", errors="replace") or "{}")
+            except Exception as exc:
+                failed[model] = type(exc).__name__
+                continue
+            if isinstance(result, dict) and result.get("success") is True:
+                unloaded.append(model)
+                router._models.pop(url, None)
+            else:
+                failed[model] = "unload failed or timed out"
+
+        return {
+            "success": not failed,
+            "backend_available": healthy_backend,
+            "unloaded": unloaded,
+            "failed": failed,
+        }
 
     def generate(self, model: str, prompt: str, *, system: str | None = None, options: dict[str, Any] | None = None, keep_alive: str | None = None) -> dict[str, Any]:
         options = dict(options or {})
