@@ -1,4 +1,5 @@
 import json
+from dataclasses import asdict
 
 import pytest
 
@@ -432,6 +433,34 @@ def test_coder_packet_reports_none_findings_as_terminal_failure() -> None:
 
     assert packet["terminal"] is True
     assert packet["error"]["code"] == "malformed_coder_context"
+
+
+def test_coder_packet_bounds_finding_payloads() -> None:
+    packet = build_coder_packet(
+        prompt="Review",
+        findings=[{"element_ids": ["cta"], "problem": "x" * 100_000}],
+        dom={"elements": [{"element_id": "cta"}]},
+    )
+
+    assert packet["terminal"] is True
+    assert packet["error"]["code"] == "frontend_context_too_large"
+
+
+def test_coder_packet_normalizes_parsed_finding_tuples() -> None:
+    parsed = parse_vision_result(
+        '{"summary":"button","findings":[{"id":"f1",'
+        '"severity":"low","category":"layout",'
+        '"problem":"visible issue","confidence":0.8,'
+        '"uncertainty":["small sample"],"element_ids":[],'
+        '"bbox":[1,2,3,4],"evidence":["button is visible"]}]}'
+    )
+    finding = asdict(parsed.findings[0])
+
+    packet = build_coder_packet(prompt="Review", findings=[finding], dom={"elements": []})
+
+    assert "terminal" not in packet
+    assert packet["findings"][0]["uncertainty"] == ["small sample"]
+    assert packet["findings"][0]["bbox"] == [1.0, 2.0, 3.0, 4.0]
 
 
 @pytest.mark.parametrize("runtime_context", [[], "", 0])

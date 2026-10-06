@@ -4,6 +4,7 @@ from .json_utils import dumps as json_dumps
 
 import ast
 import json
+import math
 import os
 import re
 import sqlite3
@@ -4976,14 +4977,30 @@ def test_{sym}_regression_edge_cases():
             data = json.loads(raw)
             if isinstance(data, dict) and "traceEvents" in data:
                 events = data.get("traceEvents", [])
+                if not isinstance(events, list):
+                    return {
+                        "success": False,
+                        "error": "failed to parse profile: traceEvents must be a JSON array",
+                    }
                 durations: dict[str, float] = {}
                 counts: dict[str, int] = {}
                 for ev in events:
+                    if not isinstance(ev, dict):
+                        continue
                     name = ev.get("name", "")
-                    dur = float(ev.get("dur", 0))
-                    if name and dur > 0:
-                        durations[name] = durations.get(name, 0.0) + dur
-                        counts[name] = counts.get(name, 0) + 1
+                    raw_duration = ev.get("dur", 0)
+                    if not isinstance(name, str) or not name.strip():
+                        continue
+                    if isinstance(raw_duration, bool) or not isinstance(raw_duration, (int, float)):
+                        continue
+                    duration = float(raw_duration)
+                    if not math.isfinite(duration) or duration <= 0:
+                        continue
+                    total_duration = durations.get(name, 0.0) + duration
+                    if not math.isfinite(total_duration):
+                        continue
+                    durations[name] = total_duration
+                    counts[name] = counts.get(name, 0) + 1
                 sorted_events = sorted(durations.items(), key=lambda kv: kv[1], reverse=True)
                 for name, total_dur in sorted_events[:limit]:
                     entries.append({
