@@ -247,6 +247,18 @@ remain preserved. Generated runtime/cache data is not committed.
 
 ### Preservation rule
 
+T17 historical acceptance checkout is synchronized and integrated as
+`3efc1735`, retaining tracked checkpoint `5b16828e` and previously untracked
+Gemini audit specification committed as `67656de3`. Manual transcription test
+conflicts retain both historical error contracts and current process helper,
+timeout and cleanup assertions. Check: `python -B -m pytest -q -p no:cacheprovider
+tests/test_t17_auxiliary_formats.py tests/test_vision_contracts.py
+tests/test_transcription_contract.py --tb=short --maxfail=4`: 96 passed, 3 failed
+in 7.21 seconds. Parsed tuple fixture returns no finding; nonzero transcription
+lacks returncode; timeout transcription lacks retryable. These preserved
+unfinished contracts are not accepted as done. Details:
+`docs/integration/T17-ACCEPTANCE-SYNC-20261006.md`.
+
 Live-context benchmark reconciliation is integrated as `6a57d65d`.
 The historical live/offline benchmark and current benchmark were different
 implementations sharing one filename. Both are retained, with the historical
