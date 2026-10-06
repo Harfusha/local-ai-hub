@@ -541,3 +541,23 @@ tests/test_http_code_find_symbol_include_body.py --tb=short --maxfail=4`:
 line inside the original archived handoff patch; its original bytes are retained.
 These targeted checks do not establish lifecycle, security, or full release
 acceptance. Concurrent root security/memory issues listed above remain open.
+
+#### Final synchronization pass and stash follow-up
+
+The bounded fast-forward pass finished against immutable pin `90e6f295`.
+It excluded root and the five currently assigned worker checkouts. Before each
+fast-forward it required a clean tracked tree and ancestry, and retained the old
+HEAD at `refs/checkpoints/pre-final-sync-20261006/<absolute-path-sanitized>`.
+Original benchmark pins therefore remain recoverable; changing the checkout
+does not refresh historical benchmark receipts. No stash, runtime artifact,
+or checkpoint was deleted. This pass synchronizes to its pin, not to later root
+integration commits; a final pass is still required after remaining integrations.
+
+Root integrated stash audit `ee12a4f4` and render handoff `41296d26`. The render
+source/test already matched pinned master; owner equivalence check: 2 passed in
+0.25 seconds. Audit details: `docs/STASH_COVERAGE_20261006.md`. All 45 stashes
+remain intact. Fourteen have unmatched versions requiring manual hunk decisions:
+32 tracked/index versions and 404 untracked versions, including 22 direct active
+source/test/tool/document paths. Exact checkpoint preservation is not proof of
+integration. Separate existing workers now own the 22 active untracked candidates
+and the 32 tracked/index hunk disposition report. No duplicate task was created.
