@@ -108,6 +108,28 @@ def test_sse_stream_replays_and_receives_live_events(tmp_path: Path):
         http_server.APP = orig_app
 
 
+def test_sse_stream_resumes_from_last_event_id_for_explicit_stream(tmp_path: Path):
+    store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    store.append(AgentEvent.create("task-1", "task.created", {"step": 1}, "k1"))
+    store.append(AgentEvent.create("task-1", "task.updated", {"step": 2}, "k2"))
+
+    class DummyApp:
+        agent_state = store
+
+    orig_app = http_server.APP
+    http_server.APP = DummyApp()
+    try:
+        handler = DummyHandler(DummyApp())
+        handler.headers = {"Last-Event-ID": "1"}
+        handler._stream_agent_events(stream_id="task-1", after_seq=0, timeout=0.01)
+
+        output = handler.wfile.getvalue().decode("utf-8")
+        assert "event: task.created" not in output
+        assert "event: task.updated" in output
+    finally:
+        http_server.APP = orig_app
+
+
 def test_sse_stream_does_not_lose_event_between_replay_and_subscribe(tmp_path: Path, monkeypatch):
     store = AgentStateStore(tmp_path / "agent_state.sqlite3")
     store.append(AgentEvent.create("task-1", "task.created", {"step": 1}, "k1"))
