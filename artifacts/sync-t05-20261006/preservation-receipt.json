@@ -1,0 +1,2506 @@
+{
+  "original_head": "43f7b1ccb57762a8fa581b14f4aeeac84b520ed4",
+  "checkpoint": "df9850131a79191c5a860a1d231d3acd867869db",
+  "checkpoint_ref": "refs/heads/codex/backup-t05-pre-sync-20261006",
+  "original_tracked_count": 16,
+  "original_untracked_count": 399,
+  "raw_backup_verified_count": 29,
+  "raw_backup_errors": [],
+  "untouched_original_artifact_count": 386,
+  "untouched_original_artifact_errors": [],
+  "python_compile_errors": [],
+  "context_pack_ast_matches_initial_pin": true,
+  "remaining_status": "M  AGENTS.md\nM  CONTRIBUTING.md\nM  FEATURES.md\nM  MANIFEST.in\nM  THIRD_PARTY.md\nA  artifacts/handoff/T20-t03-accounting-root-integration-receipt-20261002.json\nA  artifacts/handoff/T20-t03-mcp-root-integration-receipt-20261002.json\nA  artifacts/handoff/T20-t08-agent-context-root-hunk-receipt-20261002.json\nA  artifacts/handoff/T20-t19-prompts-root-current-receipt-20261002.json\nA  artifacts/handoff/T20-t19-prompts-root-current.patch\nA  artifacts/handoff/T20-t19-release-test-additions-root-current.patch\nA  artifacts/handoff/T20-t19-release-tests-root-integration-receipt-20261002.json\nM  browser_bridge/background.js\nM  config.toml.example\nM  defaults.toml\nM  docs/API_COVERAGE.md\nM  docs/ARCHITECTURE.md\nM  docs/DASHBOARD.md\nM  docs/FEATURE_AUDIT_V4.md\nM  docs/HTTP_API.md\nM  docs/INSTALLATION.md\nM  docs/INSTALL_PROMPT.md\nM  docs/MCP_AND_AGENTS.md\nM  docs/MODEL_CAPABILITIES.md\nM  docs/OPERATIONS.md\nA  docs/PROJECT_CONFIGURATION.md\nA  docs/PYTHON_SDK.md\nUU docs/SECURITY_MODEL.md\nA  docs/T02-quality-performance-baseline-contract.md\nA  docs/T02-real-input-quality-evidence-plan.md\nA  docs/T19_CLEAN_HOST_INSTALLER_CYCLE.md\nA  docs/T19_RELEASE_VALIDATION_RUNBOOK.md\nM  docs/TROUBLESHOOTING.md\nM  docs/UPDATE_PROMPT.md\nA  docs/superpowers/patches/2026-09-26-t07-two-client-http-idempotence.patch\nM  docs/superpowers/plans/2026-09-22-adaptive-retrieval-orchestrator.md\nM  docs/superpowers/plans/2026-09-22-hub-quality-performance-master-plan.md\nA  docs/superpowers/plans/2026-09-24-t07-retries-idempotence-task-note.md\nA  docs/superpowers/plans/2026-09-25-t19-install-sdk-rollout.md\nA  docs/superpowers/plans/2026-09-26-t04-end-to-end.md\nA  docs/superpowers/plans/2026-10-01-hub-consolidated-completion.md\nA  docs/superpowers/plans/2026-10-05-release-acceptance-matrix.md\nA  docs/superpowers/receipts/2026-10-01-chat-resume-and-current-delta-review.md\nA  docs/superpowers/receipts/2026-10-01-integration-preflight-r1.md\nA  docs/superpowers/receipts/2026-10-01-release-dependency-review-r3.md\nA  docs/superpowers/receipts/2026-10-01-release-fast-track-r2.md\nA  docs/superpowers/receipts/2026-10-01-t09-spec-review-r1.md\nA  docs/superpowers/receipts/2026-10-01-t11-isolation-review-r1.md\nA  docs/superpowers/receipts/2026-10-01-t12-r3-review.md\nA  docs/superpowers/receipts/2026-10-01-t16-spec-review-r1.md\nA  docs/superpowers/receipts/2026-10-01-t21-root-search-acceptance.md\nA  docs/superpowers/specs/2026-09-25-t21-adapter-handoff.md\nA  handoff/T02-instability-source-handoff-20261002.md\nA  handoff/T02-remaining-acceptance.md\nA  handoff/T20-CPU-SLOT-20261002-14/00-prerun.json\nA  handoff/T20-CPU-SLOT-20261002-14/01-project-config-loader.receipt.json\nA  handoff/T20-CPU-SLOT-20261002-15/00-preflight.json\nA  handoff/T20-CPU-SLOT-20261002-15/01-t12-tiered-wrapper.receipt.json\nA  handoff/T20-CPU-SLOT-20261002-16/00-preflight.json\nA  handoff/T20-CPU-SLOT-20261002-16/01-t07-request-id.receipt.json\nA  handoff/T20-CPU-SLOT-20261002-17/00-preflight.json\nA  handoff/T20-CPU-SLOT-20261002-17/01-t07-request-id-postfix.receipt.json\nA  handoff/T20-CPU-SLOT-20261002-18/00-preflight.json\nA  handoff/T20-CPU-SLOT-20261002-18/01-t17-cancellation-drain.receipt.json\nA  handoff/T20-CPU-SLOT-20261002-19/00-preflight.json\nA  handoff/T20-CPU-SLOT-20261002-19/01-t01-client-operation-acceptance.receipt.json\nA  handoff/T20-CPU-SLOT-20261002-20/00-preflight.json\nA  handoff/T20-CPU-SLOT-20261002-20/01-t01-http-route-acceptance.receipt.json\nA  handoff/T20-CPU-SLOT-20261002-21/00-preflight.json\nA  handoff/T20-CPU-SLOT-20261002-21/01-t01-hubctl-operations.receipt.json\nA  handoff/T20-CPU-SLOT-20261002-22/00-preflight.json\nA  handoff/T20-CPU-SLOT-20261002-22/01-t01-mcp-command-acceptance.receipt.json\nA  handoff/T20-CPU-SLOT-20261002-23/00-preflight.json\nA  handoff/T20-CPU-SLOT-20261002-23/01-t01-mcp-coord-acceptance.receipt.json\nA  handoff/T20-CPU-SLOT-20261002-24/00-preflight.json\nA  handoff/T20-CPU-SLOT-20261002-24/01-t01-rag-work-acceptance.receipt.json\nA  handoff/T20-CPU-SLOT-20261002-25/00-preflight.json\nA  handoff/T20-CPU-SLOT-20261002-25/01-t10-ast-impact-acceptance.receipt.json\nA  handoff/T20-CPU-SLOT-20261002-26/00-preflight.json\nA  handoff/T20-CPU-SLOT-20261002-26/01-t09-lease-path-normalization.receipt.json\nA  handoff/T20-CPU-SLOT-20261002-27/00-preflight.json\nA  handoff/T20-CPU-SLOT-20261002-27/01-t04-current-root-acceptance.receipt.json\nA  handoff/T20-CPU-SLOT-20261002-28/00-preflight.json\nA  handoff/T20-CPU-SLOT-20261002-28/01-t04-client-retry-acceptance.receipt.json\nA  handoff/T20-CPU-SLOT-20261002-29/00-preflight.json\nA  handoff/T20-CPU-SLOT-20261002-29/01-t04-client-auth-transport.receipt.json\nA  handoff/T20-CPU-SLOT-20261002-30/00-preflight.json\nA  handoff/T20-CPU-SLOT-20261002-30/01-t04-public-http-stream-acceptance.receipt.json\nA  handoff/T20-CPU-SLOT-20261002-31/00-preflight.json\nA  handoff/T20-CPU-SLOT-20261002-31/01-t04-real-child-startup-acceptance.receipt.json\nA  handoff/T20-CPU-SLOT-20261002-32/00-preflight.json\nA  handoff/T20-CPU-SLOT-20261002-32/01-client-startup-transport-fallback.receipt.json\nA  handoff/T20-CPU-SLOT-20261002-33/00-preflight.json\nA  handoff/T20-CPU-SLOT-20261002-33/01-t07-six-module-acceptance.receipt.json\nA  handoff/T20-CPU-SLOT-20261002-34/00-preflight.json\nA  handoff/T20-CPU-SLOT-20261002-34/01-t09-lease-path-normalization-postfix.receipt.json\nA  handoff/T20-CPU-SLOT-20261002-35/00-preflight.json\nA  handoff/T20-CPU-SLOT-20261002-35/01-t05-memory-tenant-delete.receipt.json\nA  handoff/T20-CPU-SLOT-20261002-36/00-preflight.json\nA  handoff/T20-CPU-SLOT-20261002-36/01-t08-session-tenant.outcome-unknown.receipt.json\nA  handoff/T20-CPU-SLOT-20261002-37/00-preflight.json\nA  handoff/T20-CPU-SLOT-20261002-37/01-cancelled-before-dispatch.json\nA  handoff/T20-CPU-SLOT-20261002-38/00-preflight.json\nA  handoff/T20-CPU-SLOT-20261002-38/03-t08-unscoped-blackboard.receipt.json\nA  handoff/T20-CPU-SLOT-20261002-39/00-preflight.json\nA  handoff/T20-CPU-SLOT-20261002-39/02-t08-actor-idempotency.receipt.json\nA  handoff/T20-CPU-SLOT-20261002-40/00-preflight.json\nA  handoff/T20-CPU-SLOT-20261002-40/02-t06-classifier-red.receipt.json\nA  handoff/T20-CPU-SLOT-20261002-41/00-preflight.json\nA  handoff/T20-CPU-SLOT-20261002-41/02-t06-daemon-red.receipt.json\nA  handoff/T20-CPU-SLOT-20261002-42/00-preflight.json\nA  handoff/T20-CPU-SLOT-20261002-42/02-t06-critical-green.receipt.json\nA  handoff/test_t03_live_mcp_single_daemon.py\nA  handoff/test_t03_multi_client_single_daemon.py\nA  handoff/test_t03_stdio_http_proxy.py\nM  install.ps1\nM  install.sh\nM  skills/tool-orchestration/SKILL.md\nM  src/local_ai_hub/agent_blackboard.py\nM  src/local_ai_hub/agent_consistency.py\nM  src/local_ai_hub/agent_context.py\nUU src/local_ai_hub/agent_events.py\nM  src/local_ai_hub/agent_incidents.py\nUU src/local_ai_hub/agent_memory.py\nUU src/local_ai_hub/agent_tasks.py\nM  src/local_ai_hub/agent_verification.py\nM  src/local_ai_hub/app.py\nM  src/local_ai_hub/artifacts.py\nM  src/local_ai_hub/async_jobs.py\nM  src/local_ai_hub/background_gpu.py\nM  src/local_ai_hub/benchmark.py\nM  src/local_ai_hub/browser_bridge.py\nM  src/local_ai_hub/cache.py\nM  src/local_ai_hub/client.py\nM  src/local_ai_hub/code_index.py\nA  src/local_ai_hub/command_transactions.py\nM  src/local_ai_hub/commands.py\nA  src/local_ai_hub/context_identity.py\nM  src/local_ai_hub/context_ledger.py\nM  src/local_ai_hub/conversations.py\nM  src/local_ai_hub/dashboard.py\nM  src/local_ai_hub/debug_traces.py\nM  src/local_ai_hub/defaults.toml\nM  src/local_ai_hub/deterministic.py\nM  src/local_ai_hub/embeddings.py\nM  src/local_ai_hub/external_tools.py\nM  src/local_ai_hub/features.py\nM  src/local_ai_hub/frontend_review.py\nM  src/local_ai_hub/generator.py\nA  src/local_ai_hub/http_route_registry.py\nUU src/local_ai_hub/http_server.py\nA  src/local_ai_hub/inprocess_transport.py\nM  src/local_ai_hub/leases.py\nM  src/local_ai_hub/llama_cpp.py\nM  src/local_ai_hub/logging_setup.py\nM  src/local_ai_hub/mcp_server.py\nUU src/local_ai_hub/memory.py\nA  src/local_ai_hub/model_lifecycle.py\nM  src/local_ai_hub/model_policy.py\nM  src/local_ai_hub/ollama.py\nM  src/local_ai_hub/ollama_subagents.py\nA  src/local_ai_hub/operation_contracts.py\nA  src/local_ai_hub/operational_mode.py\nM  src/local_ai_hub/pipeline.py\nM  src/local_ai_hub/preprocess.py\nM  src/local_ai_hub/process_utils.py\nA  src/local_ai_hub/project_config.py\nM  src/local_ai_hub/projection.py\nM  src/local_ai_hub/rag.py\nM  src/local_ai_hub/repo_state.py\nM  src/local_ai_hub/repo_tools.py\nA  src/local_ai_hub/repository_test_impact.py\nM  src/local_ai_hub/reranker.py\nM  src/local_ai_hub/resilience.py\nM  src/local_ai_hub/response_budget.py\nM  src/local_ai_hub/response_protocol.py\nM  src/local_ai_hub/retrieval.py\nM  src/local_ai_hub/router.py\nM  src/local_ai_hub/scheduler.py\nM  src/local_ai_hub/services.py\nM  src/local_ai_hub/sqlite_support.py\nM  src/local_ai_hub/supervisor.py\nM  src/local_ai_hub/swarm.py\nM  src/local_ai_hub/task_context.py\nM  src/local_ai_hub/telemetry.py\nM  src/local_ai_hub/tiered_ollama.py\nM  src/local_ai_hub/token_economy.py\nM  src/local_ai_hub/tool_agent.py\nM  src/local_ai_hub/treesitter_parser.py\nA  src/local_ai_hub/verification_rules.py\nM  src/local_ai_hub/vision_contracts.py\nA  src/local_ai_hub/vision_inputs.py\nA  src/local_ai_hub/vision_payload.py\nA  src/local_ai_hub/vision_request.py\nA  src/local_ai_hub/vision_runtime.py\nM  src/local_ai_hub/vram_balancer.py\nA  src/local_ai_hub/work_fencing.py\nM  src/local_ai_hub/work_orchestrator.py\nM  tests/conftest.py\nA  tests/fencing_lease_support.py\nM  tests/fixtures/browser_bridge/current_tab_harness.js\nA  tests/fixtures/dashboard_mode_playwright_t18.cjs\nM  tests/test_adaptive_retrieval.py\nA  tests/test_affected_tests_no_code_index.py\nM  tests/test_agent_consistency.py\nM  tests/test_agent_context.py\nA  tests/test_agent_context_cleanup_t24.py\nA  tests/test_agent_crash_recovery.py\nA  tests/test_agent_event_page_t18.py\nM  tests/test_agent_events.py\nA  tests/test_agent_incident_scope.py\nUU tests/test_agent_memory.py\nAA tests/test_agent_memory_context_tenant_isolation.py\nAA tests/test_agent_memory_http_identity.py\nA  tests/test_agent_memory_t08_rollback_masking.py\nA  tests/test_agent_memory_t08_tombstones.py\nM  tests/test_agent_os_enhancements.py\nA  tests/test_agent_receipt_completion_t09.py\nA  tests/test_agent_receipt_ordering_t09.py\nM  tests/test_agent_state_e2e.py\nA  tests/test_agent_state_migrations.py\nM  tests/test_agent_state_operations.py\nA  tests/test_agent_state_preflight_retry.py\nM  tests/test_agent_state_reliability.py\nM  tests/test_agent_state_transport.py\nA  tests/test_agent_t08_cache_isolation.py\nA  tests/test_agent_t08_completion_validation.py\nA  tests/test_agent_t08_crash_after_commit.py\nA  tests/test_agent_t08_durable_contract.py\nA  tests/test_agent_t08_event_page_snapshot.py\nA  tests/test_agent_t08_live_order.py\nA  tests/test_agent_t08_migration_recovery.py\nA  tests/test_agent_t08_receipt_transaction.py\nA  tests/test_agent_task_memory_adoption.py\nA  tests/test_agent_task_query.py\nA  tests/test_agent_task_scope.py\nM  tests/test_agent_tasks.py\nM  tests/test_agent_verification.py\nM  tests/test_all_advanced_improvements.py\nM  tests/test_all_categories_expanded.py\nA  tests/test_api_search_path_hints.py\nM  tests/test_architectural_extensions.py\nA  tests/test_artifact_tenant_isolation.py\nM  tests/test_async_coordination_reliability.py\nM  tests/test_async_job_reliability_contract.py\nM  tests/test_async_jobs.py\nM  tests/test_async_jobs_tasks.py\nA  tests/test_async_operational_mode.py\nUU tests/test_audit_round2_enhancements.py\nM  tests/test_auto_negative_knowledge.py\nM  tests/test_auxiliary_action_policy.py\nA  tests/test_benchmark_command_broker.py\nM  tests/test_browser_bridge.py\nM  tests/test_browser_bridge_background.js\nM  tests/test_browser_bridge_runtime.py\nA  tests/test_bundle_import_recovery.py\nA  tests/test_cache_invalidation.py\nA  tests/test_client_autostart_timeout.py\nA  tests/test_client_operation_acceptance.py\nA  tests/test_client_operational_mode_autostart.py\nA  tests/test_client_path_hints.py\nA  tests/test_client_start_lock_owner.py\nA  tests/test_client_startup_resilience.py\nA  tests/test_client_startup_transport_fallback.py\nUU tests/test_client_transport.py\nM  tests/test_codegraph_package_policy.py\nA  tests/test_command_cache_freshness.py\nA  tests/test_command_cache_singleflight_contract.py\nA  tests/test_command_concurrency_contract.py\nA  tests/test_command_network_safety.py\nA  tests/test_command_replay_policy.py\nM  tests/test_command_rollback.py\nA  tests/test_command_singleflight_revision.py\nM  tests/test_command_timeout_cache_contract.py\nA  tests/test_command_transaction_snapshot.py\nM  tests/test_command_unblocked.py\nM  tests/test_context_delivery.py\nA  tests/test_context_identity.py\nM  tests/test_context_ledger.py\nA  tests/test_context_pack_budget_e2e.py\nA  tests/test_context_pack_quality_e2e.py\nA  tests/test_context_pack_render_order.py\nA  tests/test_context_pack_render_perf.py\nA  tests/test_context_path_hints_skip_unbounded_scan.py\nA  tests/test_context_request_identity.py\nA  tests/test_context_snippet_budget_audit.py\nM  tests/test_conversation_continue_route_contract.py\nM  tests/test_conversations.py\nM  tests/test_daemon_lifecycle_hardening.py\nA  tests/test_dashboard_mode_playwright_t18.py\nM  tests/test_dashboard_operational_surfaces.py\nM  tests/test_dashboard_polling_quality.py\nA  tests/test_dashboard_project_identity.py\nA  tests/test_db_query_bounds_t18.py\nM  tests/test_debug_traces.py\nM  tests/test_external_tools.py\nM  tests/test_feature_suite.py\nM  tests/test_feature_surface_parity.py\nM  tests/test_features.py\nM  tests/test_frontend_review.py\nA  tests/test_http_admin_action_auth_t18.py\nA  tests/test_http_find_symbol_boolean.py\nA  tests/test_http_get_live_status_t18.py\nA  tests/test_http_get_live_t18.py\nA  tests/test_http_operational_mode_t18.py\nA  tests/test_http_post_telemetry_timeline_t18.py\nA  tests/test_http_request_id_fallback.py\nA  tests/test_http_route_operation_acceptance.py\nA  tests/test_http_status_diagnostics_t18.py\nA  tests/test_http_telemetry_paging.py\nM  tests/test_http_tool_accounting_rejections.py\nM  tests/test_http_vision_routes.py\nA  tests/test_hubctl_dispatch_acceptance.py\nA  tests/test_hubctl_mode.py\nA  tests/test_hubctl_unlinked_operations.py\nUU tests/test_identity_contracts.py\nA  tests/test_inprocess_transport.py\nA  tests/test_lease_path_normalization.py\nM  tests/test_logging_setup.py\nM  tests/test_mcp_agent_routing.py\nA  tests/test_mcp_autostart.py\nA  tests/test_mcp_autostart_contract.py\nA  tests/test_mcp_budget_wire_accounting.py\nA  tests/test_mcp_command_operation_acceptance.py\nM  tests/test_mcp_compact_transport.py\nA  tests/test_mcp_contract_dispatch.py\nA  tests/test_mcp_coord_operation_acceptance.py\nA  tests/test_mcp_daemon_proxy.py\nA  tests/test_mcp_live_wire_schema.py\nA  tests/test_mcp_operational_mode_dispatch.py\nA  tests/test_mcp_repo_path_hints.py\nM  tests/test_mcp_response_budget.py\nA  tests/test_mcp_stdio_contract.py\nA  tests/test_mcp_task_mode_gate.py\nA  tests/test_mcp_wire_contract.py\nM  tests/test_missing_and_high_value_features.py\nA  tests/test_model_release_lifecycle.py\nM  tests/test_model_routing.py\nM  tests/test_mutation_replay.py\nM  tests/test_new_capabilities_and_hardening.py\nA  tests/test_ollama_gaming_mode.py\nM  tests/test_ollama_ownership.py\nA  tests/test_operation_contracts.py\nA  tests/test_operational_mode.py\nA  tests/test_operational_mode_http_gate.py\nA  tests/test_preprocess_operational_mode.py\nM  tests/test_preprocessing_overhaul.py\nM  tests/test_preprocessor_and_deterministic.py\nM  tests/test_process_utils.py\nUU tests/test_production_readiness_repairs.py\nA  tests/test_project_command_broker.py\nA  tests/test_project_completion_root.py\nA  tests/test_project_config.py\nA  tests/test_project_config_service_integration.py\nA  tests/test_project_config_worktrees.py\nA  tests/test_project_memory_audit_completion.py\nA  tests/test_project_path_hints.py\nA  tests/test_project_verification_rules.py\nM  tests/test_projection_extra_fields.py\nM  tests/test_rag_fragment_cache.py\nM  tests/test_rag_hybrid.py\nM  tests/test_rag_quality_contract.py\nA  tests/test_rag_read_bounds.py\nA  tests/test_rag_work_operation_acceptance.py\nM  tests/test_release_contract.py\nM  tests/test_release_hardening.py\nM  tests/test_reliability_core.py\nM  tests/test_reliability_integration.py\nM  tests/test_reliability_runtime.py\nA  tests/test_repo_tools_path_hints.py\nA  tests/test_repository_test_impact_service.py\nM  tests/test_reranker_cache_identity.py\nM  tests/test_response_budget.py\nA  tests/test_rollback_cache_delete_failure.py\nM  tests/test_router.py\nM  tests/test_runtime_hardening.py\nA  tests/test_search_completeness.py\nM  tests/test_setup.py\nM  tests/test_sse_events_stream.py\nA  tests/test_status_action_schema.py\nM  tests/test_status_snapshot_quality.py\nM  tests/test_storage_service_reliability.py\nA  tests/test_structural_search_completeness.py\nM  tests/test_stuck_preprocessing_and_dashboard_fixes.py\nM  tests/test_surface_benchmarks.py\nM  tests/test_surface_inventory.py\nM  tests/test_swarm_orchestrator.py\nA  tests/test_t02_repeat_pytest.py\nA  tests/test_t03_alias_contract.py\nA  tests/test_t03_multi_client_single_daemon.py\nA  tests/test_t03_stdio_http_proxy.py\nA  tests/test_t04_client_auth_transport.py\nA  tests/test_t04_client_request_id_http.py\nA  tests/test_t04_client_retry_acceptance.py\nA  tests/test_t04_client_sse_socket_interrupt.py\nA  tests/test_t04_current_root_acceptance.py\nA  tests/test_t04_inprocess_transport_acceptance.py\nA  tests/test_t04_malformed_json_contract.py\nA  tests/test_t04_mcp_status_actual_hub_child.py\nA  tests/test_t04_public_api_contracts.py\nA  tests/test_t04_public_http_stream_acceptance.py\nA  tests/test_t04_real_child_startup_acceptance.py\nA  tests/test_t04_root_current_service_autostart.py\nA  tests/test_t04_root_path_hint_chain.py\nA  tests/test_t04_root_request_id_preflight.py\nA  tests/test_t04_root_start_lock_acceptance.py\nAA tests/test_t05_agent_state_migrations.py\nAA tests/test_t05_cache_clear_durable_state.py\nAA tests/test_t05_cache_state_isolation.py\nAA tests/test_t05_memory_delete_artifacts.py\nAA tests/test_t05_memory_fts_atomicity.py\nA  tests/test_t06_command_cache_read_fail_closed.py\nA  tests/test_t06_durable_command_provenance.py\nA  tests/test_t06_project_validation_receipts.py\nA  tests/test_t08_async_admission_lifecycle.py\nA  tests/test_t08_http_memory_context_immutable.py\nA  tests/test_t08_t13_t12_consumer_overlay.py\nA  tests/test_t09_command_execution_completion.py\nA  tests/test_t09_http_task_completion_matrix.py\nA  tests/test_t09_http_task_completion_persisted_receipts.py\nA  tests/test_t10_ast_impact_acceptance.py\nA  tests/test_t10_code_index_schema_rebuild.py\nA  tests/test_t10_fallback_callgraph_parity.py\nA  tests/test_t10_impact_dependents_limit.py\nA  tests/test_t10_incremental_callgraph_edges.py\nA  tests/test_t10_like_suffix_escape.py\nA  tests/test_t10_preprocessor_index_version.py\nA  tests/test_t10_python_fallback_budget.py\nA  tests/test_t10_repo_search_path_hints.py\nA  tests/test_t10_retrieval_fixture_matrix.py\nA  tests/test_t10_retrieval_index_gaps.py\nA  tests/test_t10_snapshot_cache_revalidation.py\nA  tests/test_t10_transitive_dependencies.py\nA  tests/test_t10_treesitter_parser_thread_safety.py\nA  tests/test_t11_embedding_space_reindex.py\nA  tests/test_t11_project_policy_consumers.py\nA  tests/test_t11_rag_ingestion_contract.py\nA  tests/test_t11_rag_project_policy.py\nA  tests/test_t11_rag_seed_integrity.py\nA  tests/test_t12_benchmark_contract.py\nA  tests/test_t12_gaming_pause_loaded_rows.py\nA  tests/test_t12_generation_boundary.py\nA  tests/test_t12_llama_cpp_transport.py\nA  tests/test_t12_llama_model_inventory.py\nA  tests/test_t12_model_free_harness.py\nA  tests/test_t12_project_model_consumer.py\nA  tests/test_t12_runtime_scenarios.py\nA  tests/test_t12_scheduler_scenarios.py\nA  tests/test_t13_gaming_conversation_release_receipt.py\nA  tests/test_t13_hubctl_offline_persistence.py\nA  tests/test_t14_context_pack_agent_memory.py\nA  tests/test_t14_mcp_context_http.py\nA  tests/test_t15_repo_state_fingerprint.py\nA  tests/test_t16_cross_process_namespace_lease_recovery.py\nA  tests/test_t16_explicit_write_set_lifecycle.py\nA  tests/test_t16_http_lease_routes.py\nA  tests/test_t16_lease_wait_namespace_isolation.py\nA  tests/test_t16_project_namespace_leases.py\nA  tests/test_t16_terminal_rollback_preflight.py\nM  tests/test_t17_auxiliary_formats.py\nA  tests/test_t19_clean_profile_roundtrip.py\nA  tests/test_t19_codegraph_removal.py\nA  tests/test_t19_coverage_owner.py\nA  tests/test_t19_current_prompt_adoption.py\nA  tests/test_t19_doctor_optional_status.py\nA  tests/test_t19_hubctl_config_isolation.py\nA  tests/test_t19_install_contracts.py\nA  tests/test_t19_mcp_handshake.py\nA  tests/test_t19_packaged_sdk_smoke.py\nA  tests/test_t19_packaging_contract.py\nA  tests/test_t19_parity_contract.py\nA  tests/test_t19_project_config_prompts.py\nA  tests/test_t19_prompt_profile_parity.py\nA  tests/test_t19_recovery_journal_schema.py\nA  tests/test_t19_rollback_contract.py\nA  tests/test_t19_rollback_snapshot.py\nA  tests/test_t19_sdk_docs.py\nA  tests/test_t19_sdk_scenarios.py\nA  tests/test_t19_sdk_wrapper_payloads.py\nA  tests/test_t19_shared_daemon_rollout.py\nA  tests/test_t19_verified_install_flow.py\nA  tests/test_t21_completion_root_binding.py\nA  tests/test_t21_coordination_identity.py\nA  tests/test_t21_journal_observation_uncertainty.py\nA  tests/test_t21_real_namespace_identity.py\nA  tests/test_t21_root_path_hint_worktree_chain.py\nA  tests/test_t21_search_recall.py\nA  tests/test_t21_verification_rules_settings_type.py\nA  tests/test_task_worktree_cleanup_contract.py\nA  tests/test_telemetry_error_classification_t18.py\nA  tests/test_telemetry_error_diagnostics_t18.py\nA  tests/test_telemetry_error_errno_diagnostics_t18.py\nA  tests/test_telemetry_error_metadata_privacy_t18.py\nA  tests/test_telemetry_flush_retry_t18.py\nA  tests/test_telemetry_privacy.py\nA  tests/test_telemetry_report_bounds_t18.py\nA  tests/test_telemetry_report_http_days_privacy_t18.py\nA  tests/test_telemetry_sqlite_dashboard_t18.py\nM  tests/test_telemetry_tail_latency.py\nA  tests/test_telemetry_timeline_paging_t18.py\nM  tests/test_tiered_ollama_runtime.py\nM  tests/test_token_economy_tools.py\nM  tests/test_transcription_contract.py\nA  tests/test_verified_handoff.py\nUU tests/test_vision_artifacts.py\nM  tests/test_vision_contracts.py\nM  tests/test_vision_service.py\nA  tests/test_vision_service_phases.py\nM  tests/test_vram_balancer.py\nA  tests/test_whisper_cancellation.py\nA  tests/test_work_fencing.py\nA  tests/test_work_handoff_acceptance.py\nM  tests/test_work_orchestrator.py\nA  tests/test_work_orchestrator_junction_recovery.py\nA  tools/benchmark_command_broker.py\nA  tools/benchmark_context_pack_quality.py\nM  tools/benchmark_surfaces.py\nM  tools/doctor.py\nM  tools/hubctl.py\nA  tools/repeat_t02_pytest.py\nA  tools/rollback_snapshot.py\nA  tools/schemas/t02-pytest-repeat.schema.json\nM  tools/selftest.py\nM  tools/setup.py\nM  tools/surface_inventory.py\nA  tools/t12_model_free_harness.py\nM  tools/telemetry_report.py\nM  tools/uninstall.py\n?? artifacts/handoff/t05-d1-d4-receipt-v1-20261001.json\n?? artifacts/handoff/t05-d1-d4-receipt-v2-20261001.json\n?? artifacts/handoff/t05-d1-d4-receipt-v3-20261001.json\n?? artifacts/handoff/t05-d1-d4-receipt-v4-20261001.json\n?? artifacts/handoff/t05-d1-d4-receipt-v5-20261001.json\n?? artifacts/handoff/t05-d1-d4-receipt-v8-20261001.json\n?? artifacts/handoff/t05-d1-d4-tests-v1-20261001.patch\n?? artifacts/handoff/t05-end-to-end-acceptance-receipt-20261003-v3.json\n?? artifacts/handoff/t05-focused-test-run-receipt-20261003-v1.json\n?? artifacts/handoff/t05-get-global-privacy-receipt-20261003-v1.json\n?? artifacts/handoff/t05-get-global-privacy-root-current-20261003/base/src/local_ai_hub/agent_memory.py\n?? artifacts/handoff/t05-get-global-privacy-root-current-20261003/base/tests/test_agent_memory.py\n?? artifacts/handoff/t05-get-global-privacy-root-current-20261003/post/src/local_ai_hub/agent_memory.py\n?? artifacts/handoff/t05-get-global-privacy-root-current-20261003/post/tests/test_agent_memory.py\n?? artifacts/handoff/t05-http-memory-identity-receipt-v1-20261001.json\n?? artifacts/handoff/t05-http-memory-identity-receipt-v2-20261001.json\n?? artifacts/handoff/t05-identity-shared-memory-e2e-receipt-20261003-v1.json\n?? artifacts/handoff/t05-new-memory-selectors-fallback-20261003-v1.json\n?? artifacts/handoff/t05-public-http-identity-receipt-v1-20261001.json\n?? artifacts/handoff/t05-root-acceptance-receipt-v7-20261001.json\n?? artifacts/handoff/t05-root-apply-check-receipt-20261003-v1.json\n?? artifacts/handoff/t05-root-cache-migration-receipt-v6-20261001.json\n?? artifacts/handoff/t05-root-current-acceptance-receipt-20261003-v2.json\n?? artifacts/handoff/t05-root-current-base/empty-test-file\n?? artifacts/handoff/t05-root-current-base/src/local_ai_hub/agent_memory.py\n?? artifacts/handoff/t05-root-current-base/src/local_ai_hub/http_server.py\n?? artifacts/handoff/t05-root-current-base/src/local_ai_hub/memory.py\n?? artifacts/handoff/t05-root-current-combined-20261003/base/src/local_ai_hub/agent_memory.py\n?? artifacts/handoff/t05-root-current-combined-20261003/base/src/local_ai_hub/http_server.py\n?? artifacts/handoff/t05-root-current-combined-20261003/base/src/local_ai_hub/memory.py\n?? artifacts/handoff/t05-root-current-combined-20261003/base/tests/test_agent_memory.py\n?? artifacts/handoff/t05-root-current-combined-20261003/base/tests/test_agent_memory_http_identity.py\n?? artifacts/handoff/t05-root-current-combined-20261003/post/src/local_ai_hub/agent_memory.py\n?? artifacts/handoff/t05-root-current-combined-20261003/post/src/local_ai_hub/http_server.py\n?? artifacts/handoff/t05-root-current-combined-20261003/post/src/local_ai_hub/memory.py\n?? artifacts/handoff/t05-root-current-combined-20261003/post/tests/test_agent_memory.py\n?? artifacts/handoff/t05-root-current-combined-20261003/post/tests/test_agent_memory_http_identity.py\n?? artifacts/handoff/t05-root-current-four-file-comparison-20261004-v1.patch\n?? artifacts/handoff/t05-root-current-four-file-comparison-20261004-v2.patch\n?? artifacts/handoff/t05-root-current-get-global-privacy-20261003-v1.patch\n?? artifacts/handoff/t05-root-current-identity-shared-memory-20261003-v1.patch\n?? artifacts/handoff/t05-root-current-integration-20261004-v2.receipt.md\n?? artifacts/handoff/t05-root-current-integration-receipt-20261003-v1.json\n?? artifacts/handoff/t05-root-current-memory-consumer-20261003-v1.patch\n?? artifacts/handoff/t05-root-current-memory-lifecycle-20261003-v1.patch\n?? artifacts/handoff/t05-root-current-memory-lifecycle-20261003-v2.patch\n?? artifacts/handoff/t05-root-current-memory-lifecycle-20261003-v3.patch\n?? artifacts/handoff/t05-root-current-memory-lifecycle-receipt-20261003-v1.json\n?? artifacts/handoff/t05-root-current-overlay/src/local_ai_hub/agent_memory.py\n?? artifacts/handoff/t05-root-current-overlay/src/local_ai_hub/http_server.py\n?? artifacts/handoff/t05-root-current-overlay/src/local_ai_hub/memory.py\n?? artifacts/handoff/t05-root-current-overlay/tests/test_agent_memory_http_identity.py\n?? artifacts/handoff/t05-root-current-scoped-delete-tenant-test-v1.patch\n?? artifacts/handoff/t05-root-current-semantic-disposition-20261004.md\n?? artifacts/handoff/t05-root-identity-memory-receipt-v8-20261001.json\n?? artifacts/handoff/t05-root-memory-identity-test-fixes-20261004.patch\n?? artifacts/handoff/t05-root-patch-compatibility-receipt-v9-20261001.json\n?? artifacts/handoff/t05-root-privacy-parity-receipt-v7-20261001.json\n?? artifacts/handoff/t05-root-provider-pytest.py\n?? artifacts/handoff/t05-root-test-surface-receipt-v10-20261001.json\n?? artifacts/handoff/t05-session-memory-provider-20261003-v1.patch\n?? artifacts/sync-t05-20261006/.gitignore\n?? artifacts/sync-t05-20261006/conflicts.py\n?? artifacts/sync-t05-20261006/preservation.py\n?? artifacts/sync-t05-20261006/resolve.py\n?? artifacts/sync-t05-20261006/task-surgery.py\n?? artifacts/t05-acceptance-evidence-2026-09-30.md\n?? artifacts/t05-agent-memory-core-tests.patch\n?? artifacts/t05-agent-memory-core.patch\n?? artifacts/t05-agent-memory-field-shadowing-root-current.patch\n?? artifacts/t05-agent-memory-global-delete/http-identity-test.patch\n?? artifacts/t05-agent-memory-global-delete/http-server-unattributed.patch\n?? artifacts/t05-agent-memory-global-delete/manifest.md\n?? artifacts/t05-agent-memory-global-delete/t05-agent-memory-global-delete.patch\n?? artifacts/t05-agent-memory-global-delete/task-context-privacy-root-overlay.patch\n?? artifacts/t05-agent-memory-source.patch\n?? artifacts/t05-bundle-allowed-sensitivity-fixture.patch\n?? artifacts/t05-cache-state-isolation/manifest.md\n?? artifacts/t05-cache-state-isolation/t05-cache-state-isolation-root-current.patch\n?? artifacts/t05-cache-state-isolation/t05-cache-state-isolation-root.patch\n?? artifacts/t05-candidate-acceptance-receipt-v1.json\n?? artifacts/t05-candidate-acceptance-receipt-v2.json\n?? artifacts/t05-candidate-acceptance-receipt-v3.json\n?? artifacts/t05-candidate-full-acceptance-receipt-v1.json\n?? artifacts/t05-cross-project-tenant-isolation-receipt-v1.json\n?? artifacts/t05-current-evidence-api-2026-10-01.patch\n?? artifacts/t05-current-evidence-api-receipt-2026-10-01.md\n?? artifacts/t05-db-separation-fault-matrix-2026-10-01.md\n?? artifacts/t05-evidence-ids-shape-receipt-v1.json\n?? artifacts/t05-evidence-ids-shape-receipt-v2.json\n?? artifacts/t05-evidence-ids-shape-receipt-v3.json\n?? artifacts/t05-evidence-ids-shape-v1.patch\n?? artifacts/t05-evidence-ids-shape-v2.patch\n?? artifacts/t05-evidence-ids-shape-v3.patch\n?? artifacts/t05-fts-cleanup-focused-selector-run-20261002.json\n?? artifacts/t05-fts-cleanup-rollback-mask-receipt-20261002.json\n?? artifacts/t05-fts-cleanup-verified-selector-receipt-20261002.json\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/__init__.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/__main__.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/accelerators.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/adoption_metrics.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/agent_blackboard.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/agent_consistency.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/agent_context.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/agent_events.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/agent_identity.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/agent_incidents.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/agent_learning.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/agent_memory.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/agent_policy.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/agent_routing.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/agent_tasks.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/agent_verification.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/app.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/artifacts.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/async_jobs.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/autotune.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/background_gpu.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/benchmark.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/browser_bridge.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/budget.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/cache.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/client.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/code_index.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/commands.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/compact.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/config.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/context_ledger.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/conversations.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/dashboard.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/debug_traces.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/defaults.toml\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/delivery.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/deterministic.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/diff_parsers.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/doctor_support.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/embeddings.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/evidence.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/evidence_contract.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/external_tools.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/features.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/frontend_review.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/generator.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/gpu_monitor.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/hardware.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/http_server.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/json_utils.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/learning.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/leases.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/llama_cpp.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/llama_cpp_runtime.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/logging_setup.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/mcp_server.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/memory.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/model_policy.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/model_quality.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/normalizer.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/ollama.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/ollama_subagents.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/performance_probe.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/pipeline.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/planner.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/preprocess.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/priority_gate.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/process_utils.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/projection.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/prompt_contracts.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/rag.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/repo_state.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/repo_tools.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/reranker.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/resilience.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/response_budget.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/response_protocol.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/retrieval.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/router.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/routing.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/scheduler.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/semantic_cache.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/semantic_quality.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/services.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/speculative_lint.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/sqlite_support.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/state_paths.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/supervisor.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/swarm.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/task_context.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/telemetry.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/tiered_ollama.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/token_accounting.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/token_economy.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/token_router.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/tool_agent.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/trace_context.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/treesitter_parser.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/vision_contracts.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/vram_balancer.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/work_orchestrator.py\n?? artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/worktrees.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/__init__.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/__main__.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/accelerators.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/adoption_metrics.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/agent_blackboard.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/agent_consistency.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/agent_context.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/agent_events.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/agent_identity.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/agent_incidents.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/agent_learning.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/agent_memory.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/agent_policy.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/agent_routing.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/agent_tasks.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/agent_verification.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/app.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/artifacts.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/async_jobs.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/autotune.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/background_gpu.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/benchmark.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/browser_bridge.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/budget.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/cache.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/client.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/code_index.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/commands.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/compact.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/config.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/context_ledger.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/conversations.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/dashboard.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/debug_traces.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/defaults.toml\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/delivery.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/deterministic.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/diff_parsers.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/doctor_support.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/embeddings.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/evidence.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/evidence_contract.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/external_tools.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/features.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/frontend_review.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/generator.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/gpu_monitor.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/hardware.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/http_server.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/json_utils.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/learning.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/leases.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/llama_cpp.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/llama_cpp_runtime.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/logging_setup.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/mcp_server.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/memory.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/model_policy.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/model_quality.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/normalizer.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/ollama.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/ollama_subagents.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/performance_probe.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/pipeline.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/planner.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/preprocess.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/priority_gate.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/process_utils.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/projection.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/prompt_contracts.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/rag.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/repo_state.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/repo_tools.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/reranker.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/resilience.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/response_budget.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/response_protocol.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/retrieval.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/router.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/routing.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/scheduler.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/semantic_cache.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/semantic_quality.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/services.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/speculative_lint.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/sqlite_support.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/state_paths.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/supervisor.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/swarm.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/task_context.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/telemetry.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/tiered_ollama.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/token_accounting.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/token_economy.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/token_router.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/tool_agent.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/trace_context.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/treesitter_parser.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/vision_contracts.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/vram_balancer.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/work_orchestrator.py\n?? artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/worktrees.py\n?? artifacts/t05-identity-shared-memory-continuation-2026-10-01.md\n?? artifacts/t05-memory-acceptance-tests-v5.patch\n?? artifacts/t05-memory-acceptance-v4.patch\n?? artifacts/t05-memory-adoption-acceptance-contract-2026-10-01.md\n?? artifacts/t05-memory-cursor-callsite-handoff.patch\n?? artifacts/t05-memory-cursor-integration-receipt-2026-10-01.md\n?? artifacts/t05-memory-delete-fts-cleanup-20261002.patch\n?? artifacts/t05-memory-delete-identity-candidate-receipt-v10.json\n?? artifacts/t05-memory-policy-global-tenant-root.patch\n?? artifacts/t05-memory-policy-missing-root-tests-v2.patch\n?? artifacts/t05-memory-policy-missing-root-tests-v3.patch\n?? artifacts/t05-memory-policy-missing-root-tests-v4.patch\n?? artifacts/t05-memory-policy-missing-root-tests.patch\n?? artifacts/t05-memory-policy-root-correction.patch\n?? artifacts/t05-memory-write-rollback-test.patch\n?? artifacts/t05-own-memory-acceptance-checkpoint-v16.json\n?? artifacts/t05-own-memory-acceptance-checkpoint-v17.json\n?? artifacts/t05-own-memory-acceptance-checkpoint-v18.json\n?? artifacts/t05-own-memory-acceptance-checkpoint-v19.json\n?? artifacts/t05-own-memory-acceptance-checkpoint-v20.json\n?? artifacts/t05-own-memory-acceptance-checkpoint-v21.json\n?? artifacts/t05-own-memory-acceptance-checkpoint-v22.json\n?? artifacts/t05-own-memory-acceptance-checkpoint-v23.json\n?? artifacts/t05-own-memory-acceptance-checkpoint-v24.json\n?? artifacts/t05-own-memory-acceptance-checkpoint-v25.json\n?? artifacts/t05-own-memory-acceptance-checkpoint-v26.json\n?? artifacts/t05-own-memory-acceptance-checkpoint-v27.json\n?? artifacts/t05-own-memory-acceptance-checkpoint-v28.json\n?? artifacts/t05-own-memory-acceptance-checkpoint-v29.json\n?? artifacts/t05-own-memory-acceptance-checkpoint-v30.json\n?? artifacts/t05-owned-handoff-2026-10-01.md\n?? artifacts/t05-owned-handoff-2026-10-01.patch\n?? artifacts/t05-root-current-agent-state-migration-v1.json\n?? artifacts/t05-root-current-agent-state-migration-v1.patch\n?? artifacts/t05-root-current-cache-worker-root-import.patch\n?? artifacts/t05-root-current-db-fault-tests.patch\n?? artifacts/t05-root-current-delete-artifact-cleanup.patch\n?? artifacts/t05-root-current-fts-fail-closed.patch\n?? artifacts/t05-root-current-fts-fault-fixture-fix.patch\n?? artifacts/t05-root-current-handoff-20261002.json\n?? artifacts/t05-root-current-http-memory-get-identity-v1.patch\n?? artifacts/t05-root-current-http-memory-identity-test-v3.patch\n?? artifacts/t05-root-current-http-memory-identity-test-v4.patch\n?? artifacts/t05-root-current-http-memory-identity-test-v5.patch\n?? artifacts/t05-root-current-http-memory-identity-test-v6.patch\n?? artifacts/t05-root-current-http-memory-identity-test-v7.patch\n?? artifacts/t05-root-current-http-memory-identity-test.patch\n?? artifacts/t05-root-current-http-memory-identity-v2.patch\n?? artifacts/t05-root-current-http-memory-identity-v3.patch\n?? artifacts/t05-root-current-http-memory-identity-v4.patch\n?? artifacts/t05-root-current-manifest-v2.json\n?? artifacts/t05-root-current-memory-context-tenant-isolation-v1.json\n?? artifacts/t05-root-current-memory-context-tenant-isolation-v1.patch\n?? artifacts/t05-root-current-memory-delete-identity-v1.json\n?? artifacts/t05-root-current-memory-delete-identity-v1.patch\n?? artifacts/t05-root-current-memory-delete-identity-v11.json\n?? artifacts/t05-root-current-memory-delete-identity-v3.patch\n?? artifacts/t05-root-current-memory-delete-identity-v4.patch\n?? artifacts/t05-root-current-memory-global-delete-tenant-agnostic-v1.patch\n?? artifacts/t05-root-current-memory-patch-receipt-v1.json\n?? artifacts/t05-root-current-memory-patch-receipt-v2.json\n?? artifacts/t05-root-current-memory-patch-receipt-v3.json\n?? artifacts/t05-root-current-memory-transport-identity-v1.json\n?? artifacts/t05-root-current-memory-transport-identity-v1.patch\n?? artifacts/t05-root-current-memory-v1.patch\n?? artifacts/t05-root-current-migration-fault-tests.patch\n?? artifacts/t05-root-current-privacy-provenance-v1.patch\n?? artifacts/t05-root-current-scoped-delete-t08-test-fix.patch\n?? artifacts/t05-root-current-scoped-tenant-delete.patch\n?? artifacts/t05-root-current-stepback-audit-2026-10-01.md\n?? artifacts/t05-root-current-workspace-memo-cas.patch\n?? artifacts/t05-root-event-and-scope-fix-receipt-2026-10-01.md\n?? artifacts/t05-root-event-and-scope-fix.patch\n?? artifacts/t05-root-identity-delete-acceptance-2026-10-01.md\n?? artifacts/t05-root-identity-shared-memory-receipt-2026-10-01.md\n?? artifacts/t05-root-integration-static-check-20261002.json\n?? artifacts/t05-root-memory-context-sensitive-filter.patch\n?? artifacts/t05-root-memory-identity-minimal.patch\n?? artifacts/t05-root-memory-persisted-privacy-assertions.patch\n?? artifacts/t05-root-scoped-delete-missing-tenant-test.patch\n?? artifacts/t05-root-stale-stream-test-syntax-repair.patch\n?? artifacts/t05-run-root-overlay-acceptance.py\n?? artifacts/t05-scoped-handoff-2026-09-30.md\n?? artifacts/t05-source-root-provenance-sanitizer.patch\n?? artifacts/t05-source-root-redaction-boundary-test.patch\n?? artifacts/t05-t07-fixture-one-line-2026-10-01.patch\n?? artifacts/t05-t08-reconciliation/manifest.md\n?? artifacts/t05-t08-reconciliation/t05-t08-reconciled-snapshot-v2.patch\n?? artifacts/t05-tenant-context-strictness-receipt-20261002.json\n?? artifacts/t05-tenant-context-strictness-root.patch\n",
+  "original_path_final_hashes": [
+    {
+      "path": "src/local_ai_hub/agent_events.py",
+      "original_sha256": "84edb06dfd22fa900db09474efcf0689393e1a9fb76c0e0d636bfd5826b63ac2",
+      "current_sha256": "ea49952a7e7faffdabb2b6a9bebb08806ed7eff07f76a5d2834ae0952b14ebdd",
+      "tracked_now": true
+    },
+    {
+      "path": "src/local_ai_hub/agent_memory.py",
+      "original_sha256": "3c124a00d2b2f14847107b2e1abde1771f509c695ae9d1281cd3bcfc5792467a",
+      "current_sha256": "ba71019799e95f01c0a2d175616ee7ecb837086c2837acd8be62aaaed3e1e9e5",
+      "tracked_now": true
+    },
+    {
+      "path": "src/local_ai_hub/agent_tasks.py",
+      "original_sha256": "c432d07fb1d3773a79fd3b723509f0a771a82d990c832347b74b5a0b73bd245f",
+      "current_sha256": "cca7826f5dd0f9526b276df4eb9032710b518c215c42bb8cceda862b7ab9075d",
+      "tracked_now": true
+    },
+    {
+      "path": "src/local_ai_hub/evidence.py",
+      "original_sha256": "8050048407befae57fb13159da11e98a4e1d48e418652c6e817dd465957fe033",
+      "current_sha256": "8050048407befae57fb13159da11e98a4e1d48e418652c6e817dd465957fe033",
+      "tracked_now": true
+    },
+    {
+      "path": "src/local_ai_hub/http_server.py",
+      "original_sha256": "f59d500c43559fc82da9ca72d6477894a9cded0b598ac2f860cb464b792a897f",
+      "current_sha256": "8207d43a8bdf0db904c27d0dc8b42cf7d41e0f10be9674833bf17942da9d3766",
+      "tracked_now": true
+    },
+    {
+      "path": "src/local_ai_hub/memory.py",
+      "original_sha256": "58211a3a02ea090591c1cac67efb61c8111f5d40a06a17be5a2afc618652e517",
+      "current_sha256": "58211a3a02ea090591c1cac67efb61c8111f5d40a06a17be5a2afc618652e517",
+      "tracked_now": true
+    },
+    {
+      "path": "tests/test_agent_memory.py",
+      "original_sha256": "f5f056c9add73ddf4ff45d800f38de44d9491f2d8cf71ef39cb68c515c29260b",
+      "current_sha256": "392a01aef7817212c787608f387cfa8b008c30fb275f6e6e89cf248a1e7c3d0d",
+      "tracked_now": true
+    },
+    {
+      "path": "tests/test_agent_state_operations.py",
+      "original_sha256": "d53300dc9770100050498cd7f68b623ab6c453469cf2cd2fcf70500fbbaaaf24",
+      "current_sha256": "84482296cc1dd2693b17b8b826d3d4f09a26ff8fb1330bb8e8c2e83b2dc8f29f",
+      "tracked_now": true
+    },
+    {
+      "path": "tests/test_agent_state_transport.py",
+      "original_sha256": "83a61b134d31ca53677023342bce165a1bd3461c43aac71907dfdb45045096be",
+      "current_sha256": "a5e7c22991e52943a82fa42782af241be0d004e1ea05254014e488e3c9e8b414",
+      "tracked_now": true
+    },
+    {
+      "path": "tests/test_audit_round2_enhancements.py",
+      "original_sha256": "2225772e6e7a9275ffaf20b608af7f78f1576aed691a111803d5d76ea22217bb",
+      "current_sha256": "3217d29855dc3ec770984c54b1beb64454d4683dc9f3f17f5e616f583a754031",
+      "tracked_now": true
+    },
+    {
+      "path": "tests/test_client_transport.py",
+      "original_sha256": "1881abcd14d5cb312cf34f0effa19337c2e9f97852068fe85da8be77086df045",
+      "current_sha256": "7fa1e4534fb7ff6164a26d98f75ff911943752be2b2cf3b5ea5fa90bb9d76aa4",
+      "tracked_now": true
+    },
+    {
+      "path": "tests/test_debug_trace_request_summary.py",
+      "original_sha256": "206ea71255efdc210345ce08ee6abd207cd01e50e98a846835c45d049e991b93",
+      "current_sha256": "206ea71255efdc210345ce08ee6abd207cd01e50e98a846835c45d049e991b93",
+      "tracked_now": true
+    },
+    {
+      "path": "tests/test_evidence_contract.py",
+      "original_sha256": "50794a86a3381a8ee0504de466a7a69fb1c77ab0b305a3280cd1f308263a14b0",
+      "current_sha256": "50794a86a3381a8ee0504de466a7a69fb1c77ab0b305a3280cd1f308263a14b0",
+      "tracked_now": true
+    },
+    {
+      "path": "tests/test_identity_contracts.py",
+      "original_sha256": "0c6b5d007f4f049f9de36004a216cbc598f9cdf9350a7dca6171e0f4e0d8d211",
+      "current_sha256": "4645ffa2453f78f7e9aa5bb514b31ec18317d7a58762a1c97dea1fe3da0ed346",
+      "tracked_now": true
+    },
+    {
+      "path": "tests/test_production_readiness_repairs.py",
+      "original_sha256": "fbb12f229170a000b42258a3b630eb16b44b1a7edd0f261ed4c58d6b05c5379a",
+      "current_sha256": "7002e40acc0905168c14b3d617c8f64a09b8a0496a1482c85d4912610d69f30b",
+      "tracked_now": true
+    },
+    {
+      "path": "tests/test_t05_cache_state_isolation.py",
+      "original_sha256": "9adbfa6ebadf31f382e5c62f90ffe29fb6b03eaac07580041c151383f1ce977e",
+      "current_sha256": "9adbfa6ebadf31f382e5c62f90ffe29fb6b03eaac07580041c151383f1ce977e",
+      "tracked_now": true
+    },
+    {
+      "path": "artifacts/handoff/t05-d1-d4-receipt-v1-20261001.json",
+      "original_sha256": "658494d5800e46bbef84b235d33d2617263db744a02cf7b63ef8162df3154f44",
+      "current_sha256": "658494d5800e46bbef84b235d33d2617263db744a02cf7b63ef8162df3154f44",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-d1-d4-receipt-v2-20261001.json",
+      "original_sha256": "d4c27258bd32cde988ba38ab4edb47d43612aa864f0ad0a7f55319087aaa0c95",
+      "current_sha256": "d4c27258bd32cde988ba38ab4edb47d43612aa864f0ad0a7f55319087aaa0c95",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-d1-d4-receipt-v3-20261001.json",
+      "original_sha256": "cf2196cfa23e5892fa39e3e7a27f684671b0c774085bd103dc414dbd7ac5229f",
+      "current_sha256": "cf2196cfa23e5892fa39e3e7a27f684671b0c774085bd103dc414dbd7ac5229f",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-d1-d4-receipt-v4-20261001.json",
+      "original_sha256": "f660530fec1e2c83ff9223e1f4e5a2aa2900d03bbe3bbc6206ea6eb65f661ddf",
+      "current_sha256": "f660530fec1e2c83ff9223e1f4e5a2aa2900d03bbe3bbc6206ea6eb65f661ddf",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-d1-d4-receipt-v5-20261001.json",
+      "original_sha256": "08a0786696aeca87e046d841182b02b5af85be9fec1ef9c5636a14d66d417f2b",
+      "current_sha256": "08a0786696aeca87e046d841182b02b5af85be9fec1ef9c5636a14d66d417f2b",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-d1-d4-receipt-v8-20261001.json",
+      "original_sha256": "478efaf5d79f04fe89b1ade0f269cb09ed25d56f2d43567f9001f711dc255d29",
+      "current_sha256": "478efaf5d79f04fe89b1ade0f269cb09ed25d56f2d43567f9001f711dc255d29",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-d1-d4-tests-v1-20261001.patch",
+      "original_sha256": "100356f04f5cc46361dc7e42519de0a92d38d09a49f4fbf8f6441a7aeb7d9df0",
+      "current_sha256": "100356f04f5cc46361dc7e42519de0a92d38d09a49f4fbf8f6441a7aeb7d9df0",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-end-to-end-acceptance-receipt-20261003-v3.json",
+      "original_sha256": "9979c00a59d10fbef39ffe5d4c07a9e848e851f0c6ed438edc3e7a45bc6f28ea",
+      "current_sha256": "9979c00a59d10fbef39ffe5d4c07a9e848e851f0c6ed438edc3e7a45bc6f28ea",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-focused-test-run-receipt-20261003-v1.json",
+      "original_sha256": "94a511da1b66c856955d4d7698a4d44d8d38c8f28411ba921de2d38f7d081f21",
+      "current_sha256": "94a511da1b66c856955d4d7698a4d44d8d38c8f28411ba921de2d38f7d081f21",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-get-global-privacy-receipt-20261003-v1.json",
+      "original_sha256": "faee6d5f6a15814ffa19c459f360b31386f9dad4fbd85db54920cb80e3e9b80a",
+      "current_sha256": "faee6d5f6a15814ffa19c459f360b31386f9dad4fbd85db54920cb80e3e9b80a",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-get-global-privacy-root-current-20261003/base/src/local_ai_hub/agent_memory.py",
+      "original_sha256": "17c0b0458d3c541d8dd57d8f5dda46607e71437a444e98ce35bda678070aaa78",
+      "current_sha256": "17c0b0458d3c541d8dd57d8f5dda46607e71437a444e98ce35bda678070aaa78",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-get-global-privacy-root-current-20261003/base/tests/test_agent_memory.py",
+      "original_sha256": "292df7c8359e211430b85cbad5eeff2e201da10f7be58a92f455cfe6f8a1d3c5",
+      "current_sha256": "292df7c8359e211430b85cbad5eeff2e201da10f7be58a92f455cfe6f8a1d3c5",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-get-global-privacy-root-current-20261003/post/src/local_ai_hub/agent_memory.py",
+      "original_sha256": "aa0b120f80c23cf64d53e9e7842ca58a8f7cee522d303f108f7a619fc0a63233",
+      "current_sha256": "aa0b120f80c23cf64d53e9e7842ca58a8f7cee522d303f108f7a619fc0a63233",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-get-global-privacy-root-current-20261003/post/tests/test_agent_memory.py",
+      "original_sha256": "26abc1c60be3d1e3eb90ec38de046f54689da9d2e47b9866f9c51985068b9cf8",
+      "current_sha256": "26abc1c60be3d1e3eb90ec38de046f54689da9d2e47b9866f9c51985068b9cf8",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-http-memory-identity-receipt-v1-20261001.json",
+      "original_sha256": "98ad2623ada6ee6682682cd4cfcee1ac3043fed6dc8661832410c09660d96980",
+      "current_sha256": "98ad2623ada6ee6682682cd4cfcee1ac3043fed6dc8661832410c09660d96980",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-http-memory-identity-receipt-v2-20261001.json",
+      "original_sha256": "2b190505315d725861d3036e722d90f0b4d3bcc21006701e7e36c114cc5c04ec",
+      "current_sha256": "2b190505315d725861d3036e722d90f0b4d3bcc21006701e7e36c114cc5c04ec",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-identity-shared-memory-e2e-receipt-20261003-v1.json",
+      "original_sha256": "b8821c0f89accce1dddfe93647ad26ee444cfae5b18d0a790b227974647cae44",
+      "current_sha256": "b8821c0f89accce1dddfe93647ad26ee444cfae5b18d0a790b227974647cae44",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-new-memory-selectors-fallback-20261003-v1.json",
+      "original_sha256": "5c1ef322b2ed506363fc4ee29569b558759a33ab94c78f6fd0fb8e723f9f7d4b",
+      "current_sha256": "5c1ef322b2ed506363fc4ee29569b558759a33ab94c78f6fd0fb8e723f9f7d4b",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-public-http-identity-receipt-v1-20261001.json",
+      "original_sha256": "9bd737258584be9a7d1699750309f096655f60397f03e50796a217dbf0d4f60e",
+      "current_sha256": "9bd737258584be9a7d1699750309f096655f60397f03e50796a217dbf0d4f60e",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-acceptance-receipt-v7-20261001.json",
+      "original_sha256": "9df4a5e651786240229a29e48a9c8230d2fa956e7411586700ca21c9c18d1bf9",
+      "current_sha256": "9df4a5e651786240229a29e48a9c8230d2fa956e7411586700ca21c9c18d1bf9",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-apply-check-receipt-20261003-v1.json",
+      "original_sha256": "fd3375d6c2a8e1c5a7cf7401b9db8a26af61d230172abee9c17508b6361f616c",
+      "current_sha256": "fd3375d6c2a8e1c5a7cf7401b9db8a26af61d230172abee9c17508b6361f616c",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-cache-migration-receipt-v6-20261001.json",
+      "original_sha256": "ffd8907e90ff9d30d5cb15fbeccd7a000042fc038ce4e77526192e0181728d45",
+      "current_sha256": "ffd8907e90ff9d30d5cb15fbeccd7a000042fc038ce4e77526192e0181728d45",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-current-acceptance-receipt-20261003-v2.json",
+      "original_sha256": "5b8d8efa31daca9025ed1bb143b3cc6bf3b6f4c70d7082cb5cd4abb836c6ee81",
+      "current_sha256": "5b8d8efa31daca9025ed1bb143b3cc6bf3b6f4c70d7082cb5cd4abb836c6ee81",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-current-base/empty-test-file",
+      "original_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "current_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-current-base/src/local_ai_hub/agent_memory.py",
+      "original_sha256": "37de30e843f5e523183a0e1c4824b7d89147a866dc2833807e83a69732842a6e",
+      "current_sha256": "37de30e843f5e523183a0e1c4824b7d89147a866dc2833807e83a69732842a6e",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-current-base/src/local_ai_hub/http_server.py",
+      "original_sha256": "7ce0e3d38979220917443cbf1fc24ffacca8254acd9e878e456fbb97c7a936ee",
+      "current_sha256": "7ce0e3d38979220917443cbf1fc24ffacca8254acd9e878e456fbb97c7a936ee",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-current-base/src/local_ai_hub/memory.py",
+      "original_sha256": "64afe7891babc43078cc9873bf9caca392d855ae9173f6dd3084b57a401a9330",
+      "current_sha256": "64afe7891babc43078cc9873bf9caca392d855ae9173f6dd3084b57a401a9330",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-current-combined-20261003/base/src/local_ai_hub/agent_memory.py",
+      "original_sha256": "17c0b0458d3c541d8dd57d8f5dda46607e71437a444e98ce35bda678070aaa78",
+      "current_sha256": "17c0b0458d3c541d8dd57d8f5dda46607e71437a444e98ce35bda678070aaa78",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-current-combined-20261003/base/src/local_ai_hub/http_server.py",
+      "original_sha256": "7ce0e3d38979220917443cbf1fc24ffacca8254acd9e878e456fbb97c7a936ee",
+      "current_sha256": "7ce0e3d38979220917443cbf1fc24ffacca8254acd9e878e456fbb97c7a936ee",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-current-combined-20261003/base/src/local_ai_hub/memory.py",
+      "original_sha256": "64afe7891babc43078cc9873bf9caca392d855ae9173f6dd3084b57a401a9330",
+      "current_sha256": "64afe7891babc43078cc9873bf9caca392d855ae9173f6dd3084b57a401a9330",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-current-combined-20261003/base/tests/test_agent_memory.py",
+      "original_sha256": "292df7c8359e211430b85cbad5eeff2e201da10f7be58a92f455cfe6f8a1d3c5",
+      "current_sha256": "292df7c8359e211430b85cbad5eeff2e201da10f7be58a92f455cfe6f8a1d3c5",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-current-combined-20261003/base/tests/test_agent_memory_http_identity.py",
+      "original_sha256": "fb721e8caf6e2394a73ded286d6edaa64de1bd891de915bba569521b0269e321",
+      "current_sha256": "fb721e8caf6e2394a73ded286d6edaa64de1bd891de915bba569521b0269e321",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-current-combined-20261003/post/src/local_ai_hub/agent_memory.py",
+      "original_sha256": "b84b3f1f8521c46308c3b70503c53417ff7df2291a3efee6cb7557ff2e3a7a4f",
+      "current_sha256": "b84b3f1f8521c46308c3b70503c53417ff7df2291a3efee6cb7557ff2e3a7a4f",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-current-combined-20261003/post/src/local_ai_hub/http_server.py",
+      "original_sha256": "07549f73ce2f3914d6cb57e248279c23787fc335d093eff7572839e78dfd251b",
+      "current_sha256": "07549f73ce2f3914d6cb57e248279c23787fc335d093eff7572839e78dfd251b",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-current-combined-20261003/post/src/local_ai_hub/memory.py",
+      "original_sha256": "64afe7891babc43078cc9873bf9caca392d855ae9173f6dd3084b57a401a9330",
+      "current_sha256": "64afe7891babc43078cc9873bf9caca392d855ae9173f6dd3084b57a401a9330",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-current-combined-20261003/post/tests/test_agent_memory.py",
+      "original_sha256": "d9fd662e0b473aeb62dbaaa536b095de810dabb45ae23168fe85132d7fb10439",
+      "current_sha256": "d9fd662e0b473aeb62dbaaa536b095de810dabb45ae23168fe85132d7fb10439",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-current-combined-20261003/post/tests/test_agent_memory_http_identity.py",
+      "original_sha256": "00b4b9dce53f45530b3f6851af39d450678fefcdabe2ded28728436bc582fe42",
+      "current_sha256": "00b4b9dce53f45530b3f6851af39d450678fefcdabe2ded28728436bc582fe42",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-current-four-file-comparison-20261004-v1.patch",
+      "original_sha256": "f2295d618478ecadb6bd13097b8386375897dea4445c0e4232cb535844b9c828",
+      "current_sha256": "f2295d618478ecadb6bd13097b8386375897dea4445c0e4232cb535844b9c828",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-current-four-file-comparison-20261004-v2.patch",
+      "original_sha256": "ad119c682e40b74a9ce851743b0a348916dde605487c28c29c8115e94ab425d0",
+      "current_sha256": "ad119c682e40b74a9ce851743b0a348916dde605487c28c29c8115e94ab425d0",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-current-get-global-privacy-20261003-v1.patch",
+      "original_sha256": "be97362a199e49069fb77eb6c7d077d3efc02c4f066d259d1a69106d78d88ff3",
+      "current_sha256": "be97362a199e49069fb77eb6c7d077d3efc02c4f066d259d1a69106d78d88ff3",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-current-identity-shared-memory-20261003-v1.patch",
+      "original_sha256": "6580b9e9ef45b24d8cd2389ec8ad3de4d27fe7c123b6126ccc69bff8811252be",
+      "current_sha256": "6580b9e9ef45b24d8cd2389ec8ad3de4d27fe7c123b6126ccc69bff8811252be",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-current-integration-20261004-v2.receipt.md",
+      "original_sha256": "4f9cdc330e56abc1c518ac6b2bdcfacad7d16b321ea47410a02f6dadf183f9a9",
+      "current_sha256": "4f9cdc330e56abc1c518ac6b2bdcfacad7d16b321ea47410a02f6dadf183f9a9",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-current-integration-receipt-20261003-v1.json",
+      "original_sha256": "1ff2e7ee68b83b023c4c854957b5c4a493b9bd4fb0b6f5ffc102ccf9330237a4",
+      "current_sha256": "1ff2e7ee68b83b023c4c854957b5c4a493b9bd4fb0b6f5ffc102ccf9330237a4",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-current-memory-consumer-20261003-v1.patch",
+      "original_sha256": "a9e5b82415d6cd483d7a50140ae2da99065abf65098bdaa9652e875d3d7926fc",
+      "current_sha256": "a9e5b82415d6cd483d7a50140ae2da99065abf65098bdaa9652e875d3d7926fc",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-current-memory-lifecycle-20261003-v1.patch",
+      "original_sha256": "bee154f33e3a839964b7d1eaefe0a67feef7563c6456e4801df0a708dccc6a2f",
+      "current_sha256": "bee154f33e3a839964b7d1eaefe0a67feef7563c6456e4801df0a708dccc6a2f",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-current-memory-lifecycle-20261003-v2.patch",
+      "original_sha256": "ab5ef8074dc46e9465055c41ee1f65db2a75c828de9addb5a7d8e4ef505d71db",
+      "current_sha256": "ab5ef8074dc46e9465055c41ee1f65db2a75c828de9addb5a7d8e4ef505d71db",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-current-memory-lifecycle-20261003-v3.patch",
+      "original_sha256": "21a247351cae6aca22d4b59cbbf15089e09b95508654fd2563a558ad917bd31b",
+      "current_sha256": "21a247351cae6aca22d4b59cbbf15089e09b95508654fd2563a558ad917bd31b",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-current-memory-lifecycle-receipt-20261003-v1.json",
+      "original_sha256": "b5969b9a829644d3f30ae7c5246418cdbd947e021f90371981f0130285f564da",
+      "current_sha256": "b5969b9a829644d3f30ae7c5246418cdbd947e021f90371981f0130285f564da",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-current-overlay/src/local_ai_hub/agent_memory.py",
+      "original_sha256": "86965001fa13738131d22be02afa69464f2e741289d98ae2bf171950d7fcb21e",
+      "current_sha256": "86965001fa13738131d22be02afa69464f2e741289d98ae2bf171950d7fcb21e",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-current-overlay/src/local_ai_hub/http_server.py",
+      "original_sha256": "86c7a95133023f0feb93b99ffba5eafe3105b89afc8d3235e0e72060ed3f64a8",
+      "current_sha256": "86c7a95133023f0feb93b99ffba5eafe3105b89afc8d3235e0e72060ed3f64a8",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-current-overlay/src/local_ai_hub/memory.py",
+      "original_sha256": "58211a3a02ea090591c1cac67efb61c8111f5d40a06a17be5a2afc618652e517",
+      "current_sha256": "58211a3a02ea090591c1cac67efb61c8111f5d40a06a17be5a2afc618652e517",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-current-overlay/tests/test_agent_memory_http_identity.py",
+      "original_sha256": "6bfb5673f65dcc54531d7ce29efd984fffe497119aab9b23f0901ac7216bfe8a",
+      "current_sha256": "6bfb5673f65dcc54531d7ce29efd984fffe497119aab9b23f0901ac7216bfe8a",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-current-scoped-delete-tenant-test-v1.patch",
+      "original_sha256": "fda01763ecd529a513c93718bf22fbc9012afe4b7464212cfb73f5e5725a5766",
+      "current_sha256": "fda01763ecd529a513c93718bf22fbc9012afe4b7464212cfb73f5e5725a5766",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-current-semantic-disposition-20261004.md",
+      "original_sha256": "aa6b0315ccd76000fdba8f993a73b65e2c6779ee5cb63da8a4edfd8887b2304d",
+      "current_sha256": "aa6b0315ccd76000fdba8f993a73b65e2c6779ee5cb63da8a4edfd8887b2304d",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-identity-memory-receipt-v8-20261001.json",
+      "original_sha256": "cfa652f98efe26481237298c85424954ca881eb4016cc981cee2be065ef09a5f",
+      "current_sha256": "cfa652f98efe26481237298c85424954ca881eb4016cc981cee2be065ef09a5f",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-memory-identity-test-fixes-20261004.patch",
+      "original_sha256": "ee58a4dd3fb0e3fda7bff2052abe17b03e4caac74332e2fedbef6aa6d7ccf586",
+      "current_sha256": "ee58a4dd3fb0e3fda7bff2052abe17b03e4caac74332e2fedbef6aa6d7ccf586",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-patch-compatibility-receipt-v9-20261001.json",
+      "original_sha256": "93f933fdca50453ee9a6fc1c72aaa44c86f08c2f7a28cd7b7518e142d92e8b5a",
+      "current_sha256": "93f933fdca50453ee9a6fc1c72aaa44c86f08c2f7a28cd7b7518e142d92e8b5a",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-privacy-parity-receipt-v7-20261001.json",
+      "original_sha256": "1c36df90b9dd484ef342533bbc480326428be6de3738e65b663b4ad7e3b8368f",
+      "current_sha256": "1c36df90b9dd484ef342533bbc480326428be6de3738e65b663b4ad7e3b8368f",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-provider-pytest.py",
+      "original_sha256": "f9205ed4884ac70d523d99ddc90a2bcedb2be63a0d5b392f8d61d915c1f6003e",
+      "current_sha256": "f9205ed4884ac70d523d99ddc90a2bcedb2be63a0d5b392f8d61d915c1f6003e",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-root-test-surface-receipt-v10-20261001.json",
+      "original_sha256": "a389341c116b6c475734b9980cfeda9b97993190274679098027397a334adb4d",
+      "current_sha256": "a389341c116b6c475734b9980cfeda9b97993190274679098027397a334adb4d",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/handoff/t05-session-memory-provider-20261003-v1.patch",
+      "original_sha256": "1c29180e144f932b9b5f24211edf818bba18db8e568b3022c0048d47257261fd",
+      "current_sha256": "1c29180e144f932b9b5f24211edf818bba18db8e568b3022c0048d47257261fd",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-acceptance-evidence-2026-09-30.md",
+      "original_sha256": "5352fd86ed912bdf735a1a917d6b98d2e9e0deb4fdf3b010feae0486c7161530",
+      "current_sha256": "5352fd86ed912bdf735a1a917d6b98d2e9e0deb4fdf3b010feae0486c7161530",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-agent-memory-core-tests.patch",
+      "original_sha256": "ef1afa82c48c630be0aaae8379e7a1c8c23c8868a7b712013328c08da04df513",
+      "current_sha256": "ef1afa82c48c630be0aaae8379e7a1c8c23c8868a7b712013328c08da04df513",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-agent-memory-core.patch",
+      "original_sha256": "0536e218c263567f9c1b1ee73d2c148959fe9776e013b61eecce8755d810c8ad",
+      "current_sha256": "0536e218c263567f9c1b1ee73d2c148959fe9776e013b61eecce8755d810c8ad",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-agent-memory-field-shadowing-root-current.patch",
+      "original_sha256": "2018dd3195dd3b1cb0e103c80e6c4530cef34839e87e5e3dc092bab9985919f7",
+      "current_sha256": "2018dd3195dd3b1cb0e103c80e6c4530cef34839e87e5e3dc092bab9985919f7",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-agent-memory-global-delete/http-identity-test.patch",
+      "original_sha256": "7d05599824e076bea029a79b03ba4f6d6cb63024a0a2e68d915b508927c71070",
+      "current_sha256": "7d05599824e076bea029a79b03ba4f6d6cb63024a0a2e68d915b508927c71070",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-agent-memory-global-delete/http-server-unattributed.patch",
+      "original_sha256": "2bfa4695bbf6701d2889844867d09c06195b7d00030c7c0f0512d35670ea3fb4",
+      "current_sha256": "2bfa4695bbf6701d2889844867d09c06195b7d00030c7c0f0512d35670ea3fb4",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-agent-memory-global-delete/manifest.md",
+      "original_sha256": "77994dd3aaaa58abbdf7bfc0388052c84cb02e2cc91298540d7fe7aa52ae4b57",
+      "current_sha256": "77994dd3aaaa58abbdf7bfc0388052c84cb02e2cc91298540d7fe7aa52ae4b57",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-agent-memory-global-delete/t05-agent-memory-global-delete.patch",
+      "original_sha256": "70f1cb3b1fe58dade25892a1afdeca5387a7f61636d15139ddee843d3f23ceeb",
+      "current_sha256": "70f1cb3b1fe58dade25892a1afdeca5387a7f61636d15139ddee843d3f23ceeb",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-agent-memory-global-delete/task-context-privacy-root-overlay.patch",
+      "original_sha256": "6822898ee3b5507bea971628302920ed45586befb8df12972fe3cb643c51395e",
+      "current_sha256": "6822898ee3b5507bea971628302920ed45586befb8df12972fe3cb643c51395e",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-agent-memory-source.patch",
+      "original_sha256": "b00679bc8a89b8ecff99cb622216e7bc2213de9062a90a171d7701b8bbf7947e",
+      "current_sha256": "b00679bc8a89b8ecff99cb622216e7bc2213de9062a90a171d7701b8bbf7947e",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-bundle-allowed-sensitivity-fixture.patch",
+      "original_sha256": "a97b91f6466b5fd487e0bffe681bd8820c44318bb39a70c3d13f0109a28c1abe",
+      "current_sha256": "a97b91f6466b5fd487e0bffe681bd8820c44318bb39a70c3d13f0109a28c1abe",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-cache-state-isolation/manifest.md",
+      "original_sha256": "09b306a2f27bf6f45b5e9a887e0b215888b33a98fcfa45adb8ea6a3bd8726a3b",
+      "current_sha256": "09b306a2f27bf6f45b5e9a887e0b215888b33a98fcfa45adb8ea6a3bd8726a3b",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-cache-state-isolation/t05-cache-state-isolation-root-current.patch",
+      "original_sha256": "9ce0fafac66f6cd96528e26b2c7ef9a88294a3cb34485fcbf83fe86da0193949",
+      "current_sha256": "9ce0fafac66f6cd96528e26b2c7ef9a88294a3cb34485fcbf83fe86da0193949",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-cache-state-isolation/t05-cache-state-isolation-root.patch",
+      "original_sha256": "890c8499f14282bec3f5ef3628fc42b31831070f91c2dd7a07e6ddebd781ea4b",
+      "current_sha256": "890c8499f14282bec3f5ef3628fc42b31831070f91c2dd7a07e6ddebd781ea4b",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-candidate-acceptance-receipt-v1.json",
+      "original_sha256": "2126eb0928a33f62e06c8efa712bf0e94be1d39b4f80067b8a99245254d74dc3",
+      "current_sha256": "2126eb0928a33f62e06c8efa712bf0e94be1d39b4f80067b8a99245254d74dc3",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-candidate-acceptance-receipt-v2.json",
+      "original_sha256": "ec45ae61403afadf344f447bc0315360db0c3f8457fd8ecd825107890073ebaa",
+      "current_sha256": "ec45ae61403afadf344f447bc0315360db0c3f8457fd8ecd825107890073ebaa",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-candidate-acceptance-receipt-v3.json",
+      "original_sha256": "e03725b1b9459c4a824080318d88b13e5ca57eb96423477c7ba31b0f41a1fc5e",
+      "current_sha256": "e03725b1b9459c4a824080318d88b13e5ca57eb96423477c7ba31b0f41a1fc5e",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-candidate-full-acceptance-receipt-v1.json",
+      "original_sha256": "78fa10f100f43b061d7984029ea0724bd18ff4fec946a77717b2259b441b9b34",
+      "current_sha256": "78fa10f100f43b061d7984029ea0724bd18ff4fec946a77717b2259b441b9b34",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-cross-project-tenant-isolation-receipt-v1.json",
+      "original_sha256": "0097e8ae1058cae340f65dd23dab40aace6165968208c293dad019cb018bb472",
+      "current_sha256": "0097e8ae1058cae340f65dd23dab40aace6165968208c293dad019cb018bb472",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-current-evidence-api-2026-10-01.patch",
+      "original_sha256": "be0ab70308873fa8cae337dffb133db212810b37fb020d7acf2ac2ada86807e6",
+      "current_sha256": "be0ab70308873fa8cae337dffb133db212810b37fb020d7acf2ac2ada86807e6",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-current-evidence-api-receipt-2026-10-01.md",
+      "original_sha256": "74d8458d188567d84b295d38ab51cb764e27c341241db6faa9725f626aa75390",
+      "current_sha256": "74d8458d188567d84b295d38ab51cb764e27c341241db6faa9725f626aa75390",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-db-separation-fault-matrix-2026-10-01.md",
+      "original_sha256": "a204e3536469b0ff2a6ca010dc7b6695aeaf8208b0aca059a98cab795f975cfd",
+      "current_sha256": "a204e3536469b0ff2a6ca010dc7b6695aeaf8208b0aca059a98cab795f975cfd",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-evidence-ids-shape-receipt-v1.json",
+      "original_sha256": "4da2fbebf5293f6dc363992f04b6b1760fcf1e3d7da3ba944a8190fcfeac3957",
+      "current_sha256": "4da2fbebf5293f6dc363992f04b6b1760fcf1e3d7da3ba944a8190fcfeac3957",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-evidence-ids-shape-receipt-v2.json",
+      "original_sha256": "8285ec49068e885242cdcb5f63bf7315e92843f1eb38871cd4722e4773b4a253",
+      "current_sha256": "8285ec49068e885242cdcb5f63bf7315e92843f1eb38871cd4722e4773b4a253",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-evidence-ids-shape-receipt-v3.json",
+      "original_sha256": "e75b85378952c2076613914f4770a225c3e87ff34a4b590b1b84ff502b36457f",
+      "current_sha256": "e75b85378952c2076613914f4770a225c3e87ff34a4b590b1b84ff502b36457f",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-evidence-ids-shape-v1.patch",
+      "original_sha256": "1f16d598f755de85863e997847ec38c1d1d7533bb4399f349461c170e5e20044",
+      "current_sha256": "1f16d598f755de85863e997847ec38c1d1d7533bb4399f349461c170e5e20044",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-evidence-ids-shape-v2.patch",
+      "original_sha256": "91353e95804236dc493de50381d58f3cb69cd428bcaefd7f80f95147905fdb1f",
+      "current_sha256": "91353e95804236dc493de50381d58f3cb69cd428bcaefd7f80f95147905fdb1f",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-evidence-ids-shape-v3.patch",
+      "original_sha256": "f48d1eaeeecf87ca1f532e42e6438b04a127bb3c59e905bdb2a50564ab1ae2b2",
+      "current_sha256": "f48d1eaeeecf87ca1f532e42e6438b04a127bb3c59e905bdb2a50564ab1ae2b2",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-cleanup-focused-selector-run-20261002.json",
+      "original_sha256": "cbd457de71cd85a5f5faddb056ce71ac4d7ad02ddc650ee082b55bbca8e3a2ae",
+      "current_sha256": "cbd457de71cd85a5f5faddb056ce71ac4d7ad02ddc650ee082b55bbca8e3a2ae",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-cleanup-rollback-mask-receipt-20261002.json",
+      "original_sha256": "3b9bb8d2e5e15431ff9b8f5e3e624a79717c4f323c6e4e7724a87d46937737ae",
+      "current_sha256": "3b9bb8d2e5e15431ff9b8f5e3e624a79717c4f323c6e4e7724a87d46937737ae",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-cleanup-verified-selector-receipt-20261002.json",
+      "original_sha256": "42df2c3b06c50c8ac2fc03f024ce1bc85b30bc8ec3a3dc03790cbfd5600a9480",
+      "current_sha256": "42df2c3b06c50c8ac2fc03f024ce1bc85b30bc8ec3a3dc03790cbfd5600a9480",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/__init__.py",
+      "original_sha256": "945d7de874d7ceb14d8f723083c6c4353e0ca8241d325b8f61fd36db738dba4e",
+      "current_sha256": "945d7de874d7ceb14d8f723083c6c4353e0ca8241d325b8f61fd36db738dba4e",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/__main__.py",
+      "original_sha256": "1e5ded47869eb24767f14cd5df403d04c717d2f0b30f15d8b8dcd5454bbe648d",
+      "current_sha256": "1e5ded47869eb24767f14cd5df403d04c717d2f0b30f15d8b8dcd5454bbe648d",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/accelerators.py",
+      "original_sha256": "19beeffa05d42a9b3ecdff07e0f967b277beb55adf87b3355d417a89bbd35259",
+      "current_sha256": "19beeffa05d42a9b3ecdff07e0f967b277beb55adf87b3355d417a89bbd35259",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/adoption_metrics.py",
+      "original_sha256": "de9881097933ed3150e91dd41ef8fe30f2d1265c92a919f1aa22292844d8f28f",
+      "current_sha256": "de9881097933ed3150e91dd41ef8fe30f2d1265c92a919f1aa22292844d8f28f",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/agent_blackboard.py",
+      "original_sha256": "9222a5084bbb0a937cadb79a091134cabd4ca3a73b7a1321f0035db4dc78e2d1",
+      "current_sha256": "9222a5084bbb0a937cadb79a091134cabd4ca3a73b7a1321f0035db4dc78e2d1",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/agent_consistency.py",
+      "original_sha256": "96bed9e1101c34e314c0559515d53ea9288e3e6380f8f04e5201b7c64aa45fce",
+      "current_sha256": "96bed9e1101c34e314c0559515d53ea9288e3e6380f8f04e5201b7c64aa45fce",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/agent_context.py",
+      "original_sha256": "752f22929abd0a2a54b805e37bdf6a1723c5c53e84f6d41b1dec29e09f1ff875",
+      "current_sha256": "752f22929abd0a2a54b805e37bdf6a1723c5c53e84f6d41b1dec29e09f1ff875",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/agent_events.py",
+      "original_sha256": "b00aaf9a109b697ce7d3a8756ef3e88bd72772d2f36dec30bf3acda76e6babe3",
+      "current_sha256": "b00aaf9a109b697ce7d3a8756ef3e88bd72772d2f36dec30bf3acda76e6babe3",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/agent_identity.py",
+      "original_sha256": "c1dd52b5b8ba98c85670a4fa0513f3a5c15ec44758a09089d2ef758cc14cc804",
+      "current_sha256": "c1dd52b5b8ba98c85670a4fa0513f3a5c15ec44758a09089d2ef758cc14cc804",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/agent_incidents.py",
+      "original_sha256": "cf3d22739857f2b7af5bc7c27a04a617d92d261a97eb4bb4f99b2bc58cdd5805",
+      "current_sha256": "cf3d22739857f2b7af5bc7c27a04a617d92d261a97eb4bb4f99b2bc58cdd5805",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/agent_learning.py",
+      "original_sha256": "01ba0f0d3c251492e8e18db49c777b7ec13c9b4d43997f8bc1dd9e0560ae0800",
+      "current_sha256": "01ba0f0d3c251492e8e18db49c777b7ec13c9b4d43997f8bc1dd9e0560ae0800",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/agent_memory.py",
+      "original_sha256": "572031d594a04ccb3254c91cc18c88a76a422feb9d968d56baefc8ad9df27135",
+      "current_sha256": "572031d594a04ccb3254c91cc18c88a76a422feb9d968d56baefc8ad9df27135",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/agent_policy.py",
+      "original_sha256": "52a6458a9f7f54fb57bb490351cd8f33a6d7b0d89ed32f6c5ea0b55465572042",
+      "current_sha256": "52a6458a9f7f54fb57bb490351cd8f33a6d7b0d89ed32f6c5ea0b55465572042",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/agent_routing.py",
+      "original_sha256": "2fe47c3c0c673304e8e0eb14ffaa6377fd79b6aa9af1e8a23dc493c395150573",
+      "current_sha256": "2fe47c3c0c673304e8e0eb14ffaa6377fd79b6aa9af1e8a23dc493c395150573",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/agent_tasks.py",
+      "original_sha256": "1d59f3e1fa8a6082eaa439f4ec3d4c542bbad47fa5f2664d76570462fb505d25",
+      "current_sha256": "1d59f3e1fa8a6082eaa439f4ec3d4c542bbad47fa5f2664d76570462fb505d25",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/agent_verification.py",
+      "original_sha256": "468e4b18117cf77ce0bb34cfe08f9d1898ee0bda43c5494beaf7ae23f418645d",
+      "current_sha256": "468e4b18117cf77ce0bb34cfe08f9d1898ee0bda43c5494beaf7ae23f418645d",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/app.py",
+      "original_sha256": "c09721bde51eed9f0ec5a71d5188fbbed27abd4804912fe6e885c31d551fc2a5",
+      "current_sha256": "c09721bde51eed9f0ec5a71d5188fbbed27abd4804912fe6e885c31d551fc2a5",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/artifacts.py",
+      "original_sha256": "bac20530b7463aeb48aad0eff297136750435bd99a013d536f0f56417afd13c4",
+      "current_sha256": "bac20530b7463aeb48aad0eff297136750435bd99a013d536f0f56417afd13c4",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/async_jobs.py",
+      "original_sha256": "14ed05c6dc4c7bcb3e3b430e0596ec4aed47ded82241ff41f0028009e6ab0cd9",
+      "current_sha256": "14ed05c6dc4c7bcb3e3b430e0596ec4aed47ded82241ff41f0028009e6ab0cd9",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/autotune.py",
+      "original_sha256": "fc094eb1dbb726134150979ae7c1dc795316dcfd19e0981c480c2cc92d6081f5",
+      "current_sha256": "fc094eb1dbb726134150979ae7c1dc795316dcfd19e0981c480c2cc92d6081f5",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/background_gpu.py",
+      "original_sha256": "b5b5bcef1b1514a7a0072947315975479ce62a1a607e7dcdfa1baffc2ce0a421",
+      "current_sha256": "b5b5bcef1b1514a7a0072947315975479ce62a1a607e7dcdfa1baffc2ce0a421",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/benchmark.py",
+      "original_sha256": "8810323cc94d9d007ab46c04cea4769068b8e6a29135cd1bd3cba79615fe8f92",
+      "current_sha256": "8810323cc94d9d007ab46c04cea4769068b8e6a29135cd1bd3cba79615fe8f92",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/browser_bridge.py",
+      "original_sha256": "4eafffe01962eb8d67734f3f1d5fce2befc66e1f1a339ef5e7548b546bea0620",
+      "current_sha256": "4eafffe01962eb8d67734f3f1d5fce2befc66e1f1a339ef5e7548b546bea0620",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/budget.py",
+      "original_sha256": "1b8b8136fe1c3e642186ed666faa3b97b992007df5509f0cf46b05dd6b061931",
+      "current_sha256": "1b8b8136fe1c3e642186ed666faa3b97b992007df5509f0cf46b05dd6b061931",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/cache.py",
+      "original_sha256": "e69ac756c8df9fc21d5e2a5ef57d3670be307be50285d6c12f935ccd693c29cf",
+      "current_sha256": "e69ac756c8df9fc21d5e2a5ef57d3670be307be50285d6c12f935ccd693c29cf",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/client.py",
+      "original_sha256": "e6189812b84d66c913f21db66bca5d5afdbe6ee0680a4751158b9a04b528b490",
+      "current_sha256": "e6189812b84d66c913f21db66bca5d5afdbe6ee0680a4751158b9a04b528b490",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/code_index.py",
+      "original_sha256": "d6cd501589a8d264648fdc4aff68d8db8a603e7cfbd8585c8902feaaf541f376",
+      "current_sha256": "d6cd501589a8d264648fdc4aff68d8db8a603e7cfbd8585c8902feaaf541f376",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/commands.py",
+      "original_sha256": "bf7c9c9faf2ec563db60f0bf27224f950f88e18dd0ce1eaece16cd47156a9c1e",
+      "current_sha256": "bf7c9c9faf2ec563db60f0bf27224f950f88e18dd0ce1eaece16cd47156a9c1e",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/compact.py",
+      "original_sha256": "c6cbe27700c70e9eb49cc2f68a1dad27a41845553d8f220ffe4bde499a2ecee3",
+      "current_sha256": "c6cbe27700c70e9eb49cc2f68a1dad27a41845553d8f220ffe4bde499a2ecee3",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/config.py",
+      "original_sha256": "28d03a727ca41b2b089ee45114edd4bf11bf0a7711c31ccc8032aab75939a01a",
+      "current_sha256": "28d03a727ca41b2b089ee45114edd4bf11bf0a7711c31ccc8032aab75939a01a",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/context_ledger.py",
+      "original_sha256": "ee6f979ddd922f39b0a369a632b7065f88e8f2ea7bfe7372272d76722ee80560",
+      "current_sha256": "ee6f979ddd922f39b0a369a632b7065f88e8f2ea7bfe7372272d76722ee80560",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/conversations.py",
+      "original_sha256": "46dbcc009505cc15c91d76b6baecd9b7b6b0be956cf0317402ce7500cbcc4e09",
+      "current_sha256": "46dbcc009505cc15c91d76b6baecd9b7b6b0be956cf0317402ce7500cbcc4e09",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/dashboard.py",
+      "original_sha256": "45234b12abcf41f8f8b4454a8877a217cc0512dfde94b913c41810886656a28d",
+      "current_sha256": "45234b12abcf41f8f8b4454a8877a217cc0512dfde94b913c41810886656a28d",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/debug_traces.py",
+      "original_sha256": "142281960953aeaf16efdb6d9544b5f124091b18b988203207f6dafdbee0df27",
+      "current_sha256": "142281960953aeaf16efdb6d9544b5f124091b18b988203207f6dafdbee0df27",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/defaults.toml",
+      "original_sha256": "d688f8546f616b872b2111c1f137c06964035e75c6da8b2a2dd2f420400a039e",
+      "current_sha256": "d688f8546f616b872b2111c1f137c06964035e75c6da8b2a2dd2f420400a039e",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/delivery.py",
+      "original_sha256": "d181b91f4e4efd01f472581ee5c88368f49b80d75eeb5b8e5eb550804e885007",
+      "current_sha256": "d181b91f4e4efd01f472581ee5c88368f49b80d75eeb5b8e5eb550804e885007",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/deterministic.py",
+      "original_sha256": "1c7389e1ff64f30c3abec27ed9fe587d671406f0dcab3570c1a9e6a1dc9105a8",
+      "current_sha256": "1c7389e1ff64f30c3abec27ed9fe587d671406f0dcab3570c1a9e6a1dc9105a8",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/diff_parsers.py",
+      "original_sha256": "03333ab8516342d6ac5d39d22119d3ef2eb61b7a81e846870f278c52cd8db086",
+      "current_sha256": "03333ab8516342d6ac5d39d22119d3ef2eb61b7a81e846870f278c52cd8db086",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/doctor_support.py",
+      "original_sha256": "7bf94e9edf7bfe5220737cf77a198266d5510fb5ee76eabc197e5d3988c3a67e",
+      "current_sha256": "7bf94e9edf7bfe5220737cf77a198266d5510fb5ee76eabc197e5d3988c3a67e",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/embeddings.py",
+      "original_sha256": "30ef35094ccc090989d583091afe812bbd1d712f4ff606c6c9c493de0f883d96",
+      "current_sha256": "30ef35094ccc090989d583091afe812bbd1d712f4ff606c6c9c493de0f883d96",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/evidence.py",
+      "original_sha256": "bc35b658d890e973477d099af79dfd026e6c4a0ad0e6657fbdc4e61bc475dd00",
+      "current_sha256": "bc35b658d890e973477d099af79dfd026e6c4a0ad0e6657fbdc4e61bc475dd00",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/evidence_contract.py",
+      "original_sha256": "2dfadd9a7cabb3bdc10d41fb6ef3b6b06a49a4e7458bec5db43a6f9dfa1be057",
+      "current_sha256": "2dfadd9a7cabb3bdc10d41fb6ef3b6b06a49a4e7458bec5db43a6f9dfa1be057",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/external_tools.py",
+      "original_sha256": "7f10f5bf2865ee59134d62e6e0292296ea4ea8e87edeb797b2b72c99cc6bfad5",
+      "current_sha256": "7f10f5bf2865ee59134d62e6e0292296ea4ea8e87edeb797b2b72c99cc6bfad5",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/features.py",
+      "original_sha256": "0bea955120b6d37cf1a4ebf481aea7407e24e3d010ca49b91781dde4f33593f5",
+      "current_sha256": "0bea955120b6d37cf1a4ebf481aea7407e24e3d010ca49b91781dde4f33593f5",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/frontend_review.py",
+      "original_sha256": "59f8c9b4d9926bf749e7b0824c5636f849c70974c3c20897a9bcf511d859b505",
+      "current_sha256": "59f8c9b4d9926bf749e7b0824c5636f849c70974c3c20897a9bcf511d859b505",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/generator.py",
+      "original_sha256": "21d820e1d5ad1da3ae493a231f561851d42a8ae22214c81272bea7b1c2201e9c",
+      "current_sha256": "21d820e1d5ad1da3ae493a231f561851d42a8ae22214c81272bea7b1c2201e9c",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/gpu_monitor.py",
+      "original_sha256": "96c8be899ae9df53ab237333797e280f23c81904e83ff4e58c58bf66896b2769",
+      "current_sha256": "96c8be899ae9df53ab237333797e280f23c81904e83ff4e58c58bf66896b2769",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/hardware.py",
+      "original_sha256": "91621dec38e68e611ed6f89d71508600d9c59a6f5aac087678b4dddc17069a8e",
+      "current_sha256": "91621dec38e68e611ed6f89d71508600d9c59a6f5aac087678b4dddc17069a8e",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/http_server.py",
+      "original_sha256": "3c04d9f1af56ffdd14d0bd283ea0f3c5bb06cdbe71a419dbbad95a6a28be2e98",
+      "current_sha256": "3c04d9f1af56ffdd14d0bd283ea0f3c5bb06cdbe71a419dbbad95a6a28be2e98",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/json_utils.py",
+      "original_sha256": "ff61cc099023cfe615ea69fb4eec6b8b1e9a10897418b133b17241f46259783d",
+      "current_sha256": "ff61cc099023cfe615ea69fb4eec6b8b1e9a10897418b133b17241f46259783d",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/learning.py",
+      "original_sha256": "bc74d06e1560256d54ef273fd7cfa3ef24625f0ff81983387a46edc99b88e568",
+      "current_sha256": "bc74d06e1560256d54ef273fd7cfa3ef24625f0ff81983387a46edc99b88e568",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/leases.py",
+      "original_sha256": "7673c5ad3989ddb49e73691f3fe68f0ba9f6798b239bf5fb082b8df0e5aac896",
+      "current_sha256": "7673c5ad3989ddb49e73691f3fe68f0ba9f6798b239bf5fb082b8df0e5aac896",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/llama_cpp.py",
+      "original_sha256": "d136e188a75dfe91bc3f3331f356692a6e4b5ab20a0671f46b66507d89aafe41",
+      "current_sha256": "d136e188a75dfe91bc3f3331f356692a6e4b5ab20a0671f46b66507d89aafe41",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/llama_cpp_runtime.py",
+      "original_sha256": "988e30be01283c2cce962293007c9181fe068525ee230208625596b6269d2777",
+      "current_sha256": "988e30be01283c2cce962293007c9181fe068525ee230208625596b6269d2777",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/logging_setup.py",
+      "original_sha256": "d00c355e05a2bc814b406b4df083ac40c3de4e4332ecb6c5905b1303e7010720",
+      "current_sha256": "d00c355e05a2bc814b406b4df083ac40c3de4e4332ecb6c5905b1303e7010720",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/mcp_server.py",
+      "original_sha256": "169e6591f80dccb47efd0370d4e0f6c12086c0fe2fa93ce65cd206f3d38f6924",
+      "current_sha256": "169e6591f80dccb47efd0370d4e0f6c12086c0fe2fa93ce65cd206f3d38f6924",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/memory.py",
+      "original_sha256": "64afe7891babc43078cc9873bf9caca392d855ae9173f6dd3084b57a401a9330",
+      "current_sha256": "64afe7891babc43078cc9873bf9caca392d855ae9173f6dd3084b57a401a9330",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/model_policy.py",
+      "original_sha256": "2bd6f8579a01e64d7ca2f10b9b78328db07a311998e26ae5af1f1934bdc5c6b1",
+      "current_sha256": "2bd6f8579a01e64d7ca2f10b9b78328db07a311998e26ae5af1f1934bdc5c6b1",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/model_quality.py",
+      "original_sha256": "935f34d5de6825f7852bfbebb6dbad1f81cde2cff5a7d0280cf58635d46d6e3c",
+      "current_sha256": "935f34d5de6825f7852bfbebb6dbad1f81cde2cff5a7d0280cf58635d46d6e3c",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/normalizer.py",
+      "original_sha256": "ffd7d08099c5d4bf0475724a28aa51057867e5df3eef2400ba30375fd986163b",
+      "current_sha256": "ffd7d08099c5d4bf0475724a28aa51057867e5df3eef2400ba30375fd986163b",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/ollama.py",
+      "original_sha256": "5f23bb57baec861a7fb01cad0f25c2a4392e661793a9ffda8ed6b705daf74b96",
+      "current_sha256": "5f23bb57baec861a7fb01cad0f25c2a4392e661793a9ffda8ed6b705daf74b96",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/ollama_subagents.py",
+      "original_sha256": "d37e5ee150871f3d47b81b87a16dd64f76b9990cef5938593d7fed3b2943fc85",
+      "current_sha256": "d37e5ee150871f3d47b81b87a16dd64f76b9990cef5938593d7fed3b2943fc85",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/performance_probe.py",
+      "original_sha256": "5f67af5e9bbf304662bab079505c6615bcb7bbd3e1933e49183d9fba3f9bace3",
+      "current_sha256": "5f67af5e9bbf304662bab079505c6615bcb7bbd3e1933e49183d9fba3f9bace3",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/pipeline.py",
+      "original_sha256": "00687262f35ed7d0e27398da04b94eb5ab1b59b967a52a4cf9a14bb2411bebd7",
+      "current_sha256": "00687262f35ed7d0e27398da04b94eb5ab1b59b967a52a4cf9a14bb2411bebd7",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/planner.py",
+      "original_sha256": "27bd30384a67822d844521faf96a388bdee60437cc396f2588dd547ed24582d3",
+      "current_sha256": "27bd30384a67822d844521faf96a388bdee60437cc396f2588dd547ed24582d3",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/preprocess.py",
+      "original_sha256": "1ec59d6a549db306d29a36ec3655bcad6fe06f726a33ddee518b83cac8e7f069",
+      "current_sha256": "1ec59d6a549db306d29a36ec3655bcad6fe06f726a33ddee518b83cac8e7f069",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/priority_gate.py",
+      "original_sha256": "6bfd74bcf3feb91afad61f098a4fe6f2599431e98de5d357a9a6f23f83a4ce9e",
+      "current_sha256": "6bfd74bcf3feb91afad61f098a4fe6f2599431e98de5d357a9a6f23f83a4ce9e",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/process_utils.py",
+      "original_sha256": "84386bb55c992806087909fcc32c8162805fe10a622d0bf37b84adf658d68554",
+      "current_sha256": "84386bb55c992806087909fcc32c8162805fe10a622d0bf37b84adf658d68554",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/projection.py",
+      "original_sha256": "1c04447280f0d491d498c67560d5848bef788a42cd64344ee919614ad12c7c07",
+      "current_sha256": "1c04447280f0d491d498c67560d5848bef788a42cd64344ee919614ad12c7c07",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/prompt_contracts.py",
+      "original_sha256": "9293554d0bf670c4e9ece01aa15a047c21ae36f7d3f07c41444bf94c13d6675d",
+      "current_sha256": "9293554d0bf670c4e9ece01aa15a047c21ae36f7d3f07c41444bf94c13d6675d",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/rag.py",
+      "original_sha256": "000beba5b9fec80a9c3673d3df41040c0a2b0e8d29a1e859e370f99b05522b9a",
+      "current_sha256": "000beba5b9fec80a9c3673d3df41040c0a2b0e8d29a1e859e370f99b05522b9a",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/repo_state.py",
+      "original_sha256": "e72bec0686e31ff7806568f7cbb633c42d473638b9e6a264eed2c9080ed23113",
+      "current_sha256": "e72bec0686e31ff7806568f7cbb633c42d473638b9e6a264eed2c9080ed23113",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/repo_tools.py",
+      "original_sha256": "a7ad39bfcc3dc037d1c731332e91d1e970ffc3a49e59477767a562594a047e5a",
+      "current_sha256": "a7ad39bfcc3dc037d1c731332e91d1e970ffc3a49e59477767a562594a047e5a",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/reranker.py",
+      "original_sha256": "dc76ae52244e030ed412b790c42b94d1fd720e3ebe335d4ac25dc93054f89094",
+      "current_sha256": "dc76ae52244e030ed412b790c42b94d1fd720e3ebe335d4ac25dc93054f89094",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/resilience.py",
+      "original_sha256": "424338386a322de55c73269e5d8900a9df3391dbeb32ca94f115b9e79e9ea23f",
+      "current_sha256": "424338386a322de55c73269e5d8900a9df3391dbeb32ca94f115b9e79e9ea23f",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/response_budget.py",
+      "original_sha256": "00c8dfdb1411ac5a32d1fc60feb82ad8364f16c4d0f42c3926d9533be004c4ee",
+      "current_sha256": "00c8dfdb1411ac5a32d1fc60feb82ad8364f16c4d0f42c3926d9533be004c4ee",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/response_protocol.py",
+      "original_sha256": "0e1d66bc6c9c56f0cc59c93a06db7fd3a21a2a2ec446811830ce1c100d2d7d8b",
+      "current_sha256": "0e1d66bc6c9c56f0cc59c93a06db7fd3a21a2a2ec446811830ce1c100d2d7d8b",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/retrieval.py",
+      "original_sha256": "396a494a65a774abaef17099f79d4603cb9efab0afae1f81f84ecf143e128442",
+      "current_sha256": "396a494a65a774abaef17099f79d4603cb9efab0afae1f81f84ecf143e128442",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/router.py",
+      "original_sha256": "424064b5c37c4dfb560603688a4e2be1bed27c6958273a5192091719deae91ab",
+      "current_sha256": "424064b5c37c4dfb560603688a4e2be1bed27c6958273a5192091719deae91ab",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/routing.py",
+      "original_sha256": "fe193552619ac7c4fad545898c99c32d5da083f65567efb847b1c7f696f106b5",
+      "current_sha256": "fe193552619ac7c4fad545898c99c32d5da083f65567efb847b1c7f696f106b5",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/scheduler.py",
+      "original_sha256": "019785fde53002541de50a001bbd61e15204c522d0064b305bdc4fdd7781cb36",
+      "current_sha256": "019785fde53002541de50a001bbd61e15204c522d0064b305bdc4fdd7781cb36",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/semantic_cache.py",
+      "original_sha256": "36620f2811e66c19520c4123b556940c0f7960454179313f90ef675f875593f7",
+      "current_sha256": "36620f2811e66c19520c4123b556940c0f7960454179313f90ef675f875593f7",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/semantic_quality.py",
+      "original_sha256": "162daa4e2410f89b763747bb57114084b562ed034aed315424980a8a974abd71",
+      "current_sha256": "162daa4e2410f89b763747bb57114084b562ed034aed315424980a8a974abd71",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/services.py",
+      "original_sha256": "d71eb259f42128007b665ab1575089936dc4c0022ed79d8899eb2ab79f852868",
+      "current_sha256": "d71eb259f42128007b665ab1575089936dc4c0022ed79d8899eb2ab79f852868",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/speculative_lint.py",
+      "original_sha256": "3ea699f4fcae1b5d37120c4633503b9d06d9261637353491e495919a55731a6f",
+      "current_sha256": "3ea699f4fcae1b5d37120c4633503b9d06d9261637353491e495919a55731a6f",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/sqlite_support.py",
+      "original_sha256": "8c40aa5dcaba19ae4972a57009edc61cd3ba4a628652522fcff1c44d3cb68570",
+      "current_sha256": "8c40aa5dcaba19ae4972a57009edc61cd3ba4a628652522fcff1c44d3cb68570",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/state_paths.py",
+      "original_sha256": "4a9baa3f2e7e7394f1e4f310d2618a37ff0430f5a04d659f233bc03c2d5a8016",
+      "current_sha256": "4a9baa3f2e7e7394f1e4f310d2618a37ff0430f5a04d659f233bc03c2d5a8016",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/supervisor.py",
+      "original_sha256": "6e5a78dc766f5db9afce0e07a7bd5cfd86526bee89e958ee1de0c1b692a933d2",
+      "current_sha256": "6e5a78dc766f5db9afce0e07a7bd5cfd86526bee89e958ee1de0c1b692a933d2",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/swarm.py",
+      "original_sha256": "8e2e0a4a7289b1308295a6b87a988921ffa56271c6079752ca361fd39c950513",
+      "current_sha256": "8e2e0a4a7289b1308295a6b87a988921ffa56271c6079752ca361fd39c950513",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/task_context.py",
+      "original_sha256": "d32657383880ce09d4dc7737b1e843bc95c03e058bace20bba063d514960e17c",
+      "current_sha256": "d32657383880ce09d4dc7737b1e843bc95c03e058bace20bba063d514960e17c",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/telemetry.py",
+      "original_sha256": "b05ed170c3056a0a9c35dad13b3918e27af4b103f00d79fe80813b875e97945a",
+      "current_sha256": "b05ed170c3056a0a9c35dad13b3918e27af4b103f00d79fe80813b875e97945a",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/tiered_ollama.py",
+      "original_sha256": "ea54d95c270dc7d526fb9298e524ea9e0b6ac43e0768175e98557939243100b1",
+      "current_sha256": "ea54d95c270dc7d526fb9298e524ea9e0b6ac43e0768175e98557939243100b1",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/token_accounting.py",
+      "original_sha256": "c344ed0b650761924ea6c13606b96ae5fa0c3db0e350e7c45322b367efcb21f3",
+      "current_sha256": "c344ed0b650761924ea6c13606b96ae5fa0c3db0e350e7c45322b367efcb21f3",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/token_economy.py",
+      "original_sha256": "e77db41f0d60f01ed015e966759e5053736ac86d8495911da6d0d4e9ec1b4a67",
+      "current_sha256": "e77db41f0d60f01ed015e966759e5053736ac86d8495911da6d0d4e9ec1b4a67",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/token_router.py",
+      "original_sha256": "0fda087f4d57d6065c8817303fad31b06e4b66c000604f3dccb881844ada36d6",
+      "current_sha256": "0fda087f4d57d6065c8817303fad31b06e4b66c000604f3dccb881844ada36d6",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/tool_agent.py",
+      "original_sha256": "d392ab290c0946c34071641241f2a29b428501015a2f3c3b4231f744f4d82a6e",
+      "current_sha256": "d392ab290c0946c34071641241f2a29b428501015a2f3c3b4231f744f4d82a6e",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/trace_context.py",
+      "original_sha256": "4a09748829533a9dd05bc12c9e55d7e20a8e88e34024476a1b51342e776ab304",
+      "current_sha256": "4a09748829533a9dd05bc12c9e55d7e20a8e88e34024476a1b51342e776ab304",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/treesitter_parser.py",
+      "original_sha256": "cf92c0470c3c77302325fb6e197474c47d330dae7a16d9e3a32ec67fbde6c8c3",
+      "current_sha256": "cf92c0470c3c77302325fb6e197474c47d330dae7a16d9e3a32ec67fbde6c8c3",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/vision_contracts.py",
+      "original_sha256": "2f2237d0a28c721eceafad24e4f548855bad7f539d3443c9d62d26f8f646b2a1",
+      "current_sha256": "2f2237d0a28c721eceafad24e4f548855bad7f539d3443c9d62d26f8f646b2a1",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/vram_balancer.py",
+      "original_sha256": "f5a5a7e0f5129f4144b875b4fd54d7c9e92685a7b66e94e54daf5fa337d5e00a",
+      "current_sha256": "f5a5a7e0f5129f4144b875b4fd54d7c9e92685a7b66e94e54daf5fa337d5e00a",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/work_orchestrator.py",
+      "original_sha256": "8285355d6fc1a535e3efcb7cd9d84dc7c2b75f4c2e024fce4e8e26625bf27647",
+      "current_sha256": "8285355d6fc1a535e3efcb7cd9d84dc7c2b75f4c2e024fce4e8e26625bf27647",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-20261002-v1/src/local_ai_hub/worktrees.py",
+      "original_sha256": "65e7daed8c96afd347088efde82d00a063a66cd6712081a02c9ac40d84dc427c",
+      "current_sha256": "65e7daed8c96afd347088efde82d00a063a66cd6712081a02c9ac40d84dc427c",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/__init__.py",
+      "original_sha256": "945d7de874d7ceb14d8f723083c6c4353e0ca8241d325b8f61fd36db738dba4e",
+      "current_sha256": "945d7de874d7ceb14d8f723083c6c4353e0ca8241d325b8f61fd36db738dba4e",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/__main__.py",
+      "original_sha256": "1e5ded47869eb24767f14cd5df403d04c717d2f0b30f15d8b8dcd5454bbe648d",
+      "current_sha256": "1e5ded47869eb24767f14cd5df403d04c717d2f0b30f15d8b8dcd5454bbe648d",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/accelerators.py",
+      "original_sha256": "19beeffa05d42a9b3ecdff07e0f967b277beb55adf87b3355d417a89bbd35259",
+      "current_sha256": "19beeffa05d42a9b3ecdff07e0f967b277beb55adf87b3355d417a89bbd35259",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/adoption_metrics.py",
+      "original_sha256": "de9881097933ed3150e91dd41ef8fe30f2d1265c92a919f1aa22292844d8f28f",
+      "current_sha256": "de9881097933ed3150e91dd41ef8fe30f2d1265c92a919f1aa22292844d8f28f",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/agent_blackboard.py",
+      "original_sha256": "9222a5084bbb0a937cadb79a091134cabd4ca3a73b7a1321f0035db4dc78e2d1",
+      "current_sha256": "9222a5084bbb0a937cadb79a091134cabd4ca3a73b7a1321f0035db4dc78e2d1",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/agent_consistency.py",
+      "original_sha256": "96bed9e1101c34e314c0559515d53ea9288e3e6380f8f04e5201b7c64aa45fce",
+      "current_sha256": "96bed9e1101c34e314c0559515d53ea9288e3e6380f8f04e5201b7c64aa45fce",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/agent_context.py",
+      "original_sha256": "752f22929abd0a2a54b805e37bdf6a1723c5c53e84f6d41b1dec29e09f1ff875",
+      "current_sha256": "752f22929abd0a2a54b805e37bdf6a1723c5c53e84f6d41b1dec29e09f1ff875",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/agent_events.py",
+      "original_sha256": "b00aaf9a109b697ce7d3a8756ef3e88bd72772d2f36dec30bf3acda76e6babe3",
+      "current_sha256": "b00aaf9a109b697ce7d3a8756ef3e88bd72772d2f36dec30bf3acda76e6babe3",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/agent_identity.py",
+      "original_sha256": "c1dd52b5b8ba98c85670a4fa0513f3a5c15ec44758a09089d2ef758cc14cc804",
+      "current_sha256": "c1dd52b5b8ba98c85670a4fa0513f3a5c15ec44758a09089d2ef758cc14cc804",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/agent_incidents.py",
+      "original_sha256": "cf3d22739857f2b7af5bc7c27a04a617d92d261a97eb4bb4f99b2bc58cdd5805",
+      "current_sha256": "cf3d22739857f2b7af5bc7c27a04a617d92d261a97eb4bb4f99b2bc58cdd5805",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/agent_learning.py",
+      "original_sha256": "01ba0f0d3c251492e8e18db49c777b7ec13c9b4d43997f8bc1dd9e0560ae0800",
+      "current_sha256": "01ba0f0d3c251492e8e18db49c777b7ec13c9b4d43997f8bc1dd9e0560ae0800",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/agent_memory.py",
+      "original_sha256": "572031d594a04ccb3254c91cc18c88a76a422feb9d968d56baefc8ad9df27135",
+      "current_sha256": "572031d594a04ccb3254c91cc18c88a76a422feb9d968d56baefc8ad9df27135",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/agent_policy.py",
+      "original_sha256": "52a6458a9f7f54fb57bb490351cd8f33a6d7b0d89ed32f6c5ea0b55465572042",
+      "current_sha256": "52a6458a9f7f54fb57bb490351cd8f33a6d7b0d89ed32f6c5ea0b55465572042",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/agent_routing.py",
+      "original_sha256": "2fe47c3c0c673304e8e0eb14ffaa6377fd79b6aa9af1e8a23dc493c395150573",
+      "current_sha256": "2fe47c3c0c673304e8e0eb14ffaa6377fd79b6aa9af1e8a23dc493c395150573",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/agent_tasks.py",
+      "original_sha256": "1d59f3e1fa8a6082eaa439f4ec3d4c542bbad47fa5f2664d76570462fb505d25",
+      "current_sha256": "1d59f3e1fa8a6082eaa439f4ec3d4c542bbad47fa5f2664d76570462fb505d25",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/agent_verification.py",
+      "original_sha256": "468e4b18117cf77ce0bb34cfe08f9d1898ee0bda43c5494beaf7ae23f418645d",
+      "current_sha256": "468e4b18117cf77ce0bb34cfe08f9d1898ee0bda43c5494beaf7ae23f418645d",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/app.py",
+      "original_sha256": "c09721bde51eed9f0ec5a71d5188fbbed27abd4804912fe6e885c31d551fc2a5",
+      "current_sha256": "c09721bde51eed9f0ec5a71d5188fbbed27abd4804912fe6e885c31d551fc2a5",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/artifacts.py",
+      "original_sha256": "bac20530b7463aeb48aad0eff297136750435bd99a013d536f0f56417afd13c4",
+      "current_sha256": "bac20530b7463aeb48aad0eff297136750435bd99a013d536f0f56417afd13c4",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/async_jobs.py",
+      "original_sha256": "14ed05c6dc4c7bcb3e3b430e0596ec4aed47ded82241ff41f0028009e6ab0cd9",
+      "current_sha256": "14ed05c6dc4c7bcb3e3b430e0596ec4aed47ded82241ff41f0028009e6ab0cd9",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/autotune.py",
+      "original_sha256": "fc094eb1dbb726134150979ae7c1dc795316dcfd19e0981c480c2cc92d6081f5",
+      "current_sha256": "fc094eb1dbb726134150979ae7c1dc795316dcfd19e0981c480c2cc92d6081f5",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/background_gpu.py",
+      "original_sha256": "b5b5bcef1b1514a7a0072947315975479ce62a1a607e7dcdfa1baffc2ce0a421",
+      "current_sha256": "b5b5bcef1b1514a7a0072947315975479ce62a1a607e7dcdfa1baffc2ce0a421",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/benchmark.py",
+      "original_sha256": "8810323cc94d9d007ab46c04cea4769068b8e6a29135cd1bd3cba79615fe8f92",
+      "current_sha256": "8810323cc94d9d007ab46c04cea4769068b8e6a29135cd1bd3cba79615fe8f92",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/browser_bridge.py",
+      "original_sha256": "4eafffe01962eb8d67734f3f1d5fce2befc66e1f1a339ef5e7548b546bea0620",
+      "current_sha256": "4eafffe01962eb8d67734f3f1d5fce2befc66e1f1a339ef5e7548b546bea0620",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/budget.py",
+      "original_sha256": "1b8b8136fe1c3e642186ed666faa3b97b992007df5509f0cf46b05dd6b061931",
+      "current_sha256": "1b8b8136fe1c3e642186ed666faa3b97b992007df5509f0cf46b05dd6b061931",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/cache.py",
+      "original_sha256": "e69ac756c8df9fc21d5e2a5ef57d3670be307be50285d6c12f935ccd693c29cf",
+      "current_sha256": "e69ac756c8df9fc21d5e2a5ef57d3670be307be50285d6c12f935ccd693c29cf",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/client.py",
+      "original_sha256": "e6189812b84d66c913f21db66bca5d5afdbe6ee0680a4751158b9a04b528b490",
+      "current_sha256": "e6189812b84d66c913f21db66bca5d5afdbe6ee0680a4751158b9a04b528b490",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/code_index.py",
+      "original_sha256": "d6cd501589a8d264648fdc4aff68d8db8a603e7cfbd8585c8902feaaf541f376",
+      "current_sha256": "d6cd501589a8d264648fdc4aff68d8db8a603e7cfbd8585c8902feaaf541f376",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/commands.py",
+      "original_sha256": "bf7c9c9faf2ec563db60f0bf27224f950f88e18dd0ce1eaece16cd47156a9c1e",
+      "current_sha256": "bf7c9c9faf2ec563db60f0bf27224f950f88e18dd0ce1eaece16cd47156a9c1e",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/compact.py",
+      "original_sha256": "c6cbe27700c70e9eb49cc2f68a1dad27a41845553d8f220ffe4bde499a2ecee3",
+      "current_sha256": "c6cbe27700c70e9eb49cc2f68a1dad27a41845553d8f220ffe4bde499a2ecee3",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/config.py",
+      "original_sha256": "28d03a727ca41b2b089ee45114edd4bf11bf0a7711c31ccc8032aab75939a01a",
+      "current_sha256": "28d03a727ca41b2b089ee45114edd4bf11bf0a7711c31ccc8032aab75939a01a",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/context_ledger.py",
+      "original_sha256": "ee6f979ddd922f39b0a369a632b7065f88e8f2ea7bfe7372272d76722ee80560",
+      "current_sha256": "ee6f979ddd922f39b0a369a632b7065f88e8f2ea7bfe7372272d76722ee80560",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/conversations.py",
+      "original_sha256": "46dbcc009505cc15c91d76b6baecd9b7b6b0be956cf0317402ce7500cbcc4e09",
+      "current_sha256": "46dbcc009505cc15c91d76b6baecd9b7b6b0be956cf0317402ce7500cbcc4e09",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/dashboard.py",
+      "original_sha256": "45234b12abcf41f8f8b4454a8877a217cc0512dfde94b913c41810886656a28d",
+      "current_sha256": "45234b12abcf41f8f8b4454a8877a217cc0512dfde94b913c41810886656a28d",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/debug_traces.py",
+      "original_sha256": "142281960953aeaf16efdb6d9544b5f124091b18b988203207f6dafdbee0df27",
+      "current_sha256": "142281960953aeaf16efdb6d9544b5f124091b18b988203207f6dafdbee0df27",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/defaults.toml",
+      "original_sha256": "d688f8546f616b872b2111c1f137c06964035e75c6da8b2a2dd2f420400a039e",
+      "current_sha256": "d688f8546f616b872b2111c1f137c06964035e75c6da8b2a2dd2f420400a039e",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/delivery.py",
+      "original_sha256": "d181b91f4e4efd01f472581ee5c88368f49b80d75eeb5b8e5eb550804e885007",
+      "current_sha256": "d181b91f4e4efd01f472581ee5c88368f49b80d75eeb5b8e5eb550804e885007",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/deterministic.py",
+      "original_sha256": "1c7389e1ff64f30c3abec27ed9fe587d671406f0dcab3570c1a9e6a1dc9105a8",
+      "current_sha256": "1c7389e1ff64f30c3abec27ed9fe587d671406f0dcab3570c1a9e6a1dc9105a8",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/diff_parsers.py",
+      "original_sha256": "03333ab8516342d6ac5d39d22119d3ef2eb61b7a81e846870f278c52cd8db086",
+      "current_sha256": "03333ab8516342d6ac5d39d22119d3ef2eb61b7a81e846870f278c52cd8db086",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/doctor_support.py",
+      "original_sha256": "7bf94e9edf7bfe5220737cf77a198266d5510fb5ee76eabc197e5d3988c3a67e",
+      "current_sha256": "7bf94e9edf7bfe5220737cf77a198266d5510fb5ee76eabc197e5d3988c3a67e",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/embeddings.py",
+      "original_sha256": "30ef35094ccc090989d583091afe812bbd1d712f4ff606c6c9c493de0f883d96",
+      "current_sha256": "30ef35094ccc090989d583091afe812bbd1d712f4ff606c6c9c493de0f883d96",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/evidence.py",
+      "original_sha256": "bc35b658d890e973477d099af79dfd026e6c4a0ad0e6657fbdc4e61bc475dd00",
+      "current_sha256": "bc35b658d890e973477d099af79dfd026e6c4a0ad0e6657fbdc4e61bc475dd00",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/evidence_contract.py",
+      "original_sha256": "2dfadd9a7cabb3bdc10d41fb6ef3b6b06a49a4e7458bec5db43a6f9dfa1be057",
+      "current_sha256": "2dfadd9a7cabb3bdc10d41fb6ef3b6b06a49a4e7458bec5db43a6f9dfa1be057",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/external_tools.py",
+      "original_sha256": "7f10f5bf2865ee59134d62e6e0292296ea4ea8e87edeb797b2b72c99cc6bfad5",
+      "current_sha256": "7f10f5bf2865ee59134d62e6e0292296ea4ea8e87edeb797b2b72c99cc6bfad5",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/features.py",
+      "original_sha256": "0bea955120b6d37cf1a4ebf481aea7407e24e3d010ca49b91781dde4f33593f5",
+      "current_sha256": "0bea955120b6d37cf1a4ebf481aea7407e24e3d010ca49b91781dde4f33593f5",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/frontend_review.py",
+      "original_sha256": "59f8c9b4d9926bf749e7b0824c5636f849c70974c3c20897a9bcf511d859b505",
+      "current_sha256": "59f8c9b4d9926bf749e7b0824c5636f849c70974c3c20897a9bcf511d859b505",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/generator.py",
+      "original_sha256": "21d820e1d5ad1da3ae493a231f561851d42a8ae22214c81272bea7b1c2201e9c",
+      "current_sha256": "21d820e1d5ad1da3ae493a231f561851d42a8ae22214c81272bea7b1c2201e9c",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/gpu_monitor.py",
+      "original_sha256": "96c8be899ae9df53ab237333797e280f23c81904e83ff4e58c58bf66896b2769",
+      "current_sha256": "96c8be899ae9df53ab237333797e280f23c81904e83ff4e58c58bf66896b2769",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/hardware.py",
+      "original_sha256": "91621dec38e68e611ed6f89d71508600d9c59a6f5aac087678b4dddc17069a8e",
+      "current_sha256": "91621dec38e68e611ed6f89d71508600d9c59a6f5aac087678b4dddc17069a8e",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/http_server.py",
+      "original_sha256": "3c04d9f1af56ffdd14d0bd283ea0f3c5bb06cdbe71a419dbbad95a6a28be2e98",
+      "current_sha256": "3c04d9f1af56ffdd14d0bd283ea0f3c5bb06cdbe71a419dbbad95a6a28be2e98",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/json_utils.py",
+      "original_sha256": "ff61cc099023cfe615ea69fb4eec6b8b1e9a10897418b133b17241f46259783d",
+      "current_sha256": "ff61cc099023cfe615ea69fb4eec6b8b1e9a10897418b133b17241f46259783d",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/learning.py",
+      "original_sha256": "bc74d06e1560256d54ef273fd7cfa3ef24625f0ff81983387a46edc99b88e568",
+      "current_sha256": "bc74d06e1560256d54ef273fd7cfa3ef24625f0ff81983387a46edc99b88e568",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/leases.py",
+      "original_sha256": "7673c5ad3989ddb49e73691f3fe68f0ba9f6798b239bf5fb082b8df0e5aac896",
+      "current_sha256": "7673c5ad3989ddb49e73691f3fe68f0ba9f6798b239bf5fb082b8df0e5aac896",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/llama_cpp.py",
+      "original_sha256": "d136e188a75dfe91bc3f3331f356692a6e4b5ab20a0671f46b66507d89aafe41",
+      "current_sha256": "d136e188a75dfe91bc3f3331f356692a6e4b5ab20a0671f46b66507d89aafe41",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/llama_cpp_runtime.py",
+      "original_sha256": "988e30be01283c2cce962293007c9181fe068525ee230208625596b6269d2777",
+      "current_sha256": "988e30be01283c2cce962293007c9181fe068525ee230208625596b6269d2777",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/logging_setup.py",
+      "original_sha256": "d00c355e05a2bc814b406b4df083ac40c3de4e4332ecb6c5905b1303e7010720",
+      "current_sha256": "d00c355e05a2bc814b406b4df083ac40c3de4e4332ecb6c5905b1303e7010720",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/mcp_server.py",
+      "original_sha256": "169e6591f80dccb47efd0370d4e0f6c12086c0fe2fa93ce65cd206f3d38f6924",
+      "current_sha256": "169e6591f80dccb47efd0370d4e0f6c12086c0fe2fa93ce65cd206f3d38f6924",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/memory.py",
+      "original_sha256": "64afe7891babc43078cc9873bf9caca392d855ae9173f6dd3084b57a401a9330",
+      "current_sha256": "64afe7891babc43078cc9873bf9caca392d855ae9173f6dd3084b57a401a9330",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/model_policy.py",
+      "original_sha256": "2bd6f8579a01e64d7ca2f10b9b78328db07a311998e26ae5af1f1934bdc5c6b1",
+      "current_sha256": "2bd6f8579a01e64d7ca2f10b9b78328db07a311998e26ae5af1f1934bdc5c6b1",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/model_quality.py",
+      "original_sha256": "935f34d5de6825f7852bfbebb6dbad1f81cde2cff5a7d0280cf58635d46d6e3c",
+      "current_sha256": "935f34d5de6825f7852bfbebb6dbad1f81cde2cff5a7d0280cf58635d46d6e3c",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/normalizer.py",
+      "original_sha256": "ffd7d08099c5d4bf0475724a28aa51057867e5df3eef2400ba30375fd986163b",
+      "current_sha256": "ffd7d08099c5d4bf0475724a28aa51057867e5df3eef2400ba30375fd986163b",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/ollama.py",
+      "original_sha256": "5f23bb57baec861a7fb01cad0f25c2a4392e661793a9ffda8ed6b705daf74b96",
+      "current_sha256": "5f23bb57baec861a7fb01cad0f25c2a4392e661793a9ffda8ed6b705daf74b96",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/ollama_subagents.py",
+      "original_sha256": "d37e5ee150871f3d47b81b87a16dd64f76b9990cef5938593d7fed3b2943fc85",
+      "current_sha256": "d37e5ee150871f3d47b81b87a16dd64f76b9990cef5938593d7fed3b2943fc85",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/performance_probe.py",
+      "original_sha256": "5f67af5e9bbf304662bab079505c6615bcb7bbd3e1933e49183d9fba3f9bace3",
+      "current_sha256": "5f67af5e9bbf304662bab079505c6615bcb7bbd3e1933e49183d9fba3f9bace3",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/pipeline.py",
+      "original_sha256": "00687262f35ed7d0e27398da04b94eb5ab1b59b967a52a4cf9a14bb2411bebd7",
+      "current_sha256": "00687262f35ed7d0e27398da04b94eb5ab1b59b967a52a4cf9a14bb2411bebd7",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/planner.py",
+      "original_sha256": "27bd30384a67822d844521faf96a388bdee60437cc396f2588dd547ed24582d3",
+      "current_sha256": "27bd30384a67822d844521faf96a388bdee60437cc396f2588dd547ed24582d3",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/preprocess.py",
+      "original_sha256": "1ec59d6a549db306d29a36ec3655bcad6fe06f726a33ddee518b83cac8e7f069",
+      "current_sha256": "1ec59d6a549db306d29a36ec3655bcad6fe06f726a33ddee518b83cac8e7f069",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/priority_gate.py",
+      "original_sha256": "6bfd74bcf3feb91afad61f098a4fe6f2599431e98de5d357a9a6f23f83a4ce9e",
+      "current_sha256": "6bfd74bcf3feb91afad61f098a4fe6f2599431e98de5d357a9a6f23f83a4ce9e",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/process_utils.py",
+      "original_sha256": "84386bb55c992806087909fcc32c8162805fe10a622d0bf37b84adf658d68554",
+      "current_sha256": "84386bb55c992806087909fcc32c8162805fe10a622d0bf37b84adf658d68554",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/projection.py",
+      "original_sha256": "1c04447280f0d491d498c67560d5848bef788a42cd64344ee919614ad12c7c07",
+      "current_sha256": "1c04447280f0d491d498c67560d5848bef788a42cd64344ee919614ad12c7c07",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/prompt_contracts.py",
+      "original_sha256": "9293554d0bf670c4e9ece01aa15a047c21ae36f7d3f07c41444bf94c13d6675d",
+      "current_sha256": "9293554d0bf670c4e9ece01aa15a047c21ae36f7d3f07c41444bf94c13d6675d",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/rag.py",
+      "original_sha256": "000beba5b9fec80a9c3673d3df41040c0a2b0e8d29a1e859e370f99b05522b9a",
+      "current_sha256": "000beba5b9fec80a9c3673d3df41040c0a2b0e8d29a1e859e370f99b05522b9a",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/repo_state.py",
+      "original_sha256": "e72bec0686e31ff7806568f7cbb633c42d473638b9e6a264eed2c9080ed23113",
+      "current_sha256": "e72bec0686e31ff7806568f7cbb633c42d473638b9e6a264eed2c9080ed23113",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/repo_tools.py",
+      "original_sha256": "a7ad39bfcc3dc037d1c731332e91d1e970ffc3a49e59477767a562594a047e5a",
+      "current_sha256": "a7ad39bfcc3dc037d1c731332e91d1e970ffc3a49e59477767a562594a047e5a",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/reranker.py",
+      "original_sha256": "dc76ae52244e030ed412b790c42b94d1fd720e3ebe335d4ac25dc93054f89094",
+      "current_sha256": "dc76ae52244e030ed412b790c42b94d1fd720e3ebe335d4ac25dc93054f89094",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/resilience.py",
+      "original_sha256": "424338386a322de55c73269e5d8900a9df3391dbeb32ca94f115b9e79e9ea23f",
+      "current_sha256": "424338386a322de55c73269e5d8900a9df3391dbeb32ca94f115b9e79e9ea23f",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/response_budget.py",
+      "original_sha256": "00c8dfdb1411ac5a32d1fc60feb82ad8364f16c4d0f42c3926d9533be004c4ee",
+      "current_sha256": "00c8dfdb1411ac5a32d1fc60feb82ad8364f16c4d0f42c3926d9533be004c4ee",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/response_protocol.py",
+      "original_sha256": "0e1d66bc6c9c56f0cc59c93a06db7fd3a21a2a2ec446811830ce1c100d2d7d8b",
+      "current_sha256": "0e1d66bc6c9c56f0cc59c93a06db7fd3a21a2a2ec446811830ce1c100d2d7d8b",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/retrieval.py",
+      "original_sha256": "396a494a65a774abaef17099f79d4603cb9efab0afae1f81f84ecf143e128442",
+      "current_sha256": "396a494a65a774abaef17099f79d4603cb9efab0afae1f81f84ecf143e128442",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/router.py",
+      "original_sha256": "424064b5c37c4dfb560603688a4e2be1bed27c6958273a5192091719deae91ab",
+      "current_sha256": "424064b5c37c4dfb560603688a4e2be1bed27c6958273a5192091719deae91ab",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/routing.py",
+      "original_sha256": "fe193552619ac7c4fad545898c99c32d5da083f65567efb847b1c7f696f106b5",
+      "current_sha256": "fe193552619ac7c4fad545898c99c32d5da083f65567efb847b1c7f696f106b5",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/scheduler.py",
+      "original_sha256": "019785fde53002541de50a001bbd61e15204c522d0064b305bdc4fdd7781cb36",
+      "current_sha256": "019785fde53002541de50a001bbd61e15204c522d0064b305bdc4fdd7781cb36",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/semantic_cache.py",
+      "original_sha256": "36620f2811e66c19520c4123b556940c0f7960454179313f90ef675f875593f7",
+      "current_sha256": "36620f2811e66c19520c4123b556940c0f7960454179313f90ef675f875593f7",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/semantic_quality.py",
+      "original_sha256": "162daa4e2410f89b763747bb57114084b562ed034aed315424980a8a974abd71",
+      "current_sha256": "162daa4e2410f89b763747bb57114084b562ed034aed315424980a8a974abd71",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/services.py",
+      "original_sha256": "d71eb259f42128007b665ab1575089936dc4c0022ed79d8899eb2ab79f852868",
+      "current_sha256": "d71eb259f42128007b665ab1575089936dc4c0022ed79d8899eb2ab79f852868",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/speculative_lint.py",
+      "original_sha256": "3ea699f4fcae1b5d37120c4633503b9d06d9261637353491e495919a55731a6f",
+      "current_sha256": "3ea699f4fcae1b5d37120c4633503b9d06d9261637353491e495919a55731a6f",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/sqlite_support.py",
+      "original_sha256": "8c40aa5dcaba19ae4972a57009edc61cd3ba4a628652522fcff1c44d3cb68570",
+      "current_sha256": "8c40aa5dcaba19ae4972a57009edc61cd3ba4a628652522fcff1c44d3cb68570",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/state_paths.py",
+      "original_sha256": "4a9baa3f2e7e7394f1e4f310d2618a37ff0430f5a04d659f233bc03c2d5a8016",
+      "current_sha256": "4a9baa3f2e7e7394f1e4f310d2618a37ff0430f5a04d659f233bc03c2d5a8016",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/supervisor.py",
+      "original_sha256": "6e5a78dc766f5db9afce0e07a7bd5cfd86526bee89e958ee1de0c1b692a933d2",
+      "current_sha256": "6e5a78dc766f5db9afce0e07a7bd5cfd86526bee89e958ee1de0c1b692a933d2",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/swarm.py",
+      "original_sha256": "8e2e0a4a7289b1308295a6b87a988921ffa56271c6079752ca361fd39c950513",
+      "current_sha256": "8e2e0a4a7289b1308295a6b87a988921ffa56271c6079752ca361fd39c950513",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/task_context.py",
+      "original_sha256": "d32657383880ce09d4dc7737b1e843bc95c03e058bace20bba063d514960e17c",
+      "current_sha256": "d32657383880ce09d4dc7737b1e843bc95c03e058bace20bba063d514960e17c",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/telemetry.py",
+      "original_sha256": "b05ed170c3056a0a9c35dad13b3918e27af4b103f00d79fe80813b875e97945a",
+      "current_sha256": "b05ed170c3056a0a9c35dad13b3918e27af4b103f00d79fe80813b875e97945a",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/tiered_ollama.py",
+      "original_sha256": "ea54d95c270dc7d526fb9298e524ea9e0b6ac43e0768175e98557939243100b1",
+      "current_sha256": "ea54d95c270dc7d526fb9298e524ea9e0b6ac43e0768175e98557939243100b1",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/token_accounting.py",
+      "original_sha256": "c344ed0b650761924ea6c13606b96ae5fa0c3db0e350e7c45322b367efcb21f3",
+      "current_sha256": "c344ed0b650761924ea6c13606b96ae5fa0c3db0e350e7c45322b367efcb21f3",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/token_economy.py",
+      "original_sha256": "e77db41f0d60f01ed015e966759e5053736ac86d8495911da6d0d4e9ec1b4a67",
+      "current_sha256": "e77db41f0d60f01ed015e966759e5053736ac86d8495911da6d0d4e9ec1b4a67",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/token_router.py",
+      "original_sha256": "0fda087f4d57d6065c8817303fad31b06e4b66c000604f3dccb881844ada36d6",
+      "current_sha256": "0fda087f4d57d6065c8817303fad31b06e4b66c000604f3dccb881844ada36d6",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/tool_agent.py",
+      "original_sha256": "d392ab290c0946c34071641241f2a29b428501015a2f3c3b4231f744f4d82a6e",
+      "current_sha256": "d392ab290c0946c34071641241f2a29b428501015a2f3c3b4231f744f4d82a6e",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/trace_context.py",
+      "original_sha256": "4a09748829533a9dd05bc12c9e55d7e20a8e88e34024476a1b51342e776ab304",
+      "current_sha256": "4a09748829533a9dd05bc12c9e55d7e20a8e88e34024476a1b51342e776ab304",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/treesitter_parser.py",
+      "original_sha256": "cf92c0470c3c77302325fb6e197474c47d330dae7a16d9e3a32ec67fbde6c8c3",
+      "current_sha256": "cf92c0470c3c77302325fb6e197474c47d330dae7a16d9e3a32ec67fbde6c8c3",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/vision_contracts.py",
+      "original_sha256": "2f2237d0a28c721eceafad24e4f548855bad7f539d3443c9d62d26f8f646b2a1",
+      "current_sha256": "2f2237d0a28c721eceafad24e4f548855bad7f539d3443c9d62d26f8f646b2a1",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/vram_balancer.py",
+      "original_sha256": "f5a5a7e0f5129f4144b875b4fd54d7c9e92685a7b66e94e54daf5fa337d5e00a",
+      "current_sha256": "f5a5a7e0f5129f4144b875b4fd54d7c9e92685a7b66e94e54daf5fa337d5e00a",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/work_orchestrator.py",
+      "original_sha256": "8285355d6fc1a535e3efcb7cd9d84dc7c2b75f4c2e024fce4e8e26625bf27647",
+      "current_sha256": "8285355d6fc1a535e3efcb7cd9d84dc7c2b75f4c2e024fce4e8e26625bf27647",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-fts-rollback-overlay-applypatch-20261002-v2/src/local_ai_hub/worktrees.py",
+      "original_sha256": "65e7daed8c96afd347088efde82d00a063a66cd6712081a02c9ac40d84dc427c",
+      "current_sha256": "65e7daed8c96afd347088efde82d00a063a66cd6712081a02c9ac40d84dc427c",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-identity-shared-memory-continuation-2026-10-01.md",
+      "original_sha256": "7ef9602319fde1eac758d5fded67de8deea35e639c43385e6c873cbfb6b7c918",
+      "current_sha256": "7ef9602319fde1eac758d5fded67de8deea35e639c43385e6c873cbfb6b7c918",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-memory-acceptance-tests-v5.patch",
+      "original_sha256": "0368d5cdd751603cc7d890d82f2525ec8bdc1bd6363240df800608c71c0dfb61",
+      "current_sha256": "0368d5cdd751603cc7d890d82f2525ec8bdc1bd6363240df800608c71c0dfb61",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-memory-acceptance-v4.patch",
+      "original_sha256": "0c86e375d2cb59fa333b2329104f04f972275c8f438e17f034b5c8e61f84b38d",
+      "current_sha256": "0c86e375d2cb59fa333b2329104f04f972275c8f438e17f034b5c8e61f84b38d",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-memory-adoption-acceptance-contract-2026-10-01.md",
+      "original_sha256": "9ebcabb2b5aef101c74e68d8d01f2534a5ef74a6a441168a4c4419c4ff9bd1f7",
+      "current_sha256": "9ebcabb2b5aef101c74e68d8d01f2534a5ef74a6a441168a4c4419c4ff9bd1f7",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-memory-cursor-callsite-handoff.patch",
+      "original_sha256": "dd8dc53284271af2130903d6a14fbdd44637c5d86580ff56352a72c2f277ba92",
+      "current_sha256": "dd8dc53284271af2130903d6a14fbdd44637c5d86580ff56352a72c2f277ba92",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-memory-cursor-integration-receipt-2026-10-01.md",
+      "original_sha256": "c206b843c6745f58d9a13398489472eb926648d30c23e1b36562aadd3a162b0b",
+      "current_sha256": "c206b843c6745f58d9a13398489472eb926648d30c23e1b36562aadd3a162b0b",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-memory-delete-fts-cleanup-20261002.patch",
+      "original_sha256": "a678fc8ad745de1aed18dcc646b8bd34f964e26d31536984d6b3d5a9e8074c3d",
+      "current_sha256": "a678fc8ad745de1aed18dcc646b8bd34f964e26d31536984d6b3d5a9e8074c3d",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-memory-delete-identity-candidate-receipt-v10.json",
+      "original_sha256": "890792520217581daef674f3ce6005b12d95463d938ce1f0e03d471b1fcaa3f8",
+      "current_sha256": "890792520217581daef674f3ce6005b12d95463d938ce1f0e03d471b1fcaa3f8",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-memory-policy-global-tenant-root.patch",
+      "original_sha256": "407041670101319d7215f8669c63b2ac8bce41720064d3b92e4636ca67ef239a",
+      "current_sha256": "407041670101319d7215f8669c63b2ac8bce41720064d3b92e4636ca67ef239a",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-memory-policy-missing-root-tests-v2.patch",
+      "original_sha256": "86aa3bfbe74588df6af4edf2460d663aeaf8435318cb8fb43aec706bff120b71",
+      "current_sha256": "86aa3bfbe74588df6af4edf2460d663aeaf8435318cb8fb43aec706bff120b71",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-memory-policy-missing-root-tests-v3.patch",
+      "original_sha256": "86aa3bfbe74588df6af4edf2460d663aeaf8435318cb8fb43aec706bff120b71",
+      "current_sha256": "86aa3bfbe74588df6af4edf2460d663aeaf8435318cb8fb43aec706bff120b71",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-memory-policy-missing-root-tests-v4.patch",
+      "original_sha256": "fbff5f8e5fa658e4c30c33f4a32ebfc2e35a91e2ebd06a3ebf20d181da650d65",
+      "current_sha256": "fbff5f8e5fa658e4c30c33f4a32ebfc2e35a91e2ebd06a3ebf20d181da650d65",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-memory-policy-missing-root-tests.patch",
+      "original_sha256": "78d04909de5856d27e48a5e3fc36da0d51cab5d79fb0959e8c71b0ffd8d2d7d6",
+      "current_sha256": "78d04909de5856d27e48a5e3fc36da0d51cab5d79fb0959e8c71b0ffd8d2d7d6",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-memory-policy-root-correction.patch",
+      "original_sha256": "1d0f7e302d8cc7c1e3a142625ab630f0e53d4c8ba5b92d30e77b8ce682870a17",
+      "current_sha256": "1d0f7e302d8cc7c1e3a142625ab630f0e53d4c8ba5b92d30e77b8ce682870a17",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-memory-write-rollback-test.patch",
+      "original_sha256": "a0997614ac342cc655775e0e617a9defc5ca20908d5cfb443dc03df6c5052424",
+      "current_sha256": "a0997614ac342cc655775e0e617a9defc5ca20908d5cfb443dc03df6c5052424",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-own-memory-acceptance-checkpoint-v16.json",
+      "original_sha256": "68a96b6c83b92713aabef3af302b8d2bebf4def957ec1ec88e86efe0bf95752c",
+      "current_sha256": "68a96b6c83b92713aabef3af302b8d2bebf4def957ec1ec88e86efe0bf95752c",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-own-memory-acceptance-checkpoint-v17.json",
+      "original_sha256": "1336f4f0aeaa917122f72b3b24c91f96370d9fa8c3ec9112ac58fbc2101af054",
+      "current_sha256": "1336f4f0aeaa917122f72b3b24c91f96370d9fa8c3ec9112ac58fbc2101af054",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-own-memory-acceptance-checkpoint-v18.json",
+      "original_sha256": "2c01ca0918c481bfe76380c1d7de4ecad11a13cdbce30b6a1535944e7b180f44",
+      "current_sha256": "2c01ca0918c481bfe76380c1d7de4ecad11a13cdbce30b6a1535944e7b180f44",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-own-memory-acceptance-checkpoint-v19.json",
+      "original_sha256": "7696b3d4c14797d87b7d1d38e32dd12e316d232bd40da106f4687375c0f5e4a6",
+      "current_sha256": "7696b3d4c14797d87b7d1d38e32dd12e316d232bd40da106f4687375c0f5e4a6",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-own-memory-acceptance-checkpoint-v20.json",
+      "original_sha256": "220dbd7136b3afd4937f3d81c75bfab80748846835c571bd82caab07a8fd5d54",
+      "current_sha256": "220dbd7136b3afd4937f3d81c75bfab80748846835c571bd82caab07a8fd5d54",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-own-memory-acceptance-checkpoint-v21.json",
+      "original_sha256": "4a5a85df497c665c93ed93b967f20ce02fdacd2543936482fb25d0d270973fb5",
+      "current_sha256": "4a5a85df497c665c93ed93b967f20ce02fdacd2543936482fb25d0d270973fb5",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-own-memory-acceptance-checkpoint-v22.json",
+      "original_sha256": "d9b333c1ee345c981b51249ca5c05f0be180a40962ab6ea9d005f5499a3e35f9",
+      "current_sha256": "d9b333c1ee345c981b51249ca5c05f0be180a40962ab6ea9d005f5499a3e35f9",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-own-memory-acceptance-checkpoint-v23.json",
+      "original_sha256": "b28140964495ea94ab0e329a72c352638c545c749808e56841d2a2388a2e828c",
+      "current_sha256": "b28140964495ea94ab0e329a72c352638c545c749808e56841d2a2388a2e828c",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-own-memory-acceptance-checkpoint-v24.json",
+      "original_sha256": "a83b81f3a3bab3b0cd621644ab607cd192693f42f6a1adc7a376c5560650eb49",
+      "current_sha256": "a83b81f3a3bab3b0cd621644ab607cd192693f42f6a1adc7a376c5560650eb49",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-own-memory-acceptance-checkpoint-v25.json",
+      "original_sha256": "b2036f0f6f65e2f236e5860afe33cea365e267206e76e0f0f6dd29d10f35025d",
+      "current_sha256": "b2036f0f6f65e2f236e5860afe33cea365e267206e76e0f0f6dd29d10f35025d",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-own-memory-acceptance-checkpoint-v26.json",
+      "original_sha256": "61e33a850677ea785cb79f9a9e75ce1780896733d7990df6d54fde6928755c89",
+      "current_sha256": "61e33a850677ea785cb79f9a9e75ce1780896733d7990df6d54fde6928755c89",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-own-memory-acceptance-checkpoint-v27.json",
+      "original_sha256": "a5fe175de4e57db089a4861279d0235b18d28b348a8ca9e3c618af88a5ea383a",
+      "current_sha256": "a5fe175de4e57db089a4861279d0235b18d28b348a8ca9e3c618af88a5ea383a",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-own-memory-acceptance-checkpoint-v28.json",
+      "original_sha256": "3b7b2d5f09539f22fd51052237b744be9aae934efad179b36f7251b50e14d3f2",
+      "current_sha256": "3b7b2d5f09539f22fd51052237b744be9aae934efad179b36f7251b50e14d3f2",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-own-memory-acceptance-checkpoint-v29.json",
+      "original_sha256": "f5b51abab3f4473e6e8cf120b839706afd1147b1c2825aace79009944d6f4a06",
+      "current_sha256": "f5b51abab3f4473e6e8cf120b839706afd1147b1c2825aace79009944d6f4a06",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-own-memory-acceptance-checkpoint-v30.json",
+      "original_sha256": "4d78b6d26d9170f2607e60015e474be7726e681d4a11011c232459c6d3038980",
+      "current_sha256": "4d78b6d26d9170f2607e60015e474be7726e681d4a11011c232459c6d3038980",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-owned-handoff-2026-10-01.md",
+      "original_sha256": "996ab6652371dbf07f6382b9b059a61c058178c84ae67d6852adf09d40b97211",
+      "current_sha256": "996ab6652371dbf07f6382b9b059a61c058178c84ae67d6852adf09d40b97211",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-owned-handoff-2026-10-01.patch",
+      "original_sha256": "be4494cba12775936b967089239240e2f933b7a81770c4c8a90b50fbc0714369",
+      "current_sha256": "be4494cba12775936b967089239240e2f933b7a81770c4c8a90b50fbc0714369",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-agent-state-migration-v1.json",
+      "original_sha256": "6202b87184de2f62b56cbcfeb43604aa6136803f3623d690399c591d598328cb",
+      "current_sha256": "6202b87184de2f62b56cbcfeb43604aa6136803f3623d690399c591d598328cb",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-agent-state-migration-v1.patch",
+      "original_sha256": "c25dda1f042e3fe60b00743ea4d06768798792f6d3c778cbc2aa083685956a2f",
+      "current_sha256": "c25dda1f042e3fe60b00743ea4d06768798792f6d3c778cbc2aa083685956a2f",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-cache-worker-root-import.patch",
+      "original_sha256": "b567c66147f1863dd216f6f32238afe88835dd6ffefc668ee71231eb1323d1dc",
+      "current_sha256": "b567c66147f1863dd216f6f32238afe88835dd6ffefc668ee71231eb1323d1dc",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-db-fault-tests.patch",
+      "original_sha256": "9e155d8acfb0cf4338db19a40cb03d1e643bd0fef4ff5be943dbe889ea0957b5",
+      "current_sha256": "9e155d8acfb0cf4338db19a40cb03d1e643bd0fef4ff5be943dbe889ea0957b5",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-delete-artifact-cleanup.patch",
+      "original_sha256": "c3c9e5a5b40457b92b63ff310c87f13bdc67ce7c44b12e3cf362db95bb59e333",
+      "current_sha256": "c3c9e5a5b40457b92b63ff310c87f13bdc67ce7c44b12e3cf362db95bb59e333",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-fts-fail-closed.patch",
+      "original_sha256": "5bcc0503570a5d493e1f8a2afd64164c2ed738cb71f8070cff66ea800d840495",
+      "current_sha256": "5bcc0503570a5d493e1f8a2afd64164c2ed738cb71f8070cff66ea800d840495",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-fts-fault-fixture-fix.patch",
+      "original_sha256": "ff9286176d11ecbfcc3e9f16b9cec806f289a78065e1989e6de9426b39cb9378",
+      "current_sha256": "ff9286176d11ecbfcc3e9f16b9cec806f289a78065e1989e6de9426b39cb9378",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-handoff-20261002.json",
+      "original_sha256": "8c74a8fe738ff643b73a39e31ed8ce80e7ea1c8fa0c575d401a024f51944a6ae",
+      "current_sha256": "8c74a8fe738ff643b73a39e31ed8ce80e7ea1c8fa0c575d401a024f51944a6ae",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-http-memory-get-identity-v1.patch",
+      "original_sha256": "e3f30f6080f08530de034cd27abb7855dce4966e79425a50418115ca79efea00",
+      "current_sha256": "e3f30f6080f08530de034cd27abb7855dce4966e79425a50418115ca79efea00",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-http-memory-identity-test-v3.patch",
+      "original_sha256": "cbc7a03c002b731dea8fa3868e4b906e037da97eeba75f0d3e220b92dbe4894b",
+      "current_sha256": "cbc7a03c002b731dea8fa3868e4b906e037da97eeba75f0d3e220b92dbe4894b",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-http-memory-identity-test-v4.patch",
+      "original_sha256": "656206d2408e42dbbd49354279a79a3d5e45362e8e99efeac45bad924233b71a",
+      "current_sha256": "656206d2408e42dbbd49354279a79a3d5e45362e8e99efeac45bad924233b71a",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-http-memory-identity-test-v5.patch",
+      "original_sha256": "e2770b78fdbdf604e5f9e2d26fe0546b98d9e7c23f6e95d76480e0030223c7a2",
+      "current_sha256": "e2770b78fdbdf604e5f9e2d26fe0546b98d9e7c23f6e95d76480e0030223c7a2",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-http-memory-identity-test-v6.patch",
+      "original_sha256": "a20b0f98272c428da09472ed86de87876718fd2b600089075d514daf6b572dae",
+      "current_sha256": "a20b0f98272c428da09472ed86de87876718fd2b600089075d514daf6b572dae",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-http-memory-identity-test-v7.patch",
+      "original_sha256": "e92d00a1f6a4af088802a1387f36ddc8ba63a0dc30be25efdf3b7c35bd954fe7",
+      "current_sha256": "e92d00a1f6a4af088802a1387f36ddc8ba63a0dc30be25efdf3b7c35bd954fe7",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-http-memory-identity-test.patch",
+      "original_sha256": "65c8e854d529857b27abacbe958ed9e92ada87de88d479c3b3ca3ecf721909b4",
+      "current_sha256": "65c8e854d529857b27abacbe958ed9e92ada87de88d479c3b3ca3ecf721909b4",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-http-memory-identity-v2.patch",
+      "original_sha256": "2365c1e68442117298d3c38b477ac7fc90b5a33b35afcf39d09b00c239e0efa5",
+      "current_sha256": "2365c1e68442117298d3c38b477ac7fc90b5a33b35afcf39d09b00c239e0efa5",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-http-memory-identity-v3.patch",
+      "original_sha256": "94863b89a716fc5fd4ad7667d616dafe08865a4bde06e6958f1dea6a144e4e41",
+      "current_sha256": "94863b89a716fc5fd4ad7667d616dafe08865a4bde06e6958f1dea6a144e4e41",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-http-memory-identity-v4.patch",
+      "original_sha256": "ed703d28d8476f75191b04778850dd89d6b577b2b718bba98a731aaaca8ed080",
+      "current_sha256": "ed703d28d8476f75191b04778850dd89d6b577b2b718bba98a731aaaca8ed080",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-manifest-v2.json",
+      "original_sha256": "1e0189d3bd6395a5a4416dbaa03bf3d57c983d2e61d6d60daf5ab1107c04cafb",
+      "current_sha256": "1e0189d3bd6395a5a4416dbaa03bf3d57c983d2e61d6d60daf5ab1107c04cafb",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-memory-context-tenant-isolation-v1.json",
+      "original_sha256": "8cf2a193988c96224053e54a52d5a050d93ec15f1be9c27605721be935ec8f85",
+      "current_sha256": "8cf2a193988c96224053e54a52d5a050d93ec15f1be9c27605721be935ec8f85",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-memory-context-tenant-isolation-v1.patch",
+      "original_sha256": "3cf034ff86ef8acd1762fdcf71856cfe18eb8c2d4d3b104b2b2c18f80eff61be",
+      "current_sha256": "3cf034ff86ef8acd1762fdcf71856cfe18eb8c2d4d3b104b2b2c18f80eff61be",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-memory-delete-identity-v1.json",
+      "original_sha256": "fa1218c45f2af46edfcd66adde2037863115d7d93cd73d268617eeb519bf5afe",
+      "current_sha256": "fa1218c45f2af46edfcd66adde2037863115d7d93cd73d268617eeb519bf5afe",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-memory-delete-identity-v1.patch",
+      "original_sha256": "ae733ecafe42fc1df5c2ffe653f4daf43e96a3c7ff2e5fc9dc031056dc7c10c6",
+      "current_sha256": "ae733ecafe42fc1df5c2ffe653f4daf43e96a3c7ff2e5fc9dc031056dc7c10c6",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-memory-delete-identity-v11.json",
+      "original_sha256": "27a71c71f8ff9b2878721976c8c7c226f7f77478684e45a6a1f961e9a7b29902",
+      "current_sha256": "27a71c71f8ff9b2878721976c8c7c226f7f77478684e45a6a1f961e9a7b29902",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-memory-delete-identity-v3.patch",
+      "original_sha256": "31c9bf78de68729c0d2f3332e0bb48a88148c71ef649e14b8adc36c8aea18a4a",
+      "current_sha256": "31c9bf78de68729c0d2f3332e0bb48a88148c71ef649e14b8adc36c8aea18a4a",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-memory-delete-identity-v4.patch",
+      "original_sha256": "6b725e15c82b7fd0f9ae0c81ca29de2ce97db6854b8ea39e2848f33570ae14d5",
+      "current_sha256": "6b725e15c82b7fd0f9ae0c81ca29de2ce97db6854b8ea39e2848f33570ae14d5",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-memory-global-delete-tenant-agnostic-v1.patch",
+      "original_sha256": "ace4719bea33887e50dbc2b555a788f1ac2eca75d2d11f9a175b9b357225a0f9",
+      "current_sha256": "ace4719bea33887e50dbc2b555a788f1ac2eca75d2d11f9a175b9b357225a0f9",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-memory-patch-receipt-v1.json",
+      "original_sha256": "5ae09a78e8a5dd22cb3b598782ebece1ee5326b40a8b5232fa4948a53ba76dca",
+      "current_sha256": "5ae09a78e8a5dd22cb3b598782ebece1ee5326b40a8b5232fa4948a53ba76dca",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-memory-patch-receipt-v2.json",
+      "original_sha256": "eb8c4f55ef01dac48051f5b4bbe66d2a41da71913f3bb770c17af411fb2fc9f1",
+      "current_sha256": "eb8c4f55ef01dac48051f5b4bbe66d2a41da71913f3bb770c17af411fb2fc9f1",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-memory-patch-receipt-v3.json",
+      "original_sha256": "4ec9e12f5b48c94b4005dd79791d6588b6724c8b167bc79d844abbcb9446c6b3",
+      "current_sha256": "4ec9e12f5b48c94b4005dd79791d6588b6724c8b167bc79d844abbcb9446c6b3",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-memory-transport-identity-v1.json",
+      "original_sha256": "df0fd2fa7adcca308422d58158a0db921977434709bb14c7336818d21f642a97",
+      "current_sha256": "df0fd2fa7adcca308422d58158a0db921977434709bb14c7336818d21f642a97",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-memory-transport-identity-v1.patch",
+      "original_sha256": "9a49a48bfcc1162065c6104325e16c354ef9df28800cdf14e7908a0cf1469717",
+      "current_sha256": "9a49a48bfcc1162065c6104325e16c354ef9df28800cdf14e7908a0cf1469717",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-memory-v1.patch",
+      "original_sha256": "f7b2f7761e72755a8ab7acf889deaf02cb7ad413c15e0ac1cc287a87344dcb19",
+      "current_sha256": "f7b2f7761e72755a8ab7acf889deaf02cb7ad413c15e0ac1cc287a87344dcb19",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-migration-fault-tests.patch",
+      "original_sha256": "201a93e11e1f3b4ffebaed5ded9efcff98716438ba97bac109f024e130648d9a",
+      "current_sha256": "201a93e11e1f3b4ffebaed5ded9efcff98716438ba97bac109f024e130648d9a",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-privacy-provenance-v1.patch",
+      "original_sha256": "0c52b5401fead8061c71b47dfc21cb4ff84ebe9f2d282b8e4d58b2743c222800",
+      "current_sha256": "0c52b5401fead8061c71b47dfc21cb4ff84ebe9f2d282b8e4d58b2743c222800",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-scoped-delete-t08-test-fix.patch",
+      "original_sha256": "5f1aa8c93d8191715bb2c86d5529314a0c50c48c863d86d100d7d519dcc10392",
+      "current_sha256": "5f1aa8c93d8191715bb2c86d5529314a0c50c48c863d86d100d7d519dcc10392",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-scoped-tenant-delete.patch",
+      "original_sha256": "5fa3b7fb38322d95dd60f63cd6c085374742ae34e93439360bb06f71fb4da48a",
+      "current_sha256": "5fa3b7fb38322d95dd60f63cd6c085374742ae34e93439360bb06f71fb4da48a",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-stepback-audit-2026-10-01.md",
+      "original_sha256": "5985c75126b82c6df8b358d37f70b41a4473e2305b3e90c7477d1c324ca23228",
+      "current_sha256": "5985c75126b82c6df8b358d37f70b41a4473e2305b3e90c7477d1c324ca23228",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-current-workspace-memo-cas.patch",
+      "original_sha256": "1c7c789c81175524f8f356647e7a95855fb30ac2046a9b9a66e57a2a468c02e7",
+      "current_sha256": "1c7c789c81175524f8f356647e7a95855fb30ac2046a9b9a66e57a2a468c02e7",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-event-and-scope-fix-receipt-2026-10-01.md",
+      "original_sha256": "23c408f7f1ecc9d1adeee9b43da9320dbf804beb33e5657ff771ba524a647b41",
+      "current_sha256": "23c408f7f1ecc9d1adeee9b43da9320dbf804beb33e5657ff771ba524a647b41",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-event-and-scope-fix.patch",
+      "original_sha256": "c20702a891817fd491ba78031b42c6a669b265c3e6028ecf211ca8c4ab655747",
+      "current_sha256": "c20702a891817fd491ba78031b42c6a669b265c3e6028ecf211ca8c4ab655747",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-identity-delete-acceptance-2026-10-01.md",
+      "original_sha256": "6bf7c916785f696d59e5cdfcad621b6ccabba7bbbfd70f20b5dab45f8b30004f",
+      "current_sha256": "6bf7c916785f696d59e5cdfcad621b6ccabba7bbbfd70f20b5dab45f8b30004f",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-identity-shared-memory-receipt-2026-10-01.md",
+      "original_sha256": "1cbc0836e2d4fe0238e2f4bc7828ad8d25f2b179f8969da564c1be39448f2c65",
+      "current_sha256": "1cbc0836e2d4fe0238e2f4bc7828ad8d25f2b179f8969da564c1be39448f2c65",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-integration-static-check-20261002.json",
+      "original_sha256": "42da6d05cf5043f0d4b4b263fba637f8935eda6958e9e2477b6f0fa13e91e130",
+      "current_sha256": "42da6d05cf5043f0d4b4b263fba637f8935eda6958e9e2477b6f0fa13e91e130",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-memory-context-sensitive-filter.patch",
+      "original_sha256": "78e09c34c9f597cb5406b67f88b8dd51f9a00a55168479b907ee4fa9767a7812",
+      "current_sha256": "78e09c34c9f597cb5406b67f88b8dd51f9a00a55168479b907ee4fa9767a7812",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-memory-identity-minimal.patch",
+      "original_sha256": "a6e335808cee22345aec03c46743ef4cef3889b70aa05811e9211b2dad67f16a",
+      "current_sha256": "a6e335808cee22345aec03c46743ef4cef3889b70aa05811e9211b2dad67f16a",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-memory-persisted-privacy-assertions.patch",
+      "original_sha256": "17286cc7b33dbfe3b941012ba4113a690a529efda1056b669329afde81c4a343",
+      "current_sha256": "17286cc7b33dbfe3b941012ba4113a690a529efda1056b669329afde81c4a343",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-scoped-delete-missing-tenant-test.patch",
+      "original_sha256": "4389c18932141e5ccdd71c603c5a5e8ca88b43e3573a54e4f7307080030c73c5",
+      "current_sha256": "4389c18932141e5ccdd71c603c5a5e8ca88b43e3573a54e4f7307080030c73c5",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-root-stale-stream-test-syntax-repair.patch",
+      "original_sha256": "3ff17b9756ff22f617532eb255f216a4c68cb4a3f8c45d0aaa6a920fcae28319",
+      "current_sha256": "3ff17b9756ff22f617532eb255f216a4c68cb4a3f8c45d0aaa6a920fcae28319",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-run-root-overlay-acceptance.py",
+      "original_sha256": "5c92118289f1d80c7d9a0bf886585657bb17d8749c767d707a7c77f81183580a",
+      "current_sha256": "5c92118289f1d80c7d9a0bf886585657bb17d8749c767d707a7c77f81183580a",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-scoped-handoff-2026-09-30.md",
+      "original_sha256": "e5f0c7f2358f9ef505ec92f8aff3a43c75944932165972a6e13290f27d6f4e32",
+      "current_sha256": "e5f0c7f2358f9ef505ec92f8aff3a43c75944932165972a6e13290f27d6f4e32",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-source-root-provenance-sanitizer.patch",
+      "original_sha256": "0595d7eb5fa56a3c7001970a1507bd1697a1574bf5c87da01db5b4b7471c6bf2",
+      "current_sha256": "0595d7eb5fa56a3c7001970a1507bd1697a1574bf5c87da01db5b4b7471c6bf2",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-source-root-redaction-boundary-test.patch",
+      "original_sha256": "260601733c8b8bd9c049fae0c27ee79096297a0e11fed436e0f28c5cc64255db",
+      "current_sha256": "260601733c8b8bd9c049fae0c27ee79096297a0e11fed436e0f28c5cc64255db",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-t07-fixture-one-line-2026-10-01.patch",
+      "original_sha256": "10f290dd9cf587eed6a004a93e28ff82aa0d55528fec437218cec665b8c6bcc4",
+      "current_sha256": "10f290dd9cf587eed6a004a93e28ff82aa0d55528fec437218cec665b8c6bcc4",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-t08-reconciliation/manifest.md",
+      "original_sha256": "03e0d479a6595041ff131286375bbbee1e606723b4f8ec8ffed606dd70091b56",
+      "current_sha256": "03e0d479a6595041ff131286375bbbee1e606723b4f8ec8ffed606dd70091b56",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-t08-reconciliation/t05-t08-reconciled-snapshot-v2.patch",
+      "original_sha256": "5201b02d050ec27db7a31b6ed1535cb34ada321d810204948e9baa79a1d4fd46",
+      "current_sha256": "5201b02d050ec27db7a31b6ed1535cb34ada321d810204948e9baa79a1d4fd46",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-tenant-context-strictness-receipt-20261002.json",
+      "original_sha256": "51139655213c8d0d9987e0108cf5a4e2ada4255f654c8c892bfb4a60f8861b85",
+      "current_sha256": "51139655213c8d0d9987e0108cf5a4e2ada4255f654c8c892bfb4a60f8861b85",
+      "tracked_now": false
+    },
+    {
+      "path": "artifacts/t05-tenant-context-strictness-root.patch",
+      "original_sha256": "005566a3ca25c3b08719a10e1b3d85117ee77e71a14a4d4f8f8c9de1f1cb5c39",
+      "current_sha256": "005566a3ca25c3b08719a10e1b3d85117ee77e71a14a4d4f8f8c9de1f1cb5c39",
+      "tracked_now": false
+    },
+    {
+      "path": "tests/test_agent_memory_context_tenant_isolation.py",
+      "original_sha256": "b2a99b20c83e0600b64dc468d2f6c3660cfadb063aad67f431c7a44fe59e5101",
+      "current_sha256": "70d00adb951d038a6d90ea93c6ebf1e9d953adcfd64a9fdfff3e8fb2d39bb092",
+      "tracked_now": true
+    },
+    {
+      "path": "tests/test_agent_memory_http_identity.py",
+      "original_sha256": "00c3d5f56727c58b2340b82a70610968c13e964361d15f6a1dd61be8e609b116",
+      "current_sha256": "60eb7e51b58157d87fd0bf8f9185a294101f2146951adb475fa671eb352df0d1",
+      "tracked_now": true
+    },
+    {
+      "path": "tests/test_agent_memory_root_snapshot.py",
+      "original_sha256": "f4f12e52c105d23e88a6f0f69a6d5ac2c23580bf9515e5dd1ea5c1ec6206e29c",
+      "current_sha256": "f4f12e52c105d23e88a6f0f69a6d5ac2c23580bf9515e5dd1ea5c1ec6206e29c",
+      "tracked_now": true
+    },
+    {
+      "path": "tests/test_agent_state_migrations_root.py",
+      "original_sha256": "e65bd621876ed30f647b1e68c6c6460ff9520457f45a2c48e1fa40c1c67386f2",
+      "current_sha256": "e65bd621876ed30f647b1e68c6c6460ff9520457f45a2c48e1fa40c1c67386f2",
+      "tracked_now": true
+    },
+    {
+      "path": "tests/test_evidence_contract_root_snapshot.py",
+      "original_sha256": "50794a86a3381a8ee0504de466a7a69fb1c77ab0b305a3280cd1f308263a14b0",
+      "current_sha256": "50794a86a3381a8ee0504de466a7a69fb1c77ab0b305a3280cd1f308263a14b0",
+      "tracked_now": true
+    },
+    {
+      "path": "tests/test_identity_contracts_root_snapshot.py",
+      "original_sha256": "c4fd7340f6ac649022908851cab9dfd81536077ee0e33b6ec179ff4610ce4993",
+      "current_sha256": "c4fd7340f6ac649022908851cab9dfd81536077ee0e33b6ec179ff4610ce4993",
+      "tracked_now": true
+    },
+    {
+      "path": "tests/test_memory_delete_identity_contract.py",
+      "original_sha256": "8abd2af37787d7747f9af58c75a4347efd1c41537109a05313201f84fc8187e2",
+      "current_sha256": "8abd2af37787d7747f9af58c75a4347efd1c41537109a05313201f84fc8187e2",
+      "tracked_now": true
+    },
+    {
+      "path": "tests/test_memory_scope_delete.py",
+      "original_sha256": "749753d08713bb333f714a4d15d8126f14835a42a7714cab451f63bebfe7ed93",
+      "current_sha256": "749753d08713bb333f714a4d15d8126f14835a42a7714cab451f63bebfe7ed93",
+      "tracked_now": true
+    },
+    {
+      "path": "tests/test_t05_agent_state_migrations.py",
+      "original_sha256": "92c786964d8b291e4ff15e9eeaa1a2342d36cf10c8ef6e814e3b34cd23b5724e",
+      "current_sha256": "7f5b606ff58fef9f4c85f41ac757ccc77e159744dcdd7363f084b65a1ced5b5c",
+      "tracked_now": true
+    },
+    {
+      "path": "tests/test_t05_cache_clear_durable_state.py",
+      "original_sha256": "1ac960c6ff9924d5d4989fb5360ca92240b624b5553213103cfa9e6d34151fd7",
+      "current_sha256": "1ac960c6ff9924d5d4989fb5360ca92240b624b5553213103cfa9e6d34151fd7",
+      "tracked_now": true
+    },
+    {
+      "path": "tests/test_t05_memory_adoption_context.py",
+      "original_sha256": "0a5a4143563b0d58c62c2d6fdafd452ae2c9790f4dd519e7f7ca6e36d7abc4af",
+      "current_sha256": "0a5a4143563b0d58c62c2d6fdafd452ae2c9790f4dd519e7f7ca6e36d7abc4af",
+      "tracked_now": true
+    },
+    {
+      "path": "tests/test_t05_memory_delete_artifacts.py",
+      "original_sha256": "4054ecccb63c0261f2a608a52058922bc13f8fe0fd86321285fc6715f394ab77",
+      "current_sha256": "cfba05a93311e7af8243699cc2e10737ef9b1079bb2b75bb0a870830430a5109",
+      "tracked_now": true
+    },
+    {
+      "path": "tests/test_t05_memory_fts_atomicity.py",
+      "original_sha256": "532e01bb3326b1f00a9cb6d6d32fda2085b713fad6a023f1f24c9b617631bf35",
+      "current_sha256": "b1239168f129c828604fd203b9f2668cf371a705b44d7b88c88263d6a4a19b35",
+      "tracked_now": true
+    }
+  ]
+}

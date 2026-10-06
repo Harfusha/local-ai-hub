@@ -61,7 +61,8 @@ def test_find_for_context_filters_explicit_foreign_tenant_for_repository_and_glo
         "global_foreign": _record(scope=AgentScope.GLOBAL, tenant="tenant-b", key="global-foreign"),
         "global_tenantless": _record(scope=AgentScope.GLOBAL, key="global-tenantless"),
     }
-    _seed_memory_projections(memory, records.values())
+    for record in records.values():
+        memory.record(record, actor="user")
 
     found = memory.find_for_context(root=str(root), task_id="shared-task", tenant="tenant-a")
 
@@ -106,7 +107,8 @@ def test_context_compiler_filters_foreign_tenant_before_returning_memory(tmp_pat
         "global_foreign": _record(scope=AgentScope.GLOBAL, tenant="tenant-b", key="global-foreign"),
         "global_tenantless": _record(scope=AgentScope.GLOBAL, key="global-tenantless"),
     }
-    _seed_memory_projections(memory, records.values())
+    for record in records.values():
+        memory.record(record, actor="user")
     compiler = ContextCompiler(state, memory_store=memory)
 
     compiled = compiler.compile(
@@ -155,7 +157,8 @@ def test_task_create_and_resume_exclude_same_root_foreign_tenant_memory(tmp_path
         "global_foreign": _record(scope=AgentScope.GLOBAL, tenant="tenant-b", key="global-foreign"),
         "global_tenantless": _record(scope=AgentScope.GLOBAL, key="global-tenantless"),
     }
-    _seed_memory_projections(memory, records.values())
+    for record in records.values():
+        memory.record(record, actor="user")
     expected = {
         records["repo_current"].record_id,
         records["global_current"].record_id,

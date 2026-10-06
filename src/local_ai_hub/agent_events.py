@@ -1,20 +1,21 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from contextlib import closing
 import hashlib
+import stat
+import subprocess
+import tempfile
 import json
 import os
 import queue
 import sqlite3
-import stat
-import subprocess
-import tempfile
 import threading
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from .json_utils import dumps as json_dumps
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy
@@ -123,6 +124,8 @@ class AppendResult:
 
 
 class AgentStateStore:
+    _append_publish_locks_guard = threading.Lock()
+    _append_publish_locks: dict[str, threading.Lock] = {}
     _SCHEMA_VERSION = 1
     _SCHEMA_PREFLIGHT_TIMEOUT_SECONDS = 5.0
     _MIGRATION_BACKUP_TIMEOUT_SECONDS = 5.0
@@ -188,7 +191,22 @@ class AgentStateStore:
         ("table", "agent_tasks_projection", "agent_tasks_projection"): "d4283f29e8560ff94ae0877f38c1fdd8020a2d8e2fc6c66aa01a58dca6339cc4",
         ("table", "agent_verification_receipts", "agent_verification_receipts"): "6aeb2ffafd9572d5325f56e99f7c62455989c3d44772bd83d3e47b6f3abe953a",
     }
+    _EXPECTED_OBJECT_SQL_HASHES.update({
+        ("index", "idx_agent_incidents_scope", "agent_incidents"): "fcddf0dcdaa939754d8826b199dc730bfee46c1e3f9f1dc7742757a26b324fc3",
+        ("index", "idx_agent_task_search_grams_gram", "agent_task_search_grams"): "47289e8fa6b5eb7e6837a56d77ad684e26fbc466f43f0f7af252e77fb8af5e0a",
+        ("index", "idx_agent_verif_task_outbox_pending", "agent_verification_task_outbox"): "50dff1b755ee28d10c80d199270f9f6b12fb2ca958b4a8948cb59ac6ff751f48",
+        ("table", "agent_event_cursors", "agent_event_cursors"): "0ecf2e08637aef9d2f4a9167feb61de083e1a9d9b8b927f79ae7a58e74b2ef71",
+        ("table", "agent_incidents", "agent_incidents"): "a2be58a71724133b64d9a7a773680a193488f64414ee245e378b06973454e420",
+        ("table", "agent_task_search_documents", "agent_task_search_documents"): "a291a7122e95c8b2f3f6b9a9a73269489b1794ceea3f4378d9ff6155fd900f93",
+        ("table", "agent_task_search_grams", "agent_task_search_grams"): "d2f7c3b733bc0ffcee4d9ee72804edc3fedc36f73f7ceca5ce18662941a13b78",
+        ("table", "agent_verification_task_outbox", "agent_verification_task_outbox"): "2f17423836ca86bf09a701a71a27ead55a2c458d02bb9f29e1445a0c0fc11d17",
+    })
     _ALTERNATE_OBJECT_SQL_HASHES = {
+        ("table", "agent_incidents", "agent_incidents"): (
+            "6ea9770af294cd83e1fd6dcc80a0c7950bc93d142c27d40996c5acf5a0b478d4",
+            "43c461c1906a1c11a5558889e2c49478942b940c3e98d0a926848ead3010a63e",
+            "b3f8fa5c1723ab3addf421e28c3e9e07d232a7734cc95c247aed04224f3856b0",
+        ),
         # T08 adds root/version columns to the T05 swarm projection. Both layouts
         # are known; present definitions still require an exact fingerprint.
         ("table", "agent_swarms", "agent_swarms"): (
@@ -202,6 +220,7 @@ class AgentStateStore:
         ("index", "idx_agent_events_kind", "agent_events"): "77d2e2a836ce41786c2710ad9b46a9ff484aac89a3fc28461dcd46c5f85a9299",
     }
 
+
     def __init__(
         self,
         db_path: Path | str,
@@ -212,6 +231,11 @@ class AgentStateStore:
         self.db_path = Path(db_path)
         self.enabled = bool(enabled)
         self.max_payload_bytes = int(max_payload_bytes)
+        lock_key = os.path.normcase(str(self.db_path.resolve()))
+        with self._append_publish_locks_guard:
+            self._append_publish_lock = self._append_publish_locks.setdefault(
+                lock_key, threading.RLock()
+            )
         self._lock = threading.RLock()
         self._initialized = False
         self._subscribers: list[queue.Queue[AgentEvent]] = []
@@ -232,13 +256,40 @@ class AgentStateStore:
                 return
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
+            expected_events = [
+                "stream_id", "seq", "event_id", "kind", "payload", "idempotency_key",
+                "correlation_id", "actor", "created_at",
+            ]
+            expected_snapshots = ["snapshot_id", "stream_id", "seq", "state", "created_at"]
+            expected_cursors = ["stream_id", "last_seq", "first_retained_seq"]
+
             def _setup() -> None:
-                existed_before_open = self.db_path.exists()
-                if existed_before_open and self.db_path.stat().st_size > 0:
+                existed_before_open = self.db_path.exists() and self.db_path.stat().st_size > 0
+                if existed_before_open:
                     self._preflight_schema_read_only()
-                con = sqlite3.connect(self.db_path, timeout=5.0)
+                con = connect_sqlite(self.db_path)
                 try:
                     self._migrate_known_schema(con, existed_before_open=existed_before_open)
+                    version = int(con.execute("PRAGMA user_version").fetchone()[0])
+                    if version < 0 or version > self._SCHEMA_VERSION:
+                        raise RuntimeError(f"unsupported agent state schema version: {version}")
+                    existing = {row[0] for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                    current = True
+                    if "agent_events" in existing:
+                        current = [str(row[1]) for row in con.execute("PRAGMA table_info(agent_events)")] == expected_events
+                    if current and "agent_snapshots" in existing:
+                        current = [str(row[1]) for row in con.execute("PRAGMA table_info(agent_snapshots)")] == expected_snapshots
+                    if "agent_event_cursors" in existing:
+                        cursor_columns = [str(row[1]) for row in con.execute("PRAGMA table_info(agent_event_cursors)")]
+                        if cursor_columns != expected_cursors:
+                            raise RuntimeError("agent event cursor schema mismatch; refusing to alter durable database")
+                    if not current or (version == self._SCHEMA_VERSION and not {"agent_events", "agent_snapshots"}.issubset(existing)):
+                        raise RuntimeError(
+                            "agent state schema mismatch; refusing to delete or recreate durable database"
+                        )
+                    if version == 0 and {"agent_events", "agent_snapshots"}.issubset(existing):
+                        self._verified_migration_backup(con)
+                    initialize_wal(con)
                     with con:
                         con.execute("""
                         CREATE TABLE IF NOT EXISTS agent_events (
@@ -268,24 +319,55 @@ class AgentStateStore:
                         """)
                         con.execute("CREATE INDEX IF NOT EXISTS idx_agent_snapshots_stream ON agent_snapshots (stream_id, seq DESC)")
                         con.execute("""
-                        CREATE TABLE IF NOT EXISTS agent_event_schema_versions (
-                            stream_id TEXT NOT NULL,
-                            seq INTEGER NOT NULL,
-                            schema_version INTEGER NOT NULL,
-                            PRIMARY KEY (stream_id, seq)
+                        CREATE TABLE IF NOT EXISTS agent_event_cursors (
+                            stream_id TEXT PRIMARY KEY,
+                            last_seq INTEGER NOT NULL,
+                            first_retained_seq INTEGER NOT NULL
                         );
                         """)
+                        if "agent_event_cursors" not in existing:
+                            con.execute("""
+                            INSERT INTO agent_event_cursors (stream_id, last_seq, first_retained_seq)
+                            SELECT stream_id, MAX(seq), MIN(seq) FROM agent_events GROUP BY stream_id
+                            """)
                         con.execute(f"PRAGMA user_version={self._SCHEMA_VERSION}")
-                    initialize_wal(con)
                 finally:
                     con.close()
 
             retry_busy(_setup, retries=5, base_delay_seconds=0.02)
             self._initialized = True
 
+    def _verified_migration_backup(self, source: sqlite3.Connection) -> Path:
+        """Create and verify a snapshot before changing a legacy durable database."""
+        backup_path = self.db_path.with_name(
+            f"{self.db_path.name}.migration-v0-v1-{time.time_ns()}.bak"
+        )
+        with backup_path.open("xb"):
+            pass
+        destination = sqlite3.connect(backup_path)
+        try:
+            source.backup(destination)
+            quick_check = destination.execute("PRAGMA quick_check").fetchone()
+            if not quick_check or str(quick_check[0]).lower() != "ok":
+                raise sqlite3.DatabaseError("agent state migration backup failed quick_check")
+            source_schema = source.execute(
+                "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+            ).fetchall()
+            backup_schema = destination.execute(
+                "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+            ).fetchall()
+            if source_schema != backup_schema:
+                raise sqlite3.DatabaseError("agent state migration backup schema mismatch")
+        except Exception:
+            destination.close()
+            backup_path.unlink(missing_ok=True)
+            raise
+        destination.close()
+        return backup_path
+
     def _preflight_schema_read_only(self) -> None:
         deadline = time.monotonic() + self._SCHEMA_PREFLIGHT_TIMEOUT_SECONDS
-        suffixes = ("", "-wal", "-shm", "-journal")
+        suffixes = ("", "-wal", "-journal")
         original_paths = [Path(f"{self.db_path}{suffix}") for suffix in suffixes]
 
         def signatures() -> tuple[tuple[bool, int, int], ...]:
@@ -313,7 +395,9 @@ class AgentStateStore:
                         if time.monotonic() >= deadline:
                             raise TimeoutError("agent_state schema preflight time limit exceeded")
             if signatures() != before:
-                raise RuntimeError("agent_state changed during schema preflight")
+                raise sqlite3.OperationalError(
+                    "database is locked: agent_state changed during schema preflight"
+                )
 
             uri = f"{snapshot_db.resolve().as_uri()}?mode=ro"
             try:
@@ -342,11 +426,13 @@ class AgentStateStore:
                             )
                         except Exception as backup_error:
                             raise RuntimeError(
-                                f"{exc}; verified recovery backup could not be created: {backup_error}. "
+                                f"agent_state schema mismatch: {exc}; verified recovery backup "
+                                f"could not be created: {backup_error}. "
                                 "The original database and sidecars were preserved."
                             ) from backup_error
                         raise RuntimeError(
-                            f"{exc}; verified recovery backup created at {recovery_path}. "
+                            f"agent_state schema mismatch: {exc}; verified recovery backup "
+                            f"created at {recovery_path}. "
                             "Preserve the original database files and use a compatible recovery path."
                         ) from exc
             except RuntimeError:
@@ -354,17 +440,19 @@ class AgentStateStore:
             except sqlite3.DatabaseError as exc:
                 if time.monotonic() >= deadline:
                     raise TimeoutError("agent_state schema preflight time limit exceeded") from exc
-                raise RuntimeError("unsupported agent_state database") from exc
+                raise
             if time.monotonic() >= deadline:
                 raise TimeoutError("agent_state schema preflight time limit exceeded")
             if signatures() != before:
-                raise RuntimeError("agent_state changed during schema preflight")
+                raise sqlite3.OperationalError(
+                    "database is locked: agent_state changed during schema preflight"
+                )
 
     @classmethod
     def _classify_schema(cls, con: sqlite3.Connection) -> tuple[Any, ...]:
         version = int(con.execute("PRAGMA user_version").fetchone()[0])
         if version > cls._SCHEMA_VERSION or version < 0:
-            raise RuntimeError(f"unsupported agent_state schema version: {version}")
+            raise RuntimeError(f"unsupported agent state schema version: {version}")
 
         event_columns = cls._columns(con, "agent_events")
         snapshot_columns = cls._columns(con, "agent_snapshots")
@@ -405,19 +493,34 @@ class AgentStateStore:
         if version == cls._SCHEMA_VERSION:
             if event_columns != cls._EVENT_COLUMNS or snapshot_columns != cls._SNAPSHOT_COLUMNS:
                 raise RuntimeError("unsupported agent_state schema layout")
-            if cls._columns(con, "agent_event_schema_versions") != [
-                "stream_id", "seq", "schema_version",
-            ]:
+            event_version_columns = cls._columns(con, "agent_event_schema_versions")
+            if event_version_columns == ["stream_id", "seq", "schema_version"]:
+                if "agent_schema_migrations" in tables:
+                    markers = [int(row[0]) for row in con.execute(
+                        "SELECT version FROM agent_schema_migrations ORDER BY version"
+                    )]
+                    if markers != [1]:
+                        raise RuntimeError("unsupported agent_state schema migration history")
+                layout = "current"
+            elif not event_version_columns:
+                layout = "current-unversioned"
+            else:
                 raise RuntimeError("unsupported agent_state schema layout")
-            if "agent_schema_migrations" in tables:
+        else:
+            is_empty = not objects
+            is_current_unversioned = (
+                version == 0
+                and event_columns == cls._EVENT_COLUMNS
+                and snapshot_columns == cls._SNAPSHOT_COLUMNS
+                and cls._columns(con, "agent_event_schema_versions")
+                == ["stream_id", "seq", "schema_version"]
+            )
+            if is_current_unversioned and "agent_schema_migrations" in tables:
                 markers = [int(row[0]) for row in con.execute(
                     "SELECT version FROM agent_schema_migrations ORDER BY version"
                 )]
                 if markers != [1]:
                     raise RuntimeError("unsupported agent_state schema migration history")
-            layout = "current"
-        else:
-            is_empty = not objects
             is_current_v0 = (
                 event_columns == cls._EVENT_COLUMNS
                 and snapshot_columns == cls._SNAPSHOT_COLUMNS
@@ -439,6 +542,9 @@ class AgentStateStore:
                     raise RuntimeError("unsupported agent_state schema migration history")
             if is_empty:
                 layout = "empty"
+            elif is_current_unversioned:
+                # Existing current event metadata is preserved; _ensure_schema owns the v0->v1 backup/write.
+                layout = "current"
             elif is_current_v0:
                 layout = "current-v0"
             elif is_historical_v0:
@@ -457,7 +563,7 @@ class AgentStateStore:
         event_versions = ("table", "agent_event_schema_versions", "agent_event_schema_versions")
         if layout == "current":
             required_objects.add(event_versions)
-        elif layout == "current-v0":
+        elif layout in {"current-v0", "current-unversioned"}:
             pass
         elif layout == "historical-v0":
             required_objects.add(migration_history)
@@ -512,7 +618,7 @@ class AgentStateStore:
             except Exception:
                 con.rollback()
                 raise
-            if locked[0] == cls._SCHEMA_VERSION:
+            if locked[1] == "current":
                 con.rollback()
                 return
             locked_data_version = int(con.execute("PRAGMA data_version").fetchone()[0])
@@ -872,65 +978,196 @@ class AgentStateStore:
             raise RuntimeError("agent_state migration backup path unavailable")
         return backup_path
 
-    def append(self, event: AgentEvent) -> AppendResult:
+
+    def append_in_transaction(
+        self,
+        con: Any,
+        event: AgentEvent,
+        *,
+        strict_idempotency: bool = False,
+    ) -> AppendResult:
+        """Append event and advance durable sequence cursor in caller transaction."""
+        if not self.enabled:
+            raise RuntimeError("agent_state is disabled")
+        if not bool(getattr(con, "in_transaction", False)):
+            raise RuntimeError("append_in_transaction requires a caller-owned transaction")
+        payload = json_dumps(event.payload, separators=(",", ":"))
+        payload_bytes = payload.encode("utf-8")
+        if len(payload_bytes) > self.max_payload_bytes:
+            raise ValueError(
+                f"payload exceeds maximum allowed {self.max_payload_bytes} bytes (got {len(payload_bytes)})"
+            )
+        existing = con.execute(
+            """
+            SELECT stream_id, seq, event_id, kind, payload, idempotency_key, correlation_id, actor, created_at
+            FROM agent_events WHERE stream_id = ? AND idempotency_key = ?
+            """,
+            (event.stream_id, event.idempotency_key),
+        ).fetchone()
+        if existing:
+            stored = AgentEvent.from_row(existing)
+            if strict_idempotency and (
+                stored.kind != event.kind
+                or dict(stored.payload) != dict(event.payload)
+                or stored.actor != event.actor
+                or stored.correlation_id != event.correlation_id
+            ):
+                raise ValueError(
+                    "idempotency key was already used for a different event payload"
+                )
+            bounds = con.execute(
+                "SELECT MIN(seq), MAX(seq) FROM agent_events WHERE stream_id = ?",
+                (event.stream_id,),
+            ).fetchone()
+            cursor = con.execute(
+                "SELECT last_seq, first_retained_seq FROM agent_event_cursors WHERE stream_id = ?",
+                (event.stream_id,),
+            ).fetchone()
+            retained = int(bounds[0]) if bounds and bounds[0] is not None else (stored.seq or 1)
+            stream_high_water = int(bounds[1]) if bounds and bounds[1] is not None else 0
+            high_water = max(
+                int(cursor[0]) if cursor else 0,
+                stream_high_water,
+                int(stored.seq or 0),
+            )
+            first_retained = min(int(cursor[1]), retained) if cursor else retained
+            con.execute(
+                """
+                INSERT INTO agent_event_cursors (stream_id, last_seq, first_retained_seq)
+                VALUES (?, ?, ?)
+                ON CONFLICT(stream_id) DO UPDATE SET
+                    last_seq = MAX(agent_event_cursors.last_seq, excluded.last_seq),
+                    first_retained_seq = MIN(agent_event_cursors.first_retained_seq, excluded.first_retained_seq)
+                """,
+                (event.stream_id, high_water, first_retained),
+            )
+            return AppendResult(seq=stored.seq or 0, duplicate=True, event=stored)
+
+        cursor = con.execute(
+            "SELECT last_seq, first_retained_seq FROM agent_event_cursors WHERE stream_id = ?",
+            (event.stream_id,),
+        ).fetchone()
+        if cursor is None:
+            bounds = con.execute(
+                "SELECT MIN(seq), MAX(seq) FROM agent_events WHERE stream_id = ?",
+                (event.stream_id,),
+            ).fetchone()
+            if bounds and bounds[1] is not None:
+                last_seq = int(bounds[1])
+                first_retained = int(bounds[0])
+            else:
+                last_seq = 0
+                first_retained = 1
+            con.execute(
+                "INSERT INTO agent_event_cursors (stream_id, last_seq, first_retained_seq) VALUES (?, ?, ?)",
+                (event.stream_id, last_seq, first_retained),
+            )
+        else:
+            last_seq, first_retained = int(cursor[0]), int(cursor[1])
+
+        new_seq = last_seq + 1
+        if first_retained > last_seq:
+            first_retained = new_seq
+        persisted = event.with_seq(new_seq)
+        con.execute(
+            """
+            INSERT INTO agent_events (
+                stream_id, seq, event_id, kind, payload, idempotency_key,
+                correlation_id, actor, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event.stream_id,
+                new_seq,
+                event.event_id,
+                event.kind,
+                payload,
+                event.idempotency_key,
+                event.correlation_id,
+                event.actor,
+                event.created_at,
+            ),
+        )
+        con.execute(
+            "UPDATE agent_event_cursors SET last_seq = ?, first_retained_seq = ? WHERE stream_id = ?",
+            (new_seq, first_retained, event.stream_id),
+        )
+        return AppendResult(seq=new_seq, duplicate=False, event=persisted)
+
+    @contextmanager
+    def ordered_event_publication(
+        self, con: Any
+    ) -> Iterator[Callable[[Sequence[AgentEvent]], None]]:
+        """Serialize a caller-owned commit with publication to live subscribers.
+
+        Enter before the caller starts its transaction. The caller retains ownership
+        of BEGIN, COMMIT, and ROLLBACK; call the yielded publisher only after COMMIT.
+        The publisher verifies committed rows before emitting any event. A rollback
+        therefore cannot produce a live event, even if the caller mistakenly tries
+        to publish its pending result.
+        """
+        if not self.enabled:
+            raise RuntimeError("agent_state is disabled")
+        if bool(getattr(con, "in_transaction", False)):
+            raise RuntimeError(
+                "ordered_event_publication must be entered before caller transaction begins"
+            )
+        with self._append_publish_lock:
+            scope_active = True
+
+            def publish_committed(events: Sequence[AgentEvent]) -> None:
+                if not scope_active:
+                    raise RuntimeError("ordered event publication scope is closed")
+                if bool(getattr(con, "in_transaction", False)):
+                    raise RuntimeError("caller transaction is still open")
+                committed: list[AgentEvent] = []
+                last_seq_by_stream: dict[str, int] = {}
+                for event in events:
+                    if event.seq is None:
+                        raise RuntimeError("event is not committed")
+                    prior_seq = last_seq_by_stream.get(event.stream_id)
+                    if prior_seq is not None and event.seq <= prior_seq:
+                        raise ValueError("committed events must be supplied in stream sequence order")
+                    last_seq_by_stream[event.stream_id] = event.seq
+                    row = con.execute(
+                        """
+                        SELECT stream_id, seq, event_id, kind, payload, idempotency_key,
+                               correlation_id, actor, created_at
+                        FROM agent_events
+                        WHERE stream_id = ? AND seq = ? AND event_id = ?
+                        """,
+                        (event.stream_id, event.seq, event.event_id),
+                    ).fetchone()
+                    if row is None or AgentEvent.from_row(row) != event:
+                        raise RuntimeError("event is not committed")
+                    committed.append(event)
+                for event in committed:
+                    self._publish(event)
+
+            try:
+                yield publish_committed
+            finally:
+                scope_active = False
+
+    def append(self, event: AgentEvent, *, strict_idempotency: bool = False) -> AppendResult:
         if not self.enabled:
             return AppendResult(seq=0, duplicate=False, error="agent_state is disabled")
-
         payload_bytes = json_dumps(event.payload, separators=(",", ":")).encode("utf-8")
         if len(payload_bytes) > self.max_payload_bytes:
             raise ValueError(
                 f"payload exceeds maximum allowed {self.max_payload_bytes} bytes (got {len(payload_bytes)})"
             )
-
         self._ensure_schema()
 
         def _do_append() -> AppendResult:
-            # Keep each busy wait short; retry_busy provides bounded recovery for
-            # transient locks, while persistent locks must return retryable quickly.
             con = connect_sqlite(self.db_path, isolation_level=None, timeout_seconds=0.25)
             try:
                 con.execute("BEGIN IMMEDIATE")
-                existing = con.execute(
-                    """
-                    SELECT stream_id, seq, event_id, kind, payload, idempotency_key, correlation_id, actor, created_at
-                    FROM agent_events
-                    WHERE stream_id = ? AND idempotency_key = ?
-                    """,
-                    (event.stream_id, event.idempotency_key),
-                ).fetchone()
-                if existing:
-                    con.execute("COMMIT")
-                    existing_ev = AgentEvent.from_row(existing)
-                    return AppendResult(seq=existing_ev.seq or 0, duplicate=True, event=existing_ev)
-
-                row = con.execute(
-                    "SELECT COALESCE(MAX(seq), 0) + 1 FROM agent_events WHERE stream_id = ?",
-                    (event.stream_id,),
-                ).fetchone()
-                new_seq = int(row[0]) if row else 1
-
-                con.execute(
-                    """
-                    INSERT INTO agent_events (
-                        stream_id, seq, event_id, kind, payload, idempotency_key,
-                        correlation_id, actor, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        event.stream_id,
-                        new_seq,
-                        event.event_id,
-                        event.kind,
-                        payload_bytes.decode("utf-8"),
-                        event.idempotency_key,
-                        event.correlation_id,
-                        event.actor,
-                        event.created_at,
-                    ),
+                result = self.append_in_transaction(
+                    con, event, strict_idempotency=strict_idempotency
                 )
                 con.execute("COMMIT")
-                persisted = event.with_seq(new_seq)
-                return AppendResult(seq=new_seq, duplicate=False, event=persisted)
+                return result
             except Exception as exc:
                 try:
                     con.execute("ROLLBACK")
@@ -943,10 +1180,11 @@ class AgentStateStore:
                 con.close()
 
         try:
-            res = retry_busy(_do_append, retries=5, base_delay_seconds=0.02)
-            if not res.duplicate and res.event is not None:
-                self._publish(res.event)
-            return res
+            with self._append_publish_lock:
+                result = retry_busy(_do_append, retries=5, base_delay_seconds=0.02)
+                if not result.duplicate and result.event is not None:
+                    self._publish(result.event)
+                return result
         except Exception as exc:
             if is_busy_error(exc):
                 return AppendResult(seq=0, duplicate=False, retryable=True, error=str(exc))
@@ -989,6 +1227,162 @@ class AgentStateStore:
                 for q in dead_queues:
                     if q in self._subscribers:
                         self._subscribers.remove(q)
+
+    def event_page(
+        self,
+        stream_id: str,
+        after_seq: int = 0,
+        limit: int = 1000,
+        through_seq: int | None = None,
+    ) -> dict[str, Any]:
+        """Read a bounded sequence page and report replay gaps explicitly."""
+        try:
+            requested_after = max(0, int(after_seq))
+        except (TypeError, ValueError, OverflowError):
+            requested_after = 0
+            return self._event_page_error(requested_after)
+        try:
+            page_limit = max(1, min(int(limit), 10000))
+        except (TypeError, ValueError, OverflowError):
+            return self._event_page_error(requested_after)
+        try:
+            requested_through = (
+                None if through_seq is None else max(0, int(through_seq))
+            )
+        except (TypeError, ValueError, OverflowError):
+            return self._event_page_error(requested_after)
+        if not self.enabled:
+            return {
+                "success": False,
+                "events": [],
+                "next_seq": requested_after,
+                "first_retained_seq": 0,
+                "last_seq": 0,
+                "has_more": False,
+                "gap_ranges": [],
+                "cursor_reset": False,
+                "error": {
+                    "code": "agent_state_disabled",
+                    "message": "agent state is disabled",
+                },
+            }
+        if not self.db_path.exists():
+            return {
+                "success": True,
+                "events": [],
+                "next_seq": requested_after,
+                "first_retained_seq": 0,
+                "last_seq": 0,
+                "has_more": False,
+                "gap_ranges": [],
+                "cursor_reset": False,
+            }
+        con: sqlite3.Connection | None = None
+        try:
+            self._ensure_schema()
+            con = connect_sqlite(self.db_path, isolation_level=None)
+            con.execute("BEGIN")
+            cursor = con.execute(
+                "SELECT last_seq, first_retained_seq FROM agent_event_cursors WHERE stream_id = ?",
+                (stream_id,),
+            ).fetchone()
+            bounds = con.execute(
+                "SELECT MIN(seq), MAX(seq) FROM agent_events WHERE stream_id = ?",
+                (stream_id,),
+            ).fetchone()
+            if cursor is None:
+                if bounds and bounds[1] is not None:
+                    current_last_seq = int(bounds[1])
+                else:
+                    current_last_seq = 0
+            else:
+                current_last_seq = max(
+                    int(cursor[0]),
+                    int(bounds[1]) if bounds and bounds[1] is not None else 0,
+                )
+            last_seq = (
+                current_last_seq
+                if requested_through is None
+                else min(current_last_seq, requested_through)
+            )
+            first_retained = int(bounds[0]) if bounds and bounds[0] is not None else None
+            cursor_reset = requested_after > current_last_seq
+            effective_after = requested_after
+            if cursor_reset:
+                effective_after = (
+                    max(0, first_retained - 1)
+                    if first_retained is not None
+                    else current_last_seq
+                )
+            rows = con.execute(
+                """
+                SELECT stream_id, seq, event_id, kind, payload, idempotency_key, correlation_id, actor, created_at
+                FROM agent_events
+                WHERE stream_id = ? AND seq > ? AND seq <= ?
+                ORDER BY seq ASC
+                LIMIT ?
+                """,
+                (stream_id, effective_after, last_seq, page_limit + 1),
+            ).fetchall()
+            has_more = len(rows) > page_limit
+            events = [AgentEvent.from_row(row) for row in rows[:page_limit]]
+            next_seq = events[-1].seq if events else effective_after
+            gap_ranges: list[dict[str, int]] = []
+            expected_seq = effective_after + 1
+            for event in events:
+                if event.seq > expected_seq:
+                    gap_ranges.append({"from_seq": expected_seq, "to_seq": event.seq - 1})
+                expected_seq = event.seq + 1
+            if not has_more and expected_seq <= last_seq:
+                trailing_gap = {"from_seq": expected_seq, "to_seq": last_seq}
+                gap_ranges.append(trailing_gap)
+                next_seq = trailing_gap["to_seq"]
+            result = {
+                "success": True,
+                "events": [event.to_dict() for event in events],
+                "next_seq": next_seq,
+                "first_retained_seq": first_retained,
+                "last_seq": last_seq,
+                "has_more": has_more,
+                "gap_ranges": gap_ranges,
+                "cursor_reset": cursor_reset,
+            }
+            con.execute("COMMIT")
+            return result
+        except Exception as exc:
+            if con is not None:
+                try:
+                    con.execute("ROLLBACK")
+                except Exception:
+                    pass
+            detail = (
+                str(exc)
+                if isinstance(exc, (TimeoutError,))
+                else None
+            )
+            return self._event_page_error(requested_after, detail)
+        finally:
+            if con is not None:
+                try:
+                    con.close()
+                except Exception:
+                    pass
+
+    def _event_page_error(next_seq: int, message: str | None = None) -> dict[str, Any]:
+        return {
+            "success": False,
+            "events": [],
+            "next_seq": next_seq,
+            "first_retained_seq": None,
+            "last_seq": 0,
+            "has_more": False,
+            "gap_ranges": [],
+            "cursor_reset": False,
+            "error": {
+                "code": "event_page_unavailable",
+                "message": message or "Event page could not be read.",
+            },
+        }
 
     def events(self, stream_id: str, after_seq: int = 0, limit: int = 1000) -> list[AgentEvent]:
         if not self.enabled or not self.db_path.exists():
@@ -1089,6 +1483,13 @@ class AgentStateStore:
                 con.execute("BEGIN IMMEDIATE")
                 cur_ev = con.execute("DELETE FROM agent_events WHERE created_at < ?", (cutoff,))
                 deleted_events = cur_ev.rowcount if cur_ev else 0
+                con.execute("""
+                    UPDATE agent_event_cursors
+                    SET first_retained_seq = COALESCE(
+                        (SELECT MIN(seq) FROM agent_events WHERE stream_id = agent_event_cursors.stream_id),
+                        last_seq + 1
+                    )
+                """)
                 cur_snap = con.execute("DELETE FROM agent_snapshots WHERE created_at < ?", (cutoff,))
                 deleted_snaps = cur_snap.rowcount if cur_snap else 0
                 con.execute("COMMIT")

@@ -715,8 +715,8 @@ class ArtifactStore:
                     ).fetchall()
                 else:
                     rows = con.execute(
-                        "SELECT artifact_id, kind, size_bytes, created_at, mime_type FROM artifacts WHERE tenant=? ORDER BY created_at DESC LIMIT ?",
-                        (tenant, lim),
+                        "SELECT artifact_id, kind, size_bytes, created_at, mime_type FROM artifacts WHERE tenant_identity=? ORDER BY created_at DESC LIMIT ?",
+                        (tenant_identity, lim),
                     ).fetchall()
             else:
                 table = self._table

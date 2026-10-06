@@ -44,8 +44,8 @@ Model-backed endpoints `/api/delegate`, `/api/reason`, `/api/review`, `/api/seco
 
 Agent Operating System endpoints project durable task, memory, incident, verification and context state:
 
-* `GET /api/agent-state/tasks?task_id=&status=&limit=` lists or inspects tasks.
-* `POST /api/agent-state/tasks` supports actions: `create` (goal, acceptance criteria, scope, risk profile), `get` (task_id), `transition` (status: planned, active, waiting, blocked, verifying, completed, failed, abandoned), `complete` (auto-advances through verification gates if criteria met), `fail` (records failure reason), `checkpoint` (phase, next_action, affected_paths, evidence_ids), `resume`, and `list`.
+* `GET /api/agent-state/tasks?task_id=&status=&limit=&include_stale=&query=` lists or inspects tasks. `query` case-insensitively matches task ID, owner, goal, acceptance criteria, and checkpoint phase/action/paths/blockers. Query scans inspect at most 10,000 candidates; a response may set `query_truncated: true` when more candidate tasks remain beyond that window.
+* `POST /api/agent-state/tasks` supports actions: `create` (goal, acceptance criteria, scope, risk profile), `get` (task_id), `transition` (status: planned, active, waiting, blocked, verifying, completed, failed, abandoned), `complete` (auto-advances through verification gates if criteria met), `fail` (records failure reason), `checkpoint` (phase, next_action, affected_paths, evidence_ids), `resume`, and `list` (optional string `query`, status, limit, and include_stale filters).
 * `GET /api/agent-state/memory?record_id=&scope=&key=&query=&status=&limit=` searches or fetches memory records.
 * `POST /api/agent-state/memory` supports actions: `record` (kind, scope, key, value, evidence_ids, confidence), `get` (record_id), `find` (scope, key, query, status, limit), `promote` (record_id, target_scope), and `supersede` (old_record_id, new_record_id, reason).
 * `POST /api/agent-state/incidents` supports actions: `record` (tool failure fingerprint), `find` (lookup matching negative knowledge), and `decision` (circuit-breaker / tool retry guidance).

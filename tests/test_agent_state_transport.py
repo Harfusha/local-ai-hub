@@ -413,6 +413,7 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
             },
         ),
         rich_record,
+        MemoryRecord.create(kind="finding", scope=AgentScope.GLOBAL, key="global-tenant-independent", value="global-value", provenance={"root": str(repo_one), "repository_id": "repository-global"}),
         MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one", provenance={"root": str(repo_one), "repository_id": "repository-one"}),
         MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one-missing-id", provenance={"root": str(repo_one)}),
         MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-two", provenance={"root": str(repo_two), "repository_id": "repository-two"}),
@@ -462,6 +463,25 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
         assert [item["value"] for item in repository_id_without_scope["records"]] == ["repo-one"]
         tenant_without_scope = get(tenant="tenant-1", key="tenant-shared")
         assert [item["value"] for item in tenant_without_scope["records"]] == ["tenant-one"]
+        global_record = next(record for record in records if record.scope is AgentScope.GLOBAL)
+        global_for_codex = post({
+            "action": "get",
+            "record_id": global_record.record_id,
+            "scope": "global",
+            "tenant": "codex",
+            "root": str(repo_one),
+            "repository_id": "repository-global",
+        })
+        assert global_for_codex["record"]["value"] == "global-value"
+        global_deleted = post({
+            "action": "delete",
+            "record_id": global_record.record_id,
+            "scope": "global",
+            "tenant": "codex",
+            "root": str(repo_one),
+            "repository_id": "repository-global",
+        })
+        assert global_deleted["success"] is True and global_deleted["deleted"] is True
         rich_direct = post({
             "action": "get",
             "record_id": rich_record.record_id,
@@ -585,6 +605,47 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
         finally:
             mcp_server.CLIENT = previous_mcp_client
             mcp_client.close()
+        with pytest.raises(urllib.error.HTTPError) as delete_mismatch:
+            post({
+                "action": "delete",
+                "record_id": rich_record.record_id,
+                "scope": "task",
+                "scope_id": "another-task",
+            })
+        assert delete_mismatch.value.code == 404
+        deleted = post({
+            "action": "delete",
+            "record_id": rich_record.record_id,
+            "scope": "task",
+            "scope_id": "task-rich",
+        })
+        assert deleted["success"] is True
+        assert deleted["deleted"] is True
+        with pytest.raises(urllib.error.HTTPError) as delete_without_scope:
+            post({"action": "delete", "record_id": records[-2].record_id})
+        assert delete_without_scope.value.code == 400
+        with pytest.raises(urllib.error.HTTPError) as delete_repository_mismatch:
+            post({
+                "action": "delete",
+                "record_id": records[-2].record_id,
+                "scope": "repository",
+                "root": str(repo_two),
+            })
+        assert delete_repository_mismatch.value.code == 404
+        deleted_by_root = post({
+            "action": "delete",
+            "record_id": records[-2].record_id,
+            "scope": "repository",
+            "root": str(repo_one),
+        })
+        assert deleted_by_root["deleted"] is True
+        deleted_by_repository_id = post({
+            "action": "delete",
+            "record_id": records[-1].record_id,
+            "scope": "repository",
+            "repository_id": "repository-two",
+        })
+        assert deleted_by_repository_id["deleted"] is True
     finally:
         server.shutdown()
         thread.join(timeout=5)

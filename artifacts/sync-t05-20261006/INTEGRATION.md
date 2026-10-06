@@ -1,0 +1,58 @@
+# T05 manual master synchronization
+
+Owner: sole T05 writer. Workspace: `C:/Users/Adam/.codex/worktrees/t05-identity-recovery/.local-ai-hub`.
+No Hub calls (parent reported terminal unavailable; native fallback explicitly authorized).
+No writes to root/other worktree, installation, PATH changes, stash, reset, clean, push, or master-ref updates.
+Token-economizer bounded slices used; requested `ensure-tools.ps1 -PlanOnly` failed because script is absent. No installation attempted.
+
+## Pins and preservation
+
+- Original detached HEAD: `43f7b1ccb57762a8fa581b14f4aeeac84b520ed4`.
+- Initial pin merged: `614a6a50ac2a3e4106270136cb8e584e770c3752` (object verified as commit).
+- Initially observed master: `fbc965f568105e1a8d3dc03ae4c9da5531a9617e`; subsequent master movement is handled by one separately pinned final merge.
+- Branch: `codex/sync-t05-20261006`.
+- Durable checkpoint: `df9850131a79191c5a860a1d231d3acd867869db`.
+- Backup ref: `refs/heads/codex/backup-t05-pre-sync-20261006`.
+- `original-inventory.json`: exact pre-merge porcelain status, all 16 tracked dirty paths and 399 untracked paths, size/SHA256, original HEAD, observed master, relevant paths and collisions.
+- `original-bytes.zip`: exact bytes of all 16 tracked dirty files and all 13 relevant new tests, original tracked binary diff and staged binary diff. Raw bytes avoid Git line-ending normalization ambiguity.
+- Seven untracked/master collisions were committed into the checkpoint before merge: agent memory context tenant isolation, HTTP identity, memory delete identity contract, T05 state migrations, cache clear durable state, delete artifacts, FTS atomicity test modules.
+- All 386 unrelated original untracked artifacts remain in place. `preservation-receipt.json` verifies every original unrelated hash and every archived raw source/test hash; contains exact original/current per-path hashes and remaining porcelain status.
+- Runtime databases/cache created by tests remain uncommitted under ignored audit test directories. No original runtime state was removed or staged.
+
+## Semantic conflict decisions and superseded hunks
+
+Every superseded original hunk remains recoverable through the checkpoint ref and raw archive. `resolve.py` records the initial per-hunk choices; later surgical reconciliation is represented in Git history/diff.
+
+| Path | Final decision / concrete supersession |
+| --- | --- |
+| `docs/SECURITY_MODEL.md` | Keep newer transport/header tenant description; shared workspace memo generation explanation remains once. Supersede duplicate older memo paragraph in conflict. |
+| `src/local_ai_hub/agent_events.py` | Keep master cursor tables, append transaction/publication locking, supported incident/task/outbox schema fingerprints, unversioned-current migration handling and busy retry exceptions. Older strict schema-version-only classifier and standalone append body superseded by these newer mechanisms. Remove duplicate import. |
+| `src/local_ai_hub/agent_memory.py` | Keep master transactional delete/quarantine, tombstone replay rejection, complete identity aliases and tenant-agnostic GLOBAL deletion. Preserve T05 safe serialization, malformed projection filtering, SQL JSON/type filters, atomic promotion event/projection helper, unqualified get restriction, explicit quarantine scope arguments. Older stricter blanket TASK/SESSION/REPOSITORY predicates and duplicate tenant SQL superseded by master's newer root/repository identity rules; qualified GLOBAL lookup uses master behavior. |
+| `src/local_ai_hub/agent_tasks.py` | Keep master public memory bindings, scoped task identity, contract-aware context snapshot, audit history and resume refresh in one transition. Remove older duplicate setter/snapshot and unreachable second resume update, which would override bindings or bypass newer memory audit lifecycle. |
+| `src/local_ai_hub/http_server.py` | Keep newer project resolver, header/query identity precedence, explicit delete identity and tenant-agnostic GLOBAL delete. Older blanket scoped-delete 403 replaced by master's checked identity aliases. Preserve T05 composed-key debug redaction, memo delete scope validation/forwarding, verified mutation identity helper and quarantine response; use resolved identity for promote/quarantine while preserving master's authenticated approval gate. `/api/context/pack` AST matches initial master pin exactly; no redesign. |
+| `src/local_ai_hub/memory.py` | Retain T05 explicit global/tenant memo delete scope; tenant scope requires tenant, global clears filter. No superseded functionality. |
+| `tests/test_agent_memory.py` | Merge newer temporary-root and scoped identity fixtures; retain missing original top-level tests/helpers by name, including cursor/write rollback and stricter identity tests. Deduplicate auto-merged provenance keyword. Same-name older fixture/assertion variants remain in checkpoint. Some old stricter identity expectations remain failing, explicitly unaccepted. |
+| `tests/test_agent_memory_context_tenant_isolation.py` | Retain T05 projection helper and tenantless adversarial fixture coverage; merge public record-path fixtures. Tenantless-only-GLOBAL expectation retained as failing evidence rather than changing newer master context behavior. |
+| `tests/test_agent_memory_http_identity.py` | Merge master's GLOBAL transport semantics/trusted promotion fixtures; retain independent original tests and MemoryStatus import. Older expected successful caller-forged user promotion superseded by explicit 403 assertion. Replay test now expects tombstone ValueError, retaining no-resurrection checks. Other same-name old assertions saved in checkpoint. |
+| `tests/test_audit_round2_enhancements.py` | Use matching master `session-cascade` fixture/delete scope; older `session-audit` naming is equivalent and preserved in checkpoint. |
+| `tests/test_client_transport.py` | Retain master's new invalid-object response test alongside original fixture additions. |
+| `tests/test_identity_contracts.py` | Combine master subprocess output tracking/CREATE_NO_WINDOW with original independent worktree idempotency/delete tests. |
+| `tests/test_production_readiness_repairs.py` | Keep explicit master root/repository delete identity; original incomplete delete fixture superseded. |
+| `tests/test_t05_agent_state_migrations.py` | Keep master artifact-backed verification receipt fixture and added accepted incident-layout tests. Retain original projection/provenance assertions and missing-identity rejection. Older receipt fixture lacking required artifact evidence superseded. |
+| `tests/test_t05_cache_clear_durable_state.py` | Retain original explicit task/root/tenant identity fixture and negative unqualified lookup; no removed original cases. |
+| `tests/test_t05_cache_state_isolation.py` | Retain original stronger provenance, denied cross-tenant cases, cache recovery failure case and worker loaded-source-origin assertions; no original test removed. |
+| `tests/test_t05_memory_delete_artifacts.py` | Combine master public record/event setup with original three-table deletion fault injection and reopened-state assertions. Seed marker sequence now 2 (public record already emits sequence 1). Original silent replay-return expectation superseded by master tombstone ValueError; no-resurrection checks remain. |
+| `tests/test_t05_memory_fts_atomicity.py` | Retain original full event equality rollback check, add master cursor lookup. Original and current record/update cases retained. |
+| `tests/test_vision_artifacts.py` | Keep master explicit `action="get"` matching current MCP schema; older omitted action superseded. |
+
+Other original tracked paths (`evidence.py`, agent state operations/transport, debug trace summary, evidence contract) merge without conflicts; relevant root snapshot/adoption/delete scope test modules committed intact or mechanically integrated. Gemini CodeGraph removal and master context implementation inherited; no CodeGraph resurrection.
+
+## Validation / acceptance
+
+Targeted validation only; no release suite. Commands use assigned source via PYTHONPATH, PYTHONDONTWRITEBYTECODE=1, no pytest cache, and a unique audit-local basetemp.
+
+1. Initial 11-module pytest collection: failed on auto-merged repeated `provenance` keyword; repaired.
+2. Intermediate 11-module run: 122 passed, 14 failed, 1 skipped in 68.84s. Three sequence fixture failures, two silent replay expectations and caller-forged promotion expectation reconciled with current master afterward. Source changed during this intermediate run; this is diagnostic evidence, not final-source acceptance.
+3. Preservation/compile check: all 29 raw backups verified, all 386 unrelated original artifacts unchanged; zero Python syntax errors; context pack AST equal to initial pin.
+
+Final targeted result and final pin will be appended before handoff. Commit records reconciled unfinished work; it does not assert feature acceptance.

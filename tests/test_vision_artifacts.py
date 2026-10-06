@@ -962,6 +962,7 @@ def test_http_binary_artifact_get_returns_complete_payload(tmp_path: Path) -> No
         )
         with urllib.request.urlopen(request) as response:
             cross_tenant_payload = json.loads(response.read().decode("utf-8"))
+        cross_tenant_payload.pop("request_id", None)
         assert cross_tenant_payload == {"success": False, "error": "artifact not found or expired"}
     finally:
         server.shutdown()
@@ -985,7 +986,7 @@ def test_mcp_binary_artifact_response_is_metadata_only(monkeypatch: pytest.Monke
         },
     )
 
-    result = mcp_server.local_ai_artifact(artifact_id="art_image", binary=True)
+    result = mcp_server.local_ai_artifact(action="get", artifact_id="art_image", binary=True)
 
     assert result["success"] is True
     assert "data_base64" not in result
