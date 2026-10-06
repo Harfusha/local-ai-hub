@@ -437,6 +437,9 @@ def test_sdk_wrappers_match_live_http_handler_contracts(
     for method, kwargs, route, payload, service_name, args, service_kwargs in cases:
         calls.clear()
         result = getattr(client, method)(**kwargs)
-        assert result == {"success": True, "service": service_name}
+        assert result["success"] is True
+        assert result["service"] == service_name
+        assert isinstance(result.get("request_id"), str) and result["request_id"]
+        assert set(result) == {"success", "service", "request_id"}
         assert calls == [{"method": "POST", "path": route, "payload": payload}]
         assert received[service_name] == (args, service_kwargs)
