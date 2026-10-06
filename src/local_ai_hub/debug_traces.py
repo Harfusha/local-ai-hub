@@ -54,6 +54,7 @@ class DebugTraceStore:
         self.max_events_per_session = max(2, int(cfg.get("max_events_per_session", 20000)))
         self.max_event_bytes = max(256, int(cfg.get("max_event_bytes", 4 * 1024 * 1024)))
         self.max_session_text_bytes = max(1024, int(cfg.get("max_session_text_bytes", 64 * 1024 * 1024)))
+        self.max_detail_response_bytes = max(4096, min(16 * 1024 * 1024, int(cfg.get("max_detail_response_bytes", 1024 * 1024))))
         self.cleanup_batch_size = max(1, int(cfg.get("cleanup_batch_size", 50)))
         self.max_list_limit = max(1, int(cfg.get("max_list_limit", 200)))
         self.path = Path(config["server"]["state_dir"]) / "debug_traces.sqlite3"
@@ -374,17 +375,25 @@ class DebugTraceStore:
         since_seq: int = 0,
         limit: int = _TRACE_DETAIL_DEFAULT_LIMIT,
         max_bytes: int = _TRACE_DETAIL_DEFAULT_BYTES,
+        before_seq: int = 0,
+        full_payload: bool = False,
     ) -> dict[str, Any]:
         try:
             cursor = 0 if isinstance(since_seq, bool) else min(2**63 - 1, max(0, int(since_seq)))
         except (TypeError, ValueError, OverflowError):
             cursor = 0
         try:
+            backward_cursor = 0 if isinstance(before_seq, bool) else min(2**63 - 1, max(0, int(before_seq)))
+        except (TypeError, ValueError, OverflowError):
+            backward_cursor = 0
+        try:
             page_limit = 100 if isinstance(limit, bool) else max(1, min(int(limit), _TRACE_DETAIL_MAX_LIMIT))
         except (TypeError, ValueError, OverflowError):
             page_limit = _TRACE_DETAIL_DEFAULT_LIMIT
         try:
-            byte_limit = 1024 if isinstance(max_bytes, bool) else max(1024, min(int(max_bytes), _TRACE_DETAIL_MAX_BYTES))
+            byte_limit = 1024 if isinstance(max_bytes, bool) else max(
+                1024, min(int(max_bytes), _TRACE_DETAIL_MAX_BYTES, self.max_detail_response_bytes)
+            )
         except (TypeError, ValueError, OverflowError):
             byte_limit = _TRACE_DETAIL_DEFAULT_BYTES
 
@@ -403,6 +412,13 @@ class DebugTraceStore:
                 events_total = int(stats[0] or 0) if stats else 0
                 first_retained_seq = int(stats[1] or 0) if stats else 0
                 last_seq = int(stats[2] or 0) if stats else 0
+                backward_has_more = False
+                if backward_cursor:
+                    backward_count = con.execute(
+                        "SELECT COUNT(*) FROM (SELECT 1 FROM trace_events WHERE trace_id=? AND seq<? LIMIT ?)",
+                        (trace_id, backward_cursor, page_limit + 1),
+                    ).fetchone()
+                    backward_has_more = bool(backward_count and int(backward_count[0] or 0) > page_limit)
                 # Preserve the pinned forward-cursor contract: past-end requests
                 # are empty, not an implicit replay of previously retained events.
                 cursor_reset = False
@@ -436,6 +452,22 @@ class DebugTraceStore:
                             break
                 session = self._session(row)
                 session["thinking"] = "".join(thinking_parts)
+                session_payload_truncated = False
+                for field in ("request", "effective_payload", "output", "response", "thinking"):
+                    value = session.get(field)
+                    truncated = (
+                        isinstance(value, dict)
+                        and value.get("truncated") is True
+                        and isinstance(value.get("preview"), str)
+                    )
+                    output_marker = field == "output" and isinstance(value, str) and value.endswith("\n[trace output truncated]")
+                    if full_payload and isinstance(value, str) and len(value.encode("utf-8")) > 64 * 1024 and not output_marker:
+                        preview = value.encode("utf-8")[: 64 * 1024].decode("utf-8", errors="ignore")
+                        session[field] = {"truncated": True, "preview": preview}
+                        truncated = True
+                    if full_payload and output_marker:
+                        truncated = True
+                    session_payload_truncated = session_payload_truncated or truncated
                 events: list[dict[str, Any]] = []
                 result: dict[str, Any] = {
                     "success": True,
@@ -455,16 +487,21 @@ class DebugTraceStore:
                     "cursor_reset": cursor_reset,
                     "terminal": session["state"] in self.TERMINAL_STATES,
                     "response_bytes": 0,
+                    "events_has_more": backward_has_more,
+                    "events_before_seq": backward_cursor,
+                    "full_payload_requested": bool(full_payload),
                 }
+                if full_payload:
+                    result["payload_truncated"] = session_payload_truncated
 
                 def serialized_size(value: dict[str, Any]) -> int:
                     value["response_bytes"] = 0
                     for _ in range(5):
-                        size = len(json_dumps(value).encode("utf-8"))
+                        size = len(self._encode(value).encode("utf-8"))
                         if value["response_bytes"] == size:
                             return size
                         value["response_bytes"] = size
-                    return len(json_dumps(value).encode("utf-8"))
+                    return len(self._encode(value).encode("utf-8"))
 
                 def oversize_response(required_bytes: int, oversize_seq: int | None) -> dict[str, Any]:
                     response: dict[str, Any] = {
@@ -479,12 +516,15 @@ class DebugTraceStore:
                         "events_total": events_total,
                         "limit": page_limit,
                         "max_bytes": byte_limit,
-                        "has_more": last_seq > effective_cursor,
+                        "has_more": backward_has_more if backward_cursor else last_seq > effective_cursor,
                         "oversize_seq": oversize_seq,
                         "required_bytes": required_bytes,
                         "gap_ranges": gap_ranges,
                         "cursor_reset": cursor_reset,
                         "response_bytes": 0,
+                        "events_has_more": backward_has_more if backward_cursor else last_seq > effective_cursor,
+                        "events_before_seq": backward_cursor,
+                        "full_payload_requested": bool(full_payload),
                     }
                     response["response_bytes"] = serialized_size(response)
                     if response["response_bytes"] > byte_limit:
@@ -495,10 +535,13 @@ class DebugTraceStore:
                             "trace_id": trace_id[:128],
                             "next_seq": effective_cursor,
                             "max_bytes": byte_limit,
-                            "has_more": last_seq > effective_cursor,
+                            "has_more": backward_has_more if backward_cursor else last_seq > effective_cursor,
                             "oversize_seq": oversize_seq,
                             "required_bytes": required_bytes,
                             "response_bytes": 0,
+                            "events_has_more": backward_has_more if backward_cursor else last_seq > effective_cursor,
+                            "events_before_seq": backward_cursor,
+                            "full_payload_requested": bool(full_payload),
                         }
                         response["response_bytes"] = serialized_size(response)
                     return response
@@ -507,30 +550,53 @@ class DebugTraceStore:
                 if base_bytes > byte_limit:
                     return oversize_response(base_bytes, None)
 
-                rows = con.execute(
-                    "SELECT seq,created_at,event_type,payload_json FROM trace_events "
-                    "WHERE trace_id=? AND seq>? ORDER BY seq ASC LIMIT ?",
-                    (trace_id, effective_cursor, page_limit + 1),
-                )
+                if backward_cursor:
+                    backward_rows = con.execute(
+                        "SELECT seq,created_at,event_type,payload_json FROM trace_events "
+                        "WHERE trace_id=? AND seq<? ORDER BY seq DESC LIMIT ?",
+                        (trace_id, backward_cursor, page_limit + 1),
+                    ).fetchall()
+                    rows = iter(reversed(backward_rows[:page_limit]))
+                else:
+                    rows = iter(con.execute(
+                        "SELECT seq,created_at,event_type,payload_json FROM trace_events "
+                        "WHERE trace_id=? AND seq>? ORDER BY seq ASC LIMIT ?",
+                        (trace_id, effective_cursor, page_limit + 1),
+                    ).fetchall())
                 while True:
-                    event_row = rows.fetchone()
+                    event_row = next(rows, None)
                     if event_row is None:
                         break
                     if len(events) >= page_limit:
-                        result["has_more"] = True
+                        result["has_more"] = backward_has_more if backward_cursor else True
+                        if backward_cursor:
+                            result["events_has_more"] = backward_has_more
+                        else:
+                            result["events_has_more"] = True
                         break
                     event = dict(event_row)
                     event["payload"] = self._decode(event.pop("payload_json"), {})
+                    if full_payload and isinstance(event["payload"], dict) and event["payload"].get("truncated") is True:
+                        result["payload_truncated"] = True
                     candidate_events = [*events, event]
                     candidate = dict(result)
                     candidate["events"] = candidate_events
                     candidate["next_seq"] = int(event["seq"] or 0)
-                    candidate["has_more"] = candidate["next_seq"] < last_seq
+                    if backward_cursor:
+                        candidate["has_more"] = backward_has_more
+                    else:
+                        candidate["has_more"] = candidate["next_seq"] < last_seq
+                        candidate["events_has_more"] = candidate["has_more"]
+                        candidate["events_before_seq"] = int(candidate_events[0]["seq"] or 0)
                     required_bytes = serialized_size(candidate)
                     if required_bytes > byte_limit:
                         if not events:
                             return oversize_response(required_bytes, int(event["seq"] or 0))
-                        result["has_more"] = True
+                        result["has_more"] = backward_has_more if backward_cursor else True
+                        if backward_cursor:
+                            result["events_has_more"] = backward_has_more
+                        else:
+                            result["events_has_more"] = True
                         result["page_truncated"] = True
                         result["oversize_seq"] = int(event["seq"] or 0)
                         result["required_bytes"] = required_bytes
@@ -538,6 +604,8 @@ class DebugTraceStore:
                             dropped = events.pop()
                             dropped_seq = int(dropped["seq"] or 0)
                             result["next_seq"] = int(events[-1]["seq"] or 0) if events else effective_cursor
+                            if backward_cursor:
+                                result["events_before_seq"] = int(events[0]["seq"] or 0) if events else backward_cursor
                             result["oversize_seq"] = dropped_seq
                             candidate = dict(result)
                             candidate["events"] = [*events, dropped]
@@ -554,11 +622,21 @@ class DebugTraceStore:
                         break
                     events.append(event)
                     result["next_seq"] = int(event["seq"] or 0)
+                    if backward_cursor:
+                        result["events_has_more"] = backward_has_more
+                        result["events_before_seq"] = int(events[0]["seq"] or 0)
+                    else:
+                        result["events_has_more"] = result["has_more"]
+                        result["events_before_seq"] = int(events[0]["seq"] or 0)
                     result["response_bytes"] = required_bytes
 
                 result["response_bytes"] = serialized_size(result)
                 if result["response_bytes"] > byte_limit:
-                    result["has_more"] = True
+                    result["has_more"] = backward_has_more if backward_cursor else True
+                    if backward_cursor:
+                        result["events_has_more"] = backward_has_more
+                    else:
+                        result["events_has_more"] = True
                     result["page_truncated"] = True
                     first_dropped_seq: int | None = None
                     required_bytes = result["response_bytes"]
