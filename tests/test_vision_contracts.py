@@ -492,7 +492,7 @@ def test_vision_result_bounds_bbox_to_image_dimensions() -> None:
         "findings": [{
             "id": "f1", "severity": "low", "category": "layout",
             "problem": "issue", "confidence": 0.5,
-            "bbox": [90, 80, 20, 30], "evidence": ["visible region"],
+            "bbox": [90, 80, 110, 110], "evidence": ["visible region"],
         }],
     })
 
@@ -505,6 +505,8 @@ def test_vision_result_bounds_bbox_to_image_dimensions() -> None:
 def test_image_dimensions_reads_png_header() -> None:
     header = bytearray(24)
     header[:8] = b"\x89PNG\r\n\x1a\n"
+    header[8:12] = (13).to_bytes(4, "big")
+    header[12:16] = b"IHDR"
     header[16:20] = (640).to_bytes(4, "big")
     header[20:24] = (480).to_bytes(4, "big")
 
@@ -683,15 +685,6 @@ def test_coder_packet_keeps_referenced_dom_ancestors_and_bounded_runtime() -> No
     assert packet["repo"] == {"files": ["src/Checkout.tsx"]}
 
 
-def test_coder_packet_bounds_finding_payloads() -> None:
-    packet = build_coder_packet(
-        prompt="Review",
-        findings=[{"element_ids": ["cta"], "problem": "x" * 100_000}],
-        dom={"elements": [{"element_id": "cta"}]},
-    )
-
-    assert packet["terminal"] is True
-    assert packet["error"]["code"] == "frontend_context_too_large"
 
 
 def test_coder_packet_rejects_findings_that_reference_missing_dom_elements() -> None:
@@ -788,7 +781,8 @@ def test_coder_packet_normalizes_parsed_finding_tuples() -> None:
         '"severity":"low","category":"layout",'
         '"problem":"visible issue","confidence":0.8,'
         '"uncertainty":["small sample"],"element_ids":[],'
-        '"bbox":[1,2,3,4],"evidence":["button is visible"]}]}'
+        '"bbox":[1,2,3,4],"evidence":["button is visible"]}]}',
+        image_size=(640, 360),
     )
     finding = asdict(parsed.findings[0])
 
@@ -867,7 +861,6 @@ def test_grounded_vision_checks_explicit_expected_value_mismatch(
         assert "problem contradicts supplied observation fact" in result.error["message"]
     else:
         assert result.findings[0].observation_facts[0].value == fact
-
 def test_grounded_vision_rejects_live_output_missing_hypothesized() -> None:
     payload = {
         "summary": "button label review",

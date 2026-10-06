@@ -511,7 +511,7 @@ def test_extension_does_not_cancel_commit_when_both_responses_are_lost() -> None
     }
 
 
-@pytest.mark.parametrize("response_case", ["commit-invalid-shape", "commit-missing-artifact-id", "commit-request-id-mismatch"])
+@pytest.mark.parametrize("response_case", ["commit-request-id-mismatch", "commit-invalid-shape", "commit-missing-artifact-id", "commit-missing-request-id", "commit-mismatched-request-id", "commit-mismatched-error-request-id"])
 def test_extension_treats_malformed_commit_response_as_unknown(response_case: str) -> None:
     assert run_browser_background_case(response_case) == {
         "success": True,

@@ -59,6 +59,7 @@ def test_trace_retention_days_override_terminal_ttl_and_are_reported(tmp_path):
     assert expires_at - updated_at >= 2 * 86400 - 1
     assert store.stats()["retention_days"] == 2
 
+
 def test_trace_detail_preserves_ordered_full_debug_content(tmp_path):
     store = DebugTraceStore(_config(tmp_path))
     trace_id = store.start(kind="async_job", tenant="tenant", agent="codex", action="reason")
@@ -89,6 +90,106 @@ def test_trace_detail_since_seq_and_list_filters_are_bounded(tmp_path):
     assert listed["items"][0]["trace_id"] == second
 
 
+def test_trace_detail_pages_in_sequence_order_with_stable_cursor(tmp_path):
+    from local_ai_hub.json_utils import dumps as json_dumps
+
+    store = DebugTraceStore(_config(tmp_path))
+    trace_id = store.start(kind="api_request", tenant="tenant", agent="codex", action="/api/reason")
+    for index in range(5):
+        store.event(trace_id, "output_delta", {"index": index})
+
+    first = store.detail(trace_id, since_seq=0, limit=2)
+    second = store.detail(trace_id, since_seq=first["next_seq"], limit=2)
+    third = store.detail(trace_id, since_seq=second["next_seq"], limit=2)
+
+    assert [event["seq"] for event in first["events"]] == [1, 2]
+    assert [event["seq"] for event in second["events"]] == [3, 4]
+    assert [event["seq"] for event in third["events"]] == [5]
+    assert first["has_more"] is True
+    assert second["has_more"] is True
+    assert third["has_more"] is False
+    assert [first["next_seq"], second["next_seq"], third["next_seq"]] == [2, 4, 5]
+    assert first["events_total"] == 5
+    assert first["response_bytes"] == len(json_dumps(first).encode("utf-8"))
+    reset = store.detail(trace_id, since_seq=999, limit=2)
+    assert reset["cursor_reset"] is True
+    assert [event["seq"] for event in reset["events"]] == [1, 2]
+
+
+def test_trace_detail_byte_budget_pages_at_event_boundaries(tmp_path):
+    from local_ai_hub.json_utils import dumps as json_dumps
+
+    store = DebugTraceStore(_config(tmp_path, max_event_bytes=8192))
+    trace_id = store.start(kind="api_request", tenant="tenant", agent="codex", action="/api/reason")
+    for index in range(8):
+        store.event(trace_id, "output_delta", {"index": index, "text": "x" * 1500})
+
+    page = store.detail(trace_id, since_seq=0, limit=100, max_bytes=5000)
+
+    assert page["success"] is True
+    assert 1 <= len(page["events"]) < 8
+    assert page["page_truncated"] is True
+    assert page["has_more"] is True
+    assert page["next_seq"] == page["events"][-1]["seq"]
+    assert page["response_bytes"] <= 5000
+    assert page["response_bytes"] == len(json_dumps(page).encode("utf-8"))
+
+
+def test_trace_detail_required_bytes_follow_first_trimmed_event(tmp_path):
+    from local_ai_hub.json_utils import dumps as json_dumps
+
+    store = DebugTraceStore(_config(tmp_path, max_event_bytes=8192))
+    trace_id = store.start(kind="api_request", tenant="tenant", agent="codex", action="/api/reason")
+    store.event(trace_id, "output_delta", {"text": "a" * 800})
+    store.event(trace_id, "output_delta", {"text": "b" * 800})
+    store.event(trace_id, "output_delta", {"text": "c" * 5000})
+
+    first_event_page = store.detail(trace_id, limit=1, max_bytes=64 * 1024)
+    page_budget = first_event_page["response_bytes"] + 16
+    page = store.detail(trace_id, limit=100, max_bytes=page_budget)
+    full = store.detail(trace_id, limit=100, max_bytes=64 * 1024)
+
+    assert page["success"] is True
+    assert page["page_truncated"] is True
+    assert [event["seq"] for event in page["events"]] == [1]
+    assert page["next_seq"] == 1
+    assert page["oversize_seq"] == 2
+    next_event = next(event for event in full["events"] if event["seq"] == page["oversize_seq"])
+    candidate = dict(page)
+    candidate["events"] = [*page["events"], next_event]
+    candidate["next_seq"] = next_event["seq"]
+    candidate["has_more"] = candidate["next_seq"] < page["last_seq"]
+    candidate["page_truncated"] = False
+    candidate["oversize_seq"] = None
+    candidate["required_bytes"] = None
+    candidate["response_bytes"] = 0
+    for _ in range(5):
+        required_bytes = len(json_dumps(candidate).encode("utf-8"))
+        if candidate["response_bytes"] == required_bytes:
+            break
+        candidate["response_bytes"] = required_bytes
+
+    assert page["required_bytes"] == required_bytes
+    assert page["response_bytes"] <= page_budget
+
+
+def test_trace_detail_reports_oversize_event_without_advancing_cursor(tmp_path):
+    store = DebugTraceStore(_config(tmp_path, max_event_bytes=8192))
+    trace_id = store.start(kind="api_request", tenant="tenant", agent="codex", action="/api/reason")
+    store.event(trace_id, "output_delta", {"text": "full-payload-" + "x" * 6000})
+
+    blocked = store.detail(trace_id, since_seq=0, limit=10, max_bytes=4096)
+    recovered = store.detail(trace_id, since_seq=0, limit=10, max_bytes=16 * 1024)
+
+    assert blocked["success"] is False
+    assert blocked["error_code"] == "trace_detail_oversize"
+    assert blocked["next_seq"] == 0
+    assert blocked["oversize_seq"] == 1
+    assert blocked["required_bytes"] > blocked["max_bytes"]
+    assert blocked["response_bytes"] <= blocked["max_bytes"]
+    assert recovered["success"] is True
+    assert recovered["events"][0]["payload"]["text"] == "full-payload-" + "x" * 6000
+    assert recovered["response_bytes"] <= recovered["max_bytes"]
 @pytest.mark.parametrize("offset", [2**63 - 1, 2**63, 2**100])
 def test_trace_list_accepts_offsets_beyond_sqlite_integer_range(tmp_path, offset):
     store = DebugTraceStore(_config(tmp_path))
@@ -303,10 +404,12 @@ def test_model_request_promotes_model_to_trace_summary(tmp_path):
 
 
 def test_missing_debug_trace_detail_returns_not_found(monkeypatch):
+    from types import SimpleNamespace
+
     class DebugTraces:
         TERMINAL_STATES = set()
 
-        def detail(self, trace_id, *, since_seq):
+        def detail(self, trace_id, *, since_seq, limit=100, max_bytes=8 * 1024 * 1024):
             return {"success": False, "error": "trace not found"}
 
     class App:
@@ -326,6 +429,118 @@ def test_missing_debug_trace_detail_returns_not_found(monkeypatch):
     assert responses == [(404, {"success": False, "error": "trace not found"})]
 
 
+def test_trace_detail_http_clamps_page_parameters_and_maps_oversize(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    store = DebugTraceStore(_config(tmp_path, max_event_bytes=8192))
+    trace_id = store.start(kind="api_request", tenant="tenant", agent="codex", action="/api/reason")
+    store.event(trace_id, "output_delta", {"text": "x" * 6000})
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(
+        debug_traces=store,
+        async_jobs=SimpleNamespace(path=tmp_path / "jobs.sqlite3"),
+    ))
+    mode_api = SimpleNamespace(
+        load_operational_mode=lambda *, state_dir: SimpleNamespace(mode="active", degraded=False),
+        operational_mode_gate_error=lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(http_server, "_operational_mode_api", lambda: mode_api)
+
+    def get(path):
+        handler = http_server.Handler.__new__(http_server.Handler)
+        handler.path = path
+        handler.client_address = ("127.0.0.1", 12345)
+        handler.headers = {}
+        handler._begin_trace = lambda _path: None
+        handler._require_authorized = lambda: True
+        handler._reconcile_debug_trace = lambda session: session
+        handler.responses = []
+        handler._send = lambda status, data: handler.responses.append((status, data))
+        handler.do_GET()
+        return handler.responses
+
+    oversized = get(
+        f"/api/debug-traces/{trace_id}?since_seq=-3&limit=999999999&max_bytes=4096"
+    )
+    assert oversized[0][0] == 413
+    assert oversized[0][1]["error_code"] == "trace_detail_oversize"
+    assert oversized[0][1]["next_seq"] == 0
+    assert oversized[0][1]["max_bytes"] == 4096
+    assert oversized[0][1]["response_bytes"] <= 4096
+    assert oversized[0][1]["response_bytes"] == len(http_server._json_bytes(oversized[0][1]))
+
+    complete = get(
+        f"/api/debug-traces/{trace_id}?since_seq=-3&limit=999999999&max_bytes=999999999"
+    )
+    assert complete[0][0] == 200
+    assert complete[0][1]["limit"] == 1000
+    assert complete[0][1]["max_bytes"] == 8 * 1024 * 1024
+    assert complete[0][1]["next_seq"] == 1
+    assert complete[0][1]["events"][0]["payload"]["text"] == "x" * 6000
+    assert complete[0][1]["response_bytes"] <= 8 * 1024 * 1024
+    assert complete[0][1]["response_bytes"] == len(http_server._json_bytes(complete[0][1]))
+
+    default_budget = get(f"/api/debug-traces/{trace_id}")
+    assert default_budget[0][0] == 200
+    assert default_budget[0][1]["max_bytes"] == 8 * 1024 * 1024
+    assert default_budget[0][1]["response_bytes"] <= 8 * 1024 * 1024
+
+
+def test_trace_detail_http_rebuilds_page_after_reconciliation(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    class DebugTraces:
+        TERMINAL_STATES = {"done", "failed", "cancelled", "expired"}
+
+        def __init__(self):
+            self.calls = []
+
+        def detail(self, trace_id, **kwargs):
+            self.calls.append((trace_id, kwargs))
+            session = {"state": "running", "error": ""} if len(self.calls) == 1 else {
+                "state": "done", "error": "", "finished_at": 1.0,
+            }
+            result = {
+                "success": True,
+                "session": session,
+                "events": [],
+                "terminal": session["state"] in self.TERMINAL_STATES,
+                "response_bytes": 0,
+            }
+            for _ in range(5):
+                size = len(http_server._json_bytes(result))
+                if result["response_bytes"] == size:
+                    break
+                result["response_bytes"] = size
+            return result
+
+    traces = DebugTraces()
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(
+        debug_traces=traces,
+        async_jobs=SimpleNamespace(path=tmp_path / "jobs.sqlite3"),
+    ))
+    mode_api = SimpleNamespace(
+        load_operational_mode=lambda *, state_dir: SimpleNamespace(mode="active", degraded=False),
+        operational_mode_gate_error=lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(http_server, "_operational_mode_api", lambda: mode_api)
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path = "/api/debug-traces/trace-1?since_seq=0&limit=2&max_bytes=4096"
+    handler.client_address = ("127.0.0.1", 12345)
+    handler.headers = {}
+    handler._begin_trace = lambda _path: None
+    handler._require_authorized = lambda: True
+    handler._reconcile_debug_trace = lambda session: session.update(state="done", finished_at=1.0) or session
+    handler.responses = []
+    handler._send = lambda status, data: handler.responses.append((status, data))
+
+    handler.do_GET()
+
+    assert len(traces.calls) == 2
+    assert traces.calls[0] == traces.calls[1]
+    assert handler.responses[0][0] == 200
+    assert handler.responses[0][1]["session"]["state"] == "done"
+    assert handler.responses[0][1]["terminal"] is True
+    assert handler.responses[0][1]["response_bytes"] == len(http_server._json_bytes(handler.responses[0][1]))
 
 
 
@@ -516,3 +731,18 @@ def test_debug_trace_route_forwards_bounded_content_page_cursor(monkeypatch):
         {"since_seq": 0, "limit": 100, "full_payload": True, "content_field": "output", "content_offset": 128, "before_seq": 0},
     )
     assert responses == [(200, {"success": True, "content_page": {"field": "output", "offset": 128}})]
+
+
+@pytest.mark.parametrize("since_seq", [2**63 - 1, 2**63, 2**100])
+def test_trace_detail_clamps_forward_cursor_and_reports_retained_reset(tmp_path, since_seq):
+    store = DebugTraceStore(_config(tmp_path))
+    trace_id = store.start(kind="async_job", tenant="tenant", action="reason")
+    store.event(trace_id, "progress", {"index": 1})
+
+    detail = store.detail(trace_id, since_seq=since_seq)
+
+    assert detail["success"] is True
+    assert detail["cursor_reset"] is True
+    assert detail["first_retained_seq"] == 1
+    assert detail["next_seq"] == 1
+    assert [event["seq"] for event in detail["events"]] == [1]

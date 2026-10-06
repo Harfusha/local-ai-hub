@@ -1883,7 +1883,12 @@ class WorkOrchestrator:
 
             # Whole-task final check uses the original request, not the planner summary.
             self._set_state(work_id,"verifying",{"summary":"whole-task verification","plan":plan,"steps":step_results,"changed_files":changed,"validation":validation},attempt=attempt)
-            if changed and validated_generation != mutation_generation:
+            from .agent_verification import criterion_evidence_type
+            requires_execution_evidence = any(
+                criterion_evidence_type(criterion) in {"test", "benchmark"}
+                for criterion in criteria
+            )
+            if (changed or requires_execution_evidence) and validated_generation != mutation_generation:
                 run_validations("final integrated validation")
             while True:
                 if not budget_ok():
@@ -1989,7 +1994,7 @@ class WorkOrchestrator:
                     raise RuntimeError(f"whole-task verification failed: {verification.get('summary','unspecified')}")
                 run_validations("replanned repair after final verification")
             changed = [str(x) for x in diff.get("changed_files", changed)] if isinstance(diff, dict) else changed
-            report={"original_task":task,"plan":plan,"steps":step_results,"changed_files":changed,"diff":diff,"validation":validation,"verification":verification,"llm_calls":llm_calls,"replans":replans,"elapsed_seconds":round(time.monotonic()-started,2)}
+            report={"original_task":task,"plan":plan,"steps":step_results,"changed_files":changed,"diff":diff,"validation":validation,"verification":verification,"verification_receipts":[receipt.to_dict() for receipt in verification_receipts],"llm_calls":llm_calls,"replans":replans,"elapsed_seconds":round(time.monotonic()-started,2)}
             artifact=self.artifacts.put(json_dumps(report,ensure_ascii=False,indent=2),tenant,"work-handoff")
             handoff={"summary":str(verification.get("summary") or plan.get("summary") or "work complete")[:900],"changed_files":changed,"validation":{"passed":all(v.get("success") for v in validation),"commands":len(validation)},"verification":verification,"verification_receipts":[receipt.to_dict() for receipt in verification_receipts],"risks":verification.get("risks",[])[:8],"handoff_id":artifact,"artifact_id":artifact,"available_details":["plan","steps","diff","validation","verification","verification_receipts"]}
             if not self._complete_if_not_cancelled(work_id, handoff, attempt=attempt):
@@ -2004,7 +2009,7 @@ class WorkOrchestrator:
             rolled = self._rollback_transaction(work_id, root, journal, keep=bool(payload.get("keep_failed_workspace")), attempt=attempt)
             if rolled:
                 changed = []
-            self._set_terminal_if_active(work_id,"cancelled",{"summary":"work order cancelled" + ("; workspace rolled back" if rolled else ""),"changed_files":changed,"rolled_back":rolled},attempt=attempt)
+            self._set_terminal_if_active(work_id,"cancelled",{"summary":"work order cancelled" + ("; workspace rolled back" if rolled else ""),"changed_files":changed,"rolled_back":rolled,"verification_receipts":[receipt.to_dict() for receipt in verification_receipts]},attempt=attempt)
         except Exception as exc:
             rolled=False
             try:

@@ -97,3 +97,70 @@ def test_error_metadata_is_redacted_in_both_persisted_tables(tmp_path):
     assert all(row[1] == "RuntimeError" for row in events)
     assert events[0][2] == events[1][2]
     assert events[0][2] != events[2][2]
+    for row in [*errors, *events]:
+        persisted = repr(row)
+        assert all(value not in persisted for value in private_values)
+
+
+def test_root_level_posix_paths_are_redacted_from_persisted_error_fields(tmp_path):
+    paths = ("/secret", "/home/alice", "/etc/passwd", "/x")
+    store = TelemetryStore(tmp_path / "telemetry", enabled=True)
+    try:
+        for index, path in enumerate(paths):
+            store.record_error(
+                f"path={path}",
+                "generate",
+                RuntimeError("failure"),
+                request_id=f"request-{index}",
+            )
+        assert store.flush(1)
+        con = store._connect()
+        try:
+            errors = con.execute("SELECT component, operation FROM errors ORDER BY rowid").fetchall()
+            events = con.execute(
+                "SELECT action FROM events WHERE event_type='error' ORDER BY rowid"
+            ).fetchall()
+        finally:
+            con.close()
+    finally:
+        store.close()
+
+    assert len(errors) == len(events) == len(paths)
+    assert all(row == ("path=<path>", "generate") for row in errors)
+    assert all(row == ("path=<path>:generate",) for row in events)
+    for path, error_row, event_row in zip(paths, errors, events):
+        assert path not in repr(error_row)
+        assert path not in repr(event_row)
+
+
+def test_http_pathlike_labels_are_redacted_but_benign_routes_survive(tmp_path):
+    store = TelemetryStore(tmp_path / "telemetry", enabled=True)
+    try:
+        store.record_http(action="/secret", route="/x", success=True, duration_ms=1)
+        store.record_http(action="/slow", route="/median", success=True, duration_ms=2)
+        store.record_http(
+            action="/api/users/alice",
+            route="/api/projects/private-name",
+            success=True,
+            duration_ms=3,
+        )
+        assert store.flush(1)
+        con = store._connect()
+        try:
+            rows = con.execute(
+                "SELECT action, route FROM events WHERE event_type='http' ORDER BY rowid"
+            ).fetchall()
+        finally:
+            con.close()
+    finally:
+        store.close()
+
+    assert rows == [
+        ("<path>", "<path>"),
+        ("/slow", "/median"),
+        ("<path>", "<path>"),
+    ]
+    assert "/secret" not in repr(rows)
+    assert "/x" not in repr(rows)
+    assert "/api/users/alice" not in repr(rows)
+    assert "/api/projects/private-name" not in repr(rows)
