@@ -867,11 +867,13 @@ class MemoryStore:
                             record_id=existing_record_id,
                         ) is not None:
                             raise ValueError("memory record was deleted and cannot be replayed")
-                        self.state_store.append_in_transaction(
+                        appended = self.state_store.append_in_transaction(
                             con,
                             existing_event,
                             strict_idempotency=False,
                         )
+                        if appended.error is not None:
+                            raise RuntimeError(appended.error)
                         existing_record_id = str(existing_event.payload.get("record_id", ""))
                         existing_row = con.execute(
                             """
@@ -908,6 +910,8 @@ class MemoryStore:
                         event,
                         strict_idempotency=False,
                     )
+                    if appended.error is not None:
+                        raise RuntimeError(appended.error)
                     self._save_record_row(con, final_record)
                     con.execute("COMMIT")
                     publish([appended.event])

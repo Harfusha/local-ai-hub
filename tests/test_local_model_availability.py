@@ -252,6 +252,7 @@ def _scheduler_harness(*, max_queue: int = 4, max_queued_per_tenant: int = 2) ->
     scheduler.max_caller_wait_timeout = 0.05
     scheduler.default_caller_wait_timeout = 0.05
     scheduler._foreground_preempt_hook = None
+    scheduler._foreground_preempting = False
     scheduler._background_gpu_lease = False
     scheduler._foreground_generation = 0
     scheduler._last_foreground_activity = time.monotonic()
