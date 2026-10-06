@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import os
+import stat
 import re
 import sqlite3
 import subprocess
@@ -189,6 +190,18 @@ class ProjectContext:
     def config_digest(self) -> str:
         return self.resolution.config_digest
 
+    @property
+    def coordination_id(self) -> str | None:
+        """Server-derived repository namespace; never a filesystem root.
+
+        Reuse the existing git-common/namespace identity without opening a
+        database. Invalid configuration must not silently join a default
+        namespace when a caller expected a different scope.
+        """
+        if self.resolution.error_codes:
+            return None
+        return self._hint_store.project_id
+
     def path_hints(
         self, *, purpose: str, scope: str, repository_revision: str
     ) -> tuple[PathHint, ...]:
@@ -226,7 +239,11 @@ class ProjectContext:
         ordered = tuple(candidates)
         hints_available = bool(configured_hints or request_hints or saved_hints)
         hint_used = False
-        for hints in (saved_hints, request_hints, configured_hints):
+        for hints, learned in (
+            (saved_hints, True),
+            (request_hints, False),
+            (configured_hints, False),
+        ):
             if not hints:
                 continue
             usage = prioritize_paths_with_hints(
@@ -237,6 +254,7 @@ class ProjectContext:
                 scope=scope,
                 repository_revision=repository_revision,
                 config_digest=self.config_digest,
+                learned=learned,
             )
             ordered = usage.paths
             hint_used = hint_used or usage.hint_used
@@ -535,7 +553,9 @@ def _environment_values(value: Any) -> tuple[dict[str, str], dict[str, str]]:
     return values, references
 
 
-def _normalize(data: dict[str, Any]) -> ProjectSettings:
+def _normalize(
+    data: dict[str, Any], *, require_verification_commands: bool = True
+) -> ProjectSettings:
     if set(data) - _TOP_LEVEL:
         raise ProjectConfigError("invalid_config")
     preprocess = data.get("preprocess", {})
@@ -612,7 +632,7 @@ def _normalize(data: dict[str, Any]) -> ProjectSettings:
         if isinstance(rule, tuple)
         for alias in rule
     }
-    if not command_aliases.issubset(commands):
+    if require_verification_commands and not command_aliases.issubset(commands):
         raise ProjectConfigError("invalid_config")
 
     weights = data.get("retrieval_weights", {})
@@ -721,13 +741,31 @@ def _normalize(data: dict[str, Any]) -> ProjectSettings:
     )
 
 
-def _read_layer(path: Path) -> dict[str, Any]:
+def _read_layer(safe_file: tuple[Path, int, int]) -> dict[str, Any]:
+    path, expected_device, expected_inode = safe_file
+    descriptor = -1
     try:
-        if not path.is_file():
-            raise ProjectConfigError("invalid_toml")
-        if path.stat().st_size > _MAX_CONFIG_BYTES:
-            raise ProjectConfigError("config_too_large")
-        with path.open("rb") as stream:
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+        )
+        descriptor = os.open(path, flags)
+        stream = os.fdopen(descriptor, "rb")
+        descriptor = -1
+        with stream:
+            opened = os.fstat(stream.fileno())
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or not expected_inode
+                or not opened.st_ino
+                or (opened.st_dev, opened.st_ino)
+                != (expected_device, expected_inode)
+            ):
+                raise ProjectConfigError("unsafe_config_path")
+            if opened.st_size > _MAX_CONFIG_BYTES:
+                raise ProjectConfigError("config_too_large")
             raw = stream.read(_MAX_CONFIG_BYTES + 1)
         if len(raw) > _MAX_CONFIG_BYTES:
             raise ProjectConfigError("config_too_large")
@@ -736,16 +774,32 @@ def _read_layer(path: Path) -> dict[str, Any]:
         raise
     except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
         raise ProjectConfigError("invalid_toml") from None
+    finally:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                # Preserve the parser's safe fallback if descriptor cleanup itself
+                # fails; do not replace the original bounded read error.
+                pass
     if not isinstance(value, dict):
         raise ProjectConfigError("invalid_toml")
     return value
 
 
-def _safe_config_file(path: Path, base: Path) -> bool:
+def _safe_config_file(path: Path, base: Path) -> tuple[Path, int, int] | None:
     try:
-        return path.resolve(strict=True).is_relative_to(base.resolve(strict=True))
+        resolved = path.resolve(strict=True)
+        if not resolved.is_relative_to(base.resolve(strict=True)):
+            return None
+        identity = resolved.stat()
+        if not identity.st_ino:
+            return None
+        if resolved.resolve(strict=True) != resolved:
+            return None
+        return resolved, identity.st_dev, identity.st_ino
     except (OSError, ValueError, RuntimeError):
-        return False
+        return None
 
 
 def _digest(settings: ProjectSettings) -> str:
@@ -789,9 +843,11 @@ def _resolve_project_config(
         for source, path, containment_root in layers:
             if not path.exists():
                 continue
-            if not _safe_config_file(path, containment_root):
+            safe_path = _safe_config_file(path, containment_root)
+            if safe_path is None:
                 raise ProjectConfigError("unsafe_config_path")
-            layer = _canonicalize_path_override_keys(_read_layer(path))
+            layer = _canonicalize_path_override_keys(_read_layer(safe_path))
+            _normalize(layer, require_verification_commands=False)
             combined = _merge(combined, layer)
             active_sources.append(source)
         settings = _normalize(combined)
@@ -846,6 +902,8 @@ def validate_path_hint(
 ) -> Path | None:
     """Return contained, existing path only when hint scope and freshness match."""
     try:
+        if not isinstance(hint, PathHint):
+            return None
         relative = _relative_pattern(hint.path)
         if any(char in relative for char in "*?[]"):
             return None
@@ -903,6 +961,7 @@ def prioritize_paths_with_hints(
     scope: str,
     repository_revision: str,
     config_digest: str,
+    learned: bool = False,
 ) -> PathHintUsage:
     """Move matching candidates first while preserving every original candidate."""
     original = tuple(candidates)
@@ -921,7 +980,7 @@ def prioritize_paths_with_hints(
                 scope=scope,
                 repository_revision=repository_revision,
                 config_digest=config_digest,
-                learned=bool(hint.evidence_id),
+                learned=learned,
             )
         )
     ]
@@ -1157,10 +1216,9 @@ def may_descend(
         resolved_relative, settings.exclude_paths
     ):
         return False
-    overrides = {
-        _path_override_for(path, settings.path_overrides)
-        for path in (lexical_relative, resolved_relative)
-    }
+    override = _path_override_for_candidates(
+        (lexical_relative, resolved_relative), settings.path_overrides
+    )
     include_patterns = list(settings.force_include_paths) + [
         pattern
         for pattern, action in settings.path_overrides.items()
@@ -1171,9 +1229,9 @@ def may_descend(
         or _pattern_may_match_descendant(resolved_relative, pattern)
         for pattern in include_patterns
     )
-    if "exclude" in overrides:
+    if override == "exclude":
         return may_reach_included_descendant
-    if "include" in overrides:
+    if override == "include":
         return True
     ignored = soft_ignored
     if not ignored:

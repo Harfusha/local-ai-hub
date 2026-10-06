@@ -1,0 +1,344 @@
+--- a/src/local_ai_hub/commands.py
++++ b/src/local_ai_hub/commands.py
+@@ -1958,9 +1958,86 @@
+             common = os.path.commonpath([str(requested), str(registered)])
+             if os.path.normcase(common) != os.path.normcase(str(registered)):
+                 return "mutating command cwd must be inside the registered task-owned worktree"
++            identity_error = self._validate_registered_git_worktree(registered, worktree)
++            if identity_error:
++                return identity_error
+             return self._reject_git_worktree_overrides(command, requested, registered)
+         except Exception:
+             return "registered task worktree could not be verified"
++
++    def _validate_registered_git_worktree(
++        self,
++        registered: Path,
++        worktree: Mapping[str, Any],
++    ) -> str | None:
++        repo_root_value = worktree.get("repo_root")
++        expected_branch = worktree.get("branch")
++        if not isinstance(repo_root_value, str) or not repo_root_value or not isinstance(expected_branch, str) or not expected_branch:
++            return "registered task worktree identity metadata is unavailable"
++
++        repo_root = Path(repo_root_value).expanduser().resolve(strict=True)
++        clean_env = {
++            key: value for key, value in os.environ.items()
++            if not key.upper().startswith("GIT_")
++        }
++
++        def git_output(cwd: Path, *args: str) -> str | None:
++            try:
++                result = subprocess.run(
++                    ["git", "-C", str(cwd), *args],
++                    capture_output=True,
++                    text=True,
++                    timeout=5,
++                    env=clean_env,
++                    check=False,
++                    **hidden_run_kwargs(),
++                )
++            except (OSError, subprocess.SubprocessError):
++                return None
++            return result.stdout.strip() if result.returncode == 0 else None
++
++        registered_top = git_output(registered, "rev-parse", "--show-toplevel")
++        registered_common = git_output(registered, "rev-parse", "--git-common-dir")
++        registered_branch = git_output(registered, "symbolic-ref", "--quiet", "--short", "HEAD")
++        expected_top = git_output(repo_root, "rev-parse", "--show-toplevel")
++        expected_common = git_output(repo_root, "rev-parse", "--git-common-dir")
++        worktrees = git_output(repo_root, "worktree", "list", "--porcelain")
++        if not all((registered_top, registered_common, registered_branch, expected_top, expected_common, worktrees)):
++            return "registered task worktree Git identity could not be verified"
++
++        def resolve_git_path(value: str, base: Path) -> Path:
++            path = Path(value)
++            return (path if path.is_absolute() else base / path).resolve(strict=True)
++
++        registered_top_path = Path(registered_top).resolve(strict=True)
++        expected_top_path = Path(expected_top).resolve(strict=True)
++        registered_common_path = resolve_git_path(registered_common, registered)
++        expected_common_path = resolve_git_path(expected_common, repo_root)
++        if (
++            os.path.normcase(str(registered_top_path)) != os.path.normcase(str(registered))
++            or os.path.normcase(str(expected_top_path)) != os.path.normcase(str(repo_root))
++            or os.path.normcase(str(registered_common_path)) != os.path.normcase(str(expected_common_path))
++            or registered_branch != expected_branch
++        ):
++            return "registered task worktree Git identity changed"
++
++        current: dict[str, str] = {}
++        for line in (*worktrees.splitlines(), ""):
++            if not line:
++                if (
++                    current.get("worktree")
++                    and os.path.normcase(str(Path(current["worktree"]).resolve(strict=False)))
++                    == os.path.normcase(str(registered))
++                    and current.get("branch") == f"refs/heads/{expected_branch}"
++                ):
++                    return None
++                current = {}
++            elif line.startswith("worktree "):
++                current["worktree"] = line[len("worktree "):]
++            elif line.startswith("branch "):
++                current["branch"] = line[len("branch "):]
++        return "registered task worktree is not present in its source Git worktree registry"
++
+ 
+     def _reject_git_worktree_overrides(
+         self,
+@@ -3326,12 +3403,17 @@
+                 codecs.getincrementaldecoder("utf-8")(errors="replace"),
+                 translate=True,
+             )
+-            read_chunk = getattr(stream, "read1", None) or stream.read
++            read_chunk = (
++                getattr(stream, "read1", None)
++                or getattr(stream, "read", None)
++                or getattr(stream, "readline")
++            )
+             try:
+-                for raw_chunk in iter(lambda: read_chunk(65536), b""):
++                while True:
++                    raw_chunk = read_chunk(65536)
+                     if not raw_chunk:
+                         break
+-                    chunk = decoder.decode(raw_chunk)
++                    chunk = raw_chunk if isinstance(raw_chunk, str) else decoder.decode(raw_chunk)
+                     if not chunk:
+                         continue
+                     buf.append(chunk)
+@@ -3395,24 +3477,22 @@
+             time.sleep(0.02)
+ 
+         if timed_out or cancelled or aborted_interactive:
++            cleanup_confirmed = False
+             try:
+-                terminate_tree(process.pid, grace_seconds=self.terminate_grace_seconds)
++                cleanup_confirmed = bool(terminate_tree(process.pid, grace_seconds=self.terminate_grace_seconds))
+             except Exception:
+-                pass
+-            try:
+-                process.kill()
+-            except Exception:
+-                pass
+-            try:
+-                process.wait(timeout=max(2.0, self.terminate_grace_seconds))
+-            except Exception:
+-                pass
+-            if process.poll() is None:
+-                try:
+-                    process.kill()
+-                    process.wait(timeout=1.0)
+-                except Exception:
+-                    pass
++                cleanup_confirmed = False
++            if not cleanup_confirmed:
++                self.executed += 1
++                return {
++                    "success": False, "exit_code": -9, "timed_out": timed_out,
++                    "cancelled": cancelled, "aborted_interactive": aborted_interactive,
++                    "cleanup_unconfirmed": True, "outcome_unknown": True,
++                    "fail_closed": True, "retryable": False,
++                    "error": "process-tree cleanup could not be confirmed; command outcome is unknown",
++                    "stdout": out_buf.getvalue(), "stderr": err_buf.getvalue(),
++                    "duration_ms": round((time.perf_counter() - started) * 1000, 1),
++                }
+ 
+         # A successful child can exit before the reader/callback threads finish
+         # publishing their last SSE/event chunks.  Keep the drain bounded, but
+@@ -3805,6 +3885,7 @@
+             raise ValueError("transaction journal mtime is invalid")
+         return RollbackFileSnapshot(content, mode, xattrs, windows_dacl, atime_ns, mtime_ns)
+ 
++    @staticmethod
+     def _persist_transaction_journal(path: Path, payload: dict[str, Any]) -> None:
+         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+         temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+@@ -4117,11 +4198,8 @@
+                 )
+                 try:
+                     execution = self._execute(
+-                        argv,
+-                        str(transaction_root),
+-                        timeout,
+-                        cancel_event,
+-                        log_callback=log_callback,
++                        shlex.join(argv), str(transaction_root), timeout, cancel_event,
++                        log_callback=log_callback, argv_override=argv,
+                     )
+                 except subprocess.TimeoutExpired as exc:
+                     execution = {
+@@ -4611,6 +4689,7 @@
+         rollback_paths: list[str] | None = None,
+         _environment_overrides: Mapping[str, str] | None = None,
+         _cache_context: str = "",
++        _transaction_context: str = "",
+     ) -> dict[str, Any]:
+         if not self.enabled:
+             return {"success": False, "error": "command broker disabled"}
+@@ -4648,6 +4727,17 @@
+                 "terminal": True,
+                 "retryable": False,
+             }
++        transaction_cwd: Path | None = None
++        if _transaction_context:
++            if not re.fullmatch(r"[0-9a-f]{32}", _transaction_context):
++                return {"success": False, "error": "invalid private transaction context", "terminal": True, "retryable": False}
++            try:
++                transaction_cwd = self._transaction_root_for_context(_transaction_context).resolve(strict=True)
++                requested_cwd = Path(cwd).resolve(strict=True)
++                if transaction_cwd != requested_cwd or not transaction_cwd.is_dir():
++                    raise ValueError("private transaction cwd does not match transaction context")
++            except (OSError, ValueError) as exc:
++                return {"success": False, "error": str(exc)[:256], "terminal": True, "retryable": False}
+         if not isinstance(_cache_context, str):
+             return {
+                 "success": False,
+@@ -4696,7 +4786,7 @@
+         original_command = command
+         classification = self.classify(original_command)
+         is_mutating = classification.get("class") == "mutating"
+-        if is_mutating or auto_fix or rollback_on_failure:
++        if (is_mutating or auto_fix or rollback_on_failure) and not _transaction_context:
+             worktree_error = self._require_task_worktree(task_id, cwd, original_command)
+             if worktree_error:
+                 return {
+@@ -4707,14 +4797,14 @@
+                     "retryable": False,
+                 }
+         declared_paths = paths if paths is not None else (rollback_paths if rollback_on_failure else None)
+-        if is_mutating and not declared_paths:
++        if (is_mutating or auto_fix) and not declared_paths and not _transaction_context:
+             return {"success": False, "error": "mutating command requires an explicit non-empty paths write set", "mutation_write_set_required": True, "terminal": True, "retryable": False}
+         if rollback_on_failure and paths is not None and rollback_paths is not None:
+             if {value.replace(chr(92), "/") for value in paths} != {value.replace(chr(92), "/") for value in rollback_paths}:
+                 return {"success": False, "error": "paths and rollback_paths must describe the same write set", "mutation_write_set_invalid": True, "terminal": True, "retryable": False}
+         if (is_mutating or rollback_on_failure) and _environment_overrides:
+             return {"success": False, "error": "mutating transaction does not accept project environment overrides", "terminal": True, "retryable": False}
+-        if sandbox == "docker" and not is_mutating:
++        if sandbox == "docker" and not is_mutating and not _transaction_context:
+             if not shutil.which("docker"):
+                 return {
+                     "success": False,
+@@ -4739,7 +4829,7 @@
+             if _cache_context
+             else self._attempt_key(command, cwd)
+         )
+-        if not force and not bypass_cache and not is_mutating:
++        if not force and not bypass_cache and not is_mutating and not _transaction_context:
+             suppressed = self.suppression_cache.get(attempt_key)
+             if isinstance(suppressed, dict):
+                 self.suppressed += 1
+@@ -4771,7 +4861,7 @@
+             if not force and not bypass_cache and not is_mutating:
+                 self.suppression_cache.set(attempt_key, result)
+             return result
+-        unavailable = self._unavailable_executable(command, cwd)
++        unavailable = None if _transaction_context else self._unavailable_executable(command, cwd)
+         if unavailable:
+             result = {
+                 "success": False, "error": f"command executable is unavailable: {unavailable}",
+@@ -4807,7 +4897,7 @@
+             if not force and not bypass_cache and not is_mutating:
+                 self.suppression_cache.set(attempt_key, result)
+             return self._compact(result, tenant, command)
+-        cacheable = bool(classification["cacheable"]) and not is_mutating
++        cacheable = bool(classification["cacheable"]) and not is_mutating and not _transaction_context
+         if cacheable and not force and not bypass_cache:
+             cached = self.success_cache.get(key) or self.failure_cache.get(key)
+             if isinstance(cached, dict):
+@@ -4845,7 +4935,7 @@
+                 )
+                 return self._compact(result, tenant, command)
+ 
+-        singleflight = not is_mutating and not bypass_cache
++        singleflight = not is_mutating and not bypass_cache and not _transaction_context
+         event: threading.Event | None = None
+         owner = False
+         if singleflight:
+@@ -4912,17 +5002,21 @@
+ 
+         # Acquire rollback handles only after every preflight and early-return path.
+         # Otherwise a rejected task can retain the root directory handle on Windows.
+-        if rollback_on_failure and not is_mutating:
++        scope_paths = declared_paths
++        if scope_paths is not None:
++            scope_snapshot, scope_error = _snapshot_rollback_scope(cwd, scope_paths)
++            if scope_error:
++                key = "rollback_scope_required" if scope_error == "rollback paths are required" else "rollback_scope_invalid"
++                return {"success": False, "error": scope_error, key: True, "terminal": True, "retryable": False}
++            if rollback_on_failure and _transaction_context:
++                rollback_state = scope_snapshot
++            elif scope_snapshot is not None:
++                _close_rollback_root(scope_snapshot.root_guard)
++        elif rollback_on_failure:
+             rollback_state, scope_error = _snapshot_rollback_scope(cwd, rollback_paths)
+             if scope_error:
+                 key = "rollback_scope_required" if scope_error == "rollback paths are required" else "rollback_scope_invalid"
+-                return {
+-                    "success": False,
+-                    "error": scope_error,
+-                    key: True,
+-                    "terminal": True,
+-                    "retryable": False,
+-                }
++                return {"success": False, "error": scope_error, key: True, "terminal": True, "retryable": False}
+ 
+         self.misses += 1
+         started_wall = time.time()
+@@ -4960,18 +5054,26 @@
+             except Exception:
+                 pass
+         try:
+-            if is_mutating or rollback_on_failure:
++            if (is_mutating or auto_fix or rollback_on_failure) and not _transaction_context:
+                 result = self._run_private_transaction(
+-                    command, cwd, tenant,
+-                    task_id=task_id,
+-                    paths=list(declared_paths or []),
+-                    timeout=int(timeout or self.timeout),
+-                    docker_image=docker_image,
+-                    cancel_event=cancel_event,
+-                    log_callback=log_callback,
+-                    command_key=key,
+-                    attempt_key=attempt_key,
++                    command, cwd, tenant, task_id=task_id, paths=list(declared_paths or []),
++                    timeout=int(timeout or self.timeout), docker_image=docker_image,
++                    cancel_event=cancel_event, log_callback=log_callback,
++                    command_key=key, attempt_key=attempt_key,
+                 )
++            elif _transaction_context:
++                transaction_cwd = transaction_cwd or Path(cwd).resolve(strict=True)
++                argv = self._transaction_docker_argv(
++                    _transaction_context, transaction_cwd, original_command, docker_image,
++                    read_only_mount=False,
++                )
++                result = self._execute(
++                    shlex.join(argv), str(transaction_cwd), int(timeout or self.timeout),
++                    cancel_event, log_callback=log_callback, argv_override=argv,
++                )
++                if result.get("timed_out") or result.get("cancelled") or result.get("cleanup_unconfirmed"):
++                    if not self._transaction_stop_container(_transaction_context):
++                        result.update({"success": False, "cleanup_unconfirmed": True, "outcome_unknown": True, "fail_closed": True, "retryable": False, "terminal": True})
+             else:
+                 result = self._execute(
+                     command,
+@@ -6756,7 +6858,7 @@
+                 "terminal": True,
+                 "retryable": False,
+             }
+-        res = self._execute(cmd, resolved, timeout=30)
++        res = self._execute("git stash push", resolved, timeout=30, argv_override=cmd)
+         return {
+             "success": res.get("success", False),
+             "stdout": res.get("stdout", "").strip(),
+@@ -6776,7 +6878,7 @@
+                 "terminal": True,
+                 "retryable": False,
+             }
+-        res = self._execute(cmd, resolved, timeout=30)
++        res = self._execute("git stash pop", resolved, timeout=30, argv_override=cmd)
+         return {
+             "success": res.get("success", False),
+             "stdout": res.get("stdout", "").strip(),

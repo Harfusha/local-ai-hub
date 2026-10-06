@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import threading
 import time
-from typing import Any
+from typing import Any, cast
 
 from .model_policy import ModelExecutionPolicy
 from .ollama import OllamaRuntime
@@ -129,19 +129,50 @@ class TieredOllamaRuntime:
                 return {"error": str(exc), "retryable": True}
             return target.request_stream(endpoint, payload, on_chunk, timeout, on_thinking=on_thinking)
 
-    def request_interruptible(self, endpoint: str, payload: dict[str, Any] | None, should_stop: Any, *, timeout: float | None = None) -> dict[str, Any]:
+    def request_interruptible(
+        self,
+        endpoint: str,
+        payload: dict[str, Any] | None,
+        should_stop: Any,
+        *,
+        timeout: float | None = None,
+        deadline: float | None = None,
+    ) -> dict[str, Any]:
         model = str((payload or {}).get("model", ""))
         with self._lock:
             try:
                 target, _ = self._target(model)
             except RuntimeError as exc:
                 return {"error": str(exc), "retryable": True}
-            return target.request_interruptible(endpoint, payload, should_stop, timeout=timeout)
+            return target.request_interruptible(endpoint, payload, should_stop, timeout=timeout, deadline=deadline)
 
-    def prepare_model(self, model: str, *, unload_others: bool = True) -> list[str]:
+    def prepare_model(
+        self,
+        model: str,
+        *,
+        unload_others: bool = True,
+        post_unload_admission: Any | None = None,
+        should_stop: Any | None = None,
+        deadline: float | None = None,
+    ) -> list[str]:
         with self._lock:
             target, _ = self._target(model)
-            return target.prepare_model(model, unload_others=unload_others)
+            kwargs: dict[str, Any] = {"unload_others": unload_others}
+            if post_unload_admission is not None:
+                kwargs["post_unload_admission"] = post_unload_admission
+            if should_stop is not None or deadline is not None:
+                kwargs.update(should_stop=should_stop, deadline=deadline)
+            return target.prepare_model(model, **kwargs)
+
+    def supports_post_unload_admission(self, model: str) -> bool:
+        _, target, _ = self._runtime_for_model(model)
+        capability = getattr(target, "supports_post_unload_admission", None)
+        if not callable(capability):
+            return False
+        try:
+            return bool(capability(model))
+        except Exception:
+            return False
 
     def unload(self, model: str) -> bool:
         return self.unload_model(model)
@@ -188,6 +219,23 @@ class TieredOllamaRuntime:
                 "last_error": self._last_handoff_error,
             },
         }
+
+
+    def run_benchmark_scenario(
+        self,
+        *,
+        name: str,
+        contract: dict[str, Any],
+        scheduler: Any,
+        resource_sampler: Any | None = None,
+    ) -> dict[str, Any]:
+        # Reuse the Ollama executor on this facade. Its scheduled callback resolves
+        # the selected tier through request_interruptible, so handoff/load stays
+        # inside the measured queue and deadline window.
+        return OllamaRuntime.run_benchmark_scenario(
+            cast(Any, self), name=name, contract=contract, scheduler=scheduler,
+            resource_sampler=resource_sampler,
+        )
 
     def stop_managed_server(self) -> bool:
         return bool(self.smart.stop_managed_server())

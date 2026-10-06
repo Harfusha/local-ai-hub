@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
@@ -123,3 +124,38 @@ def test_code_index_batch_serializes_shared_python_tree_walks(tmp_path) -> None:
     result = code_index.update_files_batch(str(root), paths)
 
     assert result["success"] is True
+
+
+def test_python_extractor_handles_deep_expression_without_recursive_walk_failure() -> None:
+    if not treesitter_parser.is_treesitter_available("python"):
+        import pytest
+
+        pytest.skip("Tree-sitter Python parser unavailable")
+
+    depth = 1300
+    source = "def run():\n    return " + "(" * depth + "1" + ")" * depth + "\n"
+
+    result = treesitter_parser.parse_treesitter(source, "python")
+
+    assert result is not None
+    assert any(symbol["name"] == "run" for symbol in result[0])
+
+
+def test_windows_python_313_skips_native_treesitter_import(monkeypatch) -> None:
+    monkeypatch.setattr(treesitter_parser, "_INIT_ATTEMPTED", False)
+    monkeypatch.setattr(treesitter_parser, "_PARSERS", {})
+    monkeypatch.setattr(treesitter_parser, "_LANGUAGES", {})
+    monkeypatch.setattr(treesitter_parser.os, "name", "nt")
+    monkeypatch.setattr(treesitter_parser.sys, "version_info", (3, 13, 0))
+    imported_native_packages = []
+    original_import = builtins.__import__
+
+    def record_native_import(name, *args, **kwargs):
+        if name.startswith("tree_sitter"):
+            imported_native_packages.append(name)
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", record_native_import)
+
+    assert treesitter_parser._init_treesitter() is False
+    assert imported_native_packages == []

@@ -31,9 +31,7 @@ from local_ai_hub.treesitter_parser import is_treesitter_available
 def test_tree_sitter_language_edges_reach_sqlite_callers_and_callees(
     tmp_path: Path, language: str, filename: str, source: str, caller: str, callee: str,
 ) -> None:
-    if language in ("java", "cpp"):
-        assert is_treesitter_available(language), f"Tree-sitter parser unavailable for {language}"
-    elif not is_treesitter_available(language):
+    if not is_treesitter_available(language):
         pytest.skip(f"Tree-sitter parser unavailable for {language}")
 
     root = tmp_path / "repo"
