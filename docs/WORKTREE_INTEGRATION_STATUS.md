@@ -747,3 +747,23 @@ hashes. No runtime, import, model, DB, or
 source changes; this follow-up changes only the disposition document. Original
 refs/stash IDs remain retained. Counts are static review, not release
 acceptance.
+
+## 2026-10-06 current-master source follow-up
+
+- T08 TaskStore queue packet integrated at `27118ce3` (`agent_tasks.py` and
+  `tests/test_task_store_t08_queue.py` only). It implements the pinned V03
+  TTL clamp, no-query terminal retention, repeated-COMPLETED revalidation,
+  and generation checkpoint blocker/error preservation. The pin's missing
+  rows remain historical disposition counts, not current missing-code claims.
+- Root verification: `$env:PYTHONPATH='src'; python -B -m pytest -q
+  -p no:cacheprovider tests/test_task_store_t08_queue.py` — **41 passed in
+  5.69s**.
+- Broader check: `$env:PYTHONPATH='src'; python -B -m pytest -q
+  -p no:cacheprovider tests/test_task_store_t08_queue.py
+  tests/test_agent_tasks.py --tb=short` — **74 passed, 11 failed in 21.33s**.
+  Failures are existing `test_agent_tasks.py` expectations/fixtures around
+  server-managed `repo_root` checkpoint state and passed receipts missing
+  `command_id`. Cause/ownership not adjudicated; expectations were not changed.
+- Root still has unrelated dirty `async_jobs.py`, `http_server.py`, and
+  untracked `agent_state.sqlite`; untouched and unstaged. This is not release
+  acceptance.
