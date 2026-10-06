@@ -510,3 +510,86 @@ root edits in `client.py` and `http_server.py`; these edits were not overwritten
 or included in an orchestrator commit. The existing temporary checkout
 `lah_wt_worktree_e64978b4714c` is assigned to the browser reconciliation worker
 to preserve and merge its render-performance dirty source and regression test.
+
+#### Concurrent root source preservation, not acceptance
+
+Following the user's explicit request to commit unfinished dirty work, the
+orchestrator preserves the observed concurrent root edits in a separate WIP
+commit without editing their source. Changed paths: `agent_events.py`, `client.py`,
+and `http_server.py` under `src/local_ai_hub/`. Their original editing owner is
+still unconfirmed; this commit establishes preservation, not approval or test
+acceptance. Later concurrent writes remain untouched and must be reconciled.
+
+Observed issues needing review after synchronization: the Windows backup ACL
+setup swallows all exceptions, potentially defeating fail-closed confidentiality;
+a transient empty `if` in the memory GET scope block was repaired by the concurrent
+writer before the preservation commit. Explicit/query tenant handling still must
+not bypass authenticated identity. The SDK fixed-action
+payload ordering and worktree-delete denial also need targeted verification.
+No test result is claimed for this unfinished source snapshot. `agent_state.sqlite`
+remains outside Git. No source hunk was rewritten to create this preservation.
+
+#### T13 lifecycle root integration
+
+Packet `04a93ca7045e341e25f1957900137993f1d0dbe0` merged without conflicts on
+top of root preservation `7715b1a1`. Original checkpoints and unfinished owner
+results remain in `handoff/T13-takeover-sync-20261006.md`. All 18 staged Python
+files parsed successfully. Fresh root check, with `PYTHONPATH` set to root `src`:
+`python -B -m pytest -q -p no:cacheprovider tests/test_client_transport.py
+tests/test_http_code_find_symbol_include_body.py --tb=short --maxfail=4`:
+42 passed in 8.25 seconds. `git diff --cached --check` reports one trailing-space
+line inside the original archived handoff patch; its original bytes are retained.
+These targeted checks do not establish lifecycle, security, or full release
+acceptance. Concurrent root security/memory issues listed above remain open.
+
+#### Final synchronization pass and stash follow-up
+
+The bounded fast-forward pass finished against immutable pin `90e6f295`.
+It excluded root and the five currently assigned worker checkouts. Before each
+fast-forward it required a clean tracked tree and ancestry, and retained the old
+HEAD at `refs/checkpoints/pre-final-sync-20261006/<absolute-path-sanitized>`.
+Original benchmark pins therefore remain recoverable; changing the checkout
+does not refresh historical benchmark receipts. No stash, runtime artifact,
+or checkpoint was deleted. This pass synchronizes to its pin, not to later root
+integration commits; a final pass is still required after remaining integrations.
+
+Root integrated stash audit `ee12a4f4` and render handoff `41296d26`. The render
+source/test already matched pinned master; owner equivalence check: 2 passed in
+0.25 seconds. Audit details: `docs/STASH_COVERAGE_20261006.md`. All 45 stashes
+remain intact. Fourteen have unmatched versions requiring manual hunk decisions:
+32 tracked/index versions and 404 untracked versions, including 22 direct active
+source/test/tool/document paths. Exact checkpoint preservation is not proof of
+integration. Separate existing workers now own the 22 active untracked candidates
+and the 32 tracked/index hunk disposition report. No duplicate task was created.
+
+Additional concurrent root writes appeared after `7715b1a1`: explicit caller
+`repository_id` fallback in memory GET/POST handling. They are preserved in a
+separate unfinished snapshot without source editing. Their editing owner is
+still unconfirmed. Caller-provided repository/tenant identity must be reviewed
+against authenticated scope before release; this snapshot is not approval to
+trust it. Root runtime `agent_state.sqlite` remains uncommitted.
+
+#### T17 multimodal root integration
+
+Immutable synchronized packet `84cb230b` preserves original `a9d9afe8` and
+ordinary untracked checkpoint `774d1d8c`, with all unfinished acceptance in
+`handoff/t17-multimodal-resume-sync-20261006.md`. Root merge on `deda200a`
+completed without conflicts; 17 staged Python files parsed successfully and
+source/test whitespace checks passed. Fresh root command with root `src` on
+`PYTHONPATH`: `python -B -m pytest -q -p no:cacheprovider
+tests/test_vision_service.py tests/test_vision_contracts.py
+tests/test_http_vision_routes.py --tb=short --maxfail=4`:
+150 passed in 37.08 seconds. This does not supersede the owner's two remaining
+transcription failures or its unverified process/audio/browser acceptance.
+
+#### Checkpoint ancestry reconciliation
+
+T08 checkpoint `7153deb5` merged with an unchanged resulting tree: its five
+historical acceptance logs were already present. T06 checkpoint `4e1ee2ac`
+also has no active source/test/tool delta. Its 107 add/add handoff conflicts were
+individually checked using `git diff --ignore-cr-at-eol --quiet HEAD 4e1ee2ac
+-- <path>`; all 107 matched ignoring CR only. Resolution retained the current
+normalized bytes, with both exact original trees retained in merge ancestry.
+The resulting staged tree was unchanged before this note. This is proven
+newline-only archival reconciliation, not a claim that each historical patch's
+behavior satisfies release acceptance.
