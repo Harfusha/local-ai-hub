@@ -75,7 +75,7 @@ def test_external_close_is_best_effort_across_all_sessions(tmp_path: Path) -> No
             closed.append("good")
 
     external._serena_sessions["a"] = Bad()  # type: ignore[assignment]
-    external._codegraph_sessions["b"] = Good()  # type: ignore[assignment]
+    external._serena_sessions["b"] = Good()  # type: ignore[assignment]
     external.close()
     assert closed == ["bad", "good"]
 
@@ -241,3 +241,22 @@ def test_release_workflow_contracts() -> None:
     assert "SHA256SUMS.txt" in release_workflow
     assert "git diff --exit-code" in release_workflow and "git diff --exit-code" in ci_workflow
     assert "ORIGINAL_REQUEST.md" not in {p.name for p in ROOT.iterdir()}
+
+
+def test_release_hygiene_allows_managed_installed_directories(tmp_path: Path) -> None:
+    for name in (".venv", "tool-envs", "state", ".serena", ".agents", ".superpowers", ".worktrees"):
+        (tmp_path / name).mkdir()
+
+    violations = list(_iter_release_hygiene_violations(tmp_path, allow_installed=True))
+    assert violations == []
+
+
+def test_release_hygiene_still_rejects_build_outputs(tmp_path: Path) -> None:
+    (tmp_path / "build").mkdir()
+    (tmp_path / "dist").mkdir()
+    (tmp_path / "stale.whl").write_bytes(b"wheel")
+
+    violations = list(_iter_release_hygiene_violations(tmp_path, allow_installed=True))
+    assert "forbidden directory: build/" in violations
+    assert "forbidden directory: dist/" in violations
+    assert "runtime/build payload: stale.whl" in violations

@@ -708,7 +708,7 @@ def capture_to_artifacts(
             bundle_id = batch.put_json(bundle, "frontend-review-bundle")
     except ArtifactBatchCancelled:
         return _result_error("capture_cancelled", "capture was cancelled during artifact write", status=409)
-    except Exception as exc:
+    except Exception:
         return _result_error("artifact_store_error", "browser capture artifact storage failed; retry the request", status=503)
     return {
         "success": True,

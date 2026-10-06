@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+import threading
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -57,3 +60,60 @@ def test_reranker_bypasses_cache_when_loaded_revision_is_unknown(tmp_path):
     assert result["results"][0]["score"] == pytest.approx(0.8)
     assert result["cache_hits"] == 0
     assert second_model.predict_calls == 1
+
+
+@pytest.mark.parametrize(
+    "scores",
+    [
+        [0.1, 0.2],
+        [float("nan")],
+        [True],
+    ],
+    ids=["extra-score", "nan-score", "boolean-score"],
+)
+def test_reranker_rejects_invalid_prediction_scores(tmp_path, scores):
+    model = _RevisionedCrossEncoder("c" * 40, 0.5)
+    model.predict = lambda _pairs, **_kwargs: scores
+    reranker = _reranker(tmp_path, model)
+
+    result = reranker.rerank("query", ["document"])
+
+    assert result["success"] is False
+    assert result["results"] == []
+    assert result["error"]
+
+
+def test_identical_concurrent_rerank_calls_share_execution_and_copy_results(tmp_path):
+    model = _RevisionedCrossEncoder("d" * 40, 0.5)
+    reranker = _reranker(tmp_path, model)
+    prediction_started = threading.Event()
+    release_prediction = threading.Event()
+    prediction_calls = 0
+
+    def predict(pairs, **_kwargs):
+        nonlocal prediction_calls
+        prediction_calls += 1
+        prediction_started.set()
+        assert release_prediction.wait(timeout=2)
+        return [0.5 for _ in pairs]
+
+    model.predict = predict
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(reranker.rerank, "query", ["document"])
+        assert prediction_started.wait(timeout=1)
+        second = pool.submit(reranker.rerank, "query", ["document"])
+        deadline = time.monotonic() + 1
+        try:
+            while reranker.flight_group.coalesced_calls == 0 and time.monotonic() < deadline:
+                time.sleep(0.001)
+            assert reranker.flight_group.coalesced_calls == 1
+        finally:
+            release_prediction.set()
+        first_result = first.result(timeout=2)
+        second_result = second.result(timeout=2)
+
+    assert prediction_calls == 1
+    assert first_result["success"] is True
+    assert second_result["success"] is True
+    second_result["results"][0]["score"] = 0.9
+    assert first_result["results"][0]["score"] == pytest.approx(0.5)
