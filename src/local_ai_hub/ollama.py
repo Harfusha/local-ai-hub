@@ -23,6 +23,7 @@ from .json_utils import dumps as json_dumps
 
 
 _HTTP_ERROR_BODY_LIMIT = 65_536
+_GAMING_UNLOAD_MAX_TIMEOUT_SECONDS = 5.0
 
 
 def _read_http_error_body(error: HTTPError) -> str:
@@ -193,6 +194,15 @@ class ModelPreparationCancelled(InterruptedError):
     preparation_cancelled = True
 
 
+class ModelPreparationAdmissionRejected(RuntimeError):
+    """A fresh resource check rejected loading after existing models were unloaded."""
+
+    def __init__(self, admission: dict[str, Any], evicted_models: list[str] | None = None):
+        self.admission = dict(admission)
+        self.evicted_models = list(evicted_models or [])
+        super().__init__(str(self.admission.get("reason", "post-unload admission rejected")))
+
+
 class OllamaRuntime:
     def __init__(self, config: dict[str, Any], *, managed_name: str = "ollama"):
         self.config = config
@@ -251,9 +261,13 @@ class OllamaRuntime:
                     return {"error": "llama.cpp SYCL router unavailable"}
                 return {"models": [{"name": model} for model in models]}
             if endpoint == "/api/ps":
+                try:
+                    rows = self.llama_cpp.loaded_model_details()
+                except Exception:
+                    return {"error": "llama.cpp model inventory unavailable"}
                 return {"models": [
                     {"name": row["name"], "model": row["name"], "context_length": row.get("context_length", 0), "size": 0, "size_vram": 0, "details": {"quantization_level": row.get("quantization", "GGUF")}}
-                    for row in self.llama_cpp.loaded_model_details()
+                    for row in rows
                 ]}
             return {"error": "Ollama is not the selected backend and this endpoint is not provided by llama.cpp"}
         if should_stop is not None or deadline is not None:
@@ -686,9 +700,15 @@ class OllamaRuntime:
             failure_probe_item_id = requested_probe
 
         max_tokens = inputs.get("max_tokens", 64)
+        source_max_tokens = inputs.get("source_max_tokens", max_tokens)
+        fallback_max_tokens = inputs.get("fallback_max_tokens", max_tokens)
         concurrency_limit = inputs.get("max_concurrency", contract.get("concurrency_limit", 1))
         if (
             isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or not 1 <= max_tokens <= 4096
+            or isinstance(source_max_tokens, bool) or not isinstance(source_max_tokens, int)
+            or not 1 <= source_max_tokens <= 4096
+            or isinstance(fallback_max_tokens, bool) or not isinstance(fallback_max_tokens, int)
+            or not 1 <= fallback_max_tokens <= 4096
             or isinstance(concurrency_limit, bool) or not isinstance(concurrency_limit, int)
             or not 1 <= concurrency_limit <= 8
         ):
@@ -747,6 +767,7 @@ class OllamaRuntime:
         cancel_event = threading.Event()
         cancel_observed = threading.Event()
         cancel_signal_at: list[float] = []
+        timer: threading.Timer | None = None
         vram_lock = threading.Lock()
         vram_samples: list[dict[str, Any]] = []
         sampler_stop = threading.Event()
@@ -800,6 +821,7 @@ class OllamaRuntime:
             request_model: str = model,
             source_suffix: str = name,
             inject_failure: bool = False,
+            token_budget: int | None = None,
         ) -> dict[str, Any]:
             nonlocal running_count, maximum_running
             request_started = threading.Event()
@@ -818,7 +840,7 @@ class OllamaRuntime:
                 return False
 
             def execute() -> dict[str, Any]:
-                nonlocal running_count, maximum_running
+                nonlocal running_count, maximum_running, timer
                 with running_lock:
                     running_count += 1
                     maximum_running = max(maximum_running, running_count)
@@ -831,16 +853,28 @@ class OllamaRuntime:
                         execution_finished_at.append(time.monotonic())
                         execute_finished.set()
                 request_started.set()
+                if name == "cancel" and timer is None:
+                    timer = threading.Timer(cancel_after_ms / 1000, request_cancel)
+                    timer.daemon = True
+                    timer.start()
                 try:
                     remaining = max(0.05, absolute_deadline - time.monotonic())
+                    payload = {
+                        "model": request_model,
+                        "prompt": item["prompt"],
+                        "stream": False,
+                        "options": {
+                            "num_predict": token_budget if token_budget is not None else max_tokens,
+                            "temperature": 0.0,
+                        },
+                    }
+                    if bool(self.config.get("ollama", {}).get("enabled", False)) and (
+                        name != "fallback" or request_model != model
+                    ):
+                        payload["think"] = False
                     response = self.request_interruptible(
                         "/api/generate",
-                        {
-                            "model": request_model,
-                            "prompt": item["prompt"],
-                            "stream": False,
-                            "options": {"num_predict": max_tokens},
-                        },
+                        payload,
                         should_stop,
                         timeout=remaining,
                         deadline=absolute_deadline,
@@ -884,6 +918,9 @@ class OllamaRuntime:
             admission = admission if isinstance(admission, dict) else {}
             queue_wait = response.get("_lah_scheduler_queue_wait_ms")
             queue_age = admission.get("queue_age_ms", queue_wait)
+            fairness_wait = admission.get(
+                "fairness_wait_ms", response.get("_lah_scheduler_fairness_wait_ms"),
+            )
             return {
                 "id": item["id"],
                 "tenant": item["tenant"],
@@ -895,6 +932,7 @@ class OllamaRuntime:
                 "call_started_at": call_started_at,
                 "queue_wait_ms": queue_wait,
                 "queue_age_ms": queue_age,
+                "fairness_wait_ms": fairness_wait,
                 "admission": admission,
                 "scheduler_error": type(scheduler_error).__name__ if scheduler_error else "",
                 "scheduler_job": scheduler_job,
@@ -914,15 +952,10 @@ class OllamaRuntime:
             sampler_thread = threading.Thread(target=sample_vram_loop, name="t12-scenario-vram", daemon=True)
             sampler_thread.start()
 
-        timer: threading.Timer | None = None
         if name == "cancel":
             def request_cancel() -> None:
                 cancel_signal_at.append(time.monotonic())
                 cancel_event.set()
-
-            timer = threading.Timer(cancel_after_ms / 1000, request_cancel)
-            timer.daemon = True
-            timer.start()
 
         scheduler_bucket_id: str | None = None
         scheduler_batch_size = 0
@@ -961,7 +994,10 @@ class OllamaRuntime:
             else:
                 records = run_many(selected_items, concurrency_limit)
         else:
-            records = [run_item(normalized_items[0])]
+            records = [run_item(
+                normalized_items[0],
+                token_budget=source_max_tokens if name == "fallback" else None,
+            )]
         if timer is not None:
             timer.cancel()
             timer.join(timeout=0.2)
@@ -1031,24 +1067,24 @@ class OllamaRuntime:
                     (estimate_sources[0] if len(set(estimate_sources)) == 1 else "mixed")
                     if complete_sources else "unknown"
                 )
-            admission_budgets = [
-                row["admission"].get("vram_admission_budget_bytes")
-                for row in records
-                if isinstance(row.get("admission"), dict)
-                and isinstance(row["admission"].get("vram_admission_budget_bytes"), int)
-                and not isinstance(row["admission"].get("vram_admission_budget_bytes"), bool)
-            ]
-            incremental_requirements = [
-                row["admission"].get("vram_incremental_required_bytes")
-                for row in records
-                if isinstance(row.get("admission"), dict)
-                and isinstance(row["admission"].get("vram_incremental_required_bytes"), int)
-                and not isinstance(row["admission"].get("vram_incremental_required_bytes"), bool)
-            ]
-            if len(admission_budgets) == len(records):
-                metrics["vram_admission_budget_bytes"] = min(admission_budgets)
-            if len(incremental_requirements) == len(records):
-                metrics["vram_incremental_required_bytes"] = max(incremental_requirements)
+            admission_pairs = []
+            for row in records:
+                admission = row.get("admission")
+                if not isinstance(admission, dict):
+                    continue
+                budget = admission.get("vram_admission_budget_bytes")
+                required = admission.get("vram_incremental_required_bytes")
+                if (
+                    isinstance(budget, int) and not isinstance(budget, bool)
+                    and isinstance(required, int) and not isinstance(required, bool)
+                ):
+                    admission_pairs.append((budget, required))
+            if len(admission_pairs) == len(records):
+                # Keep budget and demand from same request. Combining smallest
+                # resident budget with largest cold demand creates impossible evidence.
+                worst_budget, worst_required = max(admission_pairs, key=lambda pair: pair[1])
+                metrics["vram_admission_budget_bytes"] = worst_budget
+                metrics["vram_incremental_required_bytes"] = worst_required
         if name == "scheduler" and scheduler_bucket_id is not None:
             metrics["bucket_id"] = scheduler_bucket_id
             metrics["batch_size"] = scheduler_batch_size
@@ -1082,13 +1118,15 @@ class OllamaRuntime:
             ] if isinstance(rows, list) else []
             if matching_vram:
                 metrics["vram_required_bytes"] = int(sum(matching_vram))
-        tenant_waits: dict[str, list[float]] = {}
-        for row in records:
-            if isinstance(row.get("queue_age_ms"), (int, float)) and not isinstance(row.get("queue_age_ms"), bool):
-                tenant_waits.setdefault(str(row["tenant"]), []).append(float(row["queue_age_ms"]))
-        if len(tenant_waits) > 1:
-            means = [sum(values) / len(values) for values in tenant_waits.values()]
-            metrics["fairness_wait_ms"] = round(max(means) - min(means), 2)
+        fairness_waits = [
+            float(row["fairness_wait_ms"])
+            for row in records
+            if isinstance(row.get("fairness_wait_ms"), (int, float))
+            and not isinstance(row.get("fairness_wait_ms"), bool)
+            and math.isfinite(float(row["fairness_wait_ms"]))
+        ]
+        if fairness_waits:
+            metrics["fairness_wait_ms"] = round(sum(fairness_waits) / len(fairness_waits), 2)
 
         if name == "batch":
             statuses = ["success" if row["ok"] else "failed" for row in records]
@@ -1107,8 +1145,15 @@ class OllamaRuntime:
 
         if name == "overload":
             rejected_count = sum(
-                row["admission"].get("state") == "rejected"
-                or row["scheduler_error"] == "QueueFullError"
+                isinstance(row.get("admission"), dict)
+                and row["admission"].get("state") == "rejected"
+                and row["admission"].get("reason") == "queue_limit"
+                for row in records
+            )
+            resource_rejected_count = sum(
+                isinstance(row.get("admission"), dict)
+                and row["admission"].get("state") == "rejected"
+                and row["admission"].get("reason") != "queue_limit"
                 for row in records
             )
             queued_count = sum(
@@ -1120,22 +1165,19 @@ class OllamaRuntime:
                 )
                 for row in records
             )
-            states = [
-                row["admission"].get("state")
-                for row in records
-                if isinstance(row.get("admission"), dict) and row["admission"].get("state")
-            ]
-            metrics["overloaded"] = bool(rejected_count or queued_count)
+            queue_depth_max = max(depth_observations) if depth_observations else None
+            metrics["overloaded"] = bool(rejected_count or queued_count or (queue_depth_max or 0) > 0)
             metrics["queue_admission"] = (
                 "rejected" if rejected_count
-                else "queued" if queued_count
-                else "degraded" if "degraded" in states
-                else "admitted"
+                else "queued" if queued_count or (queue_depth_max or 0) > 0
+                else "resource_rejected" if resource_rejected_count
+                else "not_observed"
             )
             metrics["queued_count"] = queued_count
             metrics["rejected_count"] = rejected_count
-            if depth_observations:
-                metrics["queue_depth"] = max(depth_observations)
+            metrics["resource_rejected_count"] = resource_rejected_count
+            if queue_depth_max is not None:
+                metrics["queue_depth"] = queue_depth_max
 
         if name == "deadline":
             record = records[0]
@@ -1219,7 +1261,12 @@ class OllamaRuntime:
             primary_quality = quality(primary)
             fallback_record: dict[str, Any] | None = None
             if primary_quality is None or primary_quality < float(floor):
-                fallback_record = run_item(normalized_items[0], request_model=fallback_model, source_suffix="fallback")
+                fallback_record = run_item(
+                    normalized_items[0],
+                    request_model=fallback_model,
+                    source_suffix="fallback",
+                    token_budget=fallback_max_tokens,
+                )
             fallback_quality = quality(fallback_record) if fallback_record is not None else None
             fallback_response = fallback_record["response"] if fallback_record is not None else {}
             fallback_provider = fallback_response.get("_lah_provider") if isinstance(fallback_response, dict) else None
@@ -1237,6 +1284,10 @@ class OllamaRuntime:
                 "quality_floor_pct": float(floor),
                 "source_model": model,
                 "fallback_model": fallback_model,
+                "source_max_tokens": source_max_tokens,
+                "fallback_max_tokens": fallback_max_tokens,
+                "source_quality_pct": primary_quality if primary_quality is not None else 0.0,
+                "source_quality_status": "scored" if primary_quality is not None else "no_valid_response",
             })
             if fallback_record is not None:
                 metrics["fallback_latency_ms"] = round(float(fallback_record["elapsed_ms"]), 2)
@@ -1270,7 +1321,8 @@ class OllamaRuntime:
             "overloaded", "queue_admission", "queue_depth", "stage_timings_ms", "deadline_stage",
             "completed_within_deadline", "cancel_requested", "cancelled", "cleanup_complete", "cancel_to_stop_ms",
             "fallback_used", "fallback_visible", "fallback_quality_pct", "source_backend", "fallback_backend",
-            "quality_floor_met",
+            "source_model", "fallback_model", "source_profile", "fallback_profile", "source_quality_pct",
+            "source_quality_status", "quality_floor_pct", "quality_floor_met",
         }
         receipt_fields = observed_fields.union(requested_fields)
         observed_metrics = {field: metrics[field] for field in sorted(receipt_fields) if field in metrics}
@@ -1881,6 +1933,7 @@ class OllamaRuntime:
         model: str,
         *,
         unload_others: bool = True,
+        post_unload_admission: Any | None = None,
         should_stop: Any | None = None,
         deadline: float | None = None,
     ) -> list[str]:
@@ -1911,6 +1964,11 @@ class OllamaRuntime:
         check_active()
         # llama.cpp loads the configured GGUF in its local server. Avoid also
         # loading that same model into Ollama when the SYCL endpoint is ready.
+        if post_unload_admission is not None and self.llama_cpp.supports_model(model):
+            raise ModelPreparationAdmissionRejected({
+                "state": "rejected", "reason": "post_unload_admission_unsupported_backend",
+                "vram_admission": "rejected", "vram_admission_phase": "post_unload",
+            })
         if self.llama_cpp.ensure_model(
             model,
             timeout=max(0.05, min(load_timeout, prepare_deadline - time.monotonic())),
@@ -1946,7 +2004,27 @@ class OllamaRuntime:
         # request. Explicitly unload it so Ollama recreates the runner with num_ctx.
         if current is not None:
             check_active()
-            self.unload_model(model, should_stop=stopped, deadline=prepare_deadline)
+            if self.unload_model(model, should_stop=stopped, deadline=prepare_deadline):
+                evicted.append(model)
+            check_active()
+
+        if post_unload_admission is not None:
+            check_active()
+            try:
+                admission = post_unload_admission()
+            except Exception as exc:
+                raise ModelPreparationAdmissionRejected({
+                    "state": "rejected", "reason": "post_unload_admission_failed",
+                    "vram_admission": "rejected", "vram_admission_phase": "post_unload",
+                    "failure_type": type(exc).__name__,
+                }, evicted) from exc
+            if not isinstance(admission, dict) or admission.get("state") != "admitted":
+                rejected_admission = dict(admission) if isinstance(admission, dict) else {}
+                rejected_admission["state"] = "rejected"
+                rejected_admission.setdefault("reason", "post_unload_admission_rejected")
+                rejected_admission.setdefault("vram_admission", "rejected")
+                rejected_admission.setdefault("vram_admission_phase", "post_unload")
+                raise ModelPreparationAdmissionRejected(rejected_admission, evicted)
             check_active()
 
         keep_alive = self.config.get("ollama", {}).get("keep_alive", "24h")
@@ -1978,6 +2056,13 @@ class OllamaRuntime:
             raise RuntimeError(str(result.get("error", "model load failed")))
         self._invalidate_loaded_cache()
         return evicted
+
+    def supports_post_unload_admission(self, model: str) -> bool:
+        """Whether this model uses Ollama's unload-then-load preparation path."""
+        try:
+            return not bool(self.llama_cpp.supports_model(model))
+        except Exception:
+            return False
 
     def unload(self, model: str) -> bool:
         """Scheduler-facing alias with cache invalidation."""
@@ -2030,7 +2115,486 @@ class OllamaRuntime:
             self._invalidate_loaded_cache()
         return ok
 
-    def generate(self, model: str, prompt: str, *, system: str | None = None, options: dict[str, Any] | None = None, keep_alive: str | None = None) -> dict[str, Any]:
+    def loaded_model_inventory(
+        self,
+        *,
+        should_stop: Any | None = None,
+        deadline: float | None = None,
+        force_refresh: bool = True,
+        include_llama: bool = True,
+    ) -> dict[str, Any]:
+        """Read fresh, endpoint-identified inventory without empty-on-error fallback."""
+        backends: dict[str, dict[str, Any]] = {}
+        rows: list[dict[str, Any]] = []
+        errors: dict[str, str] = {}
+        if bool(self.config.get("ollama", {}).get("enabled", False)):
+            endpoint_id = self.base_url
+            endpoint_status = "unknown"
+            endpoint_rows: list[dict[str, Any]] = []
+            try:
+                if _stop_requested(should_stop):
+                    raise InterruptedError("inventory cancelled")
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise TimeoutError("inventory deadline exceeded")
+                response = self.request(
+                    "/api/ps",
+                    timeout=None if deadline is None else max(0.0, deadline - time.monotonic()),
+                    should_stop=should_stop,
+                    deadline=deadline,
+                )
+                if not isinstance(response, dict) or "error" in response or not isinstance(response.get("models"), list):
+                    raise RuntimeError("Ollama inventory unavailable or malformed")
+                malformed = False
+                for index, row in enumerate(response["models"]):
+                    if not isinstance(row, dict):
+                        errors[f"ollama:{endpoint_id}:row:{index}"] = "model row is not an object"
+                        malformed = True
+                        continue
+                    name = next(
+                        (value.strip() for field in ("name", "model") if isinstance((value := row.get(field)), str) and value.strip()),
+                        "",
+                    )
+                    if not name:
+                        errors[f"ollama:{endpoint_id}:row:{index}"] = "model row has no usable name or model"
+                        malformed = True
+                        continue
+                    endpoint_rows.append({**row, "name": name, "model": str(row.get("model") or name), "backend": "ollama", "endpoint_id": endpoint_id})
+                endpoint_status = "unknown" if malformed else "complete"
+                if malformed:
+                    raise ValueError("Ollama inventory contains malformed model rows")
+                rows.extend(endpoint_rows)
+            except Exception as exc:
+                errors.setdefault(f"ollama:{endpoint_id}", "cancelled" if _stop_requested(should_stop) else str(exc) or type(exc).__name__)
+            backends["ollama"] = {
+                "complete": endpoint_status == "complete",
+                "endpoints": {endpoint_id: endpoint_status},
+                "models": endpoint_rows,
+            }
+
+        llama_settings = self.config.get("llama_cpp", {})
+        llama_models = llama_settings.get("models", {}) if isinstance(llama_settings, dict) else {}
+        llama_mode = str(llama_settings.get("mode", "auto")).strip().lower() if isinstance(llama_settings, dict) else "off"
+        if include_llama and llama_mode in {"auto", "on"} and isinstance(llama_models, dict) and llama_models:
+            endpoint_status: dict[str, str] = {}
+            endpoint_rows: list[dict[str, Any]] = []
+            try:
+                snapshot = self.llama_cpp.loaded_model_inventory(
+                    should_stop=should_stop, deadline=deadline, force_refresh=force_refresh,
+                )
+                if not isinstance(snapshot, dict) or snapshot.get("complete") is not True or not isinstance(snapshot.get("models"), list):
+                    raise RuntimeError("llama.cpp inventory incomplete")
+                raw_endpoints = snapshot.get("endpoints")
+                if not isinstance(raw_endpoints, dict) or any(value != "complete" for value in raw_endpoints.values()):
+                    raise RuntimeError("llama.cpp endpoint inventory incomplete")
+                endpoint_status = {str(key): str(value) for key, value in raw_endpoints.items()}
+                for index, row in enumerate(snapshot["models"]):
+                    if not isinstance(row, dict):
+                        raise ValueError(f"llama.cpp model row {index} is not an object")
+                    name = next(
+                        (value.strip() for field in ("name", "model") if isinstance((value := row.get(field)), str) and value.strip()),
+                        "",
+                    )
+                    endpoint_id = str(row.get("endpoint_url", "")).strip()
+                    if not name or not endpoint_id or endpoint_status.get(endpoint_id) != "complete":
+                        raise ValueError(f"llama.cpp model row {index} has incomplete identity")
+                    endpoint_rows.append({**row, "name": name, "model": str(row.get("model") or name), "backend": "llama.cpp-sycl", "endpoint_id": endpoint_id})
+                rows.extend(endpoint_rows)
+            except Exception as exc:
+                errors["llama.cpp"] = "cancelled" if _stop_requested(should_stop) else str(exc) or type(exc).__name__
+                if not endpoint_status:
+                    endpoint_status = {"llama.cpp": "unknown"}
+            backends["llama_cpp"] = {
+                "complete": not any(value != "complete" for value in endpoint_status.values()) and "llama.cpp" not in errors,
+                "endpoints": endpoint_status,
+                "models": endpoint_rows,
+            }
+
+        return {
+            "complete": all(item["complete"] for item in backends.values()),
+            "backend_available": bool(backends) and any(item["complete"] for item in backends.values()),
+            "observed_at_monotonic": time.monotonic(),
+            "backends": backends,
+            "models": rows,
+            "errors": errors,
+        }
+
+    def unload_inventory_model(
+        self,
+        row: dict[str, Any],
+        *,
+        should_stop: Any | None = None,
+        deadline: float | None = None,
+    ) -> bool:
+        """Unload one inventory row through the backend and endpoint that owns it."""
+        name = str(row.get("name") or row.get("model") or "").strip()
+        if not name:
+            return False
+        backend = str(row.get("backend", ""))
+        if backend == "ollama":
+            response = self.request(
+                "/api/generate", {"model": name, "prompt": "", "keep_alive": 0},
+                timeout=None if deadline is None else max(0.0, deadline - time.monotonic()),
+                should_stop=should_stop, deadline=deadline,
+            )
+            ok = isinstance(response, dict) and "error" not in response and response.get("done_reason") == "unload"
+            if ok:
+                self._invalidate_loaded_cache()
+            return ok
+        endpoint_url = str(row.get("endpoint_id") or row.get("endpoint_url") or "").strip()
+        if backend == "llama.cpp-sycl" and endpoint_url:
+            return bool(self.llama_cpp.unload_model(name, endpoint_url=endpoint_url, should_stop=should_stop, deadline=deadline))
+        return False
+
+    def unload_configured_models(
+        self,
+        *,
+        timeout_seconds: float = 3.0,
+        should_stop: Any | None = None,
+        deadline: float | None = None,
+        include_llama: bool = True,
+    ) -> dict[str, Any]:
+        """Request bounded unload and verify the resulting loaded-model state.
+
+        Pause never starts a backend or loads a model. One deadline covers both
+        ``/api/ps`` queries and all unload requests. An unload acknowledgement alone
+        is not treated as proof that the model left the loaded set. An empty loaded
+        set does not prove that physical VRAM was reclaimed.
+        """
+        if (
+            isinstance(timeout_seconds, bool)
+            or not isinstance(timeout_seconds, (int, float))
+            or not math.isfinite(timeout_seconds)
+            or timeout_seconds <= 0
+        ):
+            raise ValueError("timeout_seconds must be a finite positive number")
+
+        timeout = min(float(timeout_seconds), _GAMING_UNLOAD_MAX_TIMEOUT_SECONDS)
+        unload_deadline = time.monotonic() + timeout
+        if deadline is not None:
+            if isinstance(deadline, bool) or not isinstance(deadline, (int, float)) or not math.isfinite(deadline):
+                raise ValueError("deadline must be a finite monotonic timestamp")
+            unload_deadline = min(unload_deadline, float(deadline))
+        unloaded: list[str] = []
+        failed: dict[str, str] = {}
+        ollama_enabled = bool(self.config.get("ollama", {}).get("enabled", False))
+
+        if _stop_requested(should_stop):
+            return {
+                "success": False,
+                "backend_available": False,
+                "unloaded": unloaded,
+                "failed": {"operation": "unload cancelled"},
+                "cancelled": True,
+                "requested": [],
+                "remaining": None,
+                "verified": False,
+                "complete": False,
+                "unverified": True,
+                "physical_vram_reclaimed": False,
+            }
+        if time.monotonic() >= unload_deadline:
+            return {
+                "success": False,
+                "backend_available": False,
+                "unloaded": unloaded,
+                "failed": {"operation": "unload deadline exceeded"},
+                "requested": [],
+                "remaining": None,
+                "verified": False,
+                "complete": False,
+                "unverified": True,
+                "physical_vram_reclaimed": False,
+            }
+
+        llama_settings = self.config.get("llama_cpp", {})
+        llama_models = llama_settings.get("models", {}) if isinstance(llama_settings, dict) else {}
+        llama_mode = str(llama_settings.get("mode", "auto")).strip().lower() if isinstance(llama_settings, dict) else "off"
+        llama_configured = llama_mode in {"auto", "on"} and isinstance(llama_models, dict) and bool(llama_models)
+        # Pause checks every configured auto/on endpoint. A failed or empty
+        # convenience probe cannot distinguish an empty inventory from failure.
+        llama_active = include_llama and llama_configured
+
+        backend_names = (["ollama"] if ollama_enabled else []) + (["llama_cpp"] if llama_active else [])
+        if not backend_names:
+            reason = "no configured llama.cpp models" if not llama_configured else "backend unavailable"
+            return {
+                "success": False, "backend_available": False, "unloaded": unloaded,
+                "failed": {"backend": reason}, "requested": [], "remaining": None,
+                "verified": False, "complete": False, "unverified": True,
+                "physical_vram_reclaimed": False,
+            }
+
+        last_llama_endpoint_status: dict[str, str] = {}
+        last_llama_urls: dict[str, str] = {}
+
+        def read_llama_inventory() -> tuple[list[dict[str, Any]], dict[str, str]]:
+            inventory_reader = getattr(self.llama_cpp, "loaded_model_inventory", None)
+            if callable(inventory_reader):
+                snapshot = inventory_reader(
+                    should_stop=should_stop, deadline=unload_deadline, force_refresh=True,
+                )
+                if not isinstance(snapshot, dict):
+                    raise RuntimeError("llama.cpp inventory incomplete")
+                rows = snapshot.get("models")
+                if not isinstance(rows, list):
+                    raise RuntimeError("llama.cpp inventory incomplete")
+                endpoint_status = snapshot.get("endpoint_status", {})
+                if not isinstance(endpoint_status, dict):
+                    raise RuntimeError("llama.cpp endpoint status unavailable")
+                last_llama_endpoint_status.clear()
+                last_llama_endpoint_status.update({str(key): str(value) for key, value in endpoint_status.items()})
+                endpoints = snapshot.get("endpoints", {})
+                if not isinstance(endpoints, dict):
+                    raise RuntimeError("llama.cpp endpoint receipts unavailable")
+                last_llama_urls.clear()
+                last_llama_urls.update({str(key): str(value) for key, value in endpoints.items()})
+                if snapshot.get("complete") is not True:
+                    raise RuntimeError("llama.cpp inventory incomplete")
+                return rows, dict(last_llama_endpoint_status)
+            available = self.llama_cpp.available_models(should_stop=should_stop, deadline=unload_deadline)
+            if not available:
+                raise RuntimeError("llama.cpp inventory unavailable")
+            return self.llama_cpp.loaded_model_details(should_stop=should_stop, deadline=unload_deadline), {"legacy": "complete"}
+
+        loaded_rows_by_backend: dict[str, list[dict[str, Any]]] = {}
+        failed_by_backend: dict[str, dict[str, str]] = {name: {} for name in backend_names}
+        backend_inventory_ok: dict[str, bool] = {}
+        backend_inventory_status: dict[str, dict[str, str]] = {}
+        for backend in backend_names:
+            if _stop_requested(should_stop):
+                failed["operation"] = "unload cancelled"
+                break
+            if time.monotonic() >= unload_deadline:
+                failed[backend] = "unload deadline exceeded before inventory"
+                backend_inventory_ok[backend] = False
+                continue
+            try:
+                if backend == "ollama":
+                    response = self.request(
+                        "/api/ps", timeout=max(0.0, unload_deadline - time.monotonic()),
+                        should_stop=should_stop, deadline=unload_deadline,
+                    )
+                    if not isinstance(response, dict) or "error" in response or not isinstance(response.get("models"), list):
+                        raise RuntimeError("backend unavailable")
+                    rows = response["models"]
+                    backend_inventory_status[backend] = {"ollama": "complete"}
+                else:
+                    rows, backend_inventory_status[backend] = read_llama_inventory()
+                if _stop_requested(should_stop):
+                    raise InterruptedError("unload cancelled")
+                loaded_rows_by_backend[backend] = rows
+                backend_inventory_ok[backend] = True
+            except Exception as exc:
+                stopped = _stop_requested(should_stop)
+                failed[backend] = "unload cancelled" if stopped else ("backend unavailable" if isinstance(exc, RuntimeError) else type(exc).__name__)
+                backend_inventory_ok[backend] = False
+                backend_inventory_status[backend] = (
+                    dict(last_llama_endpoint_status) or {"llama.cpp": "unknown"}
+                    if backend == "llama_cpp" else {"ollama": "unknown"}
+                )
+
+        loaded_by_backend: dict[str, list[str]] = {name: [] for name in backend_names}
+        loaded_targets_by_backend: dict[str, list[tuple[str, str]]] = {name: [] for name in backend_names}
+        requested_by_endpoint: dict[str, list[str]] = {}
+        remaining_by_endpoint: dict[str, list[str] | None] = {}
+        if "ollama" in backend_names:
+            remaining_by_endpoint[f"ollama:{self.base_url}"] = None
+        for endpoint_url in last_llama_urls:
+            remaining_by_endpoint[f"llama_cpp:{endpoint_url}"] = None
+        for backend, rows in loaded_rows_by_backend.items():
+            for row_index, row in enumerate(rows):
+                if not isinstance(row, dict):
+                    failed_by_backend[backend][f"model_row_{row_index}"] = "loaded model row is not an object"
+                    backend_inventory_ok[backend] = False
+                    if backend == "ollama":
+                        backend_inventory_status[backend] = {"ollama": "unknown"}
+                    continue
+                model = next(
+                    (value.strip() for field in ("name", "model") if isinstance((value := row.get(field)), str) and value.strip()),
+                    "",
+                )
+                if not model:
+                    failed_by_backend[backend][f"model_row_{row_index}"] = "loaded model row has no usable name or model"
+                    backend_inventory_ok[backend] = False
+                    if backend == "ollama":
+                        backend_inventory_status[backend] = {"ollama": "unknown"}
+                    continue
+                endpoint_url = self.base_url if backend == "ollama" else str(row.get("endpoint_url", "")).strip()
+                if not endpoint_url:
+                    failed_by_backend[backend][f"model_row_{row_index}"] = "loaded llama.cpp row has no endpoint identity"
+                    backend_inventory_ok[backend] = False
+                    for known_endpoint in list(last_llama_urls):
+                        last_llama_urls[known_endpoint] = "unknown"
+                    continue
+                if (model, endpoint_url) not in loaded_targets_by_backend[backend]:
+                    loaded_targets_by_backend[backend].append((model, endpoint_url))
+                remaining_by_endpoint.setdefault(f"{backend}:{endpoint_url}", None)
+                if model not in loaded_by_backend[backend]:
+                    loaded_by_backend[backend].append(model)
+
+        cancelled = bool(_stop_requested(should_stop))
+        requested_by_backend: dict[str, list[str]] = {name: [] for name in backend_names}
+        for backend, targets in loaded_targets_by_backend.items():
+            for model_index, (model, endpoint_url) in enumerate(targets):
+                if _stop_requested(should_stop):
+                    cancelled = True
+                    for pending, _endpoint in targets[model_index:]:
+                        failed_by_backend[backend][pending] = "unload cancelled"
+                    break
+                if time.monotonic() >= unload_deadline:
+                    failed_by_backend[backend][model] = "unload deadline exceeded"
+                    continue
+                requested_by_backend[backend].append(model)
+                requested_by_endpoint.setdefault(f"{backend}:{endpoint_url}", []).append(model)
+                try:
+                    if backend == "ollama":
+                        response = self.request(
+                            "/api/generate", {"model": model, "prompt": "", "keep_alive": 0},
+                            timeout=max(0.0, unload_deadline - time.monotonic()),
+                            should_stop=should_stop, deadline=unload_deadline,
+                        )
+                        ok = isinstance(response, dict) and "error" not in response and response.get("done_reason") == "unload"
+                        if ok:
+                            self._invalidate_loaded_cache()
+                    else:
+                        ok = self.llama_cpp.unload_model(
+                            model, endpoint_url=endpoint_url,
+                            should_stop=should_stop, deadline=unload_deadline,
+                        )
+                except Exception as exc:
+                    ok = False
+                    failed_by_backend[backend][model] = "unload cancelled" if _stop_requested(should_stop) else type(exc).__name__
+                if not ok and model not in failed_by_backend[backend]:
+                    failed_by_backend[backend][model] = "unload cancelled" if _stop_requested(should_stop) else "unload failed or timed out"
+                cancelled = cancelled or _stop_requested(should_stop)
+
+        requested = [model for backend in backend_names for model in requested_by_backend[backend]]
+        for backend, errors in failed_by_backend.items():
+            for key, value in errors.items():
+                failed[f"{backend}:{key}" if len(backend_names) > 1 else key] = value
+
+        remaining_by_backend: dict[str, list[str] | None] = {name: None for name in backend_names}
+        verification_errors: list[str] = []
+        if _stop_requested(should_stop):
+            cancelled = True
+            verification_errors.append("unload cancelled before verification")
+        elif time.monotonic() >= unload_deadline:
+            verification_errors.append("unload deadline exceeded before verification")
+        else:
+            for backend in backend_names:
+                try:
+                    if backend == "ollama":
+                        response = self.request(
+                            "/api/ps", timeout=max(0.0, unload_deadline - time.monotonic()),
+                            should_stop=should_stop, deadline=unload_deadline,
+                        )
+                        if not isinstance(response, dict) or "error" in response or not isinstance(response.get("models"), list):
+                            raise RuntimeError("post-unload /api/ps unavailable")
+                        rows = response["models"]
+                        endpoint_rows = {self.base_url: []}
+                    else:
+                        rows, post_endpoint_status = read_llama_inventory()
+                        backend_inventory_status[backend] = post_endpoint_status
+                        endpoint_rows = {url: [] for url, state in last_llama_urls.items() if state == "complete"}
+                    parsed: list[str] = []
+                    for row_index, row in enumerate(rows):
+                        if not isinstance(row, dict):
+                            raise ValueError(f"post-unload model row {row_index} is not an object")
+                        name = next(
+                            (value.strip() for field in ("name", "model") if isinstance((value := row.get(field)), str) and value.strip()),
+                            "",
+                        )
+                        if not name:
+                            raise ValueError(f"post-unload model row {row_index} has no usable name or model")
+                        endpoint_url = self.base_url if backend == "ollama" else str(row.get("endpoint_url", "")).strip()
+                        if not endpoint_url or endpoint_url not in endpoint_rows:
+                            raise ValueError(f"post-unload model row {row_index} has unknown endpoint identity")
+                        endpoint_rows[endpoint_url].append(name)
+                        if name not in parsed:
+                            parsed.append(name)
+                    if _stop_requested(should_stop):
+                        cancelled = True
+                        raise InterruptedError("unload cancelled during verification")
+                    if time.monotonic() >= unload_deadline:
+                        raise TimeoutError("unload deadline exceeded during verification")
+                    remaining_by_backend[backend] = parsed
+                    for endpoint_url, endpoint_models in endpoint_rows.items():
+                        remaining_by_endpoint[f"{backend}:{endpoint_url}"] = endpoint_models
+                except Exception as exc:
+                    if backend == "llama_cpp":
+                        backend_inventory_status[backend] = dict(last_llama_endpoint_status) or {"llama.cpp": "unknown"}
+                    reason = "unload cancelled during verification" if _stop_requested(should_stop) else str(exc) if isinstance(exc, (RuntimeError, ValueError, TimeoutError)) else f"post-unload verification failed: {type(exc).__name__}"
+                    verification_errors.append(f"{backend}: {reason}")
+
+        remaining_models = None if any(value is None for value in remaining_by_backend.values()) else [
+            model for backend in backend_names for model in (remaining_by_backend[backend] or [])
+        ]
+        if verification_errors:
+            failed["verification"] = "; ".join(verification_errors)
+        verified = (
+            not verification_errors
+            and all(backend_inventory_ok.get(name, False) for name in backend_names)
+            and not any(failed_by_backend.values())
+            and all(name not in (remaining_by_backend[backend] or []) for backend in backend_names for name in requested_by_backend[backend])
+        )
+        inventory_complete = all(backend_inventory_ok.get(name, False) for name in backend_names)
+        complete = remaining_models is not None and not remaining_models and inventory_complete
+        if remaining_models is not None:
+            unloaded = [
+                name for backend in backend_names for name in requested_by_backend[backend]
+                if name not in (remaining_by_backend[backend] or [])
+            ]
+        backend_available = bool(loaded_rows_by_backend)
+        endpoint_receipts: dict[str, dict[str, Any]] = {}
+        for backend in backend_names:
+            endpoints = (
+                {self.base_url: backend_inventory_status.get(backend, {}).get("ollama", "unknown")}
+                if backend == "ollama" else (last_llama_urls or {"llama.cpp": "unknown"})
+            )
+            for endpoint_id, endpoint_state in endpoints.items():
+                receipt_key = f"{backend}:{endpoint_id}"
+                requested_at_endpoint = requested_by_endpoint.get(receipt_key, [])
+                remaining_at_endpoint = remaining_by_endpoint.get(receipt_key)
+                receipt_state = endpoint_state if backend_inventory_ok.get(backend, False) else "unknown"
+                endpoint_receipts[f"{backend}:{endpoint_id}"] = {
+                    "backend": backend,
+                    "endpoint_id": endpoint_id,
+                    "inventory_status": receipt_state,
+                    "requested": requested_at_endpoint,
+                    "remaining": remaining_at_endpoint,
+                    "complete": receipt_state == "complete" and isinstance(remaining_at_endpoint, list),
+                }
+        result = {
+            "success": complete and not failed,
+            "backend_available": backend_available,
+            "unloaded": unloaded,
+            "failed": failed,
+            "requested": requested,
+            "remaining": remaining_models,
+            "requested_by_backend": requested_by_backend,
+            "remaining_by_backend": remaining_by_backend,
+            "backend_inventory_status": backend_inventory_status,
+            "endpoint_receipts": endpoint_receipts,
+            "verified": verified,
+            "complete": complete,
+            "unverified": remaining_models is None or not inventory_complete,
+            "physical_vram_reclaimed": False,
+        }
+        if cancelled:
+            result["cancelled"] = True
+        return result
+
+    def generate(
+        self,
+        model: str,
+        prompt: str,
+        *,
+        system: str | None = None,
+        options: dict[str, Any] | None = None,
+        keep_alive: str | None = None,
+        project_settings: Any | None = None,
+        role: str = "",
+    ) -> dict[str, Any]:
         options = dict(options or {})
         payload: dict[str, Any] = {"model": model, "prompt": prompt, "stream": False, "options": options}
         # Ollama expects `think` at the request top level.  Accepting it in the
@@ -2046,13 +2610,28 @@ class OllamaRuntime:
             payload["system"] = system
         if keep_alive:
             payload["keep_alive"] = keep_alive
+        model, payload = self.model_policy.apply_project_settings(
+            model, payload, settings=project_settings, role=role,
+        )
         return self.request("/api/generate", payload)
 
-    def chat(self, model: str, messages: list[dict[str, Any]], *, options: dict[str, Any] | None = None, keep_alive: str | None = None) -> dict[str, Any]:
+    def chat(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        *,
+        options: dict[str, Any] | None = None,
+        keep_alive: str | None = None,
+        project_settings: Any | None = None,
+        role: str = "",
+    ) -> dict[str, Any]:
         options = dict(options or {})
         payload: dict[str, Any] = {"model": model, "messages": messages, "stream": False, "options": options}
         if keep_alive:
             payload["keep_alive"] = keep_alive
+        model, payload = self.model_policy.apply_project_settings(
+            model, payload, settings=project_settings, role=role,
+        )
         return self.request("/api/chat", payload)
 
     def embeddings(self, model: str, prompt: str) -> dict[str, Any]:

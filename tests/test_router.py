@@ -190,3 +190,17 @@ def test_cpu_and_low_profiles_keep_integrated_model_role_map(profile):
     from local_ai_hub.hardware import PROFILE_OVERRIDES
 
     assert PROFILE_OVERRIDES[profile]["models"] == PROFILE_OVERRIDES["integrated"]["models"]
+
+
+@pytest.mark.parametrize("profile", ["cpu", "low", "integrated", "balanced", "high", "max"])
+def test_fast_route_rejects_background_model_override(profile):
+    from local_ai_hub.hardware import PROFILE_OVERRIDES
+    from local_ai_hub.router import ModelRouter
+
+    models = PROFILE_OVERRIDES[profile]["models"]
+    router = ModelRouter({"models": models})
+    route = router.classify("write a small helper", task_type="code", complexity="fast")
+
+    assert route["model"] == models["fast_code"]
+    with pytest.raises(ValueError, match="quality floor"):
+        router.apply_model_override(route, models["background_code"])

@@ -10,12 +10,13 @@ from __future__ import annotations
 import base64
 import json
 import queue
+import select
 import socket
 import ssl
 import threading
 import time
 from contextlib import contextmanager
-from http.client import HTTPConnection
+from http.client import HTTPConnection, HTTPResponse
 from io import BytesIO
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -41,6 +42,104 @@ def _set_response_timeout(response: Any, timeout: float) -> None:
             pass
 
 
+class _InterruptibleSocketReader:
+    """File-like socket reader that checks cancellation during response reads."""
+
+    _POLL_SECONDS = 0.05
+
+    def __init__(self, sock: Any, deadline: float, should_stop: Any | None):
+        self._sock = sock
+        self._deadline = float(deadline)
+        self._should_stop = should_stop
+        self._buffer = bytearray()
+        self._eof = False
+        self._closed = False
+
+    def _receive(self) -> None:
+        while not self._eof:
+            if self._closed:
+                raise ValueError("read from closed response")
+            if _stop_requested(self._should_stop):
+                raise InterruptedError("request cancelled")
+            remaining = self._deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("request deadline expired")
+            try:
+                pending = getattr(self._sock, "pending", None)
+                if pending is not None and pending() > 0:
+                    readable, exceptional = [self._sock], []
+                else:
+                    readable, _, exceptional = select.select(
+                        [self._sock], [], [self._sock], min(self._POLL_SECONDS, remaining),
+                    )
+            except (OSError, ValueError):
+                if _stop_requested(self._should_stop):
+                    raise InterruptedError("request cancelled")
+                if time.monotonic() >= self._deadline:
+                    raise TimeoutError("request deadline expired")
+                raise
+            if exceptional:
+                if _stop_requested(self._should_stop):
+                    raise InterruptedError("request cancelled")
+                raise OSError("response socket became exceptional")
+            if not readable:
+                continue
+            try:
+                self._sock.settimeout(min(self._POLL_SECONDS, remaining))
+                chunk = self._sock.recv(65_536)
+            except (socket.timeout, TimeoutError):
+                continue
+            except OSError:
+                if _stop_requested(self._should_stop):
+                    raise InterruptedError("request cancelled")
+                raise
+            if not chunk:
+                self._eof = True
+                break
+            self._buffer.extend(chunk)
+            return
+
+    def read(self, size: int = -1) -> bytes:
+        if size == 0:
+            return b""
+        if size is None or size < 0:
+            while not self._eof:
+                self._receive()
+            size = len(self._buffer)
+        while len(self._buffer) < size and not self._eof:
+            self._receive()
+        take = min(size, len(self._buffer))
+        value = bytes(self._buffer[:take])
+        del self._buffer[:take]
+        return value
+
+    def readline(self, size: int = -1) -> bytes:
+        while True:
+            newline = self._buffer.find(b"\n")
+            if newline >= 0:
+                take = newline + 1
+                if size >= 0:
+                    take = min(take, size)
+                break
+            if size >= 0 and len(self._buffer) >= size:
+                take = size
+                break
+            if self._eof:
+                take = len(self._buffer)
+                break
+            self._receive()
+        value = bytes(self._buffer[:take])
+        del self._buffer[:take]
+        return value
+
+    def flush(self) -> None:
+        """Satisfy HTTPResponse's file-like cleanup contract; reads are unbuffered."""
+
+    def close(self) -> None:
+        self._closed = True
+        self._buffer.clear()
+
+
 def _stop_requested(should_stop: Any | None) -> bool:
     if should_stop is None:
         return False
@@ -55,6 +154,13 @@ _DNS_RESOLUTION_SLOTS = threading.BoundedSemaphore(4)
 
 def _resolve_interruptibly(host: str, port: int, remaining: Any) -> list[tuple[Any, ...]]:
     """Resolve a host without letting a stalled system resolver hold the request."""
+    try:
+        return socket.getaddrinfo(
+            host, port, 0, socket.SOCK_STREAM, 0, socket.AI_NUMERICHOST,
+        )
+    except socket.gaierror:
+        pass
+
     while not _DNS_RESOLUTION_SLOTS.acquire(timeout=min(0.025, remaining())):
         remaining()
 
@@ -85,10 +191,38 @@ def _resolve_interruptibly(host: str, port: int, remaining: Any) -> list[tuple[A
         raise value
 
 
+def _tls_handshake_interruptibly(sock: ssl.SSLSocket, remaining: Any) -> None:
+    """Complete TLS setup while honoring the request's cancellation and deadline."""
+    sock.setblocking(False)
+    while True:
+        timeout = remaining()
+        try:
+            sock.do_handshake()
+        except ssl.SSLWantReadError:
+            readable, _, exceptional = select.select([sock], [], [sock], min(0.025, timeout))
+        except ssl.SSLWantWriteError:
+            _, writable, exceptional = select.select([], [sock], [sock], min(0.025, timeout))
+            readable = []
+        except (OSError, ValueError):
+            remaining()
+            raise
+        else:
+            sock.settimeout(remaining())
+            return
+        if exceptional:
+            remaining()
+            raise OSError("TLS handshake socket became exceptional")
+
+
 def _http_proxy_for_url(parsed: Any) -> tuple[str, int, str | None] | None:
     """Return configured HTTP proxy host, port and optional Basic credentials."""
-    if proxy_bypass(parsed.hostname):
+    host = parsed.hostname
+    if proxy_bypass(host):
         return None
+    if parsed.port is not None:
+        authority = f"[{host}]:{parsed.port}" if ":" in host and not host.startswith("[") else f"{host}:{parsed.port}"
+        if proxy_bypass(authority):
+            return None
     configured = getproxies().get(parsed.scheme.lower())
     if not configured:
         return None
@@ -217,9 +351,12 @@ def _open_interruptible_response(request: Request, deadline: float, should_stop:
                 headers["Authorization"] = "Basic " + base64.b64encode(credentials).decode("ascii")
             if parsed.scheme == "https":
                 connection.sock.settimeout(remaining())
-                connection.sock = ssl.create_default_context().wrap_socket(
+                tls_sock = ssl.create_default_context().wrap_socket(
                     connection.sock, server_hostname=parsed.hostname,
+                    do_handshake_on_connect=False,
                 )
+                connection.sock = tls_sock
+                _tls_handshake_interruptibly(tls_sock, remaining)
             request_headers = dict(headers)
             request_target = target
             if proxy_info is not None and parsed.scheme == "http":
@@ -239,7 +376,10 @@ def _open_interruptible_response(request: Request, deadline: float, should_stop:
             connection.sock.settimeout(remaining())
             connection.request(method, request_target, body=body, headers=request_headers)
             connection.sock.settimeout(remaining())
-            response = connection.getresponse()
+            response = HTTPResponse(connection.sock, method=method)
+            response.fp.close()
+            response.fp = _InterruptibleSocketReader(connection.sock, deadline, should_stop)
+            response.begin()
             remaining()
             if response.status in {301, 302, 303, 307, 308} and response.getheader("Location"):
                 redirect_url = urljoin(current_url, response.getheader("Location"))
@@ -431,16 +571,21 @@ class LlamaCppRouter:
         timeout: float = 0.8,
         should_stop: Any | None = None,
         deadline: float | None = None,
+        *,
+        force_refresh: bool = False,
+        strict: bool = False,
     ) -> dict[str, dict[str, Any]]:
         now = time.monotonic()
         request_deadline = now + min(max(0.001, float(timeout)), 1.0)
         if deadline is not None:
             request_deadline = min(request_deadline, float(deadline))
         if request_deadline <= now or _stop_requested(should_stop):
+            if strict:
+                raise TimeoutError("llama.cpp model inventory deadline expired")
             return {}
         with self._health_lock:
             cached = self._models.get(url)
-            if cached and now - cached[0] < 1.0:
+            if not force_refresh and cached and now - cached[0] < 1.0:
                 return cached[1]
         result: dict[str, dict[str, Any]] = {}
         try:
@@ -450,12 +595,23 @@ class LlamaCppRouter:
                 return {}
             with _open_interruptible_response(req, request_deadline, should_stop) as response, _cancel_response_on_stop(response, should_stop, request_deadline):
                 body = json.loads(_read_response_body(response, request_deadline, should_stop).decode("utf-8", errors="replace") or "{}")
-            rows = body.get("data", []) if isinstance(body, dict) else []
-            if isinstance(rows, list):
-                result = {str(row.get("id")): row for row in rows if isinstance(row, dict) and row.get("id")}
-        except Exception:
-            pass
+            rows = body.get("data") if isinstance(body, dict) else None
+            if not isinstance(rows, list):
+                if strict:
+                    raise ValueError("llama.cpp model inventory response is incomplete")
+            else:
+                for row in rows:
+                    if not isinstance(row, dict) or not isinstance(row.get("id"), str) or not row["id"].strip():
+                        if strict:
+                            raise ValueError("llama.cpp model inventory contains an invalid model row")
+                        continue
+                    result[row["id"].strip()] = row
+        except Exception as exc:
+            if strict:
+                raise RuntimeError("llama.cpp model inventory unavailable") from exc
         if _stop_requested(should_stop) or time.monotonic() >= request_deadline:
+            if strict:
+                raise TimeoutError("llama.cpp model inventory deadline expired")
             return {}
         with self._health_lock:
             self._models[url] = (time.monotonic(), result)
@@ -583,34 +739,103 @@ class LlamaCppRouter:
         *,
         should_stop: Any | None = None,
         deadline: float | None = None,
+        force_refresh: bool = False,
     ) -> list[dict[str, Any]]:
+        if not force_refresh:
+            now = time.monotonic()
+            if now - self._models.get("__loaded_details__", (0.0, {}))[0] < 1.0:
+                cached = self._models.get("__loaded_details__", (0.0, {}))[1]
+                if isinstance(cached, list):
+                    return list(cached)
+        inventory = self.loaded_model_inventory(
+            should_stop=should_stop, deadline=deadline, force_refresh=force_refresh,
+        )
+        if inventory["complete"] is not True:
+            raise RuntimeError("llama.cpp loaded-model inventory is incomplete")
+        rows = inventory["models"]
+        self._models["__loaded_details__"] = (time.monotonic(), rows)
+        return list(rows)
+
+    def loaded_model_inventory(
+        self,
+        *,
+        should_stop: Any | None = None,
+        deadline: float | None = None,
+        force_refresh: bool = False,
+    ) -> dict[str, Any]:
         models = self.settings.get("models", {})
+        mode = str(self.settings.get("mode", "auto")).strip().lower()
+        if mode == "off" or not models:
+            return {"complete": True, "models": [], "errors": {}, "endpoint_status": {}, "endpoints": {}}
         if not isinstance(models, dict):
-            return []
-        rows = []
-        for model in self.available_models(should_stop=should_stop, deadline=deadline):
-            if _stop_requested(should_stop) or (deadline is not None and time.monotonic() >= deadline):
-                break
-            entry = models.get(model, {})
-            selected = self._entry(model)
-            status = self._model_info(
-                selected[1], should_stop=should_stop, deadline=deadline,
-            ).get(str(entry.get("served_model") or model), {}).get("status", {}) if selected else {}
-            if isinstance(status, dict) and str(status.get("value", "")).lower() != "loaded":
+            return {"complete": False, "models": [], "errors": {"configuration": "invalid model map"}, "endpoint_status": {}, "endpoints": {}}
+
+        by_endpoint: dict[str, list[str]] = {}
+        errors: dict[str, str] = {}
+        endpoint_status: dict[str, str] = {}
+        endpoint_status_by_url: dict[str, str] = {}
+        for model, entry in models.items():
+            selected = self._entry(str(model))
+            if selected is None:
+                errors[str(model)] = "configured endpoint unavailable"
+                endpoint_status[str(model)] = "unknown"
                 continue
-            rows.append({
-                "name": model,
-                "parameter_size": "",
-                "quantization": "GGUF",
-                "size_bytes": 0,
-                "vram_bytes": 0,
-                "cpu_bytes": 0,
-                "gpu_fraction": 0.0,
-                "cpu_offload_fraction": 0.0,
-                "context_length": int(entry.get("context_length", 0) or 0) if isinstance(entry, dict) else 0,
-                "backend": "llama.cpp-sycl",
-            })
-        return rows
+            by_endpoint.setdefault(selected[1], []).append(str(model))
+            endpoint_status_by_url[selected[1]] = "unknown"
+
+        rows: list[dict[str, Any]] = []
+        for url, configured_names in by_endpoint.items():
+            if _stop_requested(should_stop) or (deadline is not None and time.monotonic() >= deadline):
+                for name in configured_names:
+                    errors[name] = "inventory cancelled or deadline exceeded"
+                    endpoint_status[name] = "unknown"
+                continue
+            try:
+                served = self._model_info(
+                    url, should_stop=should_stop, deadline=deadline,
+                    force_refresh=force_refresh, strict=True,
+                )
+                active_rows: list[dict[str, Any]] = []
+                for served_id, detail in served.items():
+                    status = detail.get("status") if isinstance(detail, dict) else None
+                    state = str(status.get("value", "")).strip().lower() if isinstance(status, dict) else ""
+                    if state not in {"loaded", "loading", "unloaded", "failed", "unavailable"}:
+                        raise ValueError("llama.cpp model inventory omitted a usable load status")
+                    if state in {"loaded", "loading"}:
+                        active_rows.append({
+                            "name": served_id,
+                            "model": served_id,
+                            "status": state,
+                            "parameter_size": "",
+                            "quantization": "GGUF",
+                            "size_bytes": 0,
+                            "vram_bytes": 0,
+                            "cpu_bytes": 0,
+                            "gpu_fraction": 0.0,
+                            "cpu_offload_fraction": 0.0,
+                            "context_length": 0,
+                            "backend": "llama.cpp-sycl",
+                            "endpoint_url": url,
+                        })
+                rows.extend(active_rows)
+                endpoint_status_by_url[url] = "complete"
+                for name in configured_names:
+                    endpoint_status[name] = "complete"
+            except Exception as exc:
+                reason = "cancelled" if _stop_requested(should_stop) else (
+                    "deadline exceeded" if isinstance(exc, TimeoutError) else type(exc).__name__
+                )
+                for name in configured_names:
+                    errors[name] = reason
+                    endpoint_status[name] = "unknown"
+                endpoint_status_by_url[url] = "unknown"
+        return {
+            "complete": not errors and len(endpoint_status) == len(models),
+            "models": rows,
+            "errors": errors,
+            "endpoint_status": endpoint_status,
+            "endpoints": endpoint_status_by_url,
+        }
 
     def model_capabilities(self, model: str) -> dict[str, Any] | None:
         """Expose Ollama-shaped capability metadata for a mapped model.
@@ -650,14 +875,40 @@ class LlamaCppRouter:
         self,
         model: str,
         *,
+        endpoint_url: str | None = None,
         should_stop: Any | None = None,
         deadline: float | None = None,
     ) -> bool:
         selected = self._entry(model)
-        if not selected:
+        if selected is None:
+            models = self.settings.get("models", {})
+            if isinstance(models, dict):
+                for configured_name, configured_entry in models.items():
+                    if not isinstance(configured_entry, dict):
+                        continue
+                    if str(configured_entry.get("served_model") or "") == str(model):
+                        selected = self._entry(str(configured_name))
+                        if selected:
+                            break
+        if endpoint_url is not None:
+            requested_url = _loopback_url(endpoint_url)
+            configured_urls = {
+                _loopback_url(entry.get("url"))
+                for entry in self.settings.get("models", {}).values()
+                if isinstance(entry, dict)
+            } if isinstance(self.settings.get("models", {}), dict) else set()
+            if not requested_url or requested_url not in configured_urls:
+                return False
+            selected = ({}, requested_url)
+            alias = str(model or "").strip()
+        elif selected:
+            entry, _url = selected
+            alias = str(model) if str(entry.get("served_model") or "") == str(model) else str(entry.get("served_model") or model)
+        else:
             return False
-        entry, url = selected
-        alias = str(entry.get("served_model") or model)
+        if not selected or not alias:
+            return False
+        _entry, url = selected
         try:
             body = json_dumps({"model": alias}).encode("utf-8")
             req = Request(f"{url}/models/unload", data=body, headers={"Content-Type": "application/json"})
@@ -726,7 +977,10 @@ class LlamaCppRouter:
         if fmt == "json":
             result["response_format"] = {"type": "json_object"}
         elif isinstance(fmt, dict):
-            result["response_format"] = {"type": "json_schema", "json_schema": fmt}
+            if fmt.get("type") == "json_schema" or fmt.get("type") == "json_object":
+                result["response_format"] = fmt
+            else:
+                result["response_format"] = {"type": "json_schema", "schema": fmt}
         return result
 
     @staticmethod

@@ -81,6 +81,9 @@ class Job:
     admission: dict[str, Any] = field(default_factory=dict)
     cancel_event: threading.Event | None = None
     deadline: float | None = None
+    fairness_wait_ms: float = 0.0
+    fairness_checked_at: float | None = None
+    model_switch_receipt: dict[str, Any] | None = None
 
 
 class QueueFullError(RuntimeError):
@@ -180,6 +183,7 @@ class AffinityScheduler:
         self._inflight_by_tenant: dict[str, int] = {}
         self._inflight_jobs: dict[int, Job] = {}
         self._tenant_vruntime: dict[str, int] = {}
+        self._switch_sequence = 0
         self._last_switch = 0.0
         self._switching = False
         self._model_blocked_until: dict[str, float] = {}
@@ -218,6 +222,22 @@ class AffinityScheduler:
             # with a tiny default context must pass through prepare_model() before it
             # becomes the scheduler's active profile.
             details = runtime.loaded_model_details() if hasattr(runtime, "loaded_model_details") else []
+            for row in details:
+                if not isinstance(row, dict):
+                    continue
+                name = str(row.get("name", row.get("model", "")) or "").strip()
+                vram_bytes = row.get("vram_bytes")
+                if (
+                    name
+                    and isinstance(vram_bytes, (int, float))
+                    and not isinstance(vram_bytes, bool)
+                    and math.isfinite(vram_bytes)
+                    and vram_bytes > 0
+                ):
+                    model_key = name.casefold()
+                    self._model_vram_bytes[model_key] = self._model_vram_bytes.get(model_key, 0) + int(
+                        round(float(vram_bytes))
+                    )
             for row in details:
                 name = str(row.get("name", "")) if isinstance(row, dict) else ""
                 ctx = int(row.get("context_length", 0) or 0) if isinstance(row, dict) else 0
@@ -375,6 +395,11 @@ class AffinityScheduler:
         except TypeError:
             try:
                 rows = provider(should_stop=should_stop, deadline=deadline)
+            except TypeError:
+                try:
+                    rows = provider()
+                except Exception:
+                    return None
             except Exception:
                 return None
         except Exception:
@@ -409,6 +434,75 @@ class AffinityScheduler:
                 return value
         return None
 
+    def _supports_post_unload_admission(self, model: str) -> bool:
+        runtime = getattr(self, "runtime", None)
+        capability = getattr(runtime, "supports_post_unload_admission", None)
+        if not callable(capability):
+            return False
+        live_resource_providers = (
+            getattr(runtime, "resource_status", None),
+            getattr(runtime, "vram_status", None),
+            getattr(getattr(runtime, "vram_balancer", None), "status", None),
+            getattr(getattr(runtime, "resource_monitor", None), "status", None),
+        )
+        if not any(callable(provider) for provider in live_resource_providers):
+            return False
+        try:
+            return bool(capability(model))
+        except Exception:
+            return False
+
+    def _post_unload_vram_admission(self, model: str) -> dict[str, Any]:
+        resource = self._resource_status()
+        total_mb = resource.get("vram_total_mb")
+        available_mb = resource.get("vram_available_mb")
+        valid_total = (
+            isinstance(total_mb, (int, float)) and not isinstance(total_mb, bool)
+            and math.isfinite(total_mb) and total_mb > 0
+        )
+        valid_available = (
+            isinstance(available_mb, (int, float)) and not isinstance(available_mb, bool)
+            and math.isfinite(available_mb) and available_mb >= 0
+        )
+        model_key = str(model or "").strip().casefold()
+        estimate_map = getattr(self, "_model_vram_bytes", {})
+        measured = estimate_map.get(model_key) if isinstance(estimate_map, dict) else None
+        if not isinstance(measured, int) or isinstance(measured, bool) or measured <= 0:
+            measured = None
+        configured = self._configured_model_vram_estimate(model_key)
+        required_values = [value for value in (measured, configured) if value is not None]
+        required = max(required_values) if required_values else None
+        estimate_source = (
+            "measured_and_configured" if measured is not None and configured is not None
+            else "configured" if configured is not None
+            else "measured" if measured is not None
+            else "unknown"
+        )
+        if not valid_total or not valid_available:
+            return {
+                "state": "rejected", "reason": "post_unload_vram_unavailable",
+                "vram_admission": "rejected", "vram_admission_phase": "post_unload",
+                "vram_estimate_source": estimate_source,
+            }
+        total_bytes = int(round(float(total_mb) * 1024 * 1024))
+        available_bytes = int(round(min(float(total_mb), float(available_mb)) * 1024 * 1024))
+        result: dict[str, Any] = {
+            "state": "rejected", "reason": "target_vram_estimate_unavailable",
+            "vram_admission": "rejected", "vram_admission_phase": "post_unload",
+            "vram_budget_bytes": total_bytes, "vram_available_bytes": available_bytes,
+            "vram_admission_budget_bytes": available_bytes,
+            "vram_estimate_source": estimate_source,
+        }
+        if required is None:
+            return result
+        result["vram_required_bytes"] = required
+        result["vram_incremental_required_bytes"] = required
+        if available_bytes >= required:
+            result.update(state="admitted", reason="capacity_available_after_unload", vram_admission="admitted")
+        else:
+            result["reason"] = "vram_budget_after_unload"
+        return result
+
     def _admission(self, *, background: bool, model: str | None = None) -> dict[str, Any]:
         resource = self._resource_status()
         pressure = str(resource.get("pressure_level", "nominal") or "nominal").lower()
@@ -427,6 +521,11 @@ class AffinityScheduler:
             }
         model_key = str(model or "").strip().casefold()
         active_key = str(getattr(self, "_active_model", None) or "").strip().casefold()
+        can_defer_switch = bool(
+            model_key and active_key and active_key != model_key
+            and bool(getattr(self, "unload_others", False))
+            and self._supports_post_unload_admission(model or "")
+        )
         estimates = getattr(self, "_model_vram_bytes", {})
         incremental_required: int | None = None
         admission_budget: int | None = None
@@ -442,6 +541,8 @@ class AffinityScheduler:
             ):
                 active_size = estimates.get(active_key)
                 if isinstance(active_size, int) and not isinstance(active_size, bool) and active_size > 0:
+                    # Configured sizes are upper bounds, not observed bytes that
+                    # unloading is guaranteed to return to the device.
                     reclaimable = active_size
             admission_budget = min(
                 vram_fields["vram_budget_bytes"],
@@ -462,12 +563,13 @@ class AffinityScheduler:
                     vram_estimate_source = "configured"
             vram_fields["vram_admission_budget_bytes"] = admission_budget
             if incremental_required is None:
-                vram_admission_state = "unknown"
+                vram_admission_state = "deferred" if can_defer_switch else "unknown"
             else:
                 vram_fields["vram_incremental_required_bytes"] = incremental_required
-                vram_admission_state = (
-                    "admitted" if incremental_required <= admission_budget else "rejected"
-                )
+                if incremental_required <= admission_budget:
+                    vram_admission_state = "admitted"
+                else:
+                    vram_admission_state = "deferred" if can_defer_switch else "rejected"
         factor = resource.get("context_budget_factor", 1.0)
         try:
             factor = max(0.0, min(1.0, float(factor)))
@@ -480,6 +582,7 @@ class AffinityScheduler:
             or (
                 vram_fields["vram_available_bytes"] <= 0
                 and (incremental_required is None or incremental_required > 0)
+                and not can_defer_switch
             )
         )
         if pressure_rejected or budget_rejected:
@@ -493,6 +596,15 @@ class AffinityScheduler:
             result["vram_estimate_source"] = vram_estimate_source
             if budget_rejected:
                 result["reason"] = "vram_budget"
+            return result
+        if vram_admission_state == "deferred":
+            result = {
+                "state": "degraded", "reason": "vram_admission_deferred_until_unload",
+                "pressure_level": pressure, "context_budget_factor": factor,
+                "queue_age_ms": 0, "retryable": True, **vram_fields,
+            }
+            result["vram_admission"] = "deferred"
+            result["vram_estimate_source"] = vram_estimate_source
             return result
         degraded = pressure in {"moderate", "high", "critical"} or factor < 1.0
         result = {
@@ -652,15 +764,33 @@ class AffinityScheduler:
         if job.error:
             admission = dict(job.admission)
             admission["queue_age_ms"] = round(queue_wait_ms, 1)
-            return {"success": False, "error": job.error, "job_id": job.id, "admission": admission, "admission_state": admission["state"], "_lah_scheduler_queue_wait_ms": queue_wait_ms, "_lah_scheduler_service_ms": service_ms, "_lah_scheduler_background": job.background}
+            admission["fairness_wait_ms"] = round(job.fairness_wait_ms, 1)
+            result = {
+                "success": False,
+                "error": job.error,
+                "job_id": job.id,
+                "admission": admission,
+                "admission_state": admission["state"],
+                "_lah_scheduler_queue_wait_ms": queue_wait_ms,
+                "_lah_scheduler_service_ms": service_ms,
+                "_lah_scheduler_fairness_wait_ms": round(job.fairness_wait_ms, 1),
+                "_lah_scheduler_background": job.background,
+            }
+            if job.model_switch_receipt is not None:
+                result["_lah_scheduler_model_switch"] = dict(job.model_switch_receipt)
+            return result
         if isinstance(job.result, dict):
             job.result.setdefault("job_id", job.id)
             admission = dict(job.admission)
             admission["queue_age_ms"] = round(queue_wait_ms, 1)
+            admission["fairness_wait_ms"] = round(job.fairness_wait_ms, 1)
             job.result.setdefault("admission", admission)
             job.result.setdefault("admission_state", admission["state"])
             job.result.setdefault("_lah_scheduler_queue_wait_ms", queue_wait_ms)
             job.result.setdefault("_lah_scheduler_service_ms", service_ms)
+            job.result.setdefault("_lah_scheduler_fairness_wait_ms", round(job.fairness_wait_ms, 1))
+            if job.model_switch_receipt is not None:
+                job.result.setdefault("_lah_scheduler_model_switch", dict(job.model_switch_receipt))
             job.result.setdefault("_lah_scheduler_background", job.background)
         return job.result
 
@@ -989,16 +1119,30 @@ class AffinityScheduler:
         elif not self.background_allowed(require_switch_idle=False):
             return None
 
-        def score(job: Job) -> tuple[float, int, float]:
+        def effective_priority(job: Job) -> int:
             wait = now - job.created_at
             # Let an old foreground request catch up with higher-priority arrivals.
             # Cap at the public priority ceiling so tenant virtual runtime can still
             # share capacity fairly once waiting jobs have aged into the same tier.
-            effective_priority = min(9, job.priority + int(wait // 30.0)) if not job.background else job.priority
-            vruntime = self._tenant_vruntime.get(job.tenant, 0)
-            return (-effective_priority, vruntime, job.created_at)
+            return min(9, job.priority + int(wait // 30.0)) if not job.background else job.priority
 
-        return min(candidates, key=score)
+        def score(job: Job) -> tuple[float, int, float]:
+            priority = effective_priority(job)
+            vruntime = self._tenant_vruntime.get(job.tenant, 0)
+            return (-priority, vruntime, job.created_at)
+
+        selected = min(candidates, key=score)
+        selected_priority = effective_priority(selected)
+        for job in candidates:
+            if (
+                job is not selected
+                and job.tenant != selected.tenant
+                and effective_priority(job) == selected_priority
+                and job.fairness_checked_at is not None
+            ):
+                job.fairness_wait_ms += max(0.0, now - job.fairness_checked_at) * 1000
+            job.fairness_checked_at = now
+        return selected
 
     def _has_active_preparation_waiter(self, target: str) -> bool:
         now = time.monotonic()
@@ -1019,24 +1163,57 @@ class AffinityScheduler:
         deadline: float | None = None,
     ) -> bool:
         evicted: list[str] = []
+        vram_before_bytes: int | None = None
         observed_vram_bytes: int | None = None
         started = time.perf_counter()
+        prepare_duration_ms = 0.0
         error = ""
         cancelled = False
+        admission_rejected = False
+        post_unload_admission: dict[str, Any] | None = None
         if should_stop is not None and should_stop():
             cancelled = True
         else:
             try:
+                vram_before_bytes = self._observe_model_vram_bytes(
+                    target,
+                    should_stop=should_stop,
+                    deadline=deadline,
+                )
                 prepare_kwargs: dict[str, Any] = {"unload_others": self.unload_others}
+                active_model = str(getattr(self, "_active_model", None) or "").strip()
+                if (
+                    bool(getattr(self, "unload_others", False))
+                    and active_model
+                    and active_model.casefold() != target.strip().casefold()
+                    and self._supports_post_unload_admission(target)
+                ):
+                    def check_post_unload_admission() -> dict[str, Any]:
+                        nonlocal post_unload_admission
+                        post_unload_admission = self._post_unload_vram_admission(target)
+                        return post_unload_admission
+
+                    prepare_kwargs["post_unload_admission"] = check_post_unload_admission
                 if should_stop is not None or deadline is not None:
                     prepare_kwargs.update(should_stop=should_stop, deadline=deadline)
-                prepared = self.runtime.prepare_model(target, **prepare_kwargs)
+                prepare_started = time.perf_counter()
+                try:
+                    prepared = self.runtime.prepare_model(target, **prepare_kwargs)
+                finally:
+                    prepare_duration_ms = (time.perf_counter() - prepare_started) * 1000
                 # Runtime adapters historically returned either a list of evicted models
                 # or None. Treat a falsey/non-list success value as no evictions instead
                 # of letting an adapter quirk kill the dispatcher thread.
                 evicted = list(prepared) if isinstance(prepared, (list, tuple, set)) else []
             except Exception as exc:
-                if bool(getattr(exc, "preparation_cancelled", False)):
+                admission = getattr(exc, "admission", None)
+                if isinstance(admission, dict) and admission.get("state") == "rejected":
+                    admission_rejected = True
+                    post_unload_admission = dict(admission)
+                    evicted_models = getattr(exc, "evicted_models", None)
+                    evicted = list(evicted_models) if isinstance(evicted_models, (list, tuple, set)) else []
+                    error = f"{type(exc).__name__}: {admission.get('reason', 'post-unload admission rejected')}"[:300]
+                elif bool(getattr(exc, "preparation_cancelled", False)):
                     cancelled = True
                 else:
                     error = f"{type(exc).__name__}: {exc}"[:300]
@@ -1052,6 +1229,30 @@ class AffinityScheduler:
                 self._model_vram_bytes[target.strip().casefold()] = observed_vram_bytes
             self._stats["switch_time_ms"] = round(float(self._stats.get("switch_time_ms", 0.0)) + elapsed_ms, 1)
             self._stats["evictions"] += len(evicted)
+            self._switch_sequence = max(0, int(getattr(self, "_switch_sequence", 0))) + 1
+            switch_receipt = {
+                "switch_event_id": self._switch_sequence,
+                "model": target,
+                "model_prepare_ms": round(prepare_duration_ms, 1),
+                "model_switch_ms": round(elapsed_ms, 1),
+                "evicted_models": list(evicted),
+                "eviction_count": len(evicted),
+                "vram_before_bytes": vram_before_bytes,
+                "vram_after_bytes": observed_vram_bytes,
+                "post_unload_admission": dict(post_unload_admission) if post_unload_admission is not None else None,
+                "admission_rejected": admission_rejected,
+                "success": not cancelled and not error and not admission_rejected,
+                "cancelled": cancelled,
+            }
+            if error and not admission_rejected:
+                switch_receipt["failure"] = True
+            for job in self._pending:
+                if job.model == target and not job.done.is_set():
+                    job.model_switch_receipt = dict(switch_receipt)
+                    if post_unload_admission is not None:
+                        job.admission.update(post_unload_admission)
+                        if post_unload_admission.get("state") == "admitted":
+                            job.admission["state"] = "accepted"
             self._active_dispatched = 0
             self._last_switch = time.monotonic()
             if cancelled:
@@ -1071,6 +1272,19 @@ class AffinityScheduler:
                 self._stats["model_switch_cancellations"] = int(self._stats.get("model_switch_cancellations", 0)) + 1
                 # Preparation may already have unloaded the old model. Force the next
                 # dispatch to re-check residency instead of trusting a stale affinity.
+                self._active_model = None
+                self._active_since = 0.0
+            elif admission_rejected:
+                self._stats["model_switch_admission_rejections"] = int(
+                    self._stats.get("model_switch_admission_rejections", 0)
+                ) + 1
+                failed = [job for job in self._pending if job.model == target]
+                for job in failed:
+                    self._pending.remove(job)
+                    reason = str((post_unload_admission or {}).get("reason", "post-unload admission rejected"))
+                    job.error = f"model preparation admission rejected: {reason}"
+                    job.finished_at = time.monotonic()
+                    job.done.set()
                 self._active_model = None
                 self._active_since = 0.0
             elif error:
@@ -1097,7 +1311,7 @@ class AffinityScheduler:
                 self._active_since = time.monotonic()
             self._switching = False
             self._cond.notify_all()
-        return not error
+        return not error and not cancelled and not admission_rejected
 
     def prewarm(self, model: str) -> bool:
         """Warm one model only while completely idle; never delays queued user work."""
@@ -1116,15 +1330,18 @@ class AffinityScheduler:
     def _run_job(self, job: Job) -> None:
         job.started_at = time.monotonic()
         try:
-            job.result = job.context.run(job.execute)
-            if not isinstance(job.result, dict):
-                job.result = {"success": True, "result": job.result}
-            with self._cond:
-                self._stats["completed"] += 1
-                if job.background:
-                    self._stats["background_completed"] += 1
-                else:
-                    self._last_foreground_activity = time.monotonic()
+            if job.cancel_event is not None and job.cancel_event.is_set():
+                job.error = "caller cancelled before execution"
+            else:
+                job.result = job.context.run(job.execute)
+                if not isinstance(job.result, dict):
+                    job.result = {"success": True, "result": job.result}
+                with self._cond:
+                    self._stats["completed"] += 1
+                    if job.background:
+                        self._stats["background_completed"] += 1
+                    else:
+                        self._last_foreground_activity = time.monotonic()
         except Exception as exc:
             job.error = str(exc)
             with self._cond:
@@ -1236,6 +1453,11 @@ class AffinityScheduler:
                 job.error = "scheduler shutting down"
                 job.done.set()
             self._pending.clear()
+            # Running work can only stop cooperatively. Signal each caller-owned
+            # cancellation event before shutting down the executor.
+            for job in self._inflight_jobs.values():
+                if job.cancel_event is not None:
+                    job.cancel_event.set()
             self._cond.notify_all()
         self._executor.shutdown(wait=False, cancel_futures=True)
         if self._dispatcher.is_alive() and threading.current_thread() is not self._dispatcher:

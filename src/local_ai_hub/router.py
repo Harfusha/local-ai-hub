@@ -129,7 +129,7 @@ class ModelRouter:
             return route
         configured = {
             str(self.models.get(role))
-            for role in ("fast_code", "heavy_code", "reasoning", "general")
+            for role in ("background_code", "fast_code", "heavy_code", "reasoning", "general")
             if self.models.get(role)
         }
         if requested not in configured:
@@ -148,7 +148,13 @@ class ModelRouter:
         else:
             required_model = route.get("model")
 
-        role_ranks = {"fast_code": 0, "general": 0, "heavy_code": 1, "reasoning": 2}
+        role_ranks = {
+            "background_code": -1,
+            "fast_code": 0,
+            "general": 0,
+            "heavy_code": 1,
+            "reasoning": 2,
+        }
 
         def model_rank(model: Any) -> int:
             return max(

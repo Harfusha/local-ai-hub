@@ -220,10 +220,11 @@ def test_setup_supports_explicit_generic_mcp_config_paths(tmp_path: Path):
     }
     install = tmp_path / "install"
     install.mkdir()
-    setup.configure_agents(install, tmp_path / "python", None, None, cfg)
+    setup.configure_agents(install, tmp_path / "python", None, cfg)
     assert json.loads(generic.read_text(encoding="utf-8"))["mcpServers"]["local-ai"]["env"]["LOCAL_AI_AGENT"] == "generic"
     assert json.loads(vscode.read_text(encoding="utf-8"))["servers"]["local-ai"]["type"] == "stdio"
     assert (install / "generated" / "agent-policy.md").read_text(encoding="utf-8") == setup.GLOBAL_POLICY + "\n"
+    assert (install / "generated" / "token-economy-policy.md").read_text(encoding="utf-8") == setup.generate_token_economy_policy(cfg) + "\n"
     generated = json.loads((install / "generated" / "mcp-servers.json").read_text(encoding="utf-8"))
     assert generated["mcpServers"]["local-ai"]["env"]["LOCAL_AI_AGENT_PROFILE"] == "generic"
     assert generated["mcpServers"]["local-ai"]["args"] == ["-m", "local_ai_hub.mcp_server"]
