@@ -44,12 +44,31 @@ def test_interrupted_task_resumes_with_fresh_evidence_and_no_duplicate_command(t
     chk = TaskCheckpoint(phase="testing", next_action="verify_tests")
     app.agent_tasks.checkpoint(t.task_id, chk, actor="agent", idempotency_key="chk-1")
 
-    # Record verification receipt
+    # Record trusted command proof
+    command_id = "cmd-resume-tests"
+    repository_revision = "rev-1"
+    proof = {
+        "kind": "work_command_verification",
+        "passed": True,
+        "task_id": t.task_id,
+        "owner": t.owner,
+        "criterion": "suite_passed",
+        "command_id": command_id,
+        "exit_code": 0,
+        "repository_revision": repository_revision,
+        "mutation_generation": 0,
+        "result": {"success": True, "exit_code": 0},
+    }
+    evidence_id = app.artifacts.put_json(proof, t.owner, "command_verification")
     rcpt = VerificationReceipt.create(
         task_id=t.task_id,
         criterion="suite_passed",
         passed=True,
-        evidence_id="E-test-passed",
+        evidence_id=evidence_id,
+        command_id=command_id,
+        owner=t.owner,
+        repository_revision=repository_revision,
+        evidence_type="test",
     )
     app.agent_verification.record(rcpt)
 
@@ -114,16 +133,49 @@ def test_e2e_completion_gate_enforcement(tmp_path: Path):
     with pytest.raises(CompletionGateError):
         app.agent_tasks.transition(t.task_id, TaskStatus.COMPLETED, reason="premature", actor="agent", idempotency_key="g-fail")
 
-    # Record first receipt
-    r1 = VerificationReceipt.create(task_id=t.task_id, criterion="tests_pass", passed=True, evidence_id="ev_test")
+    # Record trusted test proof
+    test_command_id = "cmd-tests"
+    repository_revision = "rev-1"
+    test_proof = {
+        "kind": "work_command_verification",
+        "passed": True,
+        "task_id": t.task_id,
+        "owner": t.owner,
+        "criterion": "tests_pass",
+        "command_id": test_command_id,
+        "exit_code": 0,
+        "repository_revision": repository_revision,
+        "mutation_generation": 0,
+        "result": {"success": True, "exit_code": 0},
+    }
+    test_evidence = app.artifacts.put_json(test_proof, t.owner, "command_verification")
+    r1 = VerificationReceipt.create(
+        task_id=t.task_id, criterion="tests_pass", passed=True, evidence_id=test_evidence,
+        command_id=test_command_id, owner=t.owner,
+        repository_revision=repository_revision, mutation_generation=0, evidence_type="test",
+    )
     app.agent_verification.record(r1)
 
     # Still missing lint_pass
     with pytest.raises(CompletionGateError):
         app.agent_tasks.transition(t.task_id, TaskStatus.COMPLETED, reason="still missing", actor="agent", idempotency_key="g-fail2")
 
-    # Record second receipt
-    r2 = VerificationReceipt.create(task_id=t.task_id, criterion="lint_pass", passed=True, evidence_id="ev_lint")
+    # Record trusted review proof
+    review_proof = {
+        "kind": "work_source_review",
+        "passed": True,
+        "task_id": t.task_id,
+        "owner": t.owner,
+        "repository_revision": repository_revision,
+        "mutation_generation": 0,
+        "criteria": ["lint_pass"],
+    }
+    review_evidence = app.artifacts.put_json(review_proof, t.owner, "source_review")
+    r2 = VerificationReceipt.create(
+        task_id=t.task_id, criterion="lint_pass", passed=True, evidence_id=review_evidence,
+        owner=t.owner, repository_revision=repository_revision,
+        mutation_generation=0, evidence_type="source_review",
+    )
     app.agent_verification.record(r2)
 
     # Now completion succeeds
@@ -156,3 +208,77 @@ def test_e2e_negative_knowledge_retry_decision(tmp_path: Path):
     assert dec2.action == "retry"
 
     app.close()
+
+
+def test_local_app_wires_scoped_memory_adoption_on_create_and_resume(tmp_path: Path):
+    from local_ai_hub import trace_context
+    from local_ai_hub.agent_memory import AgentScope, MemoryKind, MemoryRecord, MemoryStatus
+
+    app = app_with_agent_state(tmp_path)
+    root = tmp_path / "repo"
+    root.mkdir()
+
+    def record_memory(key: str, idempotency_key: str) -> MemoryRecord:
+        record = MemoryRecord.create(
+            kind=MemoryKind.FACT,
+            scope=AgentScope.REPOSITORY,
+            scope_id=str(root),
+            key=key,
+            value=key,
+            status=MemoryStatus.CONFIRMED,
+            source="user",
+            provenance={"root": str(root), "tenant": "tenant-a"},
+        )
+        return app.agent_memory.record(record, actor="user", idempotency_key=idempotency_key)
+
+    first = record_memory("matching parser fact", "app-memory-first")
+    token = trace_context.set_context(tenant="tenant-a")
+    try:
+        task = app.agent_tasks.create(
+            GoalContract(goal="matching parser fact"),
+            ScopeContext(repository_id=str(root), branch="main", task_id="app-memory-task"),
+            task_id="app-memory-task",
+        )
+        initial_ids = {
+            item["id"] for item in task.checkpoint.state_data["memory_context"]["items"]
+        }
+        assert initial_ids == {first.record_id}
+
+        app.agent_tasks.transition(
+            task.task_id,
+            TaskStatus.ACTIVE,
+            reason="start",
+            actor="test",
+            idempotency_key="app-memory-start",
+        )
+        app.agent_tasks.transition(
+            task.task_id,
+            TaskStatus.BLOCKED,
+            reason="wait",
+            actor="test",
+            idempotency_key="app-memory-block",
+        )
+        later = record_memory("matching parser follow-up", "app-memory-later")
+        resumed = app.agent_tasks.resume(
+            task.task_id, actor="test", idempotency_key="app-memory-resume"
+        )
+        resumed_ids = {
+            item["id"] for item in resumed.checkpoint.state_data["memory_context"]["items"]
+        }
+        assert resumed_ids == {first.record_id, later.record_id}
+
+        app.agent_tasks.checkpoint(
+            task.task_id,
+            TaskCheckpoint(state_data={"memory_audit": {"used_ids": sorted(resumed_ids)}}),
+            actor="test",
+            idempotency_key="app-memory-audit",
+        )
+        stored = app.agent_tasks.get(task.task_id)
+        assert stored is not None
+        assert stored.checkpoint.state_data["memory_audit"]["used_ids"] == sorted(resumed_ids)
+        assert {
+            item["id"] for item in stored.checkpoint.state_data["memory_context"]["items"]
+        } == resumed_ids
+    finally:
+        trace_context.reset_context(token)
+        app.close()

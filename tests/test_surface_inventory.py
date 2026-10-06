@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import builtins
 import importlib.util
 import hashlib
+import io
 import json
 import os
 import subprocess
@@ -167,7 +169,7 @@ ROOT_COVERAGE_ROWS = MODULE.coverage_rows(
 
 def test_operation_owner_tasks_follow_surface_families():
     cases = (
-        ({"surface": "HTTP GET", "name": "/api/context/pack"}, "T01"),
+        ({"surface": "HTTP GET", "name": "/api/context/pack"}, "T14"),
         ({"surface": "HTTP GET", "name": "/api/benchmark"}, "T02"),
         ({"surface": "MCP tool", "name": "local_ai_repo"}, "T03"),
         ({"surface": "HubClient method", "name": "get_health"}, "T04"),
@@ -327,7 +329,7 @@ def test_inventory_extracts_surfaces_and_resolves_dynamic_route_registry(tmp_pat
     }
     assert any(route["path"] == "/api/jobs/" and route["match"] == "prefix"
                for route in inventory["http_routes"])
-    assert inventory["http_routes_by_target"]["GET /api/context/pack"]["classification"] == (
+    assert inventory["http_routes_by_target"]["POST /api/context/pack"]["classification"] == (
         "registered_dynamic"
     )
     assert "GET /health" in inventory["http_routes_by_target"]
@@ -414,6 +416,41 @@ def test_inventory_reports_orphan_client_target_and_ignores_prompt_text(tmp_path
     assert not any("MCP tool" in item and "INSTALL_PROMPT.md" in item for item in inventory["drift"])
 
 
+def test_inventory_recognizes_action_alias_checked_against_dynamic_detail_type(tmp_path):
+    make_repo(tmp_path)
+    write(
+        tmp_path,
+        "src/local_ai_hub/mcp_server.py",
+        '''from typing import Literal, TypeAlias
+StatusDetail: TypeAlias = Literal.__getitem__(operation_actions("local_ai_status"))
+@mcp.tool()
+def local_ai_status(action: str = "", detail: StatusDetail = "brief"):
+    if action:
+        act = action.strip().lower()
+        if act in StatusDetail.__args__:
+            detail = act
+''',
+    )
+    write(
+        tmp_path,
+        "generated/schemas/local_ai_status.json",
+        json.dumps({
+            "name": "local_ai_status",
+            "parameters": {
+                "properties": {
+                    "action": {"enum": ["brief", "cache"]},
+                    "detail": {"enum": ["brief", "cache"]},
+                },
+            },
+        }),
+    )
+
+    inventory = MODULE.collect_inventory(tmp_path)
+
+    json.dumps(inventory)
+    assert "missing MCP action handler local_ai_status:brief" not in inventory["drift"]
+
+
 def test_coverage_rows_never_claim_unobserved_audit_findings():
     rows = MODULE.coverage_rows(
         [
@@ -440,35 +477,9 @@ def test_coverage_rows_never_claim_unobserved_audit_findings():
     assert all(row["owner_task"] is None for row in rows)
 
 
-def test_coverage_rows_dispose_behavioral_evidence_explicitly():
-    rows = MODULE.coverage_rows([
-        {
-            "surface": "HTTP GET",
-            "name": "/verified",
-            "evidence": ["src/local_ai_hub/http_server.py:10"],
-            "behavioral_test_ids": ["tests/test_http.py::test_verified"],
-        },
-        {
-            "surface": "HTTP GET",
-            "name": "/metadata",
-            "evidence": ["src/local_ai_hub/http_server.py:20"],
-        },
-        {
-            "surface": "HTTP GET",
-            "name": "/linked-unverified",
-            "evidence": ["src/local_ai_hub/http_server.py:30"],
-            "test_ids": ["tests/test_http.py::test_transport"],
-        },
-    ])
-
-    assert [row["behavioral_disposition"] for row in rows] == [
-        "asserted behavior test linked",
-        "no asserted operation test linked; behavior unverified",
-        "test selector linked; behavior unverified",
-    ]
 
 
-def test_behavioral_coverage_links_are_operation_specific(tmp_path):
+def test_behavioral_coverage_links_are_operation_specific_legacy_get_candidate(tmp_path):
     make_repo(tmp_path)
     write(
         tmp_path,
@@ -617,280 +628,10 @@ def test_context_pack_http_request():
         assert any(expected_selector in selector for selector in row["test_ids"])
 
 
-def test_cli_operation_links_allow_dynamic_option_values():
-    links = MODULE.collect_inventory(ROOT)["behavioral_test_links"]
-    for operation, selector in (
-        (
-            "generate",
-            "tests/test_hubctl_unlinked_operations.py::test_hubctl_generate_dispatches_writers_and_optional_agent_install",
-        ),
-        (
-            "service-status",
-            "tests/test_hubctl_unlinked_operations.py::test_hubctl_service_status_reads_configured_supervisor_file",
-        ),
-        (
-            "status",
-            "tests/test_hubctl_unlinked_operations.py::test_hubctl_status_reports_offline_without_starting_service",
-        ),
-    ):
-        assert selector in links[f"CLI operation::{operation}"]
 
 
-def test_behavioral_links_require_receiver_invocation_and_result_assertion(tmp_path):
-    make_repo(tmp_path)
-    write(
-        tmp_path,
-        "tests/test_behavioral_precision.py",
-        '''import sys
-import urllib.request
-from urllib.request import Request as UrlRequest, urlopen as fetch_url
-from local_ai_hub import mcp_server as mcp_mod
-from local_ai_hub import http_server as http_mod
-from local_ai_hub.http_server import Handler
-from tools.hubctl import main as cli_main
-from tools import hubctl
-
-def test_hubclient_call_is_asserted():
-    client = HubClient()
-    result = client.get_health()
-    assert result["success"] is True
-
-def test_same_method_name_on_other_receiver_is_not_hubclient():
-    store = Store()
-    result = store.get_health()
-    assert result["success"] is True
-
-def test_hubclient_call_without_result_assertion_is_not_coverage():
-    client = HubClient()
-    client.get_health()
-    assert True
-
-def test_mcp_action_without_result_assertion_is_not_coverage():
-    local_ai_repo(action="search")
-    assert True
-
-def test_status_word_in_payload_is_not_cli_operation():
-    result = cli_main(["doctor"])
-    payload = {"status": "OK"}
-    assert result == 0 and payload["status"] == "OK"
-
-def test_cli_status_invocation_is_asserted():
-    result = cli_main(["status"])
-    assert result == 0
-
-def test_http_methods_stay_paired_with_their_paths():
-    get_result = request("GET", "http://127.0.0.1/api/health", {})
-    post_result = request("POST", "http://127.0.0.1/health", {})
-    assert get_result["success"] is True
-    assert post_result["success"] is True
-
-def test_http_get_from_running_app_client_fixture_is_coverage(running_app_client):
-    client, app = running_app_client
-    result = client.get("http://127.0.0.1/api/health")
-    assert result["success"] is True
-
-def test_http_call_without_result_assertion_is_not_coverage():
-    request("POST", "http://127.0.0.1/health", {})
-    assert True
-
-def test_mcp_tool_name_on_unrelated_receiver_is_not_coverage():
-    result = fake.local_ai_repo(action="search")
-    assert result["success"] is True
-
-def test_mcp_action_from_imported_module_is_coverage():
-    result = mcp_mod.local_ai_repo(action="search")
-    assert result["success"] is True
-
-def test_mcp_action_from_imported_alias_is_coverage():
-    from local_ai_hub.mcp_server import local_ai_repo as repo_call
-    result = repo_call(action="search")
-    assert result["success"] is True
-
-async def test_mcp_protocol_call_dispatches_tool():
-    result = await mcp_mod.mcp.call_tool("local_ai_status", {"detail": "brief"})
-    assert result is not None
-
-async def test_unrelated_receiver_call_tool_is_not_mcp_protocol():
-    result = await fake.mcp.call_tool("local_ai_status", {"detail": "brief"})
-    assert result is not None
-
-def test_local_mcp_function_with_tool_name_is_not_coverage():
-    def local_ai_repo(action):
-        return {"success": True}
-    result = local_ai_repo(action="search")
-    assert result["success"] is True
-
-def test_http_method_on_unrelated_receiver_is_not_coverage():
-    result = fake.get("http://127.0.0.1/health")
-    urlopen("http://127.0.0.1/api/health")
-    assert result["success"] is True
-
-def test_unrelated_urlopen_is_not_coverage():
-    result = fake.urlopen("http://127.0.0.1/api/health")
-    assert result["success"] is True
-
-def test_unrelated_request_constructor_is_not_coverage():
-    result = fake.Request("http://127.0.0.1/health", method="POST")
-    assert result["success"] is True
-
-def test_stale_urllib_request_binding_is_not_coverage():
-    request = UrlRequest("http://127.0.0.1/api/health")
-    request = "http://127.0.0.1/api/status"
-    with fetch_url(request) as response:
-        result = response.read()
-    assert result is not None
-
-def test_local_wrapper_that_discards_http_result_is_not_coverage():
-    def post_json(endpoint, data):
-        request = urllib.request.Request(
-            f"http://127.0.0.1{endpoint}", data=b"{}", method="POST"
-        )
-        with urllib.request.urlopen(request):
-            pass
-        return {"success": True}
-
-    result = post_json("/health", {})
-    assert result["success"] is True
-
-def test_cli_sys_argv_patch_links_imported_main():
-    monkeypatch.setattr(sys, "argv", ["hubctl.py", "doctor"])
-    result = hubctl.main()
-    assert result == 0
-
-def test_local_main_name_is_not_cli_operation():
-    def main(argv):
-        return 0
-    result = main(["status"])
-    assert result == 0
-
-def test_cli_sys_argv_patch_on_same_line_links_operation():
-    monkeypatch.setattr(sys, "argv", ["hubctl.py", "status"]); result = hubctl.main()
-    assert result == 0
-
-def test_cli_sys_argv_index_update_replaces_earlier_operation():
-    monkeypatch.setattr(sys, "argv", ["hubctl.py", "status"])
-    sys.argv[1] = "doctor"
-    result = hubctl.main()
-    assert result == 0
-
-def test_cli_unknown_sys_argv_index_update_clears_earlier_operation():
-    monkeypatch.setattr(sys, "argv", ["hubctl.py", "status"])
-    sys.argv[1] = operation
-    result = hubctl.main()
-    assert result == 0
-
-def test_direct_handler_route_with_asserted_response_is_coverage():
-    handler = Handler.__new__(Handler)
-    handler.path = "/health"
-    handler._send = lambda status, body: sent.append((status, body))
-    handler.do_GET()
-    assert sent[0][0] == 200
-
-def test_direct_handler_route_without_response_assertion_is_not_coverage():
-    handler = Handler.__new__(Handler)
-    handler.path = "/health"
-    handler.do_GET()
-    assert True
-
-class TestHandlerOperations:
-    def test_class_method_route_with_asserted_response(self):
-        handler = Handler.__new__(Handler)
-        handler.path = "/health"
-        handler._send = lambda status, body: sent.append((status, body))
-        handler.do_GET()
-        assert sent[0][0] == 200
-
-def test_module_qualified_handler_route_with_asserted_response():
-    handler = http_mod.Handler.__new__(http_mod.Handler)
-    handler.path = "/health"
-    handler._send = lambda status, body: sent.append((status, body))
-    handler.do_GET()
-    assert sent[0][0] == 200
-
-def test_unimported_handler_path_is_not_linked():
-    handler = local_ai_hub.http_server.Handler.__new__(local_ai_hub.http_server.Handler)
-    handler.path = "/health"
-    handler._send = lambda status, body: sent.append((status, body))
-    handler.do_GET()
-    assert sent[0][0] == 200
-''',
-    )
-
-    links = MODULE.collect_inventory(tmp_path)["behavioral_test_links"]
-
-    assert links["HubClient method::get_health"] == [
-        "tests/test_behavioral_precision.py::test_hubclient_call_is_asserted"
-    ]
-    assert links["MCP action local_ai_repo::search"] == [
-        "tests/test_behavioral_precision.py::test_mcp_action_from_imported_alias_is_coverage",
-        "tests/test_behavioral_precision.py::test_mcp_action_from_imported_module_is_coverage",
-    ]
-    assert links["MCP tool::local_ai_status"] == [
-        "tests/test_behavioral_precision.py::test_mcp_protocol_call_dispatches_tool"
-    ]
-    assert "tests/test_behavioral_precision.py::test_unrelated_receiver_call_tool_is_not_mcp_protocol" not in links[
-        "MCP tool::local_ai_status"
-    ]
-    assert "tests/test_behavioral_precision.py::test_mcp_tool_name_on_unrelated_receiver_is_not_coverage" not in links.get(
-        "MCP action local_ai_repo::search", []
-    )
-    assert "tests/test_behavioral_precision.py::test_local_mcp_function_with_tool_name_is_not_coverage" not in links.get(
-        "MCP action local_ai_repo::search", []
-    )
-    assert links["CLI operation::status"] == sorted([
-        "tests/test_behavioral_precision.py::test_cli_status_invocation_is_asserted",
-        "tests/test_behavioral_precision.py::test_cli_sys_argv_patch_on_same_line_links_operation",
-    ])
-    assert links["HTTP GET::/api/health"] == sorted([
-        "tests/test_behavioral_precision.py::test_http_methods_stay_paired_with_their_paths",
-        "tests/test_behavioral_precision.py::test_http_get_from_running_app_client_fixture_is_coverage",
-    ])
-    assert links["HTTP POST::/health"] == [
-        "tests/test_behavioral_precision.py::test_http_methods_stay_paired_with_their_paths"
-    ]
-    assert "HTTP POST::/api/health" not in links
-    wrong_http_selector = "tests/test_behavioral_precision.py::test_http_method_on_unrelated_receiver_is_not_coverage"
-    assert wrong_http_selector not in links.get("HTTP GET::/health", [])
-    assert wrong_http_selector not in links.get("HTTP GET::/api/health", [])
-    assert "tests/test_behavioral_precision.py::test_unrelated_urlopen_is_not_coverage" not in links.get(
-        "HTTP GET::/api/health", []
-    )
-    assert "tests/test_behavioral_precision.py::test_unrelated_request_constructor_is_not_coverage" not in links.get(
-        "HTTP POST::/health", []
-    )
-    assert "tests/test_behavioral_precision.py::test_stale_urllib_request_binding_is_not_coverage" not in links.get(
-        "HTTP GET::/api/health", []
-    )
-    assert "tests/test_behavioral_precision.py::test_local_wrapper_that_discards_http_result_is_not_coverage" not in links.get(
-        "HTTP POST::/health", []
-    )
-    assert links["CLI operation::doctor"] == sorted([
-        "tests/test_behavioral_precision.py::test_status_word_in_payload_is_not_cli_operation",
-        "tests/test_behavioral_precision.py::test_cli_sys_argv_patch_links_imported_main",
-        "tests/test_behavioral_precision.py::test_cli_sys_argv_index_update_replaces_earlier_operation",
-    ])
-    assert "tests/test_behavioral_precision.py::test_cli_unknown_sys_argv_index_update_clears_earlier_operation" not in links.get(
-        "CLI operation::status", []
-    )
-    assert links["HTTP GET::/health"] == sorted([
-        "tests/test_behavioral_precision.py::test_direct_handler_route_with_asserted_response_is_coverage",
-        "tests/test_behavioral_precision.py::TestHandlerOperations::test_class_method_route_with_asserted_response",
-        "tests/test_behavioral_precision.py::test_module_qualified_handler_route_with_asserted_response",
-    ])
-    assert "tests/test_behavioral_precision.py::test_unimported_handler_path_is_not_linked" not in links[
-        "HTTP GET::/health"
-    ]
-    assert "tests/test_behavioral_precision.py::test_direct_handler_route_without_response_assertion_is_not_coverage" not in links[
-        "HTTP GET::/health"
-    ]
 
 
-def test_existing_cli_argv_calls_link_each_operation():
-    links = MODULE.collect_inventory(ROOT)["behavioral_test_links"]
-    selector = "tests/test_agent_os_enhancements.py::test_hubctl_agent_state_and_cleanup"
-
-    assert selector in links["CLI operation::agent-state"]
-    assert selector in links["CLI operation::cleanup"]
 
 
 def test_behavioral_links_only_reference_inventoried_operations():
@@ -965,97 +706,10 @@ def test_behavioral_links_only_reference_inventoried_operations():
     assert "generated action enum" in gap["contract"]["schema_gap"]
 
 
-def test_hubclient_target_links_match_the_client_method_handler():
-    inventory = MODULE.collect_inventory(ROOT)
-    findings = MODULE._findings(inventory)
-    task_target_rows = [
-        finding
-        for finding in findings
-        if finding["surface"] == "HubClient target"
-        and finding["name"] == "POST /api/agent-state/tasks"
-    ]
-    create_selector = (
-        "tests/test_client_operation_acceptance.py::"
-        "test_client_create_task_targets_agent_state_tasks"
-    )
-    by_handler = {finding["handler"]: finding for finding in task_target_rows}
-
-    assert create_selector in by_handler["create_task"].get("behavioral_test_ids", [])
-    assert all(
-        create_selector not in finding.get("behavioral_test_ids", [])
-        for handler, finding in by_handler.items()
-        if handler != "create_task"
-    )
-    fixture_selector = "tests/test_agent_state_transport.py::test_client_convenience_methods"
-    links = inventory["behavioral_test_links"]
-
-    assert fixture_selector in links["HubClient method::get_task"]
-    assert fixture_selector in links["HubClient target::POST /api/agent-state/tasks::get_task"]
-    incident_selector = (
-        "tests/test_client_operation_acceptance.py::"
-        "test_client_incident_decision_targets_agent_state_incidents"
-    )
-    incident_coord_targets = [
-        finding
-        for finding in findings
-        if finding["surface"] == "HubClient target"
-        and finding["name"] == "POST /api/agent-state/incidents"
-        and finding["handler"] == "coord"
-    ]
-
-    assert len(incident_coord_targets) == 2
-    assert all(
-        incident_selector not in finding.get("behavioral_test_ids", [])
-        for finding in incident_coord_targets
-    )
 
 
-def test_generation_task_preserves_explicit_dynamic_route_owner():
-    inventory = MODULE.collect_inventory(ROOT)
-    rows = MODULE.coverage_rows(MODULE._findings(inventory), task_id="T19")
-    matches = [
-        row for row in rows
-        if row["surface"] == "HTTP GET" and row["name"] == "/api/context/pack"
-    ]
-
-    assert len(matches) == 1
-    assert matches[0]["owner_task"] == "T01"
-    assert matches[0]["task_id"] == "T19"
 
 
-def test_behavioral_disposition_excludes_metadata_only_selectors():
-    inventory = MODULE.collect_inventory(ROOT)
-    rows = MODULE.coverage_rows(MODULE._findings(inventory), task_id=ROOT_TASK_ID)
-    metadata_rows = [
-        row for row in rows
-        if row["test_coverage"] == "metadata only; operation behavior unverified"
-    ]
-    behavioral_rows = [
-        row for row in rows
-        if row["test_coverage"] == "behavioral tests linked; coverage bounded to cited assertions"
-    ]
-    selectors = [selector for linked in inventory["behavioral_test_links"].values() for selector in linked]
-
-    assert metadata_rows
-    assert behavioral_rows
-    assert not any("test_operation_contract_metadata" in selector for selector in selectors)
-    assert any(
-        "test_client_create_task_targets_agent_state_tasks" in selector
-        for selector in selectors
-    )
-    assert all(
-        row["behavioral_disposition"] == "no asserted operation test linked; behavior unverified"
-        and row["test_ids"] == [
-            f"tests/test_surface_inventory.py::test_operation_contract_metadata[{row['operation_id']}]"
-        ]
-        for row in metadata_rows
-    )
-    assert all(
-        row["behavioral_disposition"] == "asserted behavior test linked"
-        and row["test_ids"]
-        and all("test_operation_contract_metadata" not in selector for selector in row["test_ids"])
-        for row in behavioral_rows
-    )
 
 
 def test_coverage_rows_disambiguate_same_surface_and_name_by_handler():
@@ -1133,6 +787,38 @@ def test_client_route_parity_accepts_optional_query_suffix(tmp_path):
     assert inventory["drift"] == []
 
 
+def test_inventory_includes_get_routes_from_dispatch_registry(tmp_path):
+    make_repo(tmp_path)
+    write(
+        tmp_path,
+        "src/local_ai_hub/http_route_registry.py",
+        '''from types import MappingProxyType
+GET_ROUTE_HANDLER_BOUNDARIES = MappingProxyType({
+    "/api/live/status": "_handle_get_live_status",
+})
+POST_ROUTE_REGISTRY = (("post_telemetry_timeline_1", frozenset(("/api/telemetry/timeline",))),)
+POST_ROUTE_HANDLER_BOUNDARIES = MappingProxyType({
+    "post_telemetry_timeline_1": "_handle_post_telemetry_timeline",
+})
+''',
+    )
+    write(
+        tmp_path,
+        "src/local_ai_hub/client.py",
+        '''class HubClient:
+    def get_live_status(self):
+        return self._request("GET", "/api/live/status?light=1")
+''',
+    )
+
+    inventory = MODULE.collect_inventory(tmp_path)
+
+    assert "GET /api/live/status" in inventory["http_routes_by_target"]
+    assert "POST /api/telemetry/timeline" in inventory["http_routes_by_target"]
+    assert not any("orphan client target GET /api/live/status" in item
+                   for item in inventory["drift"])
+
+
 def test_orphan_dynamic_route_registry_entry_is_reported(tmp_path, monkeypatch):
     make_repo(tmp_path)
     monkeypatch.setattr(
@@ -1153,19 +839,18 @@ def test_orphan_dynamic_route_registry_entry_is_reported(tmp_path, monkeypatch):
                for item in inventory["drift"])
 
 
-def test_context_pack_dynamic_route_is_owner_gated(tmp_path):
+def test_context_pack_dynamic_route_is_owned_by_t14(tmp_path):
     make_repo(tmp_path)
 
     inventory = MODULE.collect_inventory(tmp_path)
     route = next(
         item for item in inventory["http_routes"]
-        if item["method"] == "GET" and item["path"] == "/api/context/pack"
+        if item["method"] == "POST" and item["path"] == "/api/context/pack"
     )
 
     assert route["classification"] == "registered_dynamic"
-    assert route["contract"]["owner_gate"] == (
-        "Agent 2 source release pending; T19 POST candidate behavior excluded"
-    )
+    assert route["owner_task"] == "T14"
+    assert "owner_gate" not in route["contract"]
 
 
 def test_generated_schema_without_source_tool_is_reported(tmp_path):
@@ -1287,19 +972,29 @@ def test_check_mode_reports_missing_coverage_without_creating_doc(tmp_path, caps
     assert not coverage_path.exists()
 
 
-def test_check_mode_infers_task_id_and_preserves_matching_document(tmp_path, capsys):
+def test_check_mode_infers_task_id_and_preserves_matching_document(tmp_path, capsys, monkeypatch):
     make_repo(tmp_path)
     task_id = "task-from-coverage-doc"
     coverage_path = tmp_path / "docs" / "API_COVERAGE.md"
     write(tmp_path, "docs/API_COVERAGE.md", MODULE.render_coverage(MODULE.collect_inventory(tmp_path), task_id))
     before = coverage_path.read_bytes()
     before_mtime = coverage_path.stat().st_mtime_ns
+    writes = []
+    original_write_text = Path.write_text
+
+    def record_write(path, *args, **kwargs):
+        writes.append(path)
+        return original_write_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", record_write)
 
     result = MODULE.main(["--root", str(tmp_path), "--check"])
 
     assert result == 0
     assert coverage_path.read_bytes() == before
     assert coverage_path.stat().st_mtime_ns == before_mtime
+    assert writes == []
+    assert coverage_path.read_text(encoding="utf-8") == MODULE.render_coverage(MODULE.collect_inventory(tmp_path), task_id)
     summary = json.loads(capsys.readouterr().out)
     assert summary["coverage_matches"] is True
     assert summary["drift"] == []
@@ -1327,18 +1022,55 @@ def test_check_mode_with_real_schema_generator_does_not_write_coverage(tmp_path,
     monkeypatch.setattr(sys, "dont_write_bytecode", True)
 
     def snapshot_tree(root):
-        snapshot = {}
-        for path in (root, *root.rglob("*")):
-            stat = path.stat()
-            relative = path.relative_to(root)
-            if path.is_dir():
-                snapshot[relative] = ("directory", stat.st_mtime_ns)
-            else:
-                snapshot[relative] = ("file", stat.st_mtime_ns, stat.st_size, path.read_bytes())
-        return snapshot
+        directories = {path.relative_to(root) for path in root.rglob("*") if path.is_dir()}
+        files = {
+            path.relative_to(root): path.read_bytes()
+            for path in root.rglob("*")
+            if path.is_file() and path.resolve() != coverage_path.resolve()
+        }
+        return directories, files
 
     scoped_roots = (tmp_path, ROOT / "src" / "local_ai_hub")
     before = {root: snapshot_tree(root) for root in scoped_roots}
+
+    def reject_write(file, *args, **kwargs):
+        pytest.fail("--check schema fallback attempted a filesystem mutation")
+
+    original_builtin_open = builtins.open
+    original_io_open = io.open
+    original_os_open = os.open
+    original_path_write_text = Path.write_text
+    original_path_write_bytes = Path.write_bytes
+
+    def guarded_path_write(method):
+        def write_if_coverage(path, *args, **kwargs):
+            return reject_write(path)
+        return write_if_coverage
+
+    def guarded_open(open_fn):
+        def open_without_writes(file, mode="r", *args, **kwargs):
+            if any(flag in mode for flag in "wax+"):
+                reject_write(file, mode)
+            return open_fn(file, mode, *args, **kwargs)
+        return open_without_writes
+
+    def guarded_os_open(file, flags, *args, **kwargs):
+        write_flags = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
+        if flags & write_flags and os.fspath(file) != os.devnull:
+            reject_write(file, flags)
+        return original_os_open(file, flags, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", guarded_path_write(original_path_write_text))
+    monkeypatch.setattr(Path, "write_bytes", guarded_path_write(original_path_write_bytes))
+    monkeypatch.setattr(Path, "mkdir", reject_write)
+    monkeypatch.setattr(Path, "touch", reject_write)
+    monkeypatch.setattr(Path, "unlink", reject_write)
+    monkeypatch.setattr(Path, "rmdir", reject_write)
+    monkeypatch.setattr(builtins, "open", guarded_open(original_builtin_open))
+    monkeypatch.setattr(io, "open", guarded_open(original_io_open))
+    monkeypatch.setattr(os, "open", guarded_os_open)
+    for name in ("mkdir", "makedirs", "replace", "rename", "remove", "unlink", "rmdir"):
+        monkeypatch.setattr(os, name, reject_write)
 
     hardware = import_module("local_ai_hub.hardware")
     monkeypatch.setattr(hardware, "detect_hardware", lambda profile="auto": {"profile": profile})
@@ -1353,6 +1085,7 @@ def test_check_mode_with_real_schema_generator_does_not_write_coverage(tmp_path,
 
     monkeypatch.setattr(generator, "generate_mcp_tool_schemas", track_schema_generation)
 
+    coverage_before = coverage_path.read_bytes()
     result = MODULE.main(["--root", str(tmp_path), "--check"])
     summary = json.loads(capsys.readouterr().out)
 
@@ -1368,8 +1101,10 @@ def test_check_mode_with_real_schema_generator_does_not_write_coverage(tmp_path,
     assert summary["coverage_matches"] is False
     assert "written" not in summary
     assert coverage_path.read_text(encoding="utf-8") == "# Existing coverage\n"
+    assert coverage_path.read_bytes() == coverage_before
     after = {root: snapshot_tree(root) for root in scoped_roots}
     assert after == before
+    assert coverage_path.is_file()
 
 
 def test_check_and_write_doc_are_rejected_before_mutating_coverage(tmp_path, capsys):
@@ -1402,6 +1137,7 @@ def test_check_cli_accepts_coverage_without_writing_it(tmp_path):
         check=False,
     )
 
+    assert result.returncode == 0, result.stdout + result.stderr
     assert coverage_path.read_bytes() == before_bytes
     assert result.returncode == 0, result.stdout + result.stderr
     summary = json.loads(result.stdout)
@@ -1432,7 +1168,7 @@ def test_check_cli_reports_drift_without_rewriting_coverage(tmp_path):
         check=False,
     )
 
-    assert result.returncode != 0, result.stdout + result.stderr
+    assert result.returncode == 1, result.stdout + result.stderr
     summary = json.loads(result.stdout)
     assert summary["coverage_matches"] is False
     assert any("rendered coverage document differs" in item for item in summary["drift"])
@@ -1761,3 +1497,576 @@ def test_check_cli_preserves_coverage_until_explicit_write_doc(tmp_path):
         MODULE.collect_inventory(tmp_path), task_id
     )
     assert coverage_path.read_bytes() != stale_coverage
+
+
+def test_behavioral_coverage_links_are_operation_specific(tmp_path):
+    make_repo(tmp_path)
+    write(
+        tmp_path,
+        "tests/test_operation_behavior.py",
+        '''import urllib.request
+from urllib.request import Request as HttpRequest, urlopen as fetch_url
+from local_ai_hub.mcp_server import local_ai_repo
+from tools.hubctl import main as cli_main
+
+def test_repo_search_dispatch():
+    result = local_ai_repo(action="search")
+    assert result["success"] is True
+
+def test_repo_context_dispatch():
+    result = local_ai_repo(action="context")
+    assert result["success"] is True
+
+def test_post_health_route():
+    result = request("POST", "http://127.0.0.1/health", {})
+    assert result["success"] is True
+
+def test_urllib_request_route():
+    with urllib.request.urlopen("http://127.0.0.1/api/health") as response:
+        result = json.loads(response.read().decode("utf-8"))
+    assert result["success"] is True
+
+def test_urllib_request_alias_defaults_to_get():
+    request = HttpRequest("http://127.0.0.1/api/health")
+    with fetch_url(request) as response:
+        result = json.loads(response.read().decode("utf-8"))
+    assert result["success"] is True
+
+def test_urllib_urlopen_data_uses_post():
+    with urllib.request.urlopen("http://127.0.0.1/health", data=b"{}") as response:
+        result = json.loads(response.read().decode("utf-8"))
+    assert result["success"] is True
+
+def test_urllib_keyword_url_route():
+    request = urllib.request.Request(url="http://127.0.0.1/api/health")
+    with urllib.request.urlopen(url=request) as response:
+        result = json.loads(response.read().decode("utf-8"))
+    assert result["success"] is True
+
+def test_urllib_post_helper_route():
+    def post_json(endpoint, data):
+        request = urllib.request.Request(
+            f"http://127.0.0.1{endpoint}", data=b"{}", method="POST"
+        )
+        with urllib.request.urlopen(request) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    result = post_json("/health", {})
+    assert result["success"] is True
+
+def _module_request(url, *, method="GET", body=None):
+    request = urllib.request.Request(url, method="GET")
+    request = urllib.request.Request(url, data=body, method=method)
+    with urllib.request.urlopen(request) as response:
+        return response.status, dict(response.headers), response.read()
+
+def test_module_level_urllib_helper_links_asserted_operation():
+    url = "http://127.0.0.1" + "/api/status"
+    url = "http://127.0.0.1" + "/api/repo/search"
+    status, _, body = _module_request(url, method="POST", body=b"{}")
+    assert status == 200
+    assert json.loads(body)["success"] is True
+
+def _module_discarded_request(url):
+    with urllib.request.urlopen(url) as response:
+        response.read()
+    return {"success": True}
+
+def test_module_level_helper_discarding_response_is_not_route_coverage():
+    result = _module_discarded_request("http://127.0.0.1/api/repo/search")
+    assert result["success"] is True
+
+def test_module_level_urllib_helper_defaults_to_get():
+    _, _, body = _module_request("http://127.0.0.1/api/health")
+    assert json.loads(body)["success"] is True
+
+def test_client_health_method():
+    client = HubClient()
+    result = client.get_health()
+    assert result["success"] is True
+
+def test_cli_status_operation():
+    assert cli_main(["status"]) == 0
+
+def test_status_route_is_only_documented():
+    assert "/api/status" in "documented route: /api/status"
+
+def test_context_pack_http_request():
+    result = request("POST", "http://127.0.0.1/api/context/pack", {})
+    assert result["success"] is True
+''',
+    )
+
+    write(
+        tmp_path,
+        "tests/test_mcp_compact_transport.py",
+        '''from local_ai_hub.mcp_server import local_ai_repo
+
+def test_local_ai_repo_context_forwards_guarded_pack_fields():
+    result = local_ai_repo(action="context", root="C:/repo", query="context")
+    assert result["success"] is True
+''',
+    )
+
+    links = MODULE.collect_inventory(tmp_path)["behavioral_test_links"]
+
+    assert links["MCP action local_ai_repo::search"] == [
+        "tests/test_operation_behavior.py::test_repo_search_dispatch"
+    ]
+    context_action_selector = (
+        "tests/test_mcp_compact_transport.py::"
+        "test_local_ai_repo_context_forwards_guarded_pack_fields"
+    )
+    assert context_action_selector in links["MCP action local_ai_repo::context"]
+    assert links["HTTP POST::/health"] == sorted([
+        "tests/test_operation_behavior.py::test_post_health_route",
+        "tests/test_operation_behavior.py::test_urllib_post_helper_route",
+        "tests/test_operation_behavior.py::test_urllib_urlopen_data_uses_post",
+    ])
+    assert links["HTTP GET::/api/health"] == sorted([
+        "tests/test_operation_behavior.py::test_urllib_request_alias_defaults_to_get",
+        "tests/test_operation_behavior.py::test_urllib_request_route",
+        "tests/test_operation_behavior.py::test_urllib_keyword_url_route",
+        "tests/test_operation_behavior.py::test_module_level_urllib_helper_defaults_to_get",
+    ])
+    assert "tests/test_operation_behavior.py::test_module_level_urllib_helper_defaults_to_get" not in links.get(
+        "HTTP POST::/api/health", []
+    )
+    assert links["HTTP POST::/api/repo/"] == [
+        "tests/test_operation_behavior.py::test_module_level_urllib_helper_links_asserted_operation"
+    ]
+    assert "tests/test_operation_behavior.py::test_module_level_helper_discarding_response_is_not_route_coverage" not in links.get(
+        "HTTP POST::/api/repo/", []
+    )
+    assert "tests/test_operation_behavior.py::test_module_level_urllib_helper_links_asserted_operation" not in links.get(
+        "HTTP GET::/api/repo/", []
+    )
+    assert links["HubClient method::get_health"] == [
+        "tests/test_operation_behavior.py::test_client_health_method"
+    ]
+    assert links["CLI operation::status"] == [
+        "tests/test_operation_behavior.py::test_cli_status_operation"
+    ]
+    assert "HTTP GET::/api/status" not in links
+    assert "HTTP POST::/api/context/pack" not in links
+    rows = MODULE.coverage_rows(MODULE._findings(MODULE.collect_inventory(tmp_path)))
+    for key, expected_selector in (
+        (("MCP action local_ai_repo", "search"), "test_repo_search_dispatch"),
+        (("HTTP POST", "/health"), "test_post_health_route"),
+        (("HubClient method", "get_health"), "test_client_health_method"),
+        (("CLI operation", "status"), "test_cli_status_operation"),
+    ):
+        row = next(row for row in rows if (row["surface"], row["name"]) == key)
+        assert row["test_coverage"] == "behavioral tests linked; coverage bounded to cited assertions"
+        assert any(expected_selector in selector for selector in row["test_ids"])
+
+def test_cli_operation_links_allow_dynamic_option_values():
+    links = MODULE.collect_inventory(ROOT)["behavioral_test_links"]
+    for operation, selector in (
+        (
+            "generate",
+            "tests/test_hubctl_unlinked_operations.py::test_hubctl_generate_dispatches_writers_and_optional_agent_install",
+        ),
+        (
+            "service-status",
+            "tests/test_hubctl_unlinked_operations.py::test_hubctl_service_status_reads_configured_supervisor_file",
+        ),
+        (
+            "status",
+            "tests/test_hubctl_unlinked_operations.py::test_hubctl_status_reports_offline_without_starting_service",
+        ),
+    ):
+        assert selector in links[f"CLI operation::{operation}"]
+
+def test_behavioral_links_require_receiver_invocation_and_result_assertion(tmp_path):
+    make_repo(tmp_path)
+    write(
+        tmp_path,
+        "tests/test_behavioral_precision.py",
+        '''import sys
+import urllib.request
+from urllib.request import Request as UrlRequest, urlopen as fetch_url
+from local_ai_hub import mcp_server as mcp_mod
+from local_ai_hub import http_server as http_mod
+from local_ai_hub.http_server import Handler
+from tools.hubctl import main as cli_main
+from tools import hubctl
+
+def test_hubclient_call_is_asserted():
+    client = HubClient()
+    result = client.get_health()
+    assert result["success"] is True
+
+def test_same_method_name_on_other_receiver_is_not_hubclient():
+    store = Store()
+    result = store.get_health()
+    assert result["success"] is True
+
+def test_hubclient_call_without_result_assertion_is_not_coverage():
+    client = HubClient()
+    client.get_health()
+    assert True
+
+def test_mcp_action_without_result_assertion_is_not_coverage():
+    local_ai_repo(action="search")
+    assert True
+
+def test_status_word_in_payload_is_not_cli_operation():
+    result = cli_main(["doctor"])
+    payload = {"status": "OK"}
+    assert result == 0 and payload["status"] == "OK"
+
+def test_cli_status_invocation_is_asserted():
+    result = cli_main(["status"])
+    assert result == 0
+
+def test_http_methods_stay_paired_with_their_paths():
+    get_result = request("GET", "http://127.0.0.1/api/health", {})
+    post_result = request("POST", "http://127.0.0.1/health", {})
+    assert get_result["success"] is True
+    assert post_result["success"] is True
+
+def test_http_get_from_running_app_client_fixture_is_coverage(running_app_client):
+    client, app = running_app_client
+    result = client.get("http://127.0.0.1/api/health")
+    assert result["success"] is True
+
+def test_http_call_without_result_assertion_is_not_coverage():
+    request("POST", "http://127.0.0.1/health", {})
+    assert True
+
+def test_mcp_tool_name_on_unrelated_receiver_is_not_coverage():
+    result = fake.local_ai_repo(action="search")
+    assert result["success"] is True
+
+def test_mcp_action_from_imported_module_is_coverage():
+    result = mcp_mod.local_ai_repo(action="search")
+    assert result["success"] is True
+
+def test_mcp_action_from_imported_alias_is_coverage():
+    from local_ai_hub.mcp_server import local_ai_repo as repo_call
+    result = repo_call(action="search")
+    assert result["success"] is True
+
+async def test_mcp_protocol_call_dispatches_tool():
+    result = await mcp_mod.mcp.call_tool("local_ai_status", {"detail": "brief"})
+    assert result is not None
+
+async def test_unrelated_receiver_call_tool_is_not_mcp_protocol():
+    result = await fake.mcp.call_tool("local_ai_status", {"detail": "brief"})
+    assert result is not None
+
+def test_local_mcp_function_with_tool_name_is_not_coverage():
+    def local_ai_repo(action):
+        return {"success": True}
+    result = local_ai_repo(action="search")
+    assert result["success"] is True
+
+def test_http_method_on_unrelated_receiver_is_not_coverage():
+    result = fake.get("http://127.0.0.1/health")
+    urlopen("http://127.0.0.1/api/health")
+    assert result["success"] is True
+
+def test_unrelated_urlopen_is_not_coverage():
+    result = fake.urlopen("http://127.0.0.1/api/health")
+    assert result["success"] is True
+
+def test_unrelated_request_constructor_is_not_coverage():
+    result = fake.Request("http://127.0.0.1/health", method="POST")
+    assert result["success"] is True
+
+def test_stale_urllib_request_binding_is_not_coverage():
+    request = UrlRequest("http://127.0.0.1/api/health")
+    request = "http://127.0.0.1/api/status"
+    with fetch_url(request) as response:
+        result = response.read()
+    assert result is not None
+
+def test_local_wrapper_that_discards_http_result_is_not_coverage():
+    def post_json(endpoint, data):
+        request = urllib.request.Request(
+            f"http://127.0.0.1{endpoint}", data=b"{}", method="POST"
+        )
+        with urllib.request.urlopen(request):
+            pass
+        return {"success": True}
+
+    result = post_json("/health", {})
+    assert result["success"] is True
+
+def test_cli_sys_argv_patch_links_imported_main():
+    monkeypatch.setattr(sys, "argv", ["hubctl.py", "doctor"])
+    result = hubctl.main()
+    assert result == 0
+
+def test_local_main_name_is_not_cli_operation():
+    def main(argv):
+        return 0
+    result = main(["status"])
+    assert result == 0
+
+def test_cli_sys_argv_patch_on_same_line_links_operation():
+    monkeypatch.setattr(sys, "argv", ["hubctl.py", "status"]); result = hubctl.main()
+    assert result == 0
+
+def test_cli_sys_argv_index_update_replaces_earlier_operation():
+    monkeypatch.setattr(sys, "argv", ["hubctl.py", "status"])
+    sys.argv[1] = "doctor"
+    result = hubctl.main()
+    assert result == 0
+
+def test_cli_unknown_sys_argv_index_update_clears_earlier_operation():
+    monkeypatch.setattr(sys, "argv", ["hubctl.py", "status"])
+    sys.argv[1] = operation
+    result = hubctl.main()
+    assert result == 0
+
+def test_direct_handler_route_with_asserted_response_is_coverage():
+    handler = Handler.__new__(Handler)
+    handler.path = "/health"
+    handler._send = lambda status, body: sent.append((status, body))
+    handler.do_GET()
+    assert sent[0][0] == 200
+
+def test_direct_handler_route_without_response_assertion_is_not_coverage():
+    handler = Handler.__new__(Handler)
+    handler.path = "/health"
+    handler.do_GET()
+    assert True
+
+class TestHandlerOperations:
+    def test_class_method_route_with_asserted_response(self):
+        handler = Handler.__new__(Handler)
+        handler.path = "/health"
+        handler._send = lambda status, body: sent.append((status, body))
+        handler.do_GET()
+        assert sent[0][0] == 200
+
+def test_module_qualified_handler_route_with_asserted_response():
+    handler = http_mod.Handler.__new__(http_mod.Handler)
+    handler.path = "/health"
+    handler._send = lambda status, body: sent.append((status, body))
+    handler.do_GET()
+    assert sent[0][0] == 200
+
+def test_unimported_handler_path_is_not_linked():
+    handler = local_ai_hub.http_server.Handler.__new__(local_ai_hub.http_server.Handler)
+    handler.path = "/health"
+    handler._send = lambda status, body: sent.append((status, body))
+    handler.do_GET()
+    assert sent[0][0] == 200
+''',
+    )
+
+    links = MODULE.collect_inventory(tmp_path)["behavioral_test_links"]
+
+    assert links["HubClient method::get_health"] == [
+        "tests/test_behavioral_precision.py::test_hubclient_call_is_asserted"
+    ]
+    assert links["MCP action local_ai_repo::search"] == [
+        "tests/test_behavioral_precision.py::test_mcp_action_from_imported_alias_is_coverage",
+        "tests/test_behavioral_precision.py::test_mcp_action_from_imported_module_is_coverage",
+    ]
+    assert links["MCP tool::local_ai_status"] == [
+        "tests/test_behavioral_precision.py::test_mcp_protocol_call_dispatches_tool"
+    ]
+    assert "tests/test_behavioral_precision.py::test_unrelated_receiver_call_tool_is_not_mcp_protocol" not in links[
+        "MCP tool::local_ai_status"
+    ]
+    assert "tests/test_behavioral_precision.py::test_mcp_tool_name_on_unrelated_receiver_is_not_coverage" not in links.get(
+        "MCP action local_ai_repo::search", []
+    )
+    assert "tests/test_behavioral_precision.py::test_local_mcp_function_with_tool_name_is_not_coverage" not in links.get(
+        "MCP action local_ai_repo::search", []
+    )
+    assert links["CLI operation::status"] == sorted([
+        "tests/test_behavioral_precision.py::test_cli_status_invocation_is_asserted",
+        "tests/test_behavioral_precision.py::test_cli_sys_argv_patch_on_same_line_links_operation",
+    ])
+    assert links["HTTP GET::/api/health"] == sorted([
+        "tests/test_behavioral_precision.py::test_http_methods_stay_paired_with_their_paths",
+        "tests/test_behavioral_precision.py::test_http_get_from_running_app_client_fixture_is_coverage",
+    ])
+    assert links["HTTP POST::/health"] == [
+        "tests/test_behavioral_precision.py::test_http_methods_stay_paired_with_their_paths"
+    ]
+    assert "HTTP POST::/api/health" not in links
+    wrong_http_selector = "tests/test_behavioral_precision.py::test_http_method_on_unrelated_receiver_is_not_coverage"
+    assert wrong_http_selector not in links.get("HTTP GET::/health", [])
+    assert wrong_http_selector not in links.get("HTTP GET::/api/health", [])
+    assert "tests/test_behavioral_precision.py::test_unrelated_urlopen_is_not_coverage" not in links.get(
+        "HTTP GET::/api/health", []
+    )
+    assert "tests/test_behavioral_precision.py::test_unrelated_request_constructor_is_not_coverage" not in links.get(
+        "HTTP POST::/health", []
+    )
+    assert "tests/test_behavioral_precision.py::test_stale_urllib_request_binding_is_not_coverage" not in links.get(
+        "HTTP GET::/api/health", []
+    )
+    assert "tests/test_behavioral_precision.py::test_local_wrapper_that_discards_http_result_is_not_coverage" not in links.get(
+        "HTTP POST::/health", []
+    )
+    assert links["CLI operation::doctor"] == sorted([
+        "tests/test_behavioral_precision.py::test_status_word_in_payload_is_not_cli_operation",
+        "tests/test_behavioral_precision.py::test_cli_sys_argv_patch_links_imported_main",
+        "tests/test_behavioral_precision.py::test_cli_sys_argv_index_update_replaces_earlier_operation",
+    ])
+    assert "tests/test_behavioral_precision.py::test_cli_unknown_sys_argv_index_update_clears_earlier_operation" not in links.get(
+        "CLI operation::status", []
+    )
+    assert links["HTTP GET::/health"] == sorted([
+        "tests/test_behavioral_precision.py::test_direct_handler_route_with_asserted_response_is_coverage",
+        "tests/test_behavioral_precision.py::TestHandlerOperations::test_class_method_route_with_asserted_response",
+        "tests/test_behavioral_precision.py::test_module_qualified_handler_route_with_asserted_response",
+    ])
+    assert "tests/test_behavioral_precision.py::test_unimported_handler_path_is_not_linked" not in links[
+        "HTTP GET::/health"
+    ]
+    assert "tests/test_behavioral_precision.py::test_direct_handler_route_without_response_assertion_is_not_coverage" not in links[
+        "HTTP GET::/health"
+    ]
+
+def test_existing_cli_argv_calls_link_each_operation():
+    links = MODULE.collect_inventory(ROOT)["behavioral_test_links"]
+    selector = "tests/test_agent_os_enhancements.py::test_hubctl_agent_state_and_cleanup"
+
+    assert selector in links["CLI operation::agent-state"]
+    assert selector in links["CLI operation::cleanup"]
+
+
+def test_hubclient_target_links_match_the_client_method_handler():
+    inventory = MODULE.collect_inventory(ROOT)
+    findings = MODULE._findings(inventory)
+    task_target_rows = [
+        finding
+        for finding in findings
+        if finding["surface"] == "HubClient target"
+        and finding["name"] == "POST /api/agent-state/tasks"
+    ]
+    create_selector = (
+        "tests/test_client_operation_acceptance.py::"
+        "test_client_create_task_targets_agent_state_tasks"
+    )
+    by_handler = {finding["handler"]: finding for finding in task_target_rows}
+
+    assert create_selector in by_handler["create_task"].get("behavioral_test_ids", [])
+    assert all(
+        create_selector not in finding.get("behavioral_test_ids", [])
+        for handler, finding in by_handler.items()
+        if handler != "create_task"
+    )
+    fixture_selector = "tests/test_agent_state_transport.py::test_client_convenience_methods"
+    links = inventory["behavioral_test_links"]
+
+    assert fixture_selector in links["HubClient method::get_task"]
+    assert fixture_selector in links["HubClient target::POST /api/agent-state/tasks::get_task"]
+    incident_selector = (
+        "tests/test_client_operation_acceptance.py::"
+        "test_client_incident_decision_targets_agent_state_incidents"
+    )
+    incident_coord_targets = [
+        finding
+        for finding in findings
+        if finding["surface"] == "HubClient target"
+        and finding["name"] == "POST /api/agent-state/incidents"
+        and finding["handler"] == "coord"
+    ]
+
+    assert len(incident_coord_targets) == 2
+    assert all(
+        incident_selector not in finding.get("behavioral_test_ids", [])
+        for finding in incident_coord_targets
+    )
+
+
+def test_generation_task_preserves_explicit_dynamic_route_owner():
+    inventory = MODULE.collect_inventory(ROOT)
+    rows = MODULE.coverage_rows(MODULE._findings(inventory), task_id="T19")
+    matches = [
+        row for row in rows
+        if row["surface"] == "HTTP POST" and row["name"] == "/api/context/pack"
+    ]
+
+    assert len(matches) == 1
+    assert matches[0]["owner_task"] == "T14"
+    assert matches[0]["task_id"] == "T19"
+
+
+
+
+
+
+def test_context_pack_dynamic_route_retains_t14_owner(tmp_path):
+    make_repo(tmp_path)
+
+    inventory = MODULE.collect_inventory(tmp_path)
+    route = next(
+        item for item in inventory["http_routes"]
+        if item["method"] == "POST" and item["path"] == "/api/context/pack"
+    )
+
+    assert route["classification"] == "registered_dynamic"
+    assert route["owner_task"] == "T14"
+    assert "owner_gate" not in route["contract"]
+
+
+def test_coverage_rows_dispose_behavioral_evidence_explicitly():
+    rows = MODULE.coverage_rows([
+        {
+            "surface": "HTTP GET",
+            "name": "/verified",
+            "evidence": ["src/local_ai_hub/http_server.py:10"],
+            "behavioral_test_ids": ["tests/test_http.py::test_verified"],
+        },
+        {
+            "surface": "HTTP GET",
+            "name": "/metadata",
+            "evidence": ["src/local_ai_hub/http_server.py:20"],
+        },
+        {
+            "surface": "HTTP GET",
+            "name": "/linked-unverified",
+            "evidence": ["src/local_ai_hub/http_server.py:30"],
+            "test_ids": ["tests/test_http.py::test_transport"],
+        },
+    ])
+
+    assert [row["behavioral_disposition"] for row in rows] == [
+        "asserted behavior test linked",
+        "no asserted operation test linked; behavior unverified",
+        "test selector linked; behavior unverified",
+    ]
+
+def test_behavioral_disposition_excludes_metadata_only_selectors():
+    inventory = MODULE.collect_inventory(ROOT)
+    rows = MODULE.coverage_rows(MODULE._findings(inventory), task_id=ROOT_TASK_ID)
+    metadata_rows = [
+        row for row in rows
+        if row["test_coverage"] == "metadata only; operation behavior unverified"
+    ]
+    behavioral_rows = [
+        row for row in rows
+        if row["test_coverage"] == "behavioral tests linked; coverage bounded to cited assertions"
+    ]
+    selectors = [selector for linked in inventory["behavioral_test_links"].values() for selector in linked]
+
+    assert metadata_rows
+    assert behavioral_rows
+    assert not any("test_operation_contract_metadata" in selector for selector in selectors)
+    assert any(
+        "test_client_create_task_targets_agent_state_tasks" in selector
+        for selector in selectors
+    )
+    assert all(
+        row["behavioral_disposition"] == "no asserted operation test linked; behavior unverified"
+        and row["test_ids"] == [
+            f"tests/test_surface_inventory.py::test_operation_contract_metadata[{row['operation_id']}]"
+        ]
+        for row in metadata_rows
+    )
+    assert all(
+        row["behavioral_disposition"] == "asserted behavior test linked"
+        and row["test_ids"]
+        and all("test_operation_contract_metadata" not in selector for selector in row["test_ids"])
+        for row in behavioral_rows
+    )

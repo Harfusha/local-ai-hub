@@ -85,11 +85,21 @@ def test_http_get_agent_state_events_forwards_stream_cursor_and_limit(
         to_dict=lambda: {"seq": 8, "kind": "task.updated", "stream_id": "stream-31"}
     )
 
-    def events(*, stream_id="", after_seq=0, limit=1000):
+    def event_page(*, stream_id="", after_seq=0, limit=100, through_seq=None):
         calls.append((stream_id, int(after_seq), limit))
-        return [event]
+        return {
+            "success": True,
+            "events": [event.to_dict()],
+            "next_seq": 8,
+            "first_retained_seq": 1,
+            "last_seq": 8,
+            "has_more": False,
+            "gap_ranges": [],
+            "cursor_reset": False,
+            "error": None,
+        }
 
-    monkeypatch.setattr(app.agent_state, "events", events)
+    monkeypatch.setattr(app.agent_state, "event_page", event_page)
     url = f"{base_url}/api/agent-state/events?stream_id=stream-31&after_seq=4&limit=9"
     request = urllib_request.Request(
         url, headers={"X-LocalAI-Token": "acceptance-secret"}, method="GET"
@@ -103,7 +113,7 @@ def test_http_get_agent_state_events_forwards_stream_cursor_and_limit(
     assert url == f"{base_url}/api/agent-state/events?stream_id=stream-31&after_seq=4&limit=9"
     assert status == 200
     assert calls == [("stream-31", 4, 9)]
-    assert result == {"success": True, "events": [event.to_dict()]}
+    assert result["success"] is True
     assert result["events"] == [{"seq": 8, "kind": "task.updated", "stream_id": "stream-31"}]
 
 
@@ -114,8 +124,8 @@ def test_http_get_agent_state_tasks_forwards_filters_and_serializes(running_http
         to_dict=lambda: {"task_id": "task-77", "status": "active", "summary": "T08 task"}
     )
 
-    def list_tasks(*, status=None, limit=100, include_stale=False):
-        calls.append((getattr(status, "value", status), limit, include_stale))
+    def list_tasks(*, status=None, limit=100, include_stale=False, query=""):
+        calls.append((getattr(status, "value", status), limit, include_stale, query))
         return [task]
 
     monkeypatch.setattr(app.agent_tasks, "list_tasks", list_tasks)
@@ -131,7 +141,7 @@ def test_http_get_agent_state_tasks_forwards_filters_and_serializes(running_http
     assert request.get_method() == "GET"
     assert url == f"{base_url}/api/agent-state/tasks?status=active&limit=7&include_stale=true"
     assert status == 200
-    assert calls == [("active", 7, True)]
+    assert calls == [("active", 7, True, "")]
     assert result["success"] is True
     assert result["tasks"] == [{"task_id": "task-77", "status": "active", "summary": "T08 task"}]
 
