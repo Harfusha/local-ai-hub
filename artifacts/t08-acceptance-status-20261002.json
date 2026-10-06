@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "task": "T08 Agent OS atomicity, durable events, recovery acceptance status",
+  "candidate_head": "2b33602adef0d030fea66cdcc04ca742c60b2e32",
+  "root_head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "root_modified_by_T08_in_this_turn": false,
+  "candidate_receipt": {
+    "artifact": "artifacts/t08-atomicity-recovery-acceptance-receipt.json",
+    "result": "57 passed, 0 failed, 2 deselected",
+    "scope": "candidate-only atomicity, caller transaction, idempotency, CAS, receipt projection, crash/restart, disposable cache",
+    "limitations": "Does not establish current-root integration; two ordered-publication selectors have separate prior passes, SSE race/disconnect/slow-consumer/overflow acceptance remains open."
+  },
+  "root_receipt": {
+    "result": "29 passed, 1 skipped",
+    "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_agent_task_scope.py tests/test_agent_tasks.py::test_expired_active_task_becomes_abandoned_with_checkpoint tests/test_agent_tasks.py::test_resume_abandoned_task tests/test_agent_state_reliability.py::test_task_heartbeat_and_extended_reap tests/test_all_advanced_improvements.py::test_zombie_task_watchdog_and_recovery tests/test_all_categories_expanded.py::test_curate_training_dataset tests/test_storage_service_reliability.py::test_task_store_lock_and_retry tests/test_agent_task_memory_adoption.py",
+    "scope": "scoped task/reaper/curation and memory regression only; not durable DB/recovery acceptance",
+    "skip": "directory symlinks unavailable"
+  },
+  "root_migration_cache_attempt": {
+    "T20_go": "#17",
+    "command_attempted_once_via_local_ai_command": "python -B -W error::ResourceWarning -m pytest -q -p no:cacheprovider --tb=short tests/test_agent_state_migrations.py::test_current_unversioned_agent_state_migrates_with_verified_backup_and_restart tests/test_agent_t08_cache_isolation.py::test_disposable_cache_rebuild_preserves_live_agent_state",
+    "result": "UNKNOWN: local_ai_command transport closed",
+    "retry_or_native_fallback": "prohibited; not attempted",
+    "post_state": "root HEAD and source/test preimage hashes unchanged; matching runner count 0"
+  },
+  "integration_packets": {
+    "migration": {
+      "patch": "artifacts/t08-agent-state-migration-root-current.patch",
+      "patch_sha256": "D5E013334C1E62B2EFFB858AB6219BA65D64DCEAA40A82956223AD3658D9E928",
+      "root_apply_check": "passed",
+      "applied": false,
+      "root_source_preimage_sha256": "18FA5AFD496292D2A03BC7EC48DD96487829C6314239E6F2A7CC1AF7018E477E",
+      "expected_root_source_postimage_sha256": "1A10BB4918358A9F2DCE614621C16685D598A04B2EB6944877EBF7973048D966"
+    },
+    "verification_receipt_parser": {
+      "patch": "artifacts/t08-verification-receipt-parser-hardening-root-current.patch",
+      "patch_sha256": "7B0E6874A76719D040F5B3BDF9A125E050EF365293A1A0DB3D5770581DF74048",
+      "manifest": "artifacts/t08-verification-receipt-parser-hardening-root-current.json",
+      "manifest_sha256": "02DE17F08CBDA6A32DCE0D4B5614B414C174F9704E3FA4210125C7529D8F9F3C",
+      "root_apply_check": "passed",
+      "applied": false,
+      "test_selector": "tests/test_agent_verification.py::test_verification_receipt_from_dict_rejects_malformed_types",
+      "requires_new_T20_serial_GO": true
+    }
+  },
+  "unresolved_acceptance": [
+    "Obtain a new T20 serial GO for any root-current patch application or test; GO #17 remains UNKNOWN and its selector pair must never be retried.",
+    "Run root-current migration and disposable-cache acceptance against pinned state after an authorized execution becomes available.",
+    "Run root-current process-exit rollback and post-commit recovery against current dirty sources; historical overlay receipt used stale root hashes.",
+    "Close master-plan pubsub/SSE race, disconnect, slow-consumer, queue-overflow, and replay-gap criteria with T18-owned boundaries respected.",
+    "Keep mixed agent_tasks.py patch separated because it contains T04-owned hunks."
+  ],
+  "tests_run_this_turn": false
+}

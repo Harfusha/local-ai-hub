@@ -21,7 +21,7 @@ class TestFeatureSetDefaults:
     def test_all_on_by_default(self):
         fs = FeatureSet({})
         assert fs.serena is True
-        assert fs.codegraph is True
+        assert not hasattr(fs, "codegraph")
         assert fs.rag is True
         assert fs.ollama is True
         assert fs.subagents is True
@@ -30,23 +30,28 @@ class TestFeatureSetDefaults:
         fs = FeatureSet({})
         assert fs.fast_model == "qwen2.5-coder:1.5b"
 
-    def test_has_semantic_true_when_either_backend_on(self):
+    def test_codegraph_is_not_a_feature_toggle(self):
+        fs = FeatureSet({"code_intelligence": {"codegraph_enabled": True}})
+        assert not hasattr(fs, "codegraph")
+        assert not hasattr(fs, "graph")
+
+    def test_has_semantic_true_when_serena_on(self):
         assert FeatureSet({}).has_semantic() is True
 
     def test_has_any_model_true_when_ollama_on(self):
         assert FeatureSet({}).has_any_model() is True
 
 
-class TestCodeIntelligenceDisabled:
+class TestSerenaDisabled:
     def test_serena_disabled(self):
         cfg = {"code_intelligence": {"serena_enabled": False}}
         fs = FeatureSet(cfg)
         assert fs.serena is False
-        assert fs.codegraph is True
-        assert fs.has_semantic() is True
+        assert not hasattr(fs, "codegraph")
+        assert fs.has_semantic() is False
 
-    def test_both_disabled(self):
-        cfg = {"code_intelligence": {"serena_enabled": False, "codegraph_enabled": False}}
+    def test_stale_codegraph_flag_does_not_enable_semantics(self):
+        cfg = {"code_intelligence": {"serena_enabled": False, "codegraph_enabled": True}}
         fs = FeatureSet(cfg)
         assert fs.has_semantic() is False
         assert fs.semantic_hint() == ""
@@ -55,20 +60,15 @@ class TestCodeIntelligenceDisabled:
         cfg = {"code_intelligence": {"enabled": False}}
         fs = FeatureSet(cfg)
         assert fs.serena is False
-        assert fs.codegraph is False
+        assert not hasattr(fs, "codegraph")
 
-    def test_semantic_hint_serena_only(self):
-        cfg = {"code_intelligence": {"codegraph_enabled": False}}
+    def test_semantic_hint_reports_serena_when_stale_flag_is_set(self):
+        cfg = {"code_intelligence": {"codegraph_enabled": True}}
         fs = FeatureSet(cfg)
         assert fs.semantic_hint() == "semantic"
 
-    def test_semantic_hint_codegraph_only(self):
-        cfg = {"code_intelligence": {"serena_enabled": False}}
-        fs = FeatureSet(cfg)
-        assert fs.semantic_hint() == "graph"
-
-    def test_semantic_hint_both(self):
-        assert FeatureSet({}).semantic_hint() == "semantic/graph"
+    def test_semantic_hint_reports_only_serena(self):
+        assert FeatureSet({}).semantic_hint() == "semantic"
 
 
 class TestRagDisabled:
@@ -161,8 +161,11 @@ class TestBuildGlobalPolicy:
         assert "local_ai_rag" in self.build({})
 
     def test_semantic_absent_when_no_backend(self):
-        cfg = {"code_intelligence": {"serena_enabled": False, "codegraph_enabled": False}}
+        cfg = {"code_intelligence": {"serena_enabled": False, "codegraph_enabled": True}}
         assert "semantic/graph" not in self.build(cfg)
+    def test_semantic_route_absent_without_serena(self):
+        cfg = {"code_intelligence": {"serena_enabled": False}}
+        assert "-> semantic" not in self.build(cfg)
 
     def test_model_name_custom(self):
         assert "awesome-coder:7b" in self.build({"models": {"fast_code": "awesome-coder:7b"}})
@@ -223,13 +226,16 @@ enabled = true
     def test_config_update_allows_feature_toggles(self, tmp_path):
         from local_ai_hub.http_server import Handler
         from local_ai_hub import http_server
+        from local_ai_hub.resilience import RecoveryJournal
 
         cfg_file = tmp_path / "config.toml"
         cfg_file.write_text("[features]\ncommands = true\n", encoding="utf-8")
+        journal = RecoveryJournal(tmp_path)
         old_app = http_server.APP
 
         class DummyApp:
             config = {"_config_path": str(cfg_file), "features": {"commands": True}}
+            recovery = journal
 
         try:
             http_server.APP = DummyApp()
@@ -239,10 +245,18 @@ enabled = true
             handler.headers = {}
             handler._read_json = lambda limit=None: {"action": "update", "settings": {"features.commands": False}}
             handler._require_authorized = lambda: True
-            handler._begin_trace = lambda path: None
+            handler._begin_trace = lambda path: setattr(handler, "_trace_request_id", "config-toggle-test")
+            handler._agent = lambda: "test-agent"
             handler._tenant = lambda: "test"
             sent = []
-            handler._send = lambda status, body: sent.append((status, body))
+
+            def send(status, body):
+                if getattr(handler, "_journal_request_id", None) and not getattr(handler, "_journal_finished", False):
+                    journal.finish(handler._journal_request_id, status < 400, status_code=status, response=body)
+                    handler._journal_finished = True
+                sent.append((status, body))
+
+            handler._send = send
 
             handler.do_POST()
             assert len(sent) == 1

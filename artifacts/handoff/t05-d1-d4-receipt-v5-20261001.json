@@ -1,0 +1,33 @@
+{
+  "version": 5,
+  "owner": "T05",
+  "date": "2026-10-01",
+  "candidate_head": "43f7b1ccb57762a8fa581b14f4aeeac84b520ed4",
+  "candidate_isolated_receipt": {
+    "files": [
+      "tests/test_t05_cache_state_isolation.py",
+      "tests/test_t05_cache_clear_durable_state.py",
+      "tests/test_t05_memory_delete_artifacts.py",
+      "tests/test_t05_agent_state_migrations.py",
+      "tests/test_t05_memory_fts_atomicity.py::test_record_write_succeeds_when_optional_fts_table_is_absent"
+    ],
+    "result": "38 passed in 24.89s, exit 0",
+    "command": "python -B -m pytest -q -p no:cacheprovider --tb=short -W always::ResourceWarning <listed T05 selectors>",
+    "scope": "T05-only candidate cache isolation/clear, delete, migration, reopen, optional FTS absence; existing 29-pass suite not run",
+    "sha256": {
+      "src/local_ai_hub/agent_events.py": "84EDB06DFD22FA900DB09474EFCF0689393E1A9FB76C0E0D636BFD5826B63AC2",
+      "src/local_ai_hub/agent_memory.py": "FAE4E3DC6E0B34CB2DD80E7D4A3B32ED4356B045D68C78BCBCBA3CF186EF00FC",
+      "tests/test_t05_cache_state_isolation.py": "CAB00E23A110D3C4ED0BDD642821C80CA8E71495BFCBC570C72160353AB4058A",
+      "tests/test_t05_cache_clear_durable_state.py": "3369BADEB7025424A0FEC07BFD38050FDBB9C6B551AFFA15A3D28C410115C485",
+      "tests/test_t05_memory_delete_artifacts.py": "5F82540B7E6E19CB4C66DA5F38C34C321D7D17BE5A6BCB96814536CCD6CA7637",
+      "tests/test_t05_agent_state_migrations.py": "1447C8B4D5D113F729A8CCAEB1AD8B5494A4D5DB2B70F985378E98B45ED6167D",
+      "tests/test_t05_memory_fts_atomicity.py": "E2C07E0CAAE7C8D493CA7DBE240CBCE4571FEA1F27F2243D23DC13BC572BE189"
+    }
+  },
+  "root_d1_d4_receipt": {
+    "path": "artifacts/handoff/t05-d1-d4-receipt-v4-20261001.json",
+    "sha256": "F660530FEC1E2C83FF9223E1F4E5A2AA2900D03BBE3BBC6206EA6EB65F661DDF",
+    "result": "6 passed in 0.88s, exit 0 against actual root modules"
+  },
+  "acceptance_limit": "Root cache recovery, migration/failure-backup/restart, identity/privacy, and broader correction/delete/reopen remain open for T20 integration and root receipts."
+}

@@ -1,0 +1,49 @@
+diff --git a/tests/test_agent_t08_crash_after_commit.py b/tests/test_agent_t08_crash_after_commit.py
+--- a/tests/test_agent_t08_crash_after_commit.py
++++ b/tests/test_agent_t08_crash_after_commit.py
+@@ -39,8 +39,8 @@
+     assert child.returncode == 73, child.stderr
+     recovered = AgentStateStore(db_path).event_page("task:hard-crash")
+     assert recovered["success"] is True
+-    assert [event.kind for event in recovered["events"]] == ["task.updated"]
+-    assert recovered["events"][0].seq == 1
++    assert [event["kind"] for event in recovered["events"]] == ["task.updated"]
++    assert recovered["events"][0]["seq"] == 1
+     assert recovered["last_seq"] == recovered["next_seq"] == 1
+ 
+ 
+@@ -109,8 +109,8 @@
+     expected_kinds = ["task.created"]
+     if operation == "transition":
+         expected_kinds.append("task.transitioned")
+-    assert [event.kind for event in page["events"]] == expected_kinds
+-    assert [event.seq for event in page["events"]] == list(range(1, len(expected_kinds) + 1))
++    assert [event["kind"] for event in page["events"]] == expected_kinds
++    assert [event["seq"] for event in page["events"]] == list(range(1, len(expected_kinds) + 1))
+     assert page["last_seq"] == page["next_seq"] == len(expected_kinds)
+ 
+ 
+diff --git a/tests/test_agent_t08_event_page_snapshot.py b/tests/test_agent_t08_event_page_snapshot.py
+--- a/tests/test_agent_t08_event_page_snapshot.py
++++ b/tests/test_agent_t08_event_page_snapshot.py
+@@ -9,7 +9,7 @@
+ 
+     first = store.event_page(stream_id, after_seq=0, limit=1)
+     snapshot_seq = first["last_seq"]
+-    assert [event.seq for event in first["events"]] == [1]
++    assert [event["seq"] for event in first["events"]] == [1]
+     assert snapshot_seq == 2
+     assert first["has_more"] is True
+ 
+@@ -21,9 +21,9 @@
+         limit=1,
+         through_seq=snapshot_seq,
+     )
+-    assert [event.seq for event in second["events"]] == [2]
++    assert [event["seq"] for event in second["events"]] == [2]
+     assert second["last_seq"] == snapshot_seq
+     assert second["has_more"] is False
+ 
+     live = store.event_page(stream_id, after_seq=second["next_seq"], limit=1)
+-    assert [event.seq for event in live["events"]] == [3]
++    assert [event["seq"] for event in live["events"]] == [3]

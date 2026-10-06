@@ -4,16 +4,64 @@ import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
 from local_ai_hub.treesitter_parser import parse_treesitter, is_treesitter_available
 from local_ai_hub.commands import CommandBroker
+from fencing_lease_support import FakeFencingLeaseStore, install_test_work_attempt_fence
 from local_ai_hub.repo_tools import RepositoryTools
 from local_ai_hub.code_index import CodeIndex
 from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.services import LocalAIServices
+
+
+def _register_test_worktree(broker: CommandBroker, root: Path, task_id: str, monkeypatch) -> None:
+    repo_root = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"], cwd=root, capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    branch = subprocess.run(
+        ["git", "symbolic-ref", "--quiet", "--short", "HEAD"], cwd=root,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+    class TaskStore:
+        def get(self, requested_task_id: str):
+            if requested_task_id != task_id:
+                return None
+            return SimpleNamespace(checkpoint=SimpleNamespace(state_data={
+                "worktree": {
+                    "success": True,
+                    "worktree_path": str(root),
+                    "repo_root": repo_root,
+                    "branch": branch,
+                }
+            }))
+
+    broker.set_task_store(TaskStore())
+    install_test_work_attempt_fence(broker, FakeFencingLeaseStore())
+    monkeypatch.setattr(broker, "_transaction_docker_ready", lambda: (True, ""))
+
+    def execute(argv, cwd, timeout, *_args, **_kwargs):
+        assert argv[:3] == ["docker", "run", "--rm"]
+        assert "--network=none" in argv
+        assert "--read-only" in argv
+        completed = subprocess.run(
+            argv[-1], cwd=cwd, shell=True, capture_output=True, text=True, timeout=timeout,
+            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTEST_ADDOPTS": "-p no:cacheprovider"},
+        )
+        return {
+            "success": completed.returncode == 0,
+            "exit_code": completed.returncode,
+            "stdout": completed.stdout,
+            "stderr": completed.stderr,
+            "duration_ms": 1,
+            "timed_out": False,
+        }
+
+    monkeypatch.setattr(broker, "_execute", execute)
 
 
 def make_services(cfg, repo_tools=None, code_idx=None):
@@ -147,7 +195,7 @@ def test_repo_investigate_cascade(tmp_path: Path):
     assert "class OrderService" in inv["symbols"][0]["code"]
 
 
-def test_patch_and_verify_clean_success(tmp_path: Path):
+def test_patch_and_verify_clean_success(tmp_path: Path, monkeypatch):
     # Setup git repo
     subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=str(tmp_path), capture_output=True, check=True)
@@ -171,13 +219,14 @@ def test_patch_and_verify_clean_success(tmp_path: Path):
 
     cfg = {"server": {"state_dir": str(tmp_path / "state")}}
     broker = CommandBroker(cfg)
+    _register_test_worktree(broker, tmp_path, "task-clean", monkeypatch)
 
     res = broker.patch_and_verify(
         patch=diff,
         cwd=str(tmp_path),
         tenant="test-agent",
         command=f"python -m pytest test_app.py -q",
-        task_id="task-123",
+        task_id="task-clean",
         criterion="test_hello passes",
     )
 
@@ -187,7 +236,7 @@ def test_patch_and_verify_clean_success(tmp_path: Path):
     assert target_file.read_text(encoding="utf-8") == "def hello():\n    return 'new'\n"
 
 
-def test_patch_and_verify_syntax_error_rollback(tmp_path: Path):
+def test_patch_and_verify_syntax_error_rollback(tmp_path: Path, monkeypatch):
     subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=str(tmp_path), capture_output=True, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(tmp_path), capture_output=True, check=True)
@@ -208,11 +257,13 @@ def test_patch_and_verify_syntax_error_rollback(tmp_path: Path):
 
     cfg = {"server": {"state_dir": str(tmp_path / "state")}}
     broker = CommandBroker(cfg)
+    _register_test_worktree(broker, tmp_path, "task-syntax", monkeypatch)
 
     res = broker.patch_and_verify(
         patch=bad_syntax_diff,
         cwd=str(tmp_path),
         tenant="test-agent",
+        task_id="task-syntax",
         auto_rollback=True,
     )
 
@@ -224,7 +275,7 @@ def test_patch_and_verify_syntax_error_rollback(tmp_path: Path):
     assert target_file.read_text(encoding="utf-8") == initial_content
 
 
-def test_patch_and_verify_test_failure_rollback(tmp_path: Path):
+def test_patch_and_verify_test_failure_rollback(tmp_path: Path, monkeypatch):
     subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=str(tmp_path), capture_output=True, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(tmp_path), capture_output=True, check=True)
@@ -249,11 +300,13 @@ def test_patch_and_verify_test_failure_rollback(tmp_path: Path):
 
     cfg = {"server": {"state_dir": str(tmp_path / "state")}}
     broker = CommandBroker(cfg)
+    _register_test_worktree(broker, tmp_path, "task-failure", monkeypatch)
 
     res = broker.patch_and_verify(
         patch=bad_logic_diff,
         cwd=str(tmp_path),
         tenant="test-agent",
+        task_id="task-failure",
         command="python -m pytest test_calc.py -q",
         auto_rollback=True,
     )
@@ -426,7 +479,7 @@ def test_repo_briefing(tmp_path: Path):
     assert "**Stack**: Python" in brief["markdown_card"]
 
 
-def test_patch_and_verify_auto_affected_tests(tmp_path: Path):
+def test_patch_and_verify_auto_affected_tests(tmp_path: Path, monkeypatch):
     subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=str(tmp_path), capture_output=True, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(tmp_path), capture_output=True, check=True)
@@ -442,6 +495,7 @@ def test_patch_and_verify_auto_affected_tests(tmp_path: Path):
 
     cfg = {"server": {"state_dir": str(tmp_path / "state")}}
     broker = CommandBroker(cfg)
+    _register_test_worktree(broker, tmp_path, "task-auto", monkeypatch)
 
     # Patch modifying math_lib
     patch = """diff --git a/math_lib.py b/math_lib.py
@@ -457,6 +511,7 @@ def test_patch_and_verify_auto_affected_tests(tmp_path: Path):
         patch=patch,
         cwd=str(tmp_path),
         tenant="test-agent",
+        task_id="task-auto",
         command="auto",
     )
 

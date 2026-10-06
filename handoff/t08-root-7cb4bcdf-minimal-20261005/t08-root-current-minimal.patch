@@ -1,0 +1,148 @@
+--- a/src/local_ai_hub/agent_memory.py
++++ b/src/local_ai_hub/agent_memory.py
+@@ -968,6 +968,8 @@
+         target_scope: AgentScope,
+         *,
+         approver: str,
++        scope: AgentScope | str | None = None,
++        scope_id: str | None = None,
+         root: str | None = None,
+         repository_id: str | None = None,
+         tenant: str | None = None,
+@@ -981,6 +983,8 @@
+             raise ApprovalRequiredError("global promotion requires user approval")
+         current = self.get(
+             record_id,
++            scope=scope,
++            scope_id=scope_id,
+             root=root,
+             repository_id=repository_id,
+             tenant=tenant,
+@@ -1641,7 +1645,8 @@
+             elif scope_val is not None:
+                 has_identity = bool(root or repository_id or tenant or identity_scopes)
+                 if scope_val == AgentScope.REPOSITORY.value:
+-                    sql += " AND scope_id = ''"
++                    if not (root or repository_id):
++                        sql += " AND 0"
+                 elif scope_val in {AgentScope.TASK.value, AgentScope.SESSION.value}:
+                     if not legacy_allowed:
+                         sql += " AND 0"
+--- a/src/local_ai_hub/app.py
++++ b/src/local_ai_hub/app.py
+@@ -1232,7 +1232,17 @@
+                     scope_value = getattr(lookup_context.get("scope"), "value", lookup_context.get("scope"))
+                     if scope_value in ("repo", "repository") and not str(lookup_context.get("root") or "").strip():
+                         raise BundleValidationError("repository memory requires provenance root")
+-                    rec = self.agent_memory.get(rid, **lookup_context)
++                    if rid in (agent_state_contexts or {}):
++                        rec = self.agent_memory.get(rid, **lookup_context)
++                    else:
++                        rec = self.agent_memory.get(
++                            rid, scope=AgentScope.GLOBAL, tenant=tenant,
++                        )
++                        if rec is None and root and tenant:
++                            rec = self.agent_memory.get(
++                                rid, scope=AgentScope.REPOSITORY,
++                                root=root, tenant=tenant,
++                            )
+                 if rec is not None:
+                     scope_val = getattr(rec.scope, "value", rec.scope)
+                     status_val = getattr(rec.status, "value", rec.status)
+--- a/tests/test_agent_memory.py
++++ b/tests/test_agent_memory.py
+@@ -1277,3 +1277,39 @@
+     )] == [other_tenant.record_id]
+     assert store.find_for_context(session_id="session-1") == []
+     assert store.find_for_context(tenant="tenant-1") == []
++
++
++def test_t08_root_scoped_promotion_contract(store: MemoryStore):
++    record = store.record(MemoryRecord.create(
++        kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY,
++        scope_id="repo-t08", key="t08-promote", value="verified",
++        status=MemoryStatus.CONFIRMED,
++        provenance={"root": "C:/repo", "tenant": "tenant-a"},
++    ), actor="user")
++    identity = dict(scope=AgentScope.REPOSITORY, scope_id="repo-t08",
++                    root="C:/repo", tenant="tenant-a")
++    for mismatch in ({"scope_id": "other"}, {"tenant": "other"}, {"root": "C:/other"}):
++        with pytest.raises(KeyError, match="not found"):
++            store.promote(record.record_id, AgentScope.GLOBAL, approver="user",
++                          **(identity | mismatch))
++    promoted = store.promote(record.record_id, AgentScope.GLOBAL,
++                             approver="user", **identity)
++    assert promoted.scope is AgentScope.GLOBAL
++    assert promoted.status is MemoryStatus.CONFIRMED
++
++
++def test_t08_root_repository_lookup_without_scope_id(store: MemoryStore):
++    record = store.record(MemoryRecord.create(
++        kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY,
++        scope_id="repo-t08", key="t08-scoped-lookup", value="verified",
++        provenance={"root": "C:/repo", "tenant": "tenant-a"},
++    ), actor="user")
++    found = store.get(record.record_id, scope=AgentScope.REPOSITORY,
++                      root="C:/repo", tenant="tenant-a")
++    assert found is not None and found.record_id == record.record_id
++    assert store.get(record.record_id, scope=AgentScope.REPOSITORY,
++                     root="C:/other", tenant="tenant-a") is None
++    assert store.get(record.record_id, scope=AgentScope.REPOSITORY,
++                     root="C:/repo", tenant="other") is None
++    assert store.get(record.record_id, scope=AgentScope.REPOSITORY,
++                     tenant="tenant-a") is None
+--- a/tests/test_agent_state_operations.py
++++ b/tests/test_agent_state_operations.py
+@@ -527,3 +527,52 @@
+         assert ag_stat["active_tasks_count"] == 1
+         assert ag_stat["tasks_count"] == 1
+         assert ag_stat["retention_days"] == 14
++
++
++def test_t08_root_export_repository_without_record_context(tmp_path: Path):
++    repository_root = tmp_path / "repository"
++    repository_root.mkdir()
++    with app_with_agent_state(tmp_path / "source") as source:
++        record = source.agent_memory.record(MemoryRecord.create(
++            kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY,
++            scope_id="repo-t08", key="t08-export", value="verified",
++            status=MemoryStatus.CONFIRMED,
++            provenance={"root": str(repository_root), "tenant": "tenant-a"},
++        ), actor="user")
++        for tenant in ("other", None):
++            with pytest.raises(BundleValidationError, match="not found"):
++                source.export_bundle(str(repository_root), tenant=tenant,
++                                     agent_state_record_ids=[record.record_id])
++        bundle = source.export_bundle(str(repository_root), tenant="tenant-a",
++                                      agent_state_record_ids=[record.record_id])
++    with app_with_agent_state(tmp_path / "target") as target:
++        assert target.import_bundle(bundle)["success"] is True
++        restored = target.agent_memory.get(record.record_id,
++            scope=AgentScope.REPOSITORY, root=str(repository_root), tenant="tenant-a")
++        assert restored is not None and restored.value == "verified"
++
++
++def test_t08_root_export_global_with_project_root(tmp_path: Path):
++    repository_root = tmp_path / "repository"
++    repository_root.mkdir()
++    with app_with_agent_state(tmp_path / "source") as source:
++        record = source.agent_memory.record(MemoryRecord.create(
++            kind=MemoryKind.FACT, scope=AgentScope.GLOBAL,
++            key="t08-global-export", value="verified",
++            status=MemoryStatus.CONFIRMED, provenance={"tenant": "tenant-a"},
++        ), actor="user")
++        with pytest.raises(BundleValidationError, match="not found"):
++            source.export_bundle(str(repository_root), tenant="other",
++                                 agent_state_record_ids=[record.record_id])
++        with pytest.raises(BundleValidationError, match="not found"):
++            source.export_bundle(str(repository_root), tenant="tenant-a",
++                agent_state_record_ids=[record.record_id],
++                agent_state_contexts={record.record_id: {"scope": AgentScope.REPOSITORY,
++                    "root": str(repository_root), "tenant": "tenant-a"}})
++        bundle = source.export_bundle(str(repository_root), tenant="tenant-a",
++                                      agent_state_record_ids=[record.record_id])
++    with app_with_agent_state(tmp_path / "target") as target:
++        assert target.import_bundle(bundle)["success"] is True
++        restored = target.agent_memory.get(record.record_id,
++            scope=AgentScope.GLOBAL, tenant="tenant-a")
++        assert restored is not None and restored.value == "verified"

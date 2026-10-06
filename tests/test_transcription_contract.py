@@ -165,8 +165,66 @@ def test_missing_whisper_cli_does_not_report_metadata_as_transcription(
     result = _service().transcribe({"audio": str(audio), "model": "small"}, "task-17")
 
     assert result["success"] is False
+    assert result["reason"] == "cli_missing"
+    assert result["engine"] == "whisper_cli"
+    assert result["degraded"] is True
     assert not result.get("text")
-    assert result.get("degraded") is True or result.get("error")
+
+
+def test_missing_output_after_cli_success_is_not_reported_as_missing_cli(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio = tmp_path / "output-race.wav"
+    audio.write_bytes(b"test audio")
+
+    def fake_run(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        output_dir = Path(args[args.index("--output_dir") + 1])
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / f"{audio.stem}.json").write_text('{"text":"valid"}', encoding="utf-8")
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    original_read_text = Path.read_text
+
+    def missing_output(path: Path, *args: object, **kwargs: object) -> str:
+        if path.suffix == ".json":
+            raise FileNotFoundError(path)
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr("local_ai_hub.services.shutil.which", lambda _name: "whisper-cli")
+    monkeypatch.setattr(process_utils, "run_hidden", fake_run)
+    monkeypatch.setattr(Path, "read_text", missing_output)
+
+    result = _service().transcribe({"audio": str(audio)}, "task-17")
+
+    assert result["success"] is False
+    assert result["reason"] == "process_error"
+
+
+
+
+def test_audio_directory_is_not_reported_as_missing_file_preserved_checkpoint_1(tmp_path: Path) -> None:
+    result = _service().transcribe({"audio": str(tmp_path), "model": "small"}, "task-17")
+
+    assert result["success"] is False
+    assert result["reason"] == "audio_not_regular_file"
+    assert not result.get("text")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def test_missing_audio_has_machine_readable_failure_reason(tmp_path: Path) -> None:
@@ -371,6 +429,12 @@ def test_whisper_process_failure_never_returns_successful_transcript(
     assert result["success"] is False
     assert result["reason"] == ("timeout" if outcome == "timeout" else "process_failed")
     assert not result.get("text")
+    assert result["error"]
+    if outcome == "timeout":
+        assert result["retryable"] is True
+    else:
+        assert result["returncode"] == 2
+        assert result["error"] == "decoder failed"
     assert runner_kwargs[0]["timeout"] == 60
     assert output_directories
     assert not output_directories[0].exists()
@@ -414,7 +478,40 @@ def test_empty_whisper_output_is_not_a_successful_transcription(
     result = _service().transcribe({"audio": str(audio), "model": "small"}, "task-17")
 
     assert result["success"] is False
+    assert result["reason"] == "empty_transcript"
+    assert result["engine"] == "whisper_cli"
+    assert result["error"]
     assert not result.get("text")
+
+
+def test_whisper_decode_skip_does_not_report_successful_transcription_preserved_checkpoint_1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio = tmp_path / "invalid.wav"
+    audio.write_bytes(b"not a RIFF WAV file")
+    monkeypatch.setattr("local_ai_hub.services.shutil.which", lambda _name: "whisper-cli")
+    monkeypatch.setattr(
+        process_utils,
+        "run_hidden",
+        lambda args, **_kwargs: subprocess.CompletedProcess(
+            args,
+            0,
+            stdout=f"Skipping {audio} due to RuntimeError: Failed to load audio: invalid data",
+            stderr="",
+        ),
+    )
+
+    result = _service().transcribe({"audio": str(audio), "model": "base"}, "task-17")
+
+    assert result["success"] is False
+    assert result["reason"] == "invalid_audio"
+    assert not result.get("text")
+
+
+
+
+
+
 
 
 @pytest.mark.parametrize("output_stream", ["stdout", "stderr"])
@@ -527,18 +624,23 @@ def test_http_transcribe_route_preserves_requested_model(tmp_path: Path, monkeyp
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
+        request_id = "t17-transcribe-route-request"
         request = urllib.request.Request(
             f"http://127.0.0.1:{server.server_address[1]}/api/task/transcribe",
             data=json.dumps(
                 {"audio_path": "/fixture/sample.wav", "model": "base.en", "language": "cs"}
             ).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "X-LocalAI-Request-ID": request_id,
+            },
             method="POST",
         )
         with urllib.request.urlopen(request) as response:
             result = json.loads(response.read().decode("utf-8"))
         assert result == {
             "success": False,
+            "request_id": request_id,
             "model": "base.en",
             "language": "cs",
             "audio_path": "/fixture/sample.wav",
@@ -548,3 +650,27 @@ def test_http_transcribe_route_preserves_requested_model(tmp_path: Path, monkeyp
         server.shutdown()
         server.server_close()
         app.close()
+
+
+def test_whisper_decode_skip_stderr_does_not_report_successful_transcription(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    audio = tmp_path / "invalid.wav"
+    audio.write_bytes(b"not a RIFF WAV file")
+    monkeypatch.setattr("local_ai_hub.services.shutil.which", lambda _name: "whisper-cli")
+
+    def whisper_skip(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        output_dir = Path(args[args.index("--output_dir") + 1])
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / f"{audio.stem}.json").write_text(
+            json.dumps({"text": "transcript that must be discarded"}), encoding="utf-8"
+        )
+        notice = f"Skipping {audio} due to RuntimeError: Failed to load audio: invalid data"
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr=notice)
+
+    monkeypatch.setattr(process_utils, "run_hidden", whisper_skip)
+    result = _service().transcribe({"audio": str(audio), "model": "base"}, "task-17")
+
+    assert result["success"] is False
+    assert result["reason"] == "invalid_audio"
+    assert not result.get("text")

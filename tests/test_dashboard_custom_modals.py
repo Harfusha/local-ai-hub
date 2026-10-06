@@ -819,7 +819,7 @@ def test_trace_inspector_keeps_universal_summary_inside_optional_panels() -> Non
     ]
     assert "traceDisplayModel(d)" in source
     assert "universalSummary=traceSummary(model,unavailableCopy)" in source
-    assert "${header}${primaryMarkup}${optionalMarkup}" in source
+    assert "${header}${historyControls}${traceRetentionNotice}${contentNotice}${primaryMarkup}${optionalMarkup}" in source
     assert "${universalSummary}<nav" in source
     for marker in [
         "Input unavailable for this request type",
@@ -874,7 +874,7 @@ def test_trace_inspector_exposes_core_panels_when_human_presentation_is_empty() 
     ]
     assert "function tracePrimaryFallback(" in DASHBOARD_HTML
     assert "primaryMarkup=tracePrimaryFallback(presentationMarkup,panels,model)" in detail_source
-    assert "${header}${primaryMarkup}${optionalMarkup}" in detail_source
+    assert "${header}${historyControls}${traceRetentionNotice}${contentNotice}${primaryMarkup}${optionalMarkup}" in detail_source
 
 
 def test_trace_inspector_stacks_primary_and_model_chat_panels_full_width() -> None:
@@ -913,7 +913,7 @@ def test_trace_inspector_dispatches_primary_body_before_optional_technical_detai
     assert source.index("renderTracePresentation(model)") < source.index(
         "const optionalMarkup="
     )
-    assert "${header}${primaryMarkup}${optionalMarkup}" in source
+    assert "${header}${historyControls}${traceRetentionNotice}${contentNotice}${primaryMarkup}${optionalMarkup}" in source
     assert "tracePrimaryFallback(presentationMarkup,panels,model)" in source
 
 
@@ -970,7 +970,7 @@ def test_trace_detail_runtime_keeps_primary_first_and_technical_details_closed()
         'class="trace-tabs"',
         "Timeline",
         "data-trace-reveal",
-        "Trace details are redacted by default.",
+        "Recognized sensitive values are masked in this dashboard by default.",
     ]:
         assert marker in first
     assert "Raw JSON" in raw_view
@@ -998,13 +998,14 @@ def test_trace_inspector_polling_guards_stale_responses_and_bounds_client_buffer
     ]
     for marker in [
         "tracePollGeneration",
-        "tracePollInFlight",
         "pollGeneration=++tracePollGeneration",
-        "tracePollInFlight=pollGeneration",
-        "tracePollInFlight=false",
+        "let pollInFlight=false,lastTracePollSignature='';",
+        "pollInFlight||!isCurrent()",
+        "pollInFlight=true",
+        "finally{pollInFlight=false",
         "traceAppendEvents(traceEvents,d.events",
-        "pollGeneration!==tracePollGeneration",
-        "pollTraceId!==activeTraceId",
+        "if(!isCurrent()||pollGeneration!==tracePollGeneration||pollTraceId!==activeTraceId)return false;",
+        "traceDetailPoller=createDashboardStatusPoller(poll,{baseDelay:1000,maxDelay:30000});",
     ]:
         assert marker in source, f"Polling guard missing: {marker}"
 
@@ -1105,7 +1106,7 @@ def test_trace_inspector_keeps_optional_details_open_and_summary_visible() -> No
     assert "traceOptionalDetailsOpen" in detail_source
     assert "existingOptionalDetails.open" in detail_source
     assert "traceOptionalDetailsOpen?' open':''" in detail_source
-    assert "${header}${primaryMarkup}${optionalMarkup}" in detail_source
+    assert "${header}${historyControls}${traceRetentionNotice}${contentNotice}${primaryMarkup}${optionalMarkup}" in detail_source
     assert "${universalSummary}<nav" in detail_source
     assert "tracePanel('summary'" not in model_source
 

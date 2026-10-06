@@ -1,0 +1,82 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-03",
+  "task": "T08 root-current source/test overlay and T05/T09 interface receipt",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+  "candidate": "C:\\Users\\Adam\\.codex\\worktrees\\t08-agent-os\\.local-ai-hub",
+  "candidate_head": "2b33602adef0d030fea66cdcc04ca742c60b2e32",
+  "patch": {
+    "path": "artifacts/t08-root-current-test-schema-reconciliation-20261003.patch",
+    "sha256": "6C62A3881CED7E91B0231C970487CD9A227C8D0E7D5F10C2B53E5F023B04A456",
+    "root_apply_check": "PASS",
+    "applied": false,
+    "root_preimages": {
+      "src/local_ai_hub/agent_events.py": "1B8E63A5FF329090801CD7F19E7DF7A95E42AC0034465AC5FA06D566B279CCF4",
+      "tests/test_agent_t08_durable_contract.py": "2B75E1FBB4EF0DCBC7B82BDFA811DE688E54B90A9D23D74F0D4A29BC1A9B2725"
+    },
+    "scope": "agent_incidents legacy fingerprint allowlist reconciliation plus durable contract test fixture/semantic event equality"
+  },
+  "root_interfaces": {
+    "ordered_event_publication": {
+      "symbol": "AgentStateStore.ordered_event_publication",
+      "signature": "(self, con: Any) -> Iterator[Callable[[Sequence[AgentEvent]], None]]",
+      "file": "src/local_ai_hub/agent_events.py",
+      "line": 1102,
+      "behavior": "enter before BEGIN; caller owns BEGIN/COMMIT/ROLLBACK; publish committed rows only after COMMIT"
+    },
+    "append_in_transaction": {
+      "symbol": "AgentStateStore.append_in_transaction",
+      "signature": "(self, con: Any, event: AgentEvent, *, strict_idempotency: bool = False) -> AppendResult",
+      "file": "src/local_ai_hub/agent_events.py",
+      "line": 986,
+      "behavior": "requires caller-owned active transaction"
+    },
+    "receipt_projection_and_event": {
+      "symbol": "TaskStore.add_verification_receipt_in_transaction",
+      "signature": "(self, con: sqlite3.Connection, task_id: str, criterion: str, receipt_id: str) -> tuple[TaskState | None, AgentEvent | None]",
+      "file": "src/local_ai_hub/agent_tasks.py",
+      "line": 1201,
+      "behavior": "updates receipt projection and event in same caller-owned transaction"
+    },
+    "event_page": {
+      "symbol": "AgentStateStore.event_page",
+      "signature": "(self, stream_id: str, after_seq: int = 0, limit: int = 1000, through_seq: int | None = None) -> dict[str, Any]",
+      "file": "src/local_ai_hub/agent_events.py",
+      "line": 1235,
+      "behavior": "bounded serialized event page with snapshot high-water through_seq"
+    },
+    "http_event_page": {
+      "symbol": "GET /api/agent-state/events",
+      "file": "src/local_ai_hub/http_server.py",
+      "line": 2297,
+      "behavior": "forwards stream_id, after_seq, bounded limit and optional through_seq; applies response bound"
+    }
+  },
+  "root_source_hashes": {
+    "src/local_ai_hub/agent_events.py": "1B8E63A5FF329090801CD7F19E7DF7A95E42AC0034465AC5FA06D566B279CCF4",
+    "src/local_ai_hub/agent_tasks.py": "73A5BDBB25205B1F789A6E452D3B28AC24A278D781D071AC6FABE347992BDCBB",
+    "src/local_ai_hub/agent_verification.py": "FB477438FF110AB80FE6F2D486FFA5D87AAB1A855735FCD94592F8080EAF0017",
+    "src/local_ai_hub/http_server.py": "7CE0E3D38979220917443CBF1FC24FFACCA8254ACD9E878E456FBB97C7A936EE"
+  },
+  "scoped_memory": {
+    "contract": "task memory retrieval and incident negative-knowledge lookup require repository root plus tenant; audit checks persisted cited IDs",
+    "files": [
+      "src/local_ai_hub/agent_tasks.py",
+      "src/local_ai_hub/agent_incidents.py"
+    ],
+    "root_current": "present; older T08 memory patches fail apply-check on root drift/already-integrated hunks"
+  },
+  "tests": {
+    "root_run_this_action": false,
+    "root_test_receipt": "none",
+    "selector_plan": [
+      "tests/test_agent_task_memory_adoption.py",
+      "tests/test_agent_incident_scope.py",
+      "tests/test_agent_t08_event_page_snapshot.py",
+      "tests/test_http_route_operation_acceptance.py::test_http_get_agent_state_events_forwards_stream_cursor_and_limit"
+    ],
+    "authorization": "run only after T01 assigns slot"
+  },
+  "root_writes": 0
+}

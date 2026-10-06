@@ -1,0 +1,42 @@
+{
+  "schema": "t12-admission-diagnostic-v1",
+  "created_epoch": 1790708540,
+  "config_path": "C:\\Users\\Adam\\.codex\\worktrees\\4816\\.local-ai-hub\\.handoff\\t12-measured-admission-config.toml",
+  "hardware_profile": "balanced",
+  "results": [
+    {
+      "task": "review",
+      "success": false,
+      "failure_code": "empty_response",
+      "error_type": "QueueFullError",
+      "end_to_end_latency_ms": 0.03,
+      "model_digest": "dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364"
+    }
+  ],
+  "transition": {
+    "reason_success": true,
+    "active_model": "qwen3.5:9b",
+    "measured_resident_bytes": 5542636418,
+    "configured_resident_estimate_bytes": 6096900060,
+    "resource": {
+      "vram_total_mb": 8188.0,
+      "vram_available_mb": 1020.0,
+      "pressure_level": "critical"
+    },
+    "review_admission": {
+      "state": "rejected",
+      "reason": "vram_budget",
+      "pressure_level": "critical",
+      "context_budget_factor": 0.25,
+      "queue_age_ms": 0,
+      "retryable": true,
+      "vram_budget_bytes": 8585740288,
+      "vram_available_bytes": 1069547520,
+      "vram_admission_budget_bytes": 6612183938,
+      "vram_incremental_required_bytes": 6853448695,
+      "vram_admission": "rejected",
+      "vram_estimate_source": "configured"
+    }
+  },
+  "managed_server_stopped": true
+}

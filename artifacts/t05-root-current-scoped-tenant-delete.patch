@@ -1,0 +1,63 @@
+--- a/src/local_ai_hub/agent_memory.py
++++ b/src/local_ai_hub/agent_memory.py
+@@ -1912,6 +1912,14 @@
+                         provenance = {}
+                     if not isinstance(provenance, dict):
+                         provenance = {}
++                    stored_tenant = str(provenance.get("tenant", "") or "").strip()
++                    if (
++                        parsed_scope is not AgentScope.GLOBAL
++                        and stored_tenant
++                        and stored_tenant != identity_values["tenant"]
++                    ):
++                        con.execute("COMMIT")
++                        return False, None
+                     for identity_key, expected in identity_values.items():
+                         if not expected or identity_key == scope_identity_key:
+                             continue
+--- a/tests/test_agent_memory.py
++++ b/tests/test_agent_memory.py
+@@ -1025,3 +1025,43 @@
+     assert record_count == 0
+     assert event_count == 0
+     assert cursor_count == 0
++
++def test_scoped_memory_delete_requires_matching_tenant(store: MemoryStore):
++    record = store.record(MemoryRecord.create(
++        kind=MemoryKind.FACT,
++        scope=AgentScope.SESSION,
++        scope_id="session-owner",
++        key="tenant-delete-identity",
++        value="tenant private value",
++        provenance={"tenant": "owner-tenant"},
++    ), actor="user")
++
++    assert store.delete(
++        record.record_id,
++        scope=record.scope,
++        scope_id=record.scope_id,
++    ) is False
++    assert store.delete(
++        record.record_id,
++        scope=record.scope,
++        scope_id=record.scope_id,
++        tenant="other-tenant",
++    ) is False
++    assert store.get(
++        record.record_id,
++        scope=record.scope,
++        scope_id=record.scope_id,
++        tenant="owner-tenant",
++    ) == record
++    assert store.delete(
++        record.record_id,
++        scope=record.scope,
++        scope_id=record.scope_id,
++        tenant="owner-tenant",
++    ) is True
++    assert store.get(
++        record.record_id,
++        scope=record.scope,
++        scope_id=record.scope_id,
++        tenant="owner-tenant",
++    ) is None

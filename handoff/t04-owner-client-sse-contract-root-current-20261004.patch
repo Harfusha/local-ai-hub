@@ -1,0 +1,138 @@
+diff --git a/src/local_ai_hub/client.py b/src/local_ai_hub/client.py
+--- a/src/local_ai_hub/client.py
++++ b/src/local_ai_hub/client.py
+@@ -8,6 +8,7 @@
+ import io
+ import json
+ import os
++import socket
+ import threading
+ import uuid
+ import subprocess
+@@ -1297,19 +1298,30 @@
+                 return
+             response = urlopen(req, timeout=transport_timeout)
+             with response as resp:
++                def interrupt_response() -> None:
++                    fp = getattr(resp, "fp", None)
++                    raw = getattr(fp, "raw", None)
++                    stream_socket = getattr(raw, "_sock", None)
++                    connection = getattr(resp, "_connection", None)
++                    if stream_socket is not None:
++                        try: stream_socket.shutdown(socket.SHUT_RDWR)
++                        except OSError: pass
++                    try: resp.close()
++                    except OSError: pass
++                    if connection is not None:
++                        try: connection.close()
++                        except OSError: pass
+                 def close_on_interrupt() -> None:
+                     deadline = time.monotonic() + transport_timeout
+                     while not monitor_stopped.is_set():
+                         if cancel_event is not None and cancel_event.is_set():
+-                            try: resp.close()
+-                            except Exception: pass
++                            interrupt_response()
+                             return
+                         remaining = deadline - time.monotonic()
+                         if remaining <= 0:
+                             if not monitor_stopped.is_set():
+                                 deadline_expired.set()
+-                                try: resp.close()
+-                                except Exception: pass
++                                interrupt_response()
+                             return
+                         monitor_stopped.wait(min(0.05, remaining))
+ 
+@@ -1342,7 +1354,9 @@
+                         cur_data.append(line[len("data:"):].strip())
+         except HTTPError:
+             raise
+-        except (URLError, OSError, http.client.HTTPException):
++        except (URLError, OSError, http.client.HTTPException) as exc:
++            if isinstance(exc, TimeoutError):
++                deadline_expired.set()
+             if cancel_event is None or not cancel_event.is_set():
+                 result = self._uncertain_response(request_id)
+                 if deadline_expired.is_set():
+diff --git a/tests/test_t04_client_sse_socket_interrupt.py b/tests/test_t04_client_sse_socket_interrupt.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_t04_client_sse_socket_interrupt.py
+@@ -0,0 +1,76 @@
++from __future__ import annotations
++
++import socket
++import threading
++from concurrent.futures import ThreadPoolExecutor
++
++from local_ai_hub import client as client_module
++from local_ai_hub.client import HubClient
++
++
++def test_stream_deadline_shuts_down_blocked_socket_and_reports_timeout(monkeypatch):
++    client = HubClient.__new__(HubClient)
++    client.base_url = "http://127.0.0.1:1"
++    client.api_token = ""
++    client.tenant = "t04-test-tenant"
++    client.agent = "t04-test-agent"
++    client.max_request_timeout = 0.2
++
++    class FakeSocket:
++        def __init__(self):
++            self.shutdown_mode = None
++            self.interrupted = threading.Event()
++
++        def shutdown(self, mode):
++            self.shutdown_mode = mode
++            self.interrupted.set()
++
++    class FakeConnection:
++        def __init__(self):
++            self.closed = threading.Event()
++
++        def close(self):
++            self.closed.set()
++
++    class FakeResponse:
++        def __init__(self, stream_socket, connection):
++            self.fp = type("FakeFile", (), {"raw": type("FakeRaw", (), {"_sock": stream_socket})()})()
++            self._connection = connection
++            self.closed = threading.Event()
++            self.waiting = threading.Event()
++
++        def __enter__(self):
++            return self
++
++        def __exit__(self, *_args):
++            self.close()
++
++        def close(self):
++            self.closed.set()
++
++        def __iter__(self):
++            yield b"event: update\n"
++            yield b'data: {"value":1}\n'
++            yield b"\n"
++            self.waiting.set()
++            if not self.fp.raw._sock.interrupted.wait(2):
++                raise AssertionError("deadline did not interrupt the socket")
++            raise OSError("socket interrupted")
++
++    stream_socket = FakeSocket()
++    connection = FakeConnection()
++    response = FakeResponse(stream_socket, connection)
++    monkeypatch.setattr(client_module, "urlopen", lambda *_args, **_kwargs: response)
++    events = client.stream_events(timeout=0.1)
++
++    assert next(events) == ("update", {"value": 1})
++    with ThreadPoolExecutor(max_workers=1) as pool:
++        pending = pool.submit(next, events, None)
++        assert response.waiting.wait(1)
++        error_event = pending.result(timeout=2)
++
++    assert error_event[0] == "error"
++    assert error_event[1]["retry_timeout"] is True
++    assert stream_socket.shutdown_mode == socket.SHUT_RDWR
++    assert response.closed.is_set()
++    assert connection.closed.is_set()

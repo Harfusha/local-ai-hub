@@ -1,0 +1,121 @@
+diff --git a/src/local_ai_hub/client.py b/src/local_ai_hub/client.py
+--- a/src/local_ai_hub/client.py
++++ b/src/local_ai_hub/client.py
+@@ -508,7 +508,10 @@
+             }
+             if self.api_token:
+                 headers["X-LocalAI-Token"] = self.api_token
+-            result = json.loads(self._pooled_open("POST", path, body, headers, attempt_timeout).decode("utf-8"))
++            try:
++                result = json.loads(self._pooled_open("POST", path, body, headers, attempt_timeout).decode("utf-8"))
++            except (UnicodeDecodeError, json.JSONDecodeError):
++                return self._invalid_json_response(request_id, outcome_unknown=not replay_safe)
+             if not isinstance(result, dict):
+                 return self._invalid_json_response(request_id, outcome_unknown=not replay_safe)
+             return result
+@@ -603,7 +606,10 @@
+             headers["X-LocalAI-Token"] = self.api_token
+ 
+         def once(attempt_timeout: float) -> dict[str, Any]:
+-            result = json.loads(self._pooled_open("GET", path, None, headers, attempt_timeout).decode("utf-8"))
++            try:
++                result = json.loads(self._pooled_open("GET", path, None, headers, attempt_timeout).decode("utf-8"))
++            except (UnicodeDecodeError, json.JSONDecodeError):
++                return self._invalid_json_response(request_id, outcome_unknown=False)
+             return result if isinstance(result, dict) else self._invalid_json_response(request_id, outcome_unknown=False)
+ 
+         def execute() -> dict[str, Any]:
+diff --git a/tests/test_t04_malformed_json_contract.py b/tests/test_t04_malformed_json_contract.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_t04_malformed_json_contract.py
+@@ -0,0 +1,89 @@
++from __future__ import annotations
++
++from local_ai_hub.client import HubClient
++
++
++def _client(tmp_path):
++    config = tmp_path / "client.toml"
++    state = (tmp_path / "state").as_posix()
++    config.write_text(
++        f"[server]\nport=39123\nstate_dir='{state}'\n"
++        "[client]\nmax_request_timeout_seconds=5\n",
++        encoding="utf-8",
++    )
++    return HubClient(config_path=str(config), auto_start=False)
++
++
++def test_get_malformed_json_returns_complete_retryable_invalid_response(tmp_path, monkeypatch):
++    client = _client(tmp_path)
++    calls = []
++
++    def malformed(*args, **kwargs):
++        calls.append((args, kwargs))
++        return b"{"
++
++    monkeypatch.setattr(client, "_pooled_open", malformed)
++    result = client.get("/api/status")
++
++    assert len(calls) == 1
++    assert result == {
++        "success": False,
++        "error": "invalid JSON response",
++        "status_code": 502,
++        "request_id": result["request_id"],
++        "retryable": True,
++        "terminal": False,
++    }
++    assert result.get("outcome_unknown", False) is False
++
++
++def test_ambiguous_mutating_post_malformed_json_is_unknown_without_replay(tmp_path, monkeypatch):
++    client = _client(tmp_path)
++    calls = []
++    request_id = "explicit-mutation-id"
++
++    def malformed(method, path, body, headers, timeout):
++        calls.append((method, path, headers, body))
++        return b"{"
++
++    monkeypatch.setattr(client, "_pooled_open", malformed)
++    result = client.post("/api/command", {"command": "perform-write"}, request_id=request_id)
++
++    assert len(calls) == 1
++    assert calls[0][2]["X-LocalAI-Request-ID"] == request_id
++    assert result == {
++        "success": False,
++        "error": "invalid JSON response",
++        "status_code": 502,
++        "request_id": request_id,
++        "outcome_unknown": True,
++        "retryable": False,
++        "terminal": True,
++    }
++
++
++def test_safe_post_retry_malformed_json_keeps_safe_response_classification(tmp_path, monkeypatch):
++    client = _client(tmp_path)
++    calls = []
++    request_id = "explicit-safe-id"
++
++    def transient_then_malformed(method, path, body, headers, timeout):
++        calls.append((method, path, headers, body))
++        if len(calls) == 1:
++            raise OSError("transient transport failure")
++        return b"{"
++
++    monkeypatch.setattr(client, "_pooled_open", transient_then_malformed)
++    result = client.post("/api/memory/get", {"key": "alpha"}, request_id=request_id)
++
++    assert len(calls) == 2
++    assert [call[2]["X-LocalAI-Request-ID"] for call in calls] == [request_id, request_id]
++    assert result == {
++        "success": False,
++        "error": "invalid JSON response",
++        "status_code": 502,
++        "request_id": request_id,
++        "retryable": True,
++        "terminal": False,
++    }
++    assert result.get("outcome_unknown", False) is False

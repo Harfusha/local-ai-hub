@@ -1,0 +1,12 @@
+diff --git a/tests/test_agent_t08_live_order.py b/tests/test_agent_t08_live_order.py
+--- a/tests/test_agent_t08_live_order.py
++++ b/tests/test_agent_t08_live_order.py
+@@ -95,7 +95,7 @@
+     assert [subscriber.get_nowait().seq, subscriber.get_nowait().seq] == [1, 2]
+ 
+ 
+-@pytest.mark.parametrize("task_writer", ["create", "update"])
++@pytest.mark.parametrize("task_writer", ["create", "update", "receipt"])
+ def test_task_event_commits_share_append_publish_order_lock(tmp_path, monkeypatch, task_writer):
+     db_path = tmp_path / "agent_state.sqlite3"
+     state_store = AgentStateStore(db_path)

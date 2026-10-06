@@ -1,0 +1,65 @@
+{
+  "base_blobs": {
+    "src/local_ai_hub/services.py": "9e37b5b99991a668987d3811fe3f6decad37d0c2",
+    "tests/test_project_config_service_integration.py": "97584879439321953ffa8e7a03bd722cfada8863"
+  },
+  "baseline_dirty_blob_hashes_match_after_verification": true,
+  "dirty_baseline_blobs_preserved": {
+    "docs/PROJECT_CONFIGURATION.md": "3a76e6837e5d8774f2f8dbdcc3c16f109a388450",
+    "src/local_ai_hub/commands.py": "c49bb6e3c8ed846f9b993436c7c6f0df053dc851",
+    "src/local_ai_hub/project_config.py": "67c901b92302f992fbffdf0c8c414d3ada119ba8",
+    "tests/test_project_command_broker.py": "6848fc9f968d1d970a79a65f0035a18a12becf02",
+    "tests/test_project_config.py": "4780404cfaa89333a6e7fdd7082d51868ad210f9",
+    "tests/test_project_path_hints.py": "3e71071342da4c327b0220cdda00c6d08f797e4f"
+  },
+  "evidence": {
+    "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_project_config_service_integration.py tests/test_project_config.py tests/test_project_path_hints.py tests/test_affected_tests.py",
+    "result": "86 passed in 3.51s"
+  },
+  "head": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+  "no_source_or_test_changes": true,
+  "non_owned_surfaces": {
+    "HubServices.repo_search": "owner unresolved; unchanged",
+    "MCP wire schema": "T03-owned; unchanged",
+    "api_context_pack": "Agent 2-owned; unchanged",
+    "client.py": "T04-owned; unchanged"
+  },
+  "owned_seam": "LocalAIServices.affected_tests and LocalAIServices.command run_affected branch in src/local_ai_hub/services.py",
+  "owner_evidence": {
+    "release": "T06 released LocalAIServices.affected_tests and the run_affected branch inside LocalAIServices.command to T21 consumer integration.",
+    "source": "C:/Users/Adam/.codex/worktrees/t21-project-config/.local-ai-hub/docs/superpowers/specs/2026-09-25-t21-adapter-handoff.md:54"
+  },
+  "patch_artifact": "handoff/t21-command-consumer.patch",
+  "patch_bytes": 0,
+  "patch_reason": "No code patch needed: affected-test command consumer and integration test already exist at base HEAD.",
+  "patch_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_apply_check": "passed (empty patch)",
+  "root_head": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+  "root_services_sha256_after": "7846a6a87dc79299acf58dcb064a4f5cc124f24fd88c4bebfd330faafe8f35b0",
+  "root_services_sha256_before": "7846a6a87dc79299acf58dcb064a4f5cc124f24fd88c4bebfd330faafe8f35b0",
+  "root_services_working_tree": {
+    "git_blob": "849ef8a7e79e660d523ca4ebae5d1844d9414ae6",
+    "git_status": "M src/local_ai_hub/services.py",
+    "head_blob": "9e37b5b99991a668987d3811fe3f6decad37d0c2",
+    "modified_by_this_task": false,
+    "observed_symbols": [
+      "affected_tests at line 3360",
+      "context.prioritize_paths at line 3471",
+      "command run_affected forwarding path_hints at lines 5771-5776"
+    ],
+    "path_hints_seam_present": true
+  },
+  "root_unchanged": true,
+  "task": "T21 command consumer verification from T15-owned released service seam",
+  "verified_contract": {
+    "cache_privacy": "cache params include project_config_digest and stable path_hints_digest, not raw hint paths",
+    "candidate_set": "deterministic and mapped candidates are deduplicated then reordered; hints do not filter or authorize",
+    "optional_field": "path_hints, separate from changed paths args.paths; no paths alias",
+    "output": "path_hint_usage exposes hint_used/fallback_used/hint_helped metadata only",
+    "policy": "path_is_allowed runs for each ranked candidate with phase=test",
+    "trusted_root": "run_affected root derives from cwd/root request args; hints are only passed to ProjectContext.prioritize_paths"
+  },
+  "worktree": "C:\\Users\\Adam\\.codex\\worktrees\\t15-command-config\\.local-ai-hub",
+  "worktree_services_dirty_after_verification": false
+}

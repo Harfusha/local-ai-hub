@@ -1,0 +1,36 @@
+diff --git a/src/local_ai_hub/client.py b/src/local_ai_hub/client.py
+--- a/src/local_ai_hub/client.py
++++ b/src/local_ai_hub/client.py
+@@ -97,7 +97,14 @@
+ def _write_start_lock_owner(handle: Any) -> None:
+     handle.seek(0)
+     handle.truncate()
+-    handle.write(f"{os.getpid()} {time.time()}".encode("ascii", errors="ignore"))
++    fields = [str(os.getpid()), str(time.time())]
++    identity = process_identity(os.getpid())
++    if identity is not None:
++        identity_type = str(identity.get("creation_identity_type", ""))
++        creation_identity = str(identity.get("creation_identity", ""))
++        if identity_type and creation_identity:
++            fields.extend((identity_type, creation_identity))
++    handle.write(" ".join(fields).encode("ascii", errors="ignore"))
+     handle.flush()
+ 
+ 
+@@ -128,7 +135,15 @@
+         except ValueError:
+             owner_pid = 0
+         age = max(0.0, time.time() - path.stat().st_mtime)
+-        if pid_alive(owner_pid) and age <= max(1.0, stale_seconds):
++        owner_is_live = bool(owner_pid and age <= max(1.0, stale_seconds) and pid_alive(owner_pid))
++        if owner_is_live and len(marker) >= 4:
++            identity = process_identity(owner_pid)
++            if identity is not None:
++                owner_is_live = bool(
++                    identity.get("creation_identity_type") == marker[2]
++                    and str(identity.get("creation_identity")) == marker[3]
++                )
++        if owner_is_live:
+             handle.close()
+             return None
+         _write_start_lock_owner(handle)
