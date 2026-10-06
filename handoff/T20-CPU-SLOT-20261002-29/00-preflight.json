@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "slot_id": "T20-CPU-SLOT-20261002-29",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_t04_client_auth_transport.py",
+  "route": "native_fallback_user_authorized",
+  "input_sha256_before": {
+    "tests/test_t04_client_auth_transport.py": "23543817A7CAB8B966DAAE8DA4B09B1DBC2B2F66FDF8E081B1CA6ACBBB1963C5",
+    "source_files": {
+      "src/local_ai_hub/client.py": "0C3690E24499DEC22A4EC1295BAEA06FF52E54880021E7A432A4BD733D15BC1D",
+      "src/local_ai_hub/http_server.py": "A8DF17496129DDA67BB74711A7D83568385FC301AB670AF3FB8F1659C7E3221D"
+    }
+  },
+  "acceptance_scope": "T04 client token-to-HTTP authorization boundary only"
+}

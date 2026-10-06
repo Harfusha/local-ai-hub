@@ -31,8 +31,9 @@ class _Recovery:
     def lookup(self, request_id, tenant, action):
         return None
 
-    def begin(self, request_id, tenant, action, *, identity="", payload=None):
+    def begin(self, request_id, tenant, action, **_identity):
         self.requests.append((request_id, tenant, action))
+        return {"claimed": True}
 
     def finish(self, *_args, **_kwargs):
         return None
@@ -115,6 +116,7 @@ def inprocess_client(tmp_path, monkeypatch):
     )
     set_operational_mode(state_dir, "active")
     app = _App(state_dir)
+    monkeypatch.setattr(http_server, "APP", None)
     transport = InProcessTransport(config_path=str(config_path))
     monkeypatch.setattr(transport, "_create_app", lambda: app)
     client = HubClient(
@@ -215,7 +217,11 @@ def test_inprocess_transport_preserves_request_identity_and_cancel_route(inproce
         operational_action="work_orders",
     )
 
-    assert result == {"success": True, "cancelled": "work-17"}
+    assert result == {
+        "success": True,
+        "cancelled": "work-17",
+        "request_id": "stable-cancel-17",
+    }
     assert app.cancel_calls == [("tenant-a", "work-17")]
     assert app.recovery.requests == [
         ("stable-cancel-17", "tenant-a", "/api/work-orders")
@@ -324,6 +330,47 @@ def test_inprocess_timeout_reports_uncertain_result_but_does_not_cancel_service(
         assert started.is_set()
         assert result["outcome_unknown"] is True
         assert result["request_id"]
+    finally:
+        release.set()
+    assert finished.wait(1.0)
+
+
+def test_inprocess_cancel_after_dispatch_reports_unknown_and_stops_waiting(inprocess_client):
+    client, _transport, app, _state_dir = inprocess_client
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    cancel = threading.Event()
+    response = {}
+    request_done = threading.Event()
+
+    def slow_cancel(tenant, work_id):
+        started.set()
+        release.wait(2.0)
+        finished.set()
+        return {"success": True, "tenant": tenant, "cancelled": work_id}
+
+    def send_request():
+        response["value"] = client.request(
+            "/api/work-orders",
+            {"action": "cancel", "work_id": "cancel-probe"},
+            timeout=2.0,
+            operational_action="work_orders",
+            cancel_event=cancel,
+        )
+        request_done.set()
+
+    app.work_orchestrator.cancel = slow_cancel
+    worker = threading.Thread(target=send_request, daemon=True)
+    worker.start()
+    try:
+        assert started.wait(1.0)
+        cancel.set()
+        assert request_done.wait(1.0)
+        result = response["value"]
+        assert result["cancelled"] is True
+        assert result["outcome_unknown"] is True
+        assert result.get("request_not_sent") is not True
     finally:
         release.set()
     assert finished.wait(1.0)

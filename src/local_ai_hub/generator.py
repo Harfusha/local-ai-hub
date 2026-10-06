@@ -14,6 +14,27 @@ import os
 from pathlib import Path
 from typing import Any
 
+
+T21_HANDOFF_CONTRACT = """Project configuration and PathHint core are integrated. `resolve_project_context(root, state_dir)` returns immutable effective settings and a `config_digest`; project configuration stays in the project or Git common directory, while `state_dir` stores only bounded, evidence-bound path hints. Maps merge by key, lists replace as a whole, and explicit excludes and hard boundaries take precedence over force includes. Overrides cannot bypass root containment, binary policy, configured size limits, or preprocessing exclusions; walkers check every directory and file.
+
+`verification_rules` maps exact task acceptance-criterion names to receipt requirements: `true` requires configured `lint` and `test` receipts, and an array names exact configured command aliases. `required_commands` is not a global switch; it applies only when the task criterion has that exact name. The root evaluator and persisted completion gate are integrated. The HTTP completion wrapper rejects invalid configuration or incomplete verification before checkpointing and completion. A positive HTTP case passed; the broader owner, tenant, revision, criterion, and memory-audit matrix remains open.
+
+`shared_namespace` exposes a server-derived coordination identity and shares bounded hints across linked worktrees under one Git common directory. It does not replace the physical repository root. Memory and lease consumers have not adopted this identity yet.
+
+`ProjectContext.prioritize_paths(...)` ranks the complete candidate list in this order: literal `entry_points`, request-scoped `path_hints`, then saved hints matching scope, repository revision, and config digest. It preserves every candidate and returns `PathHintUsage`; `hint_helped` stays unknown until measured. When a hint does not help, consumers use their broader fallback. Telemetry exposes usage flags without candidate paths. Save only verified hints.
+
+The HTTP `/api/search` adapter accepts typed `path_hints`. `HubClient.post` forwards them only to `/api/search` and strips them from `/api/command`. T21's private MCP search dispatch forwards typed hints internally, but the installed public `local_ai_repo` argument and output schema remain owned by T03 and pending its schema release. `/api/context/pack` does not accept or use hints. Do not infer public wire support from internal methods.
+
+Hints are repository-relative paths beneath the trusted project root; reject absolute, traversal, glob, missing, and symlink or junction escape paths. Request hints may omit evidence metadata. Learned hints require evidence ID, provenance, matching repository revision, and config digest. Revalidate saved paths when reading them, and never write raw paths or hint contents to telemetry."""
+
+T19_RUNTIME_PARITY_CONTRACT = """Use the installed `tools/list` input/output schema; action-specific fields and result shapes are not interchangeable. Schema presence is not authorization.
+
+`hubctl pause` sets `gaming` and `hubctl resume` sets `active`. When Hub is offline, `pause` and `resume` update persisted mode without starting the server; offline `mode` and `status` read that persisted state.
+
+For durable work, create and checkpoint one Agent OS task contract before edits. On restart, resume the existing task with the same `task_id`. Record memory with scope-appropriate provenance; repository-scoped memory requires provenance tied to the trusted project root.
+
+If Hub is unavailable, make one bounded health/retry attempt, then use one native fallback. Native validation still requires `terminal=true` and `retryable=false`; never poll or repeat an identical operation."""
+
 from local_ai_hub.features import FeatureSet
 from local_ai_hub.operation_contracts import (
     operation_contract,
@@ -98,7 +119,13 @@ def context_economy_contract(cfg: dict[str, Any] | None = None) -> str:
     batch_line = '- Use the existing `local_ai_task(action="batch")` for independent local tasks; keep each item bounded and consume compact per-item results.' if features.tasks else ''
     return f"""## Context economy contract
 
-- Every Hub response is aggregate-bounded (default ≈{budget} tokens); explicit `max_response_tokens` below 128 are rejected, never silently raised.
+- Every Hub response is aggregate-bounded (default ≈{budget} tokens).
+- `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.
+- Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
+- Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
+- Reject `max_response_tokens` below 128; never raise the request silently.
+- Native fallback requires an explicit `terminal=true` and `retryable=false` result.
+- On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 - Prefer `response_profile=\"minimal\"`/`\"compact\"`; request only decision-grade fields.
 - Pass a stable `reuse_key` for repeated logical queries. Use `response_profile="delta"` when only changes are needed; unchanged calls return a pointer, not missing data.
 {batch_line}
@@ -406,6 +433,14 @@ Stop escalating when evidence is sufficient; reuse cached results and bounded ev
 
 Do not fan out overlapping retrieval layers. Stop escalating when evidence is sufficient. Local AI Hub handles its own bounded work; Codex handles native-subagent design and integration.
 {subagents_section}{agent_os_section}
+
+## Project-config and PathHint status
+
+{T21_HANDOFF_CONTRACT}
+
+## Installed API and operational contracts
+
+{T19_RUNTIME_PARITY_CONTRACT}
 """
 
 
@@ -584,6 +619,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
             f"\nLocal model policy: `{fs.background_model}` is preprocessing-only, `{fs.fast_model}` handles quick/simple tasks,"
             f" `{fs.general_model}` handles ordinary tasks, `{fs.smart_model}` handles more involved work, and {reasoning_tier} handles the hardest or highest-risk reasoning."
             " Use deterministic and indexed Hub actions first for exact facts, symbols, diff and tests. For semantic generation, reasoning, review, independent second opinions and semantic compression, call `local_ai_task`."
+            " Model routes above are resolved from active config. Keep hard and extreme reasoning as distinct tiers; see `docs/MODEL_CAPABILITIES.md` for the full matrix."
         )
 
     repo_task_first = ""
@@ -752,6 +788,12 @@ Load and follow this skill before any coding or repository task. Apply its disco
 
 ### 6. MCP Response Economy
 - Hub responses are aggregate-bounded; use `max_response_tokens` only for a bounded exception.
+- `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.
+- Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
+- Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
+- Reject `max_response_tokens` below 128; never raise the request silently.
+- Native fallback requires an explicit `terminal=true` and `retryable=false` result.
+- On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 - Prefer compact/minimal profiles, stable `reuse_key` values, cache reuse, and artifact slices.
 - Keep command output at summary/status level; fetch exact logs only when needed.
 """
@@ -783,6 +825,12 @@ def generate_token_economy_policy(cfg: dict[str, Any] | None = None) -> str:
         "- Context compression & token measurement: Use `repomix --compress` or `files-to-prompt -c` for repo snapshots. Use `tokcount` to measure exact tokens.\n"
         "- Bounded command outputs: Route tests and builds through `local_ai_command`; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or stdin pipelines such as `git log | trim-run`. Use `jq` for JSON.\n"
         "- Surgical edits: Prefer targeted block replacements over rewriting entire files.\n"
+        "- `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.\n"
+        "- Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.\n"
+        "- Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.\n"
+        "- Reject `max_response_tokens` below 128; never raise the request silently.\n"
+        "- Native fallback requires an explicit `terminal=true` and `retryable=false` result.\n"
+        "- On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.\n"
         + local_model_line
         + "<!-- END TOKEN ECONOMY POLICY -->"
     )
@@ -907,11 +955,9 @@ def generate_mcp_tool_schemas(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
             "x-operation-contract": operation_metadata("local_ai_artifact"),
         }
 
-    for tool_name, schema in schemas.items():
-        if operation_contract(tool_name) is not None:
-            # Tool properties, selectors, requirements, and shared response fields live in one registry.
-            schema["parameters"] = operation_parameters_schema(tool_name, fs)
-            schema["x-operation-contract"] = operation_metadata(tool_name)
+    for name, schema in schemas.items():
+        schema["parameters"] = operation_parameters_schema(name, fs)
+        schema["x-operation-contract"] = operation_metadata(name)
 
     _apply_response_budget_schema(schemas, cfg)
     return schemas

@@ -7,16 +7,34 @@ from local_ai_hub import mcp_server
 
 
 def _mode(monkeypatch, name: str) -> None:
-    monkeypatch.setattr(
-        mcp_server,
-        "load_operational_mode",
-        lambda _state_dir: SimpleNamespace(
+    def gate_error(snapshot, action: str, *, requires_heavy_work: bool):
+        if not requires_heavy_work or snapshot.mode == "active":
+            return None
+        if snapshot.mode == "gaming" and action == "speculative_lint":
+            return None
+        return {
+            "success": False,
+            "mode": snapshot.mode,
+            "error": f"hub paused: {snapshot.mode} mode active",
+            "terminal": True,
+            "retryable": False,
+        }
+
+    def load_mode(state_dir=None):
+        return SimpleNamespace(
             mode=name,
             revision=2,
             updated_at="2026-09-29T00:00:00Z",
             degraded=False,
             error="",
-        ),
+        )
+
+    monkeypatch.setattr(mcp_server, "load_operational_mode", load_mode, raising=False)
+    monkeypatch.setattr(
+        mcp_server,
+        "operational_mode_gate_error",
+        gate_error,
+        raising=False,
     )
 
 
@@ -44,7 +62,8 @@ def test_gaming_mcp_dispatch_allows_only_speculative_lint(monkeypatch) -> None:
     assert lint["success"] is True
     assert calls and calls[0][0] == "/api/speculative-lint"
     assert inference["success"] is False
-    assert inference["error_code"] == "operational_mode_blocked"
+    assert inference["mode"] == "gaming"
+    assert inference["error"] == "hub paused: gaming mode active"
     assert len(calls) == 1
 
 
@@ -60,5 +79,6 @@ def test_maintenance_mcp_dispatch_still_blocks_speculative_lint(monkeypatch) -> 
     )
 
     assert result["success"] is False
-    assert result["error_code"] == "operational_mode_blocked"
+    assert result["mode"] == "maintenance"
+    assert result["error"] == "hub paused: maintenance mode active"
     assert calls == []

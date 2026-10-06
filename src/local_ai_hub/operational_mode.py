@@ -3,19 +3,86 @@
 from __future__ import annotations
 
 import json
+import errno
 import os
 import tempfile
 import threading
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Iterator, Literal
 
 
 OperationalMode = Literal["active", "gaming", "maintenance"]
 _ALLOWED_MODES = frozenset({"active", "gaming", "maintenance"})
 _STATE_FILENAME = "operational_mode.json"
+_LOCK_FILENAME = "operational_mode.lock"
 _LOCK = threading.RLock()
+_WRITER_LOCK_TIMEOUT_SECONDS = 5.0
+_REPLACE_RETRY_SECONDS = 1.0
+
+
+@contextmanager
+def _state_writer_lock(state_dir: str | Path) -> Iterator[None]:
+    """Serialize state updates across Hub, MCP, and CLI processes."""
+    lock_path = Path(state_dir) / _LOCK_FILENAME
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as stream:
+        stream.seek(0, os.SEEK_END)
+        if stream.tell() == 0:
+            stream.write(b"\0")
+            stream.flush()
+        deadline = time.monotonic() + _WRITER_LOCK_TIMEOUT_SECONDS
+        if os.name == "nt":
+            import msvcrt
+
+            while True:
+                try:
+                    stream.seek(0)
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError as exc:
+                    if getattr(exc, "winerror", None) not in {33, 36} and exc.errno not in {errno.EACCES, errno.EDEADLK, errno.EAGAIN}:
+                        raise
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("timed out waiting for operational mode writer lock") from exc
+                    time.sleep(0.02)
+        else:
+            import fcntl
+
+            while True:
+                try:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError as exc:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("timed out waiting for operational mode writer lock") from exc
+                    time.sleep(0.02)
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+def _replace_state_file(source: str, destination: Path) -> None:
+    deadline = time.monotonic() + _REPLACE_RETRY_SECONDS
+    while True:
+        try:
+            os.replace(source, destination)
+            return
+        except OSError as exc:
+            windows_lock_conflict = getattr(exc, "winerror", None) in {32, 33}
+            if not isinstance(exc, PermissionError) and not windows_lock_conflict:
+                raise
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.02)
 
 
 @dataclass(frozen=True)
@@ -56,6 +123,8 @@ def load_operational_mode(state_dir: str | Path) -> OperationalModeSnapshot:
             return OperationalModeSnapshot("active", 0, None)
         except OSError:
             return _degraded_snapshot("operational mode state is unreadable")
+        except UnicodeError:
+            return _degraded_snapshot("operational mode state is invalid")
 
         try:
             value = json.loads(raw)
@@ -86,7 +155,7 @@ def set_operational_mode(state_dir: str | Path, mode: str) -> OperationalModeSna
         raise ValueError("mode must be active, gaming, or maintenance")
 
     path = _state_path(state_dir)
-    with _LOCK:
+    with _LOCK, _state_writer_lock(state_dir):
         prior = load_operational_mode(state_dir)
         snapshot = OperationalModeSnapshot(
             mode=mode,  # type: ignore[arg-type]
@@ -101,7 +170,7 @@ def set_operational_mode(state_dir: str | Path, mode: str) -> OperationalModeSna
                 stream.write(payload)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(temporary_name, path)
+            _replace_state_file(temporary_name, path)
         except BaseException:
             try:
                 os.unlink(temporary_name)
@@ -111,17 +180,30 @@ def set_operational_mode(state_dir: str | Path, mode: str) -> OperationalModeSna
         return snapshot
 
 
-def operational_mode_gate_error(snapshot: OperationalModeSnapshot) -> dict[str, object] | None:
-    """Return the stable terminal envelope when agent work is currently blocked."""
-    if snapshot.mode == "active" and not snapshot.degraded:
+def operational_mode_gate_error(
+    snapshot: OperationalModeSnapshot | None,
+    action: str = "",
+    *,
+    requires_heavy_work: bool = True,
+) -> dict[str, object] | None:
+    """Return a bounded, retryable pause response when work is temporarily gated."""
+    if snapshot is not None and snapshot.mode == "active" and not snapshot.degraded:
+        return None
+    mode = snapshot.mode if snapshot is not None else "maintenance"
+    degraded = snapshot is None or snapshot.degraded
+    safe_job_actions = {"status", "wait", "result", "cancel", "evaluation_report"}
+    if not degraded and mode in {"gaming", "maintenance"} and action.strip().lower().replace("-", "_") in safe_job_actions:
+        return None
+    if not degraded and mode == "gaming" and not requires_heavy_work:
         return None
     return {
         "success": False,
-        "error": f"Hub operational mode is {snapshot.mode}; agent tool calls are disabled",
+        "mode": mode,
+        "operational_mode": mode,
         "error_code": "operational_mode_blocked",
-        "operational_mode": snapshot.mode,
-        "mode_revision": snapshot.revision,
-        "degraded": snapshot.degraded,
-        "terminal": True,
-        "retryable": False,
+        "action": action.strip().lower().replace("-", "_"),
+        "error": f"hub paused: {mode} mode active",
+        "terminal": False,
+        "retryable": True,
+        "retry_after_seconds": 5,
     }
