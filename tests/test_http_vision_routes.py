@@ -12,7 +12,7 @@ from local_ai_hub.app import LocalAIApp
 from local_ai_hub import http_server
 
 
-def _post(url: str, payload: dict, *, origin: str = "chrome-extension://fixture", tenant: str = "tenant-a", token: str | None = None, request_id: str | None = None) -> dict:
+def _post(url: str, payload: dict, *, origin: str = "chrome-extension://fixture", tenant: str = "tenant-a", token: str | None = "test-api-token", request_id: str | None = None) -> dict:
     headers = {
         "Content-Type": "application/json",
         "Origin": origin,
@@ -45,8 +45,11 @@ def test_browser_capability_capture_and_review_routes_are_explicit_and_tenant_sc
                 'bind = "127.0.0.1"',
                 'port = 11498',
                 f'state_dir = "{state_dir.as_posix()}"',
+                '[security]',
+                'api_token = "test-api-token"',
                 '[browser_bridge]',
                 'enabled = true',
+                'tenant = "tenant-a"',
                 'allowed_origins = ["chrome-extension://fixture"]',
                 'max_payload_bytes = 200000',
             ]
@@ -95,7 +98,11 @@ def test_browser_capability_capture_and_review_routes_are_explicit_and_tenant_sc
             tenant="tenant-b",
         )
         assert cross_tenant["success"] is False
-        assert cross_tenant["error_code"] in {"capability_tenant_mismatch", "capability_replayed"}
+        assert cross_tenant["error_code"] in {
+            "capability_tenant_mismatch",
+            "capability_replayed",
+            "tenant_binding_mismatch",
+        }
 
         capability = _post(
             f"{base}/api/browser/capability",
@@ -348,6 +355,19 @@ def test_token_auth_supports_bridge_and_review_preflight_without_wildcard_origin
             }, method="OPTIONS"
         )
         with urllib.request.urlopen(preflight) as response:
+            assert response.status == 204
+            assert response.headers["Access-Control-Allow-Origin"] == "chrome-extension://token-only"
+            assert "X-LocalAI-Token" in response.headers["Access-Control-Allow-Headers"]
+
+        browser_preflight = urllib.request.Request(
+            f"{base}/api/browser/capture",
+            headers={
+                "Origin": "chrome-extension://token-only",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type, x-localai-token",
+            }, method="OPTIONS"
+        )
+        with urllib.request.urlopen(browser_preflight) as response:
             assert response.status == 204
             assert response.headers["Access-Control-Allow-Origin"] == "chrome-extension://token-only"
             assert "X-LocalAI-Token" in response.headers["Access-Control-Allow-Headers"]

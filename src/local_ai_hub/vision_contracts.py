@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from typing import Any
 
 
@@ -47,12 +47,16 @@ UNTRUSTED_CONTEXT_INSTRUCTION = (
     "Always return a concise non-empty summary, including when findings is empty. "
     'When no findings exist, include "findings": [] in the JSON.'
 )
-_DOM_MARKUP_RE = re.compile(r"</?[A-Za-z][^>]*>")
+_DOM_MARKUP_RE = re.compile(
+    r"</?(?:a|article|aside|body|button|div|footer|form|h[1-6]|header|html|img|input|label|li|main|nav|ol|option|p|section|select|span|table|tbody|td|textarea|th|thead|tr|ul)\b[^>]*>",
+    re.IGNORECASE,
+)
 _EXPECTED_VALUE_MISMATCH_RE = re.compile(
     r"\b(?:does not|doesn't|doesn’t)\s+match\s+(?:the\s+)?expected\s+"
     r"(?:value|text|label)(?:\s+of)?\s+['\"`](?P<value>[^'\"`]{1,200})['\"`]",
     re.IGNORECASE,
 )
+
 
 
 class VisionContextBoundsError(ValueError):
@@ -247,7 +251,7 @@ def _json_text(raw: str) -> str:
 
 
 def image_dimensions(image_data: bytes) -> tuple[int, int] | None:
-    """Read dimensions from supported PNG/JPEG headers without image imports."""
+    """Read PNG/JPEG/GIF/WebP dimensions without decoding pixels."""
     if not isinstance(image_data, bytes):
         return None
     if (
@@ -259,6 +263,21 @@ def image_dimensions(image_data: bytes) -> tuple[int, int] | None:
         width = int.from_bytes(image_data[16:20], "big")
         height = int.from_bytes(image_data[20:24], "big")
         return (width, height) if width > 0 and height > 0 else None
+    if image_data[:6] in {b"GIF87a", b"GIF89a"} and len(image_data) >= 10:
+        width = int.from_bytes(image_data[6:8], "little")
+        height = int.from_bytes(image_data[8:10], "little")
+        return (width, height) if width > 0 and height > 0 else None
+    if image_data.startswith(b"RIFF") and image_data[8:12] == b"WEBP" and len(image_data) >= 30:
+        chunk = image_data[12:16]
+        if chunk == b"VP8X":
+            return (int.from_bytes(image_data[24:27], "little") + 1, int.from_bytes(image_data[27:30], "little") + 1)
+        if chunk == b"VP8L" and image_data[20:21] == b"\x2f":
+            bits = int.from_bytes(image_data[21:25], "little")
+            return ((bits & 0x3FFF) + 1, ((bits >> 14) & 0x3FFF) + 1)
+        if chunk == b"VP8 " and image_data[23:26] == b"\x9d\x01\x2a":
+            width = int.from_bytes(image_data[26:28], "little") & 0x3FFF
+            height = int.from_bytes(image_data[28:30], "little") & 0x3FFF
+            return (width, height) if width > 0 and height > 0 else None
     if not image_data.startswith(b"\xff\xd8"):
         return None
 
@@ -349,7 +368,7 @@ def parse_vision_result(
                 for name in ("id", "problem", "confidence")
                 if name not in item or item[name] in (None, "")
             ]
-            if require_observation_fields:
+            if require_observation_fields or strict_output_shape:
                 missing.extend(
                     name
                     for name in ("observed", "hypothesized", "uncertainty")
@@ -432,6 +451,12 @@ def parse_vision_result(
             element_ids = tuple(item.get("element_ids", []))
             if any(not element_id.strip() for element_id in element_ids):
                 return _terminal_error("element_ids must contain non-empty strings")
+            if element_ids and valid_element_ids is None:
+                return _terminal_error("DOM element ids were not present in supplied evidence")
+            if valid_element_ids is None and not element_ids and any(
+                _DOM_MARKUP_RE.search(entry) for entry in item.get("evidence", [])
+            ):
+                return _terminal_error("DOM evidence must reference a supplied DOM element ID")
             if valid_element_ids is not None:
                 unknown_ids = [element_id for element_id in element_ids if element_id not in valid_element_ids]
                 if unknown_ids:
@@ -519,6 +544,16 @@ def parse_vision_result(
                     return _terminal_error(
                         "observation_fact value does not match supplied evidence"
                     )
+                if element_id not in element_ids:
+                    return _terminal_error("observation fact element id must be cited by the finding")
+                rendered_value = str(fact_value).lower() if isinstance(fact_value, bool) else str(fact_value)
+                cited_text = " ".join(
+                    [str(item.get("observed", "")), *item.get("evidence", [])]
+                ).casefold()
+                if not rendered_value.strip() or rendered_value.casefold() not in cited_text:
+                    return _terminal_error(
+                        "observation fact value must support the finding's observed or evidence text"
+                    )
                 observation_facts.append(
                     ObservationFact(source, element_id, field_name, fact_value)
                 )
@@ -526,7 +561,7 @@ def parse_vision_result(
                 grounded_ids = {fact.element_id for fact in observation_facts}
                 if grounded_ids != set(element_ids):
                     return _terminal_error(
-                        "each cited DOM element must have an observation_fact"
+                        "every cited DOM element must have an observation_fact"
                     )
             mismatch = _EXPECTED_VALUE_MISMATCH_RE.search(item["problem"])
             if mismatch:
@@ -650,10 +685,20 @@ def build_coder_packet(
         return _coder_error("dom must be an object")
     if runtime_context is not None and not isinstance(runtime_context, dict):
         return _coder_error("runtime_context must be an object")
+    bounded_findings = []
+    for finding in findings:
+        normalized = asdict(finding) if isinstance(finding, VisionFinding) else finding
+        if isinstance(normalized, dict):
+            normalized = {
+                key: list(value) if isinstance(value, tuple) else value
+                for key, value in normalized.items()
+            }
+        bounded_findings.append(normalized)
     try:
         validate_bounded_context(
             {
                 "prompt": packet_prompt,
+                "findings": bounded_findings,
                 "dom": dom,
                 "runtime": runtime_context or {},
                 "repo": repo_context or {},
@@ -687,7 +732,7 @@ def build_coder_packet(
         and str(element.get("element_id")) != ""
     }
     referenced = set()
-    for finding in findings:
+    for finding in bounded_findings:
         if isinstance(finding, VisionFinding):
             ids = finding.element_ids
         elif isinstance(finding, dict) and isinstance(finding.get("element_ids", []), list):
@@ -717,7 +762,7 @@ def build_coder_packet(
 
     packet: dict[str, Any] = {
         "prompt": packet_prompt,
-        "findings": findings,
+        "findings": bounded_findings,
         "dom": {key: value for key, value in dom.items() if key != "elements"},
         "repo": repo_context or {},
     }

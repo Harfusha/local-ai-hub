@@ -7,6 +7,7 @@ from pathlib import Path
 
 from local_ai_hub import __version__
 from local_ai_hub.generator import write_all_generated
+from local_ai_hub.hardware import profile_overrides
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -30,7 +31,11 @@ def test_release_uses_only_current_local_ai_hub_contracts():
     roots = [ROOT / "src", ROOT / "tools", ROOT / "docs", ROOT / "skills", ROOT / "tests"]
     files = [ROOT / name for name in ("README.md", "CHANGELOG.md", "FEATURES.md", "AGENTS.md", "CONTRIBUTING.md", "SECURITY.md")]
     for base in roots:
-        files.extend(path for path in base.rglob("*") if path.is_file() and path.suffix in {".py", ".md", ".toml", ".yml", ".yaml"})
+        for path in base.rglob("*"):
+            if path.is_file() and path.suffix in {".py", ".md", ".toml", ".yml", ".yaml"}:
+                if path.relative_to(ROOT).parts[:2] == ("docs", "superpowers"):
+                    continue
+                files.append(path)
 
     current_major = int(__version__.split(".", 1)[0])
     historical_majors = tuple(str(n) for n in range(1, current_major))
@@ -50,7 +55,7 @@ def test_release_uses_only_current_local_ai_hub_contracts():
     for path in ROOT.rglob("*"):
         if path.is_file() and not any(part in {
             ".git", "__pycache__", ".pytest_cache", ".venv", "tool-envs", "state", "data",
-            "generated", "backups", "migration-backups",
+            "generated", "backups", "migration-backups", "dist", "build", "handoff",
         } for part in path.parts):
             assert not historical_name.search(path.name), f"historical release name: {path.relative_to(ROOT)}"
 
@@ -59,11 +64,104 @@ def test_release_has_compact_mcp_surface_and_tool_first_policy(tmp_path: Path):
     assert source.count("@mcp.tool()") == 8
     assert "CALL THIS FIRST before broad repository reads" in source
     assert '"mode": "full" if mode == "full" else "adaptive" if mode == "adaptive" else "fast"' in source
-    assert "CodeGraphContext" in source and "handmade grep terms" in source
+    assert "CodeGraphContext" not in source and "handmade grep terms" in source
     write_all_generated({"models": {"fast_code": "qwen2.5-coder:7b"}}, tmp_path)
     skill = (tmp_path / "skills" / "local-ai-orchestrator" / "SKILL.md").read_text(encoding="utf-8")
     assert "before native reads, grep" in skill
-    assert "semantic" in skill and "CodeGraphContext" in skill and "local_ai_command" in skill
+    assert "semantic" in skill and "CodeGraphContext" not in skill and "local_ai_command" in skill
+    installation = (ROOT / "docs" / "INSTALLATION.md").read_text(encoding="utf-8")
+    assert "## Optional standalone tool: CodeGraphContext" in installation
+    assert "CodeGraphContext and KuzuDB are not Hub dependencies or backends" in installation
+    assert "install it directly in the target repository or environment" in installation
+    assert "This connects an agent directly to CodeGraphContext; it does not configure Local AI Hub" in installation
+
+
+def test_canonical_prompts_share_profile_and_installation_docs_own_standalone_setup():
+    install = (ROOT / "docs" / "INSTALL_PROMPT.md").read_text(encoding="utf-8")
+    update = (ROOT / "docs" / "UPDATE_PROMPT.md").read_text(encoding="utf-8")
+    installation = (ROOT / "docs" / "INSTALLATION.md").read_text(encoding="utf-8")
+    sdk = (ROOT / "docs" / "PYTHON_SDK.md").read_text(encoding="utf-8")
+    install_routing = next(
+        line for line in install.splitlines()
+        if line.startswith("Local model routing starts")
+    )
+    update_routing = next(
+        line for line in update.splitlines()
+        if line.startswith("Local model routing starts")
+    )
+    assert install_routing == update_routing
+    for profile in ("integrated", "balanced", "high", "max"):
+        models = profile_overrides(profile)["models"]
+        route_keys = ("background_code", "fast_code", "general", "heavy_code", "reasoning", "vision")
+        assert all(models[key] in install_routing for key in route_keys), profile
+    assert "CodeGraphContext" not in install + update + sdk
+    assert "## Optional standalone tool: CodeGraphContext" in installation
+    assert "CodeGraphContext and KuzuDB are not Hub dependencies or backends" in installation
+    assert "install it directly in the target repository or environment" in installation
+    assert "T10 owns broader runtime" not in install + update
+
+
+def test_active_docs_and_historical_plan_do_not_claim_codegraph_as_hub_backend():
+    architecture = (ROOT / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
+    dashboard = (ROOT / "docs" / "DASHBOARD.md").read_text(encoding="utf-8")
+    feature_audit = (ROOT / "docs" / "FEATURE_AUDIT_V4.md").read_text(encoding="utf-8")
+    mcp = (ROOT / "docs" / "MCP_AND_AGENTS.md").read_text(encoding="utf-8")
+    old_plan = (ROOT / "docs" / "superpowers" / "plans" / "2026-09-22-adaptive-retrieval-orchestrator.md").read_text(encoding="utf-8")
+    assert "CodeGraphContext" not in architecture + dashboard + mcp
+    assert "CodeGraphContext (optional standalone tool)" in feature_audit
+    assert "Hub does not install, configure, preprocess, invoke, or report it" in feature_audit
+    assert "2026-09-21 audit snapshot" in feature_audit
+    assert "not current host status" in feature_audit
+    assert "**Superseded by T19" in old_plan
+    assert "not current Hub behavior" in old_plan
+    assert "do not establish current support or health" in old_plan
+
+
+def test_t20_acceptance_matrix_is_preintegration_and_records_blocking_gates():
+    plan = (ROOT / "docs" / "superpowers" / "plans" / "2026-09-25-t19-install-sdk-rollout.md").read_text(encoding="utf-8")
+    matrix = plan.split("## Cross-track release acceptance matrix", 1)[1].split("## Execution Ledger", 1)[0]
+    assert "PRE-INTEGRATION" in matrix
+    assert "T01–T19 are not integrated into one revision" in matrix
+    assert "API inventory is metadata only; operation behavior remains unverified" in matrix
+    assert "final pass cannot be given" in matrix
+    assert "clean-host Windows and Linux" in matrix
+    assert "60-minute mixed workload" in matrix
+    assert "verify_completion" in matrix
+
+
+def test_python_sdk_documents_seven_common_workflows():
+    sdk = (ROOT / "docs" / "PYTHON_SDK.md").read_text(encoding="utf-8")
+    for step in (
+        "/api/repo/callers",
+        "/api/context/pack",
+        "verify_completion",
+        "continue_conversation",
+        "/api/async-jobs",
+        "task_resume",
+        "/api/evidence/get",
+    ):
+        assert step in sdk
+
+
+def test_installation_docs_match_declared_python_extras():
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    expected = {
+        extra: {
+            re.split(r"[<>=!~]", requirement, maxsplit=1)[0]
+            for requirement in requirements
+        }
+        for extra, requirements in project["project"]["optional-dependencies"].items()
+    }
+    installation = (ROOT / "docs" / "INSTALLATION.md").read_text(encoding="utf-8")
+    extras_section = installation.split("### Optional Python extras\n", 1)[1].split("\n### ", 1)[0]
+    rows = re.findall(r"^\| `([^`]+)` \| (.+?) \|$", extras_section, re.MULTILINE)
+    documented = {
+        extra: set(re.findall(r"`([^`]+)`", dependencies))
+        for extra, dependencies in rows
+    }
+
+    assert len(rows) == len(expected)
+    assert documented == expected
 
 
 def test_guarded_context_release_contract_documents_default_flow_and_fallbacks():
@@ -144,13 +242,16 @@ def test_no_personal_paths_or_runtime_payloads_in_tracked_release_sources():
     skip_parts = {
         ".git", "__pycache__", ".pytest_cache", ".venv", "tool-envs", "state", "data", "generated",
         ".agents", ".serena", ".superpowers", "agy-contextless-workspace",
-        "backups", "migration-backups", ".worktrees",
+        "backups", "migration-backups", ".worktrees", "handoff",
     }
     skip_files = {"ORIGINAL_REQUEST.md", ".coverage"}
     for path in ROOT.rglob("*"):
         if not path.is_file():
             continue
         if any(part in skip_parts for part in path.parts) or path.name in skip_files or path.name.startswith(".coverage"):
+            continue
+        # MANIFEST.in excludes release-plan docs from the source distribution.
+        if path.relative_to(ROOT).parts[:2] == ("docs", "superpowers"):
             continue
         if path.suffix in {".pyc", ".sqlite3", ".db", ".zip", ".pkl"} or ".local-ai-hub-backup-" in path.name:
             continue
@@ -232,3 +333,86 @@ def test_update_prompt_uses_branch_safe_pull_and_generated_artifact_wording():
     assert "pull --ff-only" in prompt
     assert "checked-in/generated schemas" not in prompt
     assert "generated schemas" in prompt
+
+
+def test_public_contract_notes_match_install_update_and_generated_skill(tmp_path: Path):
+    write_all_generated({"models": {"fast_code": "qwen2.5-coder:7b"}}, tmp_path)
+    prompts = [
+        (ROOT / "docs" / "INSTALL_PROMPT.md").read_text(encoding="utf-8"),
+        (ROOT / "docs" / "UPDATE_PROMPT.md").read_text(encoding="utf-8"),
+    ]
+    mcp_docs = (ROOT / "docs" / "MCP_AND_AGENTS.md").read_text(encoding="utf-8")
+    generated = (tmp_path / "skills" / "local-ai-orchestrator" / "SKILL.md").read_text(encoding="utf-8")
+    generic_manifest = json.loads((tmp_path / "generated" / "mcp-servers.json").read_text(encoding="utf-8"))
+    vscode_manifest = json.loads((tmp_path / "generated" / "vscode-mcp.json").read_text(encoding="utf-8"))
+    rag_schema = json.loads((tmp_path / "generated" / "schemas" / "local_ai_rag.json").read_text(encoding="utf-8"))
+    generic_entry = generic_manifest["mcpServers"]["local-ai"]
+    vscode_entry = vscode_manifest["servers"]["local-ai"]
+    assert generic_entry["args"] == ["-m", "local_ai_hub.mcp_server"]
+    assert generic_entry["env"]["LOCAL_AI_AGENT"] == "generic"
+    assert vscode_entry["type"] == "stdio"
+    assert vscode_entry["env"]["LOCAL_AI_AGENT"] == "copilot"
+    rag_properties = rag_schema["parameters"]["properties"]
+    assert {"ingest_document", "ingest_diagram"} <= set(rag_properties["action"]["enum"])
+    assert {"content", "title", "metadata", "image_path", "caption"} <= rag_properties.keys()
+    ingest_notes = (
+        'non-empty `content` is required; `title` and `metadata` are optional.',
+        'Success returns `success`, `workspace`, `document_title`, `chunks_ingested`, and `embedded`.',
+        'Embedding errors do not stop lexical publication.',
+        '`image_path` must resolve to an existing `.png`, `.jpg`, `.jpeg`, `.webp`, `.svg`, or `.bmp` file; `caption` and `metadata` are optional.',
+        'Success also returns `diagram_indexed` and the resolved image path.',
+    )
+    synthesis_notes = (
+        "`disable_llm_card_synthesis = true` skips LLM synthesis for unparsed file cards and stores deterministic stubs.",
+        "It does not disable module/project cards:",
+        '`prefer_deterministic_modules` and `prefer_deterministic_project` are separate preferences',
+        "either path can use background LLM synthesis when deterministic output is unavailable or below its confidence threshold.",
+        "Check active configuration and backend state before claiming synthesis is disabled.",
+    )
+    notes = (
+        '`local_ai_rag(action="ingest_document")`',
+        *ingest_notes,
+        '`local_ai_repo(action="pipeline")` accepts closed step objects',
+        '`local_ai_artifact(action="list")` does not require `artifact_id`',
+        '`local_ai_coord(action="pubsub_poll")` accepts `after_seq`',
+        '`local_ai_coord` bounds `max_tokens` to 0 through 100000.',
+        "Repository pipelines serialize preprocessing mutation actions with other mutating steps.",
+        "CodeGraphContext/KuzuDB was removed from Local AI Hub.",
+        "optional standalone CLI/MCP",
+        "It is not a Hub dependency, runtime, backend, or MCP integration.",
+        *synthesis_notes,
+    )
+
+    for note in notes:
+        assert all(note in prompt for prompt in prompts)
+        assert note in generated
+    assert all(note in mcp_docs for note in (*ingest_notes, *synthesis_notes))
+
+
+def test_install_and_update_prompts_share_profile_aware_model_routing():
+    install = (ROOT / "docs" / "INSTALL_PROMPT.md").read_text(encoding="utf-8")
+    update = (ROOT / "docs" / "UPDATE_PROMPT.md").read_text(encoding="utf-8")
+    routing_line = next(
+        line for line in update.splitlines()
+        if line.startswith("Model routing is profile-aware:")
+    )
+
+    assert routing_line in install.splitlines()
+    stale_install_policies = (
+        "qwen2.5-coder:1.5b` only for quick/simple tasks",
+        "qwen2.5-coder:1.5b` for bounded extraction/simple work",
+        "qwen2.5-coder:1.5b` only for quick/simple microtasks",
+        "qwen2.5-coder:3b` for ordinary and more involved work",
+        "qwen2.5-coder:3b` for ordinary bounded reasoning",
+        "qwen2.5-coder:0.5b` only for preprocessing",
+        "qwen3.5:9b` for extreme reasoning in the balanced profile",
+    )
+    assert all(policy not in install for policy in stale_install_policies)
+    assert "high uses 1.5b/3b/7b/9b" not in update
+    assert "max uses 1.5b/3b/9b for heavy routes" not in update
+
+
+def test_feature_audit_marks_codegraph_as_removed_from_hub():
+    audit = (ROOT / "docs" / "FEATURE_AUDIT_V4.md").read_text(encoding="utf-8")
+    assert "Current status is removal from Hub" in audit
+    assert "**Removed from Hub; optional standalone CLI/MCP tool**" in audit

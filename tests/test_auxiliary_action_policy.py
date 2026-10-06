@@ -8,9 +8,12 @@ import pytest
 from local_ai_hub.agent_policy import (
     ActionRequest,
     CapabilityGrant,
+    PolicyDecision,
     PolicyEngine,
     RiskClass,
 )
+from local_ai_hub.commands import CommandBroker
+from local_ai_hub.services import LocalAIServices
 
 
 @pytest.fixture
@@ -25,6 +28,7 @@ def policy() -> PolicyEngine:
         ("repair_loop", "workspace_write"),
         ("format", "workspace_write"),
         ("spawn_daemon", "process_lifecycle"),
+        ("stop_daemon", "process_lifecycle"),
         ("http_probe", "network_access"),
         ("stash_save", "git_mutation"),
         ("diff_hunk_stage", "git_mutation"),
@@ -81,6 +85,175 @@ def test_unknown_auxiliary_action_fails_closed_even_when_marked_read(
     assert decision.allowed is False
     assert decision.owner == "agent_policy"
     assert decision.side_effect_class == "unknown"
+
+
+def test_command_spawn_daemon_forwards_task_id_separately_from_name(tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+
+    class Broker:
+        def authorize_auxiliary_action(
+            self, action: str, *, endpoint: str = "", task_id: str = ""
+        ) -> dict[str, object]:
+            captured["authorized_action"] = action
+            captured["policy_task_id"] = task_id
+            return {"allowed": True}
+
+        def spawn_daemon(
+            self,
+            command: str,
+            cwd: str,
+            *,
+            name: str = "",
+            env: dict[str, str] | None = None,
+            task_id: str = "",
+        ) -> dict[str, object]:
+            captured.update({"command": command, "cwd": cwd, "name": name, "env": env, "task_id": task_id})
+            return {"success": True}
+
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.commands = Broker()
+    services.agent_state = None
+
+    result = services.command(
+        {
+            "action": "spawn_daemon",
+            "command": "python -c pass",
+            "cwd": str(tmp_path),
+            "name": "named-daemon",
+            "task_id": "task-owned",
+        },
+        "agent",
+    )
+
+    assert result["success"] is True
+    assert captured["task_id"] == "task-owned"
+    assert captured["name"] == "named-daemon"
+    assert captured["authorized_action"] == "spawn_daemon"
+    assert captured["policy_task_id"] == "task-owned"
+
+
+def test_auxiliary_authorization_resolves_registered_task_before_policy(tmp_path: Path) -> None:
+    registered_task = type("RegisteredTask", (), {"task_id": "task-owned"})()
+    captured: dict[str, object] = {}
+
+    class TaskStore:
+        def get(self, task_id: str) -> object | None:
+            captured["task_id"] = task_id
+            return registered_task if task_id == "task-owned" else None
+
+    class Policy:
+        def authorize(
+            self, request: ActionRequest, task: object | None, grant: CapabilityGrant | None = None
+        ) -> PolicyDecision:
+            captured["task"] = task
+            captured["request_task_id"] = request.details.get("task_id")
+            return PolicyDecision(allowed=True, side_effect_class="process_lifecycle")
+
+    broker = CommandBroker(
+        {"server": {"state_dir": str(tmp_path)}}, artifacts=None, repo_state=None
+    )
+    broker.set_task_store(TaskStore())
+    broker.set_policy_engine(Policy())
+
+    result = broker.authorize_auxiliary_action("spawn_daemon", task_id="task-owned")
+
+    assert result["allowed"] is True
+    assert captured["task_id"] == "task-owned"
+    assert captured["task"] is registered_task
+    assert captured["request_task_id"] == "task-owned"
+
+
+def test_auxiliary_authorization_rejects_unregistered_task(tmp_path: Path) -> None:
+    class TaskStore:
+        def get(self, task_id: str) -> None:
+            return None
+
+    class Policy:
+        def authorize(self, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError("policy must not authorize an unregistered task")
+
+    broker = CommandBroker(
+        {"server": {"state_dir": str(tmp_path)}}, artifacts=None, repo_state=None
+    )
+    broker.set_task_store(TaskStore())
+    broker.set_policy_engine(Policy())
+
+    result = broker.authorize_auxiliary_action("spawn_daemon", task_id="missing")
+
+    assert result["allowed"] is False
+    assert result["terminal"] is True
+    assert result["side_effect_class"] == "process_lifecycle"
+    assert result["reason"] == "auxiliary action task is not registered"
+
+
+def test_services_command_authorizes_run_before_broker_dispatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker = CommandBroker(
+        {
+            "server": {"state_dir": str(tmp_path / "state")},
+            "commands": {"enabled": True},
+            "agent_policy": {
+                "enabled": True,
+                "allow_developer_authorized_mutations": False,
+            },
+        },
+        artifacts=None,
+        repo_state=None,
+    )
+    broker.set_policy_engine(PolicyEngine())
+    dispatched: list[str] = []
+    monkeypatch.setattr(
+        broker,
+        "run",
+        lambda command, *_args, **_kwargs: dispatched.append(command) or {"success": True},
+    )
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.commands = broker
+    services.agent_state = None
+
+    result = services.command(
+        {
+            "action": "run",
+            "command": 'python -c "print(1)"',
+            "cwd": str(tmp_path),
+            "task_id": "task-owned",
+            "force": True,
+        },
+        "agent",
+    )
+
+    assert result["success"] is False
+    assert result["policy_blocked"] is True
+    assert result["policy"]["allowed"] is False
+    assert result["policy"]["owner"] == "agent_policy"
+    assert dispatched == []
+
+
+def test_services_command_rejects_unknown_action_before_run_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker = CommandBroker({"server": {"state_dir": str(tmp_path / "state")}}, artifacts=None, repo_state=None)
+    broker.set_policy_engine(PolicyEngine())
+    dispatched: list[str] = []
+    monkeypatch.setattr(
+        broker,
+        "run",
+        lambda command, *_args, **_kwargs: dispatched.append(command) or {"success": True},
+    )
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.commands = broker
+    services.agent_state = None
+
+    result = services.command(
+        {"action": "future_action", "command": "must-not-run", "cwd": str(tmp_path)},
+        "agent",
+    )
+
+    assert result["success"] is False
+    assert result["policy_blocked"] is True
+    assert result["policy"]["side_effect_class"] == "unknown"
+    assert dispatched == []
 
 
 def test_disabled_auxiliary_policy_denies_known_action(policy: PolicyEngine) -> None:

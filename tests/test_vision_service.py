@@ -185,6 +185,7 @@ def test_prepare_vision_inputs_normalizes_data_url_and_reads_dimensions() -> Non
     assert prepared.images == [encoded]
     assert prepared.image_size == (640, 360)
 
+
 def _png(width: int = 640, height: int = 360) -> bytes:
     def chunk(kind: bytes, data: bytes) -> bytes:
         body = kind + data
@@ -194,6 +195,20 @@ def _png(width: int = 640, height: int = 360) -> bytes:
     row = b"\0" + b"\0" * (width * 3)
     pixels = zlib.compress(row * height)
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", pixels) + chunk(b"IEND", b"")
+
+
+def test_prepare_vision_inputs_normalizes_data_url_without_runtime() -> None:
+    data_url = "data:image/png;base64,aW1hZ2U="
+    prepared = prepare_vision_inputs(
+        args={"image": data_url},
+        image_path=data_url,
+        prompt="review this page",
+        tenant="tenant-a",
+        artifacts=MagicMock(),
+    )
+    assert isinstance(prepared, VisionInputs)
+    assert prepared.images == ["aW1hZ2U="]
+    assert prepared.image_size is None
 
 
 def _services(tmp_path: Path, *, models: dict[str, str] | None = None):
@@ -640,6 +655,73 @@ def test_vision_bounds_requested_output_tokens(tmp_path: Path) -> None:
     services.vision({"image": str(image), "max_tokens": 999999}, "t")
 
     assert runtime.request.call_args.args[1]["options"]["num_predict"] == 4096
+
+
+def test_vision_image_only_response_matches_golden_contract(tmp_path: Path) -> None:
+    services, runtime, image = _services(tmp_path, models={"vision": "qwen3-vl:4b"})
+    raw_output = json.dumps(
+        {
+            "summary": "Ready for review.",
+            "findings": [],
+            "unknowns": ["loaded-state contrast"],
+            "recommended_checks": ["inspect after load"],
+        }
+    )
+    runtime.request.return_value = {"response": raw_output}
+
+    result = services.vision({"image": str(image), "prompt": "Review UI"}, "tenant-a")
+
+    payload = runtime.request.call_args.args[1]
+    assert runtime.request.call_args.args[0] == "/api/generate"
+    assert payload["model"] == "qwen3-vl:4b"
+    assert payload["images"] == [base64.b64encode(_png()).decode("ascii")]
+    assert payload["stream"] is False
+    assert payload["format"] == "json"
+    assert payload["prompt"] == result["prompt"]
+    assert payload["prompt"].startswith("Review UI")
+    assert "Image 0 dimensions are 640 x 360 pixels" in payload["prompt"]
+    assert result == {
+        "success": True,
+        "model": "qwen3-vl:4b",
+        "response": raw_output,
+        "review": {
+            "summary": "Ready for review.",
+            "findings": (),
+            "unknowns": ("loaded-state contrast",),
+            "recommended_checks": ("inspect after load",),
+            "terminal": False,
+            "error": {},
+            "observation_sources": None,
+        },
+        "prompt": payload["prompt"],
+        "image_artifact_id": "",
+        "bundle_artifact_id": "",
+        "raw_output_artifact_id": "art_vision_raw",
+    }
+
+
+def test_vision_non_multimodal_model_matches_golden_error_contract(tmp_path: Path) -> None:
+    services, runtime, image = _services(tmp_path, models={"vision": "text-only:latest"})
+
+    def preflight(endpoint, payload=None, timeout=None):
+        if endpoint == "/api/show":
+            return {"capabilities": ["completion"]}
+        raise AssertionError("generation must not run for a text-only model")
+
+    runtime.request.side_effect = preflight
+
+    result = services.vision({"image": str(image)}, "tenant-a")
+
+    assert result == {
+        "success": False,
+        "model": "text-only:latest",
+        "unsupported": True,
+        "degraded": True,
+        "terminal": True,
+        "retryable": False,
+        "error": "Vision model 'text-only:latest' does not advertise image or multimodal capability; choose a configured vision-capable local model.",
+        "error_code": "vision_model_unsupported",
+    }
 
 
 def test_vision_returns_structured_findings_and_raw_artifact(tmp_path: Path) -> None:

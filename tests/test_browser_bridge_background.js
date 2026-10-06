@@ -48,6 +48,8 @@ const context = {
       const commitCount = posts.filter((post) => post.path.endsWith("/commit")).length;
       value = changeKind === "artifact-failure"
         ? {success: false, retryable: false, error_code: "artifact_store_error"}
+        : changeKind === "commit-request-id-mismatch"
+          ? {success: true, request_id: `${body.request_id}-other`, bundle_artifact_id: "bundle-1"}
         : changeKind === "commit-invalid-shape"
           ? "not-an-object"
           : changeKind === "commit-missing-artifact-id"
@@ -144,7 +146,7 @@ vm.runInNewContext(backgroundSource, context, {filename: sourcePath});
     assert.equal(posts.filter((post) => post.path.endsWith("/commit")).length, 2);
     assert.equal(posts.filter((post) => post.path.endsWith("/abandon")).length, 0);
     process.stdout.write(JSON.stringify({success: true, case: "ambiguous-commit-left-uncancelled"}));
-  } else if (["commit-invalid-shape", "commit-missing-artifact-id", "commit-missing-request-id", "commit-mismatched-request-id", "commit-mismatched-error-request-id"].includes(changeKind)) {
+  } else if (["commit-request-id-mismatch", "commit-invalid-shape", "commit-missing-artifact-id", "commit-missing-request-id", "commit-mismatched-request-id", "commit-mismatched-error-request-id"].includes(changeKind)) {
     assert.equal(result.success, false);
     assert.equal(result.error_code, "commit_outcome_unknown");
     assert.equal(result.request_id, posts.find((post) => post.path.endsWith("/commit")).body.request_id);

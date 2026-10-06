@@ -21,6 +21,8 @@ def isolated_profile_catalog(monkeypatch):
     monkeypatch.setattr(local_ai_mcp, 'PROFILE_CATALOG', local_ai_mcp.OllamaSubagentCatalog({}))
     monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
     monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
+    # Keep async accounting off: CLIENT.post spies in this module capture routing endpoints.
+    monkeypatch.setattr(local_ai_mcp._ACCOUNTING_REPORTER, "record", lambda _event: None)
 
 
 def test_vision_feature_toggle_removes_vision_action_and_hint() -> None:
@@ -37,11 +39,13 @@ def test_vision_feature_toggle_removes_vision_action_and_hint() -> None:
 
 def test_public_action_parameters_are_explicit_literals() -> None:
     expected = {
-        "local_ai_task": {"delegate", "explore", "reason", "continue", "review", "second_opinion", "compress", "route", "batch", "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report", "submit", "status", "wait", "result", "cancel", "candidate_create", "candidate_promote", "speculative_draft", "vision", "transcribe", "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold"},
+        "local_ai_task": {"delegate", "explore", "reason", "continue", "review", "second_opinion", "compress", "route", "batch", "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report", "submit", "status", "wait", "result", "cancel", "candidate_create", "candidate_promote", "speculative_draft", "vision", "transcribe", "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold", "gen", "rev", "del"},
         "local_ai_rag": {"index", "search", "list", "docset_index", "docset_search", "ingest_document", "ingest_diagram"},
-        "local_ai_coord": {"claim", "renew", "release", "leases", "memo_put", "memo_get", "memo_search", "memo_delete", "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_complete", "task_fail", "task_heartbeat", "memory_record", "memory_get", "memory_find", "memory_promote", "memory_reap", "context_compile", "verify_receipt", "verify_completion", "negative_knowledge_record", "negative_knowledge_find", "incident_decision", "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_delete", "blackboard_merge", "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel", "worktree_lease", "worktree_release", "pubsub_publish", "pubsub_poll", "simulate_merge", "relation_record", "relation_find", "relation_traverse", "curate_dataset", "task_sync", "task_zombie_reap", "task_cleanup_worktree"},
-        "local_ai_command": {"run", "cancel", "classify", "discover", "stats", "repair_loop", "auto_fix", "run_affected", "format", "lint_fix", "spawn_daemon", "daemon_status", "stop_daemon", "http_probe", "stash_save", "stash_restore", "record_mock", "replay_mock", "diff_hunk_stage", "flaky_detect", "webhook_replay", "mock_server", "mock_server_start", "mock_server_stop", "mock_server_status", "patch_and_verify", "preflight", "speculative_lint"},
+        "local_ai_coord": {"claim", "renew", "release", "leases", "memo_put", "memo_get", "memo_search", "memo_delete", "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_complete", "task_fail", "task_heartbeat", "memory_record", "memory_get", "memory_find", "memory_promote", "memory_reap", "context_compile", "verify_receipt", "verify_completion", "negative_knowledge_record", "negative_knowledge_find", "incident_decision", "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_delete", "blackboard_merge", "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel", "worktree_lease", "worktree_release", "pubsub_publish", "pubsub_poll", "simulate_merge", "relation_record", "relation_find", "relation_traverse", "curate_dataset", "task_sync", "task_zombie_reap", "task_cleanup_worktree", "ctx", "compile_ctx", "neg_rec", "neg_find", "mem_put", "mem_rec", "mem_get", "mem_find", "mem_search", "task_new", "task_chk", "task_done"},
+        "local_ai_command": {"run", "cancel", "classify", "discover", "stats", "repair_loop", "auto_fix", "run_affected", "format", "lint_fix", "spawn_daemon", "daemon_status", "stop_daemon", "http_probe", "stash_save", "stash_restore", "record_mock", "replay_mock", "diff_hunk_stage", "flaky_detect", "webhook_replay", "mock_server", "mock_server_start", "mock_server_stop", "mock_server_status", "patch_and_verify", "preflight", "speculative_lint", "patch", "fix", "repair", "fmt"},
     }
+    if not local_ai_mcp.FEATURES.speculative_lint:
+        expected["local_ai_command"].discard("speculative_lint")
     for name, values in expected.items():
         annotation = get_type_hints(getattr(local_ai_mcp, name))["action"]
         assert get_origin(annotation) is Literal, name
@@ -155,6 +159,28 @@ def test_coord_forwards_explicit_receipt_criterion_and_blackboard_identity(monke
     assert calls[1][1]["section"] == "review"
 
 
+def test_coord_memo_put_forwards_expected_version(monkeypatch, tmp_path):
+    calls = []
+
+    class _Client:
+        def post(self, endpoint, payload, **kwargs):
+            calls.append((endpoint, payload))
+            return {"success": True}
+
+    monkeypatch.setattr(local_ai_mcp, "CLIENT", _Client())
+    result = local_ai_mcp.local_ai_coord(
+        action="memo_put",
+        root=str(tmp_path),
+        key="decision",
+        value="accepted",
+        expected_version=3,
+    )
+
+    assert result["success"] is True
+    assert calls[0][0] == "/api/memory/put"
+    assert calls[0][1]["expected_version"] == 3
+
+
 def test_empty_semantic_success_is_structured_retryable_failure():
     result = local_ai_mcp._quality_check_semantic_result(
         {"success": True, "model": "qwen2.5-coder:3b"}, task="review", context=""
@@ -186,6 +212,13 @@ def test_dynamic_descriptions_make_first_choice_routing_explicit() -> None:
     assert "terminal=true and retryable=false" in descriptions["repo"]
     assert "terminal=true and retryable=false" in descriptions["command"]
     assert "Mutations never cache or single-flight" in descriptions["command"]
+
+
+def test_repo_surface_does_not_advertise_or_route_codegraph() -> None:
+    assert "CodeGraphContext" not in local_ai_mcp._desc_repo()
+    from local_ai_hub.operation_contracts import operation_actions
+
+    assert "graph" not in operation_actions("local_ai_repo")
 
 
 def test_mcp_descriptions_support_on_demand_semantic_delegation() -> None:
@@ -259,6 +292,33 @@ def test_successful_repo_evidence_exposes_typed_semantic_handoff(monkeypatch) ->
     result = local_ai_mcp.local_ai_repo(action="search", query="routing")
 
     assert result["routing"]["semantic_handoff"] == semantic_handoff_hint("local_ai_repo", "search", True)
+
+
+def test_async_task_submit_reuses_explicit_request_id(monkeypatch) -> None:
+    assert "request_id" in inspect.signature(local_ai_mcp.local_ai_task).parameters
+    schema = local_ai_mcp.mcp._tool_manager._tools["local_ai_task"].parameters["properties"]
+    assert "request_id" in schema
+    calls: list[tuple[str, dict, dict]] = []
+
+    def post(path: str, payload: dict, **kwargs) -> dict:
+        calls.append((path, payload, kwargs))
+        return {"success": True, "status": "submitted", "request_id": kwargs.get("request_id")}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", post)
+
+    first = local_ai_mcp.local_ai_task(
+        action="submit", task="bounded recovery task", request_id="stable-job-request"
+    )
+    retry = local_ai_mcp.local_ai_task(
+        action="submit", task="bounded recovery task", request_id="stable-job-request"
+    )
+
+    assert first["success"] is True
+    assert retry["success"] is True
+    assert [path for path, _, _ in calls] == ["/api/async-jobs", "/api/async-jobs"]
+    assert [options.get("request_id") for _, _, options in calls] == [
+        "stable-job-request", "stable-job-request"
+    ]
 
 
 def test_status_disabled_repo_evidence_omits_status_bypass_metadata(monkeypatch) -> None:
@@ -460,6 +520,28 @@ def test_local_ai_repo_enriches_search_when_source_requested(monkeypatch) -> Non
     assert captured["path"] == "/api/search"
     assert captured["query"] == "target symbol"
     assert captured["enrich"] is True
+
+
+@pytest.mark.parametrize("include_code", [False, True])
+def test_local_ai_repo_investigate_preserves_include_code(monkeypatch, include_code: bool) -> None:
+    monkeypatch.setattr(local_ai_mcp, "FEATURES", FeatureSet({"features": {"repo": True}}))
+    captured = {}
+
+    def fake_post(endpoint, payload, **kwargs):
+        captured.update({"endpoint": endpoint, "payload": dict(payload)})
+        return {"success": True}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
+    result = local_ai_mcp.local_ai_repo(
+        action="investigate",
+        root=str(ROOT),
+        query="target symbol",
+        include_code=include_code,
+    )
+
+    assert result["success"] is True
+    assert captured["endpoint"] == "/api/repo/investigate"
+    assert captured["payload"]["include_code"] is include_code
 
 
 def test_invalid_task_action_excludes_orchestration() -> None:
@@ -690,3 +772,152 @@ def test_named_profile_rejects_relative_repository_root() -> None:
     assert result["success"] is False
     assert result["unsupported"] is True
     assert "absolute" in result["error"]
+
+@pytest.mark.parametrize(
+    ("language", "expected_language"),
+    [("cs", "cs"), (" AUTO ", None)],
+)
+def test_local_ai_task_transcribe_forwards_only_explicit_language_hint(
+    monkeypatch, language: str, expected_language: str | None
+) -> None:
+    captured = {}
+
+    def fake_post(path, payload, **kwargs):
+        captured.update({"path": path, "payload": payload, "kwargs": kwargs})
+        return {"success": True, "text": "recognized"}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
+    result = local_ai_mcp.local_ai_task(
+        action="transcribe", task="transcribe this recording",
+        candidate="recording.wav", model="base", language=language,
+    )
+    assert result["success"] is True
+    assert captured["path"] == "/api/task/transcribe"
+    assert captured["payload"]["audio_path"] == "recording.wav"
+    assert captured["payload"]["model"] == "base"
+    if expected_language is None:
+        assert "language" not in captured["payload"]
+    else:
+        assert captured["payload"]["language"] == expected_language
+
+
+def test_async_job_controls_bypass_model_execution_gate(monkeypatch):
+    from types import SimpleNamespace
+
+    captured = {}
+
+    class Client:
+        max_request_timeout = 90
+
+        def post(self, path, payload, timeout):
+            captured.update(path=path, payload=payload, timeout=timeout)
+            return {"success": True, "job_id": payload["job_id"], "state": "completed"}
+
+    monkeypatch.setattr(local_ai_mcp, "CLIENT", Client())
+    monkeypatch.setattr(
+        local_ai_mcp, "FEATURES", SimpleNamespace(tasks=False, status=True, async_jobs=True, has_any_model=lambda: False)
+    )
+    monkeypatch.setattr(local_ai_mcp, "_compact", lambda value, _kind: value)
+
+    result = local_ai_mcp.local_ai_task(action="status", job_id="job-123")
+
+    assert result["success"] is True
+    assert captured["path"] == "/api/async-jobs"
+    assert captured["payload"] == {"action": "status", "job_id": "job-123"}
+
+
+@pytest.mark.parametrize("action", ["submit", "status", "wait", "result", "cancel"])
+def test_async_job_actions_are_rejected_when_async_jobs_are_disabled(monkeypatch, action):
+    from types import SimpleNamespace
+
+    calls = []
+
+    class Client:
+        max_request_timeout = 90
+
+        def post(self, path, payload, timeout):
+            calls.append((path, payload, timeout))
+            return {"success": True}
+
+    monkeypatch.setattr(local_ai_mcp, "CLIENT", Client())
+    monkeypatch.setattr(
+        local_ai_mcp,
+        "FEATURES",
+        SimpleNamespace(tasks=True, async_jobs=False, has_any_model=lambda: True),
+    )
+
+    result = local_ai_mcp.local_ai_task(
+        action=action, job_action="review", job_id="job-123", task="review this",
+    )
+
+    assert result == {
+        "success": False,
+        "unsupported": True,
+        "error": "Async job lifecycle is disabled (async_jobs.enabled=false)",
+    }
+    assert calls == []
+
+
+def test_async_job_wait_transport_deadline_covers_capped_wait(monkeypatch):
+    from types import SimpleNamespace
+
+    captured = {}
+
+    class Client:
+        max_request_timeout = 90
+
+        def post(self, path, payload, timeout):
+            captured.update(path=path, payload=payload, timeout=timeout)
+            return {"success": True, "job_id": payload["job_id"], "state": "running"}
+
+    monkeypatch.setattr(local_ai_mcp, "CLIENT", Client())
+    monkeypatch.setattr(local_ai_mcp, "FEATURES", SimpleNamespace(tasks=False, status=True, async_jobs=True, has_any_model=lambda: False))
+    monkeypatch.setattr(local_ai_mcp, "CFG", {"async_jobs": {"wait_max_seconds": 300}})
+    monkeypatch.setattr(local_ai_mcp, "_timeout", lambda _kind: 20)
+    monkeypatch.setattr(local_ai_mcp, "_compact", lambda value, _kind: value)
+
+    result = local_ai_mcp.local_ai_task(action="wait", job_id="job-123", timeout_seconds=420)
+
+    assert result["success"] is True
+    assert captured["payload"] == {
+        "action": "wait", "job_id": "job-123", "timeout_seconds": 70,
+    }
+    assert captured["timeout"] == 90
+
+
+def test_async_job_submit_forwards_body_request_id(monkeypatch):
+    captured = {}
+
+    def fake_post(path, payload, timeout):
+        captured.update(path=path, payload=payload, timeout=timeout)
+        return {"success": True, "job_id": "job-123"}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
+    monkeypatch.setattr(local_ai_mcp, "_load_task_context", lambda **_kwargs: ("", {"success": True}))
+    monkeypatch.setattr(local_ai_mcp, "_compact", lambda value, _kind: value)
+    result = local_ai_mcp.local_ai_task(
+        action="submit", job_action="review", request_id="stable-submit-1", task="review this",
+    )
+    assert result["success"] is True
+    assert captured["path"] == "/api/async-jobs"
+    assert captured["payload"]["request_id"] == "stable-submit-1"
+    assert captured["payload"]["job_action"] == "review"
+
+
+def test_async_job_submit_rejects_conversation_before_http(monkeypatch):
+    calls = []
+
+    def fake_post(*args, **kwargs):
+        calls.append((args, kwargs))
+        return {"success": True, "job_id": "unexpected"}
+
+    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
+    monkeypatch.setattr(local_ai_mcp, "_load_task_context", lambda **_kwargs: ("", {"success": True}))
+    monkeypatch.setattr(local_ai_mcp, "_compact", lambda value, _kind: value)
+    result = local_ai_mcp.local_ai_task(
+        action="submit", job_action="delegate", conversation=True, task="start conversation",
+    )
+    assert result["success"] is False
+    assert result["terminal"] is True
+    assert result["retryable"] is False
+    assert calls == []
