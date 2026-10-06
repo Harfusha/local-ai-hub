@@ -44,6 +44,13 @@ else:  # Direct script execution puts tools/, not the repository root, on sys.pa
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+_REPO_SOURCE = (_REPO_ROOT / "src").resolve()
+sys.path[:] = [
+    entry
+    for entry in sys.path
+    if Path(entry or os.getcwd()).resolve() != _REPO_SOURCE
+]
+sys.path.insert(0, str(_REPO_SOURCE))
 _FULL_FILE_SIZES = {100, 10_000, 100_000}
 _FULL_RAG_SIZES = {10_000, 100_000}
 _MAX_CONCURRENCY = 256
@@ -2533,21 +2540,17 @@ def _revision() -> str | None:
 
 
 def _implementation_fingerprint() -> str:
-    tracked_runtime = (
-        "src/local_ai_hub/app.py",
-        "src/local_ai_hub/http_server.py",
-        "src/local_ai_hub/services.py",
-        "src/local_ai_hub/code_index.py",
-        "src/local_ai_hub/rag.py",
-        "src/local_ai_hub/async_jobs.py",
-        "src/local_ai_hub/repo_tools.py",
-        "src/local_ai_hub/benchmark.py",
-        "tools/benchmark_surfaces.py",
-    )
+    package_root = _REPO_ROOT / "src" / "local_ai_hub"
+    tracked_runtime = {
+        path.relative_to(_REPO_ROOT).as_posix()
+        for path in package_root.rglob("*")
+        if path.is_file() and "__pycache__" not in path.parts
+    } if package_root.is_dir() else set()
+    tracked_runtime.update({"pyproject.toml", "tools/benchmark_surfaces.py"})
     digest = hashlib.sha256()
-    for relative in tracked_runtime:
+    for relative in sorted(tracked_runtime):
         source_path = _REPO_ROOT / relative
-        digest.update(Path(relative).name.encode("utf-8"))
+        digest.update(relative.encode("utf-8"))
         digest.update(b"\0")
         try:
             digest.update(hashlib.sha256(source_path.read_bytes()).digest())
@@ -3765,6 +3768,8 @@ def run_benchmark(
             + "enabled = false\n\n"
             + "[observability]\n"
             + "enabled = false\n\n"
+            + "[resilience]\nwatchdog_enabled = false\n\n"
+            + "[debug_traces]\nenabled = false\n\n"
             + _benchmark_inference_config(inference_runner),
             encoding="utf-8",
         )
@@ -5409,7 +5414,12 @@ def run_benchmark(
             "concurrency": list(concurrency), "full": full, "inference": include_inference,
             "t12_matrix": include_t12_matrix,
             "inference_model": inference_model,
-            "hub_app": {"prewarm_enabled": False, "observability_enabled": False},
+            "hub_app": {
+                "prewarm_enabled": False,
+                "observability_enabled": False,
+                "watchdog_enabled": False,
+                "debug_traces_enabled": False,
+            },
             "context_mode": "fast",
             "code_index_cache_policy": "distinct cold keys and preseeded fixed warm key",
         }
@@ -5461,6 +5471,8 @@ def run_benchmark(
             "concurrency": list(concurrency),
             "prewarm_enabled": False,
             "observability_enabled": False,
+            "watchdog_enabled": False,
+            "debug_traces_enabled": False,
             "http_response_body_bytes_scope": "HTTP response body bytes only; excludes HTTP headers, transfer framing, and transport bytes. Internal operations have no HTTP body.",
             "whitespace_token_estimate": "Whitespace split count from HTTP response bodies; not model tokenization.",
             "matrix_aggregation": "not_performed_single_case_record",

@@ -41,6 +41,7 @@ from .agent_incidents import IncidentFingerprint, ToolOutcome
 from .agent_verification import VerificationReceipt
 from .task_context import build_context_request, compose_task_context
 from .agent_learning import ImprovementCandidate, SLOObservation
+from .operation_contracts import normalize_transport_error
 from .json_utils import dumps as json_dumps
 
 _DB_QUERY_MAX_RESPONSE_BYTES = 256 * 1024
@@ -2118,13 +2119,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send(self, status: int, data: Any, *, headers: Mapping[str, str] | None = None) -> None:
         self._audit_admin_result(status)
-        if status >= 400 and isinstance(data, dict):
-            data = dict(data)
-            data.setdefault("success", False)
-            data.setdefault("status_code", status)
-            retryable = status in {408, 425, 429, 500, 502, 503, 504}
-            data.setdefault("retryable", retryable)
-            data.setdefault("terminal", not retryable)
+        if status >= 400:
+            data = normalize_transport_error(status, data)
         request_id = getattr(self, "_journal_request_id", None)
         if request_id and isinstance(data, dict):
             data = dict(data)

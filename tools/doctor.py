@@ -15,7 +15,14 @@ sys.path.insert(0, str(root / "src"))
 from local_ai_hub import __version__
 from local_ai_hub.client import HubClient
 from local_ai_hub.config import load_config
-from local_ai_hub.doctor_support import installed_models_from_status, probe_hub_status
+from local_ai_hub.doctor_support import (
+    installed_models_from_status,
+    managed_serena_executable,
+    optional_component_lines,
+    optional_component_status,
+    probe_hub_status,
+    serena_backend_status,
+)
 from local_ai_hub.http_server import validate_network_security
 from local_ai_hub.llama_cpp_runtime import llama_cpp_backend_selection
 
@@ -46,7 +53,6 @@ def runtime_module_available(module: str) -> bool:
         return result.returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
-
 
 
 def command_version(name: str) -> str | None:
@@ -108,6 +114,8 @@ vision_status_known = bool(installed) if inference_backend == "ollama" else bool
 
 mcp_file = root / "src" / "local_ai_hub" / "mcp_server.py"
 state_dir = Path(cfg.get("server", {}).get("state_dir", "~/.local-ai-hub/state")).expanduser()
+install_dir = Path(cfg.get("setup", {}).get("install_dir", "~/.local-ai-hub")).expanduser()
+serena_executable = managed_serena_executable(install_dir, shutil.which)
 
 def _supported_code_intelligence(status):
     backends = status.get("code_intelligence") if isinstance(status, dict) else None
@@ -431,6 +439,8 @@ report = {
         "llama_cpp": ollama_profile.get("llama_cpp", {}) if isinstance(ollama_profile, dict) else {},
         "background_gpu": background_gpu,
         "sentence_transformers": sentence_transformers_installed,
+        "serena_executable": serena_executable,
+        "code_intelligence_status": hub_probe["code_intelligence_status"],
         "openvino": {"requested": openvino_requested, "installed": openvino_installed, "status": status.get("accelerators") if isinstance(status, dict) else None},
         "optional_components": _optional_component_status(
             tree_sitter_installed, whisper_command, openvino_requested_components, openvino_installed,
@@ -527,6 +537,37 @@ def format_doctor_report(rep: dict[str, Any]) -> str:
     lines.append(f"  - SentenceTransf:     {st_status}")
     lines.append("")
 
+    lines.append("Code Intelligence:")
+    serena_executable = rt.get("serena_executable")
+    serena_executable_status = f"Installed at {serena_executable}" if serena_executable else "Not installed"
+    lines.append(f"  - Serena executable:  {serena_executable_status}")
+    code_intelligence = rt.get("code_intelligence") if isinstance(rt, dict) else None
+    if isinstance(code_intelligence, dict):
+        for backend in ("serena",):
+            details = code_intelligence.get(backend)
+            if not isinstance(details, dict):
+                lines.append(f"  [??] {backend:<17} Status unavailable")
+                continue
+            enabled = bool(details.get("enabled"))
+            state = str(details.get("state") or ("available" if details.get("installed") else "missing"))
+            symbol = "[--]" if not enabled else "[..]" if state == "repairing" else "[OK]" if state in {"healthy", "available", "recovering", "repair_pending_probe"} else "[ERR]"
+            line = f"  {symbol} {backend:<17} {state}; repair attempts: {details.get('repair_attempts', 0)}"
+            probe = str(details.get("last_successful_probe") or "")
+            if probe:
+                line += f"; last probe: {probe}"
+            reason = str(details.get("repair_error") or details.get("repair_blocked") or details.get("last_failure") or details.get("unavailable_reason") or "")
+            if reason:
+                line += f"; {reason[:140]}"
+            lines.append(line)
+    else:
+        diagnostic_status = rt.get("code_intelligence_status", {})
+        reason = diagnostic_status.get("reason") if isinstance(diagnostic_status, dict) else None
+        reason_text = {
+            "hub_offline": "Hub is offline",
+            "status_unavailable": "Hub status endpoint is unavailable",
+            "diagnostics_not_reported": "Hub did not report backend diagnostics",
+        }.get(reason, "Hub did not report backend diagnostics")
+        lines.append(f"  [??] Status unavailable ({reason_text})")
     lines.append("Optional Dependencies & Integrations:")
     lines.extend(_optional_component_lines(rt.get("optional_components", {})))
     lines.append("")

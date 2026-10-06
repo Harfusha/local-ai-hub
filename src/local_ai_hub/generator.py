@@ -295,6 +295,47 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
         routing_lines.append(f'{r_idx}. `local_ai_coord` — leases before overlapping edits; memos before repeating investigation.')
         r_idx += 1
     routing_section = "\n".join(routing_lines) if routing_lines else "*(No actions available: all tools disabled)*"
+    public_contract_lines: list[str] = []
+    if fs.rag:
+        public_contract_lines.append(
+            '- For `local_ai_rag(action="ingest_document")`, non-empty `content` is required; `title` and `metadata` are optional. '
+            'Success returns `success`, `workspace`, `document_title`, `chunks_ingested`, and `embedded`. '
+            'Embedding errors do not stop lexical publication. For `ingest_diagram`, `image_path` must resolve to an existing '
+            '`.png`, `.jpg`, `.jpeg`, `.webp`, `.svg`, or `.bmp` file; `caption` and `metadata` are optional. '
+            'Success also returns `diagram_indexed` and the resolved image path.'
+        )
+    contract_notes: list[str] = []
+    if fs.status:
+        contract_notes.append(
+            '`local_ai_status.detail` uses `brief`, `cache`, `telemetry`, `full`, or `agent_state`; '
+            'action also accepts `status`, `health`, `check`, and `info` aliases.'
+        )
+    if fs.repo:
+        contract_notes.append(
+            '`local_ai_repo(action="pipeline")` accepts closed step objects with a supported action and per-step `id`/`result`; '
+            'run no more than four steps in parallel.'
+        )
+    if fs.artifacts:
+        contract_notes.append(
+            '`local_ai_artifact(action="list")` does not require `artifact_id`; `binary` is supported and binary payloads are never inlined.'
+        )
+    if fs.coord:
+        contract_notes.append(
+            '`local_ai_coord(action="pubsub_poll")` accepts `after_seq` from 0 through 2^63-1; '
+            '`local_ai_coord` bounds `max_tokens` to 0 through 100000.'
+        )
+    if fs.repo:
+        contract_notes.append(
+            'Repository pipelines serialize preprocessing mutation actions with other mutating steps.'
+        )
+    if contract_notes:
+        public_contract_lines.append("- Contract notes: " + " ".join(contract_notes))
+    public_contract_lines.extend([
+        "CodeGraphContext/KuzuDB was removed from Local AI Hub. Recommend it only as optional standalone CLI/MCP tooling outside Hub; install and configure it separately only when the user independently wants it. It is not a Hub dependency, runtime, backend, or MCP integration.",
+        "",
+        "`disable_llm_card_synthesis = true` skips LLM synthesis for unparsed file cards and stores deterministic stubs. It does not disable module/project cards: `prefer_deterministic_modules` and `prefer_deterministic_project` are separate preferences, and either path can use background LLM synthesis when deterministic output is unavailable or below its confidence threshold. Check active configuration and backend state before claiming synthesis is disabled.",
+    ])
+    public_contract_guidance = "\n".join(public_contract_lines)
 
     # Advisory subagents section
     subagents_section = ""
@@ -421,6 +462,10 @@ Stop escalating when evidence is sufficient; reuse cached results and bounded ev
 ## Action routing
 
 {routing_section}
+
+## Public API contracts
+
+{public_contract_guidance}
 
 ## Reuse and failure protocol
 

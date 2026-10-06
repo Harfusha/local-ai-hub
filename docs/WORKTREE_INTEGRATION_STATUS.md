@@ -260,6 +260,26 @@ inventory 51 passed, 668 rows, zero drift). These are not root-integrated or
 release accepted. Independent workers own broad 069d, T17 vision refactor,
 T15 command config, T18 status dashboard and T16 orchestration recovery.
 
+Historical 55ed packet `b99482f8` is now centrally reconciled against root
+`3a43536a`. Four conflicts resolved: preserve both doctor/release test sets,
+retain explicit terminal/non-retryable native fallback rule plus bounded-read
+guidance, regenerate API coverage from combined source. `python
+tools/surface_inventory.py --write-doc` and `python tools/surface_inventory.py
+--check`: 705 rows, no drift, coverage matches. Fresh root command `python -B
+-m pytest -q -p no:cacheprovider tests/test_doctor_support.py
+tests/test_operation_contracts.py tests/test_release_contract.py --tb=short
+--maxfail=4`: 65 passed, 4 failed in 13.85 seconds. Release assertions forbid
+ALTER TABLE despite retained safe lease migration, and ban all CodeGraph text
+despite explicit standalone-outside-Hub guidance. Expectations remain unchanged;
+these contracts are unfinished, not release accepted. Earlier mistyped test
+filename collected no tests and is not counted as validation.
+
+T10's nine originally untracked historical benchmark JSON/schema files were
+classified as archived evidence, not runtime databases, and committed in their
+existing checkout as `0ad7e821` (original result `e4c14ded` remains ancestor).
+They are preserved exactly, not counted as current performance proof. Root
+integration of the T10 source packet is still pending.
+
 Root validation left an untracked `agent_state.sqlite` runtime database. It is
 preserved in place and intentionally not staged or deleted; it is not ordinary
 source/handoff work. Tracked source/index is clean after the integration record

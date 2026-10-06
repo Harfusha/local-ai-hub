@@ -32,10 +32,12 @@ Install multiple extras together, for example `python -m pip install ".[local-nl
 ```python
 from local_ai_hub.client import HubClient
 
-client = HubClient()
+client = HubClient(tenant="example-agent", auto_start=False)
 try:
-    status = client.status(detail="brief")
-    print(status)
+    result = client.status(detail="brief")
+    if result.get("success") is False:
+        raise RuntimeError(result.get("error", "Local AI Hub request failed"))
+    print(result)
 finally:
     client.close()
 ```
@@ -119,6 +121,27 @@ Convenience methods below call these Hub routes. `body` lists the wrapper's JSON
 | `simulate_merge` | `POST /api/coord/simulate_merge`; body: `root`, `source_branch`, `target_branch`. |
 
 All wrapper calls through `get()` use its 15-second default; calls through `post()` use 360 seconds. Both are capped by `client.max_request_timeout_seconds`; the wrappers do not declare per-method timeout overrides. `stream_events()` uses its own 30-second wait default. `ensure_server()` can start the configured local service; `close()` closes the client connection only. Other server-side effects and per-operation replay status are established only where the matching inventory row has evidence; `unverified` remains unknown.
+
+## One-call workflows retained from T19
+
+Each convenience method maps one client call to one endpoint. Calls through `post()` use its 360-second default, capped by `client.max_request_timeout_seconds`.
+
+| Goal | Python call | Endpoint |
+| --- | --- | --- |
+| Callers | `client.callers(root, symbol, limit=50)` | `POST /api/repo/callers` |
+| Context | `client.context_pack(root, query, max_tokens=4200, mode="adaptive")` | `POST /api/context/pack` |
+| Receipt | `client.verify_receipt(task_id, criterion, evidence_id=...)` | `POST /api/agent-state/verification` |
+| Conversation | `client.continue_conversation(conversation_id, prompt)` | `POST /api/conversations/continue` |
+| Cancel job | `client.cancel_job(job_id)` | `POST /api/async-jobs` |
+| Poll messages | `client.coord("pubsub_poll", root=root, topic=..., after_seq=0, limit=50)` | `POST /api/coord/pubsub_poll` |
+| Resume task | `client.coord("task_resume", root=root, task_id=...)` | `POST /api/agent-state/tasks` |
+| Evidence | `client.get_evidence(evidence_id, verify=True)` | `POST /api/evidence/get` |
+
+Task resume: Sets task status to `ACTIVE` and preserves checkpoint metadata; does not restore workspace files.
+
+The older T19 receipt stated **8/8 successful workflows on first direct call; 8 HTTP requests total**. That is historical evidence, not acceptance for this merged revision. Polling now uses the integer `after_seq` cursor; the former `since_timestamp` example and assertions require updating. Do not infer that a count of returned messages proves cursor semantics or live cross-tenant isolation.
+
+Recovery: `context mode must be adaptive, full or fast` requires a supported mode. `conversation not found` requires an existing conversation. If a continuation is already running (`in_progress=true`, `retryable=true`), wait for it to finish; do not send a duplicate request. Inspect current task or job state before retrying.
 
 ## Effects and retries
 

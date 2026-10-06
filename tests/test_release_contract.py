@@ -143,6 +143,27 @@ def test_python_sdk_documents_seven_common_workflows():
         assert step in sdk
 
 
+def test_installation_docs_match_declared_python_extras():
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    expected = {
+        extra: {
+            re.split(r"[<>=!~]", requirement, maxsplit=1)[0]
+            for requirement in requirements
+        }
+        for extra, requirements in project["project"]["optional-dependencies"].items()
+    }
+    installation = (ROOT / "docs" / "INSTALLATION.md").read_text(encoding="utf-8")
+    extras_section = installation.split("### Optional Python extras\n", 1)[1].split("\n### ", 1)[0]
+    rows = re.findall(r"^\| `([^`]+)` \| (.+?) \|$", extras_section, re.MULTILINE)
+    documented = {
+        extra: set(re.findall(r"`([^`]+)`", dependencies))
+        for extra, dependencies in rows
+    }
+
+    assert len(rows) == len(expected)
+    assert documented == expected
+
+
 def test_guarded_context_release_contract_documents_default_flow_and_fallbacks():
     configuration = (ROOT / "docs" / "CONFIGURATION.md").read_text(encoding="utf-8")
     http_api = (ROOT / "docs" / "HTTP_API.md").read_text(encoding="utf-8")
@@ -312,3 +333,86 @@ def test_update_prompt_uses_branch_safe_pull_and_generated_artifact_wording():
     assert "pull --ff-only" in prompt
     assert "checked-in/generated schemas" not in prompt
     assert "generated schemas" in prompt
+
+
+def test_public_contract_notes_match_install_update_and_generated_skill(tmp_path: Path):
+    write_all_generated({"models": {"fast_code": "qwen2.5-coder:7b"}}, tmp_path)
+    prompts = [
+        (ROOT / "docs" / "INSTALL_PROMPT.md").read_text(encoding="utf-8"),
+        (ROOT / "docs" / "UPDATE_PROMPT.md").read_text(encoding="utf-8"),
+    ]
+    mcp_docs = (ROOT / "docs" / "MCP_AND_AGENTS.md").read_text(encoding="utf-8")
+    generated = (tmp_path / "skills" / "local-ai-orchestrator" / "SKILL.md").read_text(encoding="utf-8")
+    generic_manifest = json.loads((tmp_path / "generated" / "mcp-servers.json").read_text(encoding="utf-8"))
+    vscode_manifest = json.loads((tmp_path / "generated" / "vscode-mcp.json").read_text(encoding="utf-8"))
+    rag_schema = json.loads((tmp_path / "generated" / "schemas" / "local_ai_rag.json").read_text(encoding="utf-8"))
+    generic_entry = generic_manifest["mcpServers"]["local-ai"]
+    vscode_entry = vscode_manifest["servers"]["local-ai"]
+    assert generic_entry["args"] == ["-m", "local_ai_hub.mcp_server"]
+    assert generic_entry["env"]["LOCAL_AI_AGENT"] == "generic"
+    assert vscode_entry["type"] == "stdio"
+    assert vscode_entry["env"]["LOCAL_AI_AGENT"] == "copilot"
+    rag_properties = rag_schema["parameters"]["properties"]
+    assert {"ingest_document", "ingest_diagram"} <= set(rag_properties["action"]["enum"])
+    assert {"content", "title", "metadata", "image_path", "caption"} <= rag_properties.keys()
+    ingest_notes = (
+        'non-empty `content` is required; `title` and `metadata` are optional.',
+        'Success returns `success`, `workspace`, `document_title`, `chunks_ingested`, and `embedded`.',
+        'Embedding errors do not stop lexical publication.',
+        '`image_path` must resolve to an existing `.png`, `.jpg`, `.jpeg`, `.webp`, `.svg`, or `.bmp` file; `caption` and `metadata` are optional.',
+        'Success also returns `diagram_indexed` and the resolved image path.',
+    )
+    synthesis_notes = (
+        "`disable_llm_card_synthesis = true` skips LLM synthesis for unparsed file cards and stores deterministic stubs.",
+        "It does not disable module/project cards:",
+        '`prefer_deterministic_modules` and `prefer_deterministic_project` are separate preferences',
+        "either path can use background LLM synthesis when deterministic output is unavailable or below its confidence threshold.",
+        "Check active configuration and backend state before claiming synthesis is disabled.",
+    )
+    notes = (
+        '`local_ai_rag(action="ingest_document")`',
+        *ingest_notes,
+        '`local_ai_repo(action="pipeline")` accepts closed step objects',
+        '`local_ai_artifact(action="list")` does not require `artifact_id`',
+        '`local_ai_coord(action="pubsub_poll")` accepts `after_seq`',
+        '`local_ai_coord` bounds `max_tokens` to 0 through 100000.',
+        "Repository pipelines serialize preprocessing mutation actions with other mutating steps.",
+        "CodeGraphContext/KuzuDB was removed from Local AI Hub.",
+        "optional standalone CLI/MCP",
+        "It is not a Hub dependency, runtime, backend, or MCP integration.",
+        *synthesis_notes,
+    )
+
+    for note in notes:
+        assert all(note in prompt for prompt in prompts)
+        assert note in generated
+    assert all(note in mcp_docs for note in (*ingest_notes, *synthesis_notes))
+
+
+def test_install_and_update_prompts_share_profile_aware_model_routing():
+    install = (ROOT / "docs" / "INSTALL_PROMPT.md").read_text(encoding="utf-8")
+    update = (ROOT / "docs" / "UPDATE_PROMPT.md").read_text(encoding="utf-8")
+    routing_line = next(
+        line for line in update.splitlines()
+        if line.startswith("Model routing is profile-aware:")
+    )
+
+    assert routing_line in install.splitlines()
+    stale_install_policies = (
+        "qwen2.5-coder:1.5b` only for quick/simple tasks",
+        "qwen2.5-coder:1.5b` for bounded extraction/simple work",
+        "qwen2.5-coder:1.5b` only for quick/simple microtasks",
+        "qwen2.5-coder:3b` for ordinary and more involved work",
+        "qwen2.5-coder:3b` for ordinary bounded reasoning",
+        "qwen2.5-coder:0.5b` only for preprocessing",
+        "qwen3.5:9b` for extreme reasoning in the balanced profile",
+    )
+    assert all(policy not in install for policy in stale_install_policies)
+    assert "high uses 1.5b/3b/7b/9b" not in update
+    assert "max uses 1.5b/3b/9b for heavy routes" not in update
+
+
+def test_feature_audit_marks_codegraph_as_removed_from_hub():
+    audit = (ROOT / "docs" / "FEATURE_AUDIT_V4.md").read_text(encoding="utf-8")
+    assert "Current status is removal from Hub" in audit
+    assert "**Removed from Hub; optional standalone CLI/MCP tool**" in audit

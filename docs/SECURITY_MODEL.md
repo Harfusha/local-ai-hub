@@ -16,6 +16,6 @@ Configure `api_token` when HTTP data/control routes need token authentication, i
 
 Repository paths, RAG/index databases and exported bundles may contain sensitive source-derived information. Telemetry intentionally excludes prompts, source and model output, but operational logs can still contain paths and error metadata.
 
-The command broker is allowlist/fail-closed and is not a general shell sandbox. The dashboard uses the same policy. External Serena processes are constrained by project roots, timeouts, bounded sessions and process-tree termination.
+The command broker is allowlist/fail-closed and is not a general shell sandbox. The dashboard uses the same policy. Hub-managed Serena processes are constrained by project roots, timeouts, bounded sessions and process-tree termination. CodeGraphContext is standalone external CLI/MCP tooling and follows its own process and security controls.
 
 Report vulnerabilities according to `SECURITY.md`.

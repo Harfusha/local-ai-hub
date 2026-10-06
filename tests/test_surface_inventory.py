@@ -175,10 +175,25 @@ def inspect_command():
 
 
 ROOT_TASK_ID = MODULE._coverage_task_id((ROOT / "docs" / "API_COVERAGE.md").read_text(encoding="utf-8"))
+ROOT_INVENTORY = MODULE.collect_inventory(ROOT)
 ROOT_COVERAGE_ROWS = MODULE.coverage_rows(
-    MODULE._findings(MODULE.collect_inventory(ROOT)),
+    MODULE._findings(ROOT_INVENTORY),
     task_id=ROOT_TASK_ID,
 )
+
+
+def test_root_inventory_resolves_imported_actions_and_redacted_pack_route():
+    drift = ROOT_INVENTORY["drift"]
+
+    assert not any(item.startswith("missing MCP action handler local_ai_status:") for item in drift)
+    assert not any(item.startswith("orphan client target POST /api/context/pack ") for item in drift)
+    assert {"status", "health", "check", "info"} <= set(ROOT_INVENTORY["mcp_actions"]["local_ai_status"])
+    assert any(
+        route["method"] == "POST"
+        and route["path"] == "/api/context/pack"
+        and route["classification"] == "registered_dynamic"
+        for route in ROOT_INVENTORY["http_routes"]
+    )
 
 
 def test_operation_owner_tasks_follow_surface_families():
@@ -812,6 +827,8 @@ def test_behavioral_links_only_reference_inventoried_operations():
 
 
 
+
+
 def test_coverage_rows_disambiguate_same_surface_and_name_by_handler():
     rows = MODULE.coverage_rows(
         [
@@ -1277,20 +1294,6 @@ def test_check_cli_reports_drift_without_rewriting_coverage(tmp_path):
     assert coverage_path.stat().st_mtime_ns == before_mtime
 
 
-def test_write_doc_mode_updates_coverage(tmp_path, capsys):
-    make_repo(tmp_path)
-    task_id = "task-write-coverage-test"
-    coverage_path = tmp_path / "docs" / "API_COVERAGE.md"
-    write(tmp_path, "docs/API_COVERAGE.md", "# Stale coverage\n")
-    expected = MODULE.render_coverage(MODULE.collect_inventory(tmp_path), task_id=task_id)
-
-    result = MODULE.main(["--root", str(tmp_path), "--write-doc", "--task-id", task_id])
-
-    assert result == 0
-    assert coverage_path.read_text(encoding="utf-8") == expected
-    summary = json.loads(capsys.readouterr().out)
-    assert summary["written"] == "docs/API_COVERAGE.md"
-    assert summary["coverage_rows"] > 0
 
 
 def test_write_doc_cli_process_generates_coverage(tmp_path):
@@ -1320,6 +1323,22 @@ def test_write_doc_cli_process_generates_coverage(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert coverage_path.read_text(encoding="utf-8") == expected
     summary = json.loads(result.stdout)
+    assert summary["written"] == "docs/API_COVERAGE.md"
+    assert summary["coverage_rows"] > 0
+
+
+def test_write_doc_mode_updates_coverage(tmp_path, capsys):
+    make_repo(tmp_path)
+    task_id = "task-write-coverage-test"
+    coverage_path = tmp_path / "docs" / "API_COVERAGE.md"
+    write(tmp_path, "docs/API_COVERAGE.md", "# Stale coverage\n")
+    expected = MODULE.render_coverage(MODULE.collect_inventory(tmp_path), task_id=task_id)
+
+    result = MODULE.main(["--root", str(tmp_path), "--write-doc", "--task-id", task_id])
+
+    assert result == 0
+    assert coverage_path.read_text(encoding="utf-8") == expected
+    summary = json.loads(capsys.readouterr().out)
     assert summary["written"] == "docs/API_COVERAGE.md"
     assert summary["coverage_rows"] > 0
 
