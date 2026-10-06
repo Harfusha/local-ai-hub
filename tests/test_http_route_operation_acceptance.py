@@ -146,6 +146,77 @@ def test_http_get_agent_state_tasks_forwards_filters_and_serializes(running_http
     assert result["tasks"] == [{"task_id": "task-77", "status": "active", "summary": "T08 task"}]
 
 
+def test_http_post_agent_state_cleanup_forwards_retention_policy(running_http_hub, monkeypatch):
+    base_url, app = running_http_hub
+    calls = []
+    response_data = {"success": True, "retention_days": 21, "deleted_events": 0}
+
+    def cleanup(*, retention_days):
+        calls.append(retention_days)
+        return response_data
+
+    monkeypatch.setattr(app.agent_state, "cleanup", cleanup)
+    url = f"{base_url}/api/agent-state/cleanup"
+    request = urllib_request.Request(
+        url,
+        data=json.dumps({"retention_days": 21}).encode("utf-8"),
+        headers={"X-LocalAI-Token": "acceptance-secret", "Content-Type": "application/json"},
+        method="POST",
+    )
+
+    with urllib_request.urlopen(request) as response:
+        status = response.status
+        result = json.loads(response.read().decode("utf-8"))
+
+    assert request.get_method() == "POST"
+    assert url == f"{base_url}/api/agent-state/cleanup"
+    assert status == 200
+    assert calls == [21]
+    assert result == response_data
+
+
+def test_http_post_agent_state_swarm_dispatch_forwards_explicit_scope(running_http_hub, monkeypatch):
+    base_url, app = running_http_hub
+    calls = []
+    response_data = {"success": True, "swarm_id": "swarm-21", "state": "queued"}
+
+    def dispatch(*, goal, target_paths, test_command, author, root):
+        calls.append({
+            "goal": goal,
+            "target_paths": target_paths,
+            "test_command": test_command,
+            "author": author,
+            "root": root,
+        })
+        return response_data
+
+    monkeypatch.setattr(app.swarm, "dispatch", dispatch)
+    payload = {
+        "goal": "Audit the selected route contract",
+        "target_paths": ["src/local_ai_hub/http_server.py", "tests/test_http_route_operation_acceptance.py"],
+        "test_command": "pytest -q tests/test_http_route_operation_acceptance.py::test_route",
+        "author": "acceptance-test",
+        "root": "/workspace/repo",
+    }
+    url = f"{base_url}/api/agent-state/swarm/dispatch"
+    request = urllib_request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"X-LocalAI-Token": "acceptance-secret", "Content-Type": "application/json"},
+        method="POST",
+    )
+
+    with urllib_request.urlopen(request) as response:
+        status = response.status
+        result = json.loads(response.read().decode("utf-8"))
+
+    assert request.get_method() == "POST"
+    assert url == f"{base_url}/api/agent-state/swarm/dispatch"
+    assert status == 200
+    assert calls == [payload]
+    assert result == response_data
+
+
 def test_http_get_agent_state_swarm_forwards_state_and_limit(running_http_hub, monkeypatch):
     base_url, app = running_http_hub
     calls = []
@@ -354,74 +425,3 @@ def test_http_post_affected_tests_forwards_json_paths(running_http_hub, monkeypa
     assert calls == [("/workspace/repo", ["src/agent_state.py"])]
     assert result["success"] is True
     assert result["affected"] == ["tests/test_agent_state.py"]
-
-
-def test_http_post_agent_state_cleanup_forwards_retention_policy(running_http_hub, monkeypatch):
-    base_url, app = running_http_hub
-    calls = []
-    response_data = {"success": True, "retention_days": 21, "deleted_events": 0}
-
-    def cleanup(*, retention_days):
-        calls.append(retention_days)
-        return response_data
-
-    monkeypatch.setattr(app.agent_state, "cleanup", cleanup)
-    url = f"{base_url}/api/agent-state/cleanup"
-    request = urllib_request.Request(
-        url,
-        data=json.dumps({"retention_days": 21}).encode("utf-8"),
-        headers={"X-LocalAI-Token": "acceptance-secret", "Content-Type": "application/json"},
-        method="POST",
-    )
-
-    with urllib_request.urlopen(request) as response:
-        status = response.status
-        result = json.loads(response.read().decode("utf-8"))
-
-    assert request.get_method() == "POST"
-    assert url == f"{base_url}/api/agent-state/cleanup"
-    assert status == 200
-    assert calls == [21]
-    assert result == response_data
-
-
-def test_http_post_agent_state_swarm_dispatch_forwards_explicit_scope(running_http_hub, monkeypatch):
-    base_url, app = running_http_hub
-    calls = []
-    response_data = {"success": True, "swarm_id": "swarm-21", "state": "queued"}
-
-    def dispatch(*, goal, target_paths, test_command, author, root):
-        calls.append({
-            "goal": goal,
-            "target_paths": target_paths,
-            "test_command": test_command,
-            "author": author,
-            "root": root,
-        })
-        return response_data
-
-    monkeypatch.setattr(app.swarm, "dispatch", dispatch)
-    payload = {
-        "goal": "Audit the selected route contract",
-        "target_paths": ["src/local_ai_hub/http_server.py", "tests/test_http_route_operation_acceptance.py"],
-        "test_command": "pytest -q tests/test_http_route_operation_acceptance.py::test_route",
-        "author": "acceptance-test",
-        "root": "/workspace/repo",
-    }
-    url = f"{base_url}/api/agent-state/swarm/dispatch"
-    request = urllib_request.Request(
-        url,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"X-LocalAI-Token": "acceptance-secret", "Content-Type": "application/json"},
-        method="POST",
-    )
-
-    with urllib_request.urlopen(request) as response:
-        status = response.status
-        result = json.loads(response.read().decode("utf-8"))
-
-    assert request.get_method() == "POST"
-    assert url == f"{base_url}/api/agent-state/swarm/dispatch"
-    assert status == 200
-    assert calls == [payload]
-    assert result == response_data
