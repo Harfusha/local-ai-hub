@@ -1,0 +1,129 @@
+diff --git a/tests/test_work_handoff_acceptance.py b/tests/test_work_handoff_acceptance.py
+--- a/tests/test_work_handoff_acceptance.py
++++ b/tests/test_work_handoff_acceptance.py
+@@ -1114,3 +1114,47 @@
+         ):
+             target.write_text("stale\n", encoding="utf-8")
+     assert target.read_text(encoding="utf-8") == "committed\n"
++
++
++def test_partial_git_apply_failure_restores_all_preimages_and_clears_journal(
++    tmp_path: Path, monkeypatch
++) -> None:
++    orchestrator, root, _state_dir, _config = _make_orchestrator(tmp_path)
++    first = root / "first.txt"
++    second = root / "second.txt"
++    first.write_text("first before\n", encoding="utf-8")
++    second.write_text("second before\n", encoding="utf-8")
++    patch = (
++        "diff --git a/first.txt b/first.txt\n"
++        "--- a/first.txt\n+++ b/first.txt\n@@ -1 +1 @@\n"
++        "-first before\n+first after\n"
++        "diff --git a/second.txt b/second.txt\n"
++        "--- a/second.txt\n+++ b/second.txt\n@@ -1 +1 @@\n"
++        "-second before\n+second after\n"
++    )
++    journal: list[_JournalEntry] = []
++    real_run = work_orchestrator_module.subprocess.run
++
++    def fail_after_partial_apply(command, *args, **kwargs):
++        if str(root) in command and "--check" not in command and command[-1] == "-":
++            first.write_text("first after\n", encoding="utf-8")
++            return SimpleNamespace(
++                returncode=1,
++                stdout="",
++                stderr="simulated partial apply failure",
++            )
++        return real_run(command, *args, **kwargs)
++
++    monkeypatch.setattr(work_orchestrator_module.subprocess, "run", fail_after_partial_apply)
++    try:
++        with pytest.raises(ValueError, match="simulated partial apply failure"):
++            orchestrator._apply_patch(
++                root, patch, "tenant", "work-apply-failure", journal
++            )
++
++        assert first.read_text(encoding="utf-8") == "first before\n"
++        assert second.read_text(encoding="utf-8") == "second before\n"
++        assert journal == []
++        assert orchestrator._load_journal("work-apply-failure") == []
++    finally:
++        orchestrator.close()
+diff --git a/tests/test_work_fencing.py b/tests/test_work_fencing.py
+--- a/tests/test_work_fencing.py
++++ b/tests/test_work_fencing.py
+@@ -512,3 +512,27 @@
+         "token": result["attempt_token"],
+     }
+     assert output.read_text(encoding="utf-8") == "successor\n"
++
++
++@pytest.mark.skipif(os.name != "nt", reason="Windows junction reparse points are platform-specific")
++def test_rooted_scope_resolves_junction_alias_to_same_path(tmp_path: Path) -> None:
++    root = tmp_path / "repo"
++    real = root / "real"
++    real.mkdir(parents=True)
++    (real / "file.py").write_text("", encoding="utf-8")
++    alias = root / "junction"
++    created = subprocess.run(
++        ["cmd.exe", "/c", "mklink", "/J", str(alias), str(real)],
++        capture_output=True,
++        text=True,
++        check=False,
++    )
++    if created.returncode != 0:
++        pytest.skip(f"junction creation unavailable: {created.stderr or created.stdout}")
++    try:
++        assert alias.is_junction()
++        assert normalize_paths(["junction/file.py"], root=root) == normalize_paths(
++            ["real/file.py"], root=root
++        )
++    finally:
++        alias.rmdir()
+diff --git a/tests/test_t16_terminal_rollback_preflight.py b/tests/test_t16_terminal_rollback_preflight.py
+--- a/tests/test_t16_terminal_rollback_preflight.py
++++ b/tests/test_t16_terminal_rollback_preflight.py
+@@ -157,3 +157,43 @@
+ 
+     assert first.read_bytes() == b"first postimage\n"
+     assert (root / "dir").read_bytes() == b"replaced former directory\n"
++
++
++@pytest.mark.skipif(os.name != "nt", reason="Windows junction reparse points are platform-specific")
++def test_rollback_rejects_junction_before_restoring_any_file(tmp_path: Path) -> None:
++    root = tmp_path / "repo"
++    root.mkdir()
++    external = root / "external"
++    external.mkdir()
++    (external / "deleted.txt").write_bytes(b"outside remains\n")
++    first = root / "first.txt"
++    first.write_bytes(b"first postimage\n")
++    junction = root / "junction"
++    created = subprocess.run(
++        ["cmd.exe", "/c", "mklink", "/J", str(junction), str(external)],
++        capture_output=True,
++        text=True,
++        check=False,
++    )
++    if created.returncode != 0:
++        pytest.skip(f"junction creation unavailable: {created.stderr or created.stdout}")
++    journal = [
++        _JournalEntry(
++            "junction/deleted.txt", False, b"", False,
++            hashlib.sha256(b"").hexdigest(),
++        ),
++        _JournalEntry(
++            "first.txt", True, b"first before\n", True,
++            hashlib.sha256(b"first postimage\n").hexdigest(),
++        ),
++    ]
++
++    try:
++        assert junction.is_junction()
++        with pytest.raises(ValueError, match="symlink or junction"):
++            WorkOrchestrator._rollback(root, journal)
++
++        assert first.read_bytes() == b"first postimage\n"
++        assert (external / "deleted.txt").read_bytes() == b"outside remains\n"
++    finally:
++        junction.rmdir()

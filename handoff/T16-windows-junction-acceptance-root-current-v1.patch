@@ -1,0 +1,152 @@
+diff --git a/tests/test_t16_terminal_rollback_preflight.py b/tests/test_t16_terminal_rollback_preflight.py
+index bc6e925..e692540 100644
+--- a/tests/test_t16_terminal_rollback_preflight.py
++++ b/tests/test_t16_terminal_rollback_preflight.py
+@@ -4,6 +4,7 @@ import hashlib
+ import json
+ import os
+ import sqlite3
++import subprocess
+ from pathlib import Path
+ 
+ import pytest
+@@ -157,3 +158,43 @@ def test_rollback_preflights_non_directory_ancestors_before_restoring_any_file(t
+ 
+     assert first.read_bytes() == b"first postimage\n"
+     assert (root / "dir").read_bytes() == b"replaced former directory\n"
++
++
++@pytest.mark.skipif(os.name != "nt", reason="Windows junction reparse points are platform-specific")
++def test_rollback_rejects_junction_before_restoring_any_file(tmp_path: Path) -> None:
++    root = tmp_path / "repo"
++    root.mkdir()
++    external = root / "external"
++    external.mkdir()
++    (external / "deleted.txt").write_bytes(b"outside remains\n")
++    first = root / "first.txt"
++    first.write_bytes(b"first postimage\n")
++    junction = root / "junction"
++    created = subprocess.run(
++        ["cmd.exe", "/c", "mklink", "/J", str(junction), str(external)],
++        capture_output=True,
++        text=True,
++        check=False,
++    )
++    if created.returncode != 0:
++        pytest.skip(f"junction creation unavailable: {created.stderr or created.stdout}")
++    journal = [
++        _JournalEntry(
++            "junction/deleted.txt", False, b"", False,
++            hashlib.sha256(b"").hexdigest(),
++        ),
++        _JournalEntry(
++            "first.txt", True, b"first before\n", True,
++            hashlib.sha256(b"first postimage\n").hexdigest(),
++        ),
++    ]
++
++    try:
++        assert junction.is_junction()
++        with pytest.raises(ValueError, match="symlink or junction"):
++            WorkOrchestrator._rollback(root, journal)
++
++        assert first.read_bytes() == b"first postimage\n"
++        assert (external / "deleted.txt").read_bytes() == b"outside remains\n"
++    finally:
++        junction.rmdir()
+diff --git a/tests/test_work_fencing.py b/tests/test_work_fencing.py
+index f6ad954..c1969ee 100644
+--- a/tests/test_work_fencing.py
++++ b/tests/test_work_fencing.py
+@@ -2,6 +2,7 @@ from __future__ import annotations
+ 
+ import multiprocessing
+ import os
++import subprocess
+ import time
+ from contextlib import closing
+ from pathlib import Path
+@@ -244,3 +245,83 @@ def test_namespace_writer_token_starts_above_legacy_physical_token(tmp_path: Pat
+     )
+ 
+     assert lease.fencing_token > 8
++
++
++@pytest.mark.skipif(os.name != "nt", reason="Windows paths are case-insensitive")
++def test_case_aliases_cannot_claim_same_windows_path(tmp_path: Path) -> None:
++    root = tmp_path / "repo"
++    root.mkdir()
++    store = FencingLeaseStore(tmp_path / "fences.sqlite3")
++
++    first_attempt = store.claim_attempt(str(root), "work-a", "owner-a", ttl_seconds=60)
++    second_attempt = store.claim_attempt(str(root), "work-b", "owner-b", ttl_seconds=60)
++    first = store.acquire(
++        str(root), "owner-a", ["Src/A.py"], ttl_seconds=60, attempt=first_attempt
++    )
++    try:
++        with pytest.raises(LeaseUnavailableError):
++            store.acquire(
++                str(root), "owner-b", ["src/a.PY"], ttl_seconds=60,
++                attempt=second_attempt,
++            )
++        with store.commit_guard(first, ["SRC/a.py"]):
++            pass
++    finally:
++        store.release(first)
++        store.release_attempt(first_attempt)
++        store.release_attempt(second_attempt)
++
++
++def test_commit_guard_rejects_expired_parent_attempt(tmp_path: Path) -> None:
++    root = tmp_path / "repo"
++    root.mkdir()
++    now = [100.0]
++    store = FencingLeaseStore(tmp_path / "fences.sqlite3", clock=lambda: now[0])
++    attempt = store.claim_attempt(str(root), "work-a", "owner-a", ttl_seconds=5)
++    lease = store.acquire(
++        str(root), "owner-a", ["file.py"], ttl_seconds=30, attempt=attempt
++    )
++    now[0] = 106.0
++
++    with pytest.raises(LeaseLostError, match="attempt"):
++        with store.commit_guard(lease, ["file.py"]):
++            pytest.fail("expired attempt entered the writer commit guard")
++
++
++def test_rooted_scope_resolves_symlink_alias_to_same_path(tmp_path: Path) -> None:
++    root = tmp_path / "repo"
++    (root / "real").mkdir(parents=True)
++    (root / "real" / "file.py").write_text("", encoding="utf-8")
++    alias = root / "alias"
++    try:
++        alias.symlink_to(root / "real", target_is_directory=True)
++    except OSError as exc:
++        pytest.skip(f"directory symlink unavailable: {exc}")
++
++    assert normalize_paths(["alias/file.py"], root=root) == normalize_paths(
++        ["real/file.py"], root=root
++    )
++
++
++@pytest.mark.skipif(os.name != "nt", reason="Windows junction reparse points are platform-specific")
++def test_rooted_scope_resolves_junction_alias_to_same_path(tmp_path: Path) -> None:
++    root = tmp_path / "repo"
++    real = root / "real"
++    real.mkdir(parents=True)
++    (real / "file.py").write_text("", encoding="utf-8")
++    alias = root / "junction"
++    created = subprocess.run(
++        ["cmd.exe", "/c", "mklink", "/J", str(alias), str(real)],
++        capture_output=True,
++        text=True,
++        check=False,
++    )
++    if created.returncode != 0:
++        pytest.skip(f"junction creation unavailable: {created.stderr or created.stdout}")
++    try:
++        assert alias.is_junction()
++        assert normalize_paths(["junction/file.py"], root=root) == normalize_paths(
++            ["real/file.py"], root=root
++        )
++    finally:
++        alias.rmdir()

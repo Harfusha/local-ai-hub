@@ -1,0 +1,3189 @@
+diff --git a/src/local_ai_hub/work_orchestrator.py b/src/local_ai_hub/work_orchestrator.py
+index 0e50af8..6486f10 100644
+--- a/src/local_ai_hub/work_orchestrator.py
++++ b/src/local_ai_hub/work_orchestrator.py
+@@ -9,11 +9,12 @@ import os
+ import re
+ import sqlite3
+ import subprocess
++import tempfile
+ import threading
+ import time
+ import uuid
+ from concurrent.futures import ThreadPoolExecutor
+-from contextlib import closing
++from contextlib import closing, nullcontext
+ from dataclasses import dataclass
+ from pathlib import Path
+ from typing import Any
+@@ -21,6 +22,15 @@ from typing import Any
+ from .process_utils import hidden_run_kwargs, is_rooted_path
+ from .response_protocol import project_response
+ from .sqlite_support import connect_sqlite, retry_busy
++from .work_fencing import (
++    FencingLease,
++    FencingLeaseStore,
++    LeaseLostError,
++    LeaseUnavailableError,
++    WorkAttemptFence,
++    canonical_resource,
++    normalize_paths,
++)
+ 
+ 
+ _TERMINAL = {"complete", "failed", "cancelled", "needs_agent", "partial"}
+@@ -279,6 +289,14 @@ class _JournalEntry:
+     path: str
+     existed: bool
+     data: bytes
++    postimage_existed: bool | None = None
++    postimage_sha256: str = ""
++    fencing_resource: str = ""
++    fencing_lease_id: str = ""
++    fencing_owner: str = ""
++    fencing_token: int = 0
++    attempt_id: str = ""
++    attempt_token: int = 0
+ 
+ 
+ class WorkOrchestrator:
+@@ -290,7 +308,12 @@ class WorkOrchestrator:
+     failed final verification unless the caller explicitly asks to preserve failure.
+     """
+ 
+-    def __init__(self, config: dict[str, Any], state_dir: Path, services: Any, commands: Any, leases: Any, artifacts: Any, telemetry: Any | None = None):
++    def __init__(
++        self, config: dict[str, Any], state_dir: Path, services: Any, commands: Any,
++        leases: Any, artifacts: Any, telemetry: Any | None = None,
++        verification_store: Any | None = None,
++        fencing_store: FencingLeaseStore | None = None,
++    ):
+         cfg = config.get("work_orchestrator", {})
+         self.enabled = bool(cfg.get("enabled", True))
+         self.max_active = max(1, int(cfg.get("max_active_work_orders", 1)))
+@@ -312,7 +335,16 @@ class WorkOrchestrator:
+         self.default_response_profile = str(cfg.get("default_response_profile", "compact") or "compact")
+         self.default_max_output_tokens = max(0, int(cfg.get("default_max_output_tokens", 350) or 0))
+         self.services, self.commands, self.leases, self.artifacts = services, commands, leases, artifacts
++        self.fencing_store = fencing_store or FencingLeaseStore(Path(state_dir) / "work_fencing.sqlite3")
++        set_fencing_store = getattr(self.commands, "set_fencing_lease_store", None)
++        if callable(set_fencing_store):
++            set_fencing_store(self.fencing_store)
+         self.telemetry = telemetry
++        self.verification_store = (
++            verification_store
++            if verification_store is not None
++            else getattr(services, "verification_store", None)
++        )
+         self.path = Path(state_dir) / "work_orders.sqlite3"
+         self.journal_dir = Path(state_dir) / "work_journals"
+         self._stop = threading.Event()
+@@ -320,12 +352,14 @@ class WorkOrchestrator:
+         self._waiters: dict[str, threading.Event] = {}
+         self._workers: list[threading.Thread] = []
+         self._lock = threading.RLock()
++        self._recovery_timer: threading.Timer | None = None
++        self._recovery_retry_requested = False
+         self._init_db()
++        self._worker: threading.Thread | None = None
+         self._recover()
+         # Work execution is lazy. Most LocalAIApp instances only use retrieval or
+         # status APIs; eagerly starting another polling thread for each instance
+         # caused avoidable background load in embedded/test workloads.
+-        self._worker: threading.Thread | None = None
+         if self._has_queued_work():
+             self._ensure_workers()
+ 
+@@ -365,7 +399,19 @@ class WorkOrchestrator:
+         except OSError:
+             pass
+         payload = [
+-            {"path": entry.path, "existed": entry.existed, "data": base64.b64encode(entry.data).decode("ascii")}
++            {
++                "path": entry.path,
++                "existed": entry.existed,
++                "data": base64.b64encode(entry.data).decode("ascii"),
++                "postimage_existed": entry.postimage_existed,
++                "postimage_sha256": entry.postimage_sha256,
++                "fencing_resource": entry.fencing_resource,
++                "fencing_lease_id": entry.fencing_lease_id,
++                "fencing_owner": entry.fencing_owner,
++                "fencing_token": entry.fencing_token,
++                "attempt_id": entry.attempt_id,
++                "attempt_token": entry.attempt_token,
++            }
+             for entry in journal
+         ]
+         tmp = path.with_suffix(".tmp")
+@@ -389,60 +435,310 @@ class WorkOrchestrator:
+                 rel = str(item.get("path", "")).replace("\\", "/")
+                 if not rel or rel.startswith("/") or re.match(r"^[A-Za-z]:/", rel) or any(x in {"", ".", ".."} for x in rel.split("/")):
+                     raise ValueError("unsafe work journal path")
+-                entries.append(_JournalEntry(rel, bool(item.get("existed")), base64.b64decode(str(item.get("data", "")), validate=True)))
++                existed = item.get("existed")
++                if type(existed) is not bool:
++                    raise ValueError("invalid work journal preimage state")
++                data = base64.b64decode(str(item.get("data", "")), validate=True)
++                if not existed and data:
++                    raise ValueError("absent work journal preimage contains data")
++                postimage_existed = item.get("postimage_existed")
++                postimage_sha256 = str(item.get("postimage_sha256", ""))
++                fencing_resource = str(item.get("fencing_resource", ""))
++                fencing_lease_id = str(item.get("fencing_lease_id", ""))
++                fencing_owner = str(item.get("fencing_owner", ""))
++                fencing_token = item.get("fencing_token", 0)
++                attempt_id = str(item.get("attempt_id", ""))
++                attempt_token = item.get("attempt_token", 0)
++                if type(fencing_token) is not int or fencing_token < 0:
++                    raise ValueError("invalid work journal fencing token")
++                if type(attempt_token) is not int or attempt_token < 0:
++                    raise ValueError("invalid work journal attempt token")
++                if fencing_token and not all((fencing_resource, fencing_lease_id, fencing_owner)):
++                    raise ValueError("incomplete work journal fencing identity")
++                if fencing_token and (not attempt_id or attempt_token <= 0):
++                    raise ValueError("incomplete work journal attempt identity")
++                if postimage_existed is not None and type(postimage_existed) is not bool:
++                    raise ValueError("invalid work journal postimage state")
++                if (
++                    postimage_existed is None and postimage_sha256
++                    or postimage_existed is not None
++                    and not re.fullmatch(r"[0-9a-f]{64}", postimage_sha256)
++                ):
++                    raise ValueError("invalid work journal postimage digest")
++                entries.append(
++                    _JournalEntry(
++                        rel,
++                        existed,
++                        data,
++                        postimage_existed,
++                        postimage_sha256,
++                        fencing_resource,
++                        fencing_lease_id,
++                        fencing_owner,
++                        fencing_token,
++                        attempt_id,
++                        attempt_token,
++                    )
++                )
+             return entries
+         except Exception:
+             # A corrupt recovery journal must never be used to write repository files.
+             return None
+ 
+-    def _clear_journal(self, work_id: str) -> None:
+-        self._persist_journal(work_id, [])
++    def _clear_journal(
++        self, work_id: str, *, attempt: WorkAttemptFence | None = None
++    ) -> None:
++        guard = self._state_attempt_guard(work_id, attempt)
++        with guard:
++            self._persist_journal(work_id, [])
++
++    def _record_recovery_checkpoint(self, work_id: str, journal: list[_JournalEntry]) -> bool:
++        manifest = [
++            {
++                "path": entry.path,
++                "existed": entry.existed,
++                "content_sha256": hashlib.sha256(entry.data).hexdigest(),
++                "postimage_existed": entry.postimage_existed,
++                "postimage_sha256": entry.postimage_sha256,
++                "fencing_resource": entry.fencing_resource,
++                "fencing_lease_id": entry.fencing_lease_id,
++                "fencing_owner": entry.fencing_owner,
++                "fencing_token": entry.fencing_token,
++                "attempt_id": entry.attempt_id,
++                "attempt_token": entry.attempt_token,
++            }
++            for entry in journal
++        ]
++        checkpoint = {
++            "version": 1,
++            "work_id": work_id,
++            "rollback_complete": True,
++            "journal_sha256": hashlib.sha256(
++                json_dumps(manifest, separators=(",", ":")).encode("utf-8")
++            ).hexdigest(),
++        }
++        with closing(self._connect()) as con:
++            con.execute("BEGIN IMMEDIATE")
++            row = con.execute(
++                "SELECT result_json,state FROM work_orders WHERE work_id=?",
++                (work_id,),
++            ).fetchone()
++            if row is None or str(row["state"]) not in {
++                "planning", "executing", "verifying", "integrating"
++            }:
++                con.execute("ROLLBACK")
++                return False
++            result = json.loads(str(row["result_json"] or "{}"))
++            result["_recovery_checkpoint"] = checkpoint
++            updated = con.execute(
++                "UPDATE work_orders SET result_json=?,updated_at=? WHERE work_id=? AND state=?",
++                (
++                    json_dumps(result, ensure_ascii=False, separators=(",", ":")),
++                    time.time(),
++                    work_id,
++                    str(row["state"]),
++                ),
++            )
++            con.execute("COMMIT")
++            return int(updated.rowcount or 0) == 1
+ 
+     def _recover(self) -> None:
++        self._recovery_retry_requested = False
+         transient = ("planning", "executing", "verifying", "integrating")
+         with closing(self._connect()) as con:
+             rows = con.execute(
+-                "SELECT work_id,root,state FROM work_orders WHERE state IN (?,?,?,?)", transient
++                "SELECT work_id,tenant,root,state,result_json FROM work_orders WHERE state IN (?,?,?,?)", transient
+             ).fetchall()
+         now = time.time()
+         for row in rows:
+             work_id = str(row["work_id"])
++            tenant = str(row["tenant"])
++            state = str(row["state"])
++            try:
++                prior_result = json.loads(str(row["result_json"] or "{}"))
++            except Exception:
++                prior_result = {}
++            checkpoint = prior_result.get("_recovery_checkpoint")
+             journal = self._load_journal(work_id)
+             recovered = journal is not None
++            deferred = False
++            state_attempt: WorkAttemptFence | None = None
+             if journal:
++                fence: FencingLease | None = None
++                attempt: WorkAttemptFence | None = None
++                advisory_lease_id = ""
+                 try:
+                     root = Path(str(row["root"])).resolve(strict=False)
+-                    self._rollback(root, journal)
+-                    self._clear_journal(work_id)
++                    if any(
++                        entry.fencing_token <= 0
++                        or entry.fencing_resource != canonical_resource(root)
++                        or not entry.fencing_lease_id
++                        or not entry.fencing_owner
++                        or not entry.attempt_id
++                        or entry.attempt_token <= 0
++                        for entry in journal
++                    ):
++                        raise RuntimeError("work journal lacks authoritative writer fencing metadata")
++                    paths = normalize_paths([entry.path for entry in journal], root=root)
++                    claim = self.leases.claim_batch(
++                        tenant,
++                        str(root),
++                        list(paths),
++                        ttl_seconds=900,
++                        purpose=f"work-recovery:{work_id}",
++                    )
++                    if not claim.get("success"):
++                        raise LeaseUnavailableError("recovery path lease unavailable")
++                    advisory_lease_id = str(claim.get("lease_id", ""))
++                    try:
++                        attempt = self.fencing_store.claim_attempt(
++                            str(root),
++                            work_id,
++                            f"recovery:{work_id}:{uuid.uuid4().hex}",
++                            ttl_seconds=900,
++                        )
++                    except LeaseUnavailableError:
++                        raise
++                    except Exception:
++                        deferred = True
++                        raise
++                    state_attempt = attempt
++                    fence = self.fencing_store.acquire(
++                        str(root),
++                        f"recovery:{work_id}:{uuid.uuid4().hex}",
++                        paths,
++                        ttl_seconds=900,
++                        attempt=attempt,
++                    )
++                    with self.fencing_store.commit_guard(fence, paths):
++                        self._rollback(root, journal)
++                        if not self._record_recovery_checkpoint(work_id, journal):
++                            raise RuntimeError("work recovery state changed before checkpoint")
++                        self._clear_journal(work_id)
++                except LeaseUnavailableError:
++                    # A live owner may still be committing. Preserve the transient
++                    # row and journal so the scheduled retry can recover after its TTL.
++                    deferred = True
+                 except Exception:
+                     recovered = False
+-            elif journal == []:
+-                # A missing journal is safe only when there is no evidence that a
+-                # prior process had already mutated the workspace.
++                finally:
++                    if fence is not None:
++                        try:
++                            self.fencing_store.release(fence)
++                        except Exception:
++                            pass
++                    if advisory_lease_id:
++                        try:
++                            self.leases.release(tenant, advisory_lease_id)
++                        except Exception:
++                            pass
++            else:
+                 try:
+-                    with closing(self._connect()) as con:
+-                        result_row = con.execute("SELECT result_json FROM work_orders WHERE work_id=?", (work_id,)).fetchone()
+-                    result = json.loads(str(result_row[0] or "{}")) if result_row else {}
+-                    if result.get("changed_files"):
+-                        recovered = False
++                    state_attempt = self.fencing_store.claim_attempt(
++                        str(Path(str(row["root"])).resolve(strict=False)),
++                        work_id,
++                        f"recovery-empty:{work_id}:{uuid.uuid4().hex}",
++                        ttl_seconds=900,
++                    )
++                except LeaseUnavailableError:
++                    # A running attempt may not have written its journal yet.
++                    deferred = True
+                 except Exception:
+                     recovered = False
+-            with closing(self._connect()) as con:
+-                if recovered:
+-                    con.execute(
+-                        "UPDATE work_orders SET state='queued',result_json='{}',updated_at=? WHERE work_id=?",
+-                        (now, work_id),
+-                    )
+-                else:
+-                    result = json_dumps({
+-                        "summary": "work order recovery failed",
+-                        "error": "transaction journal could not be safely restored; manual inspection required",
+-                        "needs_agent": True,
+-                    }, separators=(",", ":"))
+-                    con.execute(
+-                        "UPDATE work_orders SET state='needs_agent',result_json=?,updated_at=? WHERE work_id=?",
+-                        (result, now, work_id),
+-                    )
++                    deferred = True
++            if journal == [] and not deferred:
++                # A missing journal is safe only when there is no evidence that a
++                # prior process had already mutated the workspace.
++                checkpoint_valid = (
++                    isinstance(checkpoint, dict)
++                    and checkpoint.get("version") == 1
++                    and checkpoint.get("work_id") == work_id
++                    and checkpoint.get("rollback_complete") is True
++                )
++                if not checkpoint_valid and prior_result.get("changed_files"):
++                    recovered = False
++            if deferred:
++                if state_attempt is not None:
++                    try:
++                        self.fencing_store.release_attempt(state_attempt)
++                    except Exception:
++                        pass
++                self._recovery_retry_requested = True
++                continue
++            try:
++                guard = (
++                    self.fencing_store.attempt_guard(state_attempt)
++                    if state_attempt is not None else nullcontext()
++                )
++                with guard:
++                    with closing(self._connect()) as con:
++                        con.execute("BEGIN IMMEDIATE")
++                        if recovered:
++                            con.execute(
++                                "UPDATE work_orders SET state='queued',result_json='{}',updated_at=? WHERE work_id=? AND state=?",
++                                (now, work_id, state),
++                            )
++                        else:
++                            result = json_dumps({
++                                "summary": "work order recovery failed",
++                                "error": "transaction journal could not be safely restored; manual inspection required",
++                                "needs_agent": True,
++                            }, separators=(",", ":"))
++                            con.execute(
++                                "UPDATE work_orders SET state='needs_agent',result_json=?,updated_at=? WHERE work_id=? AND state=?",
++                                (result, now, work_id, state),
++                            )
++                        con.execute("COMMIT")
++            except LeaseLostError:
++                self._recovery_retry_requested = True
++                continue
++            finally:
++                if state_attempt is not None:
++                    try:
++                        self.fencing_store.release_attempt(state_attempt)
++                    except Exception:
++                        pass
++
++        # Completion is durable before its journal is removed. If the process
++        # stops between those writes, keep committed workspace and discard only
++        # the now-obsolete rollback snapshot on restart.
++        with closing(self._connect()) as con:
++            completed = con.execute(
++                "SELECT work_id FROM work_orders WHERE state='complete'"
++            ).fetchall()
++        for row in completed:
++            work_id = str(row["work_id"])
++            journal = self._load_journal(work_id)
++            if journal is None or journal:
++                try:
++                    self._clear_journal(work_id)
++                except OSError:
++                    # Keep a failed cleanup retryable on the next startup.
++                    pass
++        if self._recovery_retry_requested:
++            self._schedule_recovery_retry()
++
++    def _schedule_recovery_retry(self) -> None:
++        """Retry deferred crash recovery while a prior writer's lease is live."""
++        if self._stop.is_set():
++            return
++        with self._lock:
++            if self._recovery_timer is not None and self._recovery_timer.is_alive():
++                return
++            timer = threading.Timer(30.0, self._retry_deferred_recovery)
++            timer.name = "local-ai-work-recovery-retry"
++            timer.daemon = True
++            self._recovery_timer = timer
++            timer.start()
++
++    def _retry_deferred_recovery(self) -> None:
++        with self._lock:
++            self._recovery_timer = None
++        if self._stop.is_set():
++            return
++        self._recover()
++        if self._has_queued_work():
++            self._ensure_workers()
+ 
+     def _has_queued_work(self) -> bool:
+         with closing(self._connect()) as con:
+@@ -513,6 +809,26 @@ class WorkOrchestrator:
+                 # same free slot and overflow the configured bounded queue.
+                 con.execute("BEGIN IMMEDIATE")
+                 try:
++                    existing = con.execute(
++                        "SELECT * FROM work_orders WHERE work_id=? AND tenant=?",
++                        (work_id, tenant),
++                    ).fetchone()
++                    if existing is not None:
++                        existing_payload = json.loads(str(existing["payload_json"] or "{}"))
++                        if (
++                            str(existing["root"]) != str(root)
++                            or str(existing["task"]) != task
++                            or existing_payload != normalized
++                        ):
++                            con.execute("ROLLBACK")
++                            return {
++                                "success": False,
++                                "error": "work_id already exists with different request",
++                                "work_id": work_id,
++                                "terminal": True,
++                            }
++                        con.execute("COMMIT")
++                        return self._canonical(existing)
+                     pending = con.execute(
+                         "SELECT COUNT(*) FROM work_orders WHERE state IN ('queued','planning','executing','integrating','verifying')"
+                     ).fetchone()
+@@ -605,10 +921,15 @@ class WorkOrchestrator:
+         row = self._row(work_id, tenant)
+         if not row:
+             return {"success": False, "error": "work order not found", "work_id": work_id}
++        terminal_marks = ",".join("?" for _ in _TERMINAL)
+         with closing(self._connect()) as con:
+-            if str(row["state"]) in _TERMINAL:
+-                return self._canonical(row)
+-            con.execute("UPDATE work_orders SET cancel_requested=1,updated_at=? WHERE work_id=?", (time.time(), work_id))
++            changed = con.execute(
++                f"UPDATE work_orders SET cancel_requested=1,updated_at=? WHERE work_id=? AND tenant=? AND state NOT IN ({terminal_marks})",
++                (time.time(), work_id, tenant, *sorted(_TERMINAL)),
++            ).rowcount
++        if not changed:
++            current = self._row(work_id, tenant)
++            return self._canonical(current) if current else {"success": False, "error": "work order not found", "work_id": work_id}
+         self._wake.set(); self._event(work_id).set()
+         return {"success": True, "status": "cancelling", "work_id": work_id}
+ 
+@@ -622,8 +943,12 @@ class WorkOrchestrator:
+         if not payload["agent_answer"]:
+             return {"success": False, "error": "answer is required", "work_id": work_id}
+         with closing(self._connect()) as con:
+-            con.execute("UPDATE work_orders SET state='queued',payload_json=?,cancel_requested=0,updated_at=? WHERE work_id=?",
+-                        (json_dumps(payload, separators=(",", ":")), time.time(), work_id))
++            changed = con.execute(
++                "UPDATE work_orders SET state='queued',payload_json=?,cancel_requested=0,updated_at=? WHERE work_id=? AND tenant=? AND state='needs_agent' AND cancel_requested=0",
++                (json_dumps(payload, separators=(",", ":")), time.time(), work_id, tenant),
++            ).rowcount
++        if not changed:
++            return {"success": False, "error": "work order state changed", "work_id": work_id}
+         self._ensure_workers(); self._wake.set(); self._event(work_id).set()
+         return {"success": True, "status": "queued", "work_id": work_id}
+ 
+@@ -638,10 +963,24 @@ class WorkOrchestrator:
+         with self._lock:
+             return self._waiters.setdefault(work_id, threading.Event())
+ 
+-    def _set_state(self, work_id: str, state: str, result: dict[str, Any]) -> None:
+-        with closing(self._connect()) as con:
+-            con.execute("UPDATE work_orders SET state=?,result_json=?,updated_at=? WHERE work_id=?",
+-                        (state, json_dumps(result, ensure_ascii=False, separators=(",", ":")), time.time(), work_id))
++    def _state_attempt_guard(
++        self, work_id: str, attempt: WorkAttemptFence | None
++    ):
++        if attempt is None:
++            return nullcontext()
++        if attempt.work_id != work_id:
++            raise LeaseLostError("work attempt does not own this work order")
++        return self.fencing_store.attempt_guard(attempt)
++
++    def _set_state(
++        self, work_id: str, state: str, result: dict[str, Any], *,
++        attempt: WorkAttemptFence | None = None,
++    ) -> None:
++        guard = self._state_attempt_guard(work_id, attempt)
++        with guard:
++            with closing(self._connect()) as con:
++                con.execute("UPDATE work_orders SET state=?,result_json=?,updated_at=? WHERE work_id=?",
++                            (state, json_dumps(result, ensure_ascii=False, separators=(",", ":")), time.time(), work_id))
+         with self._lock:
+             event = self._waiters.get(work_id)
+             if event is not None:
+@@ -649,6 +988,120 @@ class WorkOrchestrator:
+                 if state in _TERMINAL:
+                     self._waiters.pop(work_id, None)
+ 
++    def _persist_handoff_receipts(
++        self, work_id: str, receipts: list[Any], validation: list[dict[str, Any]], *,
++        attempt: WorkAttemptFence | None = None,
++    ) -> list[Any]:
++        from .agent_verification import VerificationReceipt
++
++        guard = self._state_attempt_guard(work_id, attempt)
++        with guard:
++            serialized = [receipt.to_dict() for receipt in receipts]
++            with closing(self._connect()) as con:
++                row = con.execute(
++                    "SELECT result_json FROM work_orders WHERE work_id=?", (work_id,)
++                ).fetchone()
++                if row is None:
++                    raise RuntimeError("verification receipt work record is unavailable")
++                result = json.loads(str(row[0] or "{}"))
++                if not isinstance(result, dict):
++                    raise RuntimeError("verification receipt work record is invalid")
++                result["validation"] = validation
++                result["verification_receipts"] = serialized
++                con.execute(
++                    "UPDATE work_orders SET result_json=?,updated_at=? WHERE work_id=?",
++                    (json_dumps(result, ensure_ascii=False, separators=(",", ":")), time.time(), work_id),
++                )
++
++            with closing(self._connect()) as con:
++                row = con.execute(
++                    "SELECT result_json FROM work_orders WHERE work_id=?", (work_id,)
++                ).fetchone()
++            if row is None:
++                raise RuntimeError("persisted verification receipt work record is unavailable")
++            stored = json.loads(str(row[0] or "{}"))
++            if not isinstance(stored, dict) or not isinstance(stored.get("verification_receipts"), list):
++                raise RuntimeError("persisted verification receipts are invalid")
++            return [VerificationReceipt.from_dict(item) for item in stored["verification_receipts"]]
++
++    def _complete_if_not_cancelled(
++        self, work_id: str, result: dict[str, Any], *, expected_state: str = "verifying",
++        attempt: WorkAttemptFence | None = None,
++    ) -> bool:
++        guard = self._state_attempt_guard(work_id, attempt)
++        with guard:
++            with closing(self._connect()) as con:
++                changed = con.execute(
++                    "UPDATE work_orders SET state='complete',result_json=?,updated_at=? WHERE work_id=? AND state=? AND cancel_requested=0",
++                    (json_dumps(result, ensure_ascii=False, separators=(",", ":")), time.time(), work_id, expected_state),
++                ).rowcount
++        if changed:
++            with self._lock:
++                event = self._waiters.get(work_id)
++                if event is not None:
++                    event.set()
++                    self._waiters.pop(work_id, None)
++        return bool(changed)
++
++    def _set_terminal_if_active(
++        self, work_id: str, state: str, result: dict[str, Any], *,
++        attempt: WorkAttemptFence | None = None,
++    ) -> bool:
++        terminal_marks = ",".join("?" for _ in _TERMINAL)
++        guard = self._state_attempt_guard(work_id, attempt)
++        with guard:
++            with closing(self._connect()) as con:
++                changed = con.execute(
++                    f"UPDATE work_orders SET state=?,result_json=?,updated_at=? WHERE work_id=? AND state NOT IN ({terminal_marks})",
++                    (state, json_dumps(result, ensure_ascii=False, separators=(",", ":")), time.time(), work_id, *sorted(_TERMINAL)),
++                ).rowcount
++        if changed:
++            with self._lock:
++                event = self._waiters.get(work_id)
++                if event is not None:
++                    event.set()
++                    self._waiters.pop(work_id, None)
++        return bool(changed)
++
++    def _fail_if_not_cancelled(
++        self, work_id: str, result: dict[str, Any], *, attempt: WorkAttemptFence | None = None
++    ) -> bool:
++        terminal_marks = ",".join("?" for _ in _TERMINAL)
++        guard = self._state_attempt_guard(work_id, attempt)
++        with guard:
++            with closing(self._connect()) as con:
++                changed = con.execute(
++                    f"UPDATE work_orders SET state='failed',result_json=?,updated_at=? WHERE work_id=? AND state NOT IN ({terminal_marks}) AND cancel_requested=0",
++                    (json_dumps(result, ensure_ascii=False, separators=(",", ":")), time.time(), work_id, *sorted(_TERMINAL)),
++                ).rowcount
++        if changed:
++            with self._lock:
++                event = self._waiters.get(work_id)
++                if event is not None:
++                    event.set()
++                    self._waiters.pop(work_id, None)
++        return bool(changed)
++
++    def _set_terminal_if_not_cancelled(
++        self, work_id: str, state: str, result: dict[str, Any], *,
++        attempt: WorkAttemptFence | None = None,
++    ) -> bool:
++        terminal_marks = ",".join("?" for _ in _TERMINAL)
++        guard = self._state_attempt_guard(work_id, attempt)
++        with guard:
++            with closing(self._connect()) as con:
++                changed = con.execute(
++                    f"UPDATE work_orders SET state=?,result_json=?,updated_at=? WHERE work_id=? AND state NOT IN ({terminal_marks}) AND cancel_requested=0",
++                    (state, json_dumps(result, ensure_ascii=False, separators=(",", ":")), time.time(), work_id, *sorted(_TERMINAL)),
++                ).rowcount
++        if changed:
++            with self._lock:
++                event = self._waiters.get(work_id)
++                if event is not None:
++                    event.set()
++                    self._waiters.pop(work_id, None)
++        return bool(changed)
++
+     def _cancelled(self, work_id: str) -> bool:
+         row = self._row(work_id)
+         return bool(row and int(row["cancel_requested"] or 0)) or self._stop.is_set()
+@@ -686,7 +1139,10 @@ class WorkOrchestrator:
+                     self._execute(row)
+                 except Exception as exc:
+                     try:
+-                        self._set_state(str(row["work_id"]), "failed", {"summary": "work order failed", "error": f"{type(exc).__name__}: {exc}"})
++                        work_id = str(row["work_id"])
++                        failure = {"summary": "work order failed", "error": f"{type(exc).__name__}: {exc}"}
++                        if not self._fail_if_not_cancelled(work_id, failure):
++                            self._set_terminal_if_active(work_id, "cancelled", {"summary": "work order cancelled during worker recovery"})
+                     except Exception:
+                         pass
+         finally:
+@@ -809,13 +1265,100 @@ class WorkOrchestrator:
+             entries.append(_JournalEntry(rel,p.exists(),data))
+         return entries
+ 
++    @staticmethod
++    def _preview_postimages(patch: str, snapshot: list[_JournalEntry]) -> list[_JournalEntry]:
++        """Compute patch outputs in an isolated directory before workspace mutation."""
++        with tempfile.TemporaryDirectory(prefix="local-ai-work-preview-") as temporary:
++            preview_root = Path(temporary)
++            for entry in snapshot:
++                if entry.existed:
++                    path = preview_root / entry.path
++                    path.parent.mkdir(parents=True, exist_ok=True)
++                    path.write_bytes(entry.data)
++            checked = subprocess.run(
++                ["git", "-C", str(preview_root), "apply", "--check", "--whitespace=nowarn", "-"],
++                input=patch,
++                capture_output=True,
++                text=True,
++                timeout=12,
++                check=False,
++                **hidden_run_kwargs(),
++            )
++            if checked.returncode != 0:
++                raise ValueError((checked.stderr or checked.stdout or "git apply preview check failed")[:1000])
++            applied = subprocess.run(
++                ["git", "-C", str(preview_root), "apply", "--whitespace=nowarn", "-"],
++                input=patch,
++                capture_output=True,
++                text=True,
++                timeout=12,
++                check=False,
++                **hidden_run_kwargs(),
++            )
++            if applied.returncode != 0:
++                raise ValueError((applied.stderr or applied.stdout or "git apply preview failed")[:1000])
++            postimages: list[_JournalEntry] = []
++            for entry in snapshot:
++                path = preview_root / entry.path
++                exists = path.exists()
++                data = path.read_bytes() if exists else b""
++                postimages.append(
++                    _JournalEntry(
++                        entry.path,
++                        exists,
++                        data,
++                        exists,
++                        hashlib.sha256(data).hexdigest(),
++                    )
++                )
++            return postimages
++
+     @staticmethod
+     def _rollback(root: Path, journal: list[_JournalEntry]) -> None:
+         root = root.resolve()
++        simulated: dict[str, tuple[bool, bytes]] = {}
++        restore: list[_JournalEntry] = []
+         for entry in reversed(journal):
++            current = simulated.get(entry.path)
++            if current is None:
++                p = root / entry.path
++                cursor = root
++                for part in Path(entry.path).parts:
++                    cursor = cursor / part
++                    is_junction = getattr(cursor, "is_junction", None)
++                    if cursor.is_symlink() or (is_junction is not None and is_junction()):
++                        raise RuntimeError(f"rollback refused symlink or junction path: {entry.path}")
++                resolved = p.resolve(strict=False)
++                try:
++                    resolved.relative_to(root)
++                except ValueError as exc:
++                    raise RuntimeError(f"rollback refused escaping path: {entry.path}") from exc
++                if p.exists() and p.is_dir():
++                    raise RuntimeError(f"rollback refused directory path: {entry.path}")
++                current = (p.exists(), p.read_bytes() if p.exists() else b"")
++            before = (entry.existed, entry.data)
++            if current == before:
++                simulated[entry.path] = before
++                continue
++            postimage_matches = (
++                entry.postimage_existed is not None
++                and current[0] is entry.postimage_existed
++                and hashlib.sha256(current[1]).hexdigest() == entry.postimage_sha256
++            )
++            if not postimage_matches:
++                raise RuntimeError(f"rollback refused: postimage changed for {entry.path}")
++            restore.append(entry)
++            simulated[entry.path] = before
++
++        for entry in restore:
+             p = root / entry.path
+             if entry.existed:
+                 p.parent.mkdir(parents=True, exist_ok=True)
++                try:
++                    if p.stat().st_nlink > 1:
++                        raise RuntimeError(f"rollback refused hard link path: {entry.path}")
++                except FileNotFoundError:
++                    pass
+                 p.write_bytes(entry.data)
+             else:
+                 try:
+@@ -823,27 +1366,77 @@ class WorkOrchestrator:
+                 except FileNotFoundError:
+                     pass
+ 
+-    def _rollback_transaction(self, work_id: str, root: Path, journal: list[_JournalEntry], *, keep: bool = False) -> bool:
++    def _rollback_transaction(
++        self, work_id: str, root: Path, journal: list[_JournalEntry], *,
++        keep: bool = False, attempt: WorkAttemptFence | None = None,
++    ) -> bool:
+         if not journal:
+-            self._clear_journal(work_id)
+-            return False
+-        if keep or not self.rollback_on_failure:
+-            # The caller explicitly owns the partially-mutated workspace from here.
+-            self._clear_journal(work_id)
++            self._clear_journal(work_id, attempt=attempt)
+             return False
+-        self._rollback(root, journal)
+-        journal.clear()
+-        self._clear_journal(work_id)
+-        return True
++        root = root.resolve(strict=False)
++        resource = canonical_resource(root)
++        if attempt is not None and attempt.work_id != work_id:
++            raise LeaseLostError("work attempt does not own this rollback journal")
++        if any(
++            entry.fencing_token <= 0
++            or entry.fencing_resource != resource
++            or not entry.fencing_lease_id
++            or not entry.fencing_owner
++            or not entry.attempt_id
++            or entry.attempt_token <= 0
++            for entry in journal
++        ):
++            raise RuntimeError("work journal lacks authoritative writer fencing metadata")
++        paths = normalize_paths([entry.path for entry in journal], root=root)
++        owns_attempt = attempt is None
++        if attempt is None:
++            attempt = self.fencing_store.claim_attempt(
++                str(root), work_id, f"rollback:{work_id}:{uuid.uuid4().hex}", ttl_seconds=900
++            )
++        fence: FencingLease | None = None
++        try:
++            fence = self.fencing_store.acquire(
++                str(root), f"rollback:{work_id}:{uuid.uuid4().hex}", paths,
++                ttl_seconds=900, attempt=attempt,
++            )
++            with self.fencing_store.commit_guard(fence, paths):
++                if keep or not self.rollback_on_failure:
++                    # The caller explicitly owns the partially-mutated workspace from here.
++                    self._clear_journal(work_id)
++                    return False
++                self._rollback(root, journal)
++                if not self._record_recovery_checkpoint(work_id, journal):
++                    raise RuntimeError("work rollback state changed before checkpoint")
++                journal.clear()
++                self._clear_journal(work_id)
++                return True
++        finally:
++            if fence is not None:
++                try:
++                    self.fencing_store.release(fence)
++                except Exception:
++                    pass
++            if owns_attempt and attempt is not None:
++                try:
++                    self.fencing_store.release_attempt(attempt)
++                except Exception:
++                    pass
+ 
+-    def _apply_patch(self, root: Path, patch: str, tenant: str, work_id: str, journal: list[_JournalEntry], *, permissions: dict[str, Any] | None = None, lease_ttl_seconds: int = 900) -> tuple[list[str], str]:
++    def _apply_patch(
++        self, root: Path, patch: str, tenant: str, work_id: str,
++        journal: list[_JournalEntry], *, permissions: dict[str, Any] | None = None,
++        lease_ttl_seconds: int = 900, attempt: WorkAttemptFence | None = None,
++    ) -> tuple[list[str], str]:
+         root = root.resolve()
+         if not self.allow_edits: raise PermissionError("work orchestrator edits are disabled")
++        if attempt is not None and (attempt.work_id != work_id or attempt.resource != canonical_resource(root)):
++            raise LeaseLostError("work attempt does not own this patch target")
+         permissions = permissions or {}
+         raw=patch.encode("utf-8")
+         if len(raw)>self.max_patch_bytes: raise ValueError("patch exceeds configured byte limit")
+         paths, creates, deletes = _patch_changes(patch)
+         if not paths or len(paths)>self.max_patch_files: raise ValueError("patch changes no files or exceeds file limit")
++        scope_paths = normalize_paths(paths, root=root)
+         if creates and (not self.allow_create or not bool(permissions.get("create", True))):
+             raise PermissionError(f"file creation disabled: {sorted(creates)[0]}")
+         if deletes and (not self.allow_delete or not bool(permissions.get("delete", True))):
+@@ -851,29 +1444,151 @@ class WorkOrchestrator:
+         claim=self.leases.claim_batch(tenant, str(root), paths, ttl_seconds=lease_ttl_seconds, purpose=f"work-order:{work_id}")
+         if not claim.get("success"): raise RuntimeError(f"edit lease unavailable: {claim.get('error','conflict')}")
+         lease_id=str(claim.get("lease_id", ""))
+-        snap=self._snapshot(root, paths)
+-        journal.extend(snap)
+-        # Persist the rollback journal before the first mutating subprocess. A hard
+-        # process crash can therefore restore the repository before re-queuing work.
+-        self._persist_journal(work_id, journal)
++        owns_attempt = attempt is None
++        if attempt is None:
++            try:
++                attempt = self.fencing_store.claim_attempt(
++                    str(root), work_id, f"work:{work_id}:{uuid.uuid4().hex}",
++                    ttl_seconds=lease_ttl_seconds,
++                )
++            except Exception as exc:
++                try:
++                    self.leases.release(tenant, lease_id)
++                except Exception:
++                    pass
++                raise RuntimeError(f"work attempt fence unavailable: {exc}") from exc
++        fence: FencingLease | None = None
++        try:
++            fence = self.fencing_store.acquire(
++                str(root), f"work:{work_id}:{uuid.uuid4().hex}", scope_paths,
++                ttl_seconds=lease_ttl_seconds, attempt=attempt,
++            )
++        except Exception as exc:
++            try:
++                self.leases.release(tenant, lease_id)
++            except Exception:
++                pass
++            if owns_attempt and attempt is not None:
++                try:
++                    self.fencing_store.release_attempt(attempt)
++                except Exception:
++                    pass
++            raise RuntimeError(f"writer fence unavailable: {exc}") from exc
++
++        journal_start = len(journal)
+         try:
+-            check=subprocess.run(["git","-C",str(root),"apply","--check","--whitespace=nowarn","-"], input=patch, capture_output=True, text=True, timeout=12, check=False, **hidden_run_kwargs())
+-            if check.returncode != 0: raise ValueError((check.stderr or check.stdout or "git apply --check failed")[:1000])
+-            applied=subprocess.run(["git","-C",str(root),"apply","--whitespace=nowarn","-"], input=patch, capture_output=True, text=True, timeout=12, check=False, **hidden_run_kwargs())
+-            if applied.returncode != 0: raise ValueError((applied.stderr or applied.stdout or "git apply failed")[:1000])
++            with self.fencing_store.commit_guard(fence, scope_paths):
++                snap = self._snapshot(root, paths)
++                postimages = self._preview_postimages(patch, snap)
++                entries = [
++                    _JournalEntry(
++                        before.path,
++                        before.existed,
++                        before.data,
++                        after.existed,
++                        hashlib.sha256(after.data).hexdigest(),
++                        fence.resource,
++                        fence.lease_id,
++                        fence.owner_id,
++                        fence.fencing_token,
++                        attempt.attempt_id,
++                        attempt.fencing_token,
++                    )
++                    for before, after in zip(snap, postimages)
++                ]
++                journal.extend(entries)
++                try:
++                    # Persist both images under the fence before mutating source.
++                    self._persist_journal(work_id, journal)
++                    check=subprocess.run(["git","-C",str(root),"apply","--check","--whitespace=nowarn","-"], input=patch, capture_output=True, text=True, timeout=12, check=False, **hidden_run_kwargs())
++                    if check.returncode != 0: raise ValueError((check.stderr or check.stdout or "git apply --check failed")[:1000])
++                    applied=subprocess.run(["git","-C",str(root),"apply","--whitespace=nowarn","-"], input=patch, capture_output=True, text=True, timeout=12, check=False, **hidden_run_kwargs())
++                    if applied.returncode != 0: raise ValueError((applied.stderr or applied.stdout or "git apply failed")[:1000])
++                    actual = self._snapshot(root, paths)
++                    if any(
++                        got.existed != expected.postimage_existed
++                        or hashlib.sha256(got.data).hexdigest() != expected.postimage_sha256
++                        for got, expected in zip(actual, entries)
++                    ):
++                        raise RuntimeError("applied patch did not match its journaled postimage")
++                except Exception:
++                    self._rollback(root, entries)
++                    del journal[journal_start:]
++                    self._persist_journal(work_id, journal)
++                    raise
+             return paths, lease_id
+         except Exception:
+-            self._rollback(root, snap)
+-            del journal[-len(snap):]
+-            self._persist_journal(work_id, journal)
+-            try: self.leases.release(tenant, lease_id)
+-            except Exception: pass
++            try:
++                self.leases.release(tenant, lease_id)
++            except Exception:
++                pass
+             raise
++        finally:
++            if fence is not None:
++                try:
++                    self.fencing_store.release(fence)
++                except Exception:
++                    pass
++            if owns_attempt and attempt is not None:
++                try:
++                    self.fencing_store.release_attempt(attempt)
++                except Exception:
++                    pass
+ 
+     def _execute(self, row: sqlite3.Row) -> None:
++        work_id = str(row["work_id"])
++        root = str(row["root"])
++        try:
++            payload = json.loads(str(row["payload_json"] or "{}"))
++            budget_seconds = int((payload.get("budget") or {}).get("max_seconds", self.default_seconds))
++        except Exception:
++            budget_seconds = self.default_seconds
++        attempt_ttl = max(30, min(budget_seconds + 60, 24 * 60 * 60))
++        owner_id = f"orchestrator:{os.getpid()}:{threading.get_ident()}:{uuid.uuid4().hex}"
++        try:
++            attempt = self.fencing_store.claim_attempt(
++                root, work_id, owner_id, ttl_seconds=attempt_ttl
++            )
++        except LeaseUnavailableError:
++            # Another live process still owns this work attempt.
++            return
++        except Exception:
++            # Without an authoritative attempt token this worker cannot change
++            # durable state. Let recovery retry after the fence store is available.
++            self._recovery_retry_requested = True
++            self._schedule_recovery_retry()
++            return
++        try:
++            self._execute_fenced(row, attempt, attempt_ttl)
++        except LeaseLostError:
++            # A successor owns recovery and durable state transitions from here.
++            return
++        except Exception as exc:
++            try:
++                self._fail_if_not_cancelled(
++                    work_id,
++                    {"summary": "work execution failed", "error": f"{type(exc).__name__}: {exc}"[:1200]},
++                    attempt=attempt,
++                )
++            except Exception:
++                # Recovery owns any row whose attempt cannot be guarded.
++                return
++        finally:
++            try:
++                self.fencing_store.release_attempt(attempt)
++            except Exception:
++                pass
++
++    def _execute_fenced(
++        self, row: sqlite3.Row, attempt: WorkAttemptFence, attempt_ttl: int
++    ) -> None:
+         work_id, tenant, root_s, task = str(row["work_id"]), str(row["tenant"]), str(row["root"]), str(row["task"])
+         root=Path(root_s); payload=json.loads(str(row["payload_json"] or "{}")); started=time.monotonic()
+         budget=payload["budget"]; llm_calls=0; replans=0; journal: list[_JournalEntry]=[]; lease_ids=[]; changed=[]; step_results=[]; validation=[]
++        criteria = payload.get("acceptance_criteria") or []
++        verification_receipts: list[Any] = []
++        verification: dict[str, Any] = {}
++        handoff_revision = ""
+         mutation_generation = 0
+         validated_generation = -1
+         def budget_ok() -> bool:
+@@ -886,18 +1601,79 @@ class WorkOrchestrator:
+                 if c and c not in commands: commands.append(c)
+             return commands[:self.validation_limit] or ["git diff --check"]
+         def run_validations(criterion: str) -> None:
+-            nonlocal validated_generation
++            nonlocal attempt, validated_generation, handoff_revision
++            from .agent_verification import (
++                VerificationReceipt,
++                classify_verification_command,
++                criterion_evidence_type,
++            )
++
+             perms = payload.get("permissions", {})
+             if not bool(perms.get("tests", True)) and not bool(perms.get("build", True)):
+                 raise PermissionError("validation is required for mutating whole-task execution")
+             remaining = max(1, int(budget["max_seconds"] - (time.monotonic() - started)))
+             for command in validation_commands():
+-                r=self.services.command({"action":"run","command":command,"cwd":root_s,"timeout":min(300,remaining),"task_id":work_id,"criterion":criterion},tenant)
+-                validation.append({"command":command,"success":bool(r.get("success")),"exit_code":r.get("exit_code"),"error":r.get("error",""),"generation":mutation_generation})
++                evidence_type = classify_verification_command(command)
++                applicable = [
++                    item for item in criteria
++                    if evidence_type != "source_review" and criterion_evidence_type(item) == evidence_type
++                ]
++                run_criterion = applicable[0] if applicable else criterion
++                attempt = self.fencing_store.renew_attempt(attempt, ttl_seconds=attempt_ttl)
++                r = self.services.command({
++                    "action": "run", "command": command, "cwd": root_s,
++                    "timeout": min(300, remaining), "task_id": work_id,
++                    "criterion": run_criterion, "record_verification": False,
++                    "writer_fence": attempt,
++                    "paths": list(dict.fromkeys(changed)),
++                }, tenant)
++                self.fencing_store.assert_attempt_current(attempt)
++                command_id = str(r.get("execution_id") or r.get("command_id") or "").strip()
++                command_revision = str(r.get("repository_revision") or "").strip()
++                if command_revision:
++                    handoff_revision = command_revision
++                validation_entry = {
++                    "command": command, "success": bool(r.get("success")),
++                    "exit_code": r.get("exit_code"), "error": r.get("error", ""),
++                    "generation": mutation_generation, "command_id": command_id,
++                    "repository_revision": command_revision, "evidence_type": evidence_type,
++                }
++                validation.append(validation_entry)
+                 if not r.get("success"): raise RuntimeError(f"validation failed: {command}: {r.get('error','non-zero exit')}")
++                if (
++                    applicable and command_id and command_revision
++                    and type(r.get("exit_code")) is int and r.get("exit_code") == 0
++                ):
++                    for accepted_criterion in applicable:
++                        proof = {
++                            "kind": "work_command_verification", "passed": True,
++                            "task_id": work_id, "owner": tenant,
++                            "criterion": accepted_criterion, "command": command,
++                            "command_id": command_id, "repository_revision": command_revision,
++                            "mutation_generation": mutation_generation,
++                            "exit_code": r.get("exit_code"),
++                            "result": {"success": r.get("success") is True, "exit_code": r.get("exit_code")},
++                        }
++                        with self._state_attempt_guard(work_id, attempt):
++                            evidence_id = self.artifacts.put(
++                                json_dumps(proof, ensure_ascii=False), tenant, "command_verification"
++                            )
++                            if not evidence_id:
++                                raise RuntimeError("verification receipt evidence was not persisted")
++                            receipt = VerificationReceipt.create(
++                                task_id=work_id, criterion=accepted_criterion, passed=True,
++                                owner=tenant, evidence_id=str(evidence_id), command_id=command_id,
++                                repository_revision=command_revision,
++                                mutation_generation=mutation_generation, evidence_type=evidence_type,
++                                details={"command": command, "exit_code": r.get("exit_code")},
++                            )
++                            if self.verification_store is not None:
++                                self.verification_store.record(receipt, update_task=False)
++                            verification_receipts.append(receipt)
++                            validation_entry.setdefault("receipt_ids", []).append(receipt.receipt_id)
+             validated_generation = mutation_generation
+         def repair(reason: str) -> bool:
+-            nonlocal llm_calls, replans, mutation_generation
++            nonlocal attempt, llm_calls, replans, mutation_generation
+             # A repair consumes one model call and must leave capacity for a fresh
+             # verifier call; never "repair" into an unverifiable budget state.
+             if (replans >= self.max_replans or not budget_ok()
+@@ -913,33 +1689,46 @@ class WorkOrchestrator:
+             patch=_diff_from_text(str(res.get("text","")))
+             if not patch:
+                 return False
+-            lease_ttl = min(7200, max(900, int(budget["max_seconds"]) + 60))
++            lease_ttl = attempt_ttl
+             try:
+-                paths,lease=self._apply_patch(root,patch,tenant,work_id,journal,permissions=payload.get("permissions",{}),lease_ttl_seconds=lease_ttl)
++                attempt = self.fencing_store.renew_attempt(attempt, ttl_seconds=attempt_ttl)
++                paths,lease=self._apply_patch(root,patch,tenant,work_id,journal,permissions=payload.get("permissions",{}),lease_ttl_seconds=lease_ttl,attempt=attempt)
+             except Exception:
+                 return False
+             lease_ids.append(lease); changed.extend(x for x in paths if x not in changed)
+             mutation_generation += 1
+             return True
+-        if self._cancelled(work_id): self._set_state(work_id,"cancelled",{"summary":"cancelled before start"}); return
+-        self._set_state(work_id,"planning",{"summary":"collecting context and planning","progress":{"phase":"planning","completed":0}})
++        if self._cancelled(work_id):
++            self._set_terminal_if_active(work_id,"cancelled",{"summary":"cancelled before start"},attempt=attempt)
++            return
++        self._set_state(work_id,"planning",{"summary":"collecting context and planning","progress":{"phase":"planning","completed":0}},attempt=attempt)
+         context={"profile":self.services.repo_profile(root_s),"map":self.services.repo_map(root_s,80),"tests":self.services.test_matrix(root_s)}
+         plan=self._plan(tenant,root_s,task,payload,context); llm_calls+=1
+         if bool(plan.get("needs_agent")):
+-            self._set_state(work_id,"needs_agent",{"summary":str(plan.get("summary",task))[:600],"needs_agent":True,"question":str(plan.get("question","Clarification required"))[:1200],"plan":plan}); return
++            result={"summary":str(plan.get("summary",task))[:600],"needs_agent":True,"question":str(plan.get("question","Clarification required"))[:1200],"plan":plan}
++            if not self._set_terminal_if_not_cancelled(work_id,"needs_agent",result,attempt=attempt):
++                raise InterruptedError("work order cancelled before agent handoff")
++            return
+         if payload.get("mode") in {"plan","plan_only","dry_run"}:
+             art=self.artifacts.put(json_dumps({"task":task,"plan":plan},ensure_ascii=False,indent=2),tenant,"work-plan")
+-            self._set_state(work_id,"complete",{"summary":str(plan.get("summary",task))[:600],"plan":plan,"artifact_id":art,"available_details":["plan"]}); return
+-        self._set_state(work_id,"executing",{"summary":str(plan.get("summary",task))[:600],"plan":plan,"progress":{"phase":"executing","completed":0,"total":len(plan["steps"])}})
++            handoff={"summary":str(plan.get("summary",task))[:600],"plan":plan,"artifact_id":art,"available_details":["plan"]}
++            if not self._complete_if_not_cancelled(work_id,handoff,expected_state="planning",attempt=attempt):
++                raise InterruptedError("work order cancelled before completion")
++            return
++        self._set_state(work_id,"executing",{"summary":str(plan.get("summary",task))[:600],"plan":plan,"progress":{"phase":"executing","completed":0,"total":len(plan["steps"]) }},attempt=attempt)
+         try:
+             for idx, step in enumerate(plan["steps"]):
++                attempt = self.fencing_store.renew_attempt(attempt, ttl_seconds=attempt_ttl)
+                 if self._cancelled(work_id): raise InterruptedError("cancelled")
+                 if not budget_ok():
+                     kept = bool(payload.get("keep_failed_workspace"))
+-                    rolled = self._rollback_transaction(work_id, root, journal, keep=kept)
++                    rolled = self._rollback_transaction(work_id, root, journal, keep=kept, attempt=attempt)
+                     if rolled:
+                         changed = []
+-                    self._set_state(work_id,"partial",{"summary":"work budget exhausted" + ("; workspace rolled back" if rolled else ""),"plan":plan,"steps":step_results,"changed_files":changed,"rolled_back":rolled,"progress":{"completed":idx,"total":len(plan["steps"])}}); return
++                    result={"summary":"work budget exhausted" + ("; workspace rolled back" if rolled else ""),"plan":plan,"steps":step_results,"changed_files":changed,"rolled_back":rolled,"progress":{"completed":idx,"total":len(plan["steps"])}}
++                    if not self._set_terminal_if_not_cancelled(work_id,"partial",result,attempt=attempt):
++                        raise InterruptedError("work order cancelled before partial handoff")
++                    return
+                 kind=step["kind"]; outcome={"id":step["id"],"kind":kind,"task":step["task"],"success":True}
+                 if kind == "inspect":
+                     if self.parallel_deterministic > 1:
+@@ -973,8 +1762,8 @@ class WorkOrchestrator:
+                                 continue
+                             raise RuntimeError(last_error)
+                         try:
+-                            lease_ttl = min(7200, max(900, int(budget["max_seconds"]) + 60))
+-                            paths,lease=self._apply_patch(root,patch,tenant,work_id,journal, permissions=perms, lease_ttl_seconds=lease_ttl)
++                            lease_ttl = attempt_ttl
++                            paths,lease=self._apply_patch(root,patch,tenant,work_id,journal, permissions=perms, lease_ttl_seconds=lease_ttl, attempt=attempt)
+                             break
+                         except Exception as exc:
+                             last_error = str(exc)[:1000]
+@@ -1006,23 +1795,25 @@ class WorkOrchestrator:
+                         parsed=_json_object(str(vr.get("text",""))) or {"passed":False,"summary":"verifier returned invalid result","risks":["invalid verifier response"]}
+                         outcome["verification"]=parsed
+                         if parsed.get("needs_agent"):
+-                            rolled = self._rollback_transaction(work_id, root, journal, keep=False)
++                            rolled = self._rollback_transaction(work_id, root, journal, keep=False, attempt=attempt)
+                             if rolled:
+                                 changed = []
+-                            self._set_state(work_id,"needs_agent",{"summary":str(parsed.get("summary","needs agent")),"needs_agent":True,"question":str(parsed.get("question","Decision required")),"plan":plan,"steps":step_results+[outcome],"changed_files":changed,"validation":validation,"rolled_back":rolled}); return
++                            result={"summary":str(parsed.get("summary","needs agent")),"needs_agent":True,"question":str(parsed.get("question","Decision required")),"plan":plan,"steps":step_results+[outcome],"changed_files":changed,"validation":validation,"rolled_back":rolled}
++                            if not self._set_terminal_if_not_cancelled(work_id,"needs_agent",result,attempt=attempt):
++                                raise InterruptedError("work order cancelled before agent handoff")
++                            return
+                         if bool(parsed.get("passed")):
+                             break
+                         if not repair(f"review failed: {parsed.get('summary','unspecified')}"):
+                             raise RuntimeError(f"verification failed: {parsed.get('summary','unspecified')}")
+                         run_validations("replanned repair after review")
+                 step_results.append(outcome)
+-                self._set_state(work_id,"executing",{"summary":str(plan.get("summary",task))[:600],"plan":plan,"steps":step_results,"changed_files":changed,"validation":validation,"progress":{"phase":"executing","completed":idx+1,"total":len(plan["steps"])}})
++                self._set_state(work_id,"executing",{"summary":str(plan.get("summary",task))[:600],"plan":plan,"steps":step_results,"changed_files":changed,"validation":validation,"progress":{"phase":"executing","completed":idx+1,"total":len(plan["steps"]) }},attempt=attempt)
+ 
+             # Whole-task final check uses the original request, not the planner summary.
+-            self._set_state(work_id,"verifying",{"summary":"whole-task verification","plan":plan,"steps":step_results,"changed_files":changed,"validation":validation})
++            self._set_state(work_id,"verifying",{"summary":"whole-task verification","plan":plan,"steps":step_results,"changed_files":changed,"validation":validation},attempt=attempt)
+             if changed and validated_generation != mutation_generation:
+                 run_validations("final integrated validation")
+-            criteria=payload.get("acceptance_criteria") or []
+             while True:
+                 if not budget_ok():
+                     raise RuntimeError("LLM/time budget exhausted before final whole-task verification")
+@@ -1040,6 +1831,88 @@ class WorkOrchestrator:
+                     got={str(x.get("criterion","")): bool(x.get("passed")) for x in verification.get("criteria",[]) if isinstance(x,dict)}
+                     if not all(any(c == k or c.lower() in k.lower() or k.lower() in c.lower() for k,p in got.items() if p) for c in criteria): verification["passed"]=False
+                 if verification.get("passed"):
++                    if not handoff_revision:
++                        revision = subprocess.run(
++                            ["git", "-C", root_s, "rev-parse", "HEAD"],
++                            capture_output=True, text=True, check=False, timeout=5,
++                            **hidden_run_kwargs(),
++                        )
++                        if revision.returncode != 0 or not revision.stdout.strip():
++                            raise RuntimeError("verification receipt gate failed: repository revision is unavailable")
++                        handoff_revision = revision.stdout.strip()
++
++                    passed_model_criteria = {
++                        criterion for criterion in criteria
++                        if any(
++                            passed and (
++                                criterion == reported
++                                or criterion.lower() in reported.lower()
++                                or reported.lower() in criterion.lower()
++                            )
++                            for reported, passed in got.items()
++                        )
++                    }
++                    from .agent_verification import criterion_evidence_type
++                    review_criteria = [
++                        criterion for criterion in criteria
++                        if criterion_evidence_type(criterion) == "source_review"
++                        and criterion in passed_model_criteria
++                    ]
++                    if review_criteria:
++                        review_proof = {
++                            "kind": "work_source_review", "passed": True, "task_id": work_id,
++                            "owner": tenant, "criteria": review_criteria,
++                            "verification": verification, "repository_revision": handoff_revision,
++                            "mutation_generation": mutation_generation, "diff": diff,
++                        }
++                        review_evidence = self.artifacts.put(
++                            json_dumps(review_proof, ensure_ascii=False), tenant, "source_review"
++                        )
++                        if not review_evidence:
++                            raise RuntimeError("verification receipt gate failed: source review evidence was not persisted")
++                        from .agent_verification import VerificationReceipt
++                        for review_criterion in review_criteria:
++                            receipt = VerificationReceipt.create(
++                                task_id=work_id, criterion=review_criterion, passed=True,
++                                owner=tenant, evidence_id=str(review_evidence),
++                                repository_revision=handoff_revision,
++                                mutation_generation=mutation_generation, evidence_type="source_review",
++                                details={"summary": str(verification.get("summary", ""))},
++                            )
++                            with self._state_attempt_guard(work_id, attempt):
++                                if self.verification_store is not None:
++                                    self.verification_store.record(receipt, update_task=False)
++                                verification_receipts.append(receipt)
++
++                    persisted_receipts = self._persist_handoff_receipts(
++                        work_id, verification_receipts, validation, attempt=attempt
++                    )
++                    latest = {}
++                    for receipt in persisted_receipts:
++                        previous = latest.get(receipt.criterion)
++                        if previous is None or receipt.observed_at > previous.observed_at:
++                            latest[receipt.criterion] = receipt
++                    from .agent_verification import evaluate_completion_receipts
++                    receipt_gate = evaluate_completion_receipts(
++                        work_id, criteria, persisted_receipts, owner=tenant,
++                        repository_revision=handoff_revision,
++                        mutation_generation=mutation_generation,
++                        artifact_store=self.artifacts, require_repository_revision=True,
++                        mapped_receipt_ids={
++                            criterion: latest[criterion].receipt_id if criterion in latest else ""
++                            for criterion in criteria
++                        },
++                    )
++                    verification["receipt_gate"] = {
++                        "complete": receipt_gate.complete,
++                        "satisfied_criteria": list(receipt_gate.satisfied_criteria),
++                        "unsatisfied_criteria": list(receipt_gate.unsatisfied_criteria),
++                        "stale_criteria": list(receipt_gate.stale_criteria),
++                        "receipt_ids": {key: value.receipt_id for key, value in latest.items()},
++                    }
++                    if not receipt_gate.complete:
++                        missing = ", ".join((*receipt_gate.unsatisfied_criteria, *receipt_gate.stale_criteria))
++                        raise RuntimeError(f"verification receipt gate failed for: {missing or 'acceptance criteria'}")
+                     break
+                 if not repair(f"final whole-task verification failed: {verification.get('summary','unspecified')}"):
+                     raise RuntimeError(f"whole-task verification failed: {verification.get('summary','unspecified')}")
+@@ -1047,18 +1920,24 @@ class WorkOrchestrator:
+             changed = [str(x) for x in diff.get("changed_files", changed)] if isinstance(diff, dict) else changed
+             report={"original_task":task,"plan":plan,"steps":step_results,"changed_files":changed,"diff":diff,"validation":validation,"verification":verification,"llm_calls":llm_calls,"replans":replans,"elapsed_seconds":round(time.monotonic()-started,2)}
+             artifact=self.artifacts.put(json_dumps(report,ensure_ascii=False,indent=2),tenant,"work-handoff")
+-            handoff={"summary":str(verification.get("summary") or plan.get("summary") or "work complete")[:900],"changed_files":changed,"validation":{"passed":all(v.get("success") for v in validation),"commands":len(validation)},"verification":verification,"risks":verification.get("risks",[])[:8],"handoff_id":artifact,"artifact_id":artifact,"available_details":["plan","steps","diff","validation","verification"]}
+-            self._clear_journal(work_id)
+-            self._set_state(work_id,"complete",handoff)
++            handoff={"summary":str(verification.get("summary") or plan.get("summary") or "work complete")[:900],"changed_files":changed,"validation":{"passed":all(v.get("success") for v in validation),"commands":len(validation)},"verification":verification,"verification_receipts":[receipt.to_dict() for receipt in verification_receipts],"risks":verification.get("risks",[])[:8],"handoff_id":artifact,"artifact_id":artifact,"available_details":["plan","steps","diff","validation","verification","verification_receipts"]}
++            if not self._complete_if_not_cancelled(work_id, handoff, attempt=attempt):
++                raise InterruptedError("work order cancelled before completion")
++            try:
++                self._clear_journal(work_id, attempt=attempt)
++            except OSError:
++                # Completion is already durable. Leave the journal for startup
++                # cleanup; never roll back a committed handoff on cleanup error.
++                pass
+         except InterruptedError:
+-            rolled = self._rollback_transaction(work_id, root, journal, keep=bool(payload.get("keep_failed_workspace")))
++            rolled = self._rollback_transaction(work_id, root, journal, keep=bool(payload.get("keep_failed_workspace")), attempt=attempt)
+             if rolled:
+                 changed = []
+-            self._set_state(work_id,"cancelled",{"summary":"work order cancelled" + ("; workspace rolled back" if rolled else ""),"changed_files":changed,"rolled_back":rolled})
++            self._set_terminal_if_active(work_id,"cancelled",{"summary":"work order cancelled" + ("; workspace rolled back" if rolled else ""),"changed_files":changed,"rolled_back":rolled},attempt=attempt)
+         except Exception as exc:
+             rolled=False
+             try:
+-                rolled = self._rollback_transaction(work_id, root, journal, keep=bool(payload.get("keep_failed_workspace")))
++                rolled = self._rollback_transaction(work_id, root, journal, keep=bool(payload.get("keep_failed_workspace")), attempt=attempt)
+                 if rolled:
+                     changed=[]
+             except Exception:
+@@ -1067,9 +1946,12 @@ class WorkOrchestrator:
+                 failure_diff = self.services.repo_diff(root_s,"HEAD",False,6500)
+             except Exception:
+                 failure_diff = {"success": False, "error": "diff unavailable"}
+-            report={"original_task":task,"plan":plan,"steps":step_results,"changed_files":changed,"diff":failure_diff,"validation":validation,"error":str(exc),"rolled_back":rolled,"llm_calls":llm_calls,"replans":replans}
++            serialized_receipts = [receipt.to_dict() for receipt in verification_receipts]
++            report={"original_task":task,"plan":plan,"steps":step_results,"changed_files":changed,"diff":failure_diff,"validation":validation,"verification":verification,"verification_receipts":serialized_receipts,"error":str(exc),"rolled_back":rolled,"llm_calls":llm_calls,"replans":replans}
+             artifact=self.artifacts.put(json_dumps(report,ensure_ascii=False,indent=2),tenant,"work-failure")
+-            self._set_state(work_id,"failed",{"summary":"whole task failed" + (" and was rolled back" if rolled else ""),"error":str(exc)[:1200],"changed_files":changed,"validation":{"passed":False,"commands":len(validation)},"artifact_id":artifact,"available_details":["plan","steps","validation","failure_report"]})
++            failure={"summary":"whole task failed" + (" and was rolled back" if rolled else ""),"error":str(exc)[:1200],"changed_files":changed,"validation":{"passed":False,"commands":len(validation)},"verification":verification,"verification_receipts":serialized_receipts,"artifact_id":artifact,"available_details":["plan","steps","validation","verification","verification_receipts","failure_report"]}
++            if not self._fail_if_not_cancelled(work_id,failure,attempt=attempt):
++                self._set_terminal_if_active(work_id,"cancelled",{"summary":"work order cancelled during failure recovery" + ("; workspace rolled back" if rolled else ""),"changed_files":changed,"rolled_back":rolled},attempt=attempt)
+         finally:
+             for lid in lease_ids:
+                 try: self.leases.release(tenant,lid)
+@@ -1077,6 +1959,11 @@ class WorkOrchestrator:
+ 
+     def close(self) -> None:
+         self._stop.set(); self._wake.set()
++        with self._lock:
++            recovery_timer = self._recovery_timer
++            self._recovery_timer = None
++        if recovery_timer is not None:
++            recovery_timer.cancel()
+         current = threading.current_thread()
+         with self._lock:
+             workers = list(self._workers)
+diff --git a/src/local_ai_hub/work_fencing.py b/src/local_ai_hub/work_fencing.py
+new file mode 100644
+index 0000000..49c24cd
+--- /dev/null
++++ b/src/local_ai_hub/work_fencing.py
+@@ -0,0 +1,637 @@
++"""Cross-process writer leases with monotonic fencing tokens.
++
++The lease store is authoritative only when every writer uses the same database
++and enters ``commit_guard`` around its final write-set import and journal commit.
++``assert_current`` is a preflight check; it does not by itself protect a later
++write from a lease expiry/reacquisition race.
++"""
++
++from __future__ import annotations
++
++import json
++import math
++import os
++import sqlite3
++import threading
++import time
++from contextlib import closing, contextmanager
++from dataclasses import dataclass, replace
++from pathlib import Path, PurePosixPath, PureWindowsPath
++from typing import Callable, Iterator, Sequence
++from uuid import uuid4
++
++from .sqlite_support import connect_sqlite, initialize_wal, retry_busy
++
++
++MAX_TTL_SECONDS = 24 * 60 * 60
++
++
++class LeaseLostError(RuntimeError):
++    """The lease expired, was superseded, or no longer belongs to its owner."""
++
++
++class LeaseUnavailableError(RuntimeError):
++    """A live lease already owns an overlapping path scope."""
++
++
++class LeaseScopeError(PermissionError):
++    """A writer attempted to mutate a path outside its declared lease scope."""
++
++
++@dataclass(frozen=True)
++class WorkAttemptFence:
++    """Execution epoch held for one work ID; stale epochs cannot renew or commit."""
++
++    resource: str
++    work_id: str
++    attempt_id: str
++    owner_id: str
++    fencing_token: int
++    expires_at: float
++
++
++@dataclass(frozen=True)
++class FencingLease:
++    """Exact path lease, optionally bound to its work attempt epoch."""
++
++    resource: str
++    lease_id: str
++    owner_id: str
++    fencing_token: int
++    expires_at: float
++    paths: tuple[str, ...]
++    attempt_id: str = ""
++    attempt_token: int = 0
++
++
++def canonical_resource(resource: str | Path) -> str:
++    value = str(resource).strip()
++    if not value or "\x00" in value:
++        raise ValueError("resource must be a non-empty filesystem root")
++    return os.path.normcase(str(Path(value).expanduser().resolve(strict=False)))
++
++
++def normalize_paths(
++    paths: Sequence[str], *, root: str | Path | None = None
++) -> tuple[str, ...]:
++    normalized: set[str] = set()
++    resolved_root = Path(root).resolve(strict=False) if root is not None else None
++    for value in paths:
++        raw = str(value).replace("\\", "/")
++        windows = PureWindowsPath(raw)
++        posix = PurePosixPath(raw)
++        parts = raw.split("/")
++        if (
++            not raw
++            or "\x00" in raw
++            or windows.drive
++            or windows.root
++            or posix.is_absolute()
++            or any(part in {"", ".", ".."} for part in parts)
++        ):
++            raise ValueError(f"unsafe lease path: {value!r}")
++        identity = "/".join(parts)
++        if resolved_root is not None:
++            target = (resolved_root / Path(*parts)).resolve(strict=False)
++            try:
++                target = target.relative_to(resolved_root)
++            except ValueError as exc:
++                raise ValueError(f"lease path escapes filesystem root: {value!r}") from exc
++            identity = target.as_posix()
++        normalized.add(identity)
++    if not normalized:
++        raise ValueError("writer lease requires at least one exact path")
++    return tuple(sorted(normalized))
++
++
++def _overlaps(left: Sequence[str], right: Sequence[str]) -> bool:
++    left_keys = tuple(os.path.normcase(path).replace("\\", "/") for path in left)
++    right_keys = tuple(os.path.normcase(path).replace("\\", "/") for path in right)
++    for first in left_keys:
++        for second in right_keys:
++            if (
++                first == second
++                or first.startswith(second + "/")
++                or second.startswith(first + "/")
++            ):
++                return True
++    return False
++
++
++class FencingLeaseStore:
++    """SQLite-backed, cross-process lease and commit fence.
++
++    Tokens increase monotonically per canonical resource. Disjoint path scopes
++    may hold live leases together. The SQLite ``BEGIN IMMEDIATE`` transaction in
++    ``commit_guard`` serializes lease changes with the caller's protected write
++    and remains open until the caller's write/journal commit finishes.
++    """
++
++    def __init__(
++        self,
++        database_path: Path,
++        *,
++        clock: Callable[[], float] = time.time,
++    ) -> None:
++        self.path = Path(database_path)
++        self.path.parent.mkdir(parents=True, exist_ok=True)
++        self._clock = clock
++        self._init_lock = threading.RLock()
++        self._initialized = False
++        self._initialize()
++
++    def _connect(self) -> sqlite3.Connection:
++        return connect_sqlite(self.path, timeout_seconds=5.0, isolation_level=None)
++
++    def _initialize(self) -> None:
++        if self._initialized:
++            return
++        with self._init_lock:
++            if self._initialized:
++                return
++
++            def setup() -> None:
++                with closing(self._connect()) as con:
++                    initialize_wal(con)
++                    con.execute(
++                        """CREATE TABLE IF NOT EXISTS writer_fence_counters (
++                            resource TEXT PRIMARY KEY,
++                            last_token INTEGER NOT NULL CHECK(last_token >= 0)
++                        )"""
++                    )
++                    con.execute(
++                        """CREATE TABLE IF NOT EXISTS writer_fence_leases (
++                            lease_id TEXT PRIMARY KEY,
++                            resource TEXT NOT NULL,
++                            owner_id TEXT NOT NULL,
++                            fencing_token INTEGER NOT NULL CHECK(fencing_token > 0),
++                            expires_at REAL NOT NULL,
++                            paths_json TEXT NOT NULL,
++                            attempt_id TEXT NOT NULL DEFAULT '',
++                            attempt_token INTEGER NOT NULL DEFAULT 0,
++                            active INTEGER NOT NULL CHECK(active IN (0, 1))
++                        )"""
++                    )
++                    lease_columns = {
++                        str(row[1]) for row in con.execute("PRAGMA table_info(writer_fence_leases)")
++                    }
++                    if "attempt_id" not in lease_columns:
++                        con.execute("ALTER TABLE writer_fence_leases ADD COLUMN attempt_id TEXT NOT NULL DEFAULT ''")
++                    if "attempt_token" not in lease_columns:
++                        con.execute("ALTER TABLE writer_fence_leases ADD COLUMN attempt_token INTEGER NOT NULL DEFAULT 0")
++                    con.execute(
++                        """CREATE TABLE IF NOT EXISTS writer_fence_attempts (
++                            attempt_id TEXT PRIMARY KEY,
++                            resource TEXT NOT NULL,
++                            work_id TEXT NOT NULL,
++                            owner_id TEXT NOT NULL,
++                            fencing_token INTEGER NOT NULL CHECK(fencing_token > 0),
++                            expires_at REAL NOT NULL,
++                            active INTEGER NOT NULL CHECK(active IN (0, 1)),
++                            UNIQUE(resource, work_id, fencing_token)
++                        )"""
++                    )
++                    con.execute(
++                        "CREATE INDEX IF NOT EXISTS idx_writer_attempt_current "
++                        "ON writer_fence_attempts(resource, work_id, active, expires_at)"
++                    )
++                    con.execute(
++                        "CREATE INDEX IF NOT EXISTS idx_writer_fence_live "
++                        "ON writer_fence_leases(resource, active, expires_at)"
++                    )
++
++            retry_busy(setup, retries=5, base_delay_seconds=0.02)
++            self._initialized = True
++
++    @staticmethod
++    def _attempt_counter_key(resource: str, work_id: str) -> str:
++        return f"{resource}\nwork-order:{work_id}"
++
++    def _assert_attempt(self, con: sqlite3.Connection, attempt: WorkAttemptFence) -> None:
++        now = float(self._clock())
++        row = con.execute(
++            """SELECT resource,work_id,owner_id,fencing_token,expires_at,active
++               FROM writer_fence_attempts WHERE attempt_id=?""",
++            (attempt.attempt_id,),
++        ).fetchone()
++        if row is None:
++            raise LeaseLostError("work attempt fence no longer exists")
++        resource, work_id, owner, token, expires_at, active = row
++        if (
++            str(resource) != attempt.resource
++            or str(work_id) != attempt.work_id
++            or str(owner) != attempt.owner_id
++            or int(token) != attempt.fencing_token
++        ):
++            raise LeaseLostError("work attempt identity or fencing token changed")
++        if not bool(active) or float(expires_at) <= now:
++            raise LeaseLostError("work attempt fence expired or was superseded")
++
++    @contextmanager
++    def attempt_guard(self, attempt: WorkAttemptFence) -> Iterator[None]:
++        """Fence one durable work-order state transition against attempt expiry."""
++        con = self._connect()
++        try:
++            con.execute("BEGIN IMMEDIATE")
++            self._assert_attempt(con, attempt)
++            yield
++            con.execute("COMMIT")
++        except BaseException:
++            if con.in_transaction:
++                con.execute("ROLLBACK")
++            raise
++        finally:
++            con.close()
++
++    def assert_attempt_current(self, attempt: WorkAttemptFence) -> None:
++        """Check an execution epoch before starting work with external side effects."""
++        with closing(self._connect()) as con:
++            con.execute("BEGIN")
++            try:
++                self._assert_attempt(con, attempt)
++                con.execute("COMMIT")
++            except BaseException:
++                if con.in_transaction:
++                    con.execute("ROLLBACK")
++                raise
++
++    def claim_attempt(
++        self,
++        resource: str | Path,
++        work_id: str,
++        owner_id: str,
++        *,
++        ttl_seconds: float,
++    ) -> WorkAttemptFence:
++        """Claim a new execution epoch after the previous owner is inactive/expired.
++
++        Call once at execution start or recovery. Continue a live attempt only by
++        renewing its returned token; never mint a replacement from a stale worker.
++        """
++        root_id = canonical_resource(resource)
++        work = str(work_id).strip()
++        owner = str(owner_id).strip()
++        if not work or not owner or "\x00" in work + owner:
++            raise ValueError("work_id and owner_id must be non-empty")
++        now = float(self._clock())
++        expires_at = now + self._ttl(ttl_seconds)
++        attempt_id = uuid4().hex
++        counter_key = self._attempt_counter_key(root_id, work)
++
++        def write() -> WorkAttemptFence:
++            with closing(self._connect()) as con:
++                con.execute("BEGIN IMMEDIATE")
++                try:
++                    con.execute(
++                        "UPDATE writer_fence_attempts SET active=0 "
++                        "WHERE resource=? AND work_id=? AND active=1 AND expires_at<=?",
++                        (root_id, work, now),
++                    )
++                    current = con.execute(
++                        "SELECT attempt_id FROM writer_fence_attempts "
++                        "WHERE resource=? AND work_id=? AND active=1 AND expires_at>?",
++                        (root_id, work, now),
++                    ).fetchone()
++                    if current is not None:
++                        raise LeaseUnavailableError("work order already has a live execution owner")
++                    row = con.execute(
++                        "SELECT last_token FROM writer_fence_counters WHERE resource=?",
++                        (counter_key,),
++                    ).fetchone()
++                    token = 1 if row is None else int(row[0]) + 1
++                    con.execute(
++                        "INSERT INTO writer_fence_counters(resource,last_token) VALUES(?,?) "
++                        "ON CONFLICT(resource) DO UPDATE SET last_token=excluded.last_token",
++                        (counter_key, token),
++                    )
++                    con.execute(
++                        """INSERT INTO writer_fence_attempts(
++                            attempt_id,resource,work_id,owner_id,fencing_token,expires_at,active
++                        ) VALUES(?,?,?,?,?,?,1)""",
++                        (attempt_id, root_id, work, owner, token, expires_at),
++                    )
++                    con.execute("COMMIT")
++                    return WorkAttemptFence(root_id, work, attempt_id, owner, token, expires_at)
++                except BaseException:
++                    if con.in_transaction:
++                        con.execute("ROLLBACK")
++                    raise
++
++        return retry_busy(write, retries=5, base_delay_seconds=0.02)
++
++    def renew_attempt(
++        self,
++        attempt: WorkAttemptFence,
++        *,
++        ttl_seconds: float,
++    ) -> WorkAttemptFence:
++        """Extend only the current, unexpired attempt without changing its token."""
++        now = float(self._clock())
++        expires_at = now + self._ttl(ttl_seconds)
++
++        def write() -> WorkAttemptFence:
++            with closing(self._connect()) as con:
++                con.execute("BEGIN IMMEDIATE")
++                try:
++                    self._assert_attempt(con, attempt)
++                    updated = con.execute(
++                        "UPDATE writer_fence_attempts SET expires_at=? "
++                        "WHERE attempt_id=? AND owner_id=? AND fencing_token=? AND active=1",
++                        (expires_at, attempt.attempt_id, attempt.owner_id, attempt.fencing_token),
++                    )
++                    if int(updated.rowcount or 0) != 1:
++                        raise LeaseLostError("work attempt fence could not be renewed")
++                    con.execute("COMMIT")
++                    return replace(attempt, expires_at=expires_at)
++                except BaseException:
++                    if con.in_transaction:
++                        con.execute("ROLLBACK")
++                    raise
++
++        return retry_busy(write, retries=5, base_delay_seconds=0.02)
++
++    def release_attempt(self, attempt: WorkAttemptFence) -> bool:
++        """Release this exact attempt; a stale token cannot release a newer epoch."""
++        def write() -> bool:
++            with closing(self._connect()) as con:
++                con.execute("BEGIN IMMEDIATE")
++                try:
++                    updated = con.execute(
++                        "UPDATE writer_fence_attempts SET active=0 "
++                        "WHERE attempt_id=? AND resource=? AND work_id=? AND owner_id=? "
++                        "AND fencing_token=? AND active=1",
++                        (
++                            attempt.attempt_id,
++                            attempt.resource,
++                            attempt.work_id,
++                            attempt.owner_id,
++                            attempt.fencing_token,
++                        ),
++                    )
++                    con.execute("COMMIT")
++                    return int(updated.rowcount or 0) == 1
++                except BaseException:
++                    if con.in_transaction:
++                        con.execute("ROLLBACK")
++                    raise
++
++        return retry_busy(write, retries=5, base_delay_seconds=0.02)
++
++    @staticmethod
++    def _ttl(ttl_seconds: float) -> float:
++        ttl = float(ttl_seconds)
++        if not math.isfinite(ttl) or ttl <= 0 or ttl > MAX_TTL_SECONDS:
++            raise ValueError(f"ttl_seconds must be in (0, {MAX_TTL_SECONDS}]")
++        return ttl
++
++    def acquire(
++        self,
++        resource: str | Path,
++        owner_id: str,
++        paths: Sequence[str],
++        *,
++        ttl_seconds: float,
++        attempt: WorkAttemptFence,
++    ) -> FencingLease:
++        """Acquire a normalized exact path scope, bound to ``attempt`` for writes.
++
++        Overlapping live scopes fail closed; disjoint scopes may coexist. Mutating
++        callers must pass the current ``WorkAttemptFence`` and use ``commit_guard``.
++        """
++        root_id = canonical_resource(resource)
++        owner = str(owner_id).strip()
++        if not owner or "\x00" in owner:
++            raise ValueError("owner_id must be non-empty")
++        scope = normalize_paths(paths)
++        now = float(self._clock())
++        if not math.isfinite(now):
++            raise ValueError("lease clock must return a finite timestamp")
++        expires_at = now + self._ttl(ttl_seconds)
++        lease_id = uuid4().hex
++
++        def write() -> FencingLease:
++            with closing(self._connect()) as con:
++                con.execute("BEGIN IMMEDIATE")
++                try:
++                    if attempt.resource != root_id:
++                        raise LeaseLostError("work attempt resource does not match path lease")
++                    self._assert_attempt(con, attempt)
++                    con.execute(
++                        "UPDATE writer_fence_leases SET active=0 "
++                        "WHERE resource=? AND active=1 AND expires_at<=?",
++                        (root_id, now),
++                    )
++                    parented = con.execute(
++                        "SELECT lease_id,attempt_id,attempt_token FROM writer_fence_leases "
++                        "WHERE resource=? AND active=1 AND expires_at>? AND attempt_id!=''",
++                        (root_id, now),
++                    ).fetchall()
++                    for old_lease_id, attempt_id, attempt_token in parented:
++                        parent = con.execute(
++                            "SELECT fencing_token,expires_at,active FROM writer_fence_attempts "
++                            "WHERE attempt_id=?",
++                            (str(attempt_id),),
++                        ).fetchone()
++                        if (
++                            parent is None
++                            or int(parent[0]) != int(attempt_token)
++                            or float(parent[1]) <= now
++                            or not bool(parent[2])
++                        ):
++                            con.execute(
++                                "UPDATE writer_fence_leases SET active=0 WHERE lease_id=?",
++                                (str(old_lease_id),),
++                            )
++                    live = con.execute(
++                        "SELECT paths_json FROM writer_fence_leases "
++                        "WHERE resource=? AND active=1 AND expires_at>?",
++                        (root_id, now),
++                    ).fetchall()
++                    for (raw_paths,) in live:
++                        existing = tuple(json.loads(str(raw_paths)))
++                        if _overlaps(scope, existing):
++                            raise LeaseUnavailableError(
++                                "an active writer owns an overlapping path scope"
++                            )
++                    row = con.execute(
++                        "SELECT last_token FROM writer_fence_counters WHERE resource=?",
++                        (root_id,),
++                    ).fetchone()
++                    token = 1 if row is None else int(row[0]) + 1
++                    con.execute(
++                        "INSERT INTO writer_fence_counters(resource,last_token) VALUES(?,?) "
++                        "ON CONFLICT(resource) DO UPDATE SET last_token=excluded.last_token",
++                        (root_id, token),
++                    )
++                    con.execute(
++                        """INSERT INTO writer_fence_leases(
++                            lease_id,resource,owner_id,fencing_token,expires_at,paths_json,
++                            attempt_id,attempt_token,active
++                        ) VALUES(?,?,?,?,?,?,?,?,1)""",
++                        (
++                            lease_id, root_id, owner, token, expires_at, json.dumps(scope),
++                            attempt.attempt_id,
++                            attempt.fencing_token,
++                        ),
++                    )
++                    con.execute("COMMIT")
++                    return FencingLease(
++                        root_id,
++                        lease_id,
++                        owner,
++                        token,
++                        expires_at,
++                        scope,
++                        attempt.attempt_id,
++                        attempt.fencing_token,
++                    )
++                except BaseException:
++                    if con.in_transaction:
++                        con.execute("ROLLBACK")
++                    raise
++
++        return retry_busy(write, retries=5, base_delay_seconds=0.02)
++
++    def _assert_current(
++        self,
++        con: sqlite3.Connection,
++        lease: FencingLease,
++        actual_paths: Sequence[str],
++    ) -> None:
++        requested = normalize_paths(actual_paths) if actual_paths else ()
++        requested_keys = {os.path.normcase(path).replace("\\", "/") for path in requested}
++        lease_keys = {os.path.normcase(path).replace("\\", "/") for path in lease.paths}
++        if not requested_keys.issubset(lease_keys):
++            outside = sorted(requested_keys.difference(lease_keys))
++            raise LeaseScopeError(f"write escaped fenced lease scope: {outside[0]}")
++        now = float(self._clock())
++        row = con.execute(
++            """SELECT resource,owner_id,fencing_token,expires_at,paths_json,attempt_id,attempt_token,active
++               FROM writer_fence_leases WHERE lease_id=?""",
++            (lease.lease_id,),
++        ).fetchone()
++        if row is None:
++            raise LeaseLostError("writer lease no longer exists")
++        resource, owner, token, expires_at, raw_paths, attempt_id, attempt_token, active = row
++        try:
++            persisted_paths = tuple(json.loads(str(raw_paths)))
++        except Exception as exc:
++            raise LeaseLostError("writer lease scope is corrupt") from exc
++        if (
++            str(resource) != lease.resource
++            or str(owner) != lease.owner_id
++            or int(token) != lease.fencing_token
++            or persisted_paths != lease.paths
++            or str(attempt_id) != lease.attempt_id
++            or int(attempt_token) != lease.attempt_token
++        ):
++            raise LeaseLostError("writer lease identity or fencing token changed")
++        if not bool(active) or float(expires_at) <= now:
++            raise LeaseLostError("writer lease expired or was superseded")
++        if not lease.attempt_id or lease.attempt_token <= 0:
++            raise LeaseLostError("writer lease requires a parent work attempt fencing token")
++        attempt_row = con.execute(
++            """SELECT resource,fencing_token,expires_at,active
++               FROM writer_fence_attempts WHERE attempt_id=?""",
++            (lease.attempt_id,),
++        ).fetchone()
++        if attempt_row is None:
++            raise LeaseLostError("parent work attempt fence no longer exists")
++        attempt_resource, attempt_token, attempt_expiry, attempt_active = attempt_row
++        if (
++            str(attempt_resource) != lease.resource
++            or int(attempt_token) != lease.attempt_token
++            or not bool(attempt_active)
++            or float(attempt_expiry) <= now
++        ):
++            raise LeaseLostError("parent work attempt fence expired or was superseded")
++
++    def assert_current(
++        self,
++        lease: FencingLease,
++        actual_paths: Sequence[str] = (),
++    ) -> None:
++        """Preflight-only lease check; it is advisory and cannot guard a later write."""
++        with closing(self._connect()) as con:
++            con.execute("BEGIN")
++            try:
++                self._assert_current(con, lease, actual_paths)
++                con.execute("COMMIT")
++            except BaseException:
++                if con.in_transaction:
++                    con.execute("ROLLBACK")
++                raise
++
++    @contextmanager
++    def commit_guard(
++        self,
++        lease: FencingLease,
++        actual_paths: Sequence[str],
++    ) -> Iterator[None]:
++        """Fence a complete write/journal commit against expiry and reacquisition.
++
++        The caller must perform every protected filesystem write and durable
++        journal transition before leaving this context. Other lease operations
++        use the same SQLite database and cannot change ownership until it exits.
++        """
++        if not actual_paths:
++            raise ValueError("commit_guard requires the exact non-empty write set")
++        if not lease.attempt_id or lease.attempt_token <= 0:
++            raise LeaseLostError("commit requires a parent work attempt fencing token")
++        con = self._connect()
++        try:
++            con.execute("BEGIN IMMEDIATE")
++            self._assert_current(con, lease, actual_paths)
++            yield
++            con.execute("COMMIT")
++        except BaseException:
++            if con.in_transaction:
++                con.execute("ROLLBACK")
++            raise
++        finally:
++            con.close()
++
++    def renew(self, lease: FencingLease, *, ttl_seconds: float) -> FencingLease:
++        now = float(self._clock())
++        expires_at = now + self._ttl(ttl_seconds)
++
++        def write() -> FencingLease:
++            with closing(self._connect()) as con:
++                con.execute("BEGIN IMMEDIATE")
++                try:
++                    self._assert_current(con, lease, ())
++                    updated = con.execute(
++                        "UPDATE writer_fence_leases SET expires_at=? "
++                        "WHERE lease_id=? AND owner_id=? AND fencing_token=? AND active=1",
++                        (expires_at, lease.lease_id, lease.owner_id, lease.fencing_token),
++                    )
++                    if int(updated.rowcount or 0) != 1:
++                        raise LeaseLostError("writer lease could not be renewed")
++                    con.execute("COMMIT")
++                    return replace(lease, expires_at=expires_at)
++                except BaseException:
++                    if con.in_transaction:
++                        con.execute("ROLLBACK")
++                    raise
++
++        return retry_busy(write, retries=5, base_delay_seconds=0.02)
++
++    def release(self, lease: FencingLease) -> bool:
++        def write() -> bool:
++            with closing(self._connect()) as con:
++                con.execute("BEGIN IMMEDIATE")
++                try:
++                    updated = con.execute(
++                        "UPDATE writer_fence_leases SET active=0 "
++                        "WHERE lease_id=? AND resource=? AND owner_id=? "
++                        "AND fencing_token=? AND active=1",
++                        (lease.lease_id, lease.resource, lease.owner_id, lease.fencing_token),
++                    )
++                    con.execute("COMMIT")
++                    return int(updated.rowcount or 0) == 1
++                except BaseException:
++                    if con.in_transaction:
++                        con.execute("ROLLBACK")
++                    raise
++
++        return retry_busy(write, retries=5, base_delay_seconds=0.02)
+diff --git a/tests/test_work_fencing.py b/tests/test_work_fencing.py
+new file mode 100644
+index 0000000..8ce563f
+--- /dev/null
++++ b/tests/test_work_fencing.py
+@@ -0,0 +1,220 @@
++from __future__ import annotations
++
++import multiprocessing
++import os
++import time
++from pathlib import Path
++from queue import Empty
++
++import pytest
++
++from local_ai_hub.work_fencing import (
++    FencingLeaseStore,
++    LeaseLostError,
++    LeaseUnavailableError,
++    normalize_paths,
++)
++
++
++def _claim_overlapping_path(db_path: str, root: str, owner: str, start, results) -> None:
++    store = FencingLeaseStore(Path(db_path))
++    start.wait(timeout=10)
++    try:
++        attempt = store.claim_attempt(root, f"work-{owner}", owner, ttl_seconds=30)
++        lease = store.acquire(
++            root, owner, ["src/shared.py"], ttl_seconds=30, attempt=attempt
++        )
++    except LeaseUnavailableError:
++        results.put((owner, "busy", 0))
++    else:
++        results.put((owner, "acquired", lease.fencing_token))
++
++
++def test_cross_process_contenders_get_one_overlapping_writer(tmp_path: Path) -> None:
++    root = tmp_path / "repo"
++    root.mkdir()
++    db_path = tmp_path / "fences.sqlite3"
++    context = multiprocessing.get_context("spawn")
++    start = context.Event()
++    results = context.Queue()
++    workers = [
++        context.Process(
++            target=_claim_overlapping_path,
++            args=(str(db_path), str(root), f"owner-{index}", start, results),
++        )
++        for index in range(2)
++    ]
++    for worker in workers:
++        worker.start()
++    start.set()
++    try:
++        outcomes = [results.get(timeout=15) for _ in workers]
++    except Empty:
++        pytest.fail("lease contenders did not report a result")
++    finally:
++        for worker in workers:
++            worker.join(timeout=15)
++        for worker in workers:
++            if worker.is_alive():
++                worker.terminate()
++                worker.join(timeout=5)
++
++    assert all(worker.exitcode == 0 for worker in workers)
++    assert sorted(result[1] for result in outcomes) == ["acquired", "busy"]
++    assert len({result[2] for result in outcomes if result[1] == "acquired"}) == 1
++
++
++def test_disjoint_paths_can_coexist_but_overlapping_paths_cannot(tmp_path: Path) -> None:
++    root = tmp_path / "repo"
++    root.mkdir()
++    store = FencingLeaseStore(tmp_path / "fences.sqlite3")
++    first_attempt = store.claim_attempt(str(root), "work-a", "owner-a", ttl_seconds=60)
++    disjoint_attempt = store.claim_attempt(str(root), "work-b", "owner-b", ttl_seconds=60)
++    overlap_attempt = store.claim_attempt(str(root), "work-c", "owner-c", ttl_seconds=60)
++
++    first = store.acquire(
++        str(root), "owner-a", ["src/a.py"], ttl_seconds=60, attempt=first_attempt
++    )
++    disjoint = store.acquire(
++        str(root), "owner-b", ["src/b.py"], ttl_seconds=60, attempt=disjoint_attempt
++    )
++    try:
++        with pytest.raises(LeaseUnavailableError):
++            store.acquire(
++                str(root), "owner-c", ["src/a.py/child"], ttl_seconds=60,
++                attempt=overlap_attempt,
++            )
++        assert first.fencing_token != disjoint.fencing_token
++    finally:
++        store.release(first)
++        store.release(disjoint)
++        store.release_attempt(first_attempt)
++        store.release_attempt(disjoint_attempt)
++        store.release_attempt(overlap_attempt)
++
++
++@pytest.mark.skipif(os.name != "nt", reason="Windows paths are case-insensitive")
++def test_case_aliases_cannot_claim_same_windows_path(tmp_path: Path) -> None:
++    root = tmp_path / "repo"
++    root.mkdir()
++    store = FencingLeaseStore(tmp_path / "fences.sqlite3")
++
++    first_attempt = store.claim_attempt(str(root), "work-a", "owner-a", ttl_seconds=60)
++    second_attempt = store.claim_attempt(str(root), "work-b", "owner-b", ttl_seconds=60)
++    first = store.acquire(
++        str(root), "owner-a", ["Src/A.py"], ttl_seconds=60, attempt=first_attempt
++    )
++    try:
++        with pytest.raises(LeaseUnavailableError):
++            store.acquire(
++                str(root), "owner-b", ["src/a.PY"], ttl_seconds=60,
++                attempt=second_attempt,
++            )
++        with store.commit_guard(first, ["SRC/a.py"]):
++            pass
++    finally:
++        store.release(first)
++        store.release_attempt(first_attempt)
++        store.release_attempt(second_attempt)
++
++
++def test_commit_guard_rejects_expired_parent_attempt(tmp_path: Path) -> None:
++    root = tmp_path / "repo"
++    root.mkdir()
++    now = [100.0]
++    store = FencingLeaseStore(tmp_path / "fences.sqlite3", clock=lambda: now[0])
++    attempt = store.claim_attempt(str(root), "work-a", "owner-a", ttl_seconds=5)
++    lease = store.acquire(
++        str(root), "owner-a", ["file.py"], ttl_seconds=30, attempt=attempt
++    )
++    now[0] = 106.0
++
++    with pytest.raises(LeaseLostError, match="attempt"):
++        with store.commit_guard(lease, ["file.py"]):
++            pytest.fail("expired attempt entered the writer commit guard")
++
++
++def test_rooted_scope_resolves_symlink_alias_to_same_path(tmp_path: Path) -> None:
++    root = tmp_path / "repo"
++    (root / "real").mkdir(parents=True)
++    (root / "real" / "file.py").write_text("", encoding="utf-8")
++    alias = root / "alias"
++    try:
++        alias.symlink_to(root / "real", target_is_directory=True)
++    except OSError as exc:
++        pytest.skip(f"directory symlink unavailable: {exc}")
++
++    assert normalize_paths(["alias/file.py"], root=root) == normalize_paths(
++        ["real/file.py"], root=root
++    )
++
++
++def test_expiry_reacquire_fences_stale_write_and_commit_without_side_effects(tmp_path: Path) -> None:
++    root = tmp_path / "repo"
++    root.mkdir()
++    source = root / "source.txt"
++    journal = tmp_path / "journal.json"
++    source.write_text("before\n", encoding="utf-8")
++    journal.write_text("prepared-old\n", encoding="utf-8")
++    now = [100.0]
++    store = FencingLeaseStore(tmp_path / "fences.sqlite3", clock=lambda: now[0])
++
++    stale_attempt = store.claim_attempt(
++        str(root), "work-1", "owner-a", ttl_seconds=5
++    )
++    stale = store.acquire(
++        str(root), "owner-a", ["source.txt"], ttl_seconds=30,
++        attempt=stale_attempt,
++    )
++    now[0] = 106.0
++    current_attempt = store.claim_attempt(
++        str(root), "work-1", "owner-b", ttl_seconds=30
++    )
++    current = store.acquire(
++        str(root), "owner-b", ["source.txt"], ttl_seconds=30,
++        attempt=current_attempt,
++    )
++    assert current.fencing_token > stale.fencing_token
++    assert current_attempt.fencing_token > stale_attempt.fencing_token
++
++    with pytest.raises(LeaseLostError):
++        with store.commit_guard(stale, ["source.txt"]):
++            source.write_text("stale-write\n", encoding="utf-8")
++            journal.write_text("stale-commit\n", encoding="utf-8")
++    with pytest.raises(LeaseLostError):
++        store.acquire(
++            str(root), "owner-a", ["source.txt"], ttl_seconds=30,
++            attempt=stale_attempt,
++        )
++
++    assert source.read_text(encoding="utf-8") == "before\n"
++    assert journal.read_text(encoding="utf-8") == "prepared-old\n"
++    with store.commit_guard(current, ["source.txt"]):
++        source.write_text("current-write\n", encoding="utf-8")
++        journal.write_text("committed-current\n", encoding="utf-8")
++    assert source.read_text(encoding="utf-8") == "current-write\n"
++    assert journal.read_text(encoding="utf-8") == "committed-current\n"
++
++
++def test_stale_owner_cannot_renew_or_release_reacquired_lease(tmp_path: Path) -> None:
++    root = tmp_path / "repo"
++    root.mkdir()
++    now = [10.0]
++    store = FencingLeaseStore(tmp_path / "fences.sqlite3", clock=lambda: now[0])
++    stale_attempt = store.claim_attempt(str(root), "work-2", "owner-a", ttl_seconds=2)
++    stale = store.acquire(
++        str(root), "owner-a", ["a.py"], ttl_seconds=30, attempt=stale_attempt
++    )
++    now[0] = 13.0
++    current_attempt = store.claim_attempt(str(root), "work-2", "owner-b", ttl_seconds=30)
++    current = store.acquire(
++        str(root), "owner-b", ["a.py"], ttl_seconds=30, attempt=current_attempt
++    )
++
++    with pytest.raises(LeaseLostError):
++        store.renew(stale, ttl_seconds=30)
++    assert store.release(stale) is False
++    with pytest.raises(LeaseLostError):
++        store.renew_attempt(stale_attempt, ttl_seconds=30)
++    store.release_attempt(stale_attempt)
++    store.assert_current(current, ["a.py"])
+diff --git a/tests/test_work_handoff_acceptance.py b/tests/test_work_handoff_acceptance.py
+new file mode 100644
+index 0000000..737ce53
+--- /dev/null
++++ b/tests/test_work_handoff_acceptance.py
+@@ -0,0 +1,948 @@
++from __future__ import annotations
++
++import hashlib
++import json
++import os
++import sys
++import threading
++import time as _real_time
++from contextlib import closing
++from pathlib import Path
++from types import SimpleNamespace
++
++import pytest
++
++from local_ai_hub.commands import CommandBroker
++from local_ai_hub.leases import ScopeLeaseStore
++from local_ai_hub.repo_state import RepoStateTracker
++from local_ai_hub.services import LocalAIServices
++from local_ai_hub.work_fencing import (
++    FencingLeaseStore,
++    LeaseLostError,
++    canonical_resource,
++)
++import local_ai_hub.work_orchestrator as work_orchestrator_module
++from local_ai_hub.work_orchestrator import WorkOrchestrator, _JournalEntry
++
++
++class _Leases:
++    def claim_batch(self, tenant, root, paths, ttl_seconds=900, purpose=""):
++        return {"success": True, "lease_id": f"lease-{len(paths)}", "paths": paths}
++
++    def release(self, tenant, lease_id=""):
++        return {"success": True}
++
++
++class _Artifacts:
++    def put(self, text, tenant, kind):
++        return f"artifact-{kind}"
++
++
++def _make_orchestrator(tmp_path: Path, *, max_pending: int = 8):
++    root = tmp_path / "repo"
++    root.mkdir()
++    state_dir = tmp_path / "state"
++    config = {
++        "work_orchestrator": {
++            "enabled": True,
++            "max_pending_work_orders": max_pending,
++            "max_steps": 16,
++            "max_llm_steps": 10,
++            "max_seconds": 60,
++        }
++    }
++    orchestrator = WorkOrchestrator(
++        config,
++        state_dir,
++        services=object(),
++        commands=object(),
++        leases=_Leases(),
++        artifacts=_Artifacts(),
++    )
++    orchestrator._ensure_workers = lambda: None
++    return orchestrator, root, state_dir, config
++
++
++def _payload(root: Path, work_id: str, task: str = "inspect repo") -> dict[str, object]:
++    return {
++        "root": str(root),
++        "task": task,
++        "work_id": work_id,
++        "acceptance_criteria": ["report result"],
++        "budget": {"max_seconds": 30},
++    }
++
++
++def _fenced_journal_entry(
++    root: Path,
++    path: str,
++    before: bytes,
++    after: bytes,
++    *,
++    owner: str = "prior-owner",
++    lease_id: str = "prior-lease",
++    fencing_token: int = 1,
++    attempt_id: str = "prior-attempt",
++    attempt_token: int = 1,
++) -> _JournalEntry:
++    return _JournalEntry(
++        path,
++        True,
++        before,
++        True,
++        hashlib.sha256(after).hexdigest(),
++        canonical_resource(root),
++        lease_id,
++        owner,
++        fencing_token,
++        attempt_id,
++        attempt_token,
++    )
++
++
++def test_path_leases_allow_disjoint_scopes_and_reject_overlap(tmp_path: Path) -> None:
++    root = tmp_path / "repo"
++    root.mkdir()
++    leases = ScopeLeaseStore(tmp_path / "leases")
++    first: dict[str, object] = {}
++    disjoint: dict[str, object] = {}
++    try:
++        first = leases.claim_batch("tenant-a", str(root), ["src/a.py"])
++        disjoint = leases.claim_batch("tenant-b", str(root), ["src/b.py"])
++        overlapping = leases.claim_batch("tenant-b", str(root), ["src/a.py"])
++
++        assert first["success"] is True
++        assert disjoint["success"] is True
++        assert overlapping["success"] is False
++    finally:
++        if first.get("success"):
++            leases.release("tenant-a", first["lease_id"])
++        if disjoint.get("success"):
++            leases.release("tenant-b", disjoint["lease_id"])
++
++
++def test_edit_lease_conflict_leaves_workspace_and_journal_unchanged(tmp_path: Path) -> None:
++    orchestrator, root, state_dir, _config = _make_orchestrator(tmp_path)
++    target = root / "owned.txt"
++    target.write_text("old\n", encoding="utf-8")
++    leases = ScopeLeaseStore(state_dir / "leases")
++    held: dict[str, object] = {}
++    patch = "--- a/owned.txt\n+++ b/owned.txt\n@@ -1 +1 @@\n-old\n+new\n"
++    try:
++        held = leases.claim_batch("other-tenant", str(root), ["owned.txt"])
++        assert held["success"] is True
++        orchestrator.leases = leases
++        with pytest.raises(RuntimeError, match="edit lease unavailable"):
++            orchestrator._apply_patch(root, patch, "tenant", "work-lease", [])
++
++        assert target.read_text(encoding="utf-8") == "old\n"
++        assert orchestrator._load_journal("work-lease") == []
++    finally:
++        if held.get("success"):
++            leases.release("other-tenant", held["lease_id"])
++        orchestrator.close()
++
++
++def test_submit_retry_after_lost_ack_returns_same_work_order(tmp_path: Path) -> None:
++    orchestrator, root, _state_dir, _config = _make_orchestrator(tmp_path)
++    try:
++        # Treat first reply as lost. Retry must replay accepted order, not reject it.
++        orchestrator.submit("tenant", _payload(root, "work-replay"))
++        replay = orchestrator.submit("tenant", _payload(root, "work-replay"))
++
++        assert replay["success"] is True
++        assert replay["work_id"] == "work-replay"
++        assert replay["status"] == "queued"
++        with closing(orchestrator._connect()) as con:
++            assert con.execute(
++                "SELECT COUNT(*) FROM work_orders WHERE work_id=?", ("work-replay",)
++            ).fetchone()[0] == 1
++    finally:
++        orchestrator.close()
++
++
++def test_concurrent_idempotent_submits_create_one_work_order(tmp_path: Path) -> None:
++    orchestrator, root, _state_dir, _config = _make_orchestrator(tmp_path)
++    barrier = threading.Barrier(2)
++    results: list[dict[str, object]] = []
++
++    def submit() -> None:
++        barrier.wait(timeout=5)
++        results.append(orchestrator.submit("tenant", _payload(root, "work-concurrent-replay")))
++
++    workers = [threading.Thread(target=submit) for _ in range(2)]
++    try:
++        for worker in workers:
++            worker.start()
++        for worker in workers:
++            worker.join(timeout=5)
++
++        assert all(not worker.is_alive() for worker in workers)
++        assert len(results) == 2
++        assert all(result["success"] is True for result in results)
++        assert {result["work_id"] for result in results} == {"work-concurrent-replay"}
++        with closing(orchestrator._connect()) as con:
++            assert con.execute(
++                "SELECT COUNT(*) FROM work_orders WHERE work_id=?",
++                ("work-concurrent-replay",),
++            ).fetchone()[0] == 1
++    finally:
++        orchestrator.close()
++
++
++def test_wait_caps_requested_timeout_at_ninety_seconds(tmp_path: Path, monkeypatch) -> None:
++    orchestrator, root, _state_dir, _config = _make_orchestrator(tmp_path)
++    work_id = "work-bounded-wait"
++    clock = [100.0]
++    waits: list[float] = []
++
++    class WaitRecorder:
++        def wait(self, timeout: float) -> None:
++            waits.append(timeout)
++            clock[0] += timeout
++
++        def clear(self) -> None:
++            pass
++
++    try:
++        orchestrator.submit("tenant", _payload(root, work_id))
++        monkeypatch.setattr(
++            work_orchestrator_module,
++            "time",
++            SimpleNamespace(monotonic=lambda: clock[0], perf_counter=_real_time.perf_counter),
++        )
++        event = WaitRecorder()
++        monkeypatch.setattr(orchestrator, "_event", lambda _work_id: event)
++
++        result = orchestrator.wait("tenant", work_id, timeout_seconds=10_000)
++
++        assert result["status"] == "queued"
++        assert result["in_progress"] is True
++        assert len(waits) == 180
++        assert sum(waits) == pytest.approx(90.0)
++        assert max(waits) <= 0.5
++    finally:
++        orchestrator.close()
++
++
++def test_queue_full_still_replays_existing_work_order(tmp_path: Path) -> None:
++    orchestrator, root, _state_dir, _config = _make_orchestrator(tmp_path, max_pending=1)
++    try:
++        first = _payload(root, "work-one")
++        assert orchestrator.submit("tenant", first)["success"] is True
++
++        rejected = orchestrator.submit("tenant", _payload(root, "work-two"))
++        replay = orchestrator.submit("tenant", first)
++
++        assert rejected["error"] == "work-order queue is full"
++        assert rejected["retryable"] is True
++        assert replay["success"] is True
++        assert replay["work_id"] == "work-one"
++        with closing(orchestrator._connect()) as con:
++            assert con.execute("SELECT COUNT(*) FROM work_orders").fetchone()[0] == 1
++    finally:
++        orchestrator.close()
++
++
++def test_replayed_work_id_rejects_different_request(tmp_path: Path) -> None:
++    orchestrator, root, _state_dir, _config = _make_orchestrator(tmp_path)
++    try:
++        assert orchestrator.submit(
++            "tenant", _payload(root, "work-conflict", "inspect repo")
++        )["success"] is True
++
++        conflict = orchestrator.submit(
++            "tenant", _payload(root, "work-conflict", "delete repo")
++        )
++
++        assert conflict["success"] is False
++        assert conflict["error"] == "work_id already exists with different request"
++        assert conflict["terminal"] is True
++        with closing(orchestrator._connect()) as con:
++            assert con.execute(
++                "SELECT task FROM work_orders WHERE work_id=?", ("work-conflict",)
++            ).fetchone()[0] == "inspect repo"
++    finally:
++        orchestrator.close()
++
++
++def test_recovery_requeues_after_crash_between_journal_clear_and_state_update(
++    tmp_path: Path, monkeypatch
++) -> None:
++    now = [100.0]
++    orchestrator, root, state_dir, config = _make_orchestrator(tmp_path)
++    fencing = FencingLeaseStore(state_dir / "work_fencing.sqlite3", clock=lambda: now[0])
++    orchestrator.fencing_store = fencing
++    work_id = "work-recover"
++    target = root / "owned.txt"
++    target.write_bytes(b"new\n")
++    try:
++        orchestrator.submit("tenant", _payload(root, work_id))
++        orchestrator._set_state(work_id, "executing", {"changed_files": ["owned.txt"]})
++        stale_attempt = fencing.claim_attempt(
++            str(root), work_id, "crashed-writer", ttl_seconds=5
++        )
++        stale = fencing.acquire(
++            str(root), work_id, ["owned.txt"], ttl_seconds=5, attempt=stale_attempt
++        )
++        orchestrator._persist_journal(
++            work_id,
++            [
++                _JournalEntry(
++                    "owned.txt", True, b"old\n", True,
++                    hashlib.sha256(b"new\n").hexdigest(),
++                    stale.resource, stale.lease_id, stale.owner_id, stale.fencing_token,
++                    stale_attempt.attempt_id, stale_attempt.fencing_token,
++                )
++            ],
++        )
++        orchestrator._recover()
++        waiting_row = orchestrator._row(work_id, "tenant")
++        assert waiting_row is not None and waiting_row["state"] == "executing"
++        assert orchestrator._recovery_timer is not None
++        assert target.read_text(encoding="utf-8") == "new\n"
++        assert orchestrator._load_journal(work_id)
++        now[0] = 106.0
++        clear_journal = orchestrator._clear_journal
++
++        class SimulatedProcessCrash(BaseException):
++            pass
++
++        def clear_then_crash(current_id: str) -> None:
++            clear_journal(current_id)
++            raise SimulatedProcessCrash()
++
++        orchestrator._clear_journal = clear_then_crash
++        with pytest.raises(SimulatedProcessCrash):
++            orchestrator._recover()
++        assert target.read_text(encoding="utf-8") == "old\n"
++    finally:
++        orchestrator.close()
++
++    now[0] = 1007.0  # the simulated crashed recovery epoch has a 900 second lease
++    monkeypatch.setattr(WorkOrchestrator, "_ensure_workers", lambda _self: None)
++    recovered = WorkOrchestrator(
++        config,
++        state_dir,
++        services=object(),
++        commands=object(),
++        leases=_Leases(),
++        artifacts=_Artifacts(),
++        fencing_store=FencingLeaseStore(state_dir / "work_fencing.sqlite3", clock=lambda: now[0]),
++    )
++    try:
++        row = recovered._row(work_id, "tenant")
++        assert row is not None
++        assert row["state"] == "queued"
++        assert json.loads(str(row["result_json"] or "{}")) == {}
++        assert target.read_text(encoding="utf-8") == "old\n"
++    finally:
++        recovered.close()
++
++
++def test_recovery_reacquires_fence_after_writer_ttl_and_rejects_stale_commit(
++    tmp_path: Path, monkeypatch
++) -> None:
++    root = tmp_path / "repo"
++    root.mkdir()
++    state_dir = tmp_path / "state"
++    now = [100.0]
++    fence_path = state_dir / "work_fencing.sqlite3"
++    old_store = FencingLeaseStore(fence_path, clock=lambda: now[0])
++    monkeypatch.setattr(WorkOrchestrator, "_ensure_workers", lambda _self: None)
++    orchestrator = WorkOrchestrator(
++        {"work_orchestrator": {"enabled": True}}, state_dir,
++        services=object(), commands=object(), leases=_Leases(), artifacts=_Artifacts(),
++        fencing_store=old_store,
++    )
++    work_id = "work-fenced-recovery"
++    target = root / "owned.txt"
++    target.write_bytes(b"new\n")
++    try:
++        orchestrator.submit("tenant", _payload(root, work_id))
++        orchestrator._set_state(work_id, "executing", {"changed_files": ["owned.txt"]})
++        stale_attempt = old_store.claim_attempt(
++            str(root), work_id, "crashed-writer", ttl_seconds=5
++        )
++        stale = old_store.acquire(
++            str(root), work_id, ["owned.txt"], ttl_seconds=5, attempt=stale_attempt
++        )
++        orchestrator._persist_journal(
++            work_id,
++            [
++                _JournalEntry(
++                    "owned.txt", True, b"old\n", True,
++                    hashlib.sha256(b"new\n").hexdigest(),
++                    stale.resource, stale.lease_id, stale.owner_id, stale.fencing_token,
++                    stale_attempt.attempt_id, stale_attempt.fencing_token,
++                )
++            ],
++        )
++        now[0] = 106.0
++        recovered_store = FencingLeaseStore(fence_path, clock=lambda: now[0])
++        recovered = WorkOrchestrator(
++            {"work_orchestrator": {"enabled": True}}, state_dir,
++            services=object(), commands=object(), leases=_Leases(), artifacts=_Artifacts(),
++            fencing_store=recovered_store,
++        )
++        try:
++            row = recovered._row(work_id, "tenant")
++            assert row is not None and row["state"] == "queued"
++            assert target.read_text(encoding="utf-8") == "old\n"
++            assert recovered._load_journal(work_id) == []
++            with pytest.raises(LeaseLostError):
++                with recovered_store.commit_guard(stale, ["owned.txt"]):
++                    target.write_text("stale-after-recovery\n", encoding="utf-8")
++            assert target.read_text(encoding="utf-8") == "old\n"
++        finally:
++            recovered.close()
++    finally:
++        orchestrator.close()
++
++
++def test_stale_attempt_cannot_complete_or_clear_successor_journal(tmp_path: Path) -> None:
++    root = tmp_path / "repo"
++    root.mkdir()
++    state_dir = tmp_path / "state"
++    now = [100.0]
++    fencing = FencingLeaseStore(state_dir / "work_fencing.sqlite3", clock=lambda: now[0])
++    orchestrator = WorkOrchestrator(
++        {"work_orchestrator": {"enabled": True}}, state_dir,
++        services=object(), commands=object(), leases=_Leases(), artifacts=_Artifacts(),
++        fencing_store=fencing,
++    )
++    orchestrator._ensure_workers = lambda: None
++    work_id = "work-stale-completion"
++    target = root / "owned.txt"
++    target.write_bytes(b"successor\n")
++    try:
++        orchestrator.submit("tenant", _payload(root, work_id))
++        orchestrator._set_state(work_id, "verifying", {"summary": "verification pending"})
++        stale_attempt = fencing.claim_attempt(
++            str(root), work_id, "old-execution", ttl_seconds=5
++        )
++        stale_lease = fencing.acquire(
++            str(root), "old-execution", ["owned.txt"], ttl_seconds=30,
++            attempt=stale_attempt,
++        )
++        stale_entry = _fenced_journal_entry(
++            root, "owned.txt", b"before\n", b"old-write\n",
++            owner=stale_lease.owner_id, lease_id=stale_lease.lease_id,
++            fencing_token=stale_lease.fencing_token,
++            attempt_id=stale_attempt.attempt_id,
++            attempt_token=stale_attempt.fencing_token,
++        )
++        orchestrator._persist_journal(work_id, [stale_entry])
++
++        now[0] = 106.0
++        successor_attempt = fencing.claim_attempt(
++            str(root), work_id, "successor-execution", ttl_seconds=30
++        )
++        successor_lease = fencing.acquire(
++            str(root), "successor-execution", ["owned.txt"], ttl_seconds=30,
++            attempt=successor_attempt,
++        )
++        successor_entry = _fenced_journal_entry(
++            root, "owned.txt", b"before\n", b"successor\n",
++            owner=successor_lease.owner_id, lease_id=successor_lease.lease_id,
++            fencing_token=successor_lease.fencing_token,
++            attempt_id=successor_attempt.attempt_id,
++            attempt_token=successor_attempt.fencing_token,
++        )
++        orchestrator._persist_journal(work_id, [successor_entry])
++
++        with pytest.raises(LeaseLostError):
++            orchestrator._set_state(
++                work_id, "complete", {"summary": "stale completion"},
++                attempt=stale_attempt,
++            )
++        with pytest.raises(LeaseLostError):
++            orchestrator._persist_handoff_receipts(
++                work_id, [], [], attempt=stale_attempt
++            )
++        with pytest.raises(LeaseLostError):
++            orchestrator._complete_if_not_cancelled(
++                work_id, {"summary": "stale completion"},
++                expected_state="verifying", attempt=stale_attempt,
++            )
++        with pytest.raises(LeaseLostError):
++            orchestrator._clear_journal(work_id, attempt=stale_attempt)
++
++        row = orchestrator._row(work_id, "tenant")
++        assert row is not None and row["state"] == "verifying"
++        assert orchestrator._load_journal(work_id) == [successor_entry]
++        assert target.read_bytes() == b"successor\n"
++    finally:
++        orchestrator.close()
++
++
++def test_rollback_refuses_hardlinked_postimage(tmp_path: Path) -> None:
++    orchestrator, root, _state_dir, _config = _make_orchestrator(tmp_path)
++    target = root / "owned.txt"
++    external = tmp_path / "external-hardlink.txt"
++    target.write_bytes(b"postimage\n")
++    try:
++        try:
++            os.link(target, external)
++        except OSError as exc:
++            pytest.skip(f"hard links unavailable: {exc}")
++        entry = _fenced_journal_entry(root, "owned.txt", b"before\n", b"postimage\n")
++
++        with pytest.raises(RuntimeError, match="hard link"):
++            orchestrator._rollback(root, [entry])
++
++        assert target.read_bytes() == b"postimage\n"
++        assert external.read_bytes() == b"postimage\n"
++    finally:
++        orchestrator.close()
++
++
++def test_recovery_defers_live_attempt_without_journal(tmp_path: Path, monkeypatch) -> None:
++    root = tmp_path / "repo"
++    root.mkdir()
++    state_dir = tmp_path / "state"
++    now = [100.0]
++    fencing = FencingLeaseStore(state_dir / "work_fencing.sqlite3", clock=lambda: now[0])
++    monkeypatch.setattr(WorkOrchestrator, "_ensure_workers", lambda _self: None)
++    orchestrator = WorkOrchestrator(
++        {"work_orchestrator": {"enabled": True}}, state_dir,
++        services=object(), commands=object(), leases=_Leases(), artifacts=_Artifacts(),
++        fencing_store=fencing,
++    )
++    work_id = "work-live-attempt-no-journal"
++    try:
++        orchestrator.submit("tenant", _payload(root, work_id))
++        orchestrator._set_state(work_id, "planning", {"summary": "still running"})
++        active = fencing.claim_attempt(str(root), work_id, "live-execution", ttl_seconds=5)
++
++        orchestrator._recover()
++
++        row = orchestrator._row(work_id, "tenant")
++        assert row is not None and row["state"] == "planning"
++        assert orchestrator._recovery_retry_requested is True
++        assert orchestrator._recovery_timer is not None
++
++        now[0] = 106.0
++        orchestrator._recover()
++        row = orchestrator._row(work_id, "tenant")
++        assert row is not None and row["state"] == "queued"
++    finally:
++        orchestrator.close()
++
++
++def test_invalid_patch_releases_advisory_lease(tmp_path: Path) -> None:
++    class RecordingLeases(_Leases):
++        def __init__(self):
++            self.released: list[tuple[str, str]] = []
++
++        def release(self, tenant, lease_id=""):
++            self.released.append((tenant, lease_id))
++            return super().release(tenant, lease_id)
++
++    orchestrator, root, _state_dir, _config = _make_orchestrator(tmp_path)
++    leases = RecordingLeases()
++    orchestrator.leases = leases
++    target = root / "owned.txt"
++    target.write_bytes(b"original\n")
++    invalid_patch = "--- a/owned.txt\n+++ b/owned.txt\n@@ -1 +1 @@\n-wrong\n+changed\n"
++    try:
++        with pytest.raises(ValueError):
++            orchestrator._apply_patch(
++                root, invalid_patch, "tenant", "work-invalid-patch", []
++            )
++
++        assert leases.released == [("tenant", "lease-1")]
++        assert target.read_bytes() == b"original\n"
++    finally:
++        orchestrator.close()
++
++
++def test_real_command_broker_accepts_forwarded_work_attempt_fence(tmp_path: Path) -> None:
++    root = tmp_path / "repo"
++    root.mkdir()
++    state_dir = tmp_path / "state"
++    config = {
++        "server": {"state_dir": str(state_dir)},
++        "commands": {"enabled": True, "allow_unknown": True},
++    }
++    broker = CommandBroker(config, _Artifacts(), RepoStateTracker(config))
++    now = [100.0]
++    fencing = FencingLeaseStore(state_dir / "work_fencing.sqlite3", clock=lambda: now[0])
++    broker.set_fencing_lease_store(fencing)
++    attempt = fencing.claim_attempt(str(root), "work-real-broker", "acceptance", ttl_seconds=5)
++    services = object.__new__(LocalAIServices)
++    services.commands = broker
++    services.agent_state = None
++    command = f'"{sys.executable}" -B -c "print(123)"'
++
++    result = services.command(
++        {
++            "action": "run",
++            "command": command,
++            "cwd": str(root),
++            "task_id": "work-real-broker",
++            "criterion": "real command broker fence",
++            "record_verification": False,
++            "writer_fence": attempt,
++        },
++        "tenant",
++    )
++
++    assert result["success"] is True, result
++    assert "123" in result.get("stdout", "")
++
++    now[0] += 6
++    stale_result = services.command(
++        {
++            "action": "run",
++            "command": command,
++            "cwd": str(root),
++            "task_id": "work-real-broker",
++            "criterion": "stale real command broker fence",
++            "record_verification": False,
++            "writer_fence": attempt,
++        },
++        "tenant",
++    )
++
++    assert stale_result["success"] is False, stale_result
++    assert "123" not in stale_result.get("stdout", "")
++
++
++def test_restart_rolls_back_patch_using_postimage_journaled_before_mutation(
++    tmp_path: Path, monkeypatch
++) -> None:
++    orchestrator, root, state_dir, config = _make_orchestrator(tmp_path)
++    work_id = "work-restart-during-patch-transaction"
++    target = root / "owned.txt"
++    target.write_text("before\n", encoding="utf-8")
++    patch = "--- a/owned.txt\n+++ b/owned.txt\n@@ -1 +1 @@\n-before\n+after\n"
++    orchestrator.submit("tenant", _payload(root, work_id))
++    orchestrator._set_state(work_id, "executing", {"changed_files": ["owned.txt"]})
++
++    journal: list[_JournalEntry] = []
++    orchestrator._apply_patch(root, patch, "tenant", work_id, journal)
++    assert target.read_text(encoding="utf-8") == "after\n"
++    assert journal[0].postimage_existed is True
++    assert journal[0].postimage_sha256 == hashlib.sha256(target.read_bytes()).hexdigest()
++    orchestrator.close()
++
++    monkeypatch.setattr(WorkOrchestrator, "_ensure_workers", lambda _self: None)
++    recovered = WorkOrchestrator(
++        config,
++        state_dir,
++        services=object(),
++        commands=object(),
++        leases=_Leases(),
++        artifacts=_Artifacts(),
++    )
++    try:
++        row = recovered._row(work_id, "tenant")
++        assert row is not None and row["state"] == "queued"
++        assert target.read_text(encoding="utf-8") == "before\n"
++        assert recovered._load_journal(work_id) == []
++    finally:
++        recovered.close()
++
++
++def test_recovery_rollback_failure_fails_closed_and_preserves_journal(
++    tmp_path: Path, monkeypatch
++) -> None:
++    orchestrator, root, state_dir, config = _make_orchestrator(tmp_path)
++    work_id = "work-recovery-fail-closed"
++    target = root / "owned.txt"
++    target.write_text("new\n", encoding="utf-8")
++    journal_entry = _fenced_journal_entry(root, "owned.txt", b"old\n", b"new\n")
++    orchestrator.submit("tenant", _payload(root, work_id))
++    orchestrator._set_state(work_id, "executing", {"changed_files": ["owned.txt"]})
++    orchestrator._persist_journal(work_id, [journal_entry])
++    orchestrator.close()
++
++    def fail_rollback(*_args, **_kwargs):
++        raise OSError("simulated workspace restore failure")
++
++    monkeypatch.setattr(WorkOrchestrator, "_rollback", fail_rollback)
++    recovered = WorkOrchestrator(
++        config,
++        state_dir,
++        services=object(),
++        commands=object(),
++        leases=_Leases(),
++        artifacts=_Artifacts(),
++    )
++    try:
++        row = recovered._row(work_id, "tenant")
++        assert row is not None
++        assert row["state"] == "needs_agent"
++        assert "could not be safely restored" in str(row["result_json"])
++        assert recovered._load_journal(work_id) is not None
++        assert target.read_text(encoding="utf-8") == "new\n"
++    finally:
++        recovered.close()
++
++
++def test_rollback_refuses_unrecognized_same_path_postimage_and_keeps_journal(
++    tmp_path: Path,
++) -> None:
++    orchestrator, root, _state_dir, _config = _make_orchestrator(tmp_path)
++    work_id = "work-same-path-postimage-conflict"
++    target = root / "owned.txt"
++    other = root / "other.txt"
++    foreign = root / "foreign.txt"
++    target.write_text("original\n", encoding="utf-8")
++    other.write_text("other original\n", encoding="utf-8")
++    foreign.write_text("foreign original\n", encoding="utf-8")
++    patch = (
++        "--- a/owned.txt\n+++ b/owned.txt\n@@ -1 +1 @@\n"
++        "-original\n+orchestrator update\n"
++        "--- a/other.txt\n+++ b/other.txt\n@@ -1 +1 @@\n"
++        "-other original\n+other update\n"
++    )
++    try:
++        orchestrator.submit("tenant", _payload(root, work_id))
++        orchestrator._set_state(work_id, "executing", {"changed_files": ["owned.txt"]})
++        journal: list[_JournalEntry] = []
++        orchestrator._apply_patch(root, patch, "tenant", work_id, journal)
++        assert journal == orchestrator._load_journal(work_id)
++
++        target.write_text("external update\n", encoding="utf-8")
++        foreign.write_text("foreign external update\n", encoding="utf-8")
++
++        with pytest.raises(RuntimeError, match="postimage changed"):
++            orchestrator._rollback_transaction(work_id, root, journal)
++
++        assert target.read_text(encoding="utf-8") == "external update\n"
++        assert other.read_text(encoding="utf-8") == "other update\n"
++        assert foreign.read_text(encoding="utf-8") == "foreign external update\n"
++        assert orchestrator._load_journal(work_id) == journal
++        row = orchestrator._row(work_id, "tenant")
++        assert row is not None and row["state"] == "executing"
++    finally:
++        orchestrator.close()
++
++
++def test_rollback_accepts_chained_same_path_postimages(tmp_path: Path) -> None:
++    orchestrator, root, _state_dir, _config = _make_orchestrator(tmp_path)
++    work_id = "work-same-path-postimage-chain"
++    target = root / "owned.txt"
++    target.write_bytes(b"final\n")
++    entries = [
++        _fenced_journal_entry(root, "owned.txt", b"original\n", b"middle\n"),
++        _fenced_journal_entry(
++            root, "owned.txt", b"middle\n", b"final\n",
++            owner="later-owner", lease_id="later-lease", fencing_token=2,
++            attempt_id="later-attempt", attempt_token=2,
++        ),
++    ]
++    try:
++        orchestrator.submit("tenant", _payload(root, work_id))
++        orchestrator._set_state(work_id, "executing", {"changed_files": ["owned.txt"]})
++        orchestrator._persist_journal(work_id, entries)
++
++        assert orchestrator._rollback_transaction(work_id, root, entries) is True
++
++        assert target.read_text(encoding="utf-8") == "original\n"
++        assert orchestrator._load_journal(work_id) == []
++    finally:
++        orchestrator.close()
++
++
++def test_crash_recovery_conflict_fails_closed_without_partial_restore(tmp_path: Path) -> None:
++    orchestrator, root, state_dir, config = _make_orchestrator(tmp_path)
++    work_id = "work-recovery-postimage-conflict"
++    target = root / "owned.txt"
++    other = root / "other.txt"
++    target.write_text("orchestrator update\n", encoding="utf-8")
++    other.write_text("other update\n", encoding="utf-8")
++    entries = [
++        _fenced_journal_entry(
++            root, "owned.txt", b"original\n", b"orchestrator update\n"
++        ),
++        _fenced_journal_entry(
++            root, "other.txt", b"other original\n", b"other update\n"
++        ),
++    ]
++    orchestrator.submit("tenant", _payload(root, work_id))
++    orchestrator._set_state(work_id, "executing", {"changed_files": ["owned.txt", "other.txt"]})
++    orchestrator._persist_journal(work_id, entries)
++    orchestrator.close()
++
++    target.write_text("external update\n", encoding="utf-8")
++    recovered = WorkOrchestrator(
++        config,
++        state_dir,
++        services=object(),
++        commands=object(),
++        leases=_Leases(),
++        artifacts=_Artifacts(),
++    )
++    try:
++        row = recovered._row(work_id, "tenant")
++        assert row is not None and row["state"] == "needs_agent"
++        assert "could not be safely restored" in str(row["result_json"])
++        assert target.read_text(encoding="utf-8") == "external update\n"
++        assert other.read_text(encoding="utf-8") == "other update\n"
++        assert recovered._load_journal(work_id) == entries
++    finally:
++        recovered.close()
++
++
++def test_restart_after_completion_keeps_workspace_and_clears_orphan_journal(tmp_path: Path) -> None:
++    orchestrator, root, state_dir, config = _make_orchestrator(tmp_path)
++    work_id = "work-complete-before-journal-clear"
++    target = root / "owned.txt"
++    target.write_text("committed\n", encoding="utf-8")
++    orchestrator.submit("tenant", _payload(root, work_id))
++    orchestrator._persist_journal(
++        work_id, [_JournalEntry("owned.txt", True, b"before\n")]
++    )
++    orchestrator._set_state(work_id, "complete", {"summary": "committed"})
++    orchestrator.close()
++
++    recovered = WorkOrchestrator(
++        config,
++        state_dir,
++        services=object(),
++        commands=object(),
++        leases=_Leases(),
++        artifacts=_Artifacts(),
++    )
++    try:
++        row = recovered._row(work_id, "tenant")
++        assert row is not None
++        assert row["state"] == "complete"
++        assert target.read_text(encoding="utf-8") == "committed\n"
++        assert recovered._load_journal(work_id) == []
++    finally:
++        recovered.close()
++
++
++def test_concurrent_continue_has_one_compare_and_swap_winner(tmp_path: Path) -> None:
++    orchestrator, root, _state_dir, _config = _make_orchestrator(tmp_path)
++    work_id = "work-continue"
++    try:
++        orchestrator.submit("tenant", _payload(root, work_id))
++        orchestrator._set_state(work_id, "needs_agent", {"needs_agent": True})
++        original_row = orchestrator._row
++        read_barrier = threading.Barrier(2)
++
++        def read_same_state(current_id: str, tenant: str = ""):
++            row = original_row(current_id, tenant)
++            if threading.current_thread().name.startswith("continue-"):
++                read_barrier.wait(timeout=5)
++            return row
++
++        orchestrator._row = read_same_state
++        results: list[dict[str, object]] = []
++        workers = [
++            threading.Thread(
++                name=f"continue-{index}",
++                target=lambda answer=answer: results.append(
++                    orchestrator.continue_work("tenant", work_id, answer)
++                ),
++            )
++            for index, answer in enumerate(("answer A", "answer B"))
++        ]
++        for worker in workers:
++            worker.start()
++        for worker in workers:
++            worker.join(timeout=6)
++
++        assert all(not worker.is_alive() for worker in workers)
++        assert sum(bool(result.get("success")) for result in results) == 1
++        row = original_row(work_id, "tenant")
++        assert row is not None
++        assert row["state"] == "queued"
++        saved_answer = json.loads(str(row["payload_json"]))["agent_answer"]
++        assert saved_answer in {"answer A", "answer B"}
++    finally:
++        orchestrator.close()
++
++
++def test_cancel_request_blocks_compare_and_swap_completion(tmp_path: Path) -> None:
++    orchestrator, root, _state_dir, _config = _make_orchestrator(tmp_path)
++    work_id = "work-cancel-finalize"
++    try:
++        orchestrator.submit("tenant", _payload(root, work_id))
++        orchestrator._set_state(work_id, "verifying", {"changed_files": ["owned.txt"]})
++
++        cancelled = orchestrator.cancel("tenant", work_id)
++        completed = orchestrator._complete_if_not_cancelled(
++            work_id, {"summary": "verified"}
++        )
++
++        row = orchestrator._row(work_id, "tenant")
++        assert cancelled["status"] == "cancelling"
++        assert completed is False
++        assert row is not None
++        assert row["state"] == "verifying"
++        assert row["cancel_requested"] == 1
++    finally:
++        orchestrator.close()
++
++
++def test_completion_cas_wins_against_later_cancel(tmp_path: Path) -> None:
++    orchestrator, root, _state_dir, _config = _make_orchestrator(tmp_path)
++    work_id = "work-complete-before-cancel"
++    try:
++        orchestrator.submit("tenant", _payload(root, work_id))
++        orchestrator._set_state(work_id, "verifying", {})
++
++        completed = orchestrator._complete_if_not_cancelled(
++            work_id, {"summary": "verified"}
++        )
++        cancelled = orchestrator.cancel("tenant", work_id)
++
++        assert completed is True
++        assert cancelled["status"] == "complete"
++        row = orchestrator._row(work_id, "tenant")
++        assert row is not None
++        assert row["state"] == "complete"
++        assert row["cancel_requested"] == 0
++    finally:
++        orchestrator.close()
++
++
++def test_cancel_and_completion_race_has_one_durable_winner(tmp_path: Path) -> None:
++    orchestrator, root, _state_dir, _config = _make_orchestrator(tmp_path)
++    work_id = "work-cancel-complete-race"
++    try:
++        orchestrator.submit("tenant", _payload(root, work_id))
++        orchestrator._set_state(work_id, "verifying", {})
++        start = threading.Barrier(3)
++        results: dict[str, object] = {}
++
++        def cancel() -> None:
++            start.wait(timeout=5)
++            results["cancel"] = orchestrator.cancel("tenant", work_id)
++
++        def complete() -> None:
++            start.wait(timeout=5)
++            results["complete"] = orchestrator._complete_if_not_cancelled(
++                work_id, {"summary": "verified"}
++            )
++
++        workers = [threading.Thread(target=cancel), threading.Thread(target=complete)]
++        for worker in workers:
++            worker.start()
++        start.wait(timeout=5)
++        for worker in workers:
++            worker.join(timeout=6)
++
++        assert all(not worker.is_alive() for worker in workers)
++        cancel_result = results["cancel"]
++        completed = results["complete"]
++        row = orchestrator._row(work_id, "tenant")
++        assert isinstance(cancel_result, dict)
++        assert row is not None
++        if cancel_result["status"] == "complete":
++            assert completed is True
++            assert row["state"] == "complete"
++            assert row["cancel_requested"] == 0
++        else:
++            assert cancel_result["status"] == "cancelling"
++            assert completed is False
++            assert row["state"] == "verifying"
++            assert row["cancel_requested"] == 1
++    finally:
++        orchestrator.close()
