@@ -71,7 +71,7 @@ def validate_config(data: dict[str, Any]) -> None:
     Local AI Hub deliberately leaves most feature-specific keys extensible. Validation
     focuses on transport, resource limits, and code-intelligence lifecycle settings.
     """
-    for name in ("server", "security", "hardware", "openvino", "scheduler", "commands", "client", "mcp", "code_intelligence", "bundles", "resilience", "ollama", "llama_cpp", "ollama_subagents", "agent_state", "work_orchestrator", "browser_bridge"):
+    for name in ("server", "security", "hardware", "openvino", "scheduler", "commands", "client", "mcp", "code_intelligence", "bundles", "resilience", "ollama", "llama_cpp", "ollama_subagents", "agent_state", "work_orchestrator", "browser_bridge", "headless"):
         if name in data and not isinstance(data[name], dict):
             raise ConfigError(f"[{name}] must be a TOML table")
 
@@ -131,6 +131,9 @@ def validate_config(data: dict[str, Any]) -> None:
     _number(server, "max_concurrent_requests", minimum=4, maximum=4096)
     _number(server, "overload_wait_seconds", minimum=0, maximum=10)
     _number(server, "max_request_body_bytes", minimum=1024, maximum=512 * 1024 * 1024)
+
+    headless = data.get("headless", {})
+    _number(headless, "health_probe_timeout_seconds", minimum=0.1, maximum=5.0)
 
     hardware = data.get("hardware", {})
     profile = str(hardware.get("profile", "auto") or "auto").lower()
@@ -238,13 +241,39 @@ def validate_config(data: dict[str, Any]) -> None:
         allow_remote = security.get("allow_remote")
         if allow_remote is not None and not isinstance(allow_remote, bool):
             raise ConfigError("security.allow_remote must be a boolean")
-        bind = str(server.get("bind", "127.0.0.1")).strip().lower()
-        if bind not in {"127.0.0.1", "localhost", "::1"}:
-            if not bool(allow_remote):
-                raise ConfigError("Refusing non-loopback Local AI Hub bind: set [security].allow_remote=true explicitly")
-            token = str(security.get("api_token", "") or "")
-            if len(token) < 16:
-                raise ConfigError("Remote Local AI Hub bind requires [security].api_token with at least 16 characters")
+        if allow_remote:
+            raise ConfigError("security.allow_remote is unsupported; server.bind must be 127.0.0.1")
+        allowed_permissions = {"monitor", "read", "write", "admin"}
+        permissions = security.get("api_token_permissions")
+        if permissions is not None and (
+            not isinstance(permissions, list)
+            or not permissions
+            or any(not isinstance(item, str) or item.strip().lower() not in allowed_permissions for item in permissions)
+        ):
+            raise ConfigError("security.api_token_permissions must contain monitor, read, write, or admin")
+        token_tenant = security.get("api_token_tenant")
+        if token_tenant is not None and (not isinstance(token_tenant, str) or not token_tenant.strip()):
+            raise ConfigError("security.api_token_tenant must be a non-empty string")
+        principal = security.get("api_token_principal")
+        if principal is not None and (not isinstance(principal, str) or not principal.strip() or len(principal.strip()) > 128):
+            raise ConfigError("security.api_token_principal must be a non-empty string of at most 128 characters")
+        derivation_key = security.get("tenant_derivation_key")
+        if derivation_key is not None and (not isinstance(derivation_key, str) or len(derivation_key) < 32 or len(derivation_key) > 256):
+            raise ConfigError("security.tenant_derivation_key must contain 32 to 256 characters")
+        allowed_roots = security.get("allowed_roots", [])
+        if (
+            not isinstance(allowed_roots, list)
+            or len(allowed_roots) > 32
+            or any(not isinstance(root, str) or not root.strip() or len(root.strip()) > 4096 for root in allowed_roots)
+        ):
+            raise ConfigError("security.allowed_roots must be a list of at most 32 non-empty paths of at most 4096 characters")
+        if any(not Path(root.strip()).expanduser().is_absolute() for root in allowed_roots):
+            raise ConfigError("security.allowed_roots entries must be absolute paths")
+        if security.get("allow_anonymous") is True:
+            raise ConfigError("Anonymous HTTP API access is not supported; configure [security].api_token")
+        bind = str(server.get("bind", "127.0.0.1"))
+        if bind != "127.0.0.1":
+            raise ConfigError("Refusing non-approved Local AI Hub bind: server.bind must be 127.0.0.1")
 
 
 

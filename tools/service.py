@@ -14,11 +14,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from local_ai_hub.client import HubClient
 from local_ai_hub.config import load_config
-from local_ai_hub.process_utils import find_listening_pid, hidden_run_kwargs, pid_alive, terminate_tree
+from local_ai_hub.process_utils import find_listening_pid, hidden_run_kwargs, pid_alive, process_owner_state, terminate_owned_process
 from local_ai_hub.ollama import OllamaRuntime
 
 ROOT_CONFIG = ROOT / "config.toml"
-CFG = load_config(str(ROOT_CONFIG) if ROOT_CONFIG.is_file() else None)
+CFG = load_config(os.environ.get("LOCAL_AI_CONFIG") or (str(ROOT_CONFIG) if ROOT_CONFIG.is_file() else None))
 _ACTIVE_CONFIG = Path(str(CFG.get("_config_path", ""))).expanduser()
 _ACTIVE_CONFIG_ARG = str(_ACTIVE_CONFIG) if _ACTIVE_CONFIG.is_file() else None
 STATE = Path(CFG["server"]["state_dir"])
@@ -39,6 +39,8 @@ def run(cmd: list[object], timeout: float = 12.0) -> subprocess.CompletedProcess
     except subprocess.TimeoutExpired:
         # Service management is best-effort; never leave installer/control commands hung.
         return subprocess.CompletedProcess(argv, 124)
+    except OSError:
+        return subprocess.CompletedProcess(argv, 127)
 
 def mark_disabled(disabled: bool) -> None:
     if disabled:
@@ -52,7 +54,7 @@ def mark_managed() -> None:
 
 
 def spawn_detached() -> None:
-    if any(pid_alive(p) for p in all_supervisor_pids()):
+    if supervisor_pid() > 0:
         return
     if os.name == "nt":
         powershell = shutil.which("powershell") or shutil.which("pwsh")
@@ -83,9 +85,40 @@ def spawn_detached() -> None:
 
 def supervisor_pid() -> int:
     try:
-        return int((STATE / "supervisor.pid").read_text(encoding="utf-8").strip() or 0)
+        pid = int((STATE / "supervisor.pid").read_text(encoding="utf-8").strip() or 0)
+        owner = _read_owner("supervisor")
+        if pid > 0 and owner and int(owner.get("pid", 0)) == pid and process_owner_state(owner, STATE, "supervisor") == "owned":
+            return pid
     except Exception:
-        return 0
+        pass
+    return 0
+
+
+def _read_owner(role: str) -> dict | None:
+    try:
+        value = json.loads((STATE / f"{role}.owner.json").read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else None
+    except (OSError, ValueError, TypeError):
+        return None
+
+
+def _role_stopped(role: str) -> bool:
+    """Return true only when role PID metadata proves no live process remains."""
+    pid_path = STATE / f"{role}.pid"
+    try:
+        pid_text = pid_path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        pid_text = ""
+    except OSError:
+        return False
+    if not pid_text:
+        owner = _read_owner(role)
+        return not owner or process_owner_state(owner, STATE, role) == "stale"
+    try:
+        pid = int(pid_text)
+    except ValueError:
+        return False
+    return pid <= 0 or not pid_alive(pid)
 
 
 def all_supervisor_pids() -> list[int]:
@@ -117,34 +150,32 @@ def all_supervisor_pids() -> list[int]:
     return list(pids)
 
 
-def kill_supervisor() -> None:
-    for pid in all_supervisor_pids():
-        try:
-            terminate_tree(pid, grace_seconds=5.0)
-        except Exception:
-            pass
-    try:
-        (STATE / "supervisor.pid").unlink(missing_ok=True)
-    except OSError:
-        pass
-    try:
-        (STATE / "supervisor.lock").unlink(missing_ok=True)
-    except OSError:
-        pass
+def kill_supervisor() -> bool:
+    owner = _read_owner("supervisor")
+    if owner and process_owner_state(owner, STATE, "supervisor") == "owned":
+        if not terminate_owned_process(owner, STATE, "supervisor", grace_seconds=5.0):
+            return False
+    return _role_stopped("supervisor")
 
 
 
 
 def hub_pid() -> int:
     try:
-        return int((STATE / "hub.pid").read_text(encoding="utf-8").strip() or 0)
+        pid = int((STATE / "hub.pid").read_text(encoding="utf-8").strip() or 0)
+        owner = _read_owner("hub")
+        if pid > 0 and owner and int(owner.get("pid", 0)) == pid and process_owner_state(owner, STATE, "hub") == "owned":
+            return pid
     except Exception:
-        return 0
+        pass
+    return 0
 
 
 def request_graceful_hub_stop() -> bool:
     """Ask a live hub to close its telemetry and runtime state before killing it."""
-    control = HubClient(tenant="service-control", config_path=_ACTIVE_CONFIG_ARG, auto_start=False)
+    security = CFG.get("security", {})
+    tenant = str(security.get("api_token_tenant", "") or "service-control")
+    control = HubClient(tenant=tenant, config_path=_ACTIVE_CONFIG_ARG, auto_start=False)
     if not control._online():
         return False
     try:
@@ -167,52 +198,108 @@ def request_graceful_hub_stop() -> bool:
 
 
 def managed_service_running() -> bool:
-    if any(pid_alive(p) for p in all_supervisor_pids()):
+    if supervisor_pid() > 0 or hub_pid() > 0:
         return True
     port = int(CFG.get("server", {}).get("port", 11435))
-    return bool(find_listening_pid(port))
-
-def kill_hub() -> None:
-    pid = hub_pid()
-    if pid > 0:
-        try: terminate_tree(pid, grace_seconds=5.0)
-        except Exception: pass
-    port = int(CFG.get("server", {}).get("port", 11435))
     listening_pid = find_listening_pid(port)
-    if listening_pid and listening_pid != os.getpid():
-        try: terminate_tree(listening_pid, grace_seconds=5.0)
-        except Exception: pass
+    owner = _read_owner("hub")
+    return bool(
+        listening_pid
+        and owner
+        and int(owner.get("pid", 0)) == int(listening_pid)
+        and process_owner_state(owner, STATE, "hub") == "owned"
+    )
 
-def stop_managed_ollama() -> None:
+def kill_hub() -> bool:
+    owner = _read_owner("hub")
+    if owner and process_owner_state(owner, STATE, "hub") == "owned":
+        if not terminate_owned_process(owner, STATE, "hub", grace_seconds=5.0):
+            return False
+    return _role_stopped("hub")
+
+def stop_managed_ollama() -> bool:
     if not bool(CFG.get("headless", {}).get("stop_managed_ollama_on_stop", True)):
-        return
-    try: OllamaRuntime(CFG).stop_managed_server()
-    except Exception: pass
+        return True
+    try:
+        return bool(OllamaRuntime(CFG).stop_managed_server())
+    except Exception:
+        return False
 
-def native_stop() -> None:
-    mark_disabled(True)
+
+def _service_manager_stop_result(backend: str, result: subprocess.CompletedProcess[bytes]) -> dict[str, object]:
+    returncode = int(result.returncode)
+    timed_out = returncode == 124
+    reason = f"{backend}_stop_timeout" if timed_out else f"{backend}_stop_failed" if returncode else ""
+    return {
+        "backend": backend,
+        "returncode": returncode,
+        "success": returncode == 0,
+        "timed_out": timed_out,
+        "reason": reason,
+    }
+
+def native_stop() -> dict[str, object]:
+    errors: list[str] = []
+    manager: dict[str, object] = {"supported": True, "success": False, "timed_out": False}
+    try:
+        mark_disabled(True)
+    except OSError:
+        errors.append("disable_marker_write_failed")
     request_graceful_hub_stop()
     if os.name == "nt":
-        run(["schtasks", "/Change", "/TN", "LocalAIHubSupervisor", "/DISABLE"])
+        result = run(["schtasks", "/Change", "/TN", "LocalAIHubSupervisor", "/DISABLE"])
+        manager.update(_service_manager_stop_result("schtasks", result))
     elif sys.platform == "darwin":
         dest = Path.home() / "Library/LaunchAgents/com.localai.hub.plist"
-        run(["launchctl", "bootout", f"gui/{os.getuid()}", str(dest)])
+        if not dest.is_file():
+            manager.update(backend="launchctl", supported=False, reason="managed_launch_agent_not_installed")
+        else:
+            result = run(["launchctl", "bootout", f"gui/{os.getuid()}", str(dest)])
+            manager.update(_service_manager_stop_result("launchctl", result))
     else:
         systemctl = shutil.which("systemctl")
         dest = Path.home() / ".config/systemd/user/local-ai-hub.service"
-        if systemctl and dest.exists():
-            run([systemctl, "--user", "stop", "local-ai-hub.service"])
-    # Reap both layers even after graceful shutdown. This cleans up stale listeners
-    # and installations recovered from an old/orphaned supervisor state.
-    kill_supervisor()
-    kill_hub()
-    stop_managed_ollama()
+        if not systemctl or not dest.is_file():
+            manager.update(backend="systemctl", supported=False, reason="managed_user_unit_not_installed")
+        else:
+            result = run([systemctl, "--user", "stop", "local-ai-hub.service"])
+            manager.update(_service_manager_stop_result("systemctl", result))
+    if manager.get("success") is not True:
+        errors.append(str(manager.get("reason") or f"{manager.get('backend', 'service_manager')}_stop_failed"))
+    supervisor_stopped = kill_supervisor()
+    hub_stopped = kill_hub()
+    if not supervisor_stopped:
+        errors.append("supervisor_stop_unverified")
+    if not hub_stopped:
+        errors.append("hub_stop_unverified")
+    port = int(CFG.get("server", {}).get("port", 11435))
+    deadline = time.monotonic() + 2.0
+    listener = find_listening_pid(port)
+    while listener is not None and time.monotonic() < deadline:
+        time.sleep(0.1)
+        listener = find_listening_pid(port)
+    if listener is not None:
+        errors.append("hub_port_listener_remains")
+    ollama_stopped = stop_managed_ollama()
+    if not ollama_stopped:
+        errors.append("managed_ollama_stop_unverified")
+    stopped = supervisor_stopped and hub_stopped and listener is None and ollama_stopped
+    return {
+        "success": stopped and not errors,
+        "stopped": stopped,
+        "service_manager": manager,
+        "supervisor_stopped": supervisor_stopped,
+        "hub_stopped": hub_stopped,
+        "managed_ollama_stopped": ollama_stopped,
+        "port_listener_pid": listener,
+        "errors": errors,
+    }
 
 
 def native_start() -> None:
     mark_managed()
     mark_disabled(False)
-    if any(pid_alive(p) for p in all_supervisor_pids()):
+    if supervisor_pid() > 0:
         return
     if os.name == "nt":
         cp = run(["schtasks", "/Change", "/TN", "LocalAIHubSupervisor", "/ENABLE"])
@@ -222,7 +309,7 @@ def native_start() -> None:
                 return
         # Task Scheduler can start the supervisor even when its control command
         # reports failure. Re-check before the fallback spawn to avoid duplicates.
-        if all_supervisor_pids():
+        if supervisor_pid() > 0:
             return
         spawn_detached(); return
     if sys.platform == "darwin":
@@ -375,9 +462,23 @@ def main() -> int:
     action = parser.parse_args().action
     if action == "install": print(install()); return 0
     if action == "uninstall": uninstall(); print("uninstalled"); return 0
-    if action == "stop": native_stop(); print("stopped"); return 0
+    if action == "stop":
+        result = native_stop()
+        if not result.get("success"):
+            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            return 1
+        print("stopped")
+        return 0
     if action == "start": native_start(); time.sleep(0.5); print("started"); return 0
-    if action == "restart": native_stop(); time.sleep(0.5); native_start(); print("restarted"); return 0
+    if action == "restart":
+        result = native_stop()
+        if not result.get("success"):
+            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            return 1
+        time.sleep(0.5)
+        native_start()
+        print("restarted")
+        return 0
     client = HubClient(tenant="service-control", config_path=_ACTIVE_CONFIG_ARG, auto_start=False)
     status_path = STATE / "supervisor.status.json"
     try:

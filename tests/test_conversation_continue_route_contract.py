@@ -61,7 +61,7 @@ def test_empty_conversation_is_rejected_through_production_route(production_hub)
     assert calls == []
 
 
-def test_generic_hub_client_posts_async_job_actions_to_production_route(production_hub):
+def test_hub_client_async_job_methods_share_production_route(production_hub):
     app, client, _ = production_hub
     calls = []
 
@@ -91,15 +91,11 @@ def test_generic_hub_client_posts_async_job_actions_to_production_route(producti
     app.async_jobs.result = result
     app.async_jobs.cancel = cancel
 
-    submitted = client.post("/api/async-jobs", {
-        "action": "submit", "job_action": "reason", "task": "summarize", "request_id": "stable-submit",
-    })
-    current = client.post("/api/async-jobs", {"action": "status", "job_id": "job-1"})
-    waited = client.post(
-        "/api/async-jobs", {"action": "wait", "job_id": "job-1", "timeout_seconds": 0.25}, timeout=1.0
-    )
-    fetched = client.post("/api/async-jobs", {"action": "result", "job_id": "job-1"})
-    cancelled = client.post("/api/async-jobs", {"action": "cancel", "job_id": "job-1"})
+    submitted = client.submit_async_job("reason", {"task": "summarize"}, request_id="stable-submit")
+    current = client.async_job_status("job-1")
+    waited = client.wait_async_job("job-1", timeout_seconds=0.25, transport_timeout=1.0)
+    fetched = client.async_job_result("job-1")
+    cancelled = client.cancel_async_job("job-1")
 
     assert submitted["job_id"] == "job-1"
     assert current["state"] == "running"
