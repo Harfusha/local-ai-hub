@@ -522,8 +522,22 @@ acceptance. Later concurrent writes remain untouched and must be reconciled.
 
 Observed issues needing review after synchronization: the Windows backup ACL
 setup swallows all exceptions, potentially defeating fail-closed confidentiality;
-the memory GET scope block currently contains an empty `if`, and explicit/query
-tenant handling must not bypass authenticated identity. The SDK fixed-action
+a transient empty `if` in the memory GET scope block was repaired by the concurrent
+writer before the preservation commit. Explicit/query tenant handling still must
+not bypass authenticated identity. The SDK fixed-action
 payload ordering and worktree-delete denial also need targeted verification.
 No test result is claimed for this unfinished source snapshot. `agent_state.sqlite`
 remains outside Git. No source hunk was rewritten to create this preservation.
+
+#### T13 lifecycle root integration
+
+Packet `04a93ca7045e341e25f1957900137993f1d0dbe0` merged without conflicts on
+top of root preservation `7715b1a1`. Original checkpoints and unfinished owner
+results remain in `handoff/T13-takeover-sync-20261006.md`. All 18 staged Python
+files parsed successfully. Fresh root check, with `PYTHONPATH` set to root `src`:
+`python -B -m pytest -q -p no:cacheprovider tests/test_client_transport.py
+tests/test_http_code_find_symbol_include_body.py --tb=short --maxfail=4`:
+42 passed in 8.25 seconds. `git diff --cached --check` reports one trailing-space
+line inside the original archived handoff patch; its original bytes are retained.
+These targeted checks do not establish lifecycle, security, or full release
+acceptance. Concurrent root security/memory issues listed above remain open.

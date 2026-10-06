@@ -1207,8 +1207,14 @@ class HubClient:
 
     @staticmethod
     def _post_replay_safe(path: str, payload: dict[str, Any] | None) -> bool:
-        """Fail closed: only known read-only POST endpoints may be replayed."""
+        """Fail closed: only known read-only or explicitly idempotent POSTs replay."""
         path = path.lower().split("?", 1)[0]
+        if path == "/api/async-jobs":
+            action = str((payload or {}).get("action", "")).strip().lower().replace("-", "_")
+            if action in {"status", "wait", "result", "cancel"}:
+                return True
+            request_id = (payload or {}).get("request_id")
+            return action == "submit" and bool(str(request_id or "").strip())
         if path in {
             "/api/search",
             "/api/memory/get",
@@ -1589,20 +1595,64 @@ class HubClient:
             payload["query"] = query
         return self.post("/api/agent-state/memory", payload)
 
-    def continue_conversation(self, conversation_id: str, prompt: str, model: str | None = None, system: str | None = None, max_tokens: int | None = None, temperature: float | None = None) -> dict[str, Any]:
+    def submit_async_job(
+        self,
+        job_action: str,
+        payload: dict[str, Any],
+        *,
+        request_id: str | None = None,
+        timeout: float = 360.0,
+    ) -> dict[str, Any]:
+        body = dict(payload)
+        body["action"] = "submit"
+        body["job_action"] = str(job_action)
+        if request_id is not None:
+            body["request_id"] = str(request_id)
+        return self.post("/api/async-jobs", body, timeout=timeout)
+
+    def async_job_status(self, job_id: str, *, timeout: float = 360.0) -> dict[str, Any]:
+        return self.post("/api/async-jobs", {"action": "status", "job_id": job_id}, timeout=timeout)
+
+    def wait_async_job(
+        self,
+        job_id: str,
+        timeout_seconds: float = 90.0,
+        *,
+        transport_timeout: float | None = None,
+    ) -> dict[str, Any]:
+        requested_wait = max(0.0, float(timeout_seconds))
+        client_timeout_limit = max(0.2, float(getattr(self, "max_request_timeout", 360.0)))
+        requested_transport = transport_timeout if transport_timeout is not None else requested_wait + 30.0
+        request_timeout = min(client_timeout_limit, max(0.2, float(requested_transport)))
+        margin = max(0.2, min(30.0, request_timeout * 0.1))
+        wait_seconds = min(requested_wait, max(0.0, request_timeout - margin))
+        return self.post(
+            "/api/async-jobs",
+            {"action": "wait", "job_id": job_id, "timeout_seconds": wait_seconds},
+            timeout=request_timeout,
+        )
+
+    def async_job_result(self, job_id: str, *, timeout: float = 360.0) -> dict[str, Any]:
+        return self.post("/api/async-jobs", {"action": "result", "job_id": job_id}, timeout=timeout)
+
+    def cancel_async_job(self, job_id: str, *, timeout: float = 360.0) -> dict[str, Any]:
+        return self.post("/api/async-jobs", {"action": "cancel", "job_id": job_id}, timeout=timeout)
+
+    def continue_conversation(
+        self,
+        conversation_id: str,
+        prompt: str,
+        *,
+        context: str | None = None,
+        timeout: float = 360.0,
+    ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "conversation_id": conversation_id,
             "task": prompt,
         }
-        if model:
-            payload["model"] = model
-        if system:
-            payload["system"] = system
-        if max_tokens is not None:
-            payload["max_tokens"] = max_tokens
-        if temperature is not None:
-            payload["temperature"] = temperature
-        return self.post("/api/conversations/continue", payload)
+        if context is not None:
+            payload["context"] = context
+        return self.post("/api/conversations/continue", payload, timeout=timeout)
 
     def cancel_job(self, job_id: str) -> dict[str, Any]:
         return self.post("/api/async-jobs", {"action": "cancel", "job_id": job_id})
