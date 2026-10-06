@@ -762,6 +762,7 @@ _STATUS_PROTECTED_KEYS = (
     "job_id", "trace_id", "task_id", "state", "artifact_id", "cancel_requested",
     "expires_at", "wait_timeout_seconds", "outcome_unknown", "coalesced", "idempotent_replay",
     "admission_state", "terminal", "retryable", "in_progress",
+    "worktree_id", "worktree_path", "lease_id", "branch",
     "enabled", "active_tasks", "tasks_count", "incidents_count", "candidates_count", "status",
 )
 _RELIABILITY_PROTECTED_KEYS = (
@@ -3209,7 +3210,7 @@ def local_ai_coord(
         return _compact(CLIENT.coord(action="worktree_lease", root=root, branch=key or task or task_id or None), "status")
     if action == "worktree_release":
         del_branch = status.lower() not in {"false", "0", "no"} if status else True
-        return _compact(CLIENT.coord(action="worktree_release", root=root, worktree_path=value or lease_id or key or "", delete_branch=del_branch, branch=key or task or task_id or None), "status")
+        return _compact(CLIENT.coord(action="worktree_release", root=root, worktree_path=value or lease_id or key or "", worktree_id=worktree_id, delete_branch=del_branch, branch=key or task or task_id or None), "status")
     if action == "pubsub_publish":
         return _compact(CLIENT.coord(action="pubsub_publish", topic=key or target_scope or "default", message=value or query or record or {}, publisher=approver or "agent", root=root), "status")
     if action == "pubsub_poll":

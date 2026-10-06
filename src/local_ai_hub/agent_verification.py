@@ -628,10 +628,6 @@ def _receipt_evidence_matches(
     evidence_store: Any | None = None,
 ) -> bool:
     """Re-read and bind positive receipts to complete, tenant-scoped proof artifacts."""
-    if evidence_store is not None and str(receipt.evidence_id).startswith("E"):
-        ev = evidence_store.get(receipt.evidence_id, verify=False)
-        if isinstance(ev, Mapping) and ev.get("success") is True:
-            return True
     if artifact_store is None or not expected_owner or receipt.owner != expected_owner:
         return False
     if require_repository_revision and not receipt.repository_revision.strip():
@@ -783,7 +779,7 @@ def _receipt_evidence_matches(
             ).hexdigest()
             if proof.get("project_execution_binding_sha256") != expected_binding:
                 return False
-        if require_execution_provenance and receipt.command_id and trusted_repository_root:
+        if require_execution_provenance and receipt.command_id:
             if (
                 not callable(command_execution_record_lookup)
                 or not trusted_tenant
