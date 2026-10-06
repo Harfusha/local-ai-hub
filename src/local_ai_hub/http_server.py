@@ -1,6 +1,24 @@
 from __future__ import annotations
 
+
+def _parse_include_body(value, *, query=False):
+    """Parse the strict boolean forms accepted by code.find_symbol."""
+    if query:
+        if value is None:
+            return False
+        if value == "true":
+            return True
+        if value == "false":
+            return False
+        return None
+    if type(value) is bool:
+        return value
+    return None
+
+
 import hmac
+import hashlib
+import ipaddress
 import json
 import os
 import queue
@@ -19,8 +37,7 @@ from urllib.parse import parse_qs, urlparse
 from . import __version__
 from .app import LocalAIApp
 from .scheduler import ModelUnavailableError, QueueFullError
-from .debug_traces import DebugTraceObserver
-from .trace_context import reset_context, reset_observer, set_context, set_observer
+from .trace_context import reset_context, reset_observer, set_context
 from .dashboard import DASHBOARD_HTML
 from .config import ConfigError, deep_merge, load_config, save_runtime_overrides, validate_config
 from .delivery import decide_delivery
@@ -32,6 +49,7 @@ from .agent_verification import VerificationReceipt
 from .task_context import build_context_request, compose_task_context
 from .agent_learning import ImprovementCandidate, SLOObservation
 from .json_utils import dumps as json_dumps
+from .process_utils import process_owner_state
 from .browser_bridge import (
     abandon_staged_capture,
     capture_failure,
@@ -54,11 +72,24 @@ APP: LocalAIApp | None = None
 # Monitoring/control reads must never appear as workload. Keep this hard safety set
 # independent of user config so a dashboard refresh cannot create immortal active jobs.
 MONITOR_PATHS = {
-    "/health", "/dashboard", "/favicon.ico", "/api/live", "/api/live/status",
+    "/health", "/ready", "/dashboard", "/favicon.ico", "/api/live", "/api/live/status",
     "/api/status", "/api/capabilities", "/api/metrics", "/api/adoption", "/api/telemetry/report", "/api/telemetry/tool-accounting", "/api/telemetry/timeline", "/api/audit/tail", "/api/control",
     "/api/config", "/api/logs/tail", "/api/hardware/system", "/api/hardware/gpu",
     "/api/debug-traces",
 }
+READINESS_COMPONENTS = (
+    "artifacts",
+    "telemetry",
+    "agent_state",
+    "agent_tasks",
+    "agent_memory",
+    "agent_incidents",
+    "agent_verification",
+    "agent_blackboard",
+    "agent_context",
+    "agent_learning",
+    "async_jobs",
+)
 
 
 def _json_bytes(data: Any) -> bytes:
@@ -218,6 +249,47 @@ def _memory_lookup_has_identity(*values: Any) -> bool:
     return any(str(value or "").strip() for value in values)
 
 
+def _strict_root_path(raw: Any) -> Path:
+    if not isinstance(raw, str) or not raw.strip() or len(raw.strip()) > 4096:
+        raise ValueError("root is required")
+    candidate = Path(raw.strip()).expanduser()
+    if not candidate.is_absolute():
+        raise ValueError("root must be an absolute directory")
+    try:
+        if any(path.is_symlink() for path in (candidate, *candidate.parents)):
+            raise ValueError("symlink roots are not allowed")
+        resolved = candidate.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ValueError("root must resolve to an existing allowed directory") from exc
+    if not resolved.is_dir():
+        raise ValueError("root must resolve to an existing directory")
+    return resolved
+
+
+def _root_is_allowed(root: Path, allowed_roots: Any) -> bool:
+    if not isinstance(allowed_roots, list) or not allowed_roots:
+        return False
+    for raw_allowed in allowed_roots:
+        try:
+            allowed = _strict_root_path(raw_allowed)
+            root.relative_to(allowed)
+            return True
+        except (ValueError, OSError):
+            continue
+    return False
+
+
+def _derive_root_tenant(principal: str, canonical_root: str, key: str) -> str:
+    message = f"local-ai-root-tenant\0{principal}\0{canonical_root}".encode("utf-8")
+    digest = hmac.new(key.encode("utf-8"), message, hashlib.sha256).hexdigest()
+    return f"root-{digest}"
+
+
+def _task_memory_scope_id(tenant: str, task_id: str) -> str:
+    message = f"{tenant}\0{task_id.strip()}".encode("utf-8")
+    return "task-" + hashlib.sha256(message).hexdigest()
+
+
 def _telemetry_http_outcome(status: int, data: Any, path: str = "") -> tuple[bool, str, bool]:
     """Return reliability success, safe outcome category, and error-record flag."""
     payload = data if isinstance(data, dict) else {}
@@ -311,7 +383,9 @@ class LocalAIHTTPServer(ThreadingHTTPServer):
     """
 
     daemon_threads = True
-    allow_reuse_address = True
+    # The OS bind is the cross-config singleton gate; supervisors also own
+    # independent state-directory locks.
+    allow_reuse_address = False
     request_queue_size = 128
 
     def __init__(self, server_address: tuple[str, int], handler: type[BaseHTTPRequestHandler], *, max_handlers: int = 64, overload_wait_seconds: float = 0.05):
@@ -335,6 +409,14 @@ class LocalAIHTTPServer(ThreadingHTTPServer):
         self._rate_windows: dict[str, list[float]] = {}
         self._rate_lock = threading.Lock()
         super().__init__(server_address, handler)
+
+    def server_bind(self) -> None:
+        if os.name == "nt":
+            exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+            if exclusive is None:
+                raise OSError("exclusive Hub listener binding is unavailable")
+            self.socket.setsockopt(socket.SOL_SOCKET, exclusive, 1)
+        super().server_bind()
 
     def configure_rate_limit(self, requests: int, window_seconds: float) -> None:
         """Apply config-driven rate limit values after server creation."""
@@ -423,7 +505,7 @@ class LocalAIHTTPServer(ThreadingHTTPServer):
 class Handler(BaseHTTPRequestHandler):
     DEBUG_TRACE_REQUEST_CAPTURE_BYTES = 8 * 1024
     _DEBUG_TRACE_SENSITIVE_KEY = re.compile(
-        r"^(?:token|api[_-]?(?:key|token)|access[_-]?token|refresh[_-]?token|auth[_-]?token|id[_-]?token|bearer[_-]?token|authorization|secret|password|passwd|credential|cookie|set[-_]?cookie|private[-_]?key|privatekey|passphrase|pem|ssh[-_]?key|certificate)$",
+        r"^(?:root|target[_-]?root|repo[_-]?root|repository[_-]?id|tenant|token|api[_-]?(?:key|token)|access[_-]?token|refresh[_-]?token|auth[_-]?token|id[_-]?token|bearer[_-]?token|authorization|secret|password|passwd|credential|cookie|set[-_]?cookie|private[-_]?key|privatekey|passphrase|pem|ssh[-_]?key|certificate)$",
         re.IGNORECASE,
     )
     protocol_version = "HTTP/1.1"
@@ -673,39 +755,16 @@ class Handler(BaseHTTPRequestHandler):
                         self._debug_trace_id = trace_store.start(kind="api_request", tenant=self._tenant(), agent=self._agent(), action=path, source="http", request_id=request_id)
                         if self._debug_trace_id:
                             trace_store.event(self._debug_trace_id, "request_received", {"method": self.command, "path": path, "request_id": request_id})
-                            self._debug_observer_token = set_observer(DebugTraceObserver(trace_store, self._debug_trace_id))
+                            trace_store.event(self._debug_trace_id, "content_capture_disabled", {"mode": "metadata_only"})
         except Exception:
             pass
 
     @classmethod
     def _safe_debug_trace_request(cls, payload: Any) -> dict[str, Any]:
-        """Return a small redacted JSON/form payload suitable for durable trace storage."""
+        """Return request metadata only; durable traces must not store request values."""
         if not isinstance(payload, dict):
             return {"capture_status": "omitted", "reason": "unsupported request body"}
-
-        def redact(value: Any, key: str = "") -> Any:
-            if cls._DEBUG_TRACE_SENSITIVE_KEY.search(key):
-                return "[redacted]"
-            if isinstance(value, dict):
-                return {str(child_key): redact(child_value, str(child_key)) for child_key, child_value in value.items()}
-            if isinstance(value, list):
-                return [redact(item) for item in value[:100]]
-            if isinstance(value, (str, int, float, bool)) or value is None:
-                return value
-            return "[unsupported value]"
-
-        captured = redact(payload)
-        try:
-            encoded = json_dumps(captured, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        except (TypeError, ValueError):
-            return {"capture_status": "omitted", "reason": "unserializable request body"}
-        if len(encoded) > cls.DEBUG_TRACE_REQUEST_CAPTURE_BYTES:
-            return {
-                "capture_status": "omitted",
-                "reason": "request body exceeds trace capture limit",
-                "captured_limit_bytes": cls.DEBUG_TRACE_REQUEST_CAPTURE_BYTES,
-            }
-        return captured
+        return {"capture_status": "metadata_only", "field_count": min(len(payload), 100)}
 
     def _finish_debug_trace(self, status: int, data: Any, *, error: str = "") -> None:
         trace_id = str(getattr(self, "_debug_trace_id", "") or "")
@@ -715,9 +774,11 @@ class Handler(BaseHTTPRequestHandler):
         try:
             failed = status >= 400 or (isinstance(data, dict) and data.get("success") is False)
             redacted = bool(getattr(self, "_debug_trace_redacted", False))
-            detail = "" if redacted else error or (str(data.get("error", "")) if isinstance(data, dict) else "")
+            detail = "request failed" if failed and not redacted else ""
             if redacted:
                 data = {"success": not failed, "conversation_redacted": True}
+            else:
+                data = self._safe_debug_trace_request(data)
             state = "failed" if failed else "done"
             finished = store.finish(trace_id, state=state, response=data, error=detail)
             if not finished:
@@ -788,18 +849,515 @@ class Handler(BaseHTTPRequestHandler):
             self._trace_context_token = None
 
     def _tenant(self) -> str:
-        requested = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID") or "http-default"
+        bound_tenant = getattr(self, "_authorization_tenant", None)
+        if bound_tenant:
+            return str(bound_tenant)
+        return self._principal_tenant()
+
+    def _principal_tenant(self) -> str:
         path = str(getattr(self, "path", ""))
-        security = APP.config.get("security", {}) if APP is not None else {}
-        if APP is not None and (path.startswith("/api/browser/") or path == "/api/vision/review") and security.get("api_token"):
-            return str(APP.config.get("browser_bridge", {}).get("tenant", "http-default") or "http-default")
-        return requested
+        principal = self._configured_principal_tenant()
+        if principal:
+            return principal
+        if APP is not None and (path.startswith("/api/browser/") or path == "/api/vision/review"):
+            return str(APP.config.get("browser_bridge", {}).get("tenant", "api-token-default") or "api-token-default")
+        return "api-token-default"
+
+    def _configured_principal_tenant(self) -> str:
+        config = getattr(APP, "config", {}) if APP is not None else {}
+        security = config.get("security", {}) if isinstance(config, dict) else {}
+        return str(
+            security.get("api_token_tenant", "")
+            or security.get("api_token_principal", "")
+            or ""
+        ).strip()
+
+    def _bind_root_tenant(
+        self,
+        root: Any,
+        tenant_values: list[Any] | tuple[Any, ...] = (),
+        *,
+        allow_principal_header: bool = False,
+        require_configured_principal: bool = False,
+    ) -> tuple[str, str] | None:
+        config = getattr(APP, "config", {}) if APP is not None else {}
+        security = config.get("security", {}) if isinstance(config, dict) else {}
+        try:
+            canonical = _strict_root_path(root)
+            if not _root_is_allowed(canonical, security.get("allowed_roots", [])):
+                raise ValueError("root is not allowed")
+            principal = self._configured_principal_tenant()
+            if not principal and require_configured_principal:
+                raise ValueError("authenticated tenant binding is unavailable")
+            if not principal:
+                principal = self._principal_tenant()
+            key = str(security.get("tenant_derivation_key") or security.get("api_token") or "")
+            if not key:
+                raise ValueError("tenant derivation secret is unavailable")
+            effective = _derive_root_tenant(principal, str(canonical), key)
+        except (OSError, TypeError, ValueError):
+            self._send(403, {"success": False, "error": "root is missing, invalid, or not allowed", "error_code": "root_not_allowed", "terminal": True, "retryable": False})
+            return None
+        headers = [self.headers.get("X-LocalAI-Tenant"), self.headers.get("X-Tenant-ID")]
+        header_mismatch = any(
+            value is not None
+            and str(value).strip() != effective
+            and not (allow_principal_header and str(value).strip() == principal)
+            for value in headers
+        )
+        value_mismatch = any(value is not None and str(value).strip() != effective for value in tenant_values)
+        if header_mismatch or value_mismatch:
+            self._send(403, {"success": False, "error": "tenant does not match authenticated root scope", "error_code": "tenant_binding_mismatch", "terminal": True, "retryable": False})
+            return None
+        self._authorization_root = str(canonical)
+        self._authorization_tenant = effective
+        return str(canonical), effective
+
+    def _bind_principal_tenant(self, tenant_values: list[Any] | tuple[Any, ...] = ()) -> bool:
+        principal = self._principal_tenant()
+        requested = [self.headers.get("X-LocalAI-Tenant"), self.headers.get("X-Tenant-ID"), *tenant_values]
+        if any(value is not None and str(value).strip() != principal for value in requested):
+            self._send(403, {"success": False, "error": "tenant does not match authenticated principal", "error_code": "tenant_binding_mismatch", "terminal": True, "retryable": False})
+            return False
+        self._authorization_tenant = principal
+        return True
+
+    def _bind_memory_payload(self, payload: dict[str, Any]) -> bool:
+        record = payload.get("record") if isinstance(payload.get("record"), dict) else {}
+        payload_provenance = payload.get("provenance") if isinstance(payload.get("provenance"), dict) else {}
+        record_provenance = record.get("provenance") if isinstance(record.get("provenance"), dict) else {}
+        containers = (payload, record, payload_provenance, record_provenance)
+        roots = [item.get("root") for item in containers if item.get("root") not in (None, "")]
+        tenants = [item.get("tenant") for item in containers if item.get("tenant") not in (None, "")]
+        scope = _parse_memory_scope(payload.get("scope") or record.get("scope"))
+        task_fields = ("task_id", "session_id", "clone_id", "worktree_id", "branch")
+        has_task_identity = any(
+            item.get(key)
+            for item in (payload, record)
+            for key in ("task_id", "repository_id", "clone_id", "worktree_id", "branch")
+        )
+
+        if roots:
+            bound = self._bind_root_tenant(
+                roots[0],
+                tenants,
+                allow_principal_header=True,
+                require_configured_principal=True,
+            )
+            if bound is None:
+                return False
+            canonical_root, effective_tenant = bound
+            try:
+                if any(str(_strict_root_path(value)) != canonical_root for value in roots[1:]):
+                    raise ValueError("conflicting roots")
+            except (OSError, TypeError, ValueError):
+                self._send(403, {"success": False, "error": "root identity mismatch", "error_code": "root_not_allowed", "terminal": True, "retryable": False})
+                return False
+            payload["root"] = canonical_root
+            payload["tenant"] = effective_tenant
+            self._authorization_root = str(canonical_root)
+            if record:
+                record["root"] = canonical_root
+                record["tenant"] = effective_tenant
+            for provenance in (payload_provenance, record_provenance):
+                if provenance:
+                    provenance["root"] = canonical_root
+                    provenance["tenant"] = effective_tenant
+            task_ids = [
+                item.get("task_id")
+                for item in (payload, record, payload_provenance, record_provenance)
+                if item.get("task_id") not in (None, "")
+            ]
+            if scope is AgentScope.TASK and not task_ids:
+                task_ids = [payload.get("scope_id") or record.get("scope_id")]
+            if not self._validate_memory_task_identity(canonical_root, effective_tenant, task_ids):
+                return False
+            if scope is AgentScope.GLOBAL:
+                payload["scope"] = AgentScope.SESSION.value
+                payload["scope_id"] = effective_tenant
+                payload["session_id"] = effective_tenant
+                if record:
+                    record.update(scope=AgentScope.SESSION.value, scope_id=effective_tenant, session_id=effective_tenant)
+            elif scope is AgentScope.SESSION:
+                for item in (payload, record):
+                    if item and item.get("session_id") not in (None, "", effective_tenant):
+                        self._send(403, {"success": False, "error": "session identity does not match root scope", "error_code": "tenant_binding_mismatch", "terminal": True, "retryable": False})
+                        return False
+                    if item:
+                        item.update(scope_id=effective_tenant, session_id=effective_tenant)
+            return True
+
+        if scope in {AgentScope.TASK, AgentScope.REPOSITORY, AgentScope.CLONE, AgentScope.WORKTREE, AgentScope.BRANCH} or has_task_identity:
+            self._send(400, {"success": False, "error": "root is required for repository or task memory", "error_code": "root_required", "terminal": True, "retryable": False})
+            return False
+        if not self._bind_principal_tenant(tenants):
+            return False
+        principal = self._principal_tenant()
+        for key in task_fields:
+            if any(item.get(key) not in (None, "", principal) for item in (payload, record)):
+                self._send(403, {"success": False, "error": "memory identity does not match authenticated principal", "error_code": "tenant_binding_mismatch", "terminal": True, "retryable": False})
+                return False
+        for item in (payload, record):
+            if item:
+                item["scope"] = AgentScope.SESSION.value
+                item["scope_id"] = principal
+                item["session_id"] = principal
+                item["tenant"] = principal
+        payload["scope"] = AgentScope.SESSION.value
+        payload["scope_id"] = principal
+        payload["session_id"] = principal
+        payload["tenant"] = principal
+        return True
+
+    def _bind_memory_query(self, query: dict[str, list[str]]) -> bool:
+        root_values = query.get("root", [])
+        tenant_values = query.get("tenant", [])
+        scope = _parse_memory_scope((query.get("scope") or [None])[0])
+        scoped_values = [query.get(name, [""])[0] for name in ("task_id", "repository_id", "clone_id", "worktree_id", "branch")]
+        if root_values and root_values[0]:
+            bound = self._bind_root_tenant(
+                root_values[0],
+                tenant_values,
+                allow_principal_header=True,
+                require_configured_principal=True,
+            )
+            if bound is None:
+                return False
+            canonical_root, effective_tenant = bound
+            try:
+                if any(str(_strict_root_path(value)) != canonical_root for value in root_values[1:] if value):
+                    raise ValueError("conflicting roots")
+            except (OSError, TypeError, ValueError):
+                self._send(403, {"success": False, "error": "root identity mismatch", "error_code": "root_not_allowed", "terminal": True, "retryable": False})
+                return False
+            query["root"] = [canonical_root]
+            query["tenant"] = [effective_tenant]
+            self._authorization_root = canonical_root
+            task_ids = [value for value in query.get("task_id", []) if value]
+            if scope is AgentScope.TASK and not task_ids:
+                task_ids = [((query.get("scope_id") or [""])[0])]
+            if not self._validate_memory_task_identity(canonical_root, effective_tenant, task_ids):
+                return False
+            if scope is AgentScope.GLOBAL:
+                query.update(scope=[AgentScope.SESSION.value], scope_id=[effective_tenant], session_id=[effective_tenant])
+            elif scope is AgentScope.SESSION:
+                for name in ("session_id", "scope_id"):
+                    supplied = (query.get(name) or [None])[0]
+                    if supplied not in (None, "", effective_tenant):
+                        self._send(403, {"success": False, "error": "session identity does not match root scope", "error_code": "tenant_binding_mismatch", "terminal": True, "retryable": False})
+                        return False
+                query.update(scope_id=[effective_tenant], session_id=[effective_tenant])
+            return True
+        if scope in {AgentScope.TASK, AgentScope.REPOSITORY, AgentScope.CLONE, AgentScope.WORKTREE, AgentScope.BRANCH} or any(str(value or "").strip() for value in scoped_values):
+            self._send(400, {"success": False, "error": "root is required for repository or task memory", "error_code": "root_required", "terminal": True, "retryable": False})
+            return False
+        if not self._bind_principal_tenant(tenant_values):
+            return False
+        principal = self._principal_tenant()
+        query.update(scope=[AgentScope.SESSION.value], scope_id=[principal], session_id=[principal], tenant=[principal])
+        return True
+
+    def _bind_task_payload(self, payload: dict[str, Any]) -> bool:
+        bound = self._bind_root_tenant(
+            payload.get("root"),
+            allow_principal_header=True,
+            require_configured_principal=True,
+        )
+        if bound is None:
+            return False
+        canonical_root, effective_tenant = bound
+        self._authorization_root = str(canonical_root)
+        context = payload.get("context") if isinstance(payload.get("context"), dict) else {}
+        supplied_root = context.get("repository_id")
+        if supplied_root:
+            try:
+                if str(_strict_root_path(supplied_root)) != canonical_root:
+                    raise ValueError("root identity mismatch")
+            except (OSError, TypeError, ValueError):
+                self._send(403, {"success": False, "error": "task root identity mismatch", "error_code": "root_not_allowed", "terminal": True, "retryable": False})
+                return False
+        if context.get("session_id") not in (None, "", effective_tenant):
+            self._send(403, {"success": False, "error": "task tenant identity mismatch", "error_code": "tenant_binding_mismatch", "terminal": True, "retryable": False})
+            return False
+        context.update(repository_id=canonical_root, session_id=effective_tenant)
+        payload["context"] = context
+        payload["root"] = canonical_root
+        payload["tenant"] = effective_tenant
+        if payload.get("repo_root"):
+            try:
+                if str(_strict_root_path(payload["repo_root"])) != canonical_root:
+                    raise ValueError("root identity mismatch")
+            except (OSError, TypeError, ValueError):
+                self._send(403, {"success": False, "error": "task root identity mismatch", "error_code": "root_not_allowed", "terminal": True, "retryable": False})
+                return False
+        payload["repo_root"] = canonical_root
+        return True
+
+    @staticmethod
+    def _task_matches_request(task: Any, root: str, tenant: str) -> bool:
+        context = getattr(task, "context", None)
+        try:
+            return (
+                context is not None
+                and str(_strict_root_path(str(getattr(context, "repository_id", "")))) == root
+                and str(getattr(context, "session_id", "")) == tenant
+            )
+        except (OSError, TypeError, ValueError):
+            return False
+
+    def _request_task(self, task_id: str, root: str, tenant: str) -> Any | None:
+        task = APP.agent_tasks.get(task_id) if APP is not None and getattr(APP, "agent_tasks", None) else None
+        if task is None or not self._task_matches_request(task, root, tenant):
+            self._send(404, {"success": False, "error": "task not found", "terminal": True, "retryable": False})
+            return None
+        return task
+
+    def _require_scoped_task(self, task_id: str) -> Any | None:
+        root = str(getattr(self, "_authorization_root", "") or "")
+        tenant = str(getattr(self, "_authorization_tenant", "") or "")
+        if not root or not tenant:
+            self._send(403, {"success": False, "error": "task root scope is required", "terminal": True, "retryable": False})
+            return None
+        return self._request_task(str(task_id or "").strip(), root, tenant)
+
+    def _bind_context_payload(self, payload: dict[str, Any]) -> bool:
+        task_id = str(payload.get("task_id", "") or "").strip()
+        if not task_id:
+            self._send(400, {"success": False, "error": "task_id is required for context compilation", "terminal": True, "retryable": False})
+            return False
+        task = APP.agent_tasks.get(task_id) if APP is not None and getattr(APP, "agent_tasks", None) else None
+        context = getattr(task, "context", None) if task is not None else None
+        task_root = str(getattr(context, "repository_id", "") or "")
+        if not task_root:
+            self._send(404, {"success": False, "error": "task not found", "terminal": True, "retryable": False})
+            return False
+        for name in ("root", "repository_id"):
+            supplied = payload.get(name)
+            if supplied:
+                try:
+                    if str(_strict_root_path(supplied)) != str(_strict_root_path(task_root)):
+                        raise ValueError("task root mismatch")
+                except (OSError, TypeError, ValueError):
+                    self._send(403, {"success": False, "error": "context root does not match task", "terminal": True, "retryable": False})
+                    return False
+        tenant_values = [payload.get("tenant"), payload.get("session_id")]
+        bound = self._bind_root_tenant(
+            task_root,
+            tenant_values,
+            allow_principal_header=True,
+            require_configured_principal=True,
+        )
+        if bound is None:
+            return False
+        canonical_root, effective_tenant = bound
+        if not self._task_matches_request(task, canonical_root, effective_tenant):
+            self._send(404, {"success": False, "error": "task not found", "terminal": True, "retryable": False})
+            return False
+        payload.update(
+            root=canonical_root,
+            tenant=effective_tenant,
+            repository_id=canonical_root,
+            session_id=effective_tenant,
+            _scoped_task_only=True,
+        )
+        return True
+
+    def _bind_task_event_query(self, query: dict[str, list[str]]) -> bool:
+        stream_id = str((query.get("stream_id") or [""])[0]).strip()
+        if not stream_id.startswith("task:") or not stream_id[5:]:
+            self._send(403, {"success": False, "error": "only task-scoped event streams are available", "terminal": True, "retryable": False})
+            return False
+        task_id = stream_id[5:]
+        supplied_task_id = str((query.get("task_id") or [""])[0]).strip()
+        if supplied_task_id and supplied_task_id != task_id:
+            self._send(403, {"success": False, "error": "event stream task identity mismatch", "terminal": True, "retryable": False})
+            return False
+        bound = self._bind_root_tenant(
+            (query.get("root") or [None])[0],
+            query.get("tenant", []),
+            allow_principal_header=True,
+            require_configured_principal=True,
+        )
+        if bound is None:
+            return False
+        canonical_root, effective_tenant = bound
+        query["root"] = [canonical_root]
+        query["tenant"] = [effective_tenant]
+        return self._validate_memory_task_identity(canonical_root, effective_tenant, [task_id])
+
+    def _bind_task_event_payload(self, payload: dict[str, Any]) -> bool:
+        action = str(payload.get("action", "export")).strip().lower().replace("-", "_")
+        if action != "export":
+            self._send(403, {"success": False, "error": "global event import is unavailable through root-scoped access", "terminal": True, "retryable": False})
+            return False
+        payload["action"] = "export"
+        stream_id = str(payload.get("stream_id", "") or "").strip()
+        if not stream_id.startswith("task:") or not stream_id[5:]:
+            self._send(403, {"success": False, "error": "only task-scoped event export is available", "terminal": True, "retryable": False})
+            return False
+        task_id = stream_id[5:]
+        if payload.get("task_id") not in (None, "", task_id):
+            self._send(403, {"success": False, "error": "event stream task identity mismatch", "terminal": True, "retryable": False})
+            return False
+        bound = self._bind_root_tenant(
+            payload.get("root"),
+            [payload.get("tenant")],
+            allow_principal_header=True,
+            require_configured_principal=True,
+        )
+        if bound is None:
+            return False
+        canonical_root, effective_tenant = bound
+        if not self._validate_memory_task_identity(canonical_root, effective_tenant, [task_id]):
+            return False
+        payload.update(root=canonical_root, tenant=effective_tenant, task_id=task_id)
+        return True
+
+    @staticmethod
+    def _task_board_id_allowed(board_id: str, task_id: str) -> bool:
+        return board_id in {task_id, f"task:{task_id}"}
+
+    def _bind_task_board_query(self, query: dict[str, list[str]]) -> bool:
+        task_id = str((query.get("task_id") or [""])[0]).strip()
+        if not task_id:
+            self._send(400, {"success": False, "error": "task_id is required for blackboard access", "terminal": True, "retryable": False})
+            return False
+        bound = self._bind_root_tenant(
+            (query.get("root") or [None])[0],
+            query.get("tenant", []),
+            allow_principal_header=True,
+            require_configured_principal=True,
+        )
+        if bound is None:
+            return False
+        canonical_root, effective_tenant = bound
+        if not self._validate_memory_task_identity(canonical_root, effective_tenant, [task_id]):
+            return False
+        board_id = str((query.get("board_id") or [task_id])[0]).strip()
+        if not self._task_board_id_allowed(board_id, task_id):
+            self._send(403, {"success": False, "error": "blackboard access requires task-owned board id", "terminal": True, "retryable": False})
+            return False
+        query.update(root=[canonical_root], tenant=[effective_tenant], board_id=[board_id], task_id=[task_id])
+        return True
+
+    def _bind_task_board_payload(self, payload: dict[str, Any]) -> bool:
+        action = str(payload.get("action", "get")).strip().lower().replace("-", "_")
+        if action in {"list", "blackboard_list"}:
+            self._send(403, {"success": False, "error": "global blackboard listing is unavailable through root-scoped access", "terminal": True, "retryable": False})
+            return False
+        if action not in {
+            "update", "put", "blackboard_update", "get", "read", "blackboard_get",
+            "merge", "blackboard_merge", "delete", "remove", "blackboard_delete",
+        }:
+            self._send(400, {"success": False, "error": "unknown blackboard action", "terminal": True, "retryable": False})
+            return False
+        if not self._bind_task_payload(payload):
+            return False
+        task_id = str(payload.get("task_id", "") or "").strip()
+        if self._require_scoped_task(task_id) is None:
+            return False
+        board_id = str(payload.get("board_id") or payload.get("key") or task_id).strip()
+        if not self._task_board_id_allowed(board_id, task_id):
+            self._send(403, {"success": False, "error": "blackboard access requires task-owned board id", "terminal": True, "retryable": False})
+            return False
+        payload["board_id"] = board_id
+        payload["action"] = action
+        return True
+
+    def _bind_workspace_memory_payload(self, path: str, payload: dict[str, Any]) -> bool:
+        bound = self._bind_root_tenant(
+            payload.get("root"),
+            [payload.get("tenant")],
+            allow_principal_header=True,
+            require_configured_principal=True,
+        )
+        if bound is None:
+            return False
+        canonical_root, effective_tenant = bound
+        payload["root"] = canonical_root
+        payload["tenant"] = effective_tenant
+        if path in {"/api/memory/put", "/api/memory/get", "/api/memory/search"}:
+            self._send(403, {"success": False, "error": "workspace-shared memory access is unavailable through this tenant-scoped endpoint", "terminal": True, "retryable": False})
+            return False
+        return True
+
+    def _validate_memory_task_identity(self, root: str, tenant: str, task_ids: list[Any]) -> bool:
+        supplied = {str(value).strip() for value in task_ids if value not in (None, "")}
+        if len(supplied) > 1:
+            self._send(400, {"success": False, "error": "conflicting memory task identities", "terminal": True, "retryable": False})
+            return False
+        if supplied and self._request_task(next(iter(supplied)), root, tenant) is None:
+            return False
+        return True
+
+    def _bound_memory_scope_id(self, scope: AgentScope | None, scope_id: Any, task_id: Any = None) -> str | None:
+        tenant = self._tenant()
+        if scope is AgentScope.TASK:
+            raw_task_id = str(task_id or scope_id or "").strip()
+            return _task_memory_scope_id(tenant, raw_task_id) if raw_task_id else None
+        if scope is AgentScope.SESSION:
+            return tenant
+        return str(scope_id).strip() if scope_id not in (None, "") else None
+
+    def _get_bound_memory_record(self, payload: dict[str, Any], record_id: str) -> Any | None:
+        scope_val = _parse_memory_scope(payload.get("scope"))
+        scope_id_val = payload.get("scope_id")
+        root_val = payload.get("root")
+        repository_id_val = payload.get("repository_id")
+        tenant_val = payload.get("tenant")
+        task_id_val = payload.get("task_id")
+        session_id_val = payload.get("session_id")
+        clone_id_val = payload.get("clone_id")
+        worktree_id_val = payload.get("worktree_id")
+        branch_val = payload.get("branch")
+        scope_val, scope_id_val, ambiguous_scope = _resolve_memory_scope(
+            scope_val,
+            scope_id=scope_id_val,
+            root=root_val,
+            repository_id=repository_id_val,
+            tenant=tenant_val,
+            task_id=task_id_val,
+            session_id=session_id_val,
+            clone_id=clone_id_val,
+            worktree_id=worktree_id_val,
+            branch=branch_val,
+        )
+        if ambiguous_scope:
+            return None
+        if scope_val is None:
+            scope_val = AgentScope.SESSION
+        scope_id_val = self._bound_memory_scope_id(scope_val, scope_id_val, task_id_val)
+        if scope_val is AgentScope.TASK:
+            task_id_val = scope_id_val
+        elif scope_val is AgentScope.SESSION:
+            session_id_val = scope_id_val
+        return APP.agent_memory.get(
+            record_id,
+            scope=scope_val,
+            scope_id=str(scope_id_val) if scope_id_val is not None else None,
+            root=str(root_val) if root_val else None,
+            repository_id=str(repository_id_val) if repository_id_val else None,
+            tenant=str(tenant_val) if tenant_val else None,
+            task_id=str(task_id_val) if task_id_val else None,
+            session_id=str(session_id_val) if session_id_val else None,
+            clone_id=str(clone_id_val) if clone_id_val else None,
+            worktree_id=str(worktree_id_val) if worktree_id_val else None,
+            branch=str(branch_val) if branch_val else None,
+        )
 
     def _tenant_binding_allowed(self) -> bool:
         if APP is None:
             return True
         path = str(getattr(self, "path", ""))
         security = APP.config.get("security", {})
+        bound_tenant = getattr(self, "_authorization_tenant", None)
+        requested_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
+        if path in {"/api/agent-state/memory", "/api/agent-state/tasks"} or path.startswith("/api/memory/"):
+            # Root-scoped routes validate any client tenant after resolving request root.
+            return True
+        if bound_tenant and requested_tenant and str(requested_tenant).strip() != str(bound_tenant):
+            self._send(403, {"success": False, "error": "user credential is bound to its configured tenant", "error_code": "tenant_binding_mismatch", "terminal": True, "retryable": False})
+            return False
         if not (path.startswith("/api/browser/") or path == "/api/vision/review") or not security.get("api_token"):
             return True
         configured = str(APP.config.get("browser_bridge", {}).get("tenant", "http-default") or "http-default")
@@ -812,17 +1370,64 @@ class Handler(BaseHTTPRequestHandler):
     def _agent(self) -> str:
         return self.headers.get("X-LocalAI-Agent") or "generic"
 
-    def _authorized(self) -> bool:
+    def _authorization_permission(self) -> str:
+        path = urlparse(str(getattr(self, "path", ""))).path
+        method = str(getattr(self, "command", "GET")).upper()
+        if (
+            path.startswith("/api/admin/")
+            or path == "/api/control"
+            or path.startswith("/api/maintenance/")
+            or (path == "/api/mode" and method not in {"GET", "HEAD"})
+        ):
+            return "admin"
+        if method in {"GET", "HEAD"}:
+            return "monitor" if path in MONITOR_PATHS else "read"
+        return "write"
+
+    def _loopback_client(self) -> bool:
+        try:
+            address = str(self.client_address[0]).split("%", 1)[0]
+            return ipaddress.ip_address(address).is_loopback
+        except (AttributeError, IndexError, TypeError, ValueError):
+            return False
+
+    def _authorized(self, permission: str | None = None) -> bool:
+        self._authorization_actor = "unknown"
+        self._authorization_tenant = None
+        self._authorization_status = 401
         if APP is None:
+            self._authorization_actor = "local"
             return True
-        expected = str(APP.config.get("security", {}).get("api_token", ""))
-        if not expected:
-            return True
-        supplied = self.headers.get("X-LocalAI-Token", "")
-        auth = self.headers.get("Authorization", "")
+        security = APP.config.get("security", {})
+        if not isinstance(security, dict):
+            return False
+        expected = str(security.get("api_token", "") or "")
+        supplied = str(self.headers.get("X-LocalAI-Token", "") or "")
+        auth = str(self.headers.get("Authorization", "") or "")
         if auth.lower().startswith("bearer "):
             supplied = auth[7:].strip()
-        return hmac.compare_digest(supplied, expected)
+        if not expected or not hmac.compare_digest(supplied, expected):
+            return False
+        grants = security.get("api_token_permissions", ["monitor", "read", "write", "admin"])
+        if not isinstance(grants, list) or any(not isinstance(item, str) for item in grants):
+            self._authorization_status = 403
+            return False
+        needed = permission or self._authorization_permission()
+        grant_set = {item.strip().lower() for item in grants}
+        allowed = {
+            "monitor": {"monitor", "read", "write", "admin"},
+            "read": {"read", "write", "admin"},
+            "write": {"write", "admin"},
+            "admin": {"admin"},
+        }
+        if needed not in allowed or not (grant_set & allowed[needed]):
+            self._authorization_status = 403
+            return False
+        principal = self._principal_tenant()
+        self._authorization_actor = principal
+        self._authorization_tenant = principal
+        self._authorization_status = 200
+        return True
 
     def _validate_host_and_origin(self) -> bool:
         """Validate Host and Origin headers to protect against DNS rebinding and cross-origin attacks."""
@@ -884,11 +1489,12 @@ class Handler(BaseHTTPRequestHandler):
                     return False
         return True
 
-    def _require_authorized(self) -> bool:
+    def _require_authorized(self, permission: str | None = None) -> bool:
         if not self._validate_host_and_origin():
             return False
-        if not self._authorized():
-            self._send(401, {"success": False, "error": "unauthorized"})
+        if not self._authorized(permission):
+            status = int(getattr(self, "_authorization_status", 401))
+            self._send(status, {"success": False, "error": "forbidden" if status == 403 else "unauthorized"})
             return False
         if not self._tenant_binding_allowed():
             return False
@@ -1419,6 +2025,32 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/health":
             self._send(200, {"success": True, "hub_online": True, "version": __version__})
             return
+        if path == "/ready":
+            if APP is None and not self._loopback_client():
+                self._send(403, {"success": False, "ready": False, "error": "readiness is loopback-only"})
+                return
+            if APP is not None and not self._require_authorized("monitor"):
+                return
+            app = APP
+            stores_ready = app is not None and all(
+                getattr(app, name, None) is not None
+                for name in READINESS_COMPONENTS
+            )
+            ready = app is not None and not bool(getattr(app, "_closed", False)) and stores_ready
+            reason = "ready" if ready else "app_initializing_or_closed"
+            if app is not None and not bool(getattr(app, "_closed", False)) and not stores_ready:
+                reason = "required_store_unavailable"
+            self._send(
+                200 if ready else 503,
+                {
+                    "success": ready,
+                    "ready": ready,
+                    "reason": reason,
+                    "retryable": not ready,
+                    "version": __version__,
+                },
+            )
+            return
         if APP is None:
             self._send(503, {"success": False, "error": "hub starting up; please retry", "status_code": 503, "retryable": True})
             return
@@ -1429,6 +2061,31 @@ class Handler(BaseHTTPRequestHandler):
         if path not in {"/", "/dashboard", "/favicon.ico"} and not self._require_authorized():
             return
         query = parse_qs(parsed.query)
+        allowed_agent_state_get = {
+            "/api/agent-state/memory",
+            "/api/agent-state/tasks",
+            "/api/agent-state/events",
+            "/api/agent-state/events/stream",
+            "/api/agent-state/blackboard",
+        }
+        if path.startswith("/api/agent-state/") and path not in allowed_agent_state_get:
+            self._send(403, {"success": False, "error": "agent_state route has no root-scoped access contract", "terminal": True, "retryable": False}); return
+        if path == "/api/agent-state/memory" and not self._bind_memory_query(query):
+            return
+        if path in {"/api/agent-state/events", "/api/agent-state/events/stream"} and not self._bind_task_event_query(query):
+            return
+        if path == "/api/agent-state/blackboard" and not self._bind_task_board_query(query):
+            return
+        if path == "/api/agent-state/tasks":
+            task_identity = self._bind_root_tenant(
+                (query.get("root") or [None])[0],
+                query.get("tenant", []),
+                allow_principal_header=True,
+                require_configured_principal=True,
+            )
+            if task_identity is None:
+                return
+            query["root"], query["tenant"] = [[task_identity[0]], [task_identity[1]]]
         try:
             if path in {"/", "/dashboard"}:
                 if not bool(APP.config.get("monitoring", {}).get("dashboard_enabled", True)) or not bool(APP.config.get("features", {}).get("dashboard", True)):
@@ -1452,19 +2109,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/status":
                 detail = str((query.get("detail") or [""])[0]).strip().lower()
                 if detail == "agent_state":
-                    tasks = APP.agent_tasks.list_tasks() if getattr(APP, "agent_tasks", None) else []
-                    active_tasks = [t.task_id for t in tasks if t.status == TaskStatus.ACTIVE]
-                    incidents = APP.agent_incidents.list_incidents() if getattr(APP, "agent_incidents", None) else []
-                    candidates = APP.agent_learning.list_candidates() if getattr(APP, "agent_learning", None) else []
-                    self._send(200, {
-                        "success": True,
-                        "enabled": bool(getattr(APP, "agent_state", None) and APP.agent_state.enabled),
-                        "active_tasks": active_tasks,
-                        "tasks_count": len(tasks),
-                        "incidents_count": len(incidents),
-                        "candidates_count": len(candidates),
-                        "status": "healthy",
-                    }); return
+                    self._send(403, {"success": False, "error": "agent_state status is unavailable without root scope", "terminal": True, "retryable": False}); return
                 scope = str((query.get("scope") or ["process"])[0])
                 status = APP.status(scope=scope)
                 if isinstance(self.server, LocalAIHTTPServer):
@@ -1473,11 +2118,13 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/agent-state/tasks":
                 if not getattr(APP, "agent_tasks", None) or not APP.agent_tasks.state_store.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
+                request_root = (query.get("root") or [""])[0]
+                request_tenant = (query.get("tenant") or [""])[0]
                 task_id = (query.get("task_id") or [""])[0]
                 if task_id:
-                    task = APP.agent_tasks.get(task_id)
-                    if not task:
-                        self._send(404, {"success": False, "error": "task not found", "terminal": True, "retryable": False}); return
+                    task = self._request_task(task_id, request_root, request_tenant)
+                    if task is None:
+                        return
                     self._send(200, {"success": True, "task": task.to_dict()}); return
                 status_filter = None
                 if query.get("status"):
@@ -1487,7 +2134,10 @@ class Handler(BaseHTTPRequestHandler):
                         pass
                 limit = int((query.get("limit") or [100])[0])
                 include_stale = str((query.get("include_stale") or ["false"])[0]).lower() in ("true", "1", "yes")
-                tasks = APP.agent_tasks.list_tasks(status=status_filter, limit=limit, include_stale=include_stale)
+                tasks = [
+                    task for task in APP.agent_tasks.list_tasks(status=status_filter, limit=limit, include_stale=include_stale)
+                    if self._task_matches_request(task, request_root, request_tenant)
+                ]
                 self._send(200, {"success": True, "tasks": [t.to_dict() for t in tasks]}); return
             if path == "/api/agent-state/memory":
                 if not getattr(APP, "agent_memory", None) or not APP.agent_memory.state_store.enabled:
@@ -1521,6 +2171,11 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(400, {"success": False, "error": "ambiguous memory scope identity", "terminal": True, "retryable": False}); return
                     if scope_val is None:
                         scope_val = AgentScope.GLOBAL
+                    scope_id_val = self._bound_memory_scope_id(scope_val, scope_id_val, task_id_val)
+                    if scope_val is AgentScope.TASK:
+                        task_id_val = scope_id_val
+                    elif scope_val is AgentScope.SESSION:
+                        session_id_val = scope_id_val
                     matches = APP.agent_memory.find(
                             record_id=rec_id,
                             scope=scope_val,
@@ -1596,6 +2251,11 @@ class Handler(BaseHTTPRequestHandler):
                     )
                     if ambiguous_scope:
                         self._send(400, {"success": False, "error": "ambiguous memory scope identity", "terminal": True, "retryable": False}); return
+                    scope_id_val = self._bound_memory_scope_id(scope_val, scope_id_val, task_id_val)
+                    if scope_val is AgentScope.TASK:
+                        task_id_val = scope_id_val
+                    elif scope_val is AgentScope.SESSION:
+                        session_id_val = scope_id_val
                     records = APP.agent_memory.find(
                             scope=scope_val,
                             scope_id=str(scope_id_val) if scope_id_val is not None else None,
@@ -1624,7 +2284,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/agent-state/blackboard":
                 if not getattr(APP, "agent_blackboard", None):
                     self._send(503, {"success": False, "error": "blackboard unavailable"}); return
-                board_id = (query.get("board_id") or ["default"])[0]
+                board_id = (query.get("board_id") or query.get("task_id") or [""])[0]
                 section = (query.get("section") or [None])[0]
                 self._send(200, APP.agent_blackboard.get(board_id, section=section)); return
             if path == "/api/agent-state/swarm":
@@ -1836,7 +2496,10 @@ class Handler(BaseHTTPRequestHandler):
                 root = (query.get("root") or ["."])[0]
                 pat = (query.get("pattern") or query.get("name_path_pattern") or [""])[0]
                 depth = int((query.get("depth") or [0])[0])
-                include_body = bool((query.get("include_body") or [False])[0])
+                include_body = _parse_include_body((query.get("include_body") or [None])[0], query=True)
+                if include_body is None:
+                    self._send(400, {"success": False, "error": "include_body must be a boolean"})
+                    return
                 rel_path = (query.get("path") or query.get("relative_path") or [None])[0]
                 self._send(200, APP.services.code_find_symbol(root, pat, depth=depth, include_body=include_body, relative_path=rel_path))
                 return
@@ -1973,6 +2636,30 @@ class Handler(BaseHTTPRequestHandler):
             self._validate_payload(path, payload)
         except RequestBodyError as exc:
             self._send(exc.status, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+        allowed_agent_state_post = {
+            "/api/agent-state/memory",
+            "/api/agent-state/tasks",
+            "/api/agent-state/verification",
+            "/api/agent-state/context",
+            "/api/agent-state/events/delta",
+            "/api/agent-state/blackboard",
+        }
+        if path.startswith("/api/agent-state/") and path not in allowed_agent_state_post:
+            self._send(403, {"success": False, "error": "agent_state route has no root-scoped access contract", "terminal": True, "retryable": False}); return
+        if path == "/api/agent-state/memory" and not self._bind_memory_payload(payload):
+            return
+        if path == "/api/agent-state/tasks" and not self._bind_task_payload(payload):
+            return
+        if path == "/api/agent-state/verification" and not self._bind_task_payload(payload):
+            return
+        if path == "/api/agent-state/context" and not self._bind_context_payload(payload):
+            return
+        if path == "/api/agent-state/events/delta" and not self._bind_task_event_payload(payload):
+            return
+        if path == "/api/agent-state/blackboard" and not self._bind_task_board_payload(payload):
+            return
+        if path.startswith("/api/memory/") and not self._bind_workspace_memory_payload(path, payload):
+            return
         if path == "/api/telemetry/tool-accounting":
             # Internal MCP reporter path: do not journal or recursively count this
             # metadata transport as an agent workload/tool call.
@@ -2208,6 +2895,57 @@ class Handler(BaseHTTPRequestHandler):
                 action = str(payload.get("action", "")).strip().lower().replace("-", "_")
                 idempotency_key = str(payload.get("idempotency_key", "")).strip()
                 actor = self._agent() or "agent"
+                scoped_task_actions = {
+                    "reap", "reap_expired", "zombie_reap", "recover_zombie_tasks",
+                    "curate_dataset", "curate_training_dataset",
+                }
+                repo_root = str(getattr(self, "_authorization_root", "") or "")
+                tenant = self._tenant()
+                if action in scoped_task_actions and (not repo_root or not tenant):
+                    self._send(403, {"success": False, "error": "task root scope is required", "terminal": True, "retryable": False}); return
+                if action in {"reap", "reap_expired", "zombie_reap", "recover_zombie_tasks"}:
+                    task_id = str(payload.get("task_id", "")).strip() or None
+                    try:
+                        if action == "recover_zombie_tasks":
+                            reaped = APP.agent_tasks.recover_zombie_tasks(
+                                repo_root=repo_root,
+                                tenant=tenant,
+                                task_id=task_id,
+                            )
+                        else:
+                            auto_recover = bool(payload.get("auto_recover", False))
+                            reaped = APP.agent_tasks.reap_expired_heartbeats(
+                                auto_recover=auto_recover,
+                                repo_root=repo_root,
+                                tenant=tenant,
+                                task_id=task_id,
+                            )
+                        self._send(200, {"success": True, "reaped": reaped, "count": len(reaped)}); return
+                    except Exception as exc:
+                        self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+                if action in {"curate_dataset", "curate_training_dataset"}:
+                    task_id = str(payload.get("task_id", "")).strip() or None
+                    output_path = str(payload.get("output_path", payload.get("path", "training_dataset.jsonl")))
+                    min_receipts = int(payload.get("min_receipts", 1))
+                    dataset_format = str(payload.get("format", "jsonl"))
+                    try:
+                        result = APP.agent_tasks.curate_training_dataset(
+                            output_path,
+                            min_receipts=min_receipts,
+                            format=dataset_format,
+                            repo_root=repo_root,
+                            tenant=tenant,
+                            task_id=task_id,
+                        )
+                        self._send(200, result); return
+                    except Exception as exc:
+                        self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+                request_root = str(payload.get("root", ""))
+                request_tenant = str(payload.get("tenant", ""))
+                task_id = str(payload.get("task_id", "")).strip()
+                if action not in {"create", "list", "reap", "curate_dataset", "curate_training_dataset"} and task_id:
+                    if self._request_task(task_id, request_root, request_tenant) is None:
+                        return
                 if action == "create":
                     contract_data = payload.get("contract") or {}
                     if not contract_data:
@@ -2378,23 +3116,10 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(200, {"success": True, "task": task.to_dict()}); return
                     except KeyError as exc:
                         self._send(404, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
-                if action in {"curate_dataset", "curate_training_dataset"}:
-                    out_p = str(payload.get("output_path", payload.get("path", "training_dataset.jsonl")))
-                    min_rcpt = int(payload.get("min_receipts", 1))
-                    fmt = str(payload.get("format", "jsonl"))
-                    try:
-                        res = APP.agent_tasks.curate_training_dataset(out_p, min_receipts=min_rcpt, format=fmt)
-                        self._send(200, res); return
-                    except Exception as exc:
-                        self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                 if action in {"cleanup_worktree", "task_cleanup_worktree"}:
                     t_id = str(payload.get("task_id", ""))
                     del_br = bool(payload.get("delete_branch", True))
                     self._send(200, APP.agent_tasks.cleanup_worktree(t_id, delete_branch=del_br)); return
-                if action in {"reap_expired", "zombie_reap", "recover_zombie_tasks"}:
-                    auto_rec = bool(payload.get("auto_recover", False))
-                    reaped = APP.agent_tasks.reap_expired_heartbeats(auto_recover=auto_rec)
-                    self._send(200, {"success": True, "reaped": reaped, "count": len(reaped)}); return
                 if action == "list":
                     status_filter = None
                     if payload.get("status"):
@@ -2404,7 +3129,10 @@ class Handler(BaseHTTPRequestHandler):
                             pass
                     limit = int(payload.get("limit", 100))
                     include_stale = bool(payload.get("include_stale", False))
-                    tasks = APP.agent_tasks.list_tasks(status=status_filter, limit=limit, include_stale=include_stale)
+                    tasks = [
+                        task for task in APP.agent_tasks.list_tasks(status=status_filter, limit=limit, include_stale=include_stale)
+                        if self._task_matches_request(task, request_root, request_tenant)
+                    ]
                     self._send(200, {"success": True, "tasks": [t.to_dict() for t in tasks]}); return
                 self._send(400, {"success": False, "error": f"unknown task action '{action}'", "terminal": True, "retryable": False}); return
             if path == "/api/agent-state/memory":
@@ -2457,6 +3185,11 @@ class Handler(BaseHTTPRequestHandler):
                         if ambiguous_scope:
                             self._send(400, {"success": False, "error": "ambiguous memory scope identity", "terminal": True, "retryable": False}); return
                         scope_val = scope_val or AgentScope.TASK
+                        resolved_scope_id = self._bound_memory_scope_id(
+                            scope_val,
+                            resolved_scope_id,
+                            payload.get("task_id") or rec_data.get("task_id"),
+                        )
                         raw_status = rec_data.get("status")
                         status_val = None
                         if raw_status:
@@ -2522,6 +3255,11 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(400, {"success": False, "error": "ambiguous memory scope identity", "terminal": True, "retryable": False}); return
                     if scope_val is None:
                         scope_val = AgentScope.GLOBAL
+                    scope_id_val = self._bound_memory_scope_id(scope_val, scope_id_val, task_id_val)
+                    if scope_val is AgentScope.TASK:
+                        task_id_val = scope_id_val
+                    elif scope_val is AgentScope.SESSION:
+                        session_id_val = scope_id_val
                     rec = APP.agent_memory.get(
                         str(payload.get("record_id", "")),
                         scope=scope_val,
@@ -2542,6 +3280,8 @@ class Handler(BaseHTTPRequestHandler):
                     record_id_val = str(payload.get("record_id", "")).strip()
                     if not record_id_val:
                         self._send(400, {"success": False, "error": "memory delete requires record_id", "terminal": True, "retryable": False}); return
+                    if not self._get_bound_memory_record(payload, record_id_val):
+                        self._send(404, {"success": False, "error": "memory record not found", "terminal": True, "retryable": False}); return
                     deleted = APP.agent_memory.delete(record_id_val)
                     self._send(200 if deleted else 404, {
                         "success": bool(deleted),
@@ -2600,6 +3340,11 @@ class Handler(BaseHTTPRequestHandler):
                         )
                         if ambiguous_scope:
                             self._send(400, {"success": False, "error": "ambiguous memory scope identity", "terminal": True, "retryable": False}); return
+                        scope_id_val = self._bound_memory_scope_id(scope_val, scope_id_val, task_id_val)
+                        if scope_val is AgentScope.TASK:
+                            task_id_val = scope_id_val
+                        elif scope_val is AgentScope.SESSION:
+                            session_id_val = scope_id_val
                         records = APP.agent_memory.find(
                                 scope=scope_val,
                                 scope_id=str(scope_id_val) if scope_id_val is not None else None,
@@ -2622,10 +3367,15 @@ class Handler(BaseHTTPRequestHandler):
                     target_scope = AgentScope.parse(target_scope_str, default=None)
                     if not target_scope:
                         self._send(400, {"success": False, "error": f"invalid target scope '{target_scope_str}'", "terminal": True, "retryable": False}); return
+                    record_id_val = str(payload.get("record_id", "")).strip()
+                    if not record_id_val or not self._get_bound_memory_record(payload, record_id_val):
+                        self._send(404, {"success": False, "error": "memory record not found", "terminal": True, "retryable": False}); return
+                    if target_scope is AgentScope.GLOBAL:
+                        self._send(403, {"success": False, "error": "global memory promotion is unavailable through this endpoint", "terminal": True, "retryable": False}); return
                     approver = str(payload.get("approver", actor))
                     try:
                         promoted = APP.agent_memory.promote(
-                            str(payload.get("record_id", "")),
+                            record_id_val,
                             target_scope,
                             approver=approver,
                         )
@@ -2636,58 +3386,27 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(404, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                 if action == "quarantine":
                     reason = str(payload.get("reason", "manual quarantine"))
+                    record_id_val = str(payload.get("record_id", "")).strip()
+                    if not record_id_val or not self._get_bound_memory_record(payload, record_id_val):
+                        self._send(404, {"success": False, "error": "memory record not found", "terminal": True, "retryable": False}); return
                     try:
                         APP.agent_memory.quarantine(
-                            str(payload.get("record_id", "")),
+                            record_id_val,
                             reason=reason,
                             actor=actor,
                         )
                     except KeyError as exc:
                         self._send(404, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                 if action == "compact":
-                    scope_val = payload.get("scope")
-                    older_than = float(payload.get("older_than_seconds", 0.0))
-                    min_recs = int(payload.get("min_records", 3))
-                    target_scope = payload.get("target_scope")
-                    res = APP.agent_memory.compact(
-                        scope=scope_val,
-                        older_than_seconds=older_than,
-                        min_records=min_recs,
-                        target_scope=target_scope,
-                        actor=actor,
-                    )
-                    self._send(200, res); return
+                    self._send(403, {"success": False, "error": "memory compaction is unavailable through this endpoint", "terminal": True, "retryable": False}); return
                 if action == "reap":
-                    count = APP.agent_memory.reap_expired()
-                    self._send(200, {"success": True, "reaped_count": count}); return
+                    self._send(403, {"success": False, "error": "memory reaping is unavailable through this endpoint", "terminal": True, "retryable": False}); return
                 if action in {"relation_record", "record_relation"}:
-                    source = str(payload.get("source_entity", payload.get("source", payload.get("key", ""))))
-                    rel = str(payload.get("relation", payload.get("rel", "relates_to")))
-                    target = str(payload.get("target_entity", payload.get("target", payload.get("value", ""))))
-                    weight = float(payload.get("weight", 1.0))
-                    meta = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None
-                    rec = APP.agent_memory.record_relation(source, rel, target, weight=weight, metadata=meta)
-                    self._send(200, {"success": True, "relation": rec}); return
+                    self._send(403, {"success": False, "error": "memory relations are unavailable through this endpoint", "terminal": True, "retryable": False}); return
                 if action in {"relation_find", "find_relations"}:
-                    ent = payload.get("entity") or payload.get("source_entity") or payload.get("source") or payload.get("target_entity") or payload.get("target") or payload.get("key") or ""
-                    source = payload.get("source_entity") or payload.get("source")
-                    target = payload.get("target_entity") or payload.get("target")
-                    rel = payload.get("relation") or payload.get("rel")
-                    limit_val = int(payload.get("limit", 50))
-                    rels = APP.agent_memory.find_relations(
-                        str(ent) if ent and not (source or target) else "",
-                        source_entity=str(source) if source else None,
-                        target_entity=str(target) if target else None,
-                        relation=str(rel) if rel else None,
-                        limit=limit_val,
-                    )
-                    self._send(200, {"success": True, "relations": rels}); return
+                    self._send(403, {"success": False, "error": "memory relations are unavailable through this endpoint", "terminal": True, "retryable": False}); return
                 if action in {"relation_traverse", "traverse_graph"}:
-                    start = str(payload.get("start_entity", payload.get("start", payload.get("entity", payload.get("source_entity", payload.get("key", ""))))))
-                    depth = int(payload.get("max_depth", payload.get("depth", 2)))
-                    max_n = int(payload.get("max_nodes", 50))
-                    res = APP.agent_memory.traverse_graph(start, max_depth=depth, max_nodes=max_n)
-                    self._send(200, res); return
+                    self._send(403, {"success": False, "error": "memory relations are unavailable through this endpoint", "terminal": True, "retryable": False}); return
                 self._send(400, {"success": False, "error": f"unknown memory action '{action}'", "terminal": True, "retryable": False}); return
 
             if path == "/api/agent-state/incidents":
@@ -2775,6 +3494,12 @@ class Handler(BaseHTTPRequestHandler):
                 action = str(payload.get("action", "")).strip().lower().replace("-", "_")
                 if action == "receipt":
                     rcpt_data = payload.get("receipt") or {}
+                    receipt_task_id = str(rcpt_data.get("task_id", "") or "").strip()
+                    request_task_id = str(payload.get("task_id", "") or "").strip()
+                    if request_task_id and receipt_task_id and request_task_id != receipt_task_id:
+                        self._send(404, {"success": False, "error": "task not found", "terminal": True, "retryable": False}); return
+                    if not self._require_scoped_task(receipt_task_id or request_task_id):
+                        return
                     try:
                         if "receipt_id" in rcpt_data:
                             rcpt = VerificationReceipt.from_dict(rcpt_data)
@@ -2796,6 +3521,8 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                 if action == "completion":
                     task_id = str(payload.get("task_id", "")).strip()
+                    if not self._require_scoped_task(task_id):
+                        return
                     current_revision = ""
                     root = str(payload.get("root", "")).strip()
                     requested_revision = str(payload.get("repository_revision", "")).strip()
@@ -3304,7 +4031,10 @@ class Handler(BaseHTTPRequestHandler):
                 root = str(payload.get("root", "."))
                 pat = str(payload.get("pattern") or payload.get("name_path_pattern") or "")
                 depth = int(payload.get("depth", 0))
-                include_body = bool(payload.get("include_body", False))
+                include_body = _parse_include_body(payload.get("include_body", False))
+                if include_body is None:
+                    self._send(400, {"success": False, "error": "include_body must be a boolean"})
+                    return
                 include_info = bool(payload.get("include_info", True))
                 rel_path = payload.get("path") or payload.get("relative_path")
                 limit = int(payload.get("limit", 30))
@@ -3558,6 +4288,7 @@ class Handler(BaseHTTPRequestHandler):
                             "changed_paths": payload.get("changed_paths") or [],
                             "repository_revision": payload.get("repository_revision", payload.get("repo_revision", "")),
                             "since_hash": payload.get("task_since_hash", ""),
+                            "_scoped_task_only": True,
                         }, tenant=tenant)
                         try:
                             compiled = APP.agent_context.compile(task_request)
@@ -3851,16 +4582,26 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def validate_network_security(config: dict[str, Any]) -> None:
-    bind = str(config.get("server", {}).get("bind", "127.0.0.1")).strip().lower()
-    loopback = bind in {"127.0.0.1", "localhost", "::1"}
-    if loopback:
-        return
+    bind = str(config.get("server", {}).get("bind", "127.0.0.1"))
     security = config.get("security", {})
-    if not bool(security.get("allow_remote", False)):
-        raise RuntimeError("Refusing non-loopback Local AI Hub bind: set [security].allow_remote=true explicitly")
-    token = str(security.get("api_token", ""))
-    if len(token) < 16:
-        raise RuntimeError("Remote Local AI Hub bind requires [security].api_token with at least 16 characters")
+    if bind != "127.0.0.1" or bool(security.get("allow_remote", False)):
+        raise RuntimeError("Refusing Local AI Hub network exposure: bind must be 127.0.0.1 and allow_remote must be false")
+
+
+def _require_owned_supervisor_parent(state_dir: Path) -> None:
+    owner_path = state_dir / "supervisor.owner.json"
+    try:
+        owner = json.loads(owner_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError) as exc:
+        raise RuntimeError("Hub must be started by an identity-verified supervisor") from exc
+    if not isinstance(owner, dict) or isinstance(owner.get("pid"), bool):
+        raise RuntimeError("Hub must be started by an identity-verified supervisor")
+    try:
+        owner_pid = int(owner.get("pid", 0) or 0)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise RuntimeError("Hub must be started by an identity-verified supervisor") from exc
+    if owner_pid != os.getppid() or process_owner_state(owner, state_dir, "supervisor") != "owned":
+        raise RuntimeError("Hub must be started by an identity-verified supervisor")
 
 
 def serve(config_path: str | None = None) -> None:
@@ -3870,6 +4611,8 @@ def serve(config_path: str | None = None) -> None:
     # shared SQLite stores, eliminating a major source of lock storms during restart.
     startup_config = load_config(config_path)
     validate_network_security(startup_config)
+    startup_state_dir = Path(startup_config["server"]["state_dir"]).expanduser().resolve()
+    _require_owned_supervisor_parent(startup_state_dir)
     cfg = startup_config["server"]
     server = LocalAIHTTPServer(
         (cfg.get("bind", "127.0.0.1"), int(cfg.get("port", 11435))),
@@ -3889,7 +4632,14 @@ def serve(config_path: str | None = None) -> None:
                 APP = None
         raise
     cfg = APP.config["server"]
-    state_dir = Path(cfg["state_dir"])
+    state_dir = Path(cfg["state_dir"]).expanduser().resolve()
+    if state_dir != startup_state_dir:
+        server.server_close()
+        try:
+            APP.close()
+        finally:
+            APP = None
+        raise RuntimeError("Hub config state directory changed during startup")
     state_dir.mkdir(parents=True, exist_ok=True)
     pid_path = state_dir / "hub.pid"
     pid_path.write_text(str(os.getpid()), encoding="utf-8")

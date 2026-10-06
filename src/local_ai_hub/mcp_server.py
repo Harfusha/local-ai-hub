@@ -236,7 +236,7 @@ def _async_job_lifecycle_contract(*, include_mcp_tool: bool = True) -> str:
     if include_mcp_tool:
         contract += (
             " MCP exposes `local_ai_task(action=submit|status|wait|result|cancel, ...)`;"
-            " `HubClient.post(\"/api/async-jobs\", payload, timeout=...)` sends the same HTTP requests."
+            " `HubClient.submit_async_job`, `async_job_status`, `wait_async_job`, `async_job_result`, and `cancel_async_job` call the same HTTP path."
         )
     else:
         contract += (
@@ -256,7 +256,7 @@ def _task_delivery_contract() -> str:
         " Direct `submit` job_action accepts `batch`, `compress`, `delegate`, `reason`, `review`, `review_diff`, `route`, `second_opinion`, or `speculative_lint`; body `request_id` is the idempotency key and `X-LocalAI-Request-ID` is a separate journal ID."
         f"{_async_job_lifecycle_contract()}"
         " Start synchronously with HTTP POST `/api/delegate` or `/api/reason` or MCP `local_ai_task(action=delegate|explore|reason, conversation=true, delivery=sync)`; continue via HTTP `POST /api/conversations/continue` (`conversation_id`, `task`, optional `context`) or MCP `local_ai_task(action=continue, conversation_id=..., task=..., context=...)`."
-        " HubClient has no dedicated start helper; use `HubClient.post` for `/api/delegate` or `/api/reason`. The existing `HubClient.continue_conversation(conversation_id, prompt, model=None, system=None, max_tokens=None, temperature=None)` maps `prompt` to `task`; use `HubClient.post` to include optional `context`."
+        " `HubClient` has no dedicated start helper; use `HubClient.post` for `/api/delegate` or `/api/reason`. `HubClient.continue_conversation(conversation_id, prompt, context=...)` sends `conversation_id`, maps `prompt` to `task`, and includes optional `context`."
         " Conversation IDs are tenant-scoped; model settings stay pinned and only one turn runs at a time. Defaults: 12 turns, prompt limit from `model_conversations.max_prompt_tokens` (fallback `token_saving.max_local_input_tokens`, default 56,000), idle/active TTLs of 900/1,800 seconds, and capacity 1,000. State is process-memory only and lost on restart."
     )
 

@@ -2,6 +2,7 @@
 
 Local AI Hub exposes eight compact MCP tools instead of mirroring every internal endpoint. The same hub process, deterministic indexes, preprocess artifacts, command cache and local-model caches are shared by Codex, Claude Code, Gemini CLI, Cursor, Windsurf, VS Code/Copilot and generic MCP clients.
 
+
 ## Whole-task orchestration
 
 `local_ai_work` is the one high-level orchestration boundary. Use `submit` for a closed repository task that the Hub can plan, edit, validate and verify end-to-end. Use `status`/`wait` for bounded progress checks, `get` with `response_profile`/`return_fields` for projected handoff data, `cancel` to stop work, and `continue` only after a `needs_agent` decision. Detailed plans, step evidence and logs remain artifact-backed by default.
@@ -43,7 +44,7 @@ For HTTP `/api/review/diff`, auto delivery first checks queue age: when `review.
 
 Async lifecycle responses preserve `job_id`, `state`, `artifact_id` (empty until available), and `expires_at` (Unix timestamp seconds). Expiry is set at submission; terminal job results become `expired` at that time. `async_jobs.result_ttl_seconds` defaults to 259,200 seconds (72 hours), and artifact-store TTL must cover it. A timed-out wait returns current state with `wait_timeout_seconds` and does not cancel the job. Queued cancellation returns terminal `cancelled`; running cancellation returns `running` with `cancel_requested=true` as acknowledgement, then worker completion supplies final state.
 
-Direct HTTP lifecycle requests use `POST /api/async-jobs`: submit sends `action="submit"`, `job_action`, and optional stable `request_id`; controls send `action="status"|"wait"|"result"|"cancel"` with `job_id`, and wait also sends `timeout_seconds`. MCP uses `local_ai_task(action=submit|status|wait|result|cancel, ...)`. The existing generic `HubClient.post("/api/async-jobs", payload, timeout=...)` sends the same HTTP requests.
+Direct HTTP lifecycle requests use `POST /api/async-jobs`: submit sends `action="submit"`, `job_action`, and optional stable `request_id`; controls send `action="status"|"wait"|"result"|"cancel"` with `job_id`, and wait also sends `timeout_seconds`. MCP uses `local_ai_task(action=submit|status|wait|result|cancel, ...)`. `HubClient.submit_async_job`, `HubClient.async_job_status`, `HubClient.wait_async_job`, `HubClient.async_job_result`, and `HubClient.cancel_async_job` call the same HTTP path.
 
 Recovery may replay only explicitly replay-safe actions with a stable `request_id`, matching tenant/action/payload identity, and remaining attempts; command-backed and unclassified actions become terminal `outcome_unknown` after interruption.
 
@@ -51,7 +52,7 @@ Recovery may replay only explicitly replay-safe actions with a stable `request_i
 
 Initial and continued task text must be nonblank.
 
-Start synchronously with HTTP `POST /api/delegate` or `POST /api/reason`, setting `conversation=true` and `delivery="sync"`, or MCP `local_ai_task(action="delegate"|"explore"|"reason", conversation=true, delivery="sync")`. HubClient has no dedicated start helper; use `HubClient.post("/api/delegate", payload)` or `HubClient.post("/api/reason", payload)`. Continue with HTTP `POST /api/conversations/continue` and body `conversation_id`, `task`, optional `context`; MCP uses `local_ai_task(action="continue", conversation_id=..., task=..., context=...)`; the existing `HubClient.continue_conversation(conversation_id, prompt, model=None, system=None, max_tokens=None, temperature=None)` maps `prompt` to HTTP `task`. Use `HubClient.post` when sending optional `context`. IDs are opaque and tenant-scoped. The initial model, system prompt, output limit, temperature, and route stay pinned for the conversation. Only one turn can be active; a concurrent continuation returns retryable in-progress status.
+Start synchronously with HTTP `POST /api/delegate` or `POST /api/reason`, setting `conversation=true` and `delivery="sync"`, or MCP `local_ai_task(action="delegate"|"explore"|"reason", conversation=true, delivery="sync")`. `HubClient` has no dedicated start helper; use `post("/api/delegate", payload)` or `post("/api/reason", payload)`. Continue with HTTP `POST /api/conversations/continue` and body `conversation_id`, `task`, optional `context`; MCP uses `local_ai_task(action="continue", conversation_id=..., task=..., context=...)`; `HubClient.continue_conversation(conversation_id, prompt, context=...)` maps `prompt` to HTTP `task`. IDs are opaque and tenant-scoped. The initial model, system prompt, output limit, temperature, and route stay pinned for the conversation. Only one turn can be active; a concurrent continuation returns retryable in-progress status.
 
 Conversations allow up to 12 user turns by default. The prompt limit comes from `model_conversations.max_prompt_tokens`, falling back to `token_saving.max_local_input_tokens` or 56,000 tokens. Defaults are 900 seconds idle TTL, 1,800 seconds active TTL, and capacity 1,000. Conversation state and transcripts remain in process memory and are lost on restart.
 

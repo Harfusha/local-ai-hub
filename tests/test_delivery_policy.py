@@ -52,7 +52,7 @@ def test_install_and_update_prompts_cover_async_and_conversation_contracts():
             "`request_id`",
             "`job_id`",
             "`timeout_seconds`",
-            "`HubClient.post(\"/api/async-jobs\", payload, timeout=...)`",
+            "`HubClient.submit_async_job`",
             "`cold_start_review_diff`",
             "fewer than five telemetry samples",
             "at least ten",
@@ -87,7 +87,7 @@ def test_mcp_task_description_exposes_async_and_conversation_contracts():
     for phrase in (
         "`POST /api/async-jobs`",
         "`local_ai_task(action=submit|status|wait|result|cancel, ...)`",
-        "`HubClient.post(\"/api/async-jobs\", payload, timeout=...)`",
+        "`HubClient.submit_async_job`",
         "job_action",
         "request_id",
         "job_id",
