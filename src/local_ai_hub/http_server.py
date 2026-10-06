@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import os
@@ -1212,7 +1213,17 @@ class Handler(BaseHTTPRequestHandler):
         return 200, result
 
     def _send(self, status: int, data: Any) -> None:
+        if status >= 400 and isinstance(data, dict):
+            data = dict(data)
+            data.setdefault("success", False)
+            data.setdefault("status_code", status)
+            retryable = status in {408, 425, 429, 500, 502, 503, 504}
+            data.setdefault("retryable", retryable)
+            data.setdefault("terminal", not retryable)
         request_id = getattr(self, "_journal_request_id", None)
+        if request_id and isinstance(data, dict):
+            data = dict(data)
+            data.setdefault("request_id", request_id)
         if request_id and APP is not None and not getattr(self, "_journal_finished", False):
             try:
                 success = _journal_outcome_success(status, data)
@@ -1948,6 +1959,102 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+    def _claim_recovery(self, path: str, payload: Any) -> bool:
+        request_id = str(getattr(self, "_trace_request_id", ""))
+        tenant = self._tenant()
+        identity = str(self._agent() or "")
+        self._journal_request_id = request_id
+        self._journal_finished = False
+        try:
+            claim = APP.recovery.begin(
+                request_id,
+                tenant,
+                path,
+                identity=identity,
+                payload=payload,
+            )
+        except Exception:
+            self._journal_finished = True
+            self._send(503, {
+                "success": False,
+                "error": "request journal unavailable; mutation was not dispatched",
+                "status_code": 503,
+                "retryable": True,
+                "outcome_unknown": False,
+            })
+            return False
+
+        if claim.get("claimed"):
+            return True
+
+        self._journal_finished = True
+        state = str(claim.get("state", ""))
+        if state == "conflict":
+            self._send(409, {"success": False, "error": claim.get("error", "request id conflict"), "terminal": True})
+            return False
+        if state in {"done", "failed"} and claim.get("response") is not None:
+            status = int(claim.get("status_code") or (200 if state == "done" else 500))
+            self._send(status, claim["response"])
+            return False
+        if state == "running":
+            wait_seconds = min(
+                2.0,
+                max(0.05, float(APP.config.get("resilience", {}).get("singleflight_wait_timeout_seconds", 1.0))),
+            )
+            try:
+                replay = APP.recovery.wait_for(
+                    request_id,
+                    tenant,
+                    path,
+                    timeout_seconds=wait_seconds,
+                    identity=identity,
+                    payload_fingerprint=APP.recovery.fingerprint_payload(payload),
+                )
+            except Exception:
+                self._send(409, {
+                    "success": False,
+                    "error": "request outcome is unknown; mutation was not replayed",
+                    "status_code": 409,
+                    "terminal": True,
+                    "retryable": False,
+                    "outcome_unknown": True,
+                    "request_id": request_id,
+                })
+                return False
+            if replay and replay.get("state") in {"done", "failed"} and replay.get("response") is not None:
+                status = int(replay.get("status_code") or (200 if replay.get("state") == "done" else 500))
+                self._send(status, replay["response"])
+                return False
+            if replay and replay.get("outcome_unknown"):
+                self._send(409, {
+                    "success": False,
+                    "error": "request outcome is unknown; mutation was not replayed",
+                    "terminal": True,
+                    "retryable": False,
+                    "outcome_unknown": True,
+                })
+                return False
+            self._send(409, {
+                "success": False,
+                "error": "request with this id is already running",
+                "retryable": True,
+                "in_progress": True,
+                "retry_after_seconds": 1,
+                "waited_seconds": wait_seconds,
+            })
+            return False
+        if claim.get("outcome_unknown") or state == "abandoned":
+            self._send(409, {
+                "success": False,
+                "error": "request outcome is unknown; mutation was not replayed",
+                "terminal": True,
+                "retryable": False,
+                "outcome_unknown": True,
+            })
+            return False
+        self._send(409, {"success": False, "error": "request journal returned an invalid state", "terminal": True})
+        return False
+
     def do_POST(self) -> None:
         if APP is None:
             self._send(503, {"success": False, "error": "hub starting up; please retry", "status_code": 503, "retryable": True})
@@ -1956,6 +2063,13 @@ class Handler(BaseHTTPRequestHandler):
         self._begin_trace(path)
         if not self._require_authorized():
             return
+        if getattr(APP, "recovery", None) is not None:
+            try:
+                APP.recovery.validate_request_id(str(getattr(self, "_trace_request_id", "")))
+            except (TypeError, ValueError) as exc:
+                self._journal_finished = True
+                self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False})
+                return
         content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
         if path == "/api/bundle/import":
             if content_type not in {"application/zip", "application/octet-stream"}:
@@ -1965,6 +2079,11 @@ class Handler(BaseHTTPRequestHandler):
                 raw_bundle = self._read_body(limit=limit)
                 query = parse_qs(urlparse(self.path).query)
                 target_root = (query.get("target_root") or [None])[0]
+                if not self._claim_recovery(path, {
+                    "bundle_sha256": hashlib.sha256(raw_bundle).hexdigest(),
+                    "target_root": target_root,
+                }):
+                    return
                 self._send(200, APP.import_bundle(raw_bundle, target_root)); return
             except RequestBodyError as exc:
                 self._send(exc.status, {"success": False, "error": str(exc)}); return
@@ -1977,6 +2096,8 @@ class Handler(BaseHTTPRequestHandler):
             # Internal MCP reporter path: do not journal or recursively count this
             # metadata transport as an agent workload/tool call.
             self._telemetry_finished = True
+            if getattr(APP, "recovery", None) is not None and not self._claim_recovery(path, payload):
+                return
             accepted = 0
             rejected = 0
             rejection_reasons: dict[str, int] = {}
@@ -2013,27 +2134,8 @@ class Handler(BaseHTTPRequestHandler):
                 )
             trace_store.event(api_trace_id, "handler_started", {"action": path, "payload_keys": sorted(str(key) for key in payload)})
         tenant = self._tenant()
-        self._journal_request_id = str(getattr(self, "_trace_request_id", ""))
-        self._journal_finished = False
-        try:
-            prior = APP.recovery.lookup(self._journal_request_id, tenant, path)
-            if prior and prior.get("state") in {"done", "failed"} and prior.get("response") is not None:
-                self._journal_finished = True
-                self._send(int(prior.get("status_code") or (200 if prior.get("state") == "done" else 500)), prior["response"]); return
-            if prior and prior.get("state") == "running":
-                wait_seconds = min(2.0, max(0.05, float(APP.config.get("resilience", {}).get("singleflight_wait_timeout_seconds", 1.0))))
-                replay = APP.recovery.wait_for(self._journal_request_id, tenant, path, timeout_seconds=wait_seconds)
-                if replay and replay.get("state") in {"done", "failed"} and replay.get("response") is not None:
-                    self._journal_finished = True
-                    self._send(int(replay.get("status_code") or (200 if replay.get("state") == "done" else 500)), replay["response"]); return
-                self._journal_finished = True
-                self._send(409, {"success": False, "error": "request with this id is already running", "retryable": True, "in_progress": True, "retry_after_seconds": 1, "waited_seconds": wait_seconds}); return
-            if prior and prior.get("state") == "conflict":
-                self._journal_finished = True
-                self._send(409, {"success": False, "error": prior.get("error", "request id conflict")}); return
-            APP.recovery.begin(self._journal_request_id, tenant, path)
-        except Exception:
-            pass
+        if not self._claim_recovery(path, payload):
+            return
         try:
             if path == "/api/work-orders":
                 if not getattr(APP, "work_orchestrator", None) or not APP.work_orchestrator.enabled:
