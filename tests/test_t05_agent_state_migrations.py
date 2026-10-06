@@ -112,7 +112,23 @@ def _assert_state_survives(db_path, task, event, memory):
             "SELECT state FROM agent_snapshots WHERE stream_id=? AND seq=1",
             (event.stream_id,),
         ).fetchone()[0] == '{"snapshot":"durable"}'
-    assert MemoryStore(state).get(
+    row = None
+    with closing(sqlite3.connect(db_path)) as connection:
+        row = connection.execute(
+            "SELECT scope, scope_id, provenance FROM agent_memory_records WHERE record_id=?",
+            (memory.record_id,),
+        ).fetchone()
+    assert row is not None
+    assert row[0:2] == (AgentScope.TASK.value, task.task_id)
+    assert json.loads(row[2]) == dict(memory.provenance)
+
+    memory_store = MemoryStore(state)
+    assert memory_store.get(
+        memory.record_id,
+        scope=AgentScope.TASK,
+        scope_id=task.task_id,
+    ) is None
+    assert memory_store.get(
         memory.record_id,
         scope=AgentScope.TASK,
         scope_id=task.task_id,

@@ -1,0 +1,60 @@
+--- a/src/local_ai_hub/http_server.py
++++ b/src/local_ai_hub/http_server.py
+@@ -1260,6 +1260,25 @@
+         if APP is not None and (path.startswith("/api/browser/") or path == "/api/vision/review") and security.get("api_token"):
+             return str(APP.config.get("browser_bridge", {}).get("tenant", "http-default") or "http-default")
+         return requested
++
++    def _memory_project_identity(self, requested_root: Any) -> tuple[str, str] | None:
++        """Resolve memory project identity from server project configuration."""
++        if not requested_root:
++            return ("", "")
++        if APP is None:
++            return None
++        try:
++            from .project_config import resolve_project_context
++            from .state_paths import configured_state_dir
++
++            context = resolve_project_context(requested_root, configured_state_dir(APP.config))
++            root = str(Path(context.root).resolve(strict=True))
++            repository_id = str(context.coordination_id or "").strip()
++            if not repository_id:
++                return None
++            return root, repository_id
++        except Exception:
++            return None
+ 
+     def _tenant_binding_allowed(self) -> bool:
+         if APP is None:
+@@ -2083,9 +2102,12 @@
+                     scope_raw = (query.get("scope") or [None])[0]
+                     scope_val = _parse_memory_scope(scope_raw)
+                     scope_id_val = (query.get("scope_id") or [None])[0]
+-                    root_val = (query.get("root") or [None])[0]
+-                    repository_id_val = (query.get("repository_id") or [None])[0]
+-                    tenant_val = (query.get("tenant") or [None])[0]
++                    requested_root = (query.get("root") or [None])[0]
++                    project_identity = self._memory_project_identity(requested_root)
++                    if requested_root and project_identity is None:
++                        self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
++                    root_val, repository_id_val = project_identity or (None, None)
++                    tenant_val = self._tenant()
+                     task_id_val = (query.get("task_id") or [None])[0]
+                     session_id_val = (query.get("session_id") or [None])[0]
+                     clone_id_val = (query.get("clone_id") or [None])[0]
+@@ -2138,9 +2160,12 @@
+                         pass
+                 limit_val = _memory_query_limit((query.get("limit") or [100])[0])
+                 scope_id_val = (query.get("scope_id") or [None])[0]
+-                root_val = (query.get("root") or [None])[0]
+-                repository_id_val = (query.get("repository_id") or [None])[0]
+-                tenant_val = (query.get("tenant") or [None])[0]
++                requested_root = (query.get("root") or [None])[0]
++                project_identity = self._memory_project_identity(requested_root)
++                if requested_root and project_identity is None:
++                    self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
++                root_val, repository_id_val = project_identity or (None, None)
++                tenant_val = self._tenant()
+                 task_id_val = (query.get("task_id") or [None])[0]
+                 session_id_val = (query.get("session_id") or [None])[0]
+                 clone_id_val = (query.get("clone_id") or [None])[0]

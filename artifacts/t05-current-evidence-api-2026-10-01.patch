@@ -1,0 +1,127 @@
+diff --git a/src/local_ai_hub/evidence.py b/src/local_ai_hub/evidence.py
+index 28363c0..30dfb5b 100644
+--- a/src/local_ai_hub/evidence.py
++++ b/src/local_ai_hub/evidence.py
+@@ -11,6 +11,27 @@ from typing import Any
+ from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error
+ 
+ 
++def is_evidence_id(value: Any) -> bool:
++    """Check the syntactic shape of a content-addressed evidence reference."""
++    text = str(value or "")
++    return len(text) == 21 and text.startswith("E") and all(
++        char in "0123456789abcdefABCDEF" for char in text[1:]
++    )
++
++
++def is_current_evidence_id(value: Any, evidence_store: Any) -> bool:
++    """Accept an evidence reference only when its store proves current provenance."""
++    if not is_evidence_id(value) or evidence_store is None:
++        return False
++    validator = getattr(evidence_store, "validate_current", None)
++    if not callable(validator):
++        return False
++    try:
++        return validator(str(value)) is True
++    except Exception:
++        return False
++
++
+ class EvidenceStore:
+     """Content-addressed exact evidence slices shared by every local/cloud agent.
+ 
+@@ -153,6 +174,30 @@ class EvidenceStore:
+                 stale = True
+         return {"success": True, "evidence_id": evidence_id, "root": row["root"], "path": row["path"], "file_sha256": row["file_hash"], "start_line": row["start_line"], "end_line": row["end_line"], "text": row["text"], "stale": stale}
+ 
++    def validate_current(self, evidence_id: str) -> bool:
++        """Prove an evidence ID still matches its stored row and current source."""
++        if not is_evidence_id(evidence_id):
++            return False
++        try:
++            item = self.get(evidence_id, verify=True)
++            if (
++                not item.get("success")
++                or item.get("stale") is not False
++                or item.get("evidence_id") != evidence_id
++            ):
++                return False
++            expected = self._id(
++                str(item["root"]),
++                str(item["path"]),
++                str(item["file_sha256"]),
++                int(item["start_line"]),
++                int(item["end_line"]),
++                str(item["text"]),
++            )
++        except Exception:
++            return False
++        return expected == evidence_id
++
+     def stats(self) -> dict[str, Any]:
+         try:
+             with self._lock, closing(self._connect()) as con:
+diff --git a/tests/test_evidence_contract.py b/tests/test_evidence_contract.py
+index 3f1626b..0d71dc9 100644
+--- a/tests/test_evidence_contract.py
++++ b/tests/test_evidence_contract.py
+@@ -1,3 +1,9 @@
++from contextlib import closing
++import hashlib
++import sqlite3
++
++from local_ai_hub import evidence as evidence_module
++from local_ai_hub.evidence import EvidenceStore
+ from local_ai_hub.evidence_contract import evidence_meta
+ 
+ 
+@@ -16,3 +22,49 @@ def test_stale_evidence_cannot_claim_verified():
+     result = evidence_meta("repo.search", "abc123", ["E1"], True, "success")
+     assert result["status"] == "stale"
+     assert result["stale"] is True
++
++
++def test_current_evidence_identity_requires_current_source_and_stored_row(tmp_path):
++    root = tmp_path / "repo"
++    root.mkdir()
++    source = root / "sample.py"
++    source.write_text("value = 1\n", encoding="utf-8")
++    file_hash = hashlib.sha256(source.read_bytes()).hexdigest()
++    store = EvidenceStore(tmp_path / "state")
++    evidence_id = store.put(
++        str(root),
++        {
++            "path": "sample.py",
++            "file_sha256": file_hash,
++            "start_line": 1,
++            "end_line": 1,
++            "text": "value = 1",
++        },
++    )
++
++    assert evidence_id is not None
++    id_validator = getattr(evidence_module, "is_evidence_id", None)
++    current_validator = getattr(evidence_module, "is_current_evidence_id", None)
++    store_validator = getattr(store, "validate_current", None)
++    assert callable(id_validator), "is_evidence_id API missing"
++    assert callable(current_validator), "is_current_evidence_id API missing"
++    assert callable(store_validator), "EvidenceStore.validate_current API missing"
++    assert id_validator(evidence_id)
++    assert current_validator(evidence_id, store) is True
++    assert store_validator(evidence_id) is True
++
++    assert id_validator("EFFFFFFFFFFFFFFFFFFFF")
++    assert store_validator("EFFFFFFFFFFFFFFFFFFFF") is False
++    assert current_validator("malformed", store) is False
++    assert current_validator(evidence_id, object()) is False
++
++    source.write_text("value = 2\n", encoding="utf-8")
++    assert store_validator(evidence_id) is False
++
++    source.write_text("value = 1\n", encoding="utf-8")
++    with closing(sqlite3.connect(store.db_path)) as connection, connection:
++        connection.execute(
++            "UPDATE evidence SET text=? WHERE id=?",
++            ("forged evidence", evidence_id),
++        )
++    assert store_validator(evidence_id) is False

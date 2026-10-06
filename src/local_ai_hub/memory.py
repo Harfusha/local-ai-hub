@@ -329,11 +329,26 @@ class WorkspaceMemoryStore:
         items.sort(key=lambda x: (-x["score"], -x["updated_at"]))
         return {"success": True, "workspace": workspace, "scope": "workspace-shared", "results": items[:limit]}
 
-    def delete(self, root: str, key: str, tenant: str = "") -> dict[str, Any]:
+    def delete(self, root: str, key: str, tenant: str = "", *, scope: str | None = None) -> dict[str, Any]:
         workspace = self.workspace_id(root)
         key = self._clean_key(key)
         if tenant != "":
             tenant = self._clean_tenant(tenant)
+        if scope is not None:
+            if not isinstance(scope, str) or scope.strip().lower() not in {"global", "tenant"}:
+                raise ValueError("memo delete scope must be 'global' or 'tenant'")
+            scope = scope.strip().lower()
+            if scope == "tenant" and not tenant:
+                return {
+                    "success": False,
+                    "error": "tenant is required for tenant-scoped memory delete",
+                    "workspace": workspace,
+                    "key": key,
+                    "scope": "workspace-shared",
+                    "deleted": False,
+                }
+            if scope == "global":
+                tenant = ""
         def write() -> tuple[int, int]:
             with closing(self._connect()) as con:
                 con.execute("BEGIN IMMEDIATE")
