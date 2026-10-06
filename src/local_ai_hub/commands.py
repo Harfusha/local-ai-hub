@@ -2679,6 +2679,30 @@ class CommandBroker:
             distilled = distilled.get("text", distilled.get("summary", ""))
         return str(distilled or "").strip()[:300]
 
+    def _mark_rollback_outcome_unknown(
+        self,
+        result: dict[str, Any],
+        rollback_error: Exception,
+    ) -> None:
+        result.update({
+            "rollback_error": str(rollback_error)[:512],
+            "rolled_back": False,
+            "outcome_unknown": True,
+            "failure_kind": "rollback_incomplete",
+            "terminal": True,
+            "retryable": False,
+        })
+        cache_errors: list[str] = []
+        for cache in (self.success_cache, self.failure_cache, self.suppression_cache):
+            try:
+                cache.clear()
+            except Exception as exc:
+                cache_errors.append(str(exc)[:256])
+        with self._lock:
+            self._last.clear()
+        result["cache_invalidated"] = not cache_errors
+        if cache_errors:
+            result["cache_invalidation_error"] = "; ".join(cache_errors)[:512]
     def run(
         self,
         command: str,
@@ -2917,8 +2941,7 @@ class CommandBroker:
                     _restore_rollback_scope(cwd, rollback_state)
                     result["rolled_back"] = True
                 except Exception as rb_exc:
-                    result["rollback_error"] = str(rb_exc)[:512]
-                    result["rolled_back"] = False
+                    self._mark_rollback_outcome_unknown(result, rb_exc)
             elif snapshot and git_snapshot:
                 result["snapshot_taken"] = True
             result["diagnostics"] = self._extract_diagnostics(result)
@@ -2982,7 +3005,7 @@ class CommandBroker:
                     pass
 
             raw = dict(result)
-            if cacheable and not result.get("cancelled"):
+            if cacheable and not result.get("cancelled") and not result.get("outcome_unknown"):
                 (self.success_cache if result.get("success") else self.failure_cache).set(key, raw)
             self._record_command_verification(
                 result,
@@ -2995,7 +3018,7 @@ class CommandBroker:
                 repository_revision=str(state.get("fingerprint", "")),
                 duration_ms=float(result.get("duration_ms", 0) or 0),
             )
-            if not force and not is_mutating and self._non_retryable_failure(raw):
+            if not force and not is_mutating and not raw.get("outcome_unknown") and self._non_retryable_failure(raw):
                 raw.update({"terminal": True, "retryable": False})
                 self.suppression_cache.set(attempt_key, raw)
             if singleflight:
@@ -3004,7 +3027,8 @@ class CommandBroker:
                         old_keys = list(self._last.keys())[:64]
                         for k in old_keys:
                             self._last.pop(k, None)
-                    self._last[key] = raw
+                    if not raw.get("outcome_unknown"):
+                        self._last[key] = raw
             result.update({"cache_hit": False, "coalesced": False, "classification": classification, "repo_state": state, "repository_revision": str(state.get("fingerprint", ""))})
         except subprocess.TimeoutExpired:
             timeout_result = {"success": False, "error": "command timed out", "timed_out": True, "classification": classification, "cache_hit": False}
@@ -3013,8 +3037,7 @@ class CommandBroker:
                     _restore_rollback_scope(cwd, rollback_state)
                     timeout_result["rolled_back"] = True
                 except Exception as rb_exc:
-                    timeout_result["rollback_error"] = str(rb_exc)[:512]
-                    timeout_result["rolled_back"] = False
+                    self._mark_rollback_outcome_unknown(timeout_result, rb_exc)
             return timeout_result
         finally:
             if rollback_state is not None:
@@ -3737,9 +3760,7 @@ class CommandBroker:
             }
         classification_command = subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv)
         classification = self.classify(classification_command)
-        if classification.get("class") == "dangerous" or (
-            not classification.get("allowed", False) and self.policy_blocking
-        ):
+        if classification.get("class") == "dangerous" or not classification.get("allowed", False):
             return {
                 "success": False,
                 "error": f"daemon command blocked: {classification.get('reason', 'policy')}",

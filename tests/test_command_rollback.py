@@ -25,6 +25,61 @@ class _FakeTaskStore:
         )
 
 
+@pytest.mark.parametrize("execution_mode", ["command_failure", "timeout"])
+def test_rollback_restore_oserror_marks_outcome_unknown_and_invalidates_caches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, execution_mode: str
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    owned = repo / "owned.txt"
+    owned.write_text("before", encoding="utf-8")
+    subprocess.run(["git", "init"], cwd=str(repo), capture_output=True, check=True, **hidden_run_kwargs())
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=str(repo), capture_output=True, check=True, **hidden_run_kwargs())
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(repo), capture_output=True, check=True, **hidden_run_kwargs())
+    subprocess.run(["git", "add", "owned.txt"], cwd=str(repo), capture_output=True, check=True, **hidden_run_kwargs())
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=str(repo), capture_output=True, check=True, **hidden_run_kwargs())
+
+    broker = CommandBroker({"server": {"state_dir": str(tmp_path / "state")}}, artifacts=None, repo_state=None)
+    broker.set_task_store(_FakeTaskStore(str(repo)))
+    classification = {"class": "validation", "allowed": True, "cacheable": True, "reason": "test"}
+    monkeypatch.setattr(broker, "classify", lambda *_args, **_kwargs: classification)
+    command = "pytest -q"
+    command_cache_key = broker._key(command, str(repo), classification)[0]
+    caches = (broker.success_cache, broker.failure_cache, broker.suppression_cache)
+    cache_keys = ("rollback-success-stale", "rollback-failure-stale", "rollback-suppression-stale")
+    for cache, key in zip(caches, cache_keys):
+        cache.set(key, {"success": True})
+
+    def fail_execute(*_args: object, **_kwargs: object) -> dict[str, object]:
+        if execution_mode == "timeout":
+            raise subprocess.TimeoutExpired(command, 1)
+        return {"success": False, "exit_code": 1, "stdout": "", "stderr": "command failed"}
+
+    monkeypatch.setattr(broker, "_execute", fail_execute)
+
+    def fail_restore(_cwd: str, _snapshot: object) -> None:
+        raise OSError("rollback restore failed")
+
+    monkeypatch.setattr(commands_module, "_restore_rollback_scope", fail_restore)
+    result = broker.run(
+        command,
+        str(repo),
+        force=True,
+        task_id="task-owned",
+        rollback_on_failure=True,
+        rollback_paths=["owned.txt"],
+    )
+
+    assert result["success"] is False
+    assert result["rolled_back"] is False
+    assert result["outcome_unknown"] is True
+    assert result["failure_kind"] == "rollback_incomplete"
+    assert result["retryable"] is False
+    assert result["terminal"] is True
+    assert all(cache.get(key) is None for cache, key in zip(caches, cache_keys))
+    assert broker.failure_cache.get(command_cache_key) is None
+    assert command_cache_key not in broker._last
+
 def test_command_rollback_on_failure_preserves_unowned_changes(tmp_path: Path, monkeypatch) -> None:
     # Set up git repo
     subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True, check=True, **hidden_run_kwargs())
