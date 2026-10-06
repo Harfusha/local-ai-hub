@@ -9,7 +9,7 @@ Semantic delegation is optional and on-demand; use it when bounded independent w
 
 Before changing model routing or claiming a model switch is safe, measure supported hardware/backend cohorts and attach revision-bound quality, latency, and VRAM evidence before and after. Model output is advisory, not verification.
 
-Source synchronization (2026-10-06, pinned master `fb32354f8bf632e560e052e9b12c73f64b00cba4`): routing quality floors, operational modes, and client identity/transport safeguards are present. HTTP root authorization and complete maintenance isolation remain acceptance gaps. Packaged response budget defaults to 6400 tokens; generated guarded-context prose still mentions 3200. Preserve the configured preprocessing provider; this pinned source exposes deterministic/background Ollama synthesis, with no Gemini preprocessing provider implementation found. Gemini agent manifests are not provider evidence. Do not add or infer a Gemini implementation during installation. Prior candidate instructions and receipts in `handoff/` and checkpoint history are historical, not current acceptance.
+Pinned-source limitation (master `2458f72c`, 2026-10-06): routing quality floors, operational modes, and client identity/transport safeguards are source contracts, not deployed runtime proof. HTTP root authorization and complete maintenance isolation remain separate acceptance gaps. Preserve the configured preprocessing provider. This pinned source has no Gemini preprocessing provider implementation; Gemini agent manifests do not prove such support. Do not invent, install, or infer a Gemini preprocessing implementation. Prior candidate instructions and receipts in `handoff/` and checkpoint history are historical, not current acceptance. Configuration and the returned response-budget envelope are authoritative; generated prose may retain an older budget value.
 
 ---
 
@@ -170,6 +170,14 @@ After updating, verify the generated schemas under the installation's `generated
 - On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 
 Use only actions and arguments present in the installed generated schema. Schema presence is not authorization: process-lifecycle actions such as `spawn_daemon` require an explicit policy capability grant. Do not infer support for extra fields from similarly named APIs.
+
+### Async lifecycle and conversations
+
+`submit` accepts a stable body `request_id` for idempotent replay; `X-LocalAI-Request-ID` remains a separate journal identifier. `status`, `wait`, `result`, and `cancel` must remain usable when model execution is disabled. Cap wait duration by `async_jobs.wait_max_seconds` and by `max_request_timeout` after reserving a bounded transport margin. Compact lifecycle responses must retain `job_id`, `state`, and `artifact_id`. `HubClient.submit_async_job`, `HubClient.async_job_status`, `HubClient.wait_async_job`, `HubClient.async_job_result`, and `HubClient.cancel_async_job` expose the lifecycle; default wait transport timeout is the requested duration plus 30 seconds, capped by `max_request_timeout`.
+
+Direct HTTP lifecycle requests use `POST /api/async-jobs`: submit sends `action="submit"`, `job_action`, and optional stable `request_id`; controls send `action="status"|"wait"|"result"|"cancel"` with `job_id`, and wait also sends `timeout_seconds`. MCP uses `local_ai_task(action=submit|status|wait|result|cancel, ...)`. The `HubClient` methods above use the same HTTP path. Recovery may replay only explicitly replay-safe actions with a stable `request_id`, matching tenant/action/payload identity, and remaining attempts; command-backed or unclassified actions become terminal `outcome_unknown`.
+
+Start synchronously with HTTP `POST /api/delegate` or `POST /api/reason`, setting `conversation=true` and `delivery="sync"`, or MCP `local_ai_task(action="delegate"|"explore"|"reason", conversation=true, delivery="sync")`. HubClient has no dedicated start helper; use `HubClient.post("/api/delegate", payload)` or `HubClient.post("/api/reason", payload)`. Continue with HTTP POST `/api/conversations/continue` using `conversation_id`, `task`, and optional `context`; MCP uses `local_ai_task(action="continue", conversation_id=..., task=..., context=...)`; `HubClient.continue_conversation(conversation_id, prompt, context=...)` maps `prompt` to HTTP `task`. Conversations are tenant-scoped; their model, system prompt, output limit, temperature, and route are pinned at start. Only one turn may run at once; a concurrent call reports retryable in-progress.
 
 ### Adaptive context and supported capabilities
 

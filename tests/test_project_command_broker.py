@@ -54,6 +54,8 @@ def test_ordinary_command_cache_key_omits_empty_project_context(tmp_path: Path, 
             "env": {},
             "python": sys.version_info[:3],
             "tool": "tool",
+            "tenant": broker._tenant_identity("agent"),
+            "timeout_seconds": 60,
             "policy": {
                 "blocking": False,
                 "allow_read": True,
@@ -66,11 +68,13 @@ def test_ordinary_command_cache_key_omits_empty_project_context(tmp_path: Path, 
         }
     )
     tokens = broker._tokens(command)
-    assert broker._attempt_key(command, cwd) == stable_hash(
+    assert broker._attempt_key(command, cwd, tenant="agent", timeout=60) == stable_hash(
         {
             "command": " ".join(tokens) if tokens else command.strip(),
             "cwd": str(Path(cwd).resolve()),
             "tool": "tool",
+            "tenant": broker._tenant_identity("agent"),
+            "timeout_seconds": 60,
             "policy": {
                 "blocking": False,
                 "allow_read": True,

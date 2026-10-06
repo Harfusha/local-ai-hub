@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -157,3 +158,43 @@ def test_rollback_preflights_non_directory_ancestors_before_restoring_any_file(t
 
     assert first.read_bytes() == b"first postimage\n"
     assert (root / "dir").read_bytes() == b"replaced former directory\n"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction reparse points are platform-specific")
+def test_rollback_rejects_junction_before_restoring_any_file(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    external = root / "external"
+    external.mkdir()
+    (external / "deleted.txt").write_bytes(b"outside remains\n")
+    first = root / "first.txt"
+    first.write_bytes(b"first postimage\n")
+    junction = root / "junction"
+    created = subprocess.run(
+        ["cmd.exe", "/c", "mklink", "/J", str(junction), str(external)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if created.returncode != 0:
+        pytest.skip(f"junction creation unavailable: {created.stderr or created.stdout}")
+    journal = [
+        _JournalEntry(
+            "junction/deleted.txt", False, b"", False,
+            hashlib.sha256(b"").hexdigest(),
+        ),
+        _JournalEntry(
+            "first.txt", True, b"first before\n", True,
+            hashlib.sha256(b"first postimage\n").hexdigest(),
+        ),
+    ]
+
+    try:
+        assert junction.is_junction()
+        with pytest.raises(ValueError, match="symlink or reparse"):
+            WorkOrchestrator._rollback(root, journal)
+
+        assert first.read_bytes() == b"first postimage\n"
+        assert (external / "deleted.txt").read_bytes() == b"outside remains\n"
+    finally:
+        junction.rmdir()

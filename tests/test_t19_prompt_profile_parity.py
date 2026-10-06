@@ -23,6 +23,9 @@ def test_prompt_role_matrix_matches_hardware_profiles() -> None:
         "max": ("qwen2.5-coder:1.5b", "qwen2.5-coder:3b", "qwen3.5:9b", "qwen3.5:9b", "qwen3.5:9b", "qwen3.5:9b"),
     }
     for profile, models in routes.items():
+        role_order = ("background_code", "fast_code", "heavy_code", "reasoning", "general", "vision")
+        configured = profile_overrides(profile)["models"]
+        assert models == tuple(configured[role] for role in role_order), profile
         route = "/".join(models)
         assert f"{profile}=`{route}`" in install_routing
         expected_row = "| " + " | ".join(f"`{value}`" for value in (profile, *models)) + " |"
