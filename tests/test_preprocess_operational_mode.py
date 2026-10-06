@@ -11,11 +11,6 @@ from local_ai_hub import preprocess as preprocess_module
 from local_ai_hub.code_index import CodeIndex
 from local_ai_hub.operational_mode import set_operational_mode
 from local_ai_hub.repo_tools import RepositoryTools
-import pytest
-from local_ai_hub import preprocess as preprocess_module
-from local_ai_hub.code_index import CodeIndex
-from local_ai_hub.operational_mode import set_operational_mode
-from local_ai_hub.repo_tools import RepositoryTools
 
 
 def _preprocessor(state_dir: Path) -> ProjectPreprocessor:

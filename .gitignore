@@ -58,6 +58,7 @@ config.runtime.toml
 # Agent workspace state (internal, not for distribution)
 .superpowers/
 .serena/
+.codegraphcontext/
 .agents/
 .worktrees/
 

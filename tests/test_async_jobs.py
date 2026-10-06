@@ -411,6 +411,47 @@ def test_cancelling_queued_job_is_idempotent(tmp_path):
         manager.close()
 
 
+def test_tick_does_not_dispatch_before_delayed_submit_is_registered(tmp_path):
+    manager, _scheduler = _manager(tmp_path)
+    trace_started = threading.Event()
+    release_trace = threading.Event()
+    dispatched = []
+
+    class _BlockingTrace:
+        def start(self, **_kwargs):
+            trace_started.set()
+            assert release_trace.wait(2)
+            return "trace-1"
+
+        def update(self, *_args, **_kwargs):
+            pass
+
+        def link(self, *_args, **_kwargs):
+            pass
+
+    manager.debug_traces = _BlockingTrace()
+    manager._dispatch = lambda job_id: dispatched.append(job_id)
+    submitted = {}
+    thread = threading.Thread(
+        target=lambda: submitted.update(manager.submit(
+            "tenant-a", "reason", {"task": "delayed dispatch race"}, dispatch_delay_seconds=30,
+        )),
+    )
+
+    try:
+        thread.start()
+        assert trace_started.wait(2)
+        manager.tick()
+        assert dispatched == []
+    finally:
+        release_trace.set()
+        thread.join(2)
+        manager.close()
+
+    assert not thread.is_alive()
+    assert submitted.get("success") is True
+
+
 def test_early_delayed_dispatch_callback_preserves_queued_cancellation(tmp_path, monkeypatch):
     manager, _scheduler = _manager(tmp_path)
     timer_instances = []

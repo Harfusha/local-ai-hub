@@ -692,14 +692,103 @@ class ProjectPreprocessor:
         if any(part.lower() in self.repo_tools.ignore_dirs for part in rel_path.parts[:-1]):
             return None
         name = rel_path.name.lower()
+        if name in {".local-ai.toml", ".local-ai.worktree.toml"}:
+            return str(rel_path).replace("\\", "/")
         suffix = rel_path.suffix.lower()
-        if self.repo_tools.extensions and suffix not in self.repo_tools.extensions and name not in self.repo_tools.special_filenames:
+        project_extensions: set[str] = set()
+        _api, project_context = self._project_config_context(str(root))
+        if project_context is not None:
+            settings = project_context.settings
+            project_extensions.update(
+                str(value).lower() for value in getattr(settings, "text_extensions", ())
+            )
+            for override in getattr(settings, "language_overrides", {}).values():
+                project_extensions.update(
+                    str(value).lower() for value in override.get("text_extensions", ())
+                )
+            project_extensions.difference_update(
+                str(value).lower() for value in getattr(settings, "binary_extensions", ())
+            )
+        if (
+            self.repo_tools.extensions
+            and suffix not in self.repo_tools.extensions
+            and suffix not in project_extensions
+            and name not in self.repo_tools.special_filenames
+        ):
             return None
         return str(rel_path).replace("\\", "/")
 
     def _consume_dirty_paths(self, root: str) -> set[str]:
         with self._dirty_lock:
             return self._dirty_paths.pop(root, set())
+
+    def _project_config_context(self, root: str) -> tuple[Any | None, Any | None]:
+        """Resolve optional project policy lazily for the owning repository."""
+        try:
+            from importlib import import_module
+
+            api = import_module("local_ai_hub.project_config")
+        except ModuleNotFoundError as exc:
+            if exc.name == "local_ai_hub.project_config":
+                return None, None
+            raise
+        state_dir = self.config.get("server", {}).get("state_dir", "state")
+        return api, api.resolve_project_context(root, state_dir)
+
+    def _project_profile(self, root: str, profile: Any) -> Any:
+        _api, context = self._project_config_context(root)
+        if context is None or not isinstance(profile, dict):
+            return profile
+        profile = dict(profile)
+        settings = context.settings
+        for name in ("project_type", "solution_path"):
+            value = getattr(settings, name, None)
+            if value:
+                profile[name] = value
+        return profile
+
+    def _add_project_text_extensions(self, root: str, files: dict[str, dict[str, Any]], api: Any | None, context: Any | None) -> None:
+        if api is None or context is None:
+            return
+        settings = context.settings
+        extensions = {str(value).lower() for value in getattr(settings, "text_extensions", ())}
+        for override in getattr(settings, "language_overrides", {}).values():
+            extensions.update(str(value).lower() for value in override.get("text_extensions", ()))
+        extensions.difference_update(str(value).lower() for value in getattr(settings, "binary_extensions", ()))
+        extensions.difference_update(str(value).lower() for value in getattr(self.repo_tools, "extensions", ()))
+        if not extensions:
+            return
+        base = Path(root)
+        ignored = {str(value).lower() for value in getattr(self.repo_tools, "ignore_dirs", ())}
+        may_descend = getattr(api, "may_descend", None)
+        for current, directories, filenames in os.walk(base, followlinks=False):
+            current_path = Path(current)
+            retained = []
+            for name in directories:
+                child = current_path / name
+                if name.lower() in ignored or (callable(may_descend) and not may_descend(
+                    base, child, settings, phase="preprocess", hard_denied=False,
+                )):
+                    continue
+                retained.append(name)
+            directories[:] = retained
+            for name in filenames:
+                candidate = current_path / name
+                if candidate.suffix.lower() not in extensions:
+                    continue
+                try:
+                    stat = candidate.stat()
+                    relative = candidate.relative_to(base).as_posix()
+                except (OSError, ValueError):
+                    continue
+                if int(stat.st_size) > int(getattr(self.repo_tools, "max_file_bytes", stat.st_size)) or not self._project_path_allowed(
+                    root, relative, settings, phase="preprocess", size_bytes=int(stat.st_size),
+                ):
+                    continue
+                files.setdefault(relative, {
+                    "path": relative, "size": int(stat.st_size),
+                    "mtime_ns": int(stat.st_mtime_ns), "extension": candidate.suffix.lower(),
+                })
 
     def notify_path_changed(self, changed_path: str) -> bool:
         """Coalesce watcher events and queue only the owning registered project."""
@@ -776,16 +865,19 @@ class ProjectPreprocessor:
                 watch_revision = int(self._watch_revisions.get(resolved, 0))
                 dirty_paths = sorted(self._dirty_paths.get(resolved, set()))[:256]
                 dirty_count = len(self._dirty_paths.get(resolved, set()))
+            _api, project_context = self._project_config_context(resolved)
+            config_digest = str(getattr(project_context, "config_digest", ""))
             fp = stable_hash({
                 "root": resolved, "generation": int(row["generation"] or 0),
                 "inventory": row["inventory_hash"], "structure": row["structural_hash"],
-                "watch_revision": watch_revision,
+                "watch_revision": watch_revision, "project_config": config_digest,
             })
             return {
                 "success": True, "root": resolved, "kind": "preprocessed-watcher",
                 "fingerprint": fp, "dirty": dirty_count > 0, "changed_files": dirty_count,
                 "changed_paths": dirty_paths, "status": str(row["status"]),
-                "phase": str(row["phase"]), "created_at": time.time(),
+                "phase": str(row["phase"]), "project_config_digest": config_digest,
+                "created_at": time.time(),
             }
         except Exception:
             return None
@@ -1281,8 +1373,14 @@ class ProjectPreprocessor:
         ignore_extensions = getattr(self.repo_tools, "ignore_extensions", set())
         hard_denied = hard_denied or Path(relative).suffix.lower() in ignore_extensions
         extensions = getattr(self.repo_tools, "extensions", set())
+        project_extensions = {str(value).lower() for value in getattr(settings, "text_extensions", ())}
+        for override in getattr(settings, "language_overrides", {}).values():
+            project_extensions.update(str(value).lower() for value in override.get("text_extensions", ()))
+        binary_extensions = {str(value).lower() for value in getattr(settings, "binary_extensions", ())}
+        project_extensions.difference_update(binary_extensions)
+        hard_denied = hard_denied or Path(relative).suffix.lower() in binary_extensions
         special_filenames = getattr(self.repo_tools, "special_filenames", set())
-        if extensions and Path(relative).suffix.lower() not in extensions and Path(relative).name.lower() not in special_filenames:
+        if extensions and Path(relative).suffix.lower() not in extensions and Path(relative).suffix.lower() not in project_extensions and Path(relative).name.lower() not in special_filenames:
             hard_denied = True
         return path_is_allowed(
             root,
@@ -2004,6 +2102,11 @@ class ProjectPreprocessor:
         if optional_phase is not None:
             project_phase, next_phase = optional_phase
             if not phase_is_allowed(self._project_settings(root), project_phase):
+                if phase == "code_index" and self.code_index is not None:
+                    try:
+                        self.code_index.prune(root, [])
+                    except Exception:
+                        pass
                 self._set_project(root, phase=next_phase)
                 return True
         if phase == "inventory":
@@ -2040,6 +2143,9 @@ class ProjectPreprocessor:
         now = time.time()
         paths = sorted(set(str(x).replace("\\", "/") for x in dirty_paths if x))[:1024]
         if not paths:
+            return False
+        if any(Path(rel).name in {".local-ai.toml", ".local-ai.worktree.toml"} for rel in paths):
+            # Policy changes can affect paths outside the dirty batch. Recompute full inventory.
             return False
         placeholders = ",".join("?" for _ in paths)
         with self._db_lock, closing(self._connect()) as con:
@@ -2232,8 +2338,11 @@ class ProjectPreprocessor:
             raise RuntimeError(str(inventory.get("error", "inventory failed")))
         if self._yield():
             return False
+        policy_api, project_context = self._project_config_context(root)
+        inventory_files = {str(item["path"]): item for item in inventory.get("files", []) if item.get("path")}
+        self._add_project_text_extensions(root, inventory_files, policy_api, project_context)
         new_files: dict[str, dict[str, Any]] = {}
-        for item in inventory.get("files", []):
+        for item in inventory_files.values():
             relative = str(item.get("path") or "")
             if not relative:
                 continue
@@ -2274,6 +2383,9 @@ class ProjectPreprocessor:
             "models": {k: self.config.get("models", {}).get(k) for k in ("fast_code", "heavy_code", "reasoning")},
             "analyzer": __version__,
             "project_config": resolution.config_digest,
+            "project_type": getattr(settings, "project_type", None),
+            "solution_path": getattr(settings, "solution_path", None),
+            "language_overrides": getattr(settings, "language_overrides", {}),
         })
         force = bool(row.get("force_refresh"))
         now = time.time()
@@ -2740,11 +2852,21 @@ class ProjectPreprocessor:
             self._missing_refs_checked_generations.add(generation_key)
             self._missing_refs_checked_generations = self._bound_generation_set(self._missing_refs_checked_generations)
         with self._db_lock, closing(self._connect()) as con:
-            refs = [(str(r["path"]), str(r["content_hash"])) for r in con.execute("SELECT path,content_hash FROM file_refs WHERE root=? AND needs_hash=0 AND content_hash<>'' ORDER BY path", (root,)).fetchall()]
+            refs = [
+                (str(r["path"]), str(r["content_hash"]), int(r["size"] or 0))
+                for r in con.execute(
+                    "SELECT path,content_hash,size FROM file_refs WHERE root=? AND needs_hash=0 AND content_hash<>'' ORDER BY path",
+                    (root,),
+                ).fetchall()
+            ]
+        settings = self._project_settings(root)
         refs = [
             (path, digest)
-            for path, digest in refs
+            for path, digest, size_bytes in refs
             if not any(part.lower() in self.repo_tools.ignore_dirs for part in Path(path).parts[:-1])
+            and self._project_path_allowed(
+                root, path, settings, phase="call_graph", size_bytes=size_bytes,
+            )
         ]
         pruned_generations = getattr(self, "_code_index_pruned_generations", set())
         if generation_key not in pruned_generations:
@@ -3401,7 +3523,7 @@ class ProjectPreprocessor:
         if current and current["revision_hash"] == revision:
             self._set_project(root, phase="hot_queries")
             return True
-        profile = self.services.repo_profile(root)
+        profile = self._project_profile(root, self.services.repo_profile(root))
         repo_map = self.services.repo_map(root, int(self.cfg.get("preprocess_symbol_sample", 300)))
         module_data = []
         for x in modules:
@@ -3546,7 +3668,7 @@ class ProjectPreprocessor:
 
         profile = {}
         try:
-            profile = self.services.repo_profile(root)
+            profile = self._project_profile(root, self.services.repo_profile(root))
         except Exception:
             pass
         validation_cmds = profile.get("validation_commands", [])

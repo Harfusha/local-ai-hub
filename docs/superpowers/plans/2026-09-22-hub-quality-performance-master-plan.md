@@ -915,8 +915,12 @@ Auditní výroky jsou hypotézy k ověření v aktuálním T14 owner checkoutu, 
 - [ ] Vygenerovat API/MCP/client coverage docs z T01/T03; documentovat payload/status/timeout/side effects/backend availability pro každý řádek.
 - [ ] Klientské convenience metody přidat jen pro skutečně chybějící veřejné případy; payload mapping test porovnává s reálným handlerem. Provést usability scénáře: najít caller, získat kvalitní kontext, ověřit změnu, pokračovat v konverzaci, zrušit job, obnovit task a najít důkaz; měřit first-call success, počet potřebných volání a srozumitelnost chyb.
 - [ ] Clean-host Windows/Linux install, core-only i podporované optional extras; chybějící Tree-sitter/Whisper/OpenVINO/Serena musí mít přesný doctor výsledek. CodeGraphContext/KuzuDB není Hub runtime ani doctor backend; v dokumentaci může být jen jako samostatný externí nástroj.
-- [x] Config merge dvakrát je idempotentní a zachovává cizí entries; per-host manifest parse + skutečný MCP handshake, kde host dostupný.
-- [x] Změny flags/models/policy/schema promítnout současně do INSTALL_PROMPT a UPDATE_PROMPT, generatoru a generated manifest testů.
+- [ ] Config merge dvakrát je idempotentní a zachovává cizí entries; per-host manifest parse + skutečný MCP handshake, kde host dostupný.
+- [ ] Změny flags/models/policy/schema promítnout současně do INSTALL_PROMPT a UPDATE_PROMPT, generatoru a generated manifest testů.
+
+Synchronizace 2026-10-06: poslední dvě položky dříve označené `[x]` čekají
+znovu na ověření společného integrovaného zdroje. Historické T19 receipts a
+původní stav plánu zůstávají zachované v merge rodičích; nejsou důkazem releasu.
 - [ ] Rollout po doménách s quality/latency comparison a rollback na předchozí kód/config. Durable state před změnou zálohovat; nevracet starý kód proti nekompatibilní DB bez recovery postupu.
 
 **Hotovo:** vydaný balík obsahuje správné závislosti/soubory, docs odpovídají runtime a upgrade je reprodukovatelný.
