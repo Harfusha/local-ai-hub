@@ -776,9 +776,12 @@ def _extract_registered_http(tree: ast.Module, path: str) -> list[dict[str, Any]
     post_registry = assignments.get("POST_ROUTE_REGISTRY")
     if isinstance(post_registry, (ast.Tuple, ast.List)):
         for entry in post_registry.elts:
-            if not isinstance(entry, (ast.Tuple, ast.List)) or len(entry.elts) != 2:
+            if isinstance(entry, ast.Call) and _call_name(entry.func) == "RouteRule" and len(entry.args) >= 2:
+                route_id, paths = entry.args[:2]
+            elif isinstance(entry, (ast.Tuple, ast.List)) and len(entry.elts) == 2:
+                route_id, paths = entry.elts
+            else:
                 continue
-            route_id, paths = entry.elts
             if not isinstance(route_id, ast.Constant) or not isinstance(route_id.value, str):
                 continue
             if isinstance(paths, ast.Call) and _call_name(paths.func) == "frozenset" and paths.args:
