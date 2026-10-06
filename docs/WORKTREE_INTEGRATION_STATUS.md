@@ -85,6 +85,27 @@ The stash remains intact. Missing checkout registration/provenance still
 requires reconciliation; source integration coverage of the archived patch
 must be checked before cleanup.
 
+Recovered T11 patch coverage check: `git apply --reverse --check
+--whitespace=nowarn handoff/t11-master-b947d76f-owned.patch` returned exit 1
+with mismatches in all eight owned paths. This is not proof that changes are
+missing: current master can contain newer overlapping changes. A hunk-level
+comparison remains required; no archived source was blindly applied.
+
+Additional original untracked content checkpointed, not yet integrated:
+
+| Checkout | Preservation commit | Content |
+| --- | --- | --- |
+| t16-orchestration-resume | `22f116cd` | Two original patches, work_fencing source, junction recovery test |
+| t14-render-order | `ed6b2dbe` | Original render-order regression test |
+| t14-snippet-isolated | `ee8ba503` | Original isolated snippet-budget test |
+| t13-operational-mode-resume-20261004 | `b0ade36a` | Original operational_mode source and test |
+| t17-vision-refactor | `fad072f3` | Original vision decomposition preimage map |
+| t06-write-set-resume | `1145d19d` | Original durability regression note and patch |
+
+These commits preserve unfinished work without product edits. Each still
+needs its manually reconciled master merge and later acceptance; no claim of
+functional completion follows from preservation.
+
 ## Rules for the remainder
 
 - Preserve each original HEAD and dirty tracked content in a checkpoint ref
