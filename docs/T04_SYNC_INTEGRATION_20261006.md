@@ -17,7 +17,8 @@ Token-economizer setup script was missing; no packages or PATH changes made.
   source/tests under `src/local_ai_hub` and `tests` (33 files).
 - Existing untracked handoff Markdown documents are committed with this note.
   Historical receipts remain historical, not current acceptance proof.
-- Other artifact/patch/manifest files remain preserved in place, untracked.
+- Remaining original patches, manifests, receipts, overlay source/tests and
+  historical test logs are committed in the final preservation commit.
   Runtime state, pytest temporary directories and caches are not staged.
 - No stash, cleanup, hard reset, push, new checkout, or master ref writes.
 
@@ -76,3 +77,26 @@ whitespace; no unrelated formatting changes made.
 Latest-master merges and final ancestry verified at handoff. Exact final HEAD
 and changed-file list: `git rev-parse HEAD`, `git diff --name-only master HEAD`.
 This note is itself part of the handoff commit.
+
+## Byte preservation and exclusions
+
+Master start pinned at `fbc965f568105e1a8d3dc03ae4c9da5531a9617e`;
+already synchronized through `f8ba97fe9eafa38810dbbbc3c4184800da7bafcd`.
+Later master movement belongs to the orchestrator; no more moving-head merges.
+
+`handoff/t04-preservation-integration-20261006-v2/manifest.json` enumerates
+142 raw snapshot entries with SHA-256, archive hash and all 853 excluded paths.
+Matching `original-bytes.zip` was verified entry-by-entry before staging.
+It preserves remaining original untracked handoff/receipt bytes without Git
+line-ending conversion, including ignored historical test logs. Earlier raw
+archive and manifest are preserved too. The pre-merge source checkpoint is a
+Git tree; no claim that Git-normalized source blobs preserve original mixed EOL.
+
+Exclusions retained in place: `.pytest_cache/`, `.serena/` backend state/local
+configuration, source/tests/tools `__pycache__/`, and generated
+`artifacts/t04-sync-pytest-20261006/` plus
+`artifacts/t04-sync-pytest-followup-20261006/` test state. Empty
+`artifacts/t04-sync-temp/` remains on disk. Exact file paths are in the manifest.
+The two targeted XML receipts are committed; temporary databases are excluded.
+
+Final raw preservation ref: `checkpoint/t04-integration-preservation-20261006`.
