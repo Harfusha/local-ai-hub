@@ -195,7 +195,7 @@ def test_rollout_docs_state_adapter_multiplicity_root_and_transport_gates() -> N
         assert "release" in normalized and "blocked until t03 rejects rootless" in normalized
 
     for prompt in (install_prompt, update_prompt):
-        assert "full T04 `request_not_sent` classification is not integrated" in prompt
+        assert "Pinned source includes operational modes and client transport safeguards." in prompt
         assert "`outcome_unknown` means delivery may have occurred and must never be replayed automatically" in prompt
         assert "Service registration is external to the file snapshot; reconcile that same service once" in prompt
     assert "reconcile the existing single user-service registration with the matching restored release" in operations.lower()
