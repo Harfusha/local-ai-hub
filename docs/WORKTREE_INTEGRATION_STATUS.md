@@ -247,6 +247,20 @@ remain preserved. Generated runtime/cache data is not committed.
 
 ### Preservation rule
 
+T17 vision-refactor packet `04bbeb19` is integrated as `0aebfbd9`.
+Reviewed preservation of process safety, cancellation/preflight checks, bounded
+prompt/output, evidence-grounded DOM facts and current T14 retrieval. Fresh
+root command `python -B -m pytest -q -p no:cacheprovider
+tests/test_vision_contracts.py tests/test_vision_service.py
+tests/test_http_vision_routes.py --tb=short --maxfail=5`: 139 passed, 4 failed
+in 30.42 seconds. Remaining: old bbox interpretation/error expectation,
+PNG fixture lacks IHDR, parsed tuple fixture lacks image dimensions, golden
+response differs on empty artifact IDs/observation_sources. Owner's nine
+process/transcription failures remain open. Source process_utils is unchanged
+against owner's pinned master; no process-safety weakening. Exact receipts and
+historical original handoff: `handoff/t17-vision-refactor-sync-20261006.md`.
+This is preserved unfinished integration, not vision/runtime/release acceptance.
+
 | Additional checkout | Root integration | Verification and unfinished acceptance |
 | --- | --- | --- |
 | t13-operational-mode-resume-20261004 | `f5794721` | Current locked/revisioned mode protocol retained; historical incompatible source/test files preserved verbatim in committed integration archive and checkpoint. Early inference/preprocess/background gates ported to current protocol. Exact check: `python -B -m pytest -q -p no:cacheprovider tests/test_sync_opmode_resume.py tests/test_operational_mode.py tests/test_tiered_ollama_runtime.py --tb=short --maxfail=4`: 39 passed in 8.70 s. Live VRAM release and unload end-to-end deadlines remain unverified. See `docs/integration/T13-OPMODE-RESUME-SYNC-20261006.md`. |
