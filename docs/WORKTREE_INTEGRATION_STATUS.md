@@ -247,6 +247,19 @@ remain preserved. Generated runtime/cache data is not committed.
 
 ### Preservation rule
 
+| Additional checkout | Root integration | Verification and unfinished acceptance |
+| --- | --- | --- |
+| t13-operational-mode-resume-20261004 | `f5794721` | Current locked/revisioned mode protocol retained; historical incompatible source/test files preserved verbatim in committed integration archive and checkpoint. Early inference/preprocess/background gates ported to current protocol. Exact check: `python -B -m pytest -q -p no:cacheprovider tests/test_sync_opmode_resume.py tests/test_operational_mode.py tests/test_tiered_ollama_runtime.py --tb=short --maxfail=4`: 39 passed in 8.70 s. Live VRAM release and unload end-to-end deadlines remain unverified. See `docs/integration/T13-OPMODE-RESUME-SYNC-20261006.md`. |
+| t18-candidate-2b33602 | `70059e18`, root merge `5538bd11` | Retained current ordered state, error redaction, auth and T14 behavior. Fresh root `python -B -m pytest -q -p no:cacheprovider tests/test_telemetry_privacy_t18.py tests/test_telemetry_self_accounting.py tests/test_status_snapshot_quality.py --tb=short --maxfail=4`: 29 passed in 3.06 s. Owner UI/status 164 passed, but trace paging backend, SSE expectations and remote-mode contracts remain unfinished. See `docs/T18_SYNC_INTEGRATION_20261006.md`. |
+| t16-e2e-recovery-20261004 | `387ecbdf`, root merge `1fa8c6f1` | Retained strict receipt provenance, server-derived memory identity, stable startup lock inode and worktree owner-ID forwarding. Fresh root `python -B -m pytest -q -p no:cacheprovider tests/test_client_start_lock_owner.py tests/test_worktree_release_ownership.py --tb=short --maxfail=3`: 7 passed in 4.68 s. Owner broader checks 110 passed, 20 failed, 1 skipped; receipt/policy fixtures, lease DB, MCP schemas and search fallback remain unfinished. See `docs/T16_E2E_SYNC_INTEGRATION_20261006.md`. |
+
+Ready packets still pending integration review: T10 resume `e4c14ded` (owner
+78 passed, 5 skipped; nine JSON artifacts retained outside commit require
+classification), historical 55ed `b99482f8` (owner 129 passed, 2 failed;
+inventory 51 passed, 668 rows, zero drift). These are not root-integrated or
+release accepted. Independent workers own broad 069d, T17 vision refactor,
+T15 command config, T18 status dashboard and T16 orchestration recovery.
+
 T17 historical acceptance checkout is synchronized and integrated as
 `3efc1735`, retaining tracked checkpoint `5b16828e` and previously untracked
 Gemini audit specification committed as `67656de3`. Manual transcription test
