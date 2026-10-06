@@ -440,12 +440,41 @@ def test_unknown_legacy_layout_fails_closed_without_changing_database_bytes(tmp_
         connection.commit()
     before = _sqlite_file_snapshot(db_path)
 
-    with pytest.raises(RuntimeError) as exc_info:
-        AgentStateStore(db_path).events(event.stream_id)
+    from local_ai_hub.sqlite_support import DurableSchemaMismatchError
 
-    diagnostic = str(exc_info.value).casefold().replace("_", " ")
-    assert "unsupported" in diagnostic
-    assert "agent state schema" in diagnostic
+    state = AgentStateStore(db_path)
+    mismatch = "unsupported agent_state schema object definition: table agent_events"
+    with pytest.raises(DurableSchemaMismatchError) as internal_exc:
+        state._preflight_schema_read_only()
+    internal = internal_exc.value
+    assert internal.mismatches == (mismatch,)
+    assert str(internal.__cause__) == mismatch
+    assert internal.recovery_required is True
+    assert internal.database_path == db_path
+    assert internal.backup_path is not None
+    assert internal.backup_path.is_file()
+    assert _sqlite_file_snapshot(db_path) == before
+
+    page = state.event_page(event.stream_id)
+    assert page["success"] is False
+    assert page["events"] == []
+    assert page["error"] == {
+        "code": "event_page_unavailable",
+        "message": "Event page could not be read.",
+    }
+    public = json.dumps(page)
+    for private_detail in (str(db_path), str(internal.backup_path), mismatch):
+        assert private_detail not in public
+        assert json.dumps(private_detail)[1:-1] not in public
+    assert "schema-mismatch-" not in public
+    assert "recovery_required" not in public
+    assert "backup" not in public
+    assert _sqlite_file_snapshot(db_path) == before
+
+    with pytest.raises(RuntimeError) as exc_info:
+        state.events(event.stream_id)
+
+    assert str(exc_info.value) == "event_page_unavailable: Event page could not be read."
     assert db_path.is_file()
     assert _sqlite_file_snapshot(db_path) == before
 
