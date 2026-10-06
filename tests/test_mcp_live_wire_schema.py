@@ -126,9 +126,10 @@ def test_stdio_handshake_publishes_all_registry_input_and_output_schemas() -> No
     assert set(wire_tools) == set(OPERATION_CONTRACTS)
 
     for name in OPERATION_CONTRACTS:
-        assert wire_tools[name]["inputSchema"] == operation_tool_input_schema(
-            name, mcp_server.FEATURES
-        ), name
+        expected_input = mcp_server._input_schema_with_action_aliases(
+            name, operation_tool_input_schema(name, mcp_server.FEATURES)
+        )
+        assert wire_tools[name]["inputSchema"] == expected_input, name
         assert wire_tools[name]["outputSchema"] == operation_tool_output_schema(
             name, mcp_server.FEATURES
         ), name
