@@ -3,11 +3,14 @@ from __future__ import annotations
 from .json_utils import dumps as json_dumps
 
 import json
+import inspect
+import hashlib
+import sqlite3
 import threading
 import time
 import uuid
 from contextlib import closing
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping
@@ -15,6 +18,8 @@ from typing import Any, Mapping
 from .agent_events import AgentEvent, AgentStateStore
 from .agent_identity import AgentScope, ScopeContext
 from .sqlite_support import connect_sqlite, retry_busy
+
+MAX_TRAINING_DATASET_BYTES = 16 * 1024 * 1024
 
 
 class CompletionGateError(RuntimeError):
@@ -211,6 +216,121 @@ class TaskState:
         }
 
 
+def _validate_checkpoint_memory_context(
+    current_state_data: Mapping[str, Any],
+    requested_state_data: Mapping[str, Any],
+) -> None:
+    """Prevent checkpoint clients from replacing server-injected memory."""
+    if "memory_context" in requested_state_data and (
+        "memory_context" not in current_state_data
+        or requested_state_data["memory_context"] != current_state_data["memory_context"]
+    ):
+        raise CompletionGateError(
+            "Cannot checkpoint: memory_context is server-managed and cannot be modified"
+        )
+    if "_agent_task_scope" in requested_state_data and (
+        "_agent_task_scope" not in current_state_data
+        or requested_state_data["_agent_task_scope"] != current_state_data["_agent_task_scope"]
+    ):
+        raise ValueError("Cannot checkpoint: _agent_task_scope is server-managed and cannot be modified")
+    if "repo_root" in requested_state_data and (
+        requested_state_data["repo_root"] != current_state_data.get("repo_root")
+    ):
+        raise ValueError("Cannot checkpoint: repo_root is server-managed and cannot be modified")
+    current_worktree = current_state_data.get("worktree")
+    requested_worktree = requested_state_data.get("worktree")
+    if isinstance(requested_worktree, Mapping):
+        requested_root = requested_worktree.get("repo_root")
+        current_root = current_worktree.get("repo_root") if isinstance(current_worktree, Mapping) else None
+        if requested_root != current_root and (requested_root is not None or current_root is not None):
+            raise ValueError("Cannot checkpoint: worktree repo_root is server-managed and cannot be modified")
+
+
+def _canonical_repository_root(value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValueError("repo_root is required")
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        raise ValueError("repo_root must be absolute")
+    try:
+        canonical = path.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise ValueError("repo_root must resolve to an existing directory") from exc
+    if not canonical.is_dir():
+        raise ValueError("repo_root must resolve to an existing directory")
+    return str(canonical)
+
+
+def _tenant_scope_key(tenant: Any) -> str:
+    value = str(tenant or "").strip()
+    if not value:
+        raise ValueError("authenticated tenant is required")
+    return hashlib.sha256(f"agent-task-memory-tenant\\0{value}".encode("utf-8")).hexdigest()
+
+
+def _task_scope_values(task: "TaskState") -> tuple[str, str]:
+    state_data = task.checkpoint.state_data
+    scope = state_data.get("_agent_task_scope")
+    if not isinstance(scope, Mapping) or scope.get("version") != 1:
+        return "", ""
+    root = scope.get("repo_root")
+    tenant_key = scope.get("tenant_key")
+    try:
+        canonical_root = _canonical_repository_root(root)
+    except ValueError:
+        return "", ""
+    key = str(tenant_key or "").strip().lower()
+    if len(key) != 64 or any(ch not in "0123456789abcdef" for ch in key):
+        return "", ""
+    return canonical_root, key
+
+
+def _task_matches_scope(
+    task: "TaskState", repo_root: str, tenant_key: str, task_id: str | None = None
+) -> bool:
+    if task_id and task.task_id != task_id:
+        return False
+    task_root, task_tenant_key = _task_scope_values(task)
+    return task_root == repo_root and task_tenant_key == tenant_key
+
+
+def _preserve_checkpoint_memory_state(
+    current_state_data: Mapping[str, Any],
+    checkpoint: TaskCheckpoint,
+    *,
+    allow_server_memory_refresh: bool = False,
+) -> TaskCheckpoint:
+    if not allow_server_memory_refresh:
+        _validate_checkpoint_memory_context(current_state_data, checkpoint.state_data)
+    merged_state_data = dict(checkpoint.state_data)
+    for key in (
+        "memory_context",
+        "memory_audit",
+        "memory_audit_history",
+        "_agent_task_scope",
+        "repo_root",
+    ):
+        if key not in merged_state_data and key in current_state_data:
+            merged_state_data[key] = current_state_data[key]
+    current_worktree = current_state_data.get("worktree")
+    merged_worktree = merged_state_data.get("worktree")
+    if isinstance(current_worktree, Mapping) and current_worktree.get("repo_root"):
+        preserved_worktree = dict(merged_worktree) if isinstance(merged_worktree, Mapping) else dict(current_worktree)
+        preserved_worktree["repo_root"] = current_worktree["repo_root"]
+        merged_state_data["worktree"] = preserved_worktree
+    if merged_state_data == dict(checkpoint.state_data):
+        return checkpoint
+    return TaskCheckpoint(
+        phase=checkpoint.phase,
+        next_action=checkpoint.next_action,
+        affected_paths=checkpoint.affected_paths,
+        evidence_ids=checkpoint.evidence_ids,
+        blockers=checkpoint.blockers,
+        state_data=merged_state_data,
+    )
+
+
 class TaskStore:
     def __init__(
         self,
@@ -222,12 +342,571 @@ class TaskStore:
         self.state_store = state_store
         self.default_heartbeat_ttl = float(default_heartbeat_ttl)
         self.policy_engine = policy_engine
+        self.verification_store: Any | None = None
+        self.memory_store: Any | None = None
+        self.memory_context_compiler: Any | None = None
+        self.incident_store: Any | None = None
         self._lock = threading.RLock()
         self._initialized = False
         self._init_projection_table()
 
     def set_policy_engine(self, policy_engine: Any) -> None:
         self.policy_engine = policy_engine
+
+    def set_verification_store(self, verification_store: Any) -> None:
+        self.verification_store = verification_store
+
+    def set_memory_adoption(
+        self,
+        *,
+        memory_store: Any,
+        context_compiler: Any,
+        incident_store: Any | None = None,
+    ) -> None:
+        self.memory_store = memory_store
+        self.memory_context_compiler = context_compiler
+        self.incident_store = incident_store
+
+    @staticmethod
+    def _canonical_memory_root(value: Any) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        try:
+            return str(Path(raw).expanduser().resolve(strict=False)).replace("\\", "/").casefold()
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return ""
+
+    @staticmethod
+    def _memory_token_count(value: str) -> int:
+        return max(1, len(value.strip()) // 4)
+
+    def _task_memory_context(
+        self,
+        task_id: str,
+        contract: GoalContract,
+        context: ScopeContext,
+        *,
+        root_override: str = "",
+        previous: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        compiler = self.memory_context_compiler
+        memory_store = self.memory_store
+        if compiler is None or memory_store is None:
+            return None
+        try:
+            from .agent_context import ContextRequest
+            from .trace_context import current as current_trace_context
+
+            trace_tenant = str(current_trace_context().get("tenant", "") or "").strip()
+            tenant = trace_tenant
+            root = str(root_override or context.repository_id or "").strip()
+            coordination_id = ""
+            if root:
+                try:
+                    from .project_config import resolve_project_context
+
+                    project = resolve_project_context(
+                        root, Path(self.state_store.db_path).parent
+                    )
+                    coordination_id = str(project.coordination_id or "").strip()
+                except Exception:
+                    # Failed or unavailable identity resolution keeps task
+                    # adoption scoped to this physical worktree.
+                    coordination_id = ""
+            tenant_key = hashlib.sha256(
+                f"agent-task-memory-tenant\\0{tenant}".encode("utf-8")
+            ).hexdigest() if tenant else ""
+            old_tenant_key = str((previous or {}).get("tenant_key", "") or "")
+            warnings: list[dict[str, str]] = []
+            if previous is not None and old_tenant_key and old_tenant_key != tenant_key:
+                return {
+                    "schema_version": 1,
+                    "tenant_key": tenant_key,
+                    "instruction": "Memory is advisory. Cite used memory IDs in the next checkpoint; otherwise record not_used_reason. Verify volatile facts against current source before relying on them.",
+                    "items": [],
+                    "warnings": [{"code": "memory_tenant_mismatch"}],
+                    "estimated_tokens": 0,
+                }
+
+            request = ContextRequest(
+                task_id=task_id,
+                token_budget=512,
+                root=root,
+                tenant=tenant,
+                session_id=context.session_id,
+                clone_id=context.clone_id,
+                worktree_id=context.worktree_id,
+                branch=context.branch,
+                repository_id=context.repository_id,
+                coordination_id=coordination_id,
+            )
+            started = time.monotonic()
+            compiled = compiler.compile(request)
+            if time.monotonic() - started > 1.0:
+                return {
+                    "schema_version": 1,
+                    "tenant_key": tenant_key,
+                    "instruction": "Memory is advisory. Cite used memory IDs in the next checkpoint; otherwise record not_used_reason. Verify volatile facts against current source before relying on them.",
+                    "items": [],
+                    "warnings": [{"code": "memory_lookup_deadline_exceeded"}],
+                    "estimated_tokens": 0,
+                }
+
+            items: list[dict[str, Any]] = []
+            warnings.extend(
+                {"code": str(item.get("code", "memory_context_warning"))[:80]}
+                for item in getattr(compiled, "warnings", ())[:8]
+                if isinstance(item, Mapping) and str(item.get("code", "")).startswith("memory_")
+            )
+            diagnostic_summary = getattr(memory_store, "diagnostic_summary", None)
+            if callable(diagnostic_summary):
+                try:
+                    summary = diagnostic_summary(
+                        id_limit=0,
+                        root=root or None,
+                        tenant=tenant or None,
+                        session_id=context.session_id or None,
+                        clone_id=context.clone_id or None,
+                        worktree_id=context.worktree_id or None,
+                        branch=context.branch or None,
+                    )
+                    for status, data in summary.items():
+                        if isinstance(data, Mapping) and int(data.get("count", 0) or 0) > 0:
+                            warnings.append({"code": f"memory_{str(status)[:32]}_skipped"})
+                except Exception:
+                    warnings.append({"code": "memory_diagnostics_unavailable"})
+            find_records = getattr(memory_store, "find", None)
+            if callable(find_records):
+                try:
+                    expired_found = False
+                    queries = [
+                        {"scope": AgentScope.GLOBAL},
+                        {
+                            "scope": AgentScope.REPOSITORY,
+                            "scope_id": root or None,
+                            "root": root or None,
+                            "tenant": tenant or None,
+                        },
+                    ]
+                    for query in queries:
+                        for status in ("active", "confirmed"):
+                            records = find_records(
+                                **query,
+                                status=status,
+                                include_expired=True,
+                                semantic=False,
+                                limit=8,
+                            )
+                            for record in records:
+                                expires_at = getattr(record, "expires_at", None)
+                                provenance = getattr(record, "provenance", {})
+                                if expires_at is None or float(expires_at) > time.time():
+                                    continue
+                                if not isinstance(provenance, Mapping):
+                                    continue
+                                record_tenant = str(provenance.get("tenant", "") or "").strip()
+                                if record_tenant and record_tenant != tenant:
+                                    continue
+                                record_root = provenance.get("root") or provenance.get("repository_root")
+                                if record_root and root and self._canonical_memory_root(record_root) != self._canonical_memory_root(root):
+                                    continue
+                                if record_root and not root:
+                                    continue
+                                expired_found = True
+                                break
+                            if expired_found:
+                                break
+                        if expired_found:
+                            break
+                    if expired_found:
+                        warnings.append({"code": "memory_expired_skipped"})
+                except Exception:
+                    warnings.append({"code": "memory_expiry_check_unavailable"})
+            instruction = (
+                "Memory is advisory. Cite used memory IDs in the next checkpoint; "
+                "otherwise record not_used_reason. Verify volatile facts against current source before relying on them."
+            )
+            token_budget = 512
+            used_tokens = self._memory_token_count(instruction)
+            elements = getattr(compiled, "elements", ())
+            compiled_memory_ids = {
+                str(getattr(element, "element_id", "") or "").strip()
+                for element in elements
+                if getattr(element, "source_kind", "") == "memory_record"
+            }
+            scoped_records_by_id: dict[str, Any] = {}
+            if compiled_memory_ids:
+                find_for_context = getattr(memory_store, "find_for_context", None)
+                if callable(find_for_context):
+                    try:
+                        scoped_records = find_for_context(
+                            root=root,
+                            task_id=task_id,
+                            tenant=tenant,
+                            session_id=context.session_id,
+                            clone_id=context.clone_id,
+                            worktree_id=context.worktree_id,
+                            branch=context.branch,
+                            limit=20,
+                        )
+                        scoped_records_by_id = {
+                            str(getattr(record, "record_id", "") or "").strip(): record
+                            for record in scoped_records
+                            if str(getattr(record, "record_id", "") or "").strip()
+                            in compiled_memory_ids
+                        }
+                    except Exception:
+                        warnings.append({"code": "memory_scoped_lookup_unavailable"})
+                else:
+                    warnings.append({"code": "memory_scoped_lookup_unavailable"})
+            for element in elements:
+                if getattr(element, "source_kind", "") != "memory_record" or len(items) >= 5:
+                    continue
+                record_id = str(getattr(element, "element_id", "") or "").strip()
+                if not record_id:
+                    continue
+                record = scoped_records_by_id.get(record_id)
+                if record is None:
+                    warnings.append({"code": "memory_record_unavailable"})
+                    continue
+                try:
+                    status = getattr(getattr(record, "status", ""), "value", getattr(record, "status", ""))
+                    scope = getattr(getattr(record, "scope", ""), "value", getattr(record, "scope", ""))
+                    provenance = record.provenance
+                    if not isinstance(provenance, Mapping):
+                        raise ValueError("invalid provenance")
+                    if status not in {"active", "confirmed"}:
+                        continue
+                    expires_at = getattr(record, "expires_at", None)
+                    if expires_at is not None and float(expires_at) <= time.time():
+                        continue
+                    sensitivity = str(getattr(record, "sensitivity", "normal") or "normal").strip().lower()
+                    if sensitivity not in {"normal", "low", "public"}:
+                        continue
+                    record_tenant = str(provenance.get("tenant", "") or "").strip()
+                    if scope == "global":
+                        if record_tenant and record_tenant != tenant:
+                            continue
+                    else:
+                        if (tenant and record_tenant != tenant) or (not tenant and record_tenant):
+                            continue
+                        expected_scope_ids = {
+                            "repository": root,
+                            "clone": context.clone_id,
+                            "worktree": context.worktree_id,
+                            "branch": context.branch,
+                            "task": context.task_id,
+                            "session": context.session_id,
+                        }
+                        expected_scope_id = str(expected_scope_ids.get(str(scope), "") or "")
+                        record_scope_id = str(getattr(record, "scope_id", "") or "")
+                        record_root = provenance.get("root") or provenance.get("repository_root")
+                        effective_scope_id = record_scope_id or str(record_root or "")
+                        if not expected_scope_id or (
+                            scope == "repository"
+                            and self._canonical_memory_root(expected_scope_id)
+                            != self._canonical_memory_root(effective_scope_id)
+                        ) or (scope != "repository" and expected_scope_id != record_scope_id):
+                            continue
+                    record_root = provenance.get("root") or provenance.get("repository_root")
+                    if record_root and (
+                        not root
+                        or self._canonical_memory_root(record_root) != self._canonical_memory_root(root)
+                    ):
+                        continue
+                    if scope == "repository" and not root:
+                        continue
+                    content = str(getattr(element, "content", "") or "").strip()
+                    remaining_tokens = token_budget - used_tokens
+                    if not content or remaining_tokens <= 0:
+                        break
+                    max_chars = remaining_tokens * 4
+                    if len(content) > max_chars:
+                        content = content[:max_chars].rstrip()
+                    item_tokens = self._memory_token_count(content)
+                    if item_tokens > remaining_tokens:
+                        continue
+                    evidence_ids = [str(value)[:160] for value in tuple(getattr(record, "evidence_ids", ()) or ())[:8]]
+                    safe_provenance: dict[str, Any] = {"evidence_ids": evidence_ids} if evidence_ids else {}
+                    revision = provenance.get("repository_revision")
+                    if isinstance(revision, str) and len(revision) <= 128:
+                        safe_provenance["repository_revision"] = revision
+                    version = provenance.get("version") or revision or getattr(record, "updated_at", "")
+                    items.append({
+                        "id": record_id,
+                        "origin": "memory_store",
+                        "content": content,
+                        "source": str(getattr(record, "source", "") or "")[:64],
+                        "scope": str(scope)[:32],
+                        "scope_id": str(getattr(record, "scope_id", "") or "")[:256],
+                        "status": str(status),
+                        "version": str(version)[:128],
+                        "validity": {
+                            "created_at": float(getattr(record, "created_at", 0.0) or 0.0),
+                            "updated_at": float(getattr(record, "updated_at", 0.0) or 0.0),
+                            "expires_at": float(expires_at) if expires_at is not None else None,
+                        },
+                        "confidence": float(getattr(record, "confidence", 0.0) or 0.0),
+                        "volatile": bool(provenance.get("volatile", False)),
+                        "provenance": safe_provenance,
+                        "estimated_tokens": item_tokens,
+                    })
+                    used_tokens += item_tokens
+                except (AttributeError, TypeError, ValueError, OverflowError):
+                    warnings.append({"code": "memory_record_invalid"})
+
+            incident_store = self.incident_store
+            if root and tenant and incident_store is not None:
+                finder = getattr(incident_store, "find_negative_knowledge", None)
+                if callable(finder):
+                    try:
+                        incidents = finder(contract.goal, limit=3, root=root, tenant=tenant)
+                        for incident in incidents[:3]:
+                            if not isinstance(incident, Mapping):
+                                continue
+                            incident_id = str(incident.get("incident_id", "") or "").strip()
+                            provenance = incident.get("provenance")
+                            if not incident_id or not isinstance(provenance, Mapping):
+                                continue
+                            if not provenance.get("repository_key") or not provenance.get("tenant_key"):
+                                continue
+                            detail = str(incident.get("verified_fix") or incident.get("root_cause") or "").strip()
+                            if not detail:
+                                continue
+                            content = f"[NEGATIVE KNOWLEDGE] {str(incident.get('error_class', ''))[:100]}: {detail[:700]}"
+                            remaining_tokens = token_budget - used_tokens
+                            if remaining_tokens <= 0:
+                                break
+                            content = content[:remaining_tokens * 4].rstrip()
+                            item_tokens = self._memory_token_count(content)
+                            if item_tokens > remaining_tokens:
+                                continue
+                            items.append({
+                                "id": incident_id,
+                                "origin": "incident_store",
+                                "content": content,
+                                "source": "incident_store",
+                                "scope": "repository+tenant",
+                                "scope_id": "",
+                                "status": "active",
+                                "validity": {"updated_at": float(incident.get("updated_at", 0.0) or 0.0), "expires_at": None},
+                                "confidence": float(incident.get("confidence", 0.0) or 0.0),
+                                "volatile": True,
+                                "provenance": dict(provenance),
+                                "estimated_tokens": item_tokens,
+                            })
+                            used_tokens += item_tokens
+                    except Exception:
+                        warnings.append({"code": "negative_knowledge_unavailable"})
+            if not items and not warnings:
+                return None
+            return {
+                "schema_version": 1,
+                "tenant_key": tenant_key,
+                "instruction": instruction,
+                "items": items,
+                "warnings": warnings[:8],
+                "estimated_tokens": used_tokens if items else 0,
+            }
+        except Exception:
+            return {
+                "schema_version": 1,
+                "instruction": "Memory unavailable; continue without memory claims. Cite used memory IDs or record not_used_reason in the next checkpoint.",
+                "items": [],
+                "warnings": [{"code": "memory_context_unavailable"}],
+                "estimated_tokens": 0,
+            }
+
+    @staticmethod
+    def _validate_memory_audit(task: TaskState) -> None:
+        state_data = task.checkpoint.state_data
+        memory_context = state_data.get("memory_context")
+        if not isinstance(memory_context, Mapping):
+            return
+        items = memory_context.get("items")
+        warnings = memory_context.get("warnings")
+        if not isinstance(items, list) or (not items and not warnings):
+            return
+        audit = state_data.get("memory_audit")
+        if not isinstance(audit, Mapping):
+            raise CompletionGateError(
+                "Cannot transition to COMPLETED: memory context requires checkpoint memory_audit"
+            )
+        available_ids = {
+            str(item.get("id", ""))
+            for item in items
+            if isinstance(item, Mapping) and str(item.get("id", "")).strip()
+        }
+        used_ids = audit.get("used_ids", ())
+        if not isinstance(used_ids, (list, tuple)) or any(not isinstance(value, str) for value in used_ids):
+            raise CompletionGateError(
+                "Cannot transition to COMPLETED: memory_audit.used_ids must be a list of IDs"
+            )
+        if not set(used_ids).issubset(available_ids):
+            raise CompletionGateError(
+                "Cannot transition to COMPLETED: memory_audit references unavailable memory IDs"
+            )
+        raw_not_used_reason = audit.get("not_used_reason", "")
+        not_used_reason = raw_not_used_reason.strip() if isinstance(raw_not_used_reason, str) else ""
+        if not used_ids and not not_used_reason:
+            raise CompletionGateError(
+                "Cannot transition to COMPLETED: record used memory IDs or not_used_reason in checkpoint"
+            )
+        volatile_used = {
+            str(item.get("id", ""))
+            for item in items
+            if isinstance(item, Mapping) and item.get("volatile") and str(item.get("id", "")) in used_ids
+        }
+        source_checks = audit.get("source_checks", {})
+        if volatile_used and not isinstance(source_checks, Mapping):
+            raise CompletionGateError(
+                "Cannot transition to COMPLETED: volatile memory requires source_checks"
+            )
+        for record_id in volatile_used:
+            check = source_checks.get(record_id) if isinstance(source_checks, Mapping) else None
+            if not isinstance(check, Mapping):
+                has_current_source = False
+            else:
+                source = str(check.get("source", "") or "").strip()
+                evidence_ids = check.get("evidence_ids", ())
+                has_current_source = bool(source) or (
+                    isinstance(evidence_ids, (list, tuple))
+                    and any(isinstance(value, str) and value.strip() for value in evidence_ids)
+                )
+            if not has_current_source:
+                raise CompletionGateError(
+                    f"Cannot transition to COMPLETED: volatile memory '{record_id}' lacks current-source check"
+                )
+
+    def validate_completion(self, task_id: str) -> TaskState:
+        """Validate persisted completion gates without changing task state."""
+        task = self.get(task_id)
+        if task is None:
+            raise KeyError(f"Task {task_id} not found")
+        self._verify_completion(task)
+        return task
+
+    def _verify_completion(self, task: TaskState) -> None:
+        self._validate_memory_audit(task)
+        if not task.contract.acceptance_criteria:
+            return
+
+        state_data = task.checkpoint.state_data
+        worktree = state_data.get("worktree")
+        repo_root = worktree.get("repo_root") if isinstance(worktree, Mapping) else None
+        if not isinstance(repo_root, (str, Path)) or not str(repo_root).strip():
+            repo_root = state_data.get("repo_root")
+        if not isinstance(repo_root, (str, Path)) or not str(repo_root).strip():
+            context_repo_root = task.context.repository_id
+            if isinstance(context_repo_root, (str, Path)) and str(context_repo_root).strip():
+                try:
+                    if Path(context_repo_root).expanduser().is_dir():
+                        repo_root = context_repo_root
+                except (OSError, TypeError, ValueError):
+                    pass
+        has_repo_root = isinstance(repo_root, (str, Path)) and bool(str(repo_root).strip())
+        repository_revision = str(state_data.get("repository_revision", "") or "").strip()
+        mutation_generation = state_data.get("mutation_generation", 0)
+        if isinstance(mutation_generation, bool) or not isinstance(mutation_generation, int) or mutation_generation < 0:
+            raise CompletionGateError(
+                "Cannot transition to COMPLETED: task mutation_generation is invalid"
+            )
+
+        if has_repo_root:
+            try:
+                from .project_config import resolve_project_context
+
+                project = resolve_project_context(repo_root, Path(self.state_store.db_path).parent)
+                settings = project.settings
+                verification_rules = settings.verification_rules
+                configured_criteria = tuple(settings.commands)
+                if not isinstance(verification_rules, Mapping) or not isinstance(settings.commands, Mapping):
+                    raise ValueError("project verification settings are invalid")
+            except Exception as exc:
+                raise CompletionGateError(
+                    "Cannot transition to COMPLETED: project verification config could not be resolved"
+                ) from exc
+        else:
+            verification_rules = {}
+            configured_criteria = ()
+        acceptance = set(task.contract.acceptance_criteria)
+        active_rules = any(str(key).strip() in acceptance for key in verification_rules)
+
+        verifier = getattr(self, "verification_store", None)
+        if verifier is None:
+            try:
+                from .agent_verification import VerificationStore
+
+                verifier = VerificationStore(self.state_store, task_store=self)
+                self.verification_store = verifier
+            except Exception as exc:
+                raise CompletionGateError(
+                    "Cannot transition to COMPLETED: verification evaluator is unavailable"
+                ) from exc
+
+        completion = getattr(verifier, "completion", None)
+        if not callable(completion):
+            raise CompletionGateError(
+                "Cannot transition to COMPLETED: verification evaluator has no completion method"
+            )
+        try:
+            parameters = inspect.signature(completion).parameters
+            supports_kwargs = any(
+                parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters.values()
+            )
+            supports_project_rules = {
+                "current_revision",
+                "current_mutation_generation",
+                "verification_rules",
+                "configured_criteria",
+            }.issubset(parameters)
+            if supports_project_rules:
+                if active_rules and not repository_revision:
+                    raise CompletionGateError(
+                        "Cannot transition to COMPLETED: trusted repository_revision is unavailable"
+                    )
+                result = completion(
+                    task.task_id,
+                    current_revision=repository_revision,
+                    current_mutation_generation=mutation_generation,
+                    verification_rules=verification_rules,
+                    configured_criteria=configured_criteria,
+                )
+            else:
+                if active_rules:
+                    raise CompletionGateError(
+                        "Cannot transition to COMPLETED: verification evaluator does not support project rules"
+                    )
+                legacy_kwargs = {}
+                if repository_revision and ("current_revision" in parameters or supports_kwargs):
+                    legacy_kwargs["current_revision"] = repository_revision
+                result = completion(task.task_id, **legacy_kwargs)
+        except CompletionGateError:
+            raise
+        except Exception as exc:
+            raise CompletionGateError(
+                f"Cannot transition to COMPLETED: verification evaluator failed ({type(exc).__name__})"
+            ) from exc
+
+        complete = result.get("complete", False) if isinstance(result, Mapping) else getattr(result, "complete", False)
+        if complete is not True:
+            unsatisfied = (
+                result.get("unsatisfied_criteria", ())
+                if isinstance(result, Mapping)
+                else getattr(result, "unsatisfied_criteria", ())
+            )
+            stale = result.get("stale_criteria", ()) if isinstance(result, Mapping) else getattr(result, "stale_criteria", ())
+            details = []
+            if unsatisfied:
+                details.append(f"unsatisfied={tuple(unsatisfied)}")
+            if stale:
+                details.append(f"stale={tuple(stale)}")
+            suffix = f" ({'; '.join(details)})" if details else ""
+            raise CompletionGateError(
+                f"Cannot transition to COMPLETED: verification evaluator rejected completion{suffix}"
+            )
 
     def _db_path_available(self) -> bool:
         """Return whether the projection database path is usable.
@@ -255,6 +934,23 @@ class TaskStore:
             self.state_store._ensure_schema()
             def _setup() -> None:
                 with closing(connect_sqlite(self.state_store.db_path)) as con:
+                    from .sqlite_support import validate_durable_schema
+
+                    validate_durable_schema(
+                        con,
+                        self.state_store.db_path,
+                        {
+                            "agent_tasks_projection": [
+                                ("task_id", "TEXT", 0, 1), ("status", "TEXT", 1, 0),
+                                ("owner", "TEXT", 1, 0), ("lease_id", "TEXT", 1, 0),
+                                ("contract", "TEXT", 1, 0), ("context", "TEXT", 1, 0),
+                                ("checkpoint", "TEXT", 1, 0), ("receipts", "TEXT", 1, 0),
+                                ("heartbeat_expires_at", "REAL", 1, 0),
+                                ("created_at", "REAL", 1, 0), ("updated_at", "REAL", 1, 0),
+                            ],
+                        },
+                        required_if_event_kinds={"agent_tasks_projection": ("task.%",)},
+                    )
                     con.execute(
                         """
                         CREATE TABLE IF NOT EXISTS agent_tasks_projection (
@@ -309,6 +1005,15 @@ class TaskStore:
         now = time.time()
         initial_status = TaskStatus.PLANNED
         initial_sd: dict[str, Any] = {}
+        canonical_root = _canonical_repository_root(repo_root) if repo_root else ""
+        try:
+            from .trace_context import current as current_trace_context
+
+            authenticated_tenant = str(current_trace_context().get("tenant", "") or "").strip()
+        except Exception:
+            authenticated_tenant = ""
+        if canonical_root:
+            initial_sd["repo_root"] = canonical_root
 
         if auto_worktree:
             try:
@@ -317,8 +1022,24 @@ class TaskStore:
                 wt_res = create_git_worktree(r_root, branch_name=f"hub/task-{t_id}")
                 if wt_res.get("success"):
                     initial_sd["worktree"] = wt_res
+                    if not canonical_root and wt_res.get("repo_root"):
+                        canonical_root = _canonical_repository_root(wt_res["repo_root"])
+                        initial_sd["repo_root"] = canonical_root
             except Exception:
                 pass
+
+        if canonical_root and authenticated_tenant:
+            initial_sd["_agent_task_scope"] = {
+                "version": 1,
+                "repo_root": canonical_root,
+                "tenant_key": _tenant_scope_key(authenticated_tenant),
+            }
+
+        memory_context = self._task_memory_context(
+            t_id, contract, context, root_override=canonical_root or repo_root
+        )
+        if memory_context is not None:
+            initial_sd["memory_context"] = memory_context
 
         initial_state = TaskState(
             task_id=t_id,
@@ -412,15 +1133,116 @@ class TaskStore:
 
         return retry_busy(_fetch_count, retries=5, base_delay_seconds=0.02)
 
+    def _run_ordered_task_write(
+        self,
+        write: Any,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> Any:
+        connection_options: dict[str, Any] = {"isolation_level": None}
+        if timeout_seconds is not None:
+            connection_options["timeout_seconds"] = timeout_seconds
+        con = connect_sqlite(self.state_store.db_path, **connection_options)
+        try:
+            with self.state_store.ordered_event_publication(con) as publish_committed:
+                result, events = retry_busy(
+                    lambda: write(con), retries=5, base_delay_seconds=0.02
+                )
+                publish_committed(events)
+                return result
+        finally:
+            con.close()
+
     def add_verification_receipt(self, task_id: str, criterion: str, receipt_id: str) -> TaskState:
-        current = self.get(task_id)
-        if not current:
+        if not self._db_path_available():
+            raise RuntimeError("agent task storage is unavailable")
+        self._init_projection_table()
+        def _write(con: sqlite3.Connection) -> tuple[TaskState | None, list[AgentEvent]]:
+            try:
+                con.execute("BEGIN IMMEDIATE")
+                state, event = self.add_verification_receipt_in_transaction(
+                    con, task_id, criterion, receipt_id
+                )
+                con.execute("COMMIT")
+                return state, [event] if event is not None else []
+            except Exception:
+                try:
+                    con.execute("ROLLBACK")
+                except Exception:
+                    pass
+                raise
+
+        state = self._run_ordered_task_write(_write)
+        if state is None:
             raise KeyError(f"Task {task_id} not found")
-        if current.verification_receipts.get(criterion) == receipt_id:
-            return current
-        new_receipts = dict(current.verification_receipts)
-        new_receipts[criterion] = receipt_id
-        now = time.time()
+        return state
+
+    def add_verification_receipt_in_transaction(
+        self,
+        con: sqlite3.Connection,
+        task_id: str,
+        criterion: str,
+        receipt_id: str,
+    ) -> tuple[TaskState | None, AgentEvent | None]:
+        """Update task receipt projection and event using caller's SQLite transaction."""
+        if not bool(getattr(con, "in_transaction", False)):
+            raise RuntimeError(
+                "add_verification_receipt_in_transaction requires a caller-owned transaction"
+            )
+        row = con.execute(
+            "SELECT * FROM agent_tasks_projection WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+        if not row:
+            return None, None
+        current = self._row_to_state(row)
+        event = AgentEvent.create(
+            stream_id=f"task:{task_id}",
+            kind="task.verified",
+            payload={"criterion": criterion, "receipt_id": receipt_id},
+            idempotency_key=f"ver_{task_id}_{criterion}_{receipt_id}",
+            actor="verifier",
+        )
+        existing = con.execute(
+            "SELECT seq FROM agent_events WHERE stream_id = ? AND idempotency_key = ?",
+            (event.stream_id, event.idempotency_key),
+        ).fetchone()
+        current_receipt = current.verification_receipts.get(criterion)
+        if existing and current_receipt not in (None, receipt_id):
+            appended = self.state_store.append_in_transaction(con, event, strict_idempotency=True)
+            if appended.error or appended.event is None:
+                raise RuntimeError(appended.error or "task receipt replay returned no persisted event")
+            return current, None
+        if current_receipt == receipt_id:
+            appended = self.state_store.append_in_transaction(con, event, strict_idempotency=True)
+            if appended.error or appended.event is None:
+                raise RuntimeError(appended.error or "task receipt append returned no persisted event")
+            return current, appended.event if not appended.duplicate else None
+
+        updated_receipts = dict(current.verification_receipts)
+        updated_receipts[criterion] = receipt_id
+        updated_at = time.time()
+        cur = con.execute(
+            """
+            UPDATE agent_tasks_projection
+            SET receipts = ?, updated_at = ?
+            WHERE task_id = ? AND receipts = ? AND updated_at = ?
+            """,
+            (
+                json_dumps(updated_receipts),
+                updated_at,
+                current.task_id,
+                json_dumps(current.verification_receipts),
+                current.updated_at,
+            ),
+        )
+        if cur.rowcount != 1:
+            raise ConcurrentTaskUpdateError(
+                f"Task {task_id} changed while recording verification receipt"
+            )
+        appended = self.state_store.append_in_transaction(con, event, strict_idempotency=True)
+        if appended.error or appended.event is None:
+            raise RuntimeError(appended.error or "task receipt append returned no persisted event")
         updated = TaskState(
             task_id=current.task_id,
             status=current.status,
@@ -429,19 +1251,12 @@ class TaskStore:
             owner=current.owner,
             lease_id=current.lease_id,
             created_at=current.created_at,
-            updated_at=now,
+            updated_at=updated_at,
             heartbeat_expires_at=current.heartbeat_expires_at,
             checkpoint=current.checkpoint,
-            verification_receipts=new_receipts,
+            verification_receipts=updated_receipts,
         )
-        event = AgentEvent.create(
-            stream_id=f"task:{task_id}",
-            kind="task.verified",
-            payload={"criterion": criterion, "receipt_id": receipt_id},
-            idempotency_key=f"ver_{task_id}_{criterion}_{receipt_id}",
-            actor="verifier",
-        )
-        return self._commit_update(current, updated, event)
+        return updated, appended.event if not appended.duplicate else None
 
     def transition(
         self,
@@ -451,13 +1266,47 @@ class TaskStore:
         reason: str,
         actor: str,
         idempotency_key: str,
+        checkpoint: TaskCheckpoint | None = None,
+        _allow_server_memory_refresh: bool = False,
+        _expected_reap: tuple[str, str, TaskStatus, float, float] | None = None,
     ) -> TaskState:
         current = self.get(task_id)
         if not current:
             raise KeyError(f"Task {task_id} not found")
 
+        if _expected_reap is not None:
+            expected_root, expected_tenant_key, expected_status, expected_expiry, deadline = _expected_reap
+            if (
+                not _task_matches_scope(current, expected_root, expected_tenant_key, task_id)
+                or current.status is not expected_status
+                or current.heartbeat_expires_at != expected_expiry
+                or expected_expiry <= 0
+                or expected_expiry >= deadline
+            ):
+                raise ConcurrentTaskUpdateError(
+                    f"Task {task_id} changed scope or heartbeat before reap transition"
+                )
+
+        if checkpoint is not None:
+            checkpoint = _preserve_checkpoint_memory_state(
+                current.checkpoint.state_data,
+                checkpoint,
+                allow_server_memory_refresh=_allow_server_memory_refresh,
+            )
+
         if target == current.status:
-            return current
+            if checkpoint is not None:
+                return self.checkpoint(
+                    task_id,
+                    checkpoint,
+                    actor=actor,
+                    idempotency_key=idempotency_key,
+                )
+            if not idempotency_key:
+                return current
+            return self._replay_same_status_transition(
+                task_id, target, reason=reason, actor=actor, idempotency_key=idempotency_key
+            )
 
         allowed = VALID_TRANSITIONS.get(current.status, set())
         if target not in allowed:
@@ -535,9 +1384,12 @@ class TaskStore:
             created_at=current.created_at,
             updated_at=now,
             heartbeat_expires_at=heartbeat,
-            checkpoint=current.checkpoint,
+            checkpoint=checkpoint or current.checkpoint,
             verification_receipts=current.verification_receipts,
         )
+
+        if target == TaskStatus.COMPLETED:
+            self._verify_completion(updated)
 
         event = AgentEvent.create(
             stream_id=f"task:{task_id}",
@@ -546,7 +1398,71 @@ class TaskStore:
             idempotency_key=idempotency_key,
             actor=actor,
         )
+        if _allow_server_memory_refresh:
+            return self._commit_update(
+                current, updated, event, allow_server_memory_refresh=True
+            )
         return self._commit_update(current, updated, event)
+
+    def _replay_same_status_transition(
+        self,
+        task_id: str,
+        target: TaskStatus,
+        *,
+        reason: str,
+        actor: str,
+        idempotency_key: str,
+    ) -> TaskState:
+        """Serialize a no-op retry with writers and validate its original operation."""
+        def _read_retry() -> TaskState:
+            con = connect_sqlite(
+                self.state_store.db_path, isolation_level=None, timeout_seconds=0.25
+            )
+            try:
+                con.execute("BEGIN IMMEDIATE")
+                row = con.execute(
+                    "SELECT * FROM agent_tasks_projection WHERE task_id = ?", (task_id,)
+                ).fetchone()
+                if not row:
+                    raise KeyError(f"Task {task_id} not found")
+                persisted = self._row_to_state(row)
+                if persisted.status != target:
+                    raise ConcurrentTaskUpdateError(
+                        f"Task {task_id} changed during transition; reload and retry"
+                    )
+                existing = con.execute(
+                    """SELECT stream_id, seq, event_id, kind, payload, idempotency_key,
+                              correlation_id, actor, created_at
+                       FROM agent_events WHERE stream_id = ? AND idempotency_key = ?""",
+                    (f"task:{task_id}", idempotency_key),
+                ).fetchone()
+                if existing:
+                    event = AgentEvent.from_row(existing)
+                    payload = dict(event.payload)
+                    try:
+                        source_status = TaskStatus(payload.get("from_status"))
+                        valid_transition = target in VALID_TRANSITIONS.get(source_status, set())
+                    except (TypeError, ValueError):
+                        valid_transition = False
+                    if (
+                        event.actor != actor
+                        or event.kind != "task.transitioned"
+                        or set(payload) != {"from_status", "to_status", "reason"}
+                        or payload.get("to_status") != target.value
+                        or payload.get("reason") != reason
+                        or not valid_transition
+                    ):
+                        raise ValueError("idempotency key was already used")
+                con.execute("COMMIT")
+                return persisted
+            except Exception:
+                if con.in_transaction:
+                    con.execute("ROLLBACK")
+                raise
+            finally:
+                con.close()
+
+        return retry_busy(_read_retry, retries=5, base_delay_seconds=0.02)
 
     def complete(
         self,
@@ -656,6 +1572,10 @@ class TaskStore:
         current = self.get(task_id)
         if not current:
             raise KeyError(f"Task {task_id} not found")
+
+        checkpoint = _preserve_checkpoint_memory_state(
+            current.checkpoint.state_data, checkpoint
+        )
 
         if capture_files or checkpoint.state_data.get("capture_files"):
             snaps = dict(checkpoint.state_data.get("file_snapshots") or {})
@@ -778,12 +1698,66 @@ class TaskStore:
         return self._commit_update(current, updated, event)
 
     def resume(self, task_id: str, *, actor: str = "agent", idempotency_key: str = "") -> TaskState:
+        current = self.get(task_id)
+        if not current:
+            raise KeyError(f"Task {task_id} not found")
+        resume_key = idempotency_key or f"resume_{task_id}_{int(time.time())}"
+        if current.status == TaskStatus.ACTIVE and idempotency_key:
+            return self._replay_same_status_transition(
+                task_id,
+                TaskStatus.ACTIVE,
+                reason="resumed from checkpoint",
+                actor=actor,
+                idempotency_key=resume_key,
+            )
+        state_data = dict(current.checkpoint.state_data)
+        previous_audit = state_data.pop("memory_audit", None)
+        if isinstance(previous_audit, Mapping):
+            history = list(state_data.get("memory_audit_history", ()))
+            history.append(dict(previous_audit))
+            state_data["memory_audit_history"] = history[-20:]
+        memory_context = self._task_memory_context(
+            task_id,
+            current.contract,
+            current.context,
+            root_override=str(
+                state_data.get("repo_root")
+                or (
+                    state_data.get("worktree", {}).get("repo_root", "")
+                    if isinstance(state_data.get("worktree"), Mapping)
+                    else ""
+                )
+                or current.context.repository_id
+                or ""
+            ),
+            previous=state_data.get("memory_context") if isinstance(state_data.get("memory_context"), Mapping) else None,
+        )
+        if memory_context is not None:
+            state_data["memory_context"] = memory_context
+        elif "memory_context" in state_data:
+            state_data["memory_context"] = {
+                "schema_version": 1,
+                "instruction": "Memory is advisory. Cite used memory IDs or record not_used_reason in the next checkpoint.",
+                "items": [],
+                "warnings": [{"code": "memory_context_unavailable"}],
+            }
+        state_data["memory_audit"] = None
+        resumed_checkpoint = TaskCheckpoint(
+            phase=current.checkpoint.phase,
+            next_action=current.checkpoint.next_action,
+            affected_paths=current.checkpoint.affected_paths,
+            evidence_ids=current.checkpoint.evidence_ids,
+            blockers=current.checkpoint.blockers,
+            state_data=state_data,
+        )
         return self.transition(
             task_id,
             TaskStatus.ACTIVE,
             reason="resumed from checkpoint",
             actor=actor,
-            idempotency_key=idempotency_key or f"resume_{task_id}_{int(time.time())}",
+            idempotency_key=resume_key,
+            checkpoint=resumed_checkpoint,
+            _allow_server_memory_refresh=True,
         )
 
     def heartbeat(
@@ -841,7 +1815,20 @@ class TaskStore:
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
-    def reap_expired_heartbeats(self, now: float | None = None, *, auto_recover: bool = False) -> list[str]:
+    def reap_expired_heartbeats(
+        self,
+        now: float | None = None,
+        *,
+        auto_recover: bool = False,
+        repo_root: str | Path | None = None,
+        tenant: Any = None,
+        task_id: str | None = None,
+    ) -> list[str]:
+        try:
+            scoped_root = _canonical_repository_root(repo_root)
+            tenant_key = _tenant_scope_key(tenant)
+        except ValueError:
+            return []
         if not self._db_path_available():
             return []
         self._init_projection_table()
@@ -864,6 +1851,20 @@ class TaskStore:
         for t_id in expired_ids:
             try:
                 current = self.get(t_id)
+                if (
+                    current is None
+                    or not _task_matches_scope(current, scoped_root, tenant_key, task_id)
+                    or current.status not in {
+                        TaskStatus.PLANNED,
+                        TaskStatus.ACTIVE,
+                        TaskStatus.VERIFYING,
+                        TaskStatus.WAITING,
+                        TaskStatus.BLOCKED,
+                    }
+                    or current.heartbeat_expires_at <= 0
+                    or current.heartbeat_expires_at >= current_time
+                ):
+                    continue
                 target_status = TaskStatus.WAITING if auto_recover and current and current.status != TaskStatus.PLANNED else TaskStatus.ABANDONED
                 reason = "heartbeat expired - auto-recovered to waiting" if auto_recover else "heartbeat expired"
                 self.transition(
@@ -872,15 +1873,35 @@ class TaskStore:
                     reason=reason,
                     actor="system",
                     idempotency_key=f"reap_{t_id}_{int(current_time)}",
+                    _expected_reap=(
+                        scoped_root,
+                        tenant_key,
+                        current.status,
+                        current.heartbeat_expires_at,
+                        current_time,
+                    ),
                 )
                 reaped.append(t_id)
             except Exception:
                 pass
         return reaped
 
-    def recover_zombie_tasks(self, now: float | None = None) -> list[str]:
+    def recover_zombie_tasks(
+        self,
+        now: float | None = None,
+        *,
+        repo_root: str | Path | None = None,
+        tenant: Any = None,
+        task_id: str | None = None,
+    ) -> list[str]:
         """Automatically detect timed-out zombie tasks and recover them to WAITING state for re-assignment."""
-        return self.reap_expired_heartbeats(now=now, auto_recover=True)
+        return self.reap_expired_heartbeats(
+            now=now,
+            auto_recover=True,
+            repo_root=repo_root,
+            tenant=tenant,
+            task_id=task_id,
+        )
 
     def _save_projection(self, state: TaskState) -> None:
         if not self._db_path_available():
@@ -942,16 +1963,10 @@ class TaskStore:
         retry_busy(_do_save, retries=5, base_delay_seconds=0.02)
 
     def _commit_create(self, state: TaskState, event: AgentEvent) -> TaskState:
-        """Atomically create initial projection and task.created event."""
+        """Atomically create initial projection, sequence cursor, and task event."""
         if not self.state_store.enabled:
             return state
         self._init_projection_table()
-        payload = json_dumps(event.payload, separators=(",", ":"))
-        payload_bytes = payload.encode("utf-8")
-        if len(payload_bytes) > self.state_store.max_payload_bytes:
-            raise ValueError(
-                f"payload exceeds maximum allowed {self.state_store.max_payload_bytes} bytes (got {len(payload_bytes)})"
-            )
         context = json_dumps({
             "repository_id": state.context.repository_id,
             "clone_id": state.context.clone_id,
@@ -960,16 +1975,31 @@ class TaskStore:
             "task_id": state.context.task_id,
             "session_id": state.context.session_id,
         })
-
-        def _do_commit() -> None:
-            con = connect_sqlite(self.state_store.db_path, isolation_level=None, timeout_seconds=0.25)
+        def _write(con: sqlite3.Connection) -> tuple[TaskState, list[AgentEvent]]:
             try:
                 con.execute("BEGIN IMMEDIATE")
-                seq_row = con.execute(
-                    "SELECT COALESCE(MAX(seq), 0) + 1 FROM agent_events WHERE stream_id = ?",
-                    (event.stream_id,),
+                existing = con.execute(
+                    """
+                    SELECT stream_id, seq, event_id, kind, payload, idempotency_key,
+                           correlation_id, actor, created_at
+                    FROM agent_events WHERE stream_id = ? AND idempotency_key = ?
+                    """,
+                    (event.stream_id, event.idempotency_key),
                 ).fetchone()
-                seq = int(seq_row[0]) if seq_row else 1
+                if existing:
+                    existing_event = AgentEvent.from_row(existing)
+                    if existing_event.kind != event.kind or dict(existing_event.payload) != dict(event.payload):
+                        raise RuntimeError("task create idempotency key conflicts with a different event")
+                    current = con.execute(
+                        "SELECT * FROM agent_tasks_projection WHERE task_id = ?",
+                        (state.task_id,),
+                    ).fetchone()
+                    if current:
+                        con.execute("COMMIT")
+                        return self._row_to_state(current), []
+                    if str(existing_event.payload.get("task_id", "")) != state.task_id:
+                        raise RuntimeError("task create event conflicts with requested task identity")
+
                 con.execute(
                     """
                     INSERT INTO agent_tasks_projection (
@@ -991,63 +2021,46 @@ class TaskStore:
                         state.updated_at,
                     ),
                 )
-                con.execute(
-                    """
-                    INSERT INTO agent_events (
-                        stream_id, seq, event_id, kind, payload, idempotency_key,
-                        correlation_id, actor, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        event.stream_id,
-                        seq,
-                        event.event_id,
-                        event.kind,
-                        payload,
-                        event.idempotency_key,
-                        event.correlation_id,
-                        event.actor,
-                        event.created_at,
-                    ),
-                )
+                pending_events: list[AgentEvent] = []
+                if not existing:
+                    appended = self.state_store.append_in_transaction(
+                        con, event, strict_idempotency=True
+                    )
+                    if appended.error or appended.event is None:
+                        raise RuntimeError(appended.error or "task creation append returned no persisted event")
+                    if appended.duplicate:
+                        raise RuntimeError("task projection/event idempotency mismatch")
+                    if appended.event:
+                        pending_events.append(appended.event)
                 con.execute("COMMIT")
+                return state, pending_events
             except Exception:
                 try:
                     con.execute("ROLLBACK")
                 except Exception:
                     pass
                 raise
-            finally:
-                con.close()
-            self.state_store._publish(event.with_seq(seq))
 
-        retry_busy(_do_commit, retries=5, base_delay_seconds=0.02)
-        return state
+        return self._run_ordered_task_write(_write, timeout_seconds=0.25)
 
     def _commit_update(
         self,
         current: TaskState,
         updated: TaskState,
         event: AgentEvent,
+        *,
+        allow_server_memory_refresh: bool = False,
     ) -> TaskState:
-        """Atomically compare task version, append event, and update projection."""
+        """CAS-update projection and append its event/cursor in one transaction."""
+        checkpoint = _preserve_checkpoint_memory_state(
+            current.checkpoint.state_data,
+            updated.checkpoint,
+            allow_server_memory_refresh=allow_server_memory_refresh,
+        )
+        if checkpoint != updated.checkpoint:
+            updated = replace(updated, checkpoint=checkpoint)
         if not self._db_path_available():
             raise RuntimeError("agent task storage is unavailable")
-        payload = json_dumps(event.payload, separators=(",", ":"))
-        payload_bytes = payload.encode("utf-8")
-        if len(payload_bytes) > self.state_store.max_payload_bytes:
-            raise ValueError(
-                f"payload exceeds maximum allowed {self.state_store.max_payload_bytes} bytes (got {len(payload_bytes)})"
-            )
-
-        context = json_dumps({
-            "repository_id": updated.context.repository_id,
-            "clone_id": updated.context.clone_id,
-            "worktree_id": updated.context.worktree_id,
-            "branch": updated.context.branch,
-            "task_id": updated.context.task_id,
-            "session_id": updated.context.session_id,
-        })
         expected_context = json_dumps({
             "repository_id": current.context.repository_id,
             "clone_id": current.context.clone_id,
@@ -1055,6 +2068,14 @@ class TaskStore:
             "branch": current.context.branch,
             "task_id": current.context.task_id,
             "session_id": current.context.session_id,
+        })
+        context = json_dumps({
+            "repository_id": updated.context.repository_id,
+            "clone_id": updated.context.clone_id,
+            "worktree_id": updated.context.worktree_id,
+            "branch": updated.context.branch,
+            "task_id": updated.context.task_id,
+            "session_id": updated.context.session_id,
         })
         values = (
             updated.status.value,
@@ -1079,11 +2100,38 @@ class TaskStore:
             current.heartbeat_expires_at,
             current.updated_at,
         )
-
-        def _do_commit() -> None:
-            con = connect_sqlite(self.state_store.db_path, isolation_level=None, timeout_seconds=0.25)
+        def _write(con: sqlite3.Connection) -> tuple[TaskState, list[AgentEvent]]:
+            pending_events: list[AgentEvent] = []
             try:
                 con.execute("BEGIN IMMEDIATE")
+                if event.idempotency_key:
+                    existing = con.execute(
+                        "SELECT stream_id, seq, event_id, kind, payload, idempotency_key, "
+                        "correlation_id, actor, created_at FROM agent_events "
+                        "WHERE stream_id = ? AND idempotency_key = ?",
+                        (event.stream_id, event.idempotency_key),
+                    ).fetchone()
+                    if existing:
+                        existing_event = AgentEvent.from_row(existing)
+                        if existing_event.actor != event.actor:
+                            raise ValueError("idempotency key was already used")
+                        if (
+                            existing_event.kind != event.kind
+                            or dict(existing_event.payload) != dict(event.payload)
+                            or existing_event.correlation_id != event.correlation_id
+                        ):
+                            raise ValueError(
+                                "idempotency key was already used for a different event payload"
+                            )
+                        current_row = con.execute(
+                            "SELECT * FROM agent_tasks_projection WHERE task_id = ?",
+                            (current.task_id,),
+                        ).fetchone()
+                        if not current_row:
+                            raise RuntimeError("task event exists without its durable projection")
+                        con.execute("COMMIT")
+                        return self._row_to_state(current_row), pending_events
+
                 con.execute(
                     """
                     UPDATE agent_tasks_projection SET
@@ -1099,51 +2147,25 @@ class TaskStore:
                     raise ConcurrentTaskUpdateError(
                         f"Task {current.task_id} changed during transition; reload and retry"
                     )
-                if event.idempotency_key:
-                    existing_ev = con.execute(
-                        "SELECT seq FROM agent_events WHERE stream_id = ? AND idempotency_key = ?",
-                        (event.stream_id, event.idempotency_key),
-                    ).fetchone()
-                    if existing_ev:
-                        con.execute("COMMIT")
-                        return
-                seq_row = con.execute(
-                    "SELECT COALESCE(MAX(seq), 0) + 1 FROM agent_events WHERE stream_id = ?",
-                    (event.stream_id,),
-                ).fetchone()
-                seq = int(seq_row[0]) if seq_row else 1
-                con.execute(
-                    """
-                    INSERT INTO agent_events (
-                        stream_id, seq, event_id, kind, payload, idempotency_key,
-                        correlation_id, actor, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        event.stream_id,
-                        seq,
-                        event.event_id,
-                        event.kind,
-                        payload,
-                        event.idempotency_key,
-                        event.correlation_id,
-                        event.actor,
-                        event.created_at,
-                    ),
+                appended = self.state_store.append_in_transaction(
+                    con, event, strict_idempotency=True
                 )
+                if appended.error or appended.event is None:
+                    raise RuntimeError(appended.error or "task transition append returned no persisted event")
+                if appended.duplicate:
+                    raise RuntimeError("task projection/event idempotency mismatch")
+                if appended.event:
+                    pending_events.append(appended.event)
                 con.execute("COMMIT")
+                return updated, pending_events
             except Exception:
                 try:
                     con.execute("ROLLBACK")
                 except Exception:
                     pass
                 raise
-            finally:
-                con.close()
-            self.state_store._publish(event.with_seq(seq))
 
-        retry_busy(_do_commit, retries=5, base_delay_seconds=0.02)
-        return updated
+        return self._run_ordered_task_write(_write, timeout_seconds=0.25)
 
     def _row_to_state(self, row: tuple[Any, ...]) -> TaskState:
         (
@@ -1198,10 +2220,20 @@ class TaskStore:
         output_path: str,
         min_receipts: int = 1,
         format: str = "jsonl",
+        *,
+        repo_root: str | Path | None = None,
+        tenant: Any = None,
+        task_id: str | None = None,
     ) -> dict[str, Any]:
         """Export verified completed tasks into structured fine-tuning / LoRA training dataset."""
-        tasks = self.list_tasks(status=TaskStatus.COMPLETED, limit=5000)
+        scoped_root = Path(_canonical_repository_root(repo_root))
+        tenant_key = _tenant_scope_key(tenant)
+        tasks = [
+            task for task in self.list_tasks(status=TaskStatus.COMPLETED, limit=5000)
+            if _task_matches_scope(task, str(scoped_root), tenant_key, task_id)
+        ]
         samples: list[dict[str, Any]] = []
+        estimated_bytes = 0
 
         for t in tasks:
             if len(t.verification_receipts) < min_receipts:
@@ -1216,7 +2248,7 @@ class TaskStore:
             input_text = f"Acceptance criteria:\n{criteria_str}\n\nConstraints:\n{constraints_str}"
             output_text = f"Action taken:\nModified {affected}.\nVerification receipts validated: {', '.join(receipts_list)}.\nOutcome: {next_act}"
 
-            samples.append({
+            sample = {
                 "instruction": instruction,
                 "prompt": instruction,
                 "input": input_text,
@@ -1224,17 +2256,34 @@ class TaskStore:
                 "task_id": t.task_id,
                 "created_at": t.created_at,
                 "status": t.status.value,
-            })
+            }
+            estimated_bytes += len(json_dumps(sample, ensure_ascii=False).encode("utf-8")) + 1
+            if estimated_bytes > MAX_TRAINING_DATASET_BYTES:
+                raise ValueError(
+                    f"training dataset exceeds {MAX_TRAINING_DATASET_BYTES} byte limit"
+                )
+            samples.append(sample)
 
-        out_file = Path(output_path).expanduser().resolve(strict=False)
+        requested_output = Path(str(output_path or "")).expanduser()
+        if not str(output_path or "").strip():
+            raise ValueError("output_path is required")
+        if not requested_output.is_absolute():
+            requested_output = scoped_root / requested_output
+        out_file = requested_output.resolve(strict=False)
+        if out_file == scoped_root or not out_file.is_relative_to(scoped_root):
+            raise ValueError("output_path must remain inside repo_root")
         out_file.parent.mkdir(parents=True, exist_ok=True)
+        out_file = out_file.resolve(strict=False)
+        if out_file == scoped_root or not out_file.is_relative_to(scoped_root):
+            raise ValueError("output_path must remain inside repo_root")
 
         if format.lower() == "json":
-            out_file.write_text(json_dumps(samples, indent=2, ensure_ascii=False), encoding="utf-8")
+            payload = json_dumps(samples, indent=2, ensure_ascii=False)
         else:
-            with out_file.open("w", encoding="utf-8") as f:
-                for item in samples:
-                    f.write(json_dumps(item, ensure_ascii=False) + "\n")
+            payload = "".join(json_dumps(item, ensure_ascii=False) + "\n" for item in samples)
+        if len(payload.encode("utf-8")) > MAX_TRAINING_DATASET_BYTES:
+            raise ValueError(f"training dataset exceeds {MAX_TRAINING_DATASET_BYTES} byte limit")
+        out_file.write_text(payload, encoding="utf-8")
 
         return {
             "success": True,
@@ -1243,3 +2292,4 @@ class TaskStore:
             "output_path": str(out_file),
             "format": format,
         }
+

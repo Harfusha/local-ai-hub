@@ -42,6 +42,58 @@ def receipt_for(
     )
 
 
+def test_completion_does_not_accept_orphaned_receipt_with_task_store(tmp_path: Path):
+    state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    task_store = TaskStore(state_store)
+    receipt = receipt_for("orphan-task", "tests")
+    VerificationStore(state_store, task_store=task_store).record(receipt)
+
+    completion = VerificationStore(state_store, task_store=task_store).completion("orphan-task")
+
+    assert completion.complete is False
+    assert completion.satisfied_criteria == ()
+    assert completion.unsatisfied_criteria == ("tests",)
+    assert completion.receipts[0].receipt_id == receipt.receipt_id
+    assert [event.kind for event in state_store.events("verification:orphan-task")] == [
+        "verification.receipt_recorded"
+    ]
+
+
+def test_receipt_identity_metadata_survives_restart(tmp_path: Path):
+    db_path = tmp_path / "agent_state.sqlite3"
+    state_store = AgentStateStore(db_path)
+    task_store = TaskStore(state_store)
+    task = task_store.create(
+        GoalContract(goal="receipt metadata", acceptance_criteria=("tests",)),
+        ScopeContext(task_id="receipt-metadata-task"),
+        task_id="receipt-metadata-task",
+    )
+    receipt = VerificationReceipt.create(
+        task.task_id,
+        "tests",
+        evidence_id="evidence-metadata",
+        owner=task.owner,
+        mutation_generation=3,
+        evidence_type="test",
+        details={"source": "test"},
+    )
+    VerificationStore(state_store, task_store=task_store).record(receipt)
+
+    restarted_store = AgentStateStore(db_path)
+    completion = VerificationStore(
+        restarted_store, task_store=TaskStore(restarted_store)
+    ).completion(task.task_id)
+
+    restored = completion.receipts[0]
+    assert completion.complete is True
+    assert (restored.owner, restored.mutation_generation, restored.evidence_type) == (
+        task.owner,
+        3,
+        "test",
+    )
+    assert restored.details == {"source": "test"}
+
+
 def test_stale_receipt_cannot_satisfy_completion(stores: tuple[TaskStore, VerificationStore]):
     task_store, verif_store = stores
     task = task_store.create(
@@ -93,6 +145,22 @@ def test_verification_receipts_require_task_and_criterion(task_id: str, criterio
 def test_passed_verification_receipt_requires_evidence_id():
     with pytest.raises(ValueError, match="evidence_id"):
         VerificationReceipt.create("task-proof", "tests", evidence_id=" ")
+
+
+def test_verification_receipt_parser_requires_explicit_boolean_passed():
+    base = {"receipt_id": "receipt-1", "task_id": "task-1", "criterion": "tests"}
+    payloads = (
+        base,
+        {**base, "passed": "false"},
+        {**base, "passed": "true"},
+        {**base, "passed": 1},
+        {**base, "passed": None},
+    )
+
+    assert all(
+        VerificationReceipt.from_dict(payload).passed is False
+        for payload in payloads
+    )
 
 
 def test_verifier_exception_cannot_become_a_passing_receipt(

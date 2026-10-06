@@ -34,6 +34,7 @@ def compiler(tmp_path: Path) -> ContextCompiler:
             criterion="tests",
             passed=True,
             evidence_id="E_agent_context_fixture",
+            command_id="cmd-agent-context-fixture",
             details={"output": "all passed"},
         )
     )
@@ -612,7 +613,7 @@ def test_authoritative_memory_is_root_and_task_session_scoped(tmp_path: Path):
     )
 
     context = ContextCompiler(state_store=state_store, memory_store=memory_store).compile(
-        ContextRequest(task_id="task-1", tenant="session-1", root=current_root, token_budget=300)
+        ContextRequest(task_id="task-1", session_id="session-1", root=current_root, token_budget=300)
     )
     element_ids = {element.element_id for element in context.elements}
 

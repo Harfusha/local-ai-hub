@@ -730,6 +730,7 @@ class AgentConsistencyGuard:
         passed: bool = True,
         verifier: Any | None = None,
         evidence_ids: Iterable[str] = (),
+        command_id: str = "",
         repository_revision: str = "",
         path_refs: Iterable[str] = (),
         confidence: float = 1.0,
@@ -747,6 +748,15 @@ class AgentConsistencyGuard:
                 passed = False
         path_refs = tuple(_bounded_sequence(path_refs, 24))
         request_obj = self._request_from_metadata(request, root=root, task_id=task_id, phase=phase, changed_paths=path_refs)
+        should_record_receipt = (
+            request_obj is not None
+            and bool(request_obj.task_id)
+            and self.verification_store is not None
+            and callable(getattr(self.verification_store, "record", None))
+        )
+        command_id = _text(command_id, 200)
+        if should_record_receipt and passed and not command_id:
+            raise ValueError("passed validation receipt requires command_id")
         saved = self._record_memory(
             "validation", request_obj,
             stable_key=stable_key or criterion or "validation",
@@ -754,16 +764,14 @@ class AgentConsistencyGuard:
             evidence_ids=evidence_ids, repository_revision=repository_revision, path_refs=path_refs,
             confidence=confidence, root=root, task_id=task_id, phase=phase,
         )
-        if request_obj is not None and request_obj.task_id and self.verification_store is not None and callable(getattr(self.verification_store, "record", None)):
-            try:
-                from .agent_verification import VerificationReceipt
-                self.verification_store.record(VerificationReceipt.create(
-                    request_obj.task_id, _text(criterion, 200), passed=passed,
-                    evidence_id=next(iter(evidence_ids), ""), repository_revision=self._revision(request_obj, repository_revision),
-                    details={"kind": "consistency_validation"},
-                ))
-            except Exception:
-                pass
+        if should_record_receipt:
+            from .agent_verification import VerificationReceipt
+            self.verification_store.record(VerificationReceipt.create(
+                request_obj.task_id, _text(criterion, 200), passed=passed,
+                evidence_id=next(iter(evidence_ids), ""), command_id=command_id,
+                repository_revision=self._revision(request_obj, repository_revision),
+                details={"kind": "consistency_validation"},
+            ))
         return saved
 
     def record_metric(self, category: str, amount: int = 1, *, severity: str = "") -> int:

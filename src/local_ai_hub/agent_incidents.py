@@ -4,16 +4,31 @@ from .json_utils import dumps as json_dumps
 
 import hashlib
 import json
+import os
 import re
 import threading
 import time
 import uuid
 from contextlib import closing
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Collection, Mapping
 
 from .agent_events import AgentEvent, AgentStateStore
 from .sqlite_support import connect_sqlite, retry_busy
+
+
+def _incident_scope_key(kind: str, value: Any) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    if kind == "repository":
+        try:
+            raw = os.path.normcase(str(Path(raw).expanduser().resolve(strict=False)))
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return ""
+    digest = hashlib.sha256(f"agent-incident:{kind}\0{raw}".encode("utf-8")).hexdigest()
+    return digest
 
 
 @dataclass(frozen=True)
@@ -51,6 +66,8 @@ class ToolOutcome:
     timed_out: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
     affected_paths: tuple[str, ...] = ()
+    repository_root: str = ""
+    tenant: str = ""
 
 
 @dataclass(frozen=True)
@@ -72,6 +89,8 @@ class IncidentRecord:
     updated_at: float = 0.0
     expires_at: float | None = None
     affected_paths: tuple[str, ...] = ()
+    repository_key: str = ""
+    tenant_key: str = ""
 
     @property
     def status(self) -> str:
@@ -99,6 +118,10 @@ class IncidentRecord:
             "updated_at": self.updated_at,
             "expires_at": self.expires_at,
             "affected_paths": list(self.affected_paths),
+            "provenance": {
+                "repository_key": self.repository_key,
+                "tenant_key": self.tenant_key,
+            },
         }
 
 
@@ -247,10 +270,6 @@ class IncidentStore:
                         existing = {str(row[0]) for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                         if "agent_incidents" in existing:
                             actual_columns = {str(row[1]) for row in con.execute("PRAGMA table_info(agent_incidents)")}
-                            if "incident_id" not in actual_columns:
-                                con.execute("ALTER" + " TABLE agent_incidents ADD COLUMN incident_id TEXT NOT NULL DEFAULT ''")
-                                con.execute("UPDATE agent_incidents SET incident_id = 'legacy-' || rowid WHERE incident_id = ''")
-                                actual_columns.add("incident_id")
                             column_definitions = [
                                 ("operation_class", "TEXT NOT NULL DEFAULT 'unknown'"),
                                 ("error_class", "TEXT NOT NULL DEFAULT ''"),
@@ -268,10 +287,21 @@ class IncidentStore:
                                 ("expires_at", "REAL"),
                                 ("affected_paths", "TEXT NOT NULL DEFAULT '[]'"),
                                 ("ignored", "INTEGER NOT NULL DEFAULT 0"),
+                                ("repository_key", "TEXT NOT NULL DEFAULT ''"),
+                                ("tenant_key", "TEXT NOT NULL DEFAULT ''"),
                             ]
-                            for column, definition in column_definitions:
-                                if column not in actual_columns:
-                                    con.execute(f"ALTER" + f" TABLE agent_incidents ADD COLUMN {column} {definition}")
+                            missing_columns = [
+                                (column, definition)
+                                for column, definition in column_definitions
+                                if column not in actual_columns
+                            ]
+                            if "incident_id" not in actual_columns or missing_columns:
+                                self.state_store._verified_backup(con)
+                            if "incident_id" not in actual_columns:
+                                con.execute("ALTER" + " TABLE agent_incidents ADD COLUMN incident_id TEXT NOT NULL DEFAULT ''")
+                                con.execute("UPDATE agent_incidents SET incident_id = 'legacy-' || rowid WHERE incident_id = ''")
+                            for column, definition in missing_columns:
+                                con.execute(f"ALTER" + f" TABLE agent_incidents ADD COLUMN {column} {definition}")
                         con.execute(
                             """
                             CREATE TABLE IF NOT EXISTS agent_incidents (
@@ -291,7 +321,9 @@ class IncidentStore:
                                 updated_at REAL NOT NULL,
                                 expires_at REAL,
                                 affected_paths TEXT NOT NULL DEFAULT '[]',
-                                ignored INTEGER NOT NULL DEFAULT 0
+                                ignored INTEGER NOT NULL DEFAULT 0,
+                                repository_key TEXT NOT NULL DEFAULT '',
+                                tenant_key TEXT NOT NULL DEFAULT ''
                             );
                             """
                         )
@@ -311,6 +343,12 @@ class IncidentStore:
                             """
                             CREATE INDEX IF NOT EXISTS idx_agent_incidents_recent
                             ON agent_incidents (operation_class, signature_hash, updated_at DESC);
+                            """
+                        )
+                        con.execute(
+                            """
+                            CREATE INDEX IF NOT EXISTS idx_agent_incidents_scope
+                            ON agent_incidents (repository_key, tenant_key, ignored, updated_at DESC);
                             """
                         )
                 finally:
@@ -339,6 +377,12 @@ class IncidentStore:
         meta_rc = str(outcome.metadata.get("root_cause") or "")
         meta_fix = str(outcome.metadata.get("verified_fix") or "")
         meta_conf = float(outcome.metadata.get("confidence") or 0.0)
+        repository_key = _incident_scope_key(
+            "repository", outcome.repository_root or outcome.metadata.get("repository_root")
+        )
+        tenant_key = _incident_scope_key(
+            "tenant", outcome.tenant or outcome.metadata.get("tenant")
+        )
         auto_rc, auto_fix, auto_conf = _extract_root_cause_and_fix(outcome.error, outcome.tool_name, outcome.timed_out)
         eff_rc = meta_rc or auto_rc or None
         eff_fix = meta_fix or auto_fix or None
@@ -360,12 +404,14 @@ class IncidentStore:
             with closing(connect_sqlite(self.state_store.db_path)) as con:
                 return con.execute(
                     """
-                    SELECT incident_id, state_revision, attempts, root_cause, verified_fix, confidence, affected_paths, ignored, resolved
+                    SELECT incident_id, state_revision, attempts, root_cause, verified_fix, confidence,
+                           affected_paths, ignored, resolved
                     FROM agent_incidents
                     WHERE error_class = ? AND operation_class = ? AND signature_hash = ?
+                      AND repository_key = ? AND tenant_key = ?
                     ORDER BY updated_at DESC, incident_id DESC LIMIT 1
                     """,
-                    (err_class, op_class, sig_hash),
+                    (err_class, op_class, sig_hash, repository_key, tenant_key),
                 ).fetchone()
 
         row = retry_busy(_fetch_existing, retries=5, base_delay_seconds=0.02)
@@ -393,6 +439,8 @@ class IncidentStore:
                 created_at=now,
                 updated_at=now,
                 affected_paths=affected or old_aff,
+                repository_key=repository_key,
+                tenant_key=tenant_key,
             )
             event = AgentEvent.create(
                 stream_id=f"incident:{inc_id}",
@@ -421,6 +469,8 @@ class IncidentStore:
             created_at=now,
             updated_at=now,
             affected_paths=affected,
+            repository_key=repository_key,
+            tenant_key=tenant_key,
         )
 
         event = AgentEvent.create(
@@ -465,6 +515,8 @@ class IncidentStore:
             updated_at=time.time(),
             expires_at=record.expires_at,
             affected_paths=record.affected_paths,
+            repository_key=record.repository_key,
+            tenant_key=record.tenant_key,
         )
 
         event = AgentEvent.create(
@@ -615,7 +667,8 @@ class IncidentStore:
                     """
                     SELECT incident_id, operation_class, error_class, signature_hash, redacted_message,
                            state_revision, attempts, evidence_ids, root_cause, verified_fix,
-                           confidence, resolved, created_at, updated_at, expires_at, affected_paths, ignored
+                           confidence, resolved, created_at, updated_at, expires_at, affected_paths, ignored,
+                           repository_key, tenant_key
                     FROM agent_incidents
                     WHERE incident_id = ?
                     """,
@@ -650,18 +703,19 @@ class IncidentStore:
                     WITH ranked AS (
                         SELECT incident_id, operation_class, error_class, signature_hash, redacted_message,
                                state_revision,
-                               SUM(attempts) OVER (PARTITION BY operation_class, error_class, signature_hash) AS attempts,
+                               SUM(attempts) OVER (PARTITION BY operation_class, error_class, signature_hash, repository_key, tenant_key) AS attempts,
                                evidence_ids, root_cause, verified_fix, confidence, resolved, created_at,
-                               updated_at, expires_at, affected_paths, ignored,
+                               updated_at, expires_at, affected_paths, ignored, repository_key, tenant_key,
                                ROW_NUMBER() OVER (
-                                   PARTITION BY operation_class, error_class, signature_hash
+                                   PARTITION BY operation_class, error_class, signature_hash, repository_key, tenant_key
                                    ORDER BY updated_at DESC, incident_id DESC
                                ) AS row_num
                         FROM agent_incidents
                     )
                     SELECT incident_id, operation_class, error_class, signature_hash, redacted_message,
                            state_revision, attempts, evidence_ids, root_cause, verified_fix, confidence,
-                           resolved, created_at, updated_at, expires_at, affected_paths, ignored
+                           resolved, created_at, updated_at, expires_at, affected_paths, ignored,
+                           repository_key, tenant_key
                     FROM ranked WHERE row_num = 1
                 """
                 params: list[Any] = []
@@ -703,8 +757,9 @@ class IncidentStore:
                         incident_id, operation_class, error_class, signature_hash,
                         redacted_message, state_revision, attempts, evidence_ids,
                         root_cause, verified_fix, confidence, resolved,
-                        created_at, updated_at, expires_at, affected_paths, ignored
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        created_at, updated_at, expires_at, affected_paths, ignored,
+                        repository_key, tenant_key
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(incident_id) DO UPDATE SET
                         redacted_message = excluded.redacted_message,
                         state_revision = excluded.state_revision,
@@ -717,7 +772,9 @@ class IncidentStore:
                         ignored = excluded.ignored,
                         updated_at = excluded.updated_at,
                         expires_at = excluded.expires_at,
-                        affected_paths = excluded.affected_paths
+                        affected_paths = excluded.affected_paths,
+                        repository_key = excluded.repository_key,
+                        tenant_key = excluded.tenant_key
                     """,
                     (
                         record.incident_id,
@@ -737,6 +794,8 @@ class IncidentStore:
                         record.expires_at,
                         json_dumps(list(record.affected_paths)),
                         1 if record.ignored else 0,
+                        record.repository_key,
+                        record.tenant_key,
                     ),
                 )
                 con.execute("COMMIT")
@@ -771,6 +830,8 @@ class IncidentStore:
         ) = row[:15]
         affected_paths_raw = row[15] if len(row) > 15 else "[]"
         ignored_val = row[16] if len(row) > 16 else 0
+        repository_key = str(row[17] or "") if len(row) > 17 else ""
+        tenant_key = str(row[18] or "") if len(row) > 18 else ""
         aff_paths = tuple(json.loads(affected_paths_raw) if affected_paths_raw else ())
         fp = IncidentFingerprint(
             error_class=error_class,
@@ -795,6 +856,8 @@ class IncidentStore:
             updated_at=float(updated_at),
             expires_at=float(expires_at) if expires_at is not None else None,
             affected_paths=aff_paths,
+            repository_key=repository_key,
+            tenant_key=tenant_key,
         )
 
     def find_regressions(self, paths: Collection[str], *, state_revision: str | None = None) -> list[dict[str, Any]]:
@@ -811,7 +874,9 @@ class IncidentStore:
                 WITH ranked AS (
                     SELECT incident_id, operation_class, error_class, signature_hash, redacted_message,
                            state_revision, root_cause, verified_fix, confidence,
-                           SUM(attempts) OVER (PARTITION BY operation_class, error_class, signature_hash) AS attempts,
+                           SUM(attempts) OVER (
+                               PARTITION BY operation_class, error_class, signature_hash, repository_key, tenant_key
+                           ) AS attempts,
                            affected_paths, updated_at, ignored,
                            ROW_NUMBER() OVER (
                                PARTITION BY operation_class, error_class, signature_hash
@@ -863,10 +928,26 @@ class IncidentStore:
         finally:
             con.close()
 
-    def find_negative_knowledge(self, query: str = "", limit: int = 20) -> list[dict[str, Any]]:
+    def find_negative_knowledge(
+        self,
+        query: str = "",
+        limit: int = 20,
+        *,
+        root: str | None = None,
+        tenant: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return []
         self._init_table()
+        if root is None or tenant is None:
+            return []
+        repository_key = _incident_scope_key("repository", root)
+        tenant_key = _incident_scope_key("tenant", tenant)
+        if not repository_key or not tenant_key:
+            return []
+        scope_params = (repository_key, tenant_key)
         con = connect_sqlite(self.state_store.db_path)
         try:
             cur = con.execute(
@@ -875,19 +956,23 @@ class IncidentStore:
                     SELECT incident_id, operation_class, error_class, signature_hash, redacted_message,
                            state_revision, root_cause, verified_fix, confidence,
                            SUM(attempts) OVER (PARTITION BY operation_class, error_class, signature_hash) AS attempts,
-                           updated_at, affected_paths, ignored,
+                           updated_at, affected_paths, ignored, expires_at, repository_key, tenant_key,
                            ROW_NUMBER() OVER (
-                               PARTITION BY operation_class, error_class, signature_hash
+                               PARTITION BY operation_class, error_class, signature_hash, repository_key, tenant_key
                                ORDER BY updated_at DESC, incident_id DESC
                            ) AS row_num
                     FROM agent_incidents
+                    WHERE repository_key = ? AND tenant_key = ?
                 )
                 SELECT incident_id, operation_class, error_class, redacted_message, state_revision,
-                       root_cause, verified_fix, confidence, attempts, updated_at, affected_paths
+                       root_cause, verified_fix, confidence, attempts, updated_at, affected_paths,
+                       repository_key, tenant_key
                 FROM ranked
                 WHERE ignored = 0 AND row_num = 1
+                  AND (expires_at IS NULL OR expires_at > ?)
                 ORDER BY updated_at DESC
-                """
+                """,
+                (*scope_params, time.time()),
             )
             q_norm = str(query or "").strip().lower()
             results: list[dict[str, Any]] = []
@@ -906,7 +991,7 @@ class IncidentStore:
                     )
                     if not matched:
                         continue
-                results.append({
+                item = {
                     "incident_id": r[0],
                     "operation_class": r[1],
                     "error_class": err_cls,
@@ -917,7 +1002,12 @@ class IncidentStore:
                     "confidence": float(r[7] or 0.0),
                     "attempts": int(r[8] or 1),
                     "updated_at": float(r[9] or 0.0),
-                })
+                }
+                item["provenance"] = {
+                    "repository_key": str(r[11] or ""),
+                    "tenant_key": str(r[12] or ""),
+                }
+                results.append(item)
                 if len(results) >= limit:
                     break
             return results

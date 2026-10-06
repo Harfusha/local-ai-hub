@@ -155,7 +155,7 @@ class RAGStore:
         workspace_cfg = config.get("workspace_cache", {})
         self.search_cache = TieredCache(
             SQLiteCache(
-                state_dir / "cache.sqlite3", f"rag-search:{self.index_fingerprint[:16]}",
+                state_dir / "cache.sqlite", f"rag-search:{self.index_fingerprint[:16]}",
                 int(workspace_cfg.get("rag_search_ttl_seconds", 86400)),
                 int(workspace_cfg.get("rag_search_max_entries", 10000)),
             ),
@@ -1716,7 +1716,7 @@ class RAGStore:
         graphrag_enriched = False
         try:
             state_dir = Path(self.config.get("server", {}).get("state_dir", "state")).resolve()
-            state_db = state_dir / "agent_state.sqlite3"
+            state_db = state_dir / "agent_state.sqlite"
             if state_db.is_file():
                 con_state = connect_sqlite(state_db)
                 try:

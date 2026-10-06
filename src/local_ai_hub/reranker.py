@@ -36,7 +36,7 @@ class Reranker:
         self.cache_enabled = bool(cache_cfg.get("reranker", True))
         self.cache = TieredCache(
             SQLiteCache(
-                configured_state_dir(config) / "cache.sqlite3",
+                configured_state_dir(config) / "cache.sqlite",
                 namespace=f"rerank:{self.model_name}",
                 ttl_seconds=int(cache_cfg.get("reranker_ttl_seconds", 14 * 86400)),
                 max_entries=int(cache_cfg.get("reranker_max_entries", 100_000)),

@@ -17,6 +17,7 @@ from local_ai_hub.agent_identity import AgentScope
 from local_ai_hub.agent_incidents import IncidentStore
 from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStatus, MemoryStore
 from local_ai_hub.agent_tasks import GoalContract, ScopeContext, TaskCheckpoint, TaskState, TaskStatus, TaskStore
+from local_ai_hub import trace_context
 from local_ai_hub.agent_verification import VerificationStore
 from local_ai_hub.leases import ScopeLeaseStore
 from local_ai_hub.rag import RAGStore
@@ -88,7 +89,8 @@ def test_task_heartbeat_and_extended_reap(tmp_path: Path) -> None:
 
     contract = GoalContract(goal="test heartbeat")
     context = ScopeContext()
-    t1 = task_store.create(contract, context, task_id="task_hb_1")
+    tenant_token = trace_context.set_context(tenant="tenant-a")
+    t1 = task_store.create(contract, context, task_id="task_hb_1", repo_root=str(tmp_path))
     t1 = task_store.transition(t1.task_id, TaskStatus.ACTIVE, reason="activate", actor="agent", idempotency_key="act1")
 
     # Call heartbeat
@@ -98,20 +100,21 @@ def test_task_heartbeat_and_extended_reap(tmp_path: Path) -> None:
     assert t1_updated.heartbeat_expires_at > before_hb
 
     # Create tasks in various states with expired heartbeats
-    t_active = task_store.create(contract, context, task_id="task_act")
+    t_active = task_store.create(contract, context, task_id="task_act", repo_root=str(tmp_path))
     task_store.transition(t_active.task_id, TaskStatus.ACTIVE, reason="act", actor="agent", idempotency_key="act_t")
 
-    t_verifying = task_store.create(contract, context, task_id="task_ver")
+    t_verifying = task_store.create(contract, context, task_id="task_ver", repo_root=str(tmp_path))
     task_store.transition(t_verifying.task_id, TaskStatus.ACTIVE, reason="act", actor="agent", idempotency_key="act_v")
     task_store.transition(t_verifying.task_id, TaskStatus.VERIFYING, reason="ver", actor="agent", idempotency_key="ver_v")
 
-    t_waiting = task_store.create(contract, context, task_id="task_wait")
+    t_waiting = task_store.create(contract, context, task_id="task_wait", repo_root=str(tmp_path))
     task_store.transition(t_waiting.task_id, TaskStatus.ACTIVE, reason="act", actor="agent", idempotency_key="act_w")
     task_store.transition(t_waiting.task_id, TaskStatus.WAITING, reason="wait", actor="agent", idempotency_key="wait_w")
 
-    t_blocked = task_store.create(contract, context, task_id="task_block")
+    t_blocked = task_store.create(contract, context, task_id="task_block", repo_root=str(tmp_path))
     task_store.transition(t_blocked.task_id, TaskStatus.ACTIVE, reason="act", actor="agent", idempotency_key="act_b")
     task_store.transition(t_blocked.task_id, TaskStatus.BLOCKED, reason="block", actor="agent", idempotency_key="block_b")
+    trace_context.reset_context(tenant_token)
 
     # Manually backdate heartbeats after transitions complete
     with closing(sqlite3.connect(db)) as con:
@@ -121,7 +124,7 @@ def test_task_heartbeat_and_extended_reap(tmp_path: Path) -> None:
         )
         con.commit()
 
-    reaped = task_store.reap_expired_heartbeats()
+    reaped = task_store.reap_expired_heartbeats(repo_root=tmp_path, tenant="tenant-a")
     assert "task_act" in reaped
     assert "task_ver" in reaped
     assert "task_wait" in reaped
