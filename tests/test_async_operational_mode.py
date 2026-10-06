@@ -9,6 +9,7 @@ import pytest
 
 import local_ai_hub.async_jobs as async_jobs
 from local_ai_hub.async_jobs import AsyncJobManager
+from local_ai_hub.operational_mode import operational_mode_gate_error
 
 
 class _Artifacts:
@@ -39,14 +40,16 @@ def _states(manager):
 def test_gaming_rejects_new_inference_before_database_insert(tmp_path, monkeypatch):
     manager = _manager(tmp_path)
     monkeypatch.setattr(async_jobs, "load_operational_mode", lambda _path: _mode("gaming"), raising=False)
+    monkeypatch.setattr(async_jobs, "operational_mode_gate_error", operational_mode_gate_error, raising=False)
     try:
         result = manager.submit("tenant-a", "reason", {"task": "blocked"}, dispatch_delay_seconds=30)
 
         assert result["success"] is False
-        assert result["error_code"] == "operational_mode_blocked"
-        assert result["terminal"] is True
-        assert result["retryable"] is False
-        assert result["operational_mode"] == "gaming"
+        assert result["mode"] == "gaming"
+        assert result["error"] == "hub paused: gaming mode active"
+        assert result["terminal"] is False
+        assert result["retryable"] is True
+        assert 0 < result["retry_after_seconds"] <= 10
         assert _states(manager) == {}
     finally:
         manager.close()
@@ -140,7 +143,7 @@ def test_mode_change_at_executor_boundary_prevents_start(tmp_path, monkeypatch, 
     monkeypatch.setattr(manager, "_invoke_executor_if_allowed", pause_at_boundary)
     try:
         submitted = manager.submit(
-            "tenant-a", action, {"task": "mode start race"}, dispatch_delay_seconds=30
+            "tenant-a", action, {"task": "mode start race"}, dispatch_delay_seconds=0
         )
         manager._dispatch(submitted["job_id"])
         assert boundary_entered.wait(1)

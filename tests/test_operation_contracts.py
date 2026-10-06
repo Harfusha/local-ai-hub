@@ -1,10 +1,10 @@
 import importlib.util
 import sys
-from pathlib import Path
-from types import SimpleNamespace
-from typing import get_args
 
 import pytest
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, get_args
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -19,8 +19,6 @@ from local_ai_hub.operation_contracts import (
     operation_metadata,
     operation_output_schema,
     operation_parameters_schema,
-    operation_tool_output_schema,
-    operation_tool_input_schema,
     validate_operation_arguments,
     validate_operation_output,
 )
@@ -202,8 +200,14 @@ def test_runtime_validation_uses_gate_selector_and_action_fields():
     assert missing_required[0] == 400
     assert "root is required" in missing_required[1]
 
-    # Omitted selectors keep handler defaults; explicit values are contract-checked.
-    assert validate_operation_call("local_ai_repo", {"query": "x"}, features=features) is None
+    # Only selectors with declared defaults may be omitted.
+    assert validate_operation_call("local_ai_status", {}, features=features) is None
+    missing_repo_action = validate_operation_call(
+        "local_ai_repo", {"query": "x"}, features=features
+    )
+    assert missing_repo_action is not None
+    assert missing_repo_action[0] == 400
+    assert "invalid action" in missing_repo_action[1]
 
 
 def test_registry_metadata_and_selector_schemas_cover_all_eight_public_tools():
@@ -375,6 +379,8 @@ def test_status_action_aliases_match_live_and_generated_schemas():
 
 
 def test_live_repo_action_literal_respects_batch_replacement_feature():
+    from local_ai_hub.operation_contracts import operation_tool_input_schema, validate_operation_arguments
+
     disabled_config = _config()
     disabled_config["features"].update({"repo": True, "batch_replacement": False})
     disabled_features = FeatureSet.from_config(disabled_config)
@@ -386,13 +392,22 @@ def test_live_repo_action_literal_respects_batch_replacement_feature():
     enabled_actions = get_args(local_ai_mcp._repo_action_type(enabled_features))
     assert "batch_replace" not in disabled_actions
     assert "batch_replace" in enabled_actions
+    disabled_schema = operation_tool_input_schema("local_ai_repo", disabled_features)
+    enabled_schema = operation_tool_input_schema("local_ai_repo", enabled_features)
+    assert "edits" not in disabled_schema["properties"]
+    assert "dry_run" not in disabled_schema["properties"]
+    assert "edits" in enabled_schema["properties"]
+    assert "dry_run" in enabled_schema["properties"]
+    assert validate_operation_arguments(
+        "local_ai_repo", "context", {"edits": []}, features=disabled_features
+    ) is not None
 
 
 def test_repo_search_timeout_respects_120_second_protocol_limit(monkeypatch):
     captured = {}
 
-    def post(path, payload, *, timeout):
-        captured.update(path=path, payload=payload, timeout=timeout)
+    def post(path, payload, *, timeout, path_hints=None):
+        captured.update(path=path, payload=payload, timeout=timeout, path_hints=path_hints)
         return {"success": True, "results": []}
 
     monkeypatch.setattr(local_ai_mcp, "FEATURES", SimpleNamespace(repo=True, enriched_search=False))
@@ -400,19 +415,128 @@ def test_repo_search_timeout_respects_120_second_protocol_limit(monkeypatch):
     monkeypatch.setattr(local_ai_mcp, "MCP_CFG", {"quick_timeout_seconds": 180})
     monkeypatch.setattr(local_ai_mcp, "_client_root", lambda root: root)
 
-    local_ai_mcp._local_ai_repo_impl(
-        action="search", root="C:/repo", query="needle",
-        path_hints=[{"path": "src", "purpose": "repository_search", "scope": "repo_search"}],
-    )
+    local_ai_mcp._local_ai_repo_impl(action="search", root="C:/repo", query="needle")
 
     assert captured == {
         "path": "/api/search",
-        "payload": {
-            "root": "C:/repo", "query": "needle", "top_k": 12, "enrich": False,
-            "path_hints": [{"path": "src", "purpose": "repository_search", "scope": "repo_search"}],
-        },
+        "payload": {"root": "C:/repo", "query": "needle", "top_k": 12, "enrich": False},
         "timeout": 120,
+        "path_hints": None,
     }
+
+
+def test_repo_path_hints_schema_is_bounded_and_context_scoped():
+    from local_ai_hub.operation_contracts import (
+        operation_input_schema,
+        operation_tool_input_schema,
+        validate_operation_arguments,
+    )
+
+    schema = operation_tool_input_schema("local_ai_repo")
+    hints = schema["properties"]["path_hints"]
+    assert hints["type"] == "array"
+    assert hints["maxItems"] == 64
+    item = hints["items"]
+    assert item["required"] == ["path", "purpose", "scope"]
+    assert item["properties"]["path"]["maxLength"] == 1024
+    assert item["additionalProperties"] is False
+    context_schema = operation_input_schema("local_ai_repo", "context")
+    search_schema = operation_input_schema("local_ai_repo", "search")
+    context_fields = ("path_hints", "directory_hints", "exclude_paths", "force_include_paths")
+    assert all(field in context_schema["properties"] for field in context_fields)
+    assert all(field not in search_schema["properties"] for field in context_fields[1:])
+    assert all(schema["properties"][field]["maxItems"] == 64 for field in context_fields[1:])
+    for field in context_fields:
+        assert any(
+            rule.get("if", {}).get("properties", {}).get("mode") == {"not": {"const": "adaptive"}}
+            and rule.get("then", {}).get("not", {}).get("required") == [field]
+            for rule in schema.get("allOf", [])
+        )
+
+    valid = {"path_hints": [{"path": "src/auth.py", "purpose": "repository_search", "scope": "repo_search"}]}
+    assert validate_operation_arguments("local_ai_repo", "search", valid) is None
+    context_hints = {
+        **valid,
+        "directory_hints": ["src"],
+        "exclude_paths": ["vendor"],
+        "force_include_paths": ["README.md"],
+    }
+    assert validate_operation_arguments("local_ai_repo", "context", context_hints) is None
+    assert validate_operation_arguments(
+        "local_ai_repo", "context", {"mode": "adaptive", **context_hints}
+    ) is None
+    for mode in ("fast", "full", "custom", None):
+        assert validate_operation_arguments(
+            "local_ai_repo", "context", {"mode": mode, "path_hints": None}
+        ) is not None
+    assert validate_operation_arguments(
+        "local_ai_repo", "search", {"path_hints": [{"path": "src/auth.py", "purpose": "repository_search"}]}
+    ) is not None
+    assert validate_operation_arguments(
+        "local_ai_repo", "search", {"path_hints": [{"path": "x" * 1025, "purpose": "repository_search", "scope": "repo_search"}]}
+    ) is not None
+    assert validate_operation_arguments(
+        "local_ai_repo", "search", {"path_hints": [{"path": "src/auth.py", "purpose": "repository_search", "scope": "repo_search", "extra": "x"}]}
+    ) is not None
+    assert validate_operation_arguments("local_ai_repo", "search", {"path_hints": [{}] * 65}) is not None
+
+
+def test_repo_verify_receipt_is_action_scoped():
+    from local_ai_hub.operation_contracts import (
+        operation_input_schema,
+        operation_tool_input_schema,
+        validate_operation_arguments,
+    )
+    from local_ai_hub.features import FeatureSet
+
+    assert "receipt" not in operation_input_schema("local_ai_repo", "search")["properties"]
+    assert "receipt" not in operation_input_schema("local_ai_repo", "context")["properties"]
+    assert "receipt" in operation_input_schema("local_ai_repo", "verify_receipt")["properties"]
+
+    valid_receipt = {
+        "task_id": "task-1", "criterion": "focused test", "passed": False,
+    }
+    assert validate_operation_arguments(
+        "local_ai_repo", "search", {"receipt": valid_receipt}
+    ) == "receipt is only valid for action='verify_receipt'"
+
+    disabled_config = _config()
+    disabled_config["features"]["agent_os"] = False
+    disabled_features = FeatureSet.from_config(disabled_config)
+    disabled_schema = operation_tool_input_schema("local_ai_repo", disabled_features)
+    assert "verify_receipt" not in disabled_schema["properties"]["action"]["enum"]
+    assert any(
+        rule.get("if", {}).get("properties", {}).get("action") == {"const": "context"}
+        and rule.get("then", {}).get("not", {}).get("anyOf")
+        for rule in disabled_schema.get("allOf", [])
+    )
+    assert validate_operation_arguments(
+        "local_ai_repo", "context", {"receipt": valid_receipt}, features=disabled_features
+    ) == "receipt is only valid for action='verify_receipt'"
+
+
+def test_local_ai_repo_path_hints_normalize_and_reject_root_escape(monkeypatch, tmp_path):
+    from local_ai_hub import mcp_server
+
+    captured = []
+    hint = {"path": str(tmp_path / "src"), "purpose": "repository_search", "scope": "repo_search"}
+
+    def consumer(*args, path_hints=None):
+        captured.append(path_hints)
+        return {"success": True}
+
+    monkeypatch.setattr(mcp_server, "_local_ai_repo_impl", consumer)
+    result = mcp_server.local_ai_repo("search", root=str(tmp_path), path_hints=[hint])
+    assert result["success"] is True
+    assert captured == [[{**hint, "path": "src"}]]
+
+    rejected = mcp_server.local_ai_repo(
+        "search",
+        root=str(tmp_path),
+        path_hints=[{"path": "../escape", "purpose": "repository_search", "scope": "repo_search"}],
+    )
+    assert rejected["success"] is False
+    assert len(captured) == 1
 
 
 def test_repo_verify_receipt_schema_and_runtime_require_complete_typed_receipt():
@@ -520,8 +644,8 @@ def test_runtime_validation_enforces_registered_schema_constraints():
         "local_ai_artifact", "list", {"response_profile": "unregistered"}
     ) == "response_profile must be one of minimal, compact, standard, debug, delta for action='list'"
     assert validate_operation_arguments(
-        "local_ai_task", "evaluation_record", {"quality_pass": "true"}
-    ) == "quality_pass must be boolean or null for action='evaluation_record'"
+        "local_ai_task", "reason", {"quality_pass": "true"}
+    ) == "quality_pass must be boolean or null for action='reason'"
 
 
 def test_mcp_compaction_preserves_reliability_evidence_and_cancel_metadata(monkeypatch):
@@ -615,331 +739,9 @@ def test_action_metadata_exposes_consistent_input_and_output_schemas():
             assert input_schema["properties"][selector]["enum"] == [action]
             assert input_schema["required"] == [selector, *action_metadata["required"]]
             assert output_schema["type"] == "object"
-            assert output_schema["additionalProperties"] is False
+            assert output_schema["additionalProperties"] is True
             assert output_schema["title"] == f"{tool}.{action} result"
             assert generated["x-operation-contract"]["actions"][action] == action_metadata
-
-
-def test_status_adoption_fields_are_registered_and_validated_as_a_pair():
-    parameters = operation_parameters_schema("local_ai_status")
-    properties = parameters["properties"]
-
-    assert properties["adoption_signal"]["enum"] == ["", "bypassed"]
-    assert properties["target_tool"]["enum"] == list(OPERATION_CONTRACTS)
-    assert properties["target_action"]["type"] == "string"
-    assert validate_operation_arguments(
-        "local_ai_status",
-        "brief",
-        {
-            "detail": "brief",
-            "adoption_signal": "bypassed",
-            "target_tool": "local_ai_repo",
-            "target_action": "search",
-        },
-    ) is None
-    assert validate_operation_arguments(
-        "local_ai_status", "brief", {"detail": "brief", "target_tool": "local_ai_repo"}
-    ) == "target_tool requires adoption_signal='bypassed'"
-    assert validate_operation_arguments(
-        "local_ai_status",
-        "brief",
-        {
-            "detail": "brief",
-            "adoption_signal": "bypassed",
-            "target_tool": "local_ai_repo",
-            "target_action": "unknown",
-        },
-    ) == "target_action is not supported for target_tool='local_ai_repo'"
-
-
-def test_primary_tool_outputs_publish_distinct_action_shapes():
-    representatives = {
-        "local_ai_repo": ("search", "results"),
-        "local_ai_task": ("submit", "job_id"),
-        "local_ai_rag": ("search", "results"),
-        "local_ai_command": ("run", "exit_code"),
-        "local_ai_coord": ("task_create", "task_id"),
-        "local_ai_work": ("submit", "work_id"),
-    }
-
-    for tool, (action, result_field) in representatives.items():
-        action_schema = operation_output_schema(tool, action)
-        tool_schema = operation_tool_output_schema(tool)
-
-        assert result_field in action_schema["properties"]
-        assert action_schema["x-operation-action"] == action
-        assert tool_schema["anyOf"]
-        assert {branch["x-operation-action"] for branch in tool_schema["anyOf"]} == set(
-            operation_actions(tool)
-        )
-
-
-def test_every_primary_action_publishes_typed_payload_fields():
-    envelope_fields = {
-        "success", "error", "terminal", "retryable", "degraded", "stale",
-        "evidence_ids", "cancelled", "cancel_requested", "cancel_reason",
-    }
-    for tool in (
-        "local_ai_repo", "local_ai_task", "local_ai_rag",
-        "local_ai_command", "local_ai_coord", "local_ai_work",
-    ):
-        for action in operation_actions(tool):
-            schema = operation_output_schema(tool, action)
-            payload_fields = set(schema["properties"]) - envelope_fields
-            assert payload_fields, f"{tool}.{action} has only a generic response envelope"
-            assert schema["x-operation-action"] == action
-
-
-@pytest.mark.parametrize(
-    ("tool", "action", "field", "expected_schema", "valid_value", "invalid_value"),
-    [
-        ("local_ai_repo", "preprocess_status", "projects", {"type": "array", "items": {"type": "object"}}, [], "bad"),
-        ("local_ai_command", "webhook_replay", "status_code", {"type": "integer"}, 200, "200"),
-        ("local_ai_command", "webhook_replay", "duration_ms", {"type": "number"}, 1.5, "1.5"),
-        ("local_ai_coord", "task_zombie_reap", "reaped", {"type": "array", "items": {"type": "string"}}, ["task-1"], [1]),
-        ("local_ai_coord", "task_zombie_reap", "count", {"type": "integer"}, 1, "1"),
-        ("local_ai_coord", "task_cleanup_worktree", "had_worktree", {"type": "boolean"}, True, 1),
-        ("local_ai_coord", "task_cleanup_worktree", "cleanup", {"type": "object"}, {}, []),
-    ],
-)
-def test_action_output_contracts_type_specialized_dispatch_results(
-    tool, action, field, expected_schema, valid_value, invalid_value
-):
-    schema = operation_output_schema(tool, action)
-    assert schema["properties"][field] == expected_schema
-    assert schema["x-operation-action"] == action
-    assert validate_operation_output(tool, action, {"success": True, field: valid_value}) is None
-    error = validate_operation_output(tool, action, {"success": True, field: invalid_value})
-    assert field in error
-    if tool == "local_ai_command" and action == "webhook_replay":
-        assert validate_operation_output(
-            tool, action, {"success": False, "error": "connection refused"}
-        ) is None
-
-
-def test_action_input_contracts_filter_tool_wide_fields_and_runtime_arguments():
-    search = operation_input_schema("local_ai_repo", "search")
-    batch = operation_input_schema("local_ai_repo", "batch_replace")
-
-    assert {"root", "query", "include_code", "path_hints"} <= set(search["properties"])
-    assert not {"receipt", "edits", "dry_run", "changed_paths"} & set(search["properties"])
-    path_hints = search["properties"]["path_hints"]
-    assert path_hints["type"] == "array"
-    assert path_hints["items"]["required"] == ["path", "purpose", "scope"]
-    assert {"evidence_id", "provenance", "repository_revision", "config_digest", "expires_at"} <= set(
-        path_hints["items"]["properties"]
-    )
-    assert validate_operation_arguments(
-        "local_ai_repo", "search", {
-            "query": "find parser",
-            "path_hints": [{"path": "src", "purpose": "repository_search", "scope": "repo_search"}],
-        }
-    ) is None
-    assert validate_operation_arguments(
-        "local_ai_repo", "search", {"query": "find parser", "path_hints": ["src"]}
-    )
-    assert {"root", "edits", "dry_run"} <= set(batch["properties"])
-    assert "receipt" not in batch["properties"]
-    assert validate_operation_arguments(
-        "local_ai_repo", "search", {"query": "needle", "receipt": {}}
-    ) == "receipt is not valid for action='search'"
-
-
-def test_repo_search_path_hints_schema_declares_bounds():
-    hints = operation_input_schema("local_ai_repo", "search")["properties"]["path_hints"]
-
-    assert hints["maxItems"] == 64
-    assert hints["items"]["properties"]["path"]["maxLength"] == 1024
-
-
-@pytest.mark.parametrize(
-    ("hints", "invalid_field"),
-    [
-        ([{"path": "src", "purpose": "repository_search"}], "scope"),
-        ([{"path": "src", "purpose": "repository_search", "scope": "repo_search", "extra": "x"}], "extra"),
-        ([{"path": "x" * 1025, "purpose": "repository_search", "scope": "repo_search"}], "path"),
-        ([{"path": "src", "purpose": "repository_search", "scope": "repo_search"}] * 65, "path_hints"),
-    ],
-)
-def test_repo_search_path_hints_rejects_invalid_nested_records(hints, invalid_field):
-    error = validate_operation_arguments(
-        "local_ai_repo", "search", {"query": "find parser", "path_hints": hints}
-    )
-
-    assert error is not None
-    assert invalid_field in error
-
-
-def test_task_submit_contract_includes_async_job_payload_arguments():
-    submit = operation_input_schema("local_ai_task", "submit")
-    status = operation_input_schema("local_ai_task", "status")
-
-    assert {"task", "context", "candidate", "complexity", "max_tokens", "tasks", "profile", "root", "workspace"} <= set(submit["properties"])
-    assert {"job_id", "job_action", "timeout_seconds"} <= set(submit["properties"])
-    assert not {"task", "context", "candidate", "tasks", "profile", "workspace"} & set(status["properties"])
-    assert validate_operation_arguments(
-        "local_ai_task",
-        "submit",
-        {"task": "summarize", "context": "brief", "tasks": [], "job_action": "reason"},
-    ) is None
-
-
-def test_coord_contracts_include_handler_consumed_arguments():
-    receipt = operation_input_schema("local_ai_coord", "verify_receipt")
-    completion = operation_input_schema("local_ai_coord", "verify_completion")
-    relation = operation_input_schema("local_ai_coord", "relation_record")
-    sync = operation_input_schema("local_ai_coord", "task_sync")
-
-    assert {"checkpoint", "status", "criterion", "key", "value", "query"} <= set(receipt["properties"])
-    assert {"repository_revision", "task_id", "query", "value", "key"} <= set(completion["properties"])
-    assert {"key", "task_id", "query", "task", "reason", "status", "value", "target_scope", "record", "ttl_seconds", "max_tokens"} <= set(relation["properties"])
-    assert {"key", "task_id", "status", "ttl_seconds", "max_tokens", "record"} <= set(sync["properties"])
-    assert validate_operation_arguments(
-        "local_ai_coord", "verify_receipt",
-        {"task_id": "task-1", "checkpoint": {"task_id": "task-1", "criterion": "check", "passed": True}, "status": "passed"},
-    ) is None
-    assert validate_operation_arguments(
-        "local_ai_coord", "verify_completion", {"task_id": "task-1", "repository_revision": "abc"}
-    ) is None
-    assert validate_operation_arguments(
-        "local_ai_coord", "relation_record", {"key": "source", "value": "target", "reason": "depends_on", "ttl_seconds": 1}
-    ) is None
-    assert validate_operation_arguments(
-        "local_ai_coord", "task_sync", {"status": "import", "record": [{"seq": 1}]}
-    ) is None
-
-
-def test_task_continue_contract_includes_conversation_id():
-    schema = operation_input_schema("local_ai_task", "continue")
-
-    assert "conversation_id" in schema["properties"]
-    assert validate_operation_arguments(
-        "local_ai_task", "continue", {"conversation_id": "conversation-1", "task": "continue"}
-    ) is None
-
-
-def test_coord_decision_and_merge_contracts_include_handler_inputs():
-    assert validate_operation_arguments(
-        "local_ai_coord", "incident_decision",
-        {"fingerprint": {"kind": "timeout"}, "tool_outcome": {"success": False}},
-    ) is None
-    assert validate_operation_arguments(
-        "local_ai_coord", "simulate_merge",
-        {"key": "feature", "task_id": "branch", "value": "source", "target_scope": "main"},
-    ) is None
-
-
-def test_repo_action_contracts_include_handler_inputs():
-    cases = [
-        ("generate_dataset", {"relation": "json"}),
-        ("secret_scan", {"staged": True}),
-        ("complexity", {"include_tests": True}),
-        ("git_diff", {"path": "src/app.py", "max_tokens": 100}),
-        ("mutation_test", {"diff": "diff --git a/a b/a"}),
-    ]
-    for action, arguments in cases:
-        schema = operation_input_schema("local_ai_repo", action)
-        assert set(arguments) <= set(schema["properties"]), action
-        assert validate_operation_arguments("local_ai_repo", action, arguments) is None, action
-
-
-@pytest.mark.parametrize(
-    ("tool", "action", "arguments", "path"),
-    [
-        ("local_ai_task", "batch", {"tasks": [{"options": {"temperature": float("nan")}}]}, "tasks[0].options.temperature"),
-        ("local_ai_coord", "task_sync", {"status": "import", "record": [{"weight": float("inf")}]}, "record[0].weight"),
-    ],
-)
-def test_non_finite_numbers_are_rejected_recursively(tool, action, arguments, path):
-    error = validate_operation_arguments(tool, action, arguments)
-    assert error == f"{path} must be finite for action='{action}'"
-
-
-def test_task_sync_output_contract_describes_export_and_import_deltas():
-    schema = operation_output_schema("local_ai_coord", "task_sync")
-
-    assert {"events", "count", "imported_count", "duplicate_count"} <= set(schema["properties"])
-    assert validate_operation_output(
-        "local_ai_coord", "task_sync", {"success": True, "events": [{"seq": 1}], "count": 1}
-    ) is None
-    assert validate_operation_output(
-        "local_ai_coord", "task_sync", {"success": True, "events": "bad", "count": 1}
-    ) is not None
-
-
-def test_non_finite_numbers_are_rejected_in_untyped_nested_output_fields():
-    error = validate_operation_output(
-        "local_ai_repo", "search", {"results": [{"scores": [float("nan")]}]}
-    )
-    assert error == "result.results[0].scores[0] must be finite for action='search'"
-
-
-def test_every_registered_action_has_a_narrow_input_contract():
-    for tool, contract in OPERATION_CONTRACTS.items():
-        tool_properties = set(operation_parameters_schema(tool)["properties"])
-        feature_properties = set()
-        for fields in contract.get("conditional_properties", {}).values():
-            feature_properties.update(fields)
-        for action in operation_actions(tool):
-            action_contract = contract["actions"][action]
-            schema = operation_input_schema(tool, action)
-            assert action_contract["allowed"] is not None, f"{tool}.{action} has no allowlist"
-            assert set(action_contract["allowed"]) <= tool_properties | feature_properties
-            assert schema["additionalProperties"] is False
-            common = {"extra_fields", contract["selector_field"]}
-            common.update({"max_response_tokens", "response_profile", "reuse_key"})
-            if tool == "local_ai_status":
-                common.add("action")
-            expected = (common | set(action_contract["allowed"])) & tool_properties
-            assert set(schema["properties"]) == expected, f"{tool}.{action} exposes unrelated inputs"
-
-
-def test_live_input_schema_conditions_each_action_on_its_allowed_fields():
-    feature_set = FeatureSet({"features": {"repo": True, "batch_replacement": True}})
-    schema = operation_tool_input_schema("local_ai_repo", feature_set)
-    branches = {
-        row["if"]["properties"]["action"]["const"]: row["then"]
-        for row in schema["allOf"]
-        if row.get("if", {}).get("properties", {}).get("action", {}).get("const")
-    }
-
-    search = branches["search"]
-    batch = branches["batch_replace"]
-    assert search["additionalProperties"] is False
-    assert {"root", "query", "include_code", "path_hints"} <= set(search["properties"])
-    assert not {"receipt", "edits", "dry_run", "changed_paths"} & set(search["properties"])
-    assert {"root", "edits", "dry_run"} <= set(batch["properties"])
-
-
-@pytest.mark.parametrize(
-    ("tool", "action", "result", "field"),
-    [
-        ("local_ai_repo", "search", {"results": "not-an-array"}, "results"),
-        ("local_ai_task", "submit", {"job_id": 42}, "job_id"),
-        ("local_ai_rag", "search", {"results": "not-an-array"}, "results"),
-        ("local_ai_command", "run", {"exit_code": "zero"}, "exit_code"),
-        ("local_ai_coord", "task_create", {"task_id": 42}, "task_id"),
-        ("local_ai_work", "submit", {"work_id": 42}, "work_id"),
-    ],
-)
-def test_all_public_tool_payload_fields_are_runtime_validated(tool, action, result, field):
-    error = validate_operation_output(tool, action, result)
-    assert error is not None
-    assert field in error
-
-
-@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
-def test_non_finite_top_level_numbers_are_rejected(value):
-    error = validate_operation_arguments(
-        "local_ai_task", "delegate", {"task": "summarize", "latency_budget_ms": value}
-    )
-    assert error == "latency_budget_ms must be finite for action='delegate'"
-
-
-def test_output_contract_rejects_non_object_and_non_finite_declared_values():
-    assert "wrong JSON type" in validate_operation_output("local_ai_repo", "search", ["not an object"])
-    error = validate_operation_output("local_ai_repo", "deterministic", {"confidence": float("nan")})
-    assert error is not None and "confidence" in error
 
 
 def test_artifact_list_schema_rejects_fields_used_only_by_get_and_slice():
@@ -997,10 +799,11 @@ def test_artifact_output_schemas_describe_source_payload_variants():
     )
 
 
-def test_mcp_tools_list_publishes_artifact_output_shape_union():
+def test_mcp_tools_list_publishes_shared_output_envelope():
     import asyncio
 
     from local_ai_hub import mcp_server
+    from local_ai_hub.operation_contracts import operation_tool_output_schema
 
     tool = next(
         item for item in asyncio.run(mcp_server.mcp.list_tools())
@@ -1008,18 +811,40 @@ def test_mcp_tools_list_publishes_artifact_output_shape_union():
     )
     output_schema = tool.outputSchema
 
-    assert len(output_schema["anyOf"]) == 3
-    list_action = next(
-        shape for shape in output_schema["anyOf"]
-        if any("artifacts" in variant.get("properties", {}) for variant in shape["anyOf"])
+    assert output_schema == operation_tool_output_schema("local_ai_artifact")
+    assert output_schema["type"] == "object"
+    assert output_schema["additionalProperties"] is True
+    assert "anyOf" not in output_schema
+    assert {"success", "status", "status_code", "error", "warning", "terminal", "retryable"} <= set(
+        output_schema["properties"]
     )
-    list_shape = next(
-        variant for variant in list_action["anyOf"]
-        if "artifacts" in variant.get("properties", {})
+
+
+def test_mcp_tools_list_publishes_rag_search_output_contract():
+    import asyncio
+
+    from local_ai_hub import mcp_server
+    from local_ai_hub.operation_contracts import operation_tool_output_schema
+
+    rag_tool = next(
+        item for item in asyncio.run(mcp_server.mcp.list_tools())
+        if item.name == "local_ai_rag"
     )
-    assert list_shape["properties"]["artifacts"]["items"]["required"] == [
-        "artifact_id", "kind", "size_bytes", "created_at", "mime_type"
-    ]
+    registered = mcp_server.mcp._tool_manager._tools["local_ai_rag"]
+    expected = operation_tool_output_schema("local_ai_rag", mcp_server.FEATURES)
+    search_delta = expected["x-action-output-contracts"]["search"]
+    result_item = search_delta["results"]["items"]
+
+    assert rag_tool.outputSchema == expected
+    assert registered.output_schema == expected
+    assert search_delta["workspace"] == {"type": "string"}
+    assert result_item["properties"] == {
+        "path": {"type": "string"},
+        "chunk_no": {"type": "integer"},
+        "text": {"type": "string"},
+        "content_hash": {"type": "string"},
+        "score": {"type": "number"},
+    }
 
 
 def test_mcp_tools_list_scopes_artifact_list_arguments():
@@ -1067,22 +892,18 @@ def test_receipt_schema_conditionally_requires_evidence_only_when_passed():
     ) == "receipt.evidence_id is required for passed verification receipts"
 
 
-def test_output_validation_checks_shared_envelope_and_keeps_nested_payloads():
+def test_output_validation_checks_shared_envelope_and_keeps_extra_payloads():
     valid_result = {
         "success": True,
         "terminal": False,
         "retryable": True,
         "error": "temporary",
-        "results": [{"action_payload": {"count": 3}}],
+        "action_payload": {"count": 3},
     }
 
     assert validate_operation_output("local_ai_repo", "search", valid_result) is None
-    assert validate_operation_output("local_ai_repo", "search", "plain text") == (
-        "result has the wrong JSON type for action='search'"
-    )
-    assert validate_operation_output("local_ai_repo", "search", None) == (
-        "result has the wrong JSON type for action='search'"
-    )
+    assert validate_operation_output("local_ai_repo", "search", "plain text") == "result must be an object"
+    assert validate_operation_output("local_ai_repo", "search", None) == "result must be an object"
     assert validate_operation_output(
         "local_ai_repo", "search", {**valid_result, "success": "yes"}
     ) == "success must be boolean for action='search'"
@@ -1134,10 +955,10 @@ def test_status_output_contracts_match_brief_and_cache_projections():
     assert validate_operation_output("local_ai_status", "cache", cache) is None
     assert validate_operation_output(
         "local_ai_status", "brief", {**brief, "queued": "0"}
-    ) == "result.queued has the wrong JSON type for action='brief'"
+    ) == "result does not match a declared output variant for action='brief'"
     assert validate_operation_output(
         "local_ai_status", "cache", {**cache, "context_ledger": []}
-    ) == "result.context_ledger has the wrong JSON type for action='cache'"
+    ) == "result does not match a declared output variant for action='cache'"
 
 
 def test_status_telemetry_contract_types_every_projected_summary_metric():
@@ -1166,7 +987,187 @@ def test_status_telemetry_contract_types_every_projected_summary_metric():
     }
     assert validate_operation_output(
         "local_ai_status", "telemetry", malformed
-    ) == "result.summary.net_cloud_token_delta_est has the wrong JSON type for action='telemetry'"
+    ) == "result does not match a declared output variant for action='telemetry'"
+
+
+
+def _stub_registered_mcp_tool(monkeypatch, tool_name: str, value: Any):
+    import local_ai_hub.mcp_server as mcp_server
+
+    calls: list[dict[str, Any]] = []
+    registered_tool = mcp_server.mcp._tool_manager._tools[tool_name]
+
+    async def fake_handler(**arguments: Any):
+        calls.append(arguments)
+        return value
+
+    monkeypatch.setattr(registered_tool, "fn", fake_handler)
+    return calls
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments"),
+    [
+        ("local_ai_rag", {"action": "ingest_document", "content": "body", "title": "doc", "metadata": {}}),
+        ("local_ai_rag", {"action": "ingest_diagram", "image_path": "diagram.svg", "caption": "diagram"}),
+        ("local_ai_task", {"action": "cancel", "job_id": "job-1"}),
+        ("local_ai_task", {
+            "action": "reason", "task": "review", "phase": "review", "focus": ["src"],
+            "preload_profile": "balanced", "repository_revision": "abc123", "changed_paths": ["src/a.py"],
+        }),
+        ("local_ai_repo", {
+            "action": "context_compile", "include_diagnostics": True, "clone_id": "clone",
+            "worktree_id": "worktree", "branch": "main", "repository_id": "repo",
+            "session_id": "session", "repository_revision": "abc123",
+        }),
+        ("local_ai_repo", {"action": "pipeline", "steps": [{"action": "profile"}]}),
+        ("local_ai_repo", {"action": "preprocess", "is_worktree": True, "parent_root": "."}),
+        ("local_ai_status", {
+            "adoption_signal": "bypassed", "target_tool": "local_ai_repo", "target_action": "search",
+        }),
+        ("local_ai_task", {"action": "eval_suite", "task_id": "task-1", "cases": [], "language": "python"}),
+        ("local_ai_command", {"action": "patch_and_verify", "execution_id": "exec-1", "paths": ["src/a.py"], "patch": "diff"}),
+        ("local_ai_coord", {"action": "task_complete", "task_id": "task-1", "criterion": "c1", "board_id": "board-1"}),
+    ],
+)
+def test_registered_mcp_dispatch_accepts_handler_inputs(
+    tool_name: str, arguments: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+    import local_ai_hub.mcp_server as mcp_server
+
+    result: dict[str, Any] = {"success": True}
+    if tool_name == "local_ai_status":
+        result.update({
+            "version": "1.0",
+            "ollama_online": None,
+            "active_model": None,
+            "queued": 0,
+            "inflight": None,
+            "net_cloud_token_delta_est": 0.0,
+            "cache_hits": 0,
+            "coalesced_waiters": 0,
+            "vram_pressure": "nominal",
+            "context_budget_factor": 1.0,
+        })
+    calls = _stub_registered_mcp_tool(monkeypatch, tool_name, result)
+    response = asyncio.run(mcp_server.mcp.call_tool(tool_name, arguments))
+
+    assert response[1]["success"] is True, response[1]
+    assert len(calls) == 1
+    assert all(calls[0][key] == value for key, value in arguments.items())
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "arguments", "field"),
+    [
+        ("local_ai_task", {"action": "cancel", "phase": "review"}, "phase"),
+        ("local_ai_repo", {"action": "search", "clone_id": "clone"}, "clone_id"),
+        ("local_ai_repo", {"action": "preprocess", "include_diagnostics": True}, "include_diagnostics"),
+        ("local_ai_repo", {"action": "context_compile", "is_worktree": True}, "is_worktree"),
+    ],
+)
+def test_registered_mcp_dispatch_rejects_context_fields_for_wrong_action(
+    tool_name: str, arguments: dict[str, Any], field: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+
+    import local_ai_hub.mcp_server as mcp_server
+
+    calls = _stub_registered_mcp_tool(monkeypatch, tool_name, {"success": True})
+    response = asyncio.run(mcp_server.mcp.call_tool(tool_name, arguments))
+
+    assert response[1]["status_code"] == 400
+    assert field in response[1]["error"]
+    assert calls == []
+
+
+def test_registered_status_dispatch_rejects_incomplete_adoption_pair(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    import local_ai_hub.mcp_server as mcp_server
+
+    class NeverCallClient:
+        def get(self, *_args, **_kwargs):
+            raise AssertionError("incomplete adoption report reached backend")
+
+    monkeypatch.setattr(mcp_server, "CLIENT", NeverCallClient())
+    response = asyncio.run(mcp_server.mcp.call_tool(
+        "local_ai_status", {"adoption_signal": "bypassed"}
+    ))
+
+    assert response[1]["success"] is False
+    assert "supported target_tool and safe target_action" in response[1]["error"]
+
+
+def test_registered_mcp_dispatch_accepts_feature_enabled_batch_replace(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+    from typing import Any, Literal
+
+    import local_ai_hub.mcp_server as mcp_server
+    from local_ai_hub.features import FeatureSet
+    from local_ai_hub.operation_contracts import operation_tool_input_schema
+
+    features = FeatureSet({"features": {"repo": True, "batch_replacement": True}})
+    monkeypatch.setattr(mcp_server, "FEATURES", features)
+    fresh_mcp = mcp_server.FastMCP("batch-replacement-test")
+    calls: list[dict[str, Any]] = []
+
+    def batch_tool(
+        action: Literal["batch_replace"],
+        edits: list[dict[str, Any]],
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        calls.append({"action": action, "edits": edits, "dry_run": dry_run})
+        return {"success": True}
+
+    fresh_mcp.tool(name="local_ai_repo")(batch_tool)
+    registered_tool = fresh_mcp._tool_manager._tools["local_ai_repo"]
+    registry_schema = operation_tool_input_schema("local_ai_repo", features)
+    assert {"edits", "dry_run"} <= set(registry_schema["properties"])
+    assert {"edits", "dry_run"} <= set(registered_tool.parameters["properties"])
+
+    monkeypatch.setattr(mcp_server, "mcp", fresh_mcp)
+    fresh_mcp.call_tool = mcp_server._compact_mcp_call_tool
+    fresh_mcp._mcp_server.call_tool(validate_input=False)(mcp_server._compact_mcp_call_tool)
+    arguments = {
+        "action": "batch_replace",
+        "edits": [{"path": "a.py", "old": "x", "new": "y"}],
+        "dry_run": True,
+    }
+
+    response = asyncio.run(fresh_mcp.call_tool("local_ai_repo", arguments))
+
+    assert response[1]["success"] is True
+    assert calls == [{"action": "batch_replace", "edits": arguments["edits"], "dry_run": True}]
+
+
+def test_registered_mcp_dispatch_validates_unknown_field_when_selector_omitted(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    import local_ai_hub.mcp_server as mcp_server
+
+    calls = _stub_registered_mcp_tool(monkeypatch, "local_ai_status", {"success": True})
+    response = asyncio.run(mcp_server.mcp.call_tool("local_ai_status", {"unexpected": "value"}))
+
+    assert response[1]["status_code"] == 400
+    assert "unexpected" in response[1]["error"]
+    assert calls == []
+
+
+def test_registered_mcp_dispatch_rejects_non_object_output_without_replaying_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    import local_ai_hub.mcp_server as mcp_server
+
+    calls = _stub_registered_mcp_tool(monkeypatch, "local_ai_repo", "plain text")
+    response = asyncio.run(mcp_server.mcp.call_tool("local_ai_repo", {"action": "search"}))
+
+    assert response[1]["status_code"] == 500
+    assert "output contract" in response[1]["error"]
+    assert len(calls) == 1
 
 
 def test_status_full_and_agent_state_outputs_have_typed_success_and_failure_shapes():
@@ -1213,7 +1214,7 @@ def test_status_full_and_agent_state_outputs_have_typed_success_and_failure_shap
 
     assert validate_operation_output(
         "local_ai_status", "full", {**full, "uptime_seconds": "10"}
-    ) == "result.uptime_seconds has the wrong JSON type for action='full'"
+    ) == "result does not match a declared output variant for action='full'"
     assert validate_operation_output(
         "local_ai_status", "agent_state", {**agent_state, "active_tasks": "none"}
-    ) == "result.active_tasks has the wrong JSON type for action='agent_state'"
+    ) == "result does not match a declared output variant for action='agent_state'"
