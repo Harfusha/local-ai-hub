@@ -241,6 +241,9 @@ class AgentStateStore:
         ("table", "lease_waits", "lease_waits"): {
             "a866368052df7b9433b7a44d47dc262c5a76a06058b878e0249ccee791dfb17c",
             "e9a38812fd120d00228269c2e5f28f02172702355abd9127562ccf78a5c93612",
+            # ScopeLeaseStore's namespace-key rebuild/rename quotes the table name.
+            # Same NOT NULL columns and root-inclusive PK; no SQL normalization widening.
+            "314dbe78e360c6c00133c85323b9349936d9cb2e87121e60c8ffb733b46d20aa",
         },
         ("table", "leases", "leases"): {
             "f7a165f4f68106fb33b5855d0a66532e63fde78b2675380b67fe8112096f8edd",
