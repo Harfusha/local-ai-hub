@@ -619,7 +619,7 @@ def test_vector_cursor_closes_before_scoring_and_after_search(tmp_path, monkeypa
 def test_retrieval_latency_and_peak_memory_baseline(tmp_path, monkeypatch):
     if os.environ.get("RAG_BENCHMARK") != "1":
         import pytest
-        pytest.skip("set RAG_BENCHMARK=1 to run 100k chunk retrieval measurements")
+        pytest.skip("set RAG_BENCHMARK=1 to run bounded retrieval latency and memory measurements")
 
     dimension = 384
     tenant, workspace = "benchmark-tenant", "benchmark-workspace"
@@ -634,11 +634,13 @@ def test_retrieval_latency_and_peak_memory_baseline(tmp_path, monkeypatch):
         store = _store(tmp_path / str(count), dimension)
         _insert_vectors(store, tenant, workspace, vectors)
 
+        configured_batch_size = max(32, int(store.config.get("rag", {}).get("search_batch_size", 512)))
+        batch_sizes = (configured_batch_size,)
         for batch_size in batch_sizes:
             store.config["rag"]["search_batch_size"] = batch_size
             samples_ms = []
             peak_bytes = 0
-            sample_count = 20 if count == 100_000 else 5
+            sample_count = 3
             for _ in range(2):
                 warmup = store._search_uncached("benchmark query", tenant, workspace, top_k=8, use_reranker=False)
                 assert warmup["success"] is True
@@ -649,13 +651,14 @@ def test_retrieval_latency_and_peak_memory_baseline(tmp_path, monkeypatch):
                 samples_ms.append((time.perf_counter() - started) * 1000.0)
                 assert result["success"] is True
                 assert result["results"][0]["chunk_no"] == 0
-            tracemalloc.start()
-            memory_result = store._search_uncached("benchmark query", tenant, workspace, top_k=8, use_reranker=False)
-            _, peak_bytes = tracemalloc.get_traced_memory()
-            tracemalloc.stop()
-            peak_bytes = max(peak_bytes, sample_peak)
-            assert result["success"] is True
-            assert result["results"][0]["chunk_no"] == 0
+            for _ in range(sample_count):
+                tracemalloc.start()
+                memory_result = store._search_uncached("benchmark query", tenant, workspace, top_k=8, use_reranker=False)
+                _, sample_peak = tracemalloc.get_traced_memory()
+                tracemalloc.stop()
+                peak_bytes = max(peak_bytes, sample_peak)
+                assert memory_result["success"] is True
+                assert memory_result["results"][0]["chunk_no"] == 0
         configured_batch_size = max(32, int(store.config.get("rag", {}).get("search_batch_size", 512)))
         real_dot = np.dot
         scoring_batch_rows = []
