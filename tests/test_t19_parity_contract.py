@@ -42,8 +42,8 @@ def test_current_runtime_contract_matches_between_canonical_prompts(tmp_path: Pa
     assert install_contract == update_contract
     expected = (
         "Feature-specific schemas expose only enabled tools/actions and applicable fields",
-        "`path_hints`, `directory_hints`, `exclude_paths`, and `force_include_paths` only in `adaptive` mode",
-        "generated public schema support must be checked in the installed `tools/list`",
+        "HTTP `/api/context/pack` accepts `path_hints`, `directory_hints`, `exclude_paths`, and `force_include_paths` in `adaptive` mode and validates lists. T14 owns that contract.",
+        "Inspect installed generated schemas before using public wire fields.",
         "Overlay order is defaults, primary-worktree `.local-ai.toml`",
         "`required_commands` is not a global switch",
         "Cross-worktree Agent OS memory sharing remains HOLD",
