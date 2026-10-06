@@ -517,6 +517,19 @@ def test_context_http_rejects_malformed_max_tokens_and_guard_fields(tmp_path, mo
         assert malformed["terminal"] is True
         assert malformed["retryable"] is False
 
+        for invalid_budget in (512.0, "512", True):
+            status, invalid = post({"root": str(tmp_path), "query": "x", "max_tokens": invalid_budget})
+            assert status == 400
+            assert invalid["terminal"] is True
+            assert invalid["retryable"] is False
+            assert "max_tokens must be an integer" in invalid["error"]
+
+        status, negative = post({"root": str(tmp_path), "query": "x", "max_tokens": -1})
+        assert status == 400
+        assert negative["terminal"] is True
+        assert negative["retryable"] is False
+        assert "max_tokens must be non-negative" in negative["error"]
+
         status, invalid_mode = post({"root": str(tmp_path), "query": "x", "mode": "unsafe"})
         assert status == 400
         assert "context mode" in invalid_mode["error"]
@@ -740,7 +753,7 @@ def test_context_http_endpoint_defaults_to_adaptive():
     assert 'payload.get("mode", "adaptive")' in source
 
 
-def _path_scan_services(tmp_path, *, indexed_paths=None, index_error=None, inventory_size=0):
+def _path_inventory_services(tmp_path, *, indexed_paths=None, index_error=None, inventory_size=0):
     class Preprocessor:
         def __init__(self):
             self.roots = []
@@ -766,7 +779,7 @@ def _path_scan_services(tmp_path, *, indexed_paths=None, index_error=None, inven
                 self.iterated += 1
                 yield tmp_path / f"inventory/{index:04}.py"
 
-        def context_pack_paths(self, root, query, paths, max_tokens=2600, top_k=10):
+        def context_pack_paths(self, root, query, paths, max_tokens=2600, top_k=10, **path_controls):
             self.candidates = list(paths)
             evidence = [
                 {"path": path, "evidence_id": f"e-{index}", "text": path}
@@ -794,7 +807,7 @@ def _path_scan_services(tmp_path, *, indexed_paths=None, index_error=None, inven
 
 
 def test_adaptive_path_controls_use_root_scoped_index_without_full_file_walk(tmp_path):
-    services = _path_scan_services(
+    services = _path_inventory_services(
         tmp_path,
         indexed_paths=(
             "src/generic.py", "templates/element/button.php", "build/private.py",
@@ -814,7 +827,8 @@ def test_adaptive_path_controls_use_root_scoped_index_without_full_file_walk(tmp
     assert result["success"] is True
     assert services.repo_tools.iterated == 0
     assert "templates/element/button.php" in services.repo_tools.candidates
-    assert "build/required.py" in [item["path"] for item in result["evidence"]]
+    assert "build/required.py" not in services.repo_tools.candidates
+    assert "build/required.py" not in [item["path"] for item in result["evidence"]]
     assert "src/forced.py" in services.repo_tools.candidates
     assert "build/private.py" not in services.repo_tools.candidates
     assert "build/private.py" not in [item["path"] for item in result["evidence"]]
@@ -823,7 +837,7 @@ def test_adaptive_path_controls_use_root_scoped_index_without_full_file_walk(tmp
 
 
 def test_directory_hint_resolves_indexed_descendants_and_structured_hint(tmp_path):
-    services = _path_scan_services(
+    services = _path_inventory_services(
         tmp_path,
         indexed_paths=(
             "templates/element/button.php", "templates/element/input.php",
@@ -854,7 +868,7 @@ def test_directory_hint_finds_late_index_entries_without_filesystem_walk(tmp_pat
     indexed_paths = tuple(f"unrelated/{index:04}.py" for index in range(600)) + (
         "templates/element/button.php", "templates/element/input.php",
     )
-    services = _path_scan_services(tmp_path, indexed_paths=indexed_paths, inventory_size=1000)
+    services = _path_inventory_services(tmp_path, indexed_paths=indexed_paths, inventory_size=1000)
 
     result = services._hybrid_context_uncached(
         str(tmp_path), "find button", "tenant-a", None, 512,
@@ -869,7 +883,7 @@ def test_directory_hint_finds_late_index_entries_without_filesystem_walk(tmp_pat
 
 
 def test_focus_and_changed_paths_change_candidate_order(tmp_path):
-    services = _path_scan_services(
+    services = _path_inventory_services(
         tmp_path,
         indexed_paths=("src/app.py", "docs/database.md", "tests/test_app.py"),
     )
@@ -893,7 +907,7 @@ def test_focus_and_changed_paths_change_candidate_order(tmp_path):
 
 
 def test_adaptive_path_scan_fallback_is_bounded_and_explicitly_degraded(tmp_path):
-    services = _path_scan_services(tmp_path, inventory_size=1000)
+    services = _path_inventory_services(tmp_path, inventory_size=1000)
 
     result = services._hybrid_context_uncached(
         str(tmp_path), "find route", "tenant-a", None, 512,
@@ -908,7 +922,7 @@ def test_adaptive_path_scan_fallback_is_bounded_and_explicitly_degraded(tmp_path
 
 
 def test_fallback_hints_boost_without_narrowing_inventory_candidates(tmp_path):
-    services = _path_scan_services(tmp_path, inventory_size=1000)
+    services = _path_inventory_services(tmp_path, inventory_size=1000)
 
     result = services._hybrid_context_uncached(
         str(tmp_path), "find route", "tenant-a", None, 512,
@@ -924,7 +938,7 @@ def test_fallback_hints_boost_without_narrowing_inventory_candidates(tmp_path):
 
 
 def test_empty_available_path_index_does_not_trigger_filesystem_fallback(tmp_path):
-    services = _path_scan_services(tmp_path, indexed_paths=(), inventory_size=1000)
+    services = _path_inventory_services(tmp_path, indexed_paths=(), inventory_size=1000)
 
     result = services._hybrid_context_uncached(
         str(tmp_path), "find route", "tenant-a", None, 512,
@@ -945,7 +959,7 @@ def test_path_inventory_candidates_stay_repository_scoped(tmp_path):
         str(root_a): ("src/a.py",),
         str(root_b): ("src/b.py",),
     }
-    services = _path_scan_services(
+    services = _path_inventory_services(
         tmp_path, indexed_paths=lambda root: root_paths[root],
     )
 
@@ -964,6 +978,25 @@ def test_path_inventory_candidates_stay_repository_scoped(tmp_path):
     assert "src/a.py" in candidates_a and "src/b.py" not in candidates_a
     assert "src/b.py" in candidates_b and "src/a.py" not in candidates_b
     assert services.preprocessor.roots == [str(root_a), str(root_b)]
+
+
+def test_path_inventory_rejects_symlink_alias_before_candidate_normalization(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    (root / "linked").mkdir(parents=True)
+    (root / "linked" / "private.py").write_text("private needle", encoding="utf-8")
+    services = _path_inventory_services(root, indexed_paths=("linked/private.py", "src/safe.py"))
+    original_is_symlink = Path.is_symlink
+    monkeypatch.setattr(Path, "is_symlink", lambda path: path == root / "linked" or original_is_symlink(path))
+
+    result = services._hybrid_context_uncached(
+        str(root), "needle", "tenant", None, 512,
+        quality_first=True, directory_hints=("linked",),
+        force_include_paths=("linked/private.py",),
+    )
+
+    assert result["success"] is True
+    assert "linked/private.py" not in services.repo_tools.candidates
+    assert "src/safe.py" in services.repo_tools.candidates
 
 
 def test_context_pack_forwards_focus_and_changed_paths_to_candidate_ranking():
@@ -1205,6 +1238,111 @@ def test_generation_cache_key_changes_for_adaptive_context_inputs():
 
     assert first != second
 
+
+class _PathRankingIndex:
+    def __init__(self, paths):
+        self.paths = paths
+
+    def related_paths(self, root, query, limit):
+        return self.paths[:limit]
+
+
+class _PathScanRepoTools:
+    def __init__(self):
+        self.path_calls = []
+        self.full_scan_calls = 0
+        self.iterated = []
+
+    def context_pack_paths(self, root, query, paths, max_tokens, top_k, **path_controls):
+        self.path_calls.append(list(paths))
+        return {
+            "success": True, "root": root, "query": query, "context": "",
+            "evidence": [], "estimated_tokens": 0, "scanned_files": len(paths),
+        }
+
+    def context_pack(self, *args, **kwargs):
+        self.full_scan_calls += 1
+        raise AssertionError("path-scoped retrieval must not launch a full recall scan")
+
+    def iter_files(self, root):
+        for path in self.iterated:
+            yield path
+
+
+def _path_scan_services(tmp_path, paths, *, indexed=True):
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.config = {"search": {"context_top_k": 8}, "preprocessing": {}}
+    services.repo_tools = _PathScanRepoTools()
+    services.repo_tools.iterated = [tmp_path / path for path in paths]
+    services.code_index = _PathRankingIndex(paths) if indexed else None
+    services.deterministic = None
+    services.preprocessor = None
+    services.rag = None
+    services.learner = None
+    services.evidence_store = None
+    return services
+
+
+def test_path_scoped_context_uses_bounded_candidates_with_exclude_force_precedence(tmp_path):
+    paths = ("src/app.py", "src/private.py", "vendor/lib.py")
+    for path in paths:
+        target = tmp_path / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("needle", encoding="utf-8")
+    services = _path_scan_services(tmp_path, paths)
+
+    result = services._hybrid_context_uncached(
+        str(tmp_path), "needle", "tenant", None, 1000,
+        path_hints=("src/app.py", "../outside.py"),
+        exclude_paths=("src/**",),
+        force_include_paths=("src/private.py",),
+    )
+
+    assert result["success"] is True
+    assert services.repo_tools.path_calls == [["vendor/lib.py"]]
+    assert services.repo_tools.full_scan_calls == 0
+
+
+def test_context_focus_and_changed_paths_change_candidate_ranking(tmp_path):
+    paths = ("src/app.py", "docs/guide.md", "tests/test_app.py")
+    for path in paths:
+        target = tmp_path / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("needle", encoding="utf-8")
+    services = _path_scan_services(tmp_path, paths)
+
+    services._hybrid_context_uncached(
+        str(tmp_path), "needle", "tenant", None, 1000, focus=("docs",),
+    )
+    focus_order = services.repo_tools.path_calls[-1]
+    services._hybrid_context_uncached(
+        str(tmp_path), "needle", "tenant", None, 1000,
+        changed_paths=("tests/test_app.py",),
+    )
+    changed_order = services.repo_tools.path_calls[-1]
+
+    assert focus_order[0] == "docs/guide.md"
+    assert changed_order[0] == "tests/test_app.py"
+    assert focus_order != changed_order
+
+
+def test_path_scoped_context_uses_bounded_degraded_fallback_without_index(tmp_path):
+    paths = ("src/a.py", "src/b.py", "src/c.py")
+    for path in paths:
+        target = tmp_path / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("needle", encoding="utf-8")
+    services = _path_scan_services(tmp_path, paths, indexed=False)
+    services.config["search"]["context_fallback_scan_limit"] = 2
+
+    result = services._hybrid_context_uncached(
+        str(tmp_path), "needle", "tenant", None, 1000, path_hints=("src",),
+    )
+
+    assert services.repo_tools.path_calls == [["src/a.py", "src/b.py"]]
+    assert services.repo_tools.full_scan_calls == 0
+    assert result["degraded"] is True
+    assert result["degraded_reason"] == "bounded_path_candidate_fallback"
 
 def test_adaptive_context_identity_covers_guard_inputs_and_session():
     services = _guarded_services(_Guard())

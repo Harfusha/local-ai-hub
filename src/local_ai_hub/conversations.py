@@ -38,18 +38,33 @@ class ConversationStore:
         self._items: dict[str, Conversation] = {}
         self._lock = threading.Lock()
 
-    def start(self, tenant: str, settings: dict[str, Any]) -> Conversation:
+    def start(self, tenant: str, settings: dict[str, Any]) -> Conversation | None:
+        return self._start(tenant, settings, active=False)
+
+    def start_reserved(self, tenant: str, settings: dict[str, Any]) -> Conversation | None:
+        """Create and reserve a conversation atomically before it becomes visible."""
+        return self._start(tenant, settings, active=True)
+
+    def _start(self, tenant: str, settings: dict[str, Any], *, active: bool) -> Conversation | None:
         now = self._clock()
         conversation = Conversation(
             conversation_id=uuid.uuid4().hex,
             tenant=str(tenant),
             settings=dict(settings),
+            active=active,
             updated_at=now,
         )
         with self._lock:
             self._purge_locked(now)
             if len(self._items) >= self.max_conversations:
-                oldest_cid = min(self._items.keys(), key=lambda k: self._items[k].updated_at)
+                inactive = [
+                    (item.updated_at, conversation_id)
+                    for conversation_id, item in self._items.items()
+                    if not item.active
+                ]
+                if not inactive:
+                    return None
+                _, oldest_cid = min(inactive)
                 self._items.pop(oldest_cid, None)
             self._items[conversation.conversation_id] = conversation
         return conversation
@@ -71,6 +86,8 @@ class ConversationStore:
 
     def complete(self, conversation_id: str, tenant: str, user_text: str, assistant_text: str) -> bool:
         with self._lock:
+            now = self._clock()
+            self._purge_locked(now)
             conversation = self._owned_active_locked(conversation_id, tenant)
             if conversation is None:
                 return False
@@ -79,16 +96,18 @@ class ConversationStore:
                 {"role": "assistant", "content": str(assistant_text)},
             ))
             conversation.active = False
-            conversation.updated_at = self._clock()
+            conversation.updated_at = now
             return True
 
     def abort(self, conversation_id: str, tenant: str) -> bool:
         with self._lock:
+            now = self._clock()
+            self._purge_locked(now)
             conversation = self._owned_active_locked(conversation_id, tenant)
             if conversation is None:
                 return False
             conversation.active = False
-            conversation.updated_at = self._clock()
+            conversation.updated_at = now
             return True
 
     def discard(self, conversation_id: str, tenant: str) -> None:
@@ -112,14 +131,3 @@ class ConversationStore:
         ]
         for conversation_id in stale:
             self._items.pop(conversation_id, None)
-
-        if len(self._items) >= self.max_conversations:
-            inactive = sorted(
-                (c.updated_at, cid)
-                for cid, c in self._items.items()
-                if not c.active
-            )
-            for _, cid in inactive:
-                self._items.pop(cid, None)
-                if len(self._items) < self.max_conversations:
-                    break

@@ -16,6 +16,8 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
+
+_PARSER_ANALYZER_VERSION = f"{__version__}:call-edges-v13-scoped-fallback"
 from .cache import MemoryLRUCache, stable_hash
 from .normalizer import tokenize_query_terms
 from .process_utils import canonical_root
@@ -29,6 +31,10 @@ GO_METHOD = re.compile(r"^\s*func\s*(?:\([^)]*\)\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*
 TYPED_METHOD = re.compile(r"^\s*(?:(?:public|private|protected|internal|static|final|async|virtual|override|abstract|sealed|synchronized|native)\s+)*(?:[A-Za-z_$][\w.$<>,?\[\]]*\s+)+([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^;{}]*)\)\s*(?:\{|=>|throws\b|where\b)")
 JS_METHOD = re.compile(r"^\s*(?:async\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\s*\(([^)]*)\)\s*\{")
 _CONTROL_NAMES = {"if","for","while","switch","catch","return","new","throw","using","lock","foreach","typeof","sizeof","default"}
+
+
+def _escape_like_literal(value: str) -> str:
+    return value.replace("!", "!!").replace("%", "!%").replace("_", "!_")
 
 
 class CodeIndex:
@@ -61,6 +67,7 @@ class CodeIndex:
             root TEXT,
             path TEXT,
             content_hash TEXT,
+            analyzer_version TEXT,
             language TEXT,
             updated_at REAL,
             PRIMARY KEY(root, path)
@@ -119,7 +126,12 @@ class CodeIndex:
         );
         CREATE INDEX IF NOT EXISTS idx_parse_blobs_updated ON parse_blobs(updated_at);
         """)
-        
+        file_columns = {str(row["name"]) for row in con.execute("PRAGMA table_info(files)").fetchall()}
+        if "analyzer_version" not in file_columns:
+            raise sqlite3.DatabaseError(
+                "stale derived code-index schema; rebuild this cache"
+            )
+
     def _init_db(self) -> None:
         try:
             with self._lock, closing(self._connect()) as con:
@@ -158,6 +170,7 @@ class CodeIndex:
             ".jsx": "javascript",
             ".php": "php",
             ".java": "java",
+            ".cpp": "cpp",
             ".go": "go",
             ".rs": "rust",
             ".json": "json",
@@ -293,6 +306,33 @@ class CodeIndex:
         closing = pairs.get(opening)
         return (closing + 1) if closing is not None else start_index + 1
 
+    @staticmethod
+    def _call_owners_by_line(symbols: list[dict[str, Any]], line_count: int) -> list[str]:
+        """Map source lines to the narrowest enclosing fallback function symbol."""
+        function_kinds = {"function", "method", "constructor", "func", "fn"}
+        starts: dict[int, list[dict[str, Any]]] = {}
+        for symbol in symbols:
+            start = int(symbol.get("line", 0))
+            end = int(symbol.get("end_line", 0))
+            if str(symbol.get("kind", "")).lower() in function_kinds and 1 <= start <= end <= line_count:
+                starts.setdefault(start, []).append(symbol)
+
+        owners = ["<module>"] * (line_count + 1)
+        active: list[dict[str, Any]] = []
+        for line in range(1, line_count + 1):
+            active = [symbol for symbol in active if int(symbol.get("end_line", 0)) >= line]
+            active.extend(starts.get(line, ()))
+            if active:
+                owner = min(
+                    active,
+                    key=lambda symbol: (
+                        int(symbol.get("end_line", 0)) - int(symbol.get("line", 0)),
+                        -int(symbol.get("line", 0)),
+                    ),
+                )
+                owners[line] = str(owner.get("name_path") or owner.get("name") or "<module>")
+        return owners
+
     def _parse_csharp(self, text: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
         syms: list[dict[str, Any]] = []
         refs: list[dict[str, Any]] = []
@@ -317,6 +357,7 @@ class CodeIndex:
 
         container_stack: list[tuple[str, str, int, int]] = []
         overloads: dict[str, int] = {}
+        class_names: set[str] = set()
 
         for i, line in enumerate(lines, 1):
             um = using_re.match(line)
@@ -332,6 +373,7 @@ class CodeIndex:
                 access = cm.group(1) or "internal"
                 kind = cm.group(2)
                 name = cm.group(3)
+                class_names.add(name)
                 heritage = cm.group(4) or ""
 
                 end_l = self._block_end_line(i - 1, brace_pairs, next_open, 3500)
@@ -365,7 +407,10 @@ class CodeIndex:
                 continue
 
             mm = method_re.match(line)
-            if mm and mm.group(3) not in _CONTROL_NAMES:
+            is_method_declaration = bool(
+                mm and (mm.group(2) is not None or mm.group(3) in class_names)
+            )
+            if is_method_declaration and mm.group(3) not in _CONTROL_NAMES:
                 access = mm.group(1) or "private"
                 ret_type = mm.group(2) or "void"
                 name = mm.group(3)
@@ -413,13 +458,15 @@ class CodeIndex:
                 })
 
         call_pattern = re.compile(r"\b([A-Za-z_$][A-Za-z0-9_$]{2,})\s*\(")
+        declaration_lines = {int(symbol["line"]) for symbol in syms}
+        call_owners = self._call_owners_by_line(syms, len(lines))
         for i, line in enumerate(lines, 1):
             cleaned = line.split("//")[0]
             for m in call_pattern.finditer(cleaned):
                 cname = m.group(1)
-                if cname not in _CONTROL_NAMES:
+                if cname not in _CONTROL_NAMES and i not in declaration_lines:
                     refs.append({"name": cname, "line": i, "kind": "call"})
-                    edges.append({"src": "<module>", "dst": cname, "kind": "calls", "line": i})
+                    edges.append({"src": call_owners[i], "dst": cname, "kind": "calls", "line": i})
 
         return syms, refs, edges
 
@@ -478,12 +525,14 @@ class CodeIndex:
             syms.append(s)
 
         call_re = re.compile(r"\b([A-Za-z_$][A-Za-z0-9_$]{2,})\s*\(")
+        declaration_lines = {int(symbol["line"]) for symbol in syms}
+        call_owners = self._call_owners_by_line(syms, len(lines))
         for i, line in enumerate(lines, 1):
             for m in call_re.finditer(line):
                 name = m.group(1)
-                if name.lower() not in _CONTROL_NAMES:
+                if name.lower() not in _CONTROL_NAMES and i not in declaration_lines:
                     refs.append({"name": name, "line": i, "kind": "call"})
-                    edges.append({"src": "<module>", "dst": name, "kind": "calls", "line": i})
+                    edges.append({"src": call_owners[i], "dst": name, "kind": "calls", "line": i})
 
         return syms, refs, edges
 
@@ -504,13 +553,13 @@ class CodeIndex:
             return self._parse_generic(text)
 
     def _parse_blob_get(self, content_hash: str, language: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]] | None:
-        key = f"{content_hash}:{__version__}:{language}"
+        key = f"{content_hash}:{_PARSER_ANALYZER_VERSION}:{language}"
         cached = self._parse_blob_l1.get(key)
         if cached is not None:
             return cached
         try:
             with self._lock, closing(self._connect()) as con:
-                row = con.execute("SELECT payload_json FROM parse_blobs WHERE content_hash=? AND analyzer_version=? AND language=?", (content_hash, __version__, language)).fetchone()
+                row = con.execute("SELECT payload_json FROM parse_blobs WHERE content_hash=? AND analyzer_version=? AND language=?", (content_hash, _PARSER_ANALYZER_VERSION, language)).fetchone()
             if row:
                 data = json.loads(str(row[0]))
                 if isinstance(data, dict):
@@ -522,18 +571,37 @@ class CodeIndex:
         return None
 
     def _parse_blob_put(self, content_hash: str, language: str, syms: list[dict[str, Any]], refs: list[dict[str, Any]], edges: list[dict[str, Any]]) -> None:
-        key = f"{content_hash}:{__version__}:{language}"
+        key = f"{content_hash}:{_PARSER_ANALYZER_VERSION}:{language}"
         self._parse_blob_l1.set(key, (syms, refs, edges))
         try:
             payload = json_dumps({"symbols": syms, "refs": refs, "edges": edges}, ensure_ascii=False, separators=(",", ":"))
             with self._lock, closing(self._connect()) as con:
-                con.execute("INSERT OR REPLACE INTO parse_blobs(content_hash, analyzer_version, language, payload_json, updated_at) VALUES(?,?,?,?,?)", (content_hash, __version__, language, payload, time.time()))
+                con.execute("INSERT OR REPLACE INTO parse_blobs(content_hash, analyzer_version, language, payload_json, updated_at) VALUES(?,?,?,?,?)", (content_hash, _PARSER_ANALYZER_VERSION, language, payload, time.time()))
                 count = int(con.execute("SELECT COUNT(*) FROM parse_blobs").fetchone()[0])
                 if count > self.parse_blob_max:
                     con.execute("DELETE FROM parse_blobs WHERE rowid IN (SELECT rowid FROM parse_blobs ORDER BY updated_at ASC LIMIT ?)", (max(100, count - self.parse_blob_max),))
                 con.commit()
         except Exception:
             pass
+
+    def files_needing_reindex(self, root: str, items: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        """Select paths with changed content or stale parser analyzer versions."""
+        c_root = canonical_root(root)
+        if not items:
+            return []
+        with self._lock, closing(self._connect()) as con:
+            existing = {
+                str(row["path"]): (str(row["content_hash"] or ""), str(row["analyzer_version"] or ""))
+                for row in con.execute(
+                    "SELECT path,content_hash,analyzer_version FROM files WHERE root=?",
+                    (c_root,),
+                ).fetchall()
+            }
+        return [
+            (str(path), str(content_hash))
+            for path, content_hash in items
+            if existing.get(str(path)) != (str(content_hash), _PARSER_ANALYZER_VERSION)
+        ]
 
     def update_file(self, root: str, path: str, content_hash: str | None = None) -> dict[str, Any]:
         base = Path(canonical_root(root))
@@ -547,13 +615,15 @@ class CodeIndex:
                 for t in ("files", "symbols", "refs", "edges"):
                     con.execute(f"DELETE FROM {t} WHERE root=? AND path=?", (str(base), path))
                 con.commit()
+            self._query_l1.clear()
+            self._status_cache.pop(str(base), None)
             return {"success": True, "deleted": True}
 
-        digest, lines = self.repo_tools._read_snapshot(target)
+        digest, lines = self.repo_tools._read_snapshot(target, force=True)
         content_hash = content_hash or digest
         with self._lock, closing(self._connect()) as con:
-            row = con.execute("SELECT content_hash FROM files WHERE root=? AND path=?", (str(base), path)).fetchone()
-            if row and row[0] == content_hash:
+            row = con.execute("SELECT content_hash,analyzer_version FROM files WHERE root=? AND path=?", (str(base), path)).fetchone()
+            if row and row[0] == content_hash and row[1] == _PARSER_ANALYZER_VERSION:
                 return {"success": True, "cached": True, "path": path}
 
         lang = self._lang(path)
@@ -569,7 +639,7 @@ class CodeIndex:
             con.execute("BEGIN IMMEDIATE")
             for t in ("symbols", "refs", "edges"):
                 con.execute(f"DELETE FROM {t} WHERE root=? AND path=?", (str(base), path))
-            con.execute("INSERT OR REPLACE INTO files(root, path, content_hash, language, updated_at) VALUES(?,?,?,?,?)", (str(base), path, content_hash, lang, time.time()))
+            con.execute("INSERT OR REPLACE INTO files(root, path, content_hash, analyzer_version, language, updated_at) VALUES(?,?,?,?,?,?)", (str(base), path, content_hash, _PARSER_ANALYZER_VERSION, lang, time.time()))
             con.executemany(
                 "INSERT OR REPLACE INTO symbols(root, path, name, kind, line, end_line, container, name_path, signature, access, docstring) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 [(str(base), path, s["name"], s["kind"], s["line"], s["end_line"], s.get("container", ""), s.get("name_path", s["name"]), s.get("signature", ""), s.get("access", "public"), s.get("docstring", "")) for s in syms],
@@ -578,6 +648,8 @@ class CodeIndex:
             con.executemany("INSERT INTO edges(root, src, dst, kind, path, line) VALUES(?,?,?,?,?,?)", [(str(base), e["src"], e["dst"], e.get("kind", "reference"), path, e["line"]) for e in edges])
             con.commit()
 
+        self._query_l1.clear()
+        self._status_cache.pop(str(base), None)
         return {"success": True, "cached": False, "path": path, "symbols": len(syms), "refs": len(refs), "edges": len(edges)}
 
     def update_files_batch(self, root: str, items: list[str] | list[tuple[str, str]]) -> dict[str, Any]:
@@ -594,10 +666,14 @@ class CodeIndex:
             return {"success": True, "files_processed": 0, "cached": 0, "symbols": 0, "refs": 0, "edges": 0}
 
         with self._lock, closing(self._connect()) as con:
-            existing = dict(con.execute("SELECT path,content_hash FROM files WHERE root=?", (c_root,)).fetchall())
+            existing = {
+                str(row["path"]): (str(row["content_hash"] or ""), str(row["analyzer_version"] or ""))
+                for row in con.execute("SELECT path,content_hash,analyzer_version FROM files WHERE root=?", (c_root,)).fetchall()
+            }
 
         candidates: list[tuple[str, str, str, list[str]]] = []
         cached = 0
+        deleted_paths: list[tuple[str, str]] = []
         for path, supplied_hash in normalized:
             file_path = (base / path).resolve(strict=False)
             try:
@@ -605,10 +681,11 @@ class CodeIndex:
             except ValueError:
                 continue
             if not file_path.is_file():
+                deleted_paths.append((c_root, path))
                 continue
             lang = self._lang(path)
             if supplied_hash:
-                if existing.get(path) == supplied_hash:
+                if existing.get(path) == (supplied_hash, _PARSER_ANALYZER_VERSION):
                     cached += 1
                     continue
                 # A clean new worktree can reuse a parse blob from another root.
@@ -617,11 +694,11 @@ class CodeIndex:
                     candidates.append((path, supplied_hash, lang, []))
                     continue
             try:
-                digest, lines = self.repo_tools._read_snapshot(file_path)
+                digest, lines = self.repo_tools._read_snapshot(file_path, force=True)
             except OSError:
                 continue
             content_hash = supplied_hash or digest
-            if existing.get(path) == content_hash:
+            if existing.get(path) == (content_hash, _PARSER_ANALYZER_VERSION):
                 cached += 1
                 continue
             candidates.append((path, content_hash, lang, lines))
@@ -637,7 +714,7 @@ class CodeIndex:
                     for h, lang in batch:
                         params.extend([h, lang])
                     with self._lock, closing(self._connect()) as con:
-                        rows = con.execute(f"SELECT content_hash,language,payload_json FROM parse_blobs WHERE analyzer_version=? AND ({clauses})", (__version__, *params)).fetchall()
+                        rows = con.execute(f"SELECT content_hash,language,payload_json FROM parse_blobs WHERE analyzer_version=? AND ({clauses})", (_PARSER_ANALYZER_VERSION, *params)).fetchall()
                     for row in rows:
                         data = json.loads(str(row[2]))
                         if isinstance(data, dict):
@@ -657,7 +734,7 @@ class CodeIndex:
             parsed = blob_map.get((content_hash, lang))
             if parsed is None:
                 syms, refs, edges = self._parse_file_content("\n".join(lines), lang)
-                row_blob = (content_hash, __version__, lang, json_dumps({"symbols": syms, "refs": refs, "edges": edges}, ensure_ascii=False, separators=(",", ":")), now)
+                row_blob = (content_hash, _PARSER_ANALYZER_VERSION, lang, json_dumps({"symbols": syms, "refs": refs, "edges": edges}, ensure_ascii=False, separators=(",", ":")), now)
             else:
                 syms, refs, edges = parsed
                 row_blob = None
@@ -673,25 +750,31 @@ class CodeIndex:
             if row_blob is not None:
                 parse_blob_rows.append(row_blob)
             paths_to_clean.append((c_root, path))
-            files_to_insert.append((c_root, path, content_hash, lang, now))
+            files_to_insert.append((c_root, path, content_hash, _PARSER_ANALYZER_VERSION, lang, now))
             syms_to_insert.extend((c_root, path, x["name"], x["kind"], x["line"], x["end_line"], x.get("container", ""), x.get("name_path", x["name"]), x.get("signature", ""), x.get("access", "public"), x.get("docstring", "")) for x in syms)
             refs_to_insert.extend((c_root, path, x["name"], x["line"], x.get("kind", "call")) for x in refs)
             edges_to_insert.extend((c_root, x["src"], x["dst"], x.get("kind", "reference"), path, x["line"]) for x in edges)
 
-        if files_to_insert:
+        if files_to_insert or deleted_paths:
             with self._lock, closing(self._connect()) as con:
                 con.execute("BEGIN IMMEDIATE")
                 if parse_blob_rows:
                     con.executemany("INSERT OR REPLACE INTO parse_blobs(content_hash,analyzer_version,language,payload_json,updated_at) VALUES(?,?,?,?,?)", parse_blob_rows)
                 _IDX_TABLES = frozenset({"symbols", "refs", "edges"})
+                if deleted_paths:
+                    con.executemany("DELETE FROM files WHERE root=? AND path=?", deleted_paths)
+                    for table in ("symbols", "refs", "edges"):
+                        assert table in _IDX_TABLES
+                        con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", deleted_paths)  # noqa: S608
                 for table in ("symbols", "refs", "edges"):
                     assert table in _IDX_TABLES  # defence-in-depth whitelist
                     con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", paths_to_clean)  # noqa: S608
-                con.executemany("INSERT OR REPLACE INTO files(root,path,content_hash,language,updated_at) VALUES(?,?,?,?,?)", files_to_insert)
+                con.executemany("INSERT OR REPLACE INTO files(root,path,content_hash,analyzer_version,language,updated_at) VALUES(?,?,?,?,?,?)", files_to_insert)
                 con.executemany("INSERT OR REPLACE INTO symbols(root,path,name,kind,line,end_line,container,name_path,signature,access,docstring) VALUES(?,?,?,?,?,?,?,?,?,?,?)", syms_to_insert)
                 con.executemany("INSERT INTO refs(root,path,name,line,kind) VALUES(?,?,?,?,?)", refs_to_insert)
                 con.executemany("INSERT INTO edges(root,src,dst,kind,path,line) VALUES(?,?,?,?,?,?)", edges_to_insert)
                 con.commit()
+            self._query_l1.clear()
         self._status_cache.pop(c_root, None)
         return {"success": True, "files_processed": len(files_to_insert), "cached": cached, "symbols": len(syms_to_insert), "refs": len(refs_to_insert), "edges": len(edges_to_insert), "parse_blob_hits": len(candidates) - len(parse_blob_rows)}
 
@@ -1169,7 +1252,7 @@ class CodeIndex:
         resolved_root = canonical_root(root)
         changed = list(dict.fromkeys(self._norm_rel(p) for p in changed_paths if self._norm_rel(p)))
         max_symbols = max(1, min(int(max_symbols), 200))
-        max_dependents = max(1, min(int(max_dependents), 100))
+        max_dependents = max(1, min(int(max_dependents), 10_000))
         if not changed:
             return {"success": True, "root": resolved_root, "changed_symbols": [], "likely_dependents": [], "suggested_tests": [], "confidence": 1.0}
 
@@ -1226,13 +1309,60 @@ class CodeIndex:
                             item["symbols"].append(dst)
                         item["mentions"] += 2 if str(r["kind"]) in {"imports", "inherits"} else 1
 
+                # Follow file-level import edges so changed shared modules include tests of transitive importers.
+                import_limit = max(200, max_dependents * 20)
+                import_rows = con.execute(
+                    "SELECT path,dst FROM edges WHERE root=? AND kind='imports' LIMIT ?",
+                    (resolved_root, import_limit + 1),
+                ).fetchall()
+                graph_truncated = len(import_rows) > import_limit
+
+                def module_aliases(value: str) -> set[str]:
+                    normalized = str(value or "").replace("\\", "/").strip()
+                    while normalized.startswith("./"):
+                        normalized = normalized[2:]
+                    normalized = normalized.lstrip(".")
+                    for suffix in (".pyi", ".py", ".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs"):
+                        if normalized.lower().endswith(suffix):
+                            normalized = normalized[:-len(suffix)]
+                            break
+                    normalized = normalized.strip("/")
+                    if normalized.endswith("/__init__"):
+                        normalized = normalized[:-len("/__init__")]
+                    parts = [part for part in normalized.split("/") if part]
+                    return {".".join(parts[index:]) for index in range(len(parts))}
+
+                importers_by_module: dict[str, set[str]] = {}
+                for import_row in import_rows[:import_limit]:
+                    importer_path = self._norm_rel(str(import_row["path"]))
+                    for alias in module_aliases(str(import_row["dst"])):
+                        importers_by_module.setdefault(alias, set()).add(importer_path)
+
+                visited_paths = set(changed)
+                frontier = list(changed)
+                while frontier and len(visited_paths) <= import_limit:
+                    next_frontier: list[str] = []
+                    for source_path in frontier:
+                        for alias in module_aliases(source_path):
+                            for importer_path in importers_by_module.get(alias, ()):
+                                if importer_path in visited_paths:
+                                    continue
+                                visited_paths.add(importer_path)
+                                next_frontier.append(importer_path)
+                                item = dependent_scores.setdefault(
+                                    importer_path, {"path": importer_path, "symbols": [], "mentions": 0}
+                                )
+                                item["mentions"] += 2
+                    frontier = next_frontier
+                if frontier:
+                    graph_truncated = True
                 likely_dependents = sorted(dependent_scores.values(), key=lambda x: (-int(x["mentions"]), str(x["path"])))[:max_dependents]
                 indexed_tests = [self._norm_rel(str(r[0])) for r in con.execute(
                     "SELECT path FROM files WHERE root=? AND (lower(path) LIKE '%test%' OR lower(path) LIKE '%spec%') LIMIT 500",
                     (resolved_root,),
                 ).fetchall()]
         except sqlite3.DatabaseError as exc:
-            return {"success": False, "root": resolved_root, "error": str(exc), "busy": is_busy_error(exc), "confidence": 0.0}
+            return {"success": False, "root": resolved_root, "error": str(exc), "busy": is_busy_error(exc), "confidence": 0.0, "graph_complete": False}
 
         changed_stems = {Path(p).stem.lower().replace("test_", "").replace("_test", "").replace(".test", "").replace("_spec", "").replace(".spec", "") for p in changed}
         symbol_names_l = [str(x["name"]).lower() for x in changed_symbols]
@@ -1260,6 +1390,8 @@ class CodeIndex:
             "confidence": confidence,
             "indexed_changed_files": indexed_count,
             "changed_files_count": len(changed),
+            "graph_complete": False,
+            "dependency_graph_complete": not graph_truncated and len(dependent_scores) <= max_dependents,
         }
 
     def inspect_symbol(self, root: str, symbol_name: str) -> dict[str, Any]:
@@ -1355,12 +1487,14 @@ class CodeIndex:
         if not symbol or not symbol.strip():
             return {"success": False, "error": "symbol cannot be empty"}
         sym = symbol.strip()
+        like_sym = _escape_like_literal(sym)
         with self._lock, closing(self._connect()) as con:
             rows = con.execute(
                 """SELECT src, dst, kind, path, line FROM edges
-                   WHERE root=? AND (dst=? OR dst LIKE ?)
+                   WHERE root=? AND kind='calls' AND
+                         (dst=? OR dst LIKE ? ESCAPE '!' OR dst LIKE ? ESCAPE '!')
                    ORDER BY path, line LIMIT ?""",
-                (resolved, sym, f"%/{sym}", limit),
+                (resolved, sym, f"%/{like_sym}", f"%::{like_sym}", limit),
             ).fetchall()
         callers = [
             {"caller": str(r["src"]), "callee": str(r["dst"]), "kind": str(r["kind"]), "path": str(r["path"]), "line": int(r["line"])}
@@ -1374,12 +1508,14 @@ class CodeIndex:
         if not symbol or not symbol.strip():
             return {"success": False, "error": "symbol cannot be empty"}
         sym = symbol.strip()
+        like_sym = _escape_like_literal(sym)
         with self._lock, closing(self._connect()) as con:
             rows = con.execute(
                 """SELECT src, dst, kind, path, line FROM edges
-                   WHERE root=? AND (src=? OR src LIKE ?)
+                   WHERE root=? AND kind='calls' AND
+                         (src=? OR src LIKE ? ESCAPE '!' OR src LIKE ? ESCAPE '!')
                    ORDER BY path, line LIMIT ?""",
-                (resolved, sym, f"%/{sym}", limit),
+                (resolved, sym, f"%/{like_sym}", f"%::{like_sym}", limit),
             ).fetchall()
         callees = [
             {"caller": str(r["src"]), "callee": str(r["dst"]), "kind": str(r["kind"]), "path": str(r["path"]), "line": int(r["line"])}

@@ -195,8 +195,25 @@ def test_slow_status_dependency_degrades_within_deadline_and_keeps_shape(monkeyp
     assert result["scheduler"] == {"state": "ready"}
     assert "degraded" not in result
     assert result["dependency_status"]["runtime.online"]["reason"] == "probe_timeout"
+    assert 10 <= result["dependency_status"]["runtime.online"]["duration_ms"] < 100
 
 
+
+def test_status_records_successful_probe_duration(monkeypatch):
+    def slow_online():
+        time.sleep(0.02)
+        return True
+
+    runtime = RuntimeProbe()
+    runtime.is_online = slow_online
+    app = make_app(runtime=runtime)
+    monkeypatch.setattr(app_module, "_STATUS_DEPENDENCY_TIMEOUT_SECONDS", 0.15, raising=False)
+
+    result = app.status()
+
+    probe = result["dependency_status"]["runtime.online"]
+    assert probe["degraded"] is False
+    assert 10 <= probe["duration_ms"] < 100
 def test_status_dependency_reports_probe_exception_without_exception_text():
     def broken_probe():
         raise RuntimeError("private /home/user/config token=secret")
