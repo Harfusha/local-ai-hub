@@ -260,6 +260,11 @@ inventory 51 passed, 668 rows, zero drift). These are not root-integrated or
 release accepted. Independent workers own broad 069d, T17 vision refactor,
 T15 command config, T18 status dashboard and T16 orchestration recovery.
 
+Root validation left an untracked `agent_state.sqlite` runtime database. It is
+preserved in place and intentionally not staged or deleted; it is not ordinary
+source/handoff work. Tracked source/index is clean after the integration record
+commit, but the checkout must not be described as wholly untracked-clean.
+
 T17 historical acceptance checkout is synchronized and integrated as
 `3efc1735`, retaining tracked checkpoint `5b16828e` and previously untracked
 Gemini audit specification committed as `67656de3`. Manual transcription test
