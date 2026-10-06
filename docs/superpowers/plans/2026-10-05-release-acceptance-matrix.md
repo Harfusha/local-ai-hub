@@ -21,6 +21,64 @@ Historical snapshot: statuses, hashes, and receipts below belong to their record
 - `done` requires task acceptance plus exact test receipts; historical or candidate-only receipts are not root proof.
 - Release and update prompts, source/sdist artifacts, and clean-install receipts remain release requirements.
 
+## Current Continuation — 2026-10-07
+
+This delta supersedes the historical 2026-10-05 statuses below where evidence is newer. It is not release approval.
+
+- Target: local `master` `f64a85ea4f1d0a4dac4485e266ff275b14b740b2` (521 ahead of `origin/master`). Before this matrix update, root status was 5 tracked dirty paths plus untracked `agent_state.sqlite`; now 6 tracked dirty paths, adding only this orchestrator-owned plan delta `docs/superpowers/plans/2026-10-05-release-acceptance-matrix.md`. Other tracked paths: `docs/WORKTREE_INTEGRATION_STATUS.md`, `src/local_ai_hub/agent_memory.py`, `src/local_ai_hub/async_jobs.py`, `src/local_ai_hub/http_server.py`, `tests/test_agent_state_transport.py`. This differs from both the user-stated 182/192 baseline and historical 482-path checkpoint; preserve the observed set and do not reconstruct or discard without attribution.
+- Repository family inventory: 61 worktrees, 14 dirty worktrees, 7 unmerged branch refs, 45 stashes. Categories overlap; they are not additive task/change counts. No bulk merge, stash apply/drop, or cleanup.
+- Local AI Hub remains unavailable; its one bounded fallback is exhausted. No Hub retry. No broad/full test reruns in this continuation.
+
+### Fresh reconciliation evidence — current root `f64a85ea`
+
+- Root still has 6 tracked dirty paths and untracked `agent_state.sqlite`. Existing source edits remain user-owned unless attributed hunk-by-hunk; the SQLite file is runtime state, not a source integration candidate. Exact tracked hunks and overlap with T13 were audited by parallel read-only agents; preserve the root changes in `docs/WORKTREE_INTEGRATION_STATUS.md`, `src/local_ai_hub/agent_memory.py`, `src/local_ai_hub/async_jobs.py`, `src/local_ai_hub/http_server.py`, and `tests/test_agent_state_transport.py`.
+- T19 checkout `55ed`, branch `codex/sync-55ed-20261006`, HEAD `d78aae75873d63da760fb22de4b041c84be1523d`; relative to current master, `git rev-list --left-right --count master...HEAD` reported `23 7`. Net tree difference is three T19 test files. Its three dirty files (`docs/API_COVERAGE.md`, `tests/test_t19_coverage_owner.py`, `tools/surface_inventory.py`) have blobs identical to root master, so those dirty entries do not carry missing content. Do not merge the branch wholesale; obtain T19 owner packet for any genuinely absent test hunks and receipts.
+- T03 checkout `e809` exists at detached HEAD `20f69ca1` with two dirty entries. Prior owner evidence identifies a fixture-only candidate in `tests/test_operation_contracts.py`; no fresh test receipt exists in this continuation. T03 has been asked to provide exact path/blob attribution and any existing receipt only. No integration until evidence is complete.
+- Root dirty docs and memory-scope hunks overlap T13’s broader changes semantically, although changed lines are separable. Preserve root session-scope filtering and reconcile the docs append against T13’s rewritten tail; no whole-file copy/cherry-pick is safe.
+- Stash audits used different candidate sets. One exact-patch scan against ancestor `2ca5cf8d` matched 20 tracked stash patches already reachable from master, while another identified unmatched tracked source candidates and unresolved untracked content. A separate broad untracked inventory found 426 path/blob differences requiring classification. These reports do not prove all 45 current stash entries harmless or integrated. Keep every stash intact; reconcile by full stash SHA, path, blob, ownership, and current-master comparison before disposition.
+- Parallel branch audit found T17/T21 overlap on 11 paths; T21 also has dirty files. Their branch commits and dirty overlays remain owner-reconciliation work, not safe bulk-merge candidates. Generated `.validation`, `.t17-merge-tmp`, fixture, and handoff artifacts are preserved but not copied into product source without owner attribution.
+- These are Git/blob/static audits only. No tests, release checks, staging, commits, merges, stash operations, or cleanup were performed.
+
+### T01–T21 current owner evidence
+
+| Task | Status | Current evidence / next gate |
+|---|---|---|
+| T01 API inventory | blocked | Assigned `1938` checkout/snapshot unavailable. Earlier `surface_inventory --check` failure (`coverage_matches=false`, 684 rows) came from an older checkout; T19's fresh blob audit confirms its dirty `docs/API_COVERAGE.md`, `tools/surface_inventory.py`, and test file equal current root master. Current-root check has not been rerun, so drift remains unverified, not a confirmed current failure. Restore T01-owned checkout and obtain fresh check receipt. |
+| T02 quality baseline | review | `b5e34204` fix commit is ancestor of master; source/test blobs match. Fresh receipts: reproducers 3 passed; focused gate 21 passed/87 deselected. Original 2/25 RCA and full benchmark matrix/slot remain open. |
+| T03 contracts/transport | review | Exact `e809` checkout at `20f69ca1`, detached; two owned dirty paths. `tests/test_operation_contracts.py`: base blob `1e461c27…`, postimage `95f7de6e…`, explicit `tmp_path` root in 3 calls, assertions preserved. `docs/superpowers/plans/2026-09-22-hub-quality-performance-master-plan.md`: review-item edit only; equivalent `do_POST` review already exists in this root matrix. Owner's exact selector command ran before fixture repair: 11 passed, 1 failed (the selector later fixed); no post-fix receipt. No integration until a fresh authorized receipt exists. |
+| T04 client/API | blocked | `393c` has no Git checkout; attach to `t04-integration` denied as foreign-owned. Historical 47-pass receipt excludes path-hints acceptance. |
+| T05 identity/memory | blocked | Assigned `a66e` path is not a Git repository; no own base, source diff, or current receipt. |
+| T06 safe command broker | blocked | Exact `57e3` snapshot missing; source/preimage unavailable. Existing handoff updated only at `handoff/T06-producer-gate-evidence-2026-10-06.md`, SHA-256 `1744472B6C7F174FA282DCF47D09AB78156DD9453AE40F7C33A125102E2AD873`; `commands.run` decomposition/write-set rollback acceptance remains unverified. |
+| T07 idempotence | blocked | Assigned checkout missing; `f374` is not Git. |
+| T08 Agent OS | blocked | Assigned `82de` is not Git; no own checkout or source attribution. Broad-exception review recorded, findings unverified. |
+| T09 receipts/index | blocked | Assigned artifact snapshot missing; prior 12 tracked/89 untracked state is historical only, not current attribution. |
+| T10 AST/retrieval | blocked | `d4d2` is not a Git checkout; no owned source diff/receipt. |
+| T11 RAG/runtime | review | `t11-rag-recovery-v2` clean; both owned commits patch-equivalent to master, blobs match. Receipts: 165 passed/3 skipped, transport 11 passed, live embedding smoke 1 passed. CrossEncoder benchmark remains unverified. `preprocess.py` shell/argv edge audit belongs to existing T26 per T11, not T11. |
+| T12 model routing | review | Exact `4816` checkout clean except untracked `.handoff/scratch-root-a411/`; owned commits already in master. Receipts include 83 passed and timeout selector 1 passed; remaining acceptance not fully evidenced. Preserve handoff. |
+| T13 operational mode | blocked | Assigned `t13-lifecycle` checkout unavailable. `t13-operational-mode` is foreign and not used. |
+| T14 context budget / `/api/context/pack` | blocked | Exact `0c2e` checkout unavailable. Preserve T14 ownership; no other task edits the new context-pack behavior. Element-hash optimization is recorded, not implemented or benchmarked. |
+| T15 command performance | review | Exact `fefe` checkout clean and source already matches master. Historical performance acceptance: 1 failed/2 passed (warm p50 slower); paired current benchmark receipts/GO absent. |
+| T16 orchestration | blocked | Assigned `aad5` artifact missing; no current base, source, or receipt. |
+| T17 browser/vision | blocked | Exact `8085` checkout unavailable. Candidate stash `f05d3603072c63ff38857649db95e299cb341b76` is T17-origin by metadata, 15 files/+1784/−674, SHA-256 `4be708e2a2eccd6bf455e4b05209b30d560a6119e0bc0d9dd1f1f9d21e475ce3`, patch-id `83a354bfd201f78938cfe135bf5e90c2cfa3cf56`; several files differ from master. Owner hunk reconciliation required; nothing applied/dropped. |
+| T18 status/dashboard | review | Source reconciliation reports no T18-owned missing source hunk. Preserved 349 untracked overlay snapshots (340 source + 9 test files; aggregate manifest SHA-256 `9c14dd5b2ea98fc5de23c9061969e6434b169e0b27d4ae85e28ed9f2f528b4b3`); source blobs are historical objects, not test receipts. Stash `f05d…` is T17-origin, not T18 work. Runtime/release acceptance remains open. |
+| T19 install/docs | review | Checkout `55ed`, HEAD `d78aae75`, has 7 commits ahead but net tree diff to current master is empty for T19-owned content: its three net T19 test paths and all dirty T01 paths have blobs identical to root master. No missing T19 hunk to port; do not merge branch wholesale. Prompt/install receipts: 57 passed/1 skipped; SDK receipt 1 passed. Receipts for three ancillary T19 tests and clean install/source-sdist remain missing. Current-root API coverage check remains unverified (see T01). |
+| T20 release acceptance | blocked / NO-GO | Owned `ec50` snapshot missing; matrix updates exist in task chat only. No release decision, clean-install receipt, or full gate evidence. |
+| T21 project/worktree config | blocked for remaining acceptance | Earlier root-current T21 source packet and test-only follow-up are already integrated, with recorded root receipts of 102 passing tests and selector 1 passing (see T21 integration evidence below). This does not prove the later production acceptance complete: latest owner report says its candidate differs from root by 13 dirty production hunks; exact assigned `4294` path is not a Git checkout. Do not infer ownership from another T21-named worktree or transplant those hunks without exact owner packet and fresh receipts. |
+
+### Appended review items
+
+| Review | Proposed existing owner | State |
+|---|---|---|
+| Split `http_server.Handler.do_POST` without changing endpoint/auth/recovery contracts | T03 | Recorded in existing chat; no owned source refactor/receipt. |
+| Split `services.vision` while preserving vision/audio contracts | T17 | Recorded; checkout unavailable. |
+| Split `commands.run`; enforce explicit write-set rollback | T06 | Recorded in T06 handoff; checkout unavailable. |
+| Optimize `agent_context` element hash with equivalence + separate performance proof | T14 | Recorded; checkout unavailable. |
+| Narrow broad `except Exception: pass` handling in Agent OS | T08 | Recorded; checkout unavailable. |
+| `preprocess.py` shell/argv Windows edge cases | T26 per T11; no duplicate task created | Current source uses `shlex.split` and `shell=False`; operator/timeout/process-tree acceptance remains pending. |
+| TODO audit | Release docs | `rg` found scanner regex and generated regression/scaffold template placeholders only; no actionable implementation TODO backlog found. |
+
+**Release decision: NO-GO.** Required owned checkouts, T01 coverage correction, T17 stash adjudication, T15/T11 performance proof, T14/T20 acceptance, clean install, and release gates remain open.
+
 ## Release-Critical Gates
 
 | Gate | Current state | Evidence / next proof |
