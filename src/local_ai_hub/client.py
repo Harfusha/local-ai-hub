@@ -409,6 +409,8 @@ class HubClient:
             "success": False,
             "error": "request outcome is unknown after a transport failure",
             "outcome_unknown": True,
+            "terminal": True,
+            "retryable": False,
             "request_id": request_id,
         }
         if retried:
@@ -448,6 +450,8 @@ class HubClient:
                 "error": "request was not sent because transport failed before write",
                 "request_not_sent": True,
                 "outcome_unknown": False,
+                "terminal": True,
+                "retryable": False,
                 "request_id": request_id,
             }
             if retried:
