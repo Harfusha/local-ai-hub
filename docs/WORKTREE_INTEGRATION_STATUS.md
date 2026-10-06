@@ -973,3 +973,12 @@ bytecode; caches were not removed because their ownership/pre-existence was
 not attributable to this run. Re-run release check after an explicitly scoped
 cache cleanup or packaging-only exclusion is authorized; do not weaken the
 release checker without proving the packaged artifact excludes these files.
+
+Exact cache inventory: three directories only—
+`src/local_ai_hub/__pycache__` (118 files / 7,174,355 bytes),
+`tools/__pycache__` (34 / 1,199,271), and `tests/__pycache__` (1,439 /
+42,481,782). All files were `.pyc`/`.pyo`. A scoped PowerShell recursive
+removal attempt was rejected by the command safety layer before execution;
+read-only checks confirm all three directories remain. No alternative delete
+path used. Release gate stays blocked pending approved cleanup or a verified
+packaging-only exclusion.
