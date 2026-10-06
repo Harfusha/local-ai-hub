@@ -76,12 +76,16 @@ class AsyncJobManager:
                     expected_columns = [
                         "job_id", "tenant", "action", "request_hash", "payload_json", "state", "result_json",
                         "artifact_id", "error", "lease_until", "attempts", "cancel_requested", "created_at",
-                        "updated_at", "expires_at", "trace_id", "task_id",
+                        "updated_at", "expires_at", "trace_id", "task_id", "dispatch_not_before",
                     ]
                     existing = {str(row[0]) for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                     if "async_jobs" in existing:
                         actual_columns = [str(row[1]) for row in con.execute("PRAGMA table_info(async_jobs)")]
-                        if actual_columns != expected_columns:
+                        if actual_columns == expected_columns[:-1]:
+                            con.execute(
+                                "ALTER TABLE async_jobs ADD COLUMN dispatch_not_before REAL NOT NULL DEFAULT 0"
+                            )
+                        elif actual_columns != expected_columns:
                             con.execute("DROP TABLE async_jobs")
                     con.execute("""CREATE TABLE IF NOT EXISTS async_jobs (
                         job_id TEXT PRIMARY KEY, tenant TEXT NOT NULL, action TEXT NOT NULL, request_hash TEXT NOT NULL,
@@ -89,9 +93,11 @@ class AsyncJobManager:
                         artifact_id TEXT NOT NULL DEFAULT '', error TEXT NOT NULL DEFAULT '', lease_until REAL NOT NULL DEFAULT 0,
                         attempts INTEGER NOT NULL DEFAULT 0, cancel_requested INTEGER NOT NULL DEFAULT 0,
                         created_at REAL NOT NULL, updated_at REAL NOT NULL, expires_at REAL NOT NULL,
-                        trace_id TEXT NOT NULL DEFAULT '', task_id TEXT NOT NULL DEFAULT ''
+                        trace_id TEXT NOT NULL DEFAULT '', task_id TEXT NOT NULL DEFAULT '',
+                        dispatch_not_before REAL NOT NULL DEFAULT 0
                     )""")
                     con.execute("CREATE INDEX IF NOT EXISTS idx_async_jobs_state ON async_jobs(state, lease_until, expires_at)")
+                    con.execute("CREATE INDEX IF NOT EXISTS idx_async_jobs_dispatch ON async_jobs(state, dispatch_not_before, expires_at)")
                     con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_async_jobs_active_dedupe ON async_jobs(tenant, request_hash) WHERE state IN ('queued','running')")
                     con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_async_jobs_request_id ON async_jobs(tenant, json_extract(payload_json, '$.request_id')) WHERE json_valid(payload_json) AND json_type(payload_json, '$.request_id')='text' AND json_extract(payload_json, '$.request_id')<>''")
                     con.commit()
@@ -224,7 +230,9 @@ class AsyncJobManager:
         request_hash = stable_hash({"tenant": tenant, "action": action, "payload": clean})
         request_id = self._request_id(clean)
         task_id = str(clean.get("task_id") or "")
+        delay = max(0.0, min(30.0, float(dispatch_delay_seconds or 0.0)))
         now = time.time()
+        dispatch_not_before = now + delay if delay else 0.0
         with self._lock, closing(self._connect()) as con:
             if request_id:
                 identified = con.execute(
@@ -263,7 +271,7 @@ class AsyncJobManager:
                 admission = self._admission("rejected", "queue_limit", retryable=True)
                 return {"success": False, "state": "rejected", "error": "async job queue limit reached", "admission": admission, "admission_state": admission["state"], "terminal": False, "retryable": True, "coalesced": False}
             job_id = uuid.uuid4().hex
-            con.execute("INSERT INTO async_jobs(job_id,tenant,action,request_hash,payload_json,state,created_at,updated_at,expires_at,task_id) VALUES(?,?,?,?,?,'queued',?,?,?,?)", (job_id, tenant, action, request_hash, encoded, now, now, now + self.result_ttl_seconds, task_id))
+            con.execute("INSERT INTO async_jobs(job_id,tenant,action,request_hash,payload_json,state,created_at,updated_at,expires_at,task_id,dispatch_not_before) VALUES(?,?,?,?,?,'queued',?,?,?,?,?)", (job_id, tenant, action, request_hash, encoded, now, now, now + self.result_ttl_seconds, task_id, dispatch_not_before))
             con.commit()
             self._stats["submitted"] += 1
         trace_id = ""
@@ -277,7 +285,6 @@ class AsyncJobManager:
             except Exception:
                 trace_id = ""
         self._event(job_id)
-        delay = max(0.0, min(30.0, float(dispatch_delay_seconds or 0.0)))
         if delay:
             timer = threading.Timer(delay, self._dispatch, args=(job_id,))
             timer.daemon = True
@@ -303,10 +310,17 @@ class AsyncJobManager:
         with self._lock, closing(self._connect()) as con:
             con.row_factory = sqlite3.Row
             row = con.execute("SELECT * FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()
-            if not row or row["state"] != "queued" or row["cancel_requested"] or float(row["lease_until"] or 0) > time.time():
+            now = time.time()
+            if not row or row["state"] != "queued" or row["cancel_requested"] or float(row["lease_until"] or 0) > now or float(row["dispatch_not_before"] or 0) > now:
                 return
-            con.execute("UPDATE async_jobs SET lease_until=?,updated_at=? WHERE job_id=? AND state='queued'", (time.time() + self.lease_seconds, time.time(), job_id))
+            claimed = con.execute(
+                "UPDATE async_jobs SET lease_until=?,dispatch_not_before=0,updated_at=? "
+                "WHERE job_id=? AND state='queued' AND cancel_requested=0 AND lease_until<=? AND dispatch_not_before<=?",
+                (now + self.lease_seconds, now, job_id, now, now),
+            ).rowcount
             con.commit()
+            if claimed != 1:
+                return
 
         def run() -> None:
             try:
@@ -555,7 +569,7 @@ class AsyncJobManager:
                 admission = self._admission("accepted", "capacity_available", retryable=False)
                 return {"success": True, "job_id": job_id, "state": "cancelled", "cancel_requested": True, "terminal": True, "retryable": False, "admission": admission, "admission_state": admission["state"]}
             if state in {"done", "failed", "expired", "outcome_unknown"}: return {"success": False, "job_id": job_id, "state": state, "error": "async job is already terminal", "terminal": True, "retryable": False}
-            changed = con.execute("UPDATE async_jobs SET cancel_requested=1,state=CASE WHEN state='queued' THEN 'cancelled' ELSE state END,updated_at=? WHERE job_id=? AND cancel_requested=0", (time.time(), job_id)).rowcount
+            changed = con.execute("UPDATE async_jobs SET cancel_requested=1,state=CASE WHEN state='queued' THEN 'cancelled' ELSE state END,dispatch_not_before=0,updated_at=? WHERE job_id=? AND cancel_requested=0", (time.time(), job_id)).rowcount
             con.commit()
         self._cleanup_processes(job_id)
         if changed:
@@ -577,11 +591,11 @@ class AsyncJobManager:
             rows = con.execute("SELECT job_id,state,attempts,cancel_requested,trace_id,payload_json FROM async_jobs WHERE state IN ('queued','running')").fetchall(); ids: list[tuple[str, str]] = []
             for job_id, state, attempts, cancelled, trace_id, payload_json in rows:
                 if cancelled:
-                    con.execute("UPDATE async_jobs SET state='cancelled',lease_until=0,updated_at=? WHERE job_id=?", (time.time(), job_id))
+                    con.execute("UPDATE async_jobs SET state='cancelled',lease_until=0,dispatch_not_before=0,updated_at=? WHERE job_id=?", (time.time(), job_id))
                     cancelled_ids.append((str(job_id), str(trace_id or "")))
                 elif (state == "running" or int(attempts or 0) > 0) and (not self._request_id(payload_json) or int(attempts or 0) >= self.max_attempts):
                     error = "async job outcome unknown after restart; safe replay unavailable"
-                    con.execute("UPDATE async_jobs SET state='outcome_unknown',lease_until=0,error=?,updated_at=? WHERE job_id=?", (error, time.time(), job_id))
+                    con.execute("UPDATE async_jobs SET state='outcome_unknown',lease_until=0,dispatch_not_before=0,error=?,updated_at=? WHERE job_id=?", (error, time.time(), job_id))
                     unknown_ids.append((str(job_id), str(trace_id or "")))
                 else:
                     con.execute("UPDATE async_jobs SET state='queued',lease_until=0,updated_at=? WHERE job_id=?", (time.time(), job_id)); ids.append((str(job_id), str(trace_id or "")))
@@ -612,7 +626,7 @@ class AsyncJobManager:
             return
         now = time.time()
         with self._lock, closing(self._connect()) as con:
-            expired = con.execute("UPDATE async_jobs SET state='expired',updated_at=? WHERE state IN ('done','failed','cancelled','outcome_unknown') AND expires_at<?", (now, now)).rowcount
+            expired = con.execute("UPDATE async_jobs SET state='expired',dispatch_not_before=0,updated_at=? WHERE state IN ('done','failed','cancelled','outcome_unknown') AND expires_at<?", (now, now)).rowcount
             # Periodic tombstone purge: evict expired jobs whose retention period has lapsed
             con.execute("DELETE FROM async_jobs WHERE state='expired' AND updated_at<?", (now - self.result_ttl_seconds,))
             stuck = con.execute("SELECT job_id, attempts, cancel_requested, payload_json FROM async_jobs WHERE state='running' AND lease_until<?", (now,)).fetchall()
@@ -622,13 +636,13 @@ class AsyncJobManager:
                 if s_canc or s_attempts >= self.max_attempts or not request_id:
                     state = "cancelled" if s_canc else "outcome_unknown"
                     error = "async job cancelled" if s_canc else "async job outcome unknown after lease expiry; safe replay unavailable"
-                    con.execute("UPDATE async_jobs SET state=?,lease_until=0,error=?,updated_at=? WHERE job_id=?", (state, error, now, str(s_id)))
+                    con.execute("UPDATE async_jobs SET state=?,lease_until=0,dispatch_not_before=0,error=?,updated_at=? WHERE job_id=?", (state, error, now, str(s_id)))
                     self._event(str(s_id)).set()
                     if s_canc:
                         self._stats["cancelled"] += 1
                 else:
-                    con.execute("UPDATE async_jobs SET state='queued',lease_until=0,updated_at=? WHERE job_id=?", (now, str(s_id)))
-            rows = con.execute("SELECT job_id FROM async_jobs WHERE state='queued' AND lease_until<?", (now,)).fetchall()
+                    con.execute("UPDATE async_jobs SET state='queued',lease_until=0,dispatch_not_before=0,updated_at=? WHERE job_id=?", (now, str(s_id)))
+            rows = con.execute("SELECT job_id FROM async_jobs WHERE state='queued' AND dispatch_not_before<=? AND lease_until<?", (now, now)).fetchall()
             delayed_ids = set(self._delayed_dispatch)
             active_rows = con.execute("SELECT job_id FROM async_jobs WHERE state IN ('queued','running')").fetchall()
             active_ids = {str(r[0]) for r in active_rows}
