@@ -235,7 +235,7 @@ class AgentStateStore:
         lock_key = os.path.normcase(str(self.db_path.resolve()))
         with self._append_publish_locks_guard:
             self._append_publish_lock = self._append_publish_locks.setdefault(
-                lock_key, threading.Lock()
+                lock_key, threading.RLock()
             )
         self._lock = threading.RLock()
         self._initialized = False
@@ -441,7 +441,7 @@ class AgentStateStore:
             except sqlite3.DatabaseError as exc:
                 if time.monotonic() >= deadline:
                     raise TimeoutError("agent_state schema preflight time limit exceeded") from exc
-                raise RuntimeError("unsupported agent_state database") from exc
+                raise
             if time.monotonic() >= deadline:
                 raise TimeoutError("agent_state schema preflight time limit exceeded")
             if signatures() != before:
@@ -453,7 +453,7 @@ class AgentStateStore:
     def _classify_schema(cls, con: sqlite3.Connection) -> tuple[Any, ...]:
         version = int(con.execute("PRAGMA user_version").fetchone()[0])
         if version > cls._SCHEMA_VERSION or version < 0:
-            raise RuntimeError(f"unsupported agent_state schema version: {version}")
+            raise RuntimeError(f"unsupported agent state schema version: {version}")
 
         event_columns = cls._columns(con, "agent_events")
         snapshot_columns = cls._columns(con, "agent_snapshots")
@@ -509,6 +509,19 @@ class AgentStateStore:
                 raise RuntimeError("unsupported agent_state schema layout")
         else:
             is_empty = not objects
+            is_current_unversioned = (
+                version == 0
+                and event_columns == cls._EVENT_COLUMNS
+                and snapshot_columns == cls._SNAPSHOT_COLUMNS
+                and cls._columns(con, "agent_event_schema_versions")
+                == ["stream_id", "seq", "schema_version"]
+            )
+            if is_current_unversioned and "agent_schema_migrations" in tables:
+                markers = [int(row[0]) for row in con.execute(
+                    "SELECT version FROM agent_schema_migrations ORDER BY version"
+                )]
+                if markers != [1]:
+                    raise RuntimeError("unsupported agent_state schema migration history")
             is_current_v0 = (
                 event_columns == cls._EVENT_COLUMNS
                 and snapshot_columns == cls._SNAPSHOT_COLUMNS
@@ -530,6 +543,9 @@ class AgentStateStore:
                     raise RuntimeError("unsupported agent_state schema migration history")
             if is_empty:
                 layout = "empty"
+            elif is_current_unversioned:
+                # Existing current event metadata is preserved; _ensure_schema owns the v0->v1 backup/write.
+                layout = "current"
             elif is_current_v0:
                 layout = "current-v0"
             elif is_historical_v0:

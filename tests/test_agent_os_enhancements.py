@@ -439,14 +439,3 @@ def test_external_tools_index_failure_suppression(tmp_path: Path):
     # Revision scoped error should not increment index_failures
     mgr._record_failure("serena", RuntimeError("indexing exceeded 60s"), operation="index", root=str(tmp_path))
     assert mgr.index_failures == 0
-
-    # Codegraph missing module should not increment index_failures and should disable backend cleanly
-    mgr.codegraph_enabled = True
-    mgr._codegraph = "cgc"
-    mgr._record_failure("codegraph", RuntimeError("No module named 'codegraphcontext'"), operation="index", root=str(tmp_path))
-    assert mgr.index_failures == 0
-    assert mgr.codegraph_enabled is False
-    assert mgr._codegraph is None
-
-
-

@@ -9,6 +9,7 @@ from typing import Any
 
 _listener: logging.handlers.QueueListener | None = None
 _log_path: Path | None = None
+_previous_propagate: bool | None = None
 
 
 class _DropQueueHandler(logging.handlers.QueueHandler):
@@ -40,22 +41,25 @@ def configure_logging(state_dir: Path, config: dict[str, Any]) -> logging.Logger
     Logs contain runtime/component diagnostics only. Callers must not put prompts,
     source text or model output into log messages.
     """
-    global _listener, _log_path
+    global _listener, _log_path, _previous_propagate
     cfg = config.get("logging", {})
     logger = logging.getLogger("local_ai_hub")
     level = getattr(logging, str(cfg.get("level", "INFO")).upper(), logging.INFO)
     logger.setLevel(level)
-    logger.propagate = False
 
     logs_dir = state_dir / "logs"
     logs_dir.mkdir(parents=True, exist_ok=True)
     log_path = (logs_dir / "hub.log").resolve()
     if logger.handlers and _listener is not None and _log_path == log_path:
+        logger.propagate = False
         for handler in _listener.handlers:
             handler.setLevel(level)
         return logger
     if _listener is not None or logger.handlers:
         shutdown_logging()
+    if _previous_propagate is None:
+        _previous_propagate = logger.propagate
+    logger.propagate = False
 
     q: queue.Queue[logging.LogRecord] = queue.Queue(maxsize=max(100, int(cfg.get("queue_size", 5000))))
     logger.addHandler(_DropQueueHandler(q))
@@ -76,7 +80,7 @@ def configure_logging(state_dir: Path, config: dict[str, Any]) -> logging.Logger
 
 
 def shutdown_logging() -> None:
-    global _listener, _log_path
+    global _listener, _log_path, _previous_propagate
     listener = _listener
     _listener = None
     _log_path = None
@@ -93,3 +97,6 @@ def shutdown_logging() -> None:
         logger.removeHandler(handler)
         if handler not in listener_handlers:
             handler.close()
+    if _previous_propagate is not None:
+        logger.propagate = _previous_propagate
+        _previous_propagate = None

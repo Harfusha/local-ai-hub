@@ -4,8 +4,10 @@ from .json_utils import dumps as json_dumps
 
 import json
 import hashlib
+import shutil
 import sqlite3
 import threading
+import tempfile
 import time
 from collections import deque
 from contextlib import closing
@@ -83,6 +85,10 @@ class CircuitBreakerRegistry:
             }
 
 
+class _IncompatibleRecoveryJournalSchema(sqlite3.DatabaseError):
+    """Existing request journal cannot safely serve the current release schema."""
+
+
 class RecoveryJournal:
     """Crash-safe metadata journal for in-progress high-level requests.
 
@@ -112,6 +118,7 @@ class RecoveryJournal:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._journal_unavailable_marker = self.path.with_suffix(".unavailable")
         self._journal_unavailable = self._journal_unavailable_marker.exists() or any(self.path.parent.glob("recovery.corrupt-*.sqlite3"))
+        self._journal_unavailable_reason: str | None = None
         self._init_db()
         # A newly constructed journal belongs to a fresh hub process. No request can
         # legitimately still be executing at this point, so any prior "running" row
@@ -122,7 +129,56 @@ class RecoveryJournal:
     def _connect(self) -> sqlite3.Connection:
         return connect_sqlite(self.path, timeout_seconds=5.0)
 
+    _REQUIRED_REQUEST_COLUMNS = frozenset({
+        "request_id", "tenant", "identity", "action", "payload_fingerprint", "state",
+        "created_at", "updated_at", "detail", "status_code", "response_json",
+    })
+
+    def _verify_existing_schema(self) -> None:
+        if not self.path.exists():
+            return
+        def read_columns(path: Path, *, immutable: bool) -> set[str]:
+            options = "mode=ro&immutable=1" if immutable else "mode=ro"
+            uri = f"{path.resolve().as_uri()}?{options}"
+            with closing(sqlite3.connect(uri, uri=True, timeout=5.0, isolation_level=None)) as con:
+                return {str(row[1]) for row in con.execute("PRAGMA table_info(requests)")}
+
+        # immutable avoids SQLite updating original WAL shared-memory metadata.
+        columns = read_columns(self.path, immutable=True)
+        wal_path = Path(f"{self.path}-wal")
+        try:
+            has_wal = wal_path.is_file() and wal_path.stat().st_size > 0
+        except OSError as exc:
+            raise _IncompatibleRecoveryJournalSchema(
+                "unable to safely inspect recovery journal WAL"
+            ) from exc
+        missing = self._REQUIRED_REQUEST_COLUMNS - columns
+        if missing and has_wal:
+            # Schema creation or an upgrade may be committed only in WAL. Inspect a
+            # private snapshot so SQLite can replay WAL without touching the durable
+            # journal or its sidecars. Keep the temporary database under state_dir.
+            try:
+                with tempfile.TemporaryDirectory(
+                    prefix=".recovery-schema-", dir=self.path.parent
+                ) as temporary_dir:
+                    snapshot = Path(temporary_dir) / self.path.name
+                    shutil.copyfile(self.path, snapshot)
+                    shutil.copyfile(wal_path, Path(f"{snapshot}-wal"))
+                    columns = read_columns(snapshot, immutable=False)
+            except (OSError, sqlite3.DatabaseError) as exc:
+                raise _IncompatibleRecoveryJournalSchema(
+                    "unable to safely verify recovery journal schema from WAL"
+                ) from exc
+        missing = self._REQUIRED_REQUEST_COLUMNS - columns
+        if missing:
+            names = ", ".join(sorted(missing))
+            raise _IncompatibleRecoveryJournalSchema(
+                f"incompatible recovery journal schema; missing required columns: {names}"
+            )
+
     def _create_schema(self) -> None:
+        # Inspect existing durable journal read-only before WAL setup or any DDL.
+        self._verify_existing_schema()
         with closing(self._connect()) as con:
             initialize_wal(con)
             con.execute("""CREATE TABLE IF NOT EXISTS requests (
@@ -131,18 +187,24 @@ class RecoveryJournal:
                 created_at REAL NOT NULL, updated_at REAL NOT NULL, detail TEXT NOT NULL DEFAULT '',
                 status_code INTEGER NOT NULL DEFAULT 0, response_json TEXT NOT NULL DEFAULT ''
             )""")
-            columns = {str(row[1]) for row in con.execute("PRAGMA table_info(requests)")}
-            if "identity" not in columns:
-                con.execute("ALTER TABLE requests ADD COLUMN identity TEXT NOT NULL DEFAULT ''")
-            if "payload_fingerprint" not in columns:
-                con.execute("ALTER TABLE requests ADD COLUMN payload_fingerprint TEXT NOT NULL DEFAULT ''")
-            con.execute("CREATE INDEX IF NOT EXISTS idx_recovery_state ON requests(state, updated_at)"); con.commit()
+            con.execute("CREATE INDEX IF NOT EXISTS idx_recovery_state ON requests(state, updated_at)")
+            con.commit()
 
     def _init_db(self) -> None:
+        if self._journal_unavailable:
+            return
         try:
             self._create_schema()
             with closing(self._connect()) as con:
-                if not quick_sanity_check(con): raise sqlite3.DatabaseError("recovery sanity check failed")
+                if not quick_sanity_check(con):
+                    raise sqlite3.DatabaseError("recovery sanity check failed")
+        except _IncompatibleRecoveryJournalSchema as exc:
+            self._journal_unavailable = True
+            self._journal_unavailable_reason = str(exc)
+            try:
+                self._journal_unavailable_marker.write_text(str(exc), encoding="utf-8")
+            except OSError:
+                pass
         except sqlite3.DatabaseError as exc:
             # Lock contention is not corruption. Do not rename a valid journal just because
             # another process is finishing its final transaction during startup.
@@ -150,6 +212,7 @@ class RecoveryJournal:
                 return
             # Keep Hub startup available, but never claim a request after journal loss.
             self._journal_unavailable = True
+            self._journal_unavailable_reason = "request journal is unavailable after corruption"
             try:
                 self._journal_unavailable_marker.touch(exist_ok=True)
             except OSError:
@@ -187,7 +250,8 @@ class RecoveryJournal:
         """Atomically claim a request ID or return its recorded outcome."""
         request_id = self.validate_request_id(request_id)
         if self._journal_unavailable:
-            raise sqlite3.DatabaseError("request journal is unavailable after corruption; refusing mutation dispatch")
+            reason = getattr(self, "_journal_unavailable_reason", "request journal is unavailable")
+            raise sqlite3.DatabaseError(f"{reason}; refusing mutation dispatch")
         now = time.time()
         fingerprint = self.fingerprint_payload(payload)
         result: dict[str, Any] = {}

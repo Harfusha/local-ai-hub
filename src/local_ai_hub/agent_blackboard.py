@@ -2,16 +2,18 @@ from __future__ import annotations
 
 from .json_utils import dumps as json_dumps
 
+import hashlib
 import json
 import sqlite3
 import threading
 import time
-from contextlib import closing
+from contextlib import closing, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .sqlite_support import connect_sqlite, initialize_wal, retry_busy
+from .agent_events import AgentEvent, AgentStateStore
+from .sqlite_support import connect_sqlite, initialize_wal, retry_busy, validate_durable_schema
 
 
 @dataclass(frozen=True)
@@ -87,15 +89,15 @@ def merge_sections(s1: BlackboardSection, s2: BlackboardSection) -> BlackboardSe
 class BlackboardStore:
     """Conflict-Free Replicated Data Type (CRDT) multi-agent blackboard store."""
 
-    def __init__(self, db_path: Path | str) -> None:
+    def __init__(self, db_path: Path | str, state_store: AgentStateStore | None = None) -> None:
         self.db_path = Path(db_path)
+        self.state_store = state_store
         self._lock = threading.RLock()
         self._initialized = False
         self._ensure_schema()
 
     def _connect(self) -> sqlite3.Connection:
-        con = connect_sqlite(self.db_path, timeout_seconds=2.0)
-        return con
+        return connect_sqlite(self.db_path, timeout_seconds=2.0)
 
     def _ensure_schema(self) -> None:
         if self._initialized:
@@ -103,9 +105,27 @@ class BlackboardStore:
         with self._lock:
             if self._initialized:
                 return
+            if self.state_store is not None and self.state_store.enabled:
+                self.state_store._ensure_schema()
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
+            expected = {
+                "agent_blackboard": [
+                    ("board_id", "TEXT", 1, 1), ("section", "TEXT", 1, 2),
+                    ("content", "TEXT", 1, 0), ("author", "TEXT", 1, 0),
+                    ("vector_clock", "TEXT", 1, 0), ("timestamp", "REAL", 1, 0),
+                    ("version", "INTEGER", 1, 0),
+                ],
+            }
+
             def init_db() -> None:
-                with closing(self._connect()) as con:
+                con = self._connect()
+                try:
+                    validate_durable_schema(
+                        con,
+                        self.db_path,
+                        expected,
+                        required_if_event_kinds={"agent_blackboard": ("blackboard.%",)},
+                    )
                     initialize_wal(con)
                     with con:
                         con.execute("""
@@ -120,9 +140,10 @@ class BlackboardStore:
                             PRIMARY KEY (board_id, section)
                         );
                         """)
-                        con.execute("""
-                        CREATE INDEX IF NOT EXISTS idx_blackboard_board ON agent_blackboard(board_id);
-                        """)
+                        con.execute("CREATE INDEX IF NOT EXISTS idx_blackboard_board ON agent_blackboard(board_id)")
+                finally:
+                    con.close()
+
             retry_busy(init_db, retries=5, base_delay_seconds=0.02)
             self._initialized = True
 
@@ -134,79 +155,233 @@ class BlackboardStore:
         author: str,
         clock: dict[str, int] | None = None,
         expected_version: int | None = None,
+        idempotency_key: str = "",
+        *,
+        connection: sqlite3.Connection | None = None,
     ) -> dict[str, Any]:
-        """Update a section on the blackboard, advancing the author's vector clock. Supports optimistic concurrency via expected_version."""
+        """CAS-update section; append change event in same transaction when stores share DB."""
         self._ensure_schema()
         clean_board = str(board_id).strip()
         clean_section = str(section).strip()
         clean_author = str(author).strip() or "agent"
+        if connection is not None:
+            return self._update_in_transaction(
+                connection, clean_board, clean_section, content, clean_author,
+                clock, expected_version, idempotency_key,
+            )
 
         def _do_update() -> dict[str, Any]:
             with self._lock, closing(self._connect()) as con:
-                cur = con.cursor()
-                row = cur.execute(
-                    "SELECT content, author, vector_clock, timestamp, version FROM agent_blackboard WHERE board_id=? AND section=?",
-                    (clean_board, clean_section),
-                ).fetchone()
+                con.isolation_level = None
+                con.execute("BEGIN IMMEDIATE")
+                try:
+                    result = self._update_in_transaction(
+                        con, clean_board, clean_section, content, clean_author,
+                        clock, expected_version, idempotency_key,
+                    )
+                    con.execute("COMMIT")
+                    return result
+                except Exception:
+                    try:
+                        con.execute("ROLLBACK")
+                    except Exception:
+                        pass
+                    raise
 
-                if row:
-                    existing_clock = json.loads(str(row[2])) if row[2] else {}
-                    existing_version = int(row[4] or 1)
+        publication_lock = (
+            self.state_store._append_publish_lock
+            if self.state_store is not None
+            else nullcontext()
+        )
+        with publication_lock:
+            result = retry_busy(_do_update, retries=5, base_delay_seconds=0.02)
+            event = result.pop("_event", None)
+            if event is not None and self.state_store is not None:
+                self.state_store._publish(event)
+        return result
+
+    def _update_in_transaction(
+        self,
+        con: sqlite3.Connection,
+        board_id: str,
+        section: str,
+        content: Any,
+        author: str,
+        clock: dict[str, int] | None,
+        expected_version: int | None,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        row = con.execute(
+            "SELECT content, author, vector_clock, timestamp, version "
+            "FROM agent_blackboard WHERE board_id=? AND section=?",
+            (board_id, section),
+        ).fetchone()
+        if row:
+            existing_clock = json.loads(str(row[2])) if row[2] else {}
+            existing_version = int(row[4] or 1)
+        else:
+            existing_clock = {}
+            existing_version = 0
+
+        operation_key = idempotency_key
+        event_stream = f"blackboard:{board_id}:{section}"
+        if self.state_store is not None and self.state_store.enabled:
+            key_payload = json_dumps({
+                "board_id": board_id,
+                "section": section,
+                "author": author,
+                "base_version": int(expected_version) if expected_version is not None else existing_version,
+                "content": content,
+                "clock": clock or {},
+            }, separators=(",", ":"), ensure_ascii=False)
+            operation_key = operation_key or (
+                "bb_" + hashlib.sha256(key_payload.encode("utf-8")).hexdigest()[:24]
+            )
+            existing_event = con.execute(
+                """
+                SELECT stream_id, seq, event_id, kind, payload, idempotency_key,
+                       correlation_id, actor, created_at
+                FROM agent_events WHERE stream_id = ? AND idempotency_key = ?
+                """,
+                (event_stream, operation_key),
+            ).fetchone()
+            if existing_event:
+                event = AgentEvent.from_row(existing_event)
+                stored_section = event.payload.get("section")
+                stored_clock = (stored_section or {}).get("clock", {})
+                requested_expected_version = int(expected_version) if expected_version is not None else None
+                if "expected_version" in event.payload:
+                    expected_version_matches = event.payload.get("expected_version") == requested_expected_version
                 else:
-                    existing_clock = {}
-                    existing_version = 0
-
-                if expected_version is not None:
-                    if existing_version != int(expected_version):
-                        return {
-                            "success": False,
-                            "error": f"Version conflict: current version {existing_version} does not match expected {expected_version}",
-                            "version_conflict": True,
-                            "current_version": existing_version,
-                            "expected_version": int(expected_version),
-                        }
-
-                new_clock = dict(existing_clock)
-                if clock:
-                    for k, v in clock.items():
-                        new_clock[str(k)] = max(new_clock.get(str(k), 0), int(v))
-                new_clock[clean_author] = new_clock.get(clean_author, 0) + 1
-
-                now = time.time()
-                sec = BlackboardSection(
-                    section=clean_section,
-                    content=content,
-                    author=clean_author,
-                    clock=new_clock,
-                    timestamp=now,
-                    version=existing_version + 1,
+                    stored_version = int((stored_section or {}).get("version", existing_version))
+                    expected_version_matches = (
+                        requested_expected_version is None
+                        or stored_version == requested_expected_version + 1
+                    )
+                requested_clock_matches = all(
+                    int(stored_clock.get(str(key), 0)) >= int(value)
+                    for key, value in (clock or {}).items()
                 )
+                if (
+                    event.kind != "blackboard.updated"
+                    or not stored_section
+                    or stored_section.get("content") != content
+                    or stored_section.get("author") != author
+                    or not expected_version_matches
+                    or not requested_clock_matches
+                ):
+                    return {
+                        "success": False,
+                        "error": "idempotency key was already used for different blackboard content",
+                        "idempotency_conflict": True,
+                        "current_version": existing_version,
+                    }
+                return {
+                    "success": True,
+                    "duplicate": True,
+                    "board_id": board_id,
+                    "section": stored_section,
+                    "version": int((stored_section or {}).get("version", existing_version)),
+                    "content": (stored_section or {}).get("content", content),
+                }
 
-                cur.execute(
-                    """
-                    INSERT INTO agent_blackboard (board_id, section, content, author, vector_clock, timestamp, version)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(board_id, section) DO UPDATE SET
-                        content=excluded.content,
-                        author=excluded.author,
-                        vector_clock=excluded.vector_clock,
-                        timestamp=excluded.timestamp,
-                        version=excluded.version
-                    """,
-                    (
-                        clean_board,
-                        clean_section,
-                        json_dumps(content, ensure_ascii=False),
-                        clean_author,
-                        json_dumps(new_clock),
-                        now,
-                        sec.version,
-                    ),
-                )
-                con.commit()
-                return {"success": True, "board_id": clean_board, "section": sec.to_dict(), "version": sec.version, "content": sec.content}
+        if expected_version is not None and existing_version != int(expected_version):
+            return {
+                "success": False,
+                "error": f"Version conflict: current version {existing_version} does not match expected {expected_version}",
+                "version_conflict": True,
+                "current_version": existing_version,
+                "expected_version": int(expected_version),
+            }
 
-        return retry_busy(_do_update, retries=5, base_delay_seconds=0.02)
+        new_clock = dict(existing_clock)
+        if clock:
+            for key, value in clock.items():
+                new_clock[str(key)] = max(new_clock.get(str(key), 0), int(value))
+        new_clock[author] = new_clock.get(author, 0) + 1
+        now = time.time()
+        section_value = BlackboardSection(
+            section=section,
+            content=content,
+            author=author,
+            clock=new_clock,
+            timestamp=now,
+            version=existing_version + 1,
+        )
+        if row:
+            cur = con.execute(
+                """
+                UPDATE agent_blackboard SET content=?, author=?, vector_clock=?, timestamp=?, version=?
+                WHERE board_id=? AND section=? AND version=?
+                """,
+                (
+                    json_dumps(content, ensure_ascii=False),
+                    author,
+                    json_dumps(new_clock),
+                    now,
+                    section_value.version,
+                    board_id,
+                    section,
+                    existing_version,
+                ),
+            )
+        else:
+            cur = con.execute(
+                """
+                INSERT INTO agent_blackboard
+                    (board_id, section, content, author, vector_clock, timestamp, version)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    board_id,
+                    section,
+                    json_dumps(content, ensure_ascii=False),
+                    author,
+                    json_dumps(new_clock),
+                    now,
+                    section_value.version,
+                ),
+            )
+        if cur.rowcount != 1:
+            current = con.execute(
+                "SELECT version FROM agent_blackboard WHERE board_id=? AND section=?",
+                (board_id, section),
+            ).fetchone()
+            current_version = int(current[0]) if current else 0
+            return {
+                "success": False,
+                "error": "Blackboard section changed during update",
+                "version_conflict": True,
+                "current_version": current_version,
+                "expected_version": existing_version,
+            }
+
+        result: dict[str, Any] = {
+            "success": True,
+            "board_id": board_id,
+            "section": section_value.to_dict(),
+            "version": section_value.version,
+            "content": section_value.content,
+        }
+        if self.state_store is not None and self.state_store.enabled:
+            event = AgentEvent.create(
+                stream_id=event_stream,
+                kind="blackboard.updated",
+                payload={
+                    "board_id": board_id,
+                    "section": section_value.to_dict(),
+                    "expected_version": int(expected_version) if expected_version is not None else None,
+                },
+                idempotency_key=operation_key,
+                actor=author,
+            )
+            append = self.state_store.append_in_transaction(con, event, strict_idempotency=True)
+            if append.error or append.event is None:
+                raise RuntimeError(append.error or "blackboard event append returned no persisted event")
+            if append.duplicate:
+                raise sqlite3.IntegrityError("blackboard projection/event idempotency mismatch")
+            result["_event"] = append.event
+        return result
 
     def get(self, board_id: str, section: str | None = None) -> dict[str, Any]:
         """Fetch full board state or a specific section."""
@@ -276,8 +451,11 @@ class BlackboardStore:
 
         def _do_merge() -> dict[str, Any]:
             merged_results: list[dict[str, Any]] = []
+            published: list[AgentEvent] = []
 
             with self._lock, closing(self._connect()) as con:
+                con.isolation_level = None
+                con.execute("BEGIN IMMEDIATE")
                 cur = con.cursor()
                 for sec_name, raw_data in items.items():
                     if not sec_name or not isinstance(raw_data, dict):
@@ -322,11 +500,47 @@ class BlackboardStore:
                         ),
                     )
                     merged_results.append(final_sec.to_dict())
+                    if self.state_store is not None and self.state_store.enabled:
+                        merge_payload = json_dumps({
+                            "board_id": clean_board,
+                            "section": sec_name,
+                            "remote": remote_sec.to_dict(),
+                        }, separators=(",", ":"), ensure_ascii=False)
+                        event = AgentEvent.create(
+                            stream_id=f"blackboard:{clean_board}:{sec_name}",
+                            kind="blackboard.merged",
+                            payload={"board_id": clean_board, "section": final_sec.to_dict()},
+                            idempotency_key="merge_" + hashlib.sha256(merge_payload.encode("utf-8")).hexdigest()[:24],
+                            actor=remote_sec.author or "agent",
+                        )
+                        appended = self.state_store.append_in_transaction(
+                            con, event, strict_idempotency=True
+                        )
+                        if appended.error or appended.event is None:
+                            raise RuntimeError(appended.error or "blackboard merge event append returned no persisted event")
+                        if not appended.duplicate and appended.event:
+                            published.append(appended.event)
 
-                con.commit()
-                return {"success": True, "board_id": clean_board, "merged_count": len(merged_results), "sections": merged_results}
+                con.execute("COMMIT")
+                result = {
+                    "success": True,
+                    "board_id": clean_board,
+                    "merged_count": len(merged_results),
+                    "sections": merged_results,
+                }
+                result["_events"] = published
+                return result
 
-        return retry_busy(_do_merge, retries=5, base_delay_seconds=0.02)
+        publication_lock = (
+            self.state_store._append_publish_lock
+            if self.state_store is not None
+            else nullcontext()
+        )
+        with publication_lock:
+            result = retry_busy(_do_merge, retries=5, base_delay_seconds=0.02)
+            for event in result.pop("_events", []):
+                self.state_store._publish(event)
+        return result
 
     def delete(self, board_id: str, section: str | None = None) -> dict[str, Any]:
         """Delete an entire blackboard or a specific section from it."""
@@ -335,25 +549,71 @@ class BlackboardStore:
         clean_section = str(section).strip() if section is not None else None
 
         def _do_delete() -> dict[str, Any]:
+            published: list[AgentEvent] = []
             with self._lock, closing(self._connect()) as con:
-                cur = con.cursor()
-                if clean_section:
-                    cur.execute(
-                        "DELETE FROM agent_blackboard WHERE board_id = ? AND section = ?",
-                        (clean_board, clean_section),
-                    )
-                else:
-                    cur.execute(
-                        "DELETE FROM agent_blackboard WHERE board_id = ?",
-                        (clean_board,),
-                    )
-                deleted_count = cur.rowcount
-                con.commit()
-                return {
+                con.isolation_level = None
+                con.execute("BEGIN IMMEDIATE")
+                try:
+                    if clean_section:
+                        rows = con.execute(
+                            "SELECT section, version, vector_clock FROM agent_blackboard WHERE board_id = ? AND section = ?",
+                            (clean_board, clean_section),
+                        ).fetchall()
+                        cur = con.execute(
+                            "DELETE FROM agent_blackboard WHERE board_id = ? AND section = ?",
+                            (clean_board, clean_section),
+                        )
+                    else:
+                        rows = con.execute(
+                            "SELECT section, version, vector_clock FROM agent_blackboard WHERE board_id = ?",
+                            (clean_board,),
+                        ).fetchall()
+                        cur = con.execute("DELETE FROM agent_blackboard WHERE board_id = ?", (clean_board,))
+                    deleted_count = max(0, cur.rowcount)
+                    if self.state_store is not None and self.state_store.enabled:
+                        for deleted_section, version, vector_clock in rows:
+                            event = AgentEvent.create(
+                                stream_id=f"blackboard:{clean_board}:{deleted_section}",
+                                kind="blackboard.deleted",
+                                payload={
+                                    "board_id": clean_board,
+                                    "section": str(deleted_section),
+                                    "deleted_version": int(version),
+                                    "clock": json.loads(str(vector_clock)) if vector_clock else {},
+                                },
+                                actor="system",
+                            )
+                            appended = self.state_store.append_in_transaction(
+                                con, event, strict_idempotency=True
+                            )
+                            if appended.error or appended.event is None:
+                                raise RuntimeError(appended.error or "blackboard tombstone event append returned no persisted event")
+                            if not appended.duplicate and appended.event:
+                                published.append(appended.event)
+                    con.execute("COMMIT")
+                except Exception:
+                    try:
+                        con.execute("ROLLBACK")
+                    except Exception:
+                        pass
+                    raise
+                result = {
                     "success": True,
                     "board_id": clean_board,
                     "section": clean_section,
                     "deleted_count": deleted_count,
                 }
+                result["_events"] = published
+                return result
 
-        return retry_busy(_do_delete, retries=5, base_delay_seconds=0.02)
+        publication_lock = (
+            self.state_store._append_publish_lock
+            if self.state_store is not None
+            else nullcontext()
+        )
+        with publication_lock:
+            result = retry_busy(_do_delete, retries=5, base_delay_seconds=0.02)
+            for event in result.pop("_events", []):
+                if self.state_store is not None:
+                    self.state_store._publish(event)
+        return result
