@@ -628,10 +628,6 @@ def _receipt_evidence_matches(
     evidence_store: Any | None = None,
 ) -> bool:
     """Re-read and bind positive receipts to complete, tenant-scoped proof artifacts."""
-    if evidence_store is not None and str(receipt.evidence_id).startswith("E"):
-        ev = evidence_store.get(receipt.evidence_id, verify=False)
-        if isinstance(ev, Mapping) and ev.get("success") is True:
-            return True
     if artifact_store is None or not expected_owner or receipt.owner != expected_owner:
         return False
     if require_repository_revision and not receipt.repository_revision.strip():
@@ -783,7 +779,7 @@ def _receipt_evidence_matches(
             ).hexdigest()
             if proof.get("project_execution_binding_sha256") != expected_binding:
                 return False
-        if require_execution_provenance and receipt.command_id and trusted_repository_root:
+        if require_execution_provenance and receipt.command_id:
             if (
                 not callable(command_execution_record_lookup)
                 or not trusted_tenant
@@ -1337,10 +1333,8 @@ class VerificationStore:
             change.rollback_description,
             change.created_at,
         )
-        published: list[AgentEvent] = []
-
-        def _do_save() -> None:
-            con = connect_sqlite(self.state_store.db_path, isolation_level=None)
+        def _do_save(con: Any) -> list[AgentEvent]:
+            published: list[AgentEvent] = []
             try:
                 con.execute("BEGIN IMMEDIATE")
                 appended = self.state_store.append_in_transaction(
@@ -1375,18 +1369,22 @@ class VerificationStore:
                 if not saved or tuple(saved) != expected:
                     raise ValueError("change_id already belongs to different change intent")
                 con.execute("COMMIT")
+                return published
             except Exception:
                 try:
                     con.execute("ROLLBACK")
                 except Exception:
                     pass
                 raise
-            finally:
-                con.close()
-
-        retry_busy(_do_save, retries=5, base_delay_seconds=0.02)
-        for persisted in published:
-            self.state_store._publish(persisted)
+        con = connect_sqlite(self.state_store.db_path, isolation_level=None)
+        try:
+            with self.state_store.ordered_event_publication(con) as publish_committed:
+                published = retry_busy(
+                    lambda: _do_save(con), retries=5, base_delay_seconds=0.02
+                )
+                publish_committed(published)
+        finally:
+            con.close()
         if self.task_store is not None and change.task_id:
             try:
                 task = self.task_store.get(change.task_id)
@@ -1428,10 +1426,8 @@ class VerificationStore:
             json_dumps(outcome.details),
             outcome.created_at,
         )
-        published: list[AgentEvent] = []
-
-        def _do_save() -> None:
-            con = connect_sqlite(self.state_store.db_path, isolation_level=None)
+        def _do_save(con: Any) -> list[AgentEvent]:
+            published: list[AgentEvent] = []
             try:
                 con.execute("BEGIN IMMEDIATE")
                 appended = self.state_store.append_in_transaction(
@@ -1465,18 +1461,22 @@ class VerificationStore:
                 if not saved or tuple(saved) != expected:
                     raise ValueError("outcome_id already belongs to different outcome")
                 con.execute("COMMIT")
+                return published
             except Exception:
                 try:
                     con.execute("ROLLBACK")
                 except Exception:
                     pass
                 raise
-            finally:
-                con.close()
-
-        retry_busy(_do_save, retries=5, base_delay_seconds=0.02)
-        for persisted in published:
-            self.state_store._publish(persisted)
+        con = connect_sqlite(self.state_store.db_path, isolation_level=None)
+        try:
+            with self.state_store.ordered_event_publication(con) as publish_committed:
+                published = retry_busy(
+                    lambda: _do_save(con), retries=5, base_delay_seconds=0.02
+                )
+                publish_committed(published)
+        finally:
+            con.close()
         return outcome
 
     def completion(

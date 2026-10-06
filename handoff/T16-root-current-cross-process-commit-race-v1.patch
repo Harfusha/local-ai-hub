@@ -1,0 +1,111 @@
+--- a/tests/test_work_fencing.py
++++ b/tests/test_work_fencing.py
+@@ -30,6 +30,47 @@
+     else:
+         results.put((owner, "acquired", lease.fencing_token))
+ 
++def _record_race_order(order, lock) -> int:
++    with lock:
++        order.value += 1
++        return int(order.value)
++
++
++def _guarded_race_writer(db_path: str, root_s: str, started, release, order, lock, results) -> None:
++    root = Path(root_s)
++    try:
++        store = FencingLeaseStore(Path(db_path), clock=lambda: 100.0)
++        attempt = store.claim_attempt(root, "work-commit-race", "writer", ttl_seconds=5)
++        lease = store.acquire(root, "writer", ["artifact.txt"], ttl_seconds=5, attempt=attempt)
++        with store.commit_guard(lease, ["artifact.txt"]):
++            (root / "artifact.txt").write_text("writer\n", encoding="utf-8")
++            started.set()
++            if not release.wait(timeout=10):
++                raise TimeoutError("test did not release guarded writer")
++        writer_order = _record_race_order(order, lock)
++        results.put(("writer", "committed", attempt.fencing_token, lease.fencing_token, writer_order))
++    except BaseException as exc:
++        started.set()
++        results.put(("writer", "failed", type(exc).__name__, str(exc)))
++
++
++def _claim_successor_during_guard(
++    db_path: str, root_s: str, attempting, claimed, order, lock, results
++) -> None:
++    root = Path(root_s)
++    attempting.set()
++    try:
++        store = FencingLeaseStore(Path(db_path), clock=lambda: 106.0)
++        attempt = store.claim_attempt(root, "work-commit-race", "successor", ttl_seconds=30)
++        claimed.set()
++        successor_order = _record_race_order(order, lock)
++        lease = store.acquire(root, "successor", ["artifact.txt"], ttl_seconds=30, attempt=attempt)
++        with store.commit_guard(lease, ["artifact.txt"]):
++            (root / "artifact.txt").write_text("successor\n", encoding="utf-8")
++        results.put(("successor", "claimed", attempt.fencing_token, lease.fencing_token, successor_order))
++    except BaseException as exc:
++        attempting.set()
++        results.put(("successor", "failed", type(exc).__name__, str(exc)))
+ 
+ def test_cross_process_contenders_get_one_overlapping_writer(tmp_path: Path) -> None:
+     root = tmp_path / "repo"
+@@ -64,6 +105,60 @@
+     assert sorted(result[1] for result in outcomes) == ["acquired", "busy"]
+     assert len({result[2] for result in outcomes if result[1] == "acquired"}) == 1
+ 
++def test_cross_process_successor_cannot_supersede_writer_inside_commit_guard(
++    tmp_path: Path,
++) -> None:
++    root = tmp_path / "repo"
++    root.mkdir()
++    db_path = tmp_path / "fences.sqlite3"
++    context = multiprocessing.get_context("spawn")
++    writer_started = context.Event()
++    release_writer = context.Event()
++    successor_attempting = context.Event()
++    successor_claimed = context.Event()
++    order = context.Value("i", 0)
++    order_lock = context.Lock()
++    results = context.Queue()
++    writer = context.Process(
++        target=_guarded_race_writer,
++        args=(str(db_path), str(root), writer_started, release_writer, order, order_lock, results),
++    )
++    successor = context.Process(
++        target=_claim_successor_during_guard,
++        args=(str(db_path), str(root), successor_attempting, successor_claimed, order, order_lock, results),
++    )
++    writer.start()
++    try:
++        assert writer_started.wait(timeout=10), "writer did not enter its fenced write"
++        successor.start()
++        assert successor_attempting.wait(timeout=10), "successor did not reach claim_attempt"
++        assert not successor_claimed.wait(timeout=0.5), "successor replaced writer before guarded commit"
++    finally:
++        release_writer.set()
++        writer.join(timeout=12)
++        if successor.pid is not None:
++            successor.join(timeout=12)
++        for process in (writer, successor):
++            if process.is_alive():
++                process.terminate()
++                process.join(timeout=5)
++
++    assert writer.exitcode == 0
++    assert successor.exitcode == 0
++    outcomes = []
++    try:
++        outcomes = [results.get(timeout=3) for _ in range(2)]
++    except Empty:
++        pytest.fail(f"cross-process commit race did not report both results: {outcomes!r}")
++    by_owner = {result[0]: result for result in outcomes}
++    assert by_owner["writer"][1] == "committed", by_owner["writer"]
++    assert by_owner["successor"][1] == "claimed", by_owner["successor"]
++    writer_result = by_owner["writer"]
++    successor_result = by_owner["successor"]
++    assert successor_result[2] > writer_result[2]
++    assert successor_result[3] > writer_result[3]
++    assert writer_result[4] < successor_result[4]
++    assert (root / "artifact.txt").read_text(encoding="utf-8") == "successor\n"
+ 
+ def test_disjoint_paths_can_coexist_but_overlapping_paths_cannot(tmp_path: Path) -> None:
+     root = tmp_path / "repo"

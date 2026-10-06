@@ -1,0 +1,62 @@
+diff --git a/tests/test_project_command_broker.py b/tests/test_project_command_broker.py
+--- a/tests/test_project_command_broker.py
++++ b/tests/test_project_command_broker.py
+@@ -182,6 +182,58 @@
+     )
+ 
+ 
++def test_project_environment_invalidates_suppression_and_success_cache(
++    tmp_path: Path, monkeypatch
++) -> None:
++    project_root = tmp_path / "project"
++    project_root.mkdir()
++    script = "import os; print(os.environ['T15_CHILD_TOKEN'])"
++    (project_root / ".local-ai.toml").write_text(
++        "[commands.check]\n"
++        f"argv = {json.dumps([sys.executable, '-B', '-c', script])}\n"
++        "[commands.check.env]\n"
++        'T15_CHILD_TOKEN = "${T15_HOST_TOKEN}"\n',
++        encoding="utf-8",
++    )
++    monkeypatch.setenv("T15_HOST_TOKEN", "first")
++    broker = _broker(tmp_path)
++    broker.policy_blocking = True
++    classify_calls = 0
++
++    def classify(_command: str) -> dict[str, object]:
++        nonlocal classify_calls
++        classify_calls += 1
++        blocked = classify_calls <= 2
++        return {
++            "class": "unknown",
++            "cacheable": not blocked,
++            "allowed": not blocked,
++            "reason": "test policy",
++        }
++
++    monkeypatch.setattr(broker, "classify", classify)
++
++    blocked = broker.run_project_command("check", str(project_root), tenant="test")
++    suppressed = broker.run_project_command("check", str(project_root), tenant="test")
++    assert blocked["policy_blocked"] is True
++    assert suppressed["suppression_cache_hit"] is True
++
++    monkeypatch.setenv("T15_HOST_TOKEN", "second")
++    fresh = broker.run_project_command("check", str(project_root), tenant="test")
++    warm = broker.run_project_command("check", str(project_root), tenant="test")
++    assert fresh["success"] is True
++    assert fresh["stdout"] == "second\n"
++    assert fresh.get("suppression_cache_hit") is not True
++    assert warm["cache_hit"] is True
++
++    monkeypatch.setenv("T15_HOST_TOKEN", "third")
++    changed = broker.run_project_command("check", str(project_root), tenant="test")
++    assert changed["success"] is True
++    assert changed["stdout"] == "third\n"
++    assert changed.get("cache_hit") is not True
++    assert classify_calls == 5
++
++
+ def test_unknown_project_command_alias_fails_before_execution(
+     tmp_path: Path, monkeypatch
+ ) -> None:

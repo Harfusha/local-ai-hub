@@ -290,7 +290,7 @@ def test_rag_reliability_and_events_have_operational_filters() -> None:
 def test_live_events_with_trace_id_link_to_trace_inspector() -> None:
     source = DASHBOARD_HTML[
         DASHBOARD_HTML.index("function renderEvents(events=liveEvents)") : DASHBOARD_HTML.index(
-            "async function pollEvents()"
+            "async function pollEvents(isCurrent="
         )
     ]
     assert "traceId=e.trace_id" in source
@@ -305,12 +305,12 @@ def test_live_pollers_skip_overlapping_requests() -> None:
     pollers = DASHBOARD_HTML[pollers_start:pollers_end]
     assert "statusPoller.start();" in DASHBOARD_HTML[:pollers_start]
     assert "pollStatus()" not in pollers
-    trace_poller = DASHBOARD_HTML[DASHBOARD_HTML.index("async function pollTraces()") : DASHBOARD_HTML.index("$('traceRefresh')")]
+    trace_poller = DASHBOARD_HTML[DASHBOARD_HTML.index("async function pollTraces(isCurrent=") : DASHBOARD_HTML.index("$('traceRefresh')")]
     assert "let liveEvents=[],eventsPollInFlight=false,tracesPollInFlight=false" in pollers
-    assert "if(tracesPollInFlight)return;tracesPollInFlight=true" in trace_poller
-    assert "if(eventsPollInFlight)return;eventsPollInFlight=true" in pollers
-    assert "finally{tracesPollInFlight=false}" in trace_poller
-    assert "finally{eventsPollInFlight=false}" in pollers
+    assert "if(!isCurrent()||tracesPollInFlight)return false" in trace_poller
+    assert "if(!isCurrent()||eventsPollInFlight)return false" in pollers
+    assert "finally{tracesPollInFlight=false;" in trace_poller
+    assert "finally{eventsPollInFlight=false;" in pollers
 
 
 def test_trace_inspector_consumes_pages_with_hard_response_budget() -> None:

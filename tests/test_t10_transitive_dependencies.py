@@ -1,4 +1,5 @@
 from pathlib import Path
+from contextlib import closing
 
 from local_ai_hub.code_index import CodeIndex
 from local_ai_hub.deterministic import DeterministicEngine
@@ -33,3 +34,44 @@ def test_affected_tests_include_transitive_importers(tmp_path: Path) -> None:
     assert {"tests/test_shared.py", "tests/test_core.py", "tests/test_app.py"}.issubset(
         set(result["test_files"])
     )
+
+
+def test_impact_traverses_imports_when_changed_file_has_no_symbols(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    (root / "src").mkdir(parents=True)
+    (root / "src/shared.py").write_text("# intentionally empty module\n", encoding="utf-8")
+    (root / "src/core.py").write_text("from src.shared import missing_name\n", encoding="utf-8")
+    config = {"server": {"state_dir": str(tmp_path / "state")}}
+    index = CodeIndex(config, RepositoryTools(config))
+    assert index.update_file(str(root), "src/shared.py")["success"] is True
+    assert index.update_file(str(root), "src/core.py")["success"] is True
+
+    result = index.impact(str(root), ["src/shared.py"])
+
+    assert result["changed_symbols"] == []
+    assert "src/core.py" in {item["path"] for item in result["likely_dependents"]}
+
+
+def test_truncated_import_graph_does_not_claim_exact_dependent_count(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    (root / "src").mkdir(parents=True)
+    (root / "src/shared.py").write_text("def shared_value():\n    return 1\n", encoding="utf-8")
+    config = {"server": {"state_dir": str(tmp_path / "state")}}
+    index = CodeIndex(config, RepositoryTools(config))
+    assert index.update_file(str(root), "src/shared.py")["success"] is True
+    resolved = str(root.resolve())
+    with closing(index._connect()) as con:
+        con.executemany(
+            "INSERT INTO edges(root,src,dst,kind,path,line) VALUES(?,?,?,?,?,?)",
+            [
+                (resolved, "<module>", f"dependency_{number}", "imports", f"pkg/file_{number}.py", 1)
+                for number in range(201)
+            ],
+        )
+        con.commit()
+
+    result = index.impact(str(root), ["src/shared.py"], max_dependents=1)
+
+    assert result["coverage"]["complete"] is False
+    assert result["coverage"]["dependent_candidate_count_exact"] is False
+    assert result["coverage"]["dependent_count"] is None

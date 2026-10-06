@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import json
+import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from local_ai_hub.commands import CommandBroker
 from tools import benchmark_command_broker as benchmark
+from tools import prepare_command_broker_fixtures as fixtures
 
 
 def test_pair_orders_are_balanced_and_reproducible() -> None:
@@ -200,6 +205,25 @@ def test_source_snapshot_hashes_command_file_from_selected_checkout(tmp_path, mo
     assert snapshot["commands_sha256"] == benchmark.hashlib.sha256(b"selected checkout").hexdigest()
 
 
+def test_run_benchmark_rejects_wrong_commands_pin_before_loading_api(tmp_path, monkeypatch) -> None:
+    command_file = tmp_path / "src" / "local_ai_hub" / "commands.py"
+    command_file.parent.mkdir(parents=True)
+    command_file.write_text("selected checkout", encoding="utf-8")
+    monkeypatch.setattr(benchmark, "_git_identity", lambda _root: {"head": "abc", "dirty": False})
+
+    def fail_if_loaded(_root):
+        raise AssertionError("benchmark must reject wrong source pin before importing code")
+
+    monkeypatch.setattr(benchmark, "_load_command_api", fail_if_loaded)
+    with pytest.raises(RuntimeError, match="commands.py SHA-256 does not match expected pin"):
+        benchmark.run_benchmark(
+            tmp_path,
+            light_samples=1,
+            paired_runs=1,
+            expected_commands_sha256="0" * 64,
+        )
+
+
 def test_command_api_imports_from_selected_checkout(tmp_path, monkeypatch) -> None:
     package_dir = tmp_path / "src" / "local_ai_hub"
     package_dir.mkdir(parents=True)
@@ -258,3 +282,58 @@ def test_capture_fixture_measures_callback_and_no_callback_paths(tmp_path) -> No
     assert without_callback["callback_chunks"] == 0
     assert without_callback["stdout_bytes"] == with_callback["stdout_bytes"]
     assert without_callback["stderr_bytes"] == with_callback["stderr_bytes"]
+
+
+def test_preflight_fixture_reports_valid_and_invalid_syntax_latency(tmp_path) -> None:
+    broker = CommandBroker({"commands": {"enabled": True}})
+
+    result = benchmark._measure_preflight_validation(broker, tmp_path, samples=3)
+
+    assert result["valid_syntax"]["wall_ms"]["n"] == 3
+    assert result["valid_syntax"]["outcome"] == {
+        "success": True,
+        "clean": True,
+        "checker": "py_compile",
+        "errors_count": 0,
+    }
+    assert result["invalid_syntax"]["wall_ms"]["n"] == 3
+    assert result["invalid_syntax"]["outcome"] == {
+        "success": True,
+        "clean": False,
+        "checker": "py_compile",
+        "errors_count": 1,
+    }
+
+
+def test_synthetic_repository_fixture_is_pinned_clean_and_reproducible(tmp_path) -> None:
+    worktree = tmp_path / "t15-benchmark-fixture-profile-a-100"
+    worktree.mkdir()
+    subprocess.run(["git", "init", "--quiet", str(worktree)], check=True)
+    (worktree / "README.md").write_text("fixture base\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(worktree), "add", "README.md"], check=True)
+    subprocess.run(
+        [
+            "git", "-C", str(worktree), "-c", "user.name=T15 Fixture",
+            "-c", "user.email=t15-fixture@example.invalid", "commit", "--quiet", "-m", "fixture base",
+        ],
+        check=True,
+    )
+    source_pin = subprocess.check_output(
+        ["git", "-C", str(worktree), "rev-parse", "HEAD"], text=True
+    ).strip()
+
+    receipt = fixtures.build_fixture(
+        worktree,
+        source_pin_sha=source_pin,
+        file_count=100,
+    )
+
+    manifest = json.loads(Path(receipt["manifest_path"]).read_text(encoding="utf-8"))
+    assert receipt["source_pin_sha"] == source_pin
+    assert receipt["file_count"] == 100
+    assert len(list((worktree / fixtures.FIXTURE_DATA_DIR).rglob("*.dat"))) == 100
+    assert manifest["file_count"] == 100
+    assert manifest["source_pin_sha"] == source_pin
+    assert subprocess.check_output(
+        ["git", "-C", str(worktree), "status", "--porcelain"], text=True
+    ) == ""

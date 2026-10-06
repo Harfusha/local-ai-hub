@@ -247,6 +247,167 @@ remain preserved. Generated runtime/cache data is not committed.
 
 ### Preservation rule
 
+T16 orchestration-recovery `75b8917f` is integrated as `f99619a4`.
+Reviewed production delta: import layout and blank-line-only differences;
+current fencing, private transaction and safe rollback behavior retained.
+Original checkpoint `49ced58f` preserves all 87 ordinary untracked files and
+the historical dirty work. Fresh root command `python -B -m pytest -q -p
+no:cacheprovider tests/test_work_fencing.py --tb=short --maxfail=3`: 12 passed,
+1 skipped in 4.33 seconds (Windows symlink privilege unavailable).
+Owner's rollback/command-policy/legacy lease-fixture failures remain open.
+Details: `handoff/T16-recovery-sync-20261006-integration.md`.
+
+Current Git ancestry inventory after these integrations: 60 registered
+worktrees, 55 HEADs reachable from master, five unique HEADs pending integration.
+Those five are owned by active workers: hub-audit-repairs, T13 lifecycle,
+T17 multimodal resume, T18 status dashboard and T17 browser flow. Reachability
+does not mean final fast-forward synchronization, clean runtime state or release
+acceptance. Remaining historical stashes still require coverage reconciliation;
+no stash was dropped, checkpoint ref deleted or worktree removed in this run.
+
+### Concurrent root edits discovered after integration
+
+The subsequent dirty inventory found new, unattributed tracked modifications in
+`src/local_ai_hub/agent_events.py` and `src/local_ai_hub/client.py`, besides the
+preserved runtime database. These edits were not made by the orchestrator's
+integration patches and are not staged, reverted or overwritten. Owner/handoff
+requested. Earlier targeted receipts do not certify this newly modified source.
+Reviewed concerns: Windows backup ACL application now catches/ignores all
+exceptions and substitutes USERNAME for whoami; durable backup confidentiality
+must remain fail-closed. Pubsub payload/sequence changes and SDK fixed-action
+payload ordering need the owner's regression receipts. Root is not clean;
+avoid merges across these two paths until attribution/reconciliation is ready.
+
+Subsequently `http_server.py` also changed outside orchestrator ownership:
+an explicit worktree-memory-delete 403 guard was added. Preserve it uncommitted
+pending owner handoff. Observed SHA256s for attribution (not acceptance):
+agent_events.py `226235956A405F6133947C62ECEC76BFE4857B1AF8912B4BC17C4AF98F4441D5`,
+client.py `C65E72B3B72097470C2E9B4365C9EDDCFA6C457B53FBB56734DA03D82A36C98C`,
+http_server.py `9CD9B11276C3AFDE684460C92B591369B53D92E824B39C17814D06203DD3A06E`.
+
+Hub-audit-repairs packet `0e4c62c2` integrated as `5283a418`; its production
+delta only affects async_jobs.py, with no write to the three concurrent dirty
+paths. Historical async dispatch deadlines clear on cancellation/recovery/expiry,
+and due-time selection is inclusive. Fresh root command `python -B -m pytest
+-q -p no:cacheprovider tests/test_async_jobs.py --tb=short --maxfail=3`:
+29 passed in 11.31 seconds. Owner benchmark units and guards passed, but queue
+diagnostic label sanitization and whole paired benchmark acceptance remain open.
+Details: `docs/integration-hub-audit-repairs-20261006.md`. The same existing
+worker now owns the independent 45-stash coverage audit; no stash is applied,
+dropped or claimed covered without evidence.
+
+Untracked inventory of already-integrated checkouts primarily contains retained
+test state: T04 artifacts/t04-sync-pytest-20261006, T08 handoff test-temp,
+T16 resume .merge-checks, T17 vision .t17-merge-tmp and 4816 scratch checkout.
+These are preserved, not automatically staged or deleted. T15 historical JSON
+receipts remain enumerated separately. The registered temporary checkout
+lah_wt_worktree_e64978b4714c still has one tracked and one untracked change,
+with owner unresolved; it must not be silently classified as reconciled merely
+because its HEAD is reachable from master.
+
+T15 command-config `fdbf3ec3` is integrated as `fcbb1d6f`. Active runtime is
+identical to owner's pinned master; 44 original source/test/tool/handoff files
+are preserved, including benchmark source-pin and fixture tools. Fresh root:
+`python -B -m pytest -q -p no:cacheprovider
+tests/test_command_cache_singleflight_contract.py tests/test_project_command_broker.py
+--tb=short --maxfail=3`: 29 passed in 5.77 seconds. Owner's three remaining
+coalesced-cache/affected-test result contract failures are still open. Twenty-one
+historical runtime receipt JSONs remain preserved on disk and enumerated in
+`docs/integration/T15-COMMAND-CONFIG-SYNC-20261006.md`; not current evidence.
+
+069d `06204d01` is centrally reconciled against `fcbb1d6f`; original checkpoint
+`57ee7a49` preserves 187 tracked plus 295 ordinary untracked source, test,
+tool and historical handoff files. Manual conflicts retain current optional
+Serena/standalone CodeGraph guidance, synthesis scope caveat, duplicate-safe
+historical actor-idempotency test names and structural allowlisting of mandatory
+CodeGraph ignore markers. Repository memory tenant filtering remains applied
+once in the common scope clause (only redundant application removed); trusted
+promotion scope check remains. Ordered receipt/memory publication retained.
+
+Fresh root checks: `python -B -m pytest -q -p no:cacheprovider
+tests/test_t10_like_suffix_escape.py tests/test_telemetry_privacy.py
+tests/test_agent_receipt_completion_t09.py tests/test_agent_task_memory_adoption.py
+tests/test_sync_codegraph_scan_ignore.py --tb=short --maxfail=4`: 40 passed in
+23.78 seconds. `python -B -m pytest -q -p no:cacheprovider tests/test_agent_tasks.py
+-k 'idempotency' --tb=short --maxfail=3`: 6 passed, 38 deselected in 1.00 second.
+Owner's memory promotion fixture and legacy AGENTS text failures remain open;
+no source/runtime/provider/release completion inferred. Details:
+`handoff/SYNC-069D-20261006.md`.
+
+T17 vision-refactor packet `04bbeb19` is integrated as `0aebfbd9`.
+Reviewed preservation of process safety, cancellation/preflight checks, bounded
+prompt/output, evidence-grounded DOM facts and current T14 retrieval. Fresh
+root command `python -B -m pytest -q -p no:cacheprovider
+tests/test_vision_contracts.py tests/test_vision_service.py
+tests/test_http_vision_routes.py --tb=short --maxfail=5`: 139 passed, 4 failed
+in 30.42 seconds. Remaining: old bbox interpretation/error expectation,
+PNG fixture lacks IHDR, parsed tuple fixture lacks image dimensions, golden
+response differs on empty artifact IDs/observation_sources. Owner's nine
+process/transcription failures remain open. Source process_utils is unchanged
+against owner's pinned master; no process-safety weakening. Exact receipts and
+historical original handoff: `handoff/t17-vision-refactor-sync-20261006.md`.
+This is preserved unfinished integration, not vision/runtime/release acceptance.
+
+| Additional checkout | Root integration | Verification and unfinished acceptance |
+| --- | --- | --- |
+| t13-operational-mode-resume-20261004 | `f5794721` | Current locked/revisioned mode protocol retained; historical incompatible source/test files preserved verbatim in committed integration archive and checkpoint. Early inference/preprocess/background gates ported to current protocol. Exact check: `python -B -m pytest -q -p no:cacheprovider tests/test_sync_opmode_resume.py tests/test_operational_mode.py tests/test_tiered_ollama_runtime.py --tb=short --maxfail=4`: 39 passed in 8.70 s. Live VRAM release and unload end-to-end deadlines remain unverified. See `docs/integration/T13-OPMODE-RESUME-SYNC-20261006.md`. |
+| t18-candidate-2b33602 | `70059e18`, root merge `5538bd11` | Retained current ordered state, error redaction, auth and T14 behavior. Fresh root `python -B -m pytest -q -p no:cacheprovider tests/test_telemetry_privacy_t18.py tests/test_telemetry_self_accounting.py tests/test_status_snapshot_quality.py --tb=short --maxfail=4`: 29 passed in 3.06 s. Owner UI/status 164 passed, but trace paging backend, SSE expectations and remote-mode contracts remain unfinished. See `docs/T18_SYNC_INTEGRATION_20261006.md`. |
+| t16-e2e-recovery-20261004 | `387ecbdf`, root merge `1fa8c6f1` | Retained strict receipt provenance, server-derived memory identity, stable startup lock inode and worktree owner-ID forwarding. Fresh root `python -B -m pytest -q -p no:cacheprovider tests/test_client_start_lock_owner.py tests/test_worktree_release_ownership.py --tb=short --maxfail=3`: 7 passed in 4.68 s. Owner broader checks 110 passed, 20 failed, 1 skipped; receipt/policy fixtures, lease DB, MCP schemas and search fallback remain unfinished. See `docs/T16_E2E_SYNC_INTEGRATION_20261006.md`. |
+
+Ready packets still pending integration review: T10 resume `e4c14ded` (owner
+78 passed, 5 skipped; nine JSON artifacts retained outside commit require
+classification), historical 55ed `b99482f8` (owner 129 passed, 2 failed;
+inventory 51 passed, 668 rows, zero drift). These are not root-integrated or
+release accepted. Independent workers own broad 069d, T17 vision refactor,
+T15 command config, T18 status dashboard and T16 orchestration recovery.
+
+Historical 55ed packet `b99482f8` is now centrally reconciled against root
+`3a43536a`. Four conflicts resolved: preserve both doctor/release test sets,
+retain explicit terminal/non-retryable native fallback rule plus bounded-read
+guidance, regenerate API coverage from combined source. `python
+tools/surface_inventory.py --write-doc` and `python tools/surface_inventory.py
+--check`: 705 rows, no drift, coverage matches. Fresh root command `python -B
+-m pytest -q -p no:cacheprovider tests/test_doctor_support.py
+tests/test_operation_contracts.py tests/test_release_contract.py --tb=short
+--maxfail=4`: 65 passed, 4 failed in 13.85 seconds. Release assertions forbid
+ALTER TABLE despite retained safe lease migration, and ban all CodeGraph text
+despite explicit standalone-outside-Hub guidance. Expectations remain unchanged;
+these contracts are unfinished, not release accepted. Earlier mistyped test
+filename collected no tests and is not counted as validation.
+
+T10's nine originally untracked historical benchmark JSON/schema files were
+classified as archived evidence, not runtime databases, and committed in their
+existing checkout as `0ad7e821` (original result `e4c14ded` remains ancestor).
+They are preserved exactly, not counted as current performance proof. Root
+integration is now reconciled against `04ff61eb`, including packet `0ad7e821`.
+Seven central conflicts resolved by behavior: retain T14 candidate controls
+and string/dict hints, T10 backend selection/confidence/deadline diagnostics,
+benchmark source-origin guard and T10 origin checks, both backend-removal
+assertion sets, current external-tool guidance and bounded-read instructions.
+Two formerly checked T19 rollout items are reopened for the final combined
+source; historical receipts remain in merge parents and handoffs.
+
+Fresh root command: `python -B -m pytest -q -p no:cacheprovider
+tests/test_t10_transitive_dependencies.py tests/test_t10_incremental_callgraph_edges.py
+tests/test_t10_snapshot_cache_capacity.py tests/test_context_delivery.py
+tests/test_preprocess_operational_mode.py tests/test_codegraph_package_policy.py
+--tb=short --maxfail=5`: 72 passed, 1 failed, 5 skipped in 37.09 seconds.
+Failure: CodeGraph substring audit rejects generator's standalone removal
+guidance, not a restored backend. Five language parser checks skip because
+parsers are unavailable. No expectations weakened, full runtime/benchmark
+acceptance not established. Historical JSON evidence is not current performance.
+
+Post-reconciliation T10 checks: AST parsing of seven production files plus
+tools/benchmark_surfaces.py passed (8 files). `python tools/surface_inventory.py
+--write-doc` followed by `python tools/surface_inventory.py --check`: 705 rows,
+no drift, coverage matches. Source/test/benchmark conflict-resolution diff check
+passed. Root runtime database remains preserved outside the commit.
+
+Root validation left an untracked `agent_state.sqlite` runtime database. It is
+preserved in place and intentionally not staged or deleted; it is not ordinary
+source/handoff work. Tracked source/index is clean after the integration record
+commit, but the checkout must not be described as wholly untracked-clean.
+
 T17 historical acceptance checkout is synchronized and integrated as
 `3efc1735`, retaining tracked checkpoint `5b16828e` and previously untracked
 Gemini audit specification committed as `67656de3`. Manual transcription test
@@ -329,3 +490,23 @@ the assigned merge worker to commit; runtime state remains outside Git.
 | t19-docs-rollout | `974fed0d` |
 | t21-project-config | `b568928b` |
 | t17-browser-flow-20261004 | `fbe44e0c` |
+
+### Explicit unfinished-work commit policy (2026-10-06)
+
+The user explicitly requires committing relevant dirty source, tests, documentation,
+and ordinary untracked handoffs after reconciliation, even when acceptance remains
+unfinished. Preserve original checkpoints; record failing tests and remaining work
+in committed integration notes. A preservation or merge commit is not a completion
+receipt. Runtime databases, caches and test scratch remain preserved outside Git.
+
+T17 browser handoff `e3d27bb2` is integrated into master. Its net change against
+the pinned master is the integration note; original work remains in merge ancestry.
+Owner checks: 256 passed, 14 failed; unresolved acceptance is documented in
+`docs/integration/T17-BROWSER-FLOW-SYNC-20261006.md`.
+
+T13 lifecycle `04a93ca7` and T17 multimodal `0c571b61` have committed handoffs.
+Their integration remains pending review and resolution of concurrent, unowned
+root edits in `client.py` and `http_server.py`; these edits were not overwritten
+or included in an orchestrator commit. The existing temporary checkout
+`lah_wt_worktree_e64978b4714c` is assigned to the browser reconciliation worker
+to preserve and merge its render-performance dirty source and regression test.
