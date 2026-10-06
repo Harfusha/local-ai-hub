@@ -77,6 +77,146 @@ def quick_sanity_check(con: sqlite3.Connection) -> bool:
         return False
 
 
+class DurableSchemaMismatchError(RuntimeError):
+    """Durable database schema differs from this release; data stays preserved."""
+
+    def __init__(
+        self,
+        database_path: Path | str,
+        mismatches: list[str],
+        backup_path: Path | None,
+        backup_error: str = "",
+    ) -> None:
+        self.database_path = Path(database_path)
+        self.mismatches = tuple(mismatches)
+        self.backup_path = backup_path
+        self.backup_error = backup_error
+        self.recovery_required = True
+        backup_detail = f"; backup={backup_path}" if backup_path else "; original database retained"
+        if backup_error:
+            backup_detail += f"; backup error={backup_error}"
+        super().__init__(
+            "durable database schema mismatch at "
+            f"{self.database_path}; explicit recovery required; no migration applied"
+            f"{backup_detail}: {'; '.join(mismatches)}"
+        )
+
+
+def backup_durable_database(path: Path | str, *, purpose: str = "schema-mismatch") -> Path:
+    """Create a consistent SQLite backup without changing the durable source."""
+    source_path = Path(path)
+    backup_path = source_path.with_name(
+        f"{source_path.name}.{purpose}-{time.time_ns()}.sqlite3"
+    )
+    source = sqlite3.connect(str(source_path), timeout=5.0)
+    destination = sqlite3.connect(str(backup_path), timeout=5.0)
+    try:
+        source.backup(destination)
+        check = destination.execute("PRAGMA quick_check").fetchone()
+        if not check or str(check[0]).lower() != "ok":
+            raise sqlite3.DatabaseError("schema recovery backup failed quick_check")
+        destination.commit()
+    except Exception:
+        destination.close()
+        source.close()
+        backup_path.unlink(missing_ok=True)
+        raise
+    destination.close()
+    source.close()
+    return backup_path
+
+
+def validate_durable_schema(
+    con: sqlite3.Connection,
+    db_path: Path | str,
+    expected_tables: dict[str, list[str | tuple[Any, ...]]],
+    *,
+    complete_groups: tuple[tuple[str, ...], ...] = (),
+    required_unique: dict[str, tuple[tuple[str, ...], ...]] | None = None,
+    required_if_event_kinds: dict[str, tuple[str, ...]] | None = None,
+) -> None:
+    """Fail closed on existing durable table drift, preserving a verified backup."""
+    existing = {
+        str(row[0])
+        for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        if not str(row[0]).startswith("sqlite_")
+    }
+    mismatches: list[str] = []
+    for group in complete_groups:
+        present = set(group) & existing
+        if present and present != set(group):
+            missing = sorted(set(group) - existing)
+            mismatches.append(f"incomplete durable table group; missing={','.join(missing)}")
+    for table, expected_columns in expected_tables.items():
+        if table not in existing:
+            event_kinds = (required_if_event_kinds or {}).get(table, ())
+            if event_kinds and "agent_events" in existing:
+                predicate = " OR ".join("kind LIKE ?" for _ in event_kinds)
+                found = con.execute(
+                    f"SELECT 1 FROM agent_events WHERE {predicate} LIMIT 1",
+                    tuple(event_kinds),
+                ).fetchone()
+                if found:
+                    mismatches.append(
+                        f"durable projection {table} is missing while related events remain"
+                    )
+            continue
+        actual_info = list(con.execute(f"PRAGMA table_info({table})"))
+        actual_names = [str(row[1]) for row in actual_info]
+        expected_names = [str(item[0]) if not isinstance(item, str) else item for item in expected_columns]
+        if actual_names != expected_names:
+            mismatches.append(
+                f"{table} columns differ; expected={expected_names}; actual={actual_names}"
+            )
+            continue
+        for expected, actual in zip(expected_columns, actual_info):
+            if isinstance(expected, str):
+                continue
+            name = str(expected[0])
+            declared_type = str(expected[1]).upper() if len(expected) > 1 and expected[1] is not None else None
+            not_null = expected[2] if len(expected) > 2 else None
+            primary_key_order = expected[3] if len(expected) > 3 else None
+            default_value = expected[4] if len(expected) > 4 else None
+            differences: list[str] = []
+            if declared_type is not None and str(actual[2]).upper() != declared_type:
+                differences.append(f"type={actual[2]!r}, expected={declared_type!r}")
+            if not_null is not None and int(actual[3]) != int(not_null):
+                differences.append(f"notnull={actual[3]}, expected={not_null}")
+            if primary_key_order is not None and int(actual[5]) != int(primary_key_order):
+                differences.append(f"pk={actual[5]}, expected={primary_key_order}")
+            if len(expected) > 4 and actual[4] != default_value:
+                differences.append(f"default={actual[4]!r}, expected={default_value!r}")
+            if differences:
+                mismatches.append(f"{table}.{name} differs; " + "; ".join(differences))
+
+    for table, unique_sets in (required_unique or {}).items():
+        if table not in existing:
+            continue
+        actual_unique: set[tuple[str, ...]] = set()
+        for index in con.execute(f"PRAGMA index_list({table})"):
+            if not int(index[2]) or (len(index) > 4 and int(index[4])):
+                continue
+            columns = tuple(
+                str(row[2])
+                for row in con.execute(f"PRAGMA index_info({index[1]})")
+            )
+            actual_unique.add(columns)
+        for columns in unique_sets:
+            if tuple(columns) not in actual_unique:
+                mismatches.append(f"{table} missing required unique constraint on {tuple(columns)}")
+    if not mismatches:
+        return
+
+    con.close()
+    backup_path: Path | None = None
+    backup_error = ""
+    try:
+        backup_path = backup_durable_database(db_path)
+    except Exception as exc:
+        backup_error = str(exc)
+    raise DurableSchemaMismatchError(db_path, mismatches, backup_path, backup_error)
+
+
 def retry_busy(
     operation: Callable[[], T],
     *,
