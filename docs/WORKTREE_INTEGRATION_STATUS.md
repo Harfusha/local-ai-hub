@@ -783,3 +783,43 @@ acceptance.
   Windows. Live ACL/runtime recovery remains unverified.
 - T18 worktree has five untracked temporary/evidence paths; preserved, not
   merged or deleted. Their contents still need owner-level classification.
+
+## Priority stash packet c36ddae1 current-master recheck
+
+- Candidate commit `c36ddae1fd70b18844e4cade5e3c27c58b50e81a` remains in
+  `codex/sync-hub-audit-repairs-20261006`, not merged. It adds the 2,192-line
+  pinned stash disposition report and T05/T08/T09 tests. Its own frozen-packet
+  run reported 67 passed, 19 failed; not release-ready.
+- Re-ran only `tests/test_agent_t08_durable_contract.py` with imports explicitly
+  pinned to root master `6b3c9a5e` (confirmed source path
+  `C:\Users\Adam\.local-ai-hub\src\local_ai_hub\__init__.py`).
+  Exact command:
+  `$env:PYTHONPATH='C:\Users\Adam\.local-ai-hub\src'; python -B -c "import local_ai_hub; print('SOURCE=' + str(local_ai_hub.__file__)); import pytest; raise SystemExit(pytest.main(['-q','-p','no:cacheprovider','--tb=short',r'C:\Users\Adam\.codex\worktrees\hub-audit-repairs\.local-ai-hub\tests\test_agent_t08_durable_contract.py']))"`
+  Result: **59 passed, 3 failed in 29.79s**. Failures:
+  `test_memory_append_result_error_rolls_back_projection`,
+  `test_expired_memory_delete_and_event_are_atomic`, and
+  `test_scope_leases_migrate_into_versioned_agent_state_database` (strict
+  `lease_waits` schema fingerprint rejection). First two routed to T05;
+  schema compatibility routed to T18/T08. No tests or allowlists weakened.
+- Keep candidate tests/report in their owner branch until failures are
+  adjudicated. This recheck does not prove the other candidate tests pass on
+  current master; no stash was applied or dropped.
+
+## Preserved stash census — 2026-10-06
+
+- Read-only inventory of all 45 `git stash list` entries: `git stash show
+  --numstat --include-untracked` reports **7,876 path entries** (668 tracked,
+  7,208 untracked), **5,644,035 insertions**, and **25,218 deletions**. Path
+  names repeat across snapshots; name-only census has 7,241 distinct names.
+  The 44/45 path-and-line-count signatures are not content-equivalence proofs.
+- Path-entry distribution is dominated by `handoff` (5,032), `artifacts`
+  (750), `tests` (722), `.handoff` (503), `src` (317), and `docs` (90).
+  Largest snapshots include T08/T12/T13 and command-broker evidence, source
+  copies, patches, and test runs. These are candidate contents requiring
+  owner/hunk disposition, not 7,876 files to blindly copy into release.
+- None of the 45 individual stash commits has exactly 182 tracked plus 192
+  untracked paths. Current root status remains two modified source files
+  (`async_jobs.py`, `http_server.py`) plus untracked `agent_state.sqlite`.
+  The goal's older 182/192 root snapshot was not reproduced in current status
+  or as one exact stash; do not infer its disposition from counts alone.
+  All 45 stash refs remain unchanged.
