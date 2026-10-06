@@ -71,3 +71,35 @@ def test_async_job_updates_agent_task_and_mints_receipt(tmp_path: Path):
     assert receipts[0].criterion == "async_job:reason"
     manager.close()
     assert receipts[0].passed is True
+
+
+def test_async_batch_persists_sixteen_ordered_partial_outcomes(tmp_path: Path):
+    expected = [
+        {"index": index, "success": index != 7, **({} if index != 7 else {"error": "item failed"})}
+        for index in range(16)
+    ]
+
+    def execute(_action, payload, _tenant):
+        assert len(payload["tasks"]) == 16
+        return {"success": True, "results": expected}
+
+    manager = AsyncJobManager(
+        {"server": {"state_dir": str(tmp_path / "state")}, "async_jobs": {"wait_max_seconds": 90}},
+        _Scheduler(),
+        _Artifacts(),
+        execute,
+    )
+    try:
+        submitted = manager.submit(
+            "tenant-test", "batch", {"tasks": [{"task": f"task-{index}"} for index in range(16)]}
+        )
+        assert submitted["success"] is True
+        assert manager.wait("tenant-test", submitted["job_id"], 3)["state"] == "done"
+
+        result = manager.result("tenant-test", submitted["job_id"])
+
+        assert result["success"] is True
+        assert result["result"]["results"] == expected
+        assert result["result"]["results"][7] == {"index": 7, "success": False, "error": "item failed"}
+    finally:
+        manager.close()

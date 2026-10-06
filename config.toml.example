@@ -49,15 +49,22 @@ served_model = "hub-qwen-7"
 context_length = 32768
 
 [code_intelligence]
-# Enable optional Serena semantic symbols alongside built-in AST indexes.
+# Enable Serena (semantic symbols).
 enabled = true
 serena_enabled = true
 # Increase timeout for large projects (default 120s may not be enough for big Unity repos)
 index_timeout_seconds = 1200
 # direct_agent_mcp = false
 
+[server]
+# One user-scoped supervisor/daemon and one state_dir serve all chats/worktrees for this OS user.
+# Do not install or register another Hub service per agent, repository, or worktree. Keep API on loopback.
+bind = "127.0.0.1"
+port = 11435
+
 [agents]
-# Enable MCP config injection for supported agents.
+# Each enabled agent uses a lightweight stdio proxy to the one per-user daemon.
+# Project-local cwd is target_root; global cwd is install_dir and must pass caller root/task context per request.
 codex = true
 claude = true
 gemini = true
@@ -78,10 +85,10 @@ default_max_output_tokens = 1200
 # max_replans = 2
 
 [security]
-# Keep the hub bound to loopback unless you explicitly need remote access.
+# Keep loopback-only by default. Non-loopback binds need allow_remote=true and api_token with 16+ characters.
+# On loopback, an empty api_token means HTTP data/control routes have no token authentication.
 allow_remote = false
-# api_token = "change-me-to-a-strong-random-token"   # required if allow_remote = true
-
+# api_token = "<generate-a-local-secret>"  # protects HTTP data/control routes when configured
 [commands]
 # Allow only read/validate commands by default.
 allow_mutating = true
@@ -98,7 +105,7 @@ rag = true                # semantic retrieval fallback (local_ai_rag)
 commands = true           # safe command execution broker (local_ai_command)
 coord = true              # coordination leases, memos, task contracts (local_ai_coord)
 artifacts = true          # compact responses & evidence slicing (local_ai_artifact)
-code_intelligence = true  # Optional Serena backend
+code_intelligence = true  # Serena integration
 preprocessing = true      # background idle project warmup
 subagents = true          # advisory local profiles
 agent_os = true           # durable execution: tasks, verification receipts, memory

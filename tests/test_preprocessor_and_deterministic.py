@@ -156,7 +156,7 @@ def test_cached_external_unavailability_is_retried_when_backend_is_available(tmp
         with closing(pre._connect()) as con:
             con.execute(
                 "INSERT INTO external_index_state(root,backend,revision_hash,status,updated_at,error) VALUES(?,?,?,?,?,?)",
-                (str(repo), "serena", revision, "unavailable", 0.0, "serena indexing exceeded 120s"),
+                (str(repo), "serena", revision, "unavailable", 0.0, "Serena indexing exceeded 120s"),
             )
             con.commit()
         row = {"root": str(repo), "workspace": "test", "generation": 0}
@@ -190,7 +190,7 @@ def test_startup_requeues_complete_project_with_available_external_backend(tmp_p
             )
             con.execute(
                 "INSERT INTO external_index_state(root,backend,revision_hash,status,updated_at,error) VALUES(?,?,?,?,?,?)",
-                (str(repo), "serena", "same", "skipped", now, "serena indexing exceeded 120s"),
+                (str(repo), "serena", "same", "skipped", now, "Serena indexing exceeded 120s"),
             )
             con.commit()
     finally:

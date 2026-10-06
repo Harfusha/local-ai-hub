@@ -10,6 +10,21 @@ import pytest
 from local_ai_hub.external_tools import ExternalCodeIntelligence, MCPStdioClient
 
 
+def test_external_code_intelligence_does_not_manage_codegraph(tmp_path: Path):
+    ext = ExternalCodeIntelligence(
+        {
+            "server": {"state_dir": str(tmp_path / "state")},
+            "code_intelligence": {"enabled": True, "serena_enabled": True, "codegraph_enabled": True},
+        }
+    )
+    try:
+        assert "codegraph" not in ext.status()
+        assert not hasattr(ext, "query_codegraph")
+        assert ext.reset_sessions("codegraph")["success"] is False
+    finally:
+        ext.close()
+
+
 def test_serena_index_uses_upstream_per_file_timeout(monkeypatch, tmp_path: Path):
     root = tmp_path / "repo"
     root.mkdir()
@@ -17,7 +32,6 @@ def test_serena_index_uses_upstream_per_file_timeout(monkeypatch, tmp_path: Path
         "server": {"state_dir": str(tmp_path / "state")},
         "code_intelligence": {"enabled": True, "serena_enabled": True},
     }
-    monkeypatch.setattr(ExternalCodeIntelligence, "_startup_preflight", lambda _self: None)
     ext = ExternalCodeIntelligence(cfg, telemetry=None)
     captured = []
     monkeypatch.setattr(ext, "_resolve_command", lambda backend: "serena.exe" if backend == "serena" else None)
@@ -104,17 +118,6 @@ def test_mcp_stdio_soft_timeout_does_not_kill_process(tmp_path: Path):
 
 
 
-class _FakeClient:
-    instances = []
-    def __init__(self, command, *, cwd=None, env=None, **kwargs):
-        self.command = command; self.cwd = cwd; self.env = env or {}; self.closed = False
-        self.__class__.instances.append(self)
-    def call_tool(self, name, arguments, timeout=None):
-        return {"success": True, "result": {"tool": name, "arguments": arguments}}
-    def tool_names(self):
-        return {"find_code", "analyze_code_relationships", "find_dead_code", "calculate_cyclomatic_complexity", "get_repository_stats"}
-    def close(self): self.closed = True
-    def reset(self): self.closed = True
 
 
 
@@ -130,7 +133,7 @@ class _FakeClient:
 def test_serena_tool_error_is_counted_as_backend_failure(monkeypatch, tmp_path: Path):
     cfg = {
         "server": {"state_dir": str(tmp_path / "state")},
-        "code_intelligence": {"enabled": True, "serena_enabled": True, "serena_command": sys.executable},
+        "code_intelligence": {"enabled": True, "serena_enabled": True},
     }
     ext = ExternalCodeIntelligence(cfg, telemetry=None)
 
@@ -156,7 +159,7 @@ def test_serena_tool_error_is_counted_as_backend_failure(monkeypatch, tmp_path: 
 def test_serena_structured_tool_error_is_counted_as_backend_failure(monkeypatch, tmp_path: Path):
     cfg = {
         "server": {"state_dir": str(tmp_path / "state")},
-        "code_intelligence": {"enabled": True, "serena_enabled": True, "serena_command": sys.executable},
+        "code_intelligence": {"enabled": True, "serena_enabled": True},
     }
     ext = ExternalCodeIntelligence(cfg, telemetry=None)
 
@@ -292,6 +295,20 @@ def test_root_session_reset_clears_that_roots_circuit(tmp_path: Path):
         assert ext._allowed("serena", str(root)) is True
     finally:
         ext.close()
+
+
+class _FakeClient:
+    instances = []
+
+    def __init__(self, command, *, cwd=None, env=None, **kwargs):
+        self.command = command
+        self.cwd = cwd
+        self.env = env or {}
+        self.closed = False
+        self.__class__.instances.append(self)
+
+    def close(self):
+        self.closed = True
 
 
 def test_serena_search_uses_available_symbol_tool_when_pattern_tool_missing(monkeypatch, tmp_path: Path):
@@ -430,7 +447,7 @@ def test_serena_session_retained_for_one_hour(tmp_path: Path):
         ext._session_access["serena"][old_root] = now - 3900
 
         with ext._lock:
-            evicted = ext._prune_sessions_locked("serena")
+            evicted = ext._prune_sessions_locked()
 
         # Old project must be evicted
         assert old_client in evicted
@@ -441,6 +458,4 @@ def test_serena_session_retained_for_one_hour(tmp_path: Path):
             assert f"/path/to/project_{i}" in ext._serena_sessions
     finally:
         ext.close()
-
-
 
