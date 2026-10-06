@@ -20,7 +20,10 @@ def scenario_hub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     config.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = {server.server_address[1]}\n'
         f'state_dir = "{state_dir.as_posix()}"\n'
-        "\n[agent_state]\nenabled = true\n",
+        "\n[agent_state]\nenabled = true\n"
+        "\n[security]\napi_token_tenant = \"t19-scenario\"\n"
+        "tenant_derivation_key = \"t19-test-root-derivation-key-0123456789\"\n"
+        f'allowed_roots = ["{tmp_path.as_posix()}"]\n',
         encoding="utf-8",
     )
     app = LocalAIApp(str(config))
@@ -128,6 +131,20 @@ def test_seven_sdk_workflows_have_measured_production_route_outcomes(
     assert "sample.py" in context_payload
     assert "def target()" in context_payload
 
+    calls.clear()
+    criterion = "focused pytest check passes"
+    created = client.create_task(
+        "Verify sample change",
+        acceptance_criteria=[criterion],
+        task_id="t19-change-check",
+        root=str(workspace),
+    )
+    assert created.get("success") is True
+    task = app.agent_tasks.get("t19-change-check")
+    assert task is not None
+    repository_revision = app.repo_state.fingerprint(str(workspace), force=True)[
+        "fingerprint"
+    ]
     source_text = (workspace / "sample.py").read_text(encoding="utf-8")
     evidence_id = app.evidence.put(
         str(workspace),
@@ -142,22 +159,35 @@ def test_seven_sdk_workflows_have_measured_production_route_outcomes(
         },
     )
     assert evidence_id
-
-    calls.clear()
-    created = client.create_task(
-        "Verify sample change",
-        acceptance_criteria=["focused check passes"],
-        task_id="t19-change-check",
+    receipt_evidence_id = app.artifacts.put_json(
+        {
+            "kind": "work_command_verification",
+            "passed": True,
+            "task_id": "t19-change-check",
+            "owner": task.owner,
+            "criterion": criterion,
+            "command_id": "pytest-focused",
+            "command_classification": "test",
+            "command": "python -m pytest -q tests/test_t19_scenario.py",
+            "repository_revision": repository_revision,
+            "mutation_generation": 0,
+            "exit_code": 0,
+            "cached": False,
+            "result": {"success": True, "exit_code": 0},
+        },
+        task.owner,
+        "command_verification",
     )
-    assert created.get("success") is True
     receipt = client.verify_receipt(
         "t19-change-check",
-        "focused check passes",
+        criterion,
         command_id="pytest-focused",
-        evidence_id=evidence_id,
+        evidence_id=receipt_evidence_id,
         details={"exit_code": 0},
+        root=str(workspace),
+        repository_revision=repository_revision,
     )
-    completion = client.verify_completion("t19-change-check")
+    completion = client.verify_completion("t19-change-check", root=str(workspace))
     measurements["change verification"] = {
         "success": receipt.get("success") is True and completion.get("success") is True,
         "calls": len(calls),
@@ -169,26 +199,30 @@ def test_seven_sdk_workflows_have_measured_production_route_outcomes(
     assert calls[0]["payload"] == {
         "action": "create",
         "goal": "Verify sample change",
-        "acceptance_criteria": ["focused check passes"],
+        "acceptance_criteria": [criterion],
         "task_id": "t19-change-check",
         "scope": "task",
+        "root": str(workspace),
     }
     assert calls[1]["path"] == "/api/agent-state/verification"
     assert calls[1]["payload"] == {
         "action": "receipt",
         "receipt": {
             "task_id": "t19-change-check",
-            "criterion": "focused check passes",
+            "criterion": criterion,
             "passed": True,
             "command_id": "pytest-focused",
-            "evidence_id": evidence_id,
+            "evidence_id": receipt_evidence_id,
+            "repository_revision": repository_revision,
             "details": {"exit_code": 0},
         },
+        "root": str(workspace),
     }
     assert calls[2]["path"] == "/api/agent-state/verification"
     assert calls[2]["payload"] == {
         "action": "completion",
         "task_id": "t19-change-check",
+        "root": str(workspace),
     }
     assert calls[1]["payload"]["action"] == "receipt"
     assert calls[2]["payload"]["action"] == "completion"
@@ -256,8 +290,12 @@ def test_seven_sdk_workflows_have_measured_production_route_outcomes(
     }
 
     calls.clear()
-    resumable = client.create_task("Resume task", task_id="t19-resume")
-    resumed = client.coord("task_resume", task_id="t19-resume")
+    resumable = client.create_task(
+        "Resume task", task_id="t19-resume", root=str(workspace)
+    )
+    resumed = client.coord(
+        "task_resume", task_id="t19-resume", root=str(workspace)
+    )
     measurements["task resume"] = {
         "success": resumable.get("success") is True and resumed.get("success") is True,
         "calls": len(calls),
@@ -272,8 +310,13 @@ def test_seven_sdk_workflows_have_measured_production_route_outcomes(
         "acceptance_criteria": [],
         "task_id": "t19-resume",
         "scope": "task",
+        "root": str(workspace),
     }
-    assert calls[1]["payload"] == {"action": "resume", "task_id": "t19-resume"}
+    assert calls[1]["payload"] == {
+        "action": "resume",
+        "task_id": "t19-resume",
+        "root": str(workspace),
+    }
 
     calls.clear()
     evidence = client.post(
