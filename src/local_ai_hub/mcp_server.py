@@ -199,7 +199,11 @@ def _specialized_note(tool_name: str) -> str:
 
 def _desc_status() -> str:
     if LEAN_SCHEMAS:
-        return "Health, cache, telemetry, and agent_state inspector. Aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Actions: brief, cache, telemetry, full, agent_state."
+        return (
+            "Health, cache, telemetry, and agent_state inspector. Aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Actions: brief, cache, telemetry, full, agent_state."
+            " Use when: make one bounded health, cache, or telemetry check."
+            " Skip when: repository evidence or task work is needed."
+        )
     ollama_note = " ollama_online," if FEATURES.ollama else ""
     agent_state_note = " With Agent OS enabled, `detail=agent_state` summarizes durable task state." if FEATURES.agent_os else ""
     return (
@@ -234,6 +238,8 @@ def _desc_task() -> str:
             " Returns unsupported=true for local-model actions."
             " Semantic generation, exploration, reasoning, review, independent second opinions, and semantic compression are unavailable until a local model backend is enabled."
             " Use deterministic/indexed evidence only."
+            " Use when: a bounded semantic task requires a local model backend."
+            " Skip when: the task is trivial, pure evidence lookup, security/privacy constrained, or local-model tasks are disabled."
         )
     if LEAN_SCHEMAS:
         return (
@@ -242,6 +248,8 @@ def _desc_task() -> str:
             f"{_semantic_handoff_contract(local_enabled, FEATURES.status)}"
             "Command failure diagnosis remains disabled by default; never pass raw logs or open-ended coding. "
             "Local AI Hub does not route or manage native Codex agents. "
+            "Use when: bounded local generation, compression, review, routing, second opinion, or named advisory subagent work is needed. "
+            "Skip when: task is trivial, pure evidence lookup, security/privacy constrained, no useful independent scope, or Codex-owned subagent orchestration is the right owner. "
             f"{_actions_note(FEATURES.supported_task_actions())}"
         )
     profile_note = ""
@@ -284,9 +292,15 @@ def _desc_repo() -> str:
             " Semantic generation, reasoning, review, independent second opinions, and compression are unavailable until a local model backend is enabled."
             " Use deterministic/indexed evidence only for exact facts, symbols, diff, tests, and verification."
             " Native fallback requires terminal=true and retryable=false."
+            " Use when: indexed repository evidence is needed."
+            " Skip when: the task is not repository-scoped or fresh evidence already answers it."
         )
     if LEAN_SCHEMAS:
-        return "Primary repository worker for repository navigation, symbols, and impact with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. CALL `context` first for every non-trivial repository task: its adaptive orchestrator fuses deterministic/indexed evidence, Serena, CodeGraphContext, bounded lexical search, and RAG, then returns grounded diverse context. Send the task/context rather than handmade grep terms. It accepts guarded task/phase/focus fields, requires evidence IDs and reuse candidates first, treats deterministic/indexed evidence as authoritative, limits local models to ranking/compression of structured evidence, and requires `override_reason` plus approval when requested. Raw model/debug fields stay omitted unless requested through extra_fields. Omit guarded fields to preserve legacy fast/full behavior. Use deterministic/indexed actions for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong. Native fallback requires terminal=true and retryable=false. Actions: search, code_index, context, solve, review_diff, symbols, callers, dead_code."
+        return (
+            "Primary repository worker for repository navigation, symbols, and impact with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. CALL `context` first for every non-trivial repository task: its adaptive orchestrator fuses deterministic/indexed evidence, Serena, CodeGraphContext, bounded lexical search, and RAG, then returns grounded diverse context. Send the task/context rather than handmade grep terms. It accepts guarded task/phase/focus fields, requires evidence IDs and reuse candidates first, treats deterministic/indexed evidence as authoritative, limits local models to ranking/compression of structured evidence, and requires `override_reason` plus approval when requested. Raw model/debug fields stay omitted unless requested through extra_fields. Omit guarded fields to preserve legacy fast/full behavior. Use deterministic/indexed actions for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong. Native fallback requires terminal=true and retryable=false. Actions: search, code_index, context, solve, review_diff, symbols, callers, dead_code."
+            " Use when: every non-trivial repository task needs indexed evidence or a bounded Hub operation."
+            " Skip when: the task is not repository-scoped or fresh evidence already answers it and no independent Hub scope exists."
+        )
     semantic_hint = ""
     if FEATURES.has_semantic():
         semantic_hint = f" -> {FEATURES.semantic_hint()} for relationships"
@@ -328,7 +342,11 @@ def _desc_repo() -> str:
 
 def _desc_rag() -> str:
     if LEAN_SCHEMAS:
-        return "Semantic RAG & documentation search with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Actions: search, index, docset_search, ingest_document."
+        return (
+            "Semantic RAG & documentation search with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Actions: search, index, docset_search, ingest_document."
+            " Use when: cheaper indexed repository paths cannot answer a bounded semantic retrieval question."
+            " Skip when: deterministic/indexed evidence is sufficient or RAG is disabled."
+        )
     if not FEATURES.rag:
         return (
             "Semantic retrieval — RAG backend is disabled on this installation (`features.rag=false`)."
@@ -350,7 +368,11 @@ def _desc_rag() -> str:
 
 def _desc_command() -> str:
     if LEAN_SCHEMAS:
-        return "Safe CLI command broker for test, lint, typecheck, or build commands with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Native fallback requires terminal=true and retryable=false. Mutations never cache or single-flight. Speculative lint is opt-in, read-only, debounced, changed-path scoped, and cancellable. Actions: run, auto_fix, format, patch_and_verify, repair_loop, speculative_lint."
+        return (
+            "Safe CLI command broker for test, lint, typecheck, or build commands with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Native fallback requires terminal=true and retryable=false. Mutations never cache or single-flight. Speculative lint is opt-in, read-only, debounced, changed-path scoped, and cancellable. Actions: run, auto_fix, format, patch_and_verify, repair_loop, speculative_lint."
+            " Use when: a repeatable test, lint, typecheck, build, analysis, or safe read-only command is needed."
+            " Skip when: no command is needed or a fresh cached result already answers it."
+        )
     agent_os_note = " Optional task_id and criterion link passing validation commands directly to evidence-backed VerificationReceipts." if FEATURES.agent_os else ""
     return (
         "Bounded broker for test, lint, typecheck, or build commands; also repeatable analysis/read-only commands."
@@ -370,7 +392,11 @@ def _desc_command() -> str:
 
 def _desc_coord() -> str:
     if LEAN_SCHEMAS:
-        return "Agent OS coordination for task contracts, ownership, checkpoints, and verification receipts with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Actions: claim, release, memory_record, memory_find, context_compile, task_create, task_checkpoint."
+        return (
+            "Agent OS coordination for task contracts, ownership, checkpoints, and verification receipts with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Actions: claim, release, memory_record, memory_find, context_compile, task_create, task_checkpoint."
+            " Use when: any non-trivial task benefits from durable state/verification, or Hub workers share edit paths or reusable findings."
+            " Skip when: task is a trivial one-step lookup with no shared state to preserve."
+        )
     if FEATURES.agent_os:
         agent_os_note = (
             " For non-trivial multi-step, long-running, delegated, or acceptance-criteria work, create an Agent OS task contract first;"
@@ -412,7 +438,11 @@ def _desc_work() -> str:
 
 def _desc_artifact() -> str:
     if LEAN_SCHEMAS:
-        return "Fetch an exact source or log slice or bounded binary artifact metadata; binary retrieval never inlines payloads; optional max_response_tokens, response_profile, reuse_key. Actions: get, slice, list."
+        return (
+            "Fetch an exact source or log slice or bounded binary artifact metadata; binary retrieval never inlines payloads; optional max_response_tokens, response_profile, reuse_key. Actions: get, slice, list."
+            " Use when: exact source or evidence text is required after indexed discovery."
+            " Skip when: no source slice is needed or the existing compact result is sufficient."
+        )
     return (
         "Fetch one exact source or log slice or bounded binary artifact metadata. Binary payloads are never inlined in MCP responses. Evidence IDs start with E."
         " Use when: exact source or evidence text is required after indexed discovery."
@@ -2448,6 +2478,8 @@ def local_ai_coord(
         }
         if action == "task_create" and task:
             task_kwargs["task"] = task
+        if action == "task_list":
+            task_kwargs["query"] = query
         return _compact(CLIENT.coord(
             **task_kwargs,
         ), "status")
