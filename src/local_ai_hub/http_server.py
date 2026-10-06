@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import hmac
+import inspect
+import ipaddress
+import hashlib
 import json
 import os
 import queue
@@ -10,6 +13,7 @@ import sqlite3
 import uuid
 import time
 import threading
+from contextlib import nullcontext
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Mapping
@@ -21,10 +25,14 @@ from .app import LocalAIApp
 from .scheduler import ModelUnavailableError, QueueFullError
 from .debug_traces import DebugTraceObserver
 from .trace_context import reset_context, reset_observer, set_context, set_observer
+from .http_route_registry import select_http_routes, select_post_handler
 from .dashboard import DASHBOARD_HTML
 from .config import ConfigError, deep_merge, load_config, save_runtime_overrides, validate_config
 from .delivery import decide_delivery
+from .resilience import RecoveryJournal
 from .agent_identity import AgentScope, ScopeContext
+from .project_config import resolve_project_context
+from .state_paths import configured_state_dir
 from .agent_tasks import CompletionGateError, GoalContract, InvalidTransitionError, TaskCheckpoint, TaskStatus
 from .agent_memory import ApprovalRequiredError, MAX_MEMORY_QUERY_LIMIT, MemoryKind, MemoryRecord, MemoryStatus
 from .agent_incidents import IncidentFingerprint, ToolOutcome
@@ -32,6 +40,8 @@ from .agent_verification import VerificationReceipt
 from .task_context import build_context_request, compose_task_context
 from .agent_learning import ImprovementCandidate, SLOObservation
 from .json_utils import dumps as json_dumps
+
+_DB_QUERY_MAX_RESPONSE_BYTES = 256 * 1024
 from .browser_bridge import (
     abandon_staged_capture,
     capture_failure,
@@ -42,6 +52,11 @@ from .browser_bridge import (
     stage_capture,
     validate_capture_request,
 )
+from .operational_mode import (
+    load_operational_mode,
+    operational_mode_gate_error,
+    set_operational_mode,
+)
 
 
 os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
@@ -51,18 +66,457 @@ os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 
 APP: LocalAIApp | None = None
 
+
+def _lease_coordination_id(root: str) -> str | None:
+    """Resolve lease namespace from server-side project identity only."""
+    if APP is None:
+        return None
+    try:
+        state_dir = configured_state_dir(APP.config)
+        return resolve_project_context(root, state_dir).coordination_id
+    except Exception:
+        return None
+
+class _ActiveTranscriptionRegistry:
+    """Track synchronous Whisper calls and cancel them before gaming release."""
+
+    def __init__(self) -> None:
+        self._condition = threading.Condition(threading.RLock())
+        self._active: dict[str, threading.Event] = {}
+        self._results: dict[str, dict[str, Any]] = {}
+        self._waiting: set[str] = set()
+        self._gaming = False
+        self._drained_callbacks: list[Any] = []
+
+    def enter_gaming(self) -> None:
+        with self._condition:
+            self._gaming = True
+            # Track before signaling: a cooperative worker may finish before
+            # cancel_and_wait takes its own active snapshot.
+            self._waiting.update(self._active)
+            for event in self._active.values():
+                event.set()
+            self._condition.notify_all()
+
+    def enter_active(self) -> None:
+        with self._condition:
+            self._gaming = False
+
+    def begin(self) -> tuple[str, threading.Event]:
+        token = uuid.uuid4().hex
+        event = threading.Event()
+        with self._condition:
+            if self._gaming:
+                self._waiting.add(token)
+                event.set()
+            self._active[token] = event
+            self._condition.notify_all()
+        return token, event
+
+    def finish(self, token: str, result: Any) -> None:
+        callbacks: list[Any] = []
+        with self._condition:
+            normalized = result if isinstance(result, dict) else {}
+            if token in self._waiting:
+                self._results[token] = {
+                    "cancelled": normalized.get("reason") == "cancelled" or normalized.get("cancelled") is True,
+                    "success": normalized.get("success") is True,
+                }
+            self._active.pop(token, None)
+            if not self._active:
+                callbacks, self._drained_callbacks = self._drained_callbacks, []
+                self._condition.notify_all()
+        for callback in callbacks:
+            try:
+                callback()
+            except Exception:
+                pass
+
+    def cancel_and_wait(self, timeout_seconds: float) -> dict[str, Any]:
+        deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+        with self._condition:
+            active_at_start = tuple(self._active)
+            self._waiting.update(active_at_start)
+            for event in self._active.values():
+                event.set()
+            while self._active and time.monotonic() < deadline:
+                self._condition.wait(max(0.0, deadline - time.monotonic()))
+            pending = len(self._active)
+            tracked = set(active_at_start) | set(self._waiting) | set(self._results)
+            results = [self._results.pop(token, {}) for token in tracked]
+            self._waiting.difference_update(tracked)
+        if pending:
+            return {"state": "timed_out", "inference_active": True, "active": pending}
+        if not tracked:
+            return {"state": "not_applicable", "inference_active": False, "active": 0}
+        cancelled = all(item.get("cancelled") is True for item in results)
+        return {
+            "state": "cancelled" if cancelled else "completed",
+            "inference_active": False,
+            "active": 0,
+            "cancelled": cancelled,
+        }
+
+    def when_drained(self, callback: Any) -> None:
+        with self._condition:
+            if self._active:
+                self._drained_callbacks.append(callback)
+                return
+        try:
+            callback()
+        except Exception:
+            pass
+
+    def active_count(self) -> int:
+        with self._condition:
+            return len(self._active)
+
+    def defer_process_cleanup(self, token: str, process: Any, *, tree_termination_confirmed: bool) -> None:
+        if not tree_termination_confirmed:
+            return
+
+        def observe_exit() -> None:
+            try:
+                process.wait()
+            except Exception:
+                return
+            self.finish(token, {"success": False, "reason": "cancelled", "cancelled": True})
+
+        try:
+            threading.Thread(target=observe_exit, name="whisper-cleanup-observer", daemon=True).start()
+        except Exception:
+            return
+
+
+_ACTIVE_TRANSCRIPTIONS = _ActiveTranscriptionRegistry()
+_ACTIVE_CONVERSATIONS = _ActiveTranscriptionRegistry()
+_GAMING_DRAIN_TIMEOUT_SECONDS = 4.5
+
+
+def _invoke_cancellable_request(registry: _ActiveTranscriptionRegistry, callback: Any, payload: dict[str, Any], tenant: str) -> Any:
+    token, cancel_event = registry.begin()
+    result: Any = {}
+    try:
+        try:
+            parameters = inspect.signature(callback).parameters.values()
+            supports_cancel = any(
+                parameter.name == "cancel_event"
+                or parameter.kind is inspect.Parameter.VAR_KEYWORD
+                for parameter in parameters
+            )
+        except (TypeError, ValueError):
+            supports_cancel = False
+        if cancel_event.is_set() and not supports_cancel:
+            result = {
+                "success": False,
+                "cancelled": True,
+                "preempted": True,
+                "reason": "cancelled",
+                "error": "request cancelled before an uncancellable handler could start",
+                "terminal": True,
+                "retryable": False,
+            }
+            return result
+        result = (
+            callback(payload, tenant, cancel_event=cancel_event)
+            if supports_cancel
+            else callback(payload, tenant)
+        )
+        return result
+    finally:
+        registry.finish(token, result)
+
 # Monitoring/control reads must never appear as workload. Keep this hard safety set
 # independent of user config so a dashboard refresh cannot create immortal active jobs.
 MONITOR_PATHS = {
     "/health", "/dashboard", "/favicon.ico", "/api/live", "/api/live/status",
     "/api/status", "/api/capabilities", "/api/metrics", "/api/adoption", "/api/telemetry/report", "/api/telemetry/tool-accounting", "/api/telemetry/timeline", "/api/audit/tail", "/api/control",
     "/api/config", "/api/logs/tail", "/api/hardware/system", "/api/hardware/gpu",
+    "/api/mode", "/api/admin/mode",
     "/api/debug-traces",
 }
+
+HTTP_MODE_OPERATOR_GET_PATHS = frozenset({
+    "/api/adoption", "/api/audit/tail", "/api/capabilities", "/api/config",
+    "/api/debug-traces", "/api/hardware/gpu", "/api/hardware/system",
+    "/api/live/status", "/api/logs/tail", "/api/metrics", "/api/mode",
+    "/api/models/manage", "/api/preprocess/status", "/api/status",
+    "/api/telemetry/report", "/api/telemetry/timeline",
+})
+HTTP_MODE_GAMING_READ_GET_PATHS = frozenset({
+    "/api/agent-state/blackboard", "/api/agent-state/events",
+    "/api/agent-state/memory", "/api/agent-state/swarm",
+    "/api/agent-state/tasks", "/api/db/query", "/api/rag/workspaces",
+    "/api/repo/files", "/api/repo/topology",
+})
+HTTP_MODE_OPERATOR_POST_PATHS = frozenset({"/api/admin/mode", "/api/control"})
+
+
+def _http_admin_action(method: str, path: str) -> str | None:
+    method = str(method).upper()
+    path = urlparse(str(path)).path
+    if method == "GET":
+        if path == "/api/debug-traces" or path.startswith("/api/debug-traces/"):
+            return "trace.read"
+        return {
+            "/api/adoption": "telemetry.read",
+            "/api/audit/tail": "audit.read",
+            "/api/capabilities": "status.read",
+            "/api/config": "config.read",
+            "/api/control": "control.read",
+            "/api/db/query": "db.query",
+            "/api/hardware/gpu": "hardware.read",
+            "/api/hardware/system": "hardware.read",
+            "/api/live": "telemetry.read",
+            "/api/live/status": "status.read",
+            "/api/logs/tail": "logs.read",
+            "/api/metrics": "telemetry.read",
+            "/api/models/manage": "model.manage",
+            "/api/mode": "status.read",
+            "/api/status": "status.read",
+            "/api/telemetry/report": "telemetry.read",
+            "/api/telemetry/timeline": "telemetry.read",
+        }.get(path)
+    if method == "POST":
+        if path.startswith("/api/maintenance/"):
+            return "maintenance"
+        return {
+            "/api/admin/mode": "mode.control",
+            "/api/bundle/import": "bundle.import",
+            "/api/config": "config.write",
+            "/api/config/update": "config.write",
+            "/api/control": "control",
+            "/api/db/query": "db.query",
+            "/api/models/manage": "model.manage",
+        }.get(path)
+    return None
+
+
+def _token_matches(supplied: str, expected: str) -> bool:
+    if not expected:
+        return False
+    try:
+        return hmac.compare_digest(str(supplied), expected)
+    except (TypeError, ValueError):
+        return False
+
+
+def _redact_config_secrets(config: dict[str, Any]) -> dict[str, Any]:
+    view = json.loads(json_dumps(config, default=str))
+    security = view.get("security")
+    if not isinstance(security, dict):
+        return view
+    if security.get("api_token"):
+        security["api_token"] = "***configured***"
+    action_tokens = security.get("action_tokens")
+    if isinstance(action_tokens, dict):
+        security["action_tokens"] = {
+            str(action): "***configured***"
+            for action, token in action_tokens.items() if token
+        }
+    elif action_tokens:
+        security["action_tokens"] = "***configured***"
+    return view
+HTTP_MODE_GAMING_READ_POST_PATHS = frozenset({
+    "/api/artifact/get", "/api/artifact/list", "/api/db/query",
+    "/api/evidence/get", "/api/memory/get", "/api/memory/search",
+})
+HTTP_MODE_SAFE_METHOD_REJECTIONS = frozenset({
+    "/api/maintenance/optimize_db", "/api/maintenance/purge_cache",
+    "/api/maintenance/resolve_errors",
+})
+
+
+def _http_mode_action(path: str, payload: Mapping[str, Any] | None = None) -> str:
+    if path in {"/api/speculative-lint", "/api/command/speculative-lint"}:
+        action = str((payload or {}).get("action", "submit")).strip().lower().replace("-", "_")
+        return "speculative_lint" if action == "submit" else f"speculative_lint_{action}"
+    if path in {"/api/async-jobs", "/api/work-orders"}:
+        action_key = "action" if path == "/api/work-orders" else ("job_action" if "job_action" in (payload or {}) else "action")
+        return str((payload or {}).get(action_key, "submit")).strip().lower().replace("-", "_")
+    if path == "/api/delegate":
+        return "delegate"
+    return path.removeprefix("/api/").replace("/", "_").replace("-", "_") or "http_request"
+
+
+def _http_mode_policy(method: str, path: str, payload: Mapping[str, Any] | None = None) -> str:
+    if not path.startswith("/api/"):
+        return "operator"
+    if method == "GET":
+        if path in HTTP_MODE_OPERATOR_GET_PATHS or path in HTTP_MODE_SAFE_METHOD_REJECTIONS:
+            return "operator"
+        return "gaming_read" if path in HTTP_MODE_GAMING_READ_GET_PATHS else "blocked"
+    if method != "POST":
+        return "blocked"
+    if path in HTTP_MODE_OPERATOR_POST_PATHS:
+        return "operator"
+    action_key = "job_action" if path == "/api/async-jobs" else "action"
+    action = str((payload or {}).get(action_key, "")).strip().lower().replace("-", "_")
+    if path == "/api/async-jobs" and action in {"status", "wait", "result", "cancel", "evaluation_report"}:
+        return "existing_job"
+    if path == "/api/work-orders" and action in {"status", "get", "cancel"}:
+        return "existing_job"
+    if path in {"/api/speculative-lint", "/api/command/speculative-lint"} and action in {"status", "cancel"}:
+        return "existing_job"
+    if path == "/api/agent-state/events/delta" and action == "export":
+        return "gaming_read"
+    if path == "/api/agent-state/tasks" and action in {"get", "list"}:
+        return "gaming_read"
+    if path == "/api/agent-state/memory" and action in {"get", "list", "search"}:
+        return "gaming_read"
+    if path == "/api/agent-state/incidents" and action in {"get", "list"}:
+        return "gaming_read"
+    if path == "/api/agent-state/verification" and action in {"get", "list", "status"}:
+        return "gaming_read"
+    if path == "/api/agent-state/blackboard" and action in {"get", "list", "read"}:
+        return "gaming_read"
+    return "gaming_read" if path in HTTP_MODE_GAMING_READ_POST_PATHS else "blocked"
+
+
+def _http_mode_gate_error(
+    method: str, path: str, payload: Mapping[str, Any] | None = None
+) -> dict[str, Any] | None:
+    policy = _http_mode_policy(method, path, payload)
+    if policy == "operator":
+        return None
+    action = _http_mode_action(path, payload)
+    try:
+        state_dir = APP.config.get("server", {}).get("state_dir", "state") if APP is not None else "state"
+        snapshot = load_operational_mode(state_dir)
+        if not snapshot.degraded and snapshot.mode == "active":
+            return None
+        if not snapshot.degraded and snapshot.mode == "gaming" and policy in {"gaming_read", "existing_job"}:
+            return None
+        rejection = operational_mode_gate_error(
+            snapshot, action, requires_heavy_work=policy != "gaming_read"
+        )
+    except Exception:
+        rejection = {
+            "success": False, "mode": "maintenance",
+            "error": "operation blocked because operational mode is unavailable",
+            "retryable": True, "terminal": False, "retry_after_seconds": 5,
+        }
+    result = dict(rejection) if isinstance(rejection, dict) else {}
+    result.setdefault("success", False)
+    result.setdefault("error", "operation blocked by operational mode")
+    result.setdefault("error_code", "operational_mode_blocked")
+    result.setdefault("action", action)
+    result["retryable"] = True
+    result["terminal"] = False
+    result.setdefault("retry_after_seconds", 5)
+    return result
+
+
+def _is_loopback_client_address(client_address: Any) -> bool:
+    try:
+        host = str(client_address[0]).split("%", 1)[0]
+        return ipaddress.ip_address(host).is_loopback
+    except (IndexError, TypeError, ValueError):
+        return False
 
 
 def _json_bytes(data: Any) -> bytes:
     return json_dumps(data).encode("utf-8")
+
+
+AGENT_EVENT_PAGE_MAX_BYTES = 1024 * 1024
+AGENT_EVENT_PAGE_MAX_LIMIT = 100
+
+
+def _minimum_json_bytes(value: Any, ceiling: int) -> int:
+    """Return lower bound for UTF-8 JSON size without encoding huge strings."""
+    if isinstance(value, str):
+        return min(len(value) + 2, ceiling + 1)
+    if value is None:
+        return 4
+    if value is True:
+        return 4
+    if value is False:
+        return 5
+    if isinstance(value, (int, float)):
+        try:
+            return min(len(json_dumps(value).encode("ascii")), ceiling + 1)
+        except (OverflowError, ValueError):
+            return ceiling + 1
+    if isinstance(value, dict):
+        total = 2 + max(0, len(value) - 1)
+        for key, item in value.items():
+            total += _minimum_json_bytes(key, max(0, ceiling - total)) + 1
+            total += _minimum_json_bytes(item, max(0, ceiling - total))
+            if total > ceiling:
+                return ceiling + 1
+        return total
+    if isinstance(value, (list, tuple)):
+        total = 2 + max(0, len(value) - 1)
+        for item in value:
+            total += _minimum_json_bytes(item, max(0, ceiling - total))
+            if total > ceiling:
+                return ceiling + 1
+        return total
+    return 0
+
+
+def _bound_agent_event_page(status: int, page: dict[str, Any], after_seq: Any) -> tuple[int, dict[str, Any]]:
+    """Bound event responses without advancing past rows omitted by the byte cap."""
+    try:
+        cursor = max(0, int(after_seq))
+    except (TypeError, ValueError, OverflowError):
+        cursor = 0
+    events = list(page.get("events") or [])
+    if not events:
+        if len(_json_bytes(page)) <= AGENT_EVENT_PAGE_MAX_BYTES:
+            return status, page
+        return 413, {
+            **page,
+            "events": [],
+            "next_seq": cursor,
+            "error": {
+                "code": "agent_event_page_too_large",
+                "message": "event page metadata exceeds serialized response byte limit",
+                "max_bytes": AGENT_EVENT_PAGE_MAX_BYTES,
+            },
+        }
+
+    accepted: list[dict[str, Any]] = []
+    accepted_page: dict[str, Any] | None = None
+    for index, event in enumerate(events):
+        try:
+            next_seq = max(0, int(event.get("seq") or 0))
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            break
+        candidate = dict(page)
+        candidate["next_seq"] = next_seq
+        candidate["has_more"] = bool(page.get("has_more")) or index + 1 < len(events)
+        candidate["gap_ranges"] = [
+            gap for gap in (page.get("gap_ranges") or [])
+            if isinstance(gap, dict) and int(gap.get("to_seq") or 0) <= next_seq
+        ]
+        candidate["events"] = []
+        if _minimum_json_bytes(event, AGENT_EVENT_PAGE_MAX_BYTES) > AGENT_EVENT_PAGE_MAX_BYTES:
+            break
+        trial_events = [*accepted, event]
+        candidate["events"] = trial_events
+        if len(_json_bytes(candidate)) > AGENT_EVENT_PAGE_MAX_BYTES:
+            break
+        accepted = trial_events
+        accepted_page = candidate
+    if accepted_page is not None:
+        return status, accepted_page
+    return 413, {
+        "success": False,
+        "events": [],
+        "next_seq": cursor,
+        "first_retained_seq": max(0, int(page.get("first_retained_seq") or 0)),
+        "last_seq": max(0, int(page.get("last_seq") or 0)),
+        "has_more": bool(page.get("has_more")) or bool(events),
+        "gap_ranges": [],
+        "cursor_reset": bool(page.get("cursor_reset")),
+        "error": {
+            "code": "agent_event_page_too_large",
+            "message": "first event exceeds serialized response byte limit",
+            "max_bytes": AGENT_EVENT_PAGE_MAX_BYTES,
+        },
+    }
 
 
 def _resolve_memory_scope(
@@ -241,6 +695,8 @@ def _telemetry_http_outcome(status: int, data: Any, path: str = "") -> tuple[boo
 
 def _journal_outcome_success(status: int, data: Any) -> bool:
     payload = data if isinstance(data, dict) else {}
+    if payload.get("outcome_unknown") is True:
+        return False
     return bool(payload.get("terminal") or payload.get("in_progress") or (status < 400 and payload.get("success") is not False))
 
 
@@ -565,18 +1021,43 @@ class Handler(BaseHTTPRequestHandler):
             }
             return sqlite3.SQLITE_OK if action in _ALLOWED else sqlite3.SQLITE_DENY
 
+        work_limit_reached = False
         try:
             uri = f"file:{target_db.as_posix()}?mode=ro"
             con = sqlite3.connect(uri, uri=True, timeout=3.0)
             try:
+                con.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, _DB_QUERY_MAX_RESPONSE_BYTES)
                 con.set_authorizer(_readonly_authorizer)
+                progress_checks = 0
+
+                def _limit_sqlite_work() -> int:
+                    nonlocal progress_checks, work_limit_reached
+                    progress_checks += 1
+                    if progress_checks > 5000:
+                        work_limit_reached = True
+                        return 1
+                    return 0
+
+                con.set_progress_handler(_limit_sqlite_work, 1000)
                 cur = con.cursor()
                 cur.execute(sql_clean)
                 col_names = [d[0] for d in cur.description] if cur.description else []
-                rows = cur.fetchmany(100)
                 clean_rows = []
-                for r in rows:
-                    clean_rows.append([str(item) if isinstance(item, (bytes, bytearray)) else item for item in r])
+                while len(clean_rows) < 100:
+                    batch = cur.fetchmany(1)
+                    if not batch:
+                        break
+                    clean_row = [str(item) if isinstance(item, (bytes, bytearray)) else item for item in batch[0]]
+                    clean_rows.append(clean_row)
+                    result = {
+                        "success": True,
+                        "db": db_name,
+                        "columns": col_names,
+                        "rows": clean_rows,
+                        "count": len(clean_rows),
+                    }
+                    if len(json_dumps(result, separators=(",", ":")).encode("utf-8")) > _DB_QUERY_MAX_RESPONSE_BYTES:
+                        return {"success": False, "error": "query result exceeded byte limit"}
                 return {
                     "success": True,
                     "db": db_name,
@@ -587,6 +1068,10 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 con.close()
         except sqlite3.DatabaseError as exc:
+            if getattr(exc, "sqlite_errorcode", None) == getattr(sqlite3, "SQLITE_TOOBIG", -1):
+                return {"success": False, "error": "query result exceeded byte limit"}
+            if work_limit_reached:
+                return {"success": False, "error": "query execution exceeded work limit"}
             # Sanitize error to avoid leaking internal paths
             msg = str(exc)
             if state_dir.as_posix() in msg or str(state_dir) in msg:
@@ -594,7 +1079,6 @@ class Handler(BaseHTTPRequestHandler):
             return {"success": False, "error": msg}
         except Exception:
             return {"success": False, "error": "query execution failed"}
-
     def _handle_models_list(self) -> dict[str, Any]:
         if APP is None:
             return {"success": False, "error": "Hub app not initialized", "models": []}
@@ -676,6 +1160,13 @@ class Handler(BaseHTTPRequestHandler):
                             self._debug_observer_token = set_observer(DebugTraceObserver(trace_store, self._debug_trace_id))
         except Exception:
             pass
+
+    def _ensure_trace_request_id(self) -> str:
+        request_id = getattr(self, "_trace_request_id", None)
+        if not request_id:
+            request_id = self.headers.get("X-LocalAI-Request-ID") or uuid.uuid4().hex
+            self._trace_request_id = request_id
+        return request_id
 
     @classmethod
     def _safe_debug_trace_request(cls, payload: Any) -> dict[str, Any]:
@@ -795,6 +1286,25 @@ class Handler(BaseHTTPRequestHandler):
             return str(APP.config.get("browser_bridge", {}).get("tenant", "http-default") or "http-default")
         return requested
 
+    def _memory_project_identity(self, requested_root: Any) -> tuple[str, str] | None:
+        """Resolve memory project identity from server project configuration."""
+        if not requested_root:
+            return ("", "")
+        if APP is None:
+            return None
+        try:
+            from .project_config import resolve_project_context
+            from .state_paths import configured_state_dir
+
+            context = resolve_project_context(requested_root, configured_state_dir(APP.config))
+            root = str(Path(context.root).resolve(strict=True))
+            repository_id = str(context.coordination_id or "").strip()
+            if not repository_id:
+                return None
+            return root, repository_id
+        except Exception:
+            return None
+
     def _tenant_binding_allowed(self) -> bool:
         if APP is None:
             return True
@@ -812,17 +1322,84 @@ class Handler(BaseHTTPRequestHandler):
     def _agent(self) -> str:
         return self.headers.get("X-LocalAI-Agent") or "generic"
 
-    def _authorized(self) -> bool:
+    def _authorized(self, action: str | None = None) -> bool:
         if APP is None:
-            return True
-        expected = str(APP.config.get("security", {}).get("api_token", ""))
-        if not expected:
-            return True
+            return _is_loopback_client_address(getattr(self, "client_address", None))
+        security = APP.config.get("security", {})
+        if not isinstance(security, dict):
+            self._authorization_actor = "unrecognized"
+            return False
+        expected = str(security.get("api_token", "") or "")
+        action_tokens = security.get("action_tokens", {})
+        if not isinstance(action_tokens, dict):
+            self._authorization_actor = "unrecognized"
+            return False
+        if action is None:
+            action = _http_admin_action(
+                str(getattr(self, "command", "")),
+                urlparse(str(getattr(self, "path", ""))).path,
+            )
         supplied = self.headers.get("X-LocalAI-Token", "")
         auth = self.headers.get("Authorization", "")
         if auth.lower().startswith("bearer "):
             supplied = auth[7:].strip()
-        return hmac.compare_digest(supplied, expected)
+        global_valid = _token_matches(supplied, expected)
+        scoped = str(action_tokens.get(action, "")) if action else ""
+        scoped_valid = len(scoped) >= 16 and _token_matches(supplied, scoped)
+        local_client = _is_loopback_client_address(getattr(self, "client_address", None))
+        self._authorization_actor = (
+            "api_token" if global_valid else
+            "action_token" if scoped_valid else
+            "local" if not expected and not action_tokens and local_client else
+            "unrecognized"
+        )
+        if global_valid or scoped_valid:
+            return True
+        if expected or action_tokens:
+            return False
+        return local_client
+
+    def _audit_admin_authorization(self, action: str, *, allowed: bool) -> bool:
+        if APP is None:
+            return False
+        telemetry = getattr(APP, "telemetry", None)
+        recorder = getattr(telemetry, "record_system", None)
+        if not callable(recorder):
+            return False
+        try:
+            recorder(
+                "admin.authorization",
+                success=allowed,
+                component="http_admin",
+                operation=action,
+                path=urlparse(str(getattr(self, "path", ""))).path,
+                actor=str(getattr(self, "_authorization_actor", "unknown")),
+            )
+            return True
+        except Exception:
+            return False
+
+    def _audit_admin_result(self, status: int) -> None:
+        action = str(getattr(self, "_admin_action", "") or "")
+        if not action or getattr(self, "_admin_result_audited", False):
+            return
+        self._admin_result_audited = True
+        telemetry = getattr(APP, "telemetry", None) if APP is not None else None
+        recorder = getattr(telemetry, "record_system", None)
+        if not callable(recorder):
+            return
+        try:
+            recorder(
+                "admin.action.result",
+                success=200 <= int(status) < 400,
+                component="http_admin",
+                operation=action,
+                path=urlparse(str(getattr(self, "path", ""))).path,
+                status_code=int(status),
+                actor=str(getattr(self, "_authorization_actor", "unknown")),
+            )
+        except Exception:
+            pass
 
     def _validate_host_and_origin(self) -> bool:
         """Validate Host and Origin headers to protect against DNS rebinding and cross-origin attacks."""
@@ -887,8 +1464,28 @@ class Handler(BaseHTTPRequestHandler):
     def _require_authorized(self) -> bool:
         if not self._validate_host_and_origin():
             return False
-        if not self._authorized():
+        local_mode_read = (
+            str(getattr(self, "command", "")).upper() == "GET"
+            and urlparse(str(getattr(self, "path", ""))).path == "/api/mode"
+            and _is_loopback_client_address(getattr(self, "client_address", None))
+        )
+        action = _http_admin_action(
+            str(getattr(self, "command", "")),
+            urlparse(str(getattr(self, "path", ""))).path,
+        )
+        self._admin_action = action or ""
+        self._admin_result_audited = False
+        authorized = self._authorized(action)
+        if not authorized and local_mode_read:
+            self._authorization_actor = "local"
+            authorized = True
+        if not authorized:
+            if action:
+                self._audit_admin_authorization(action, allowed=False)
             self._send(401, {"success": False, "error": "unauthorized"})
+            return False
+        if action and not self._audit_admin_authorization(action, allowed=True):
+            self._send(503, {"success": False, "error": "admin audit unavailable", "retryable": True})
             return False
         if not self._tenant_binding_allowed():
             return False
@@ -986,13 +1583,7 @@ class Handler(BaseHTTPRequestHandler):
                         return value
             raise RequestBodyError(f"{name} is required")
 
-        if path == "/api/chat/completions":
-            messages = payload.get("messages")
-            if not isinstance(messages, list) or not messages or len(messages) > 128:
-                raise RequestBodyError("messages must be a non-empty list of at most 128 entries")
-            if len(json_dumps(messages, default=str)) > 1_000_000:
-                raise RequestBodyError("messages exceed 1000000 characters", 413)
-        elif path == "/api/embed":
+        if path == "/api/embed":
             values = payload.get("texts", payload.get("input", []))
             values = [values] if isinstance(values, str) else values
             if not isinstance(values, list) or len(values) > 256:
@@ -1117,6 +1708,11 @@ class Handler(BaseHTTPRequestHandler):
             if "task_id" not in evaluation or "cohort" not in evaluation:
                 raise RequestBodyError("evaluation task_id and cohort are required")
 
+    def _handle_post_telemetry_timeline(self, payload: Any) -> None:
+        limit = payload.get("limit", 100) if isinstance(payload, dict) else 100
+        before_id = payload.get("before_id") if isinstance(payload, dict) else None
+        self._send(200, {"success": True, **APP.telemetry.get_timeline_page(limit, before_id=before_id)})
+
     def _async_delivery(self, path: str, payload: dict[str, Any], tenant: str) -> tuple[int, dict[str, Any]] | None:
         """Convert eligible long foreground work into an existing durable job when requested."""
         if APP is None:
@@ -1185,6 +1781,9 @@ class Handler(BaseHTTPRequestHandler):
         if decision["mode"] != "async":
             return None
         job_payload = dict(payload)
+        supplied_request_id = self.headers.get("X-LocalAI-Request-ID")
+        if supplied_request_id:
+            job_payload["request_id"] = supplied_request_id
         job_payload.pop("delivery", None); job_payload.pop("latency_budget_ms", None)
         if job_action == "reason":
             job_payload["task"] = str(job_payload.get("problem", job_payload.get("task", "")))
@@ -1211,8 +1810,19 @@ class Handler(BaseHTTPRequestHandler):
             trace_store.event(api_trace_id, "async_job_submitted", {"job_id": result.get("job_id", ""), "trace_id": result.get("trace_id", ""), "delivery": decision})
         return 200, result
 
-    def _send(self, status: int, data: Any) -> None:
+    def _send(self, status: int, data: Any, *, headers: Mapping[str, str] | None = None) -> None:
+        self._audit_admin_result(status)
+        if status >= 400 and isinstance(data, dict):
+            data = dict(data)
+            data.setdefault("success", False)
+            data.setdefault("status_code", status)
+            retryable = status in {408, 425, 429, 500, 502, 503, 504}
+            data.setdefault("retryable", retryable)
+            data.setdefault("terminal", not retryable)
         request_id = getattr(self, "_journal_request_id", None)
+        if request_id and isinstance(data, dict):
+            data = dict(data)
+            data.setdefault("request_id", request_id)
         if request_id and APP is not None and not getattr(self, "_journal_finished", False):
             try:
                 success = _journal_outcome_success(status, data)
@@ -1271,6 +1881,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Connection", "close")
             self._common_headers()
+            for name, value in (headers or {}).items():
+                self.send_header(str(name), str(value))
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -1337,6 +1949,8 @@ class Handler(BaseHTTPRequestHandler):
             self._finish_stream_request(False, error="client disconnected before headers")
             return
 
+        stream_success = True
+        stream_error = ""
         q = APP.agent_state.subscribe(maxsize=200)
         try:
             # Subscribe before fetching history. An event appended in the replay
@@ -1344,29 +1958,72 @@ class Handler(BaseHTTPRequestHandler):
             # are discarded by the sequence check below.
             last_seq = after_seq
             if stream_id and after_seq >= 0:
-                past = APP.agent_state.events(stream_id=stream_id, after_seq=after_seq, limit=1000)
-                for ev in past:
-                    if kind and ev.kind != kind:
-                        continue
-                    last_seq = max(last_seq, ev.seq or 0)
-                    payload = json_dumps(ev.to_dict(), separators=(",", ":"))
-                    msg = f"id: {ev.seq}\nevent: {ev.kind}\ndata: {payload}\n\n".encode("utf-8")
+                replay_cursor = after_seq
+                replay_through_seq = None
+                while True:
+                    page = APP.agent_state.event_page(
+                        stream_id=stream_id,
+                        after_seq=replay_cursor,
+                        limit=100,
+                        through_seq=replay_through_seq,
+                    )
+                    if page.get("success") is not True:
+                        stream_success = False
+                        stream_error = "event replay unavailable"
+                        payload = json_dumps(page, separators=(",", ":"))
+                        try:
+                            self.wfile.write(f"event: replay_error\ndata: {payload}\n\n".encode("utf-8"))
+                            self.wfile.flush()
+                        except OSError:
+                            stream_error = "client disconnected"
+                        return
+                    if replay_through_seq is None:
+                        replay_through_seq = int(page.get("last_seq", replay_cursor) or replay_cursor)
+                    page_payload = json_dumps(page, separators=(",", ":"))
+                    page_msg = f"id: {page.get('next_seq', replay_cursor)}\nevent: replay_page\ndata: {page_payload}\n\n".encode("utf-8")
                     try:
-                        self.wfile.write(msg)
+                        self.wfile.write(page_msg)
                         self.wfile.flush()
                     except OSError:
+                        stream_success = False
+                        stream_error = "client disconnected"
                         return
+                    if page.get("cursor_reset") is True:
+                        first_retained = int(page.get("first_retained_seq", 0) or 0)
+                        last_seq = max(0, first_retained - 1)
+                    for raw_event in page.get("events", []):
+                        if not isinstance(raw_event, dict):
+                            continue
+                        event_seq = int(raw_event.get("seq", 0) or 0)
+                        event_kind = str(raw_event.get("kind", ""))
+                        if event_seq <= last_seq or (kind and event_kind != kind):
+                            continue
+                        last_seq = event_seq
+                        payload = json_dumps(raw_event, separators=(",", ":"))
+                        msg = f"id: {event_seq}\nevent: {event_kind}\ndata: {payload}\n\n".encode("utf-8")
+                        try:
+                            self.wfile.write(msg)
+                            self.wfile.flush()
+                        except OSError:
+                            stream_success = False
+                            stream_error = "client disconnected"
+                            return
+                    next_cursor = int(page.get("next_seq", replay_cursor) or 0)
+                    if page.get("has_more") is not True or next_cursor <= replay_cursor:
+                        break
+                    replay_cursor = next_cursor
 
             start_time = time.monotonic()
             while True:
                 remaining = timeout - (time.monotonic() - start_time)
                 if remaining <= 0:
                     try:
-                        timeout_msg = f"event: stream_timeout\ndata: {{\"reconnect\":true,\"last_seq\":{last_seq}}}\n\n".encode("utf-8")
+                        timeout_msg = f"event: stream_timeout\ndata: {{\"reconnect\":true,\"next_seq\":{last_seq},\"last_seq\":{last_seq}}}\n\n".encode("utf-8")
                         self.wfile.write(timeout_msg)
                         self.wfile.flush()
                     except OSError:
-                        pass
+                        stream_success = False
+                        stream_error = "client disconnected"
                     break
                 try:
                     ev = q.get(timeout=min(1.0, remaining))
@@ -1387,13 +2044,19 @@ class Handler(BaseHTTPRequestHandler):
                         self.wfile.write(b": keep-alive\n\n")
                         self.wfile.flush()
                     except OSError:
+                        stream_success = False
+                        stream_error = "client disconnected"
                         break
+        except OSError:
+            stream_success = False
+            stream_error = "client disconnected"
         except Exception:
-            pass
+            stream_success = False
+            stream_error = "stream failed"
         finally:
             self.close_connection = True
             APP.agent_state.unsubscribe(q)
-            self._finish_stream_request(True)
+            self._finish_stream_request(stream_success, error=stream_error)
 
     def do_OPTIONS(self) -> None:
         if APP is None:
@@ -1422,12 +2085,16 @@ class Handler(BaseHTTPRequestHandler):
         if APP is None:
             self._send(503, {"success": False, "error": "hub starting up; please retry", "status_code": 503, "retryable": True})
             return
-        self._begin_trace(path)
         # The dashboard shell contains no runtime data. Keeping it public lets a
         # remote deployment prompt for an API token client-side; every data/control
         # endpoint remains authenticated.
         if path not in {"/", "/dashboard", "/favicon.ico"} and not self._require_authorized():
             return
+        mode_rejection = _http_mode_gate_error("GET", path)
+        if mode_rejection is not None:
+            self._send(503, mode_rejection)
+            return
+        self._begin_trace(path)
         query = parse_qs(parsed.query)
         try:
             if path in {"/", "/dashboard"}:
@@ -1435,6 +2102,9 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(404, {"error": "dashboard disabled"}); return
                 self._telemetry_finished = True
                 self._send_html(200, DASHBOARD_HTML); return
+            if path == "/api/mode":
+                snapshot = load_operational_mode(APP.config.get("server", {}).get("state_dir", "state"))
+                self._send(200, {"success": True, **snapshot.to_dict()}); return
             if path == "/favicon.ico":
                 self._telemetry_finished = True
                 self.send_response(204); self.end_headers(); return
@@ -1452,18 +2122,20 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/status":
                 detail = str((query.get("detail") or [""])[0]).strip().lower()
                 if detail == "agent_state":
+                    agent_state = getattr(APP, "agent_state", None)
+                    agent_state_enabled = bool(agent_state and getattr(agent_state, "enabled", False))
                     tasks = APP.agent_tasks.list_tasks() if getattr(APP, "agent_tasks", None) else []
                     active_tasks = [t.task_id for t in tasks if t.status == TaskStatus.ACTIVE]
                     incidents = APP.agent_incidents.list_incidents() if getattr(APP, "agent_incidents", None) else []
                     candidates = APP.agent_learning.list_candidates() if getattr(APP, "agent_learning", None) else []
                     self._send(200, {
                         "success": True,
-                        "enabled": bool(getattr(APP, "agent_state", None) and APP.agent_state.enabled),
+                        "enabled": agent_state_enabled,
                         "active_tasks": active_tasks,
                         "tasks_count": len(tasks),
                         "incidents_count": len(incidents),
                         "candidates_count": len(candidates),
-                        "status": "healthy",
+                        "status": "healthy" if agent_state_enabled else "disabled",
                     }); return
                 scope = str((query.get("scope") or ["process"])[0])
                 status = APP.status(scope=scope)
@@ -1487,8 +2159,17 @@ class Handler(BaseHTTPRequestHandler):
                         pass
                 limit = int((query.get("limit") or [100])[0])
                 include_stale = str((query.get("include_stale") or ["false"])[0]).lower() in ("true", "1", "yes")
-                tasks = APP.agent_tasks.list_tasks(status=status_filter, limit=limit, include_stale=include_stale)
-                self._send(200, {"success": True, "tasks": [t.to_dict() for t in tasks]}); return
+                task_query = (query.get("query") or [""])[0]
+                tasks = APP.agent_tasks.list_tasks(
+                    status=status_filter,
+                    limit=limit,
+                    include_stale=include_stale,
+                    query=task_query,
+                )
+                response = {"success": True, "tasks": [t.to_dict() for t in tasks]}
+                if getattr(tasks, "query_truncated", False):
+                    response["query_truncated"] = True
+                self._send(200, response); return
             if path == "/api/agent-state/memory":
                 if not getattr(APP, "agent_memory", None) or not APP.agent_memory.state_store.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
@@ -1497,9 +2178,12 @@ class Handler(BaseHTTPRequestHandler):
                     scope_raw = (query.get("scope") or [None])[0]
                     scope_val = _parse_memory_scope(scope_raw)
                     scope_id_val = (query.get("scope_id") or [None])[0]
-                    root_val = (query.get("root") or [None])[0]
-                    repository_id_val = (query.get("repository_id") or [None])[0]
-                    tenant_val = (query.get("tenant") or [None])[0]
+                    requested_root = (query.get("root") or [None])[0]
+                    project_identity = self._memory_project_identity(requested_root)
+                    if requested_root and project_identity is None:
+                        self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
+                    root_val, repository_id_val = project_identity or (None, None)
+                    tenant_val = self._tenant()
                     task_id_val = (query.get("task_id") or [None])[0]
                     session_id_val = (query.get("session_id") or [None])[0]
                     clone_id_val = (query.get("clone_id") or [None])[0]
@@ -1552,9 +2236,12 @@ class Handler(BaseHTTPRequestHandler):
                         pass
                 limit_val = _memory_query_limit((query.get("limit") or [100])[0])
                 scope_id_val = (query.get("scope_id") or [None])[0]
-                root_val = (query.get("root") or [None])[0]
-                repository_id_val = (query.get("repository_id") or [None])[0]
-                tenant_val = (query.get("tenant") or [None])[0]
+                requested_root = (query.get("root") or [None])[0]
+                project_identity = self._memory_project_identity(requested_root)
+                if requested_root and project_identity is None:
+                    self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
+                root_val, repository_id_val = project_identity or (None, None)
+                tenant_val = self._tenant()
                 task_id_val = (query.get("task_id") or [None])[0]
                 session_id_val = (query.get("session_id") or [None])[0]
                 clone_id_val = (query.get("clone_id") or [None])[0]
@@ -1614,13 +2301,34 @@ class Handler(BaseHTTPRequestHandler):
                     )
                 self._send(200, {"success": True, "records": [r.to_dict() for r in records]}); return
             if path == "/api/agent-state/events":
-                if not getattr(APP, "agent_state", None) or not APP.agent_state.enabled:
-                    self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
+                agent_state = getattr(APP, "agent_state", None)
+                if agent_state is None:
+                    self._send(503, {"success": False, "events": [], "next_seq": 0, "error": {"code": "event_page_unavailable", "message": "agent state is unavailable"}}); return
                 stream_id = (query.get("stream_id") or [""])[0]
-                after_seq = int((query.get("after_seq") or [0])[0])
-                limit = int((query.get("limit") or [100])[0])
-                evs = APP.agent_state.events(stream_id=stream_id, after_seq=after_seq, limit=limit)
-                self._send(200, {"success": True, "events": [e.to_dict() for e in evs]}); return
+                after_seq = (query.get("after_seq") or ["0"])[0]
+                try:
+                    int(after_seq)
+                except (TypeError, ValueError, OverflowError):
+                    after_seq = "0"
+                try:
+                    requested_limit = int((query.get("limit") or [100])[0])
+                except (TypeError, ValueError, OverflowError):
+                    requested_limit = 100
+                page_kwargs: dict[str, Any] = {
+                    "stream_id": stream_id,
+                    "after_seq": after_seq,
+                    "limit": max(1, min(requested_limit, AGENT_EVENT_PAGE_MAX_LIMIT)),
+                }
+                through_seq = (query.get("through_seq") or [None])[0]
+                if through_seq is not None:
+                    page_kwargs["through_seq"] = through_seq
+                page = agent_state.event_page(**page_kwargs)
+                error = page.get("error") or {}
+                status = 200 if page.get("success") is True else (
+                    403 if error.get("code") == "agent_state_disabled" else 503
+                )
+                status, page = _bound_agent_event_page(status, page, after_seq)
+                self._send(status, page); return
             if path == "/api/agent-state/blackboard":
                 if not getattr(APP, "agent_blackboard", None):
                     self._send(503, {"success": False, "error": "blackboard unavailable"}); return
@@ -1665,10 +2373,32 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/telemetry/report":
                 days = int((query.get("days") or [30])[0])
                 scope = str((query.get("scope") or ["window"])[0])
-                self._send(200, {"success": True, "report": APP.telemetry.report(days, scope=scope)}); return
+                try:
+                    recent_errors = int((query.get("recent_errors") or [25])[0])
+                    error_offset = int((query.get("error_offset") or [0])[0])
+                    error_cursor_values = parse_qs(parsed.query, keep_blank_values=True).get("error_cursor")
+                    error_cursor = error_cursor_values[0] if error_cursor_values else None
+                except (TypeError, ValueError):
+                    self._send(400, {
+                        "success": False,
+                        "error": "recent_errors and error_offset must be integers",
+                        "terminal": True,
+                        "retryable": False,
+                    }); return
+                try:
+                    report = APP.telemetry.report(
+                        days, recent_errors=recent_errors, error_offset=error_offset,
+                        error_cursor=error_cursor, scope=scope,
+                    )
+                except ValueError as exc:
+                    self._send(400, {
+                        "success": False, "error": str(exc), "terminal": True, "retryable": False,
+                    }); return
+                self._send(200, {"success": True, "report": report}); return
             if path == "/api/telemetry/timeline":
-                limit = int((query.get("limit") or [100])[0])
-                self._send(200, {"success": True, "timeline": APP.telemetry.get_timeline(limit)}); return
+                limit = (query.get("limit") or [100])[0]
+                before_id = (query.get("before_id") or [None])[0]
+                self._send(200, {"success": True, **APP.telemetry.get_timeline_page(limit, before_id=before_id)}); return
             if path == "/api/audit/tail":
                 limit = int((query.get("limit") or [20])[0])
                 self._send(200, {"success": True, "events": APP.telemetry.tail(limit)}); return
@@ -1698,7 +2428,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, {"success": True, "workspaces": APP.rag.list_workspaces(self._tenant())}); return
             if path == "/api/leases":
                 root = (query.get("root") or [""])[0]
-                self._send(200, {"success": True, "leases": APP.leases.list(root), "waits": APP.leases.waits(root)}); return
+                coordination_id = _lease_coordination_id(root)
+                self._send(200, {"success": True, "leases": APP.leases.list(root, coordination_id=coordination_id), "waits": APP.leases.waits(root, coordination_id=coordination_id)}); return
             if path == "/api/cross_project_graph":
                 roots = [str(p.get("root")) for p in APP.preprocessor.status().get("projects", []) if p.get("root")]
                 if APP.deterministic is not None:
@@ -1792,19 +2523,16 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
             if path == "/api/maintenance/optimize_db":
-                self._send(200, APP.services.optimize_databases())
+                self._send(405, {"success": False, "error": "method not allowed"}, headers={"Allow": "POST"})
                 return
             if path == "/api/maintenance/purge_cache":
-                days = int((query.get("days") or [7])[0])
-                self._send(200, APP.services.purge_stale_cache(days))
+                self._send(405, {"success": False, "error": "method not allowed"}, headers={"Allow": "POST"})
                 return
             if path == "/api/maintenance/resolve_errors":
-                self._send(200, APP.services.resolve_all_errors())
+                self._send(405, {"success": False, "error": "method not allowed"}, headers={"Allow": "POST"})
                 return
             if path == "/api/config":
-                view = json.loads(json_dumps(APP.config, default=str))
-                if isinstance(view.get("security"), dict) and view["security"].get("api_token"):
-                    view["security"]["api_token"] = "***configured***"
+                view = _redact_config_secrets(APP.config)
                 self._send(200, {"success": True, "config": view, "config_path": APP.config.get("_config_path", ""), "runtime_override_path": APP.config.get("_runtime_override_path", "")})
                 return
             if path == "/api/logs/tail":
@@ -1948,16 +2676,360 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 pass
 
+    def _claim_recovery(self, path: str, payload: Any) -> bool:
+        request_id = str(getattr(self, "_trace_request_id", ""))
+        tenant = self._tenant()
+        identity = str(self._agent() or "")
+        self._journal_request_id = request_id
+        self._journal_finished = False
+        try:
+            claim = APP.recovery.begin(
+                request_id,
+                tenant,
+                path,
+                identity=identity,
+                payload=payload,
+            )
+        except Exception:
+            self._journal_finished = True
+            self._send(503, {
+                "success": False,
+                "error": "request journal unavailable; mutation was not dispatched",
+                "status_code": 503,
+                "retryable": True,
+                "outcome_unknown": False,
+            })
+            return False
+
+        if claim.get("claimed"):
+            return True
+
+        self._journal_finished = True
+        state = str(claim.get("state", ""))
+        if state == "conflict":
+            self._send(409, {"success": False, "error": claim.get("error", "request id conflict"), "terminal": True})
+            return False
+        if state in {"done", "failed"} and claim.get("response") is not None:
+            status = int(claim.get("status_code") or (200 if state == "done" else 500))
+            self._send(status, claim["response"])
+            return False
+        if state == "running":
+            wait_seconds = min(
+                2.0,
+                max(0.05, float(APP.config.get("resilience", {}).get("singleflight_wait_timeout_seconds", 1.0))),
+            )
+            try:
+                replay = APP.recovery.wait_for(
+                    request_id,
+                    tenant,
+                    path,
+                    timeout_seconds=wait_seconds,
+                    identity=identity,
+                    payload_fingerprint=APP.recovery.fingerprint_payload(payload),
+                )
+            except Exception:
+                self._send(409, {
+                    "success": False,
+                    "error": "request outcome is unknown; mutation was not replayed",
+                    "status_code": 409,
+                    "terminal": True,
+                    "retryable": False,
+                    "outcome_unknown": True,
+                    "request_id": request_id,
+                })
+                return False
+            if replay and replay.get("state") in {"done", "failed"} and replay.get("response") is not None:
+                status = int(replay.get("status_code") or (200 if replay.get("state") == "done" else 500))
+                self._send(status, replay["response"])
+                return False
+            if replay and replay.get("outcome_unknown"):
+                self._send(409, {
+                    "success": False,
+                    "error": "request outcome is unknown; mutation was not replayed",
+                    "terminal": True,
+                    "retryable": False,
+                    "outcome_unknown": True,
+                })
+                return False
+            self._send(409, {
+                "success": False,
+                "error": "request with this id is already running",
+                "retryable": True,
+                "in_progress": True,
+                "retry_after_seconds": 1,
+                "waited_seconds": wait_seconds,
+            })
+            return False
+        if claim.get("outcome_unknown") or state == "abandoned":
+            self._send(409, {
+                "success": False,
+                "error": "request outcome is unknown; mutation was not replayed",
+                "terminal": True,
+                "retryable": False,
+                "outcome_unknown": True,
+            })
+            return False
+        self._send(409, {"success": False, "error": "request journal returned an invalid state", "terminal": True})
+        return False
+
     def do_POST(self) -> None:
         if APP is None:
             self._send(503, {"success": False, "error": "hub starting up; please retry", "status_code": 503, "retryable": True})
             return
         path = urlparse(self.path).path
-        self._begin_trace(path)
         if not self._require_authorized():
             return
+        self._begin_trace(path)
+        if getattr(APP, "recovery", None) is not None:
+            try:
+                request_id = RecoveryJournal.validate_request_id(self._ensure_trace_request_id())
+            except (TypeError, ValueError) as exc:
+                self._journal_finished = True
+                self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False})
+                return
+            self._trace_request_id = request_id
+        if path == "/api/admin/mode":
+            try:
+                payload = self._read_json()
+            except RequestBodyError as exc:
+                self._send(exc.status, {
+                    "success": False, "error": str(exc), "error_code": "invalid_mode_request",
+                    "terminal": True, "retryable": False,
+                }); return
+            mode = payload.get("mode")
+            if set(payload) != {"mode"} or not isinstance(mode, str):
+                self._send(400, {
+                    "success": False, "error": "request must contain only a string mode",
+                    "error_code": "invalid_mode_request", "terminal": True, "retryable": False,
+                }); return
+            async_jobs = getattr(APP, "async_jobs", None)
+            mode_changed = getattr(async_jobs, "on_operational_mode_changed", None)
+            guard_factory = getattr(async_jobs, "operational_mode_change_guard", None)
+            guard = guard_factory() if callable(guard_factory) else nullcontext()
+            cancellation_error = ""
+            release_token = None
+            try:
+                with guard:
+                    state_dir = APP.config.get("server", {}).get("state_dir", "state")
+                    current_mode = load_operational_mode(state_dir)
+                    requested_mode = str(mode).strip().lower().replace("-", "_")
+                    release_active = getattr(async_jobs, "resource_release_active", None)
+                    release_in_progress = bool(release_active()) if callable(release_active) else False
+                    if (
+                        requested_mode == "active" and current_mode.mode != "active"
+                        and (release_in_progress or _ACTIVE_TRANSCRIPTIONS.active_count() or _ACTIVE_CONVERSATIONS.active_count())
+                    ):
+                        self._send(423, {
+                            "success": False, "error": "cannot reactivate while inference or resource cleanup is active",
+                            "error_code": "resource_release_in_progress" if release_in_progress else "inference_active", "mode_changed": False,
+                            "mode": current_mode.mode, "revision": current_mode.revision,
+                            "terminal": False, "retryable": True, "retry_after_seconds": 1,
+                        }); return
+                    snapshot = set_operational_mode(state_dir, mode)
+                    if snapshot.mode == "gaming":
+                        _ACTIVE_TRANSCRIPTIONS.enter_gaming()
+                        _ACTIVE_CONVERSATIONS.enter_gaming()
+                    elif snapshot.mode == "active":
+                        _ACTIVE_TRANSCRIPTIONS.enter_active()
+                        _ACTIVE_CONVERSATIONS.enter_active()
+                    if callable(mode_changed):
+                        try:
+                            mode_changed(snapshot)
+                        except Exception as exc:
+                            cancellation_error = type(exc).__name__
+                    if snapshot.mode == "gaming" and async_jobs is not None:
+                        begin_release = getattr(async_jobs, "begin_resource_release", None)
+                        if callable(begin_release):
+                            release_token = begin_release()
+            except ValueError as exc:
+                self._send(400, {
+                    "success": False, "error": str(exc), "error_code": "invalid_mode_request",
+                    "terminal": True, "retryable": False,
+                }); return
+            except OSError:
+                self._send(503, {
+                    "success": False, "error": "operational mode could not be persisted",
+                    "error_code": "mode_persistence_failed", "terminal": True, "retryable": True,
+                }); return
+            self._telemetry_finished = True
+            response = {"success": True, **snapshot.to_dict()}
+            runtime_unload: dict[str, Any] | None = None
+            whisper_release: dict[str, Any] = {"state": "not_applicable", "inference_active": False}
+            conversation_release: dict[str, Any] = {"state": "not_applicable", "inference_active": False}
+            admission_release: dict[str, Any] = {"state": "not_applicable", "inference_active": False}
+            inference_active = False
+            preprocessor = getattr(APP, "preprocessor", None)
+            if preprocessor is not None:
+                try:
+                    prep_status = preprocessor.status()
+                    inference_active = not isinstance(prep_status, dict) or prep_status.get("success") is not True or any(
+                        isinstance(project, dict) and project.get("status") == "running"
+                        for project in prep_status.get("projects", [])
+                    )
+                except Exception:
+                    inference_active = True
+            if snapshot.mode == "gaming":
+                drain_deadline = time.monotonic() + _GAMING_DRAIN_TIMEOUT_SECONDS
+                whisper_release = _ACTIVE_TRANSCRIPTIONS.cancel_and_wait(max(0.0, drain_deadline - time.monotonic()))
+                conversation_release = _ACTIVE_CONVERSATIONS.cancel_and_wait(max(0.0, drain_deadline - time.monotonic()))
+                inference_active = inference_active or bool(whisper_release.get("inference_active")) or bool(conversation_release.get("inference_active"))
+                drain_waiter = getattr(async_jobs, "wait_for_inference_actions", None)
+                tracked_actions = {
+                    "delegate", "reason", "review", "review_diff", "second_opinion", "compress",
+                    "route", "batch", "embed", "rerank", "transcribe", "vision", "benchmark",
+                    "complete_code", "scaffold", "speculative_draft", "generate_tests", "solve",
+                    "eval_suite", "prompt_eval", "eval_drift",
+                }
+                if callable(drain_waiter):
+                    try:
+                        drained = bool(drain_waiter(
+                            set(tracked_actions), max(0.0, drain_deadline - time.monotonic())
+                        ))
+                        admission_release = {
+                            "state": "drained" if drained else "timed_out",
+                            "inference_active": not drained,
+                        }
+                    except Exception:
+                        admission_release = {"state": "unavailable", "inference_active": True}
+                else:
+                    admission_release = {
+                        "state": "unavailable", "inference_active": True,
+                        "reason": "bounded_inference_drain_unavailable",
+                    }
+                active_checker = getattr(async_jobs, "inference_actions_active", None)
+                if callable(active_checker):
+                    try:
+                        admission_active = bool(active_checker())
+                        admission_release["inference_active"] = bool(
+                            admission_release.get("inference_active") or admission_active
+                        )
+                        if admission_active:
+                            admission_release["state"] = "active"
+                    except Exception:
+                        admission_release = {"state": "unavailable", "inference_active": True}
+                else:
+                    admission_release = {
+                        "state": "unavailable", "inference_active": True,
+                        "reason": "inference_admission_tracking_unavailable",
+                    }
+                inference_active = inference_active or bool(admission_release.get("inference_active"))
+                if inference_active and release_token is not None:
+                    manager_token = release_token
+                    release_token = None
+                    wait_for_drain = getattr(async_jobs, "when_inference_actions_drained", None)
+                    if callable(wait_for_drain):
+                        def release_after_drain() -> None:
+                            wait_for_drain(
+                                set(tracked_actions),
+                                lambda: async_jobs.end_resource_release(manager_token),
+                            )
+                        _ACTIVE_TRANSCRIPTIONS.when_drained(
+                            lambda: _ACTIVE_CONVERSATIONS.when_drained(release_after_drain)
+                        )
+                    else:
+                        admission_release["release_ownership_retained"] = True
+            response["whisper_process_release"] = whisper_release
+            response["conversation_release"] = conversation_release
+            response["inference_admission_release"] = admission_release
+            if snapshot.mode == "gaming" and inference_active:
+                runtime_unload = {"success": False, "state": "skipped_active_inference", "inference_active": True}
+                response["runtime_unload"] = runtime_unload
+                response["accelerator_release"] = {"success": False, "state": "skipped_active_inference", "verified": False}
+            if snapshot.mode == "gaming" and not inference_active:
+                stale_unload = {"success": False, "backend_available": False, "unloaded": [], "failed": {"mode": "stale mode transition"}}
+                stale_accelerator = {"success": False, "verified": False, "released": [], "failed": {"mode": "stale mode transition"}}
+                if not callable(guard_factory):
+                    response["success"] = False
+                    response["mode_transition_stale"] = True
+                    response["runtime_unload"] = stale_unload
+                    response["accelerator_release"] = stale_accelerator
+                else:
+                    release_current = False
+                    with guard_factory():
+                        release_snapshot = load_operational_mode(APP.config.get("server", {}).get("state_dir", "state"))
+                        release_current = not (
+                            release_snapshot.degraded
+                            or release_snapshot.mode != snapshot.mode
+                            or release_snapshot.revision != snapshot.revision
+                        )
+                    if not release_current:
+                        response["success"] = False
+                        response["mode_transition_stale"] = True
+                        response["runtime_unload"] = stale_unload
+                        response["accelerator_release"] = stale_accelerator
+                        if release_token is not None:
+                            async_jobs.end_resource_release(release_token)
+                            release_token = None
+                    else:
+                        try:
+                                runtime = getattr(APP, "runtime", None)
+                                unload = getattr(runtime, "unload_configured_models", None)
+                                if callable(unload):
+                                    try:
+                                        result = unload(timeout_seconds=3.0)
+                                        runtime_unload = result if isinstance(result, dict) else {
+                                            "success": False, "backend_available": False,
+                                            "unloaded": [], "failed": {"backend": "invalid unload result"},
+                                        }
+                                    except Exception as exc:
+                                        runtime_unload = {
+                                            "success": False, "backend_available": False,
+                                            "unloaded": [], "failed": {"backend": type(exc).__name__},
+                                        }
+                                else:
+                                    runtime_unload = {
+                                        "success": False, "backend_available": False,
+                                        "unloaded": [], "failed": {"backend": "unload unavailable"},
+                                    }
+                                response["runtime_unload"] = runtime_unload
+                                components = {
+                                    "embeddings": getattr(APP, "embeddings", None),
+                                    "reranker": getattr(APP, "reranker", None),
+                                }
+                                accelerator_release: dict[str, Any] = {
+                                    "success": True, "verified": True, "released": [], "failed": {},
+                                }
+                                release_deadline = time.monotonic() + 3.0
+                                for name, component in components.items():
+                                    status_fn = getattr(component, "status", None)
+                                    release_fn = getattr(component, "release", None)
+                                    try:
+                                        before = status_fn() if callable(status_fn) else None
+                                        if not isinstance(before, dict):
+                                            raise RuntimeError("component status unavailable")
+                                        if not before.get("loaded") or str(before.get("active_backend", "")).lower() == "ollama":
+                                            continue
+                                        if not callable(release_fn):
+                                            raise RuntimeError("accelerator release unavailable")
+                                        timeout = max(0.0, release_deadline - time.monotonic())
+                                        if timeout <= 0.0 or not release_fn(timeout_seconds=timeout):
+                                            raise TimeoutError("accelerator release deadline reached")
+                                        after = status_fn()
+                                        if not isinstance(after, dict) or after.get("loaded"):
+                                            raise RuntimeError("accelerator release was not verified")
+                                        accelerator_release["released"].append(name)
+                                    except Exception as exc:
+                                        accelerator_release["success"] = False
+                                        accelerator_release["verified"] = False
+                                        accelerator_release["failed"][name] = type(exc).__name__
+                                response["accelerator_release"] = accelerator_release
+                        finally:
+                            if release_token is not None:
+                                async_jobs.end_resource_release(release_token)
+                                release_token = None
+            if cancellation_error:
+                response["job_cancellation"] = {"success": False, "error": cancellation_error}
+            elif mode in {"gaming", "maintenance"} and not callable(mode_changed):
+                response["job_cancellation"] = {
+                    "success": False, "error": "operational mode cancellation hook is unavailable",
+                }
+            self._send(200, response); return
         content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
         if path == "/api/bundle/import":
+            mode_rejection = _http_mode_gate_error("POST", path)
+            if mode_rejection is not None:
+                self._send(503, mode_rejection)
+                return
             if content_type not in {"application/zip", "application/octet-stream"}:
                 self._send(415, {"success": False, "error": "bundle import requires raw ZIP content"}); return
             try:
@@ -1965,18 +3037,38 @@ class Handler(BaseHTTPRequestHandler):
                 raw_bundle = self._read_body(limit=limit)
                 query = parse_qs(urlparse(self.path).query)
                 target_root = (query.get("target_root") or [None])[0]
+                if not self._claim_recovery(path, {
+                    "bundle_sha256": hashlib.sha256(raw_bundle).hexdigest(),
+                    "target_root": target_root,
+                }):
+                    return
                 self._send(200, APP.import_bundle(raw_bundle, target_root)); return
             except RequestBodyError as exc:
                 self._send(exc.status, {"success": False, "error": str(exc)}); return
+            except Exception:
+                self._send(500, {
+                    "success": False,
+                    "error": "bundle import failed; outcome may be partial",
+                    "outcome_unknown": True,
+                    "terminal": True,
+                    "retryable": False,
+                }); return
         try:
             payload = self._read_json()
             self._validate_payload(path, payload)
         except RequestBodyError as exc:
             self._send(exc.status, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+        mode_rejection = _http_mode_gate_error("POST", path, payload)
+        if mode_rejection is not None:
+            self._send(503, mode_rejection)
+            return
         if path == "/api/telemetry/tool-accounting":
             # Internal MCP reporter path: do not journal or recursively count this
-            # metadata transport as an agent workload/tool call.
+            # metadata transport as an agent workload/tool call. Journal request IDs
+            # so a lost response cannot duplicate an accepted batch.
             self._telemetry_finished = True
+            if getattr(APP, "recovery", None) is not None and not self._claim_recovery(path, payload):
+                return
             accepted = 0
             rejected = 0
             rejection_reasons: dict[str, int] = {}
@@ -1995,6 +3087,9 @@ class Handler(BaseHTTPRequestHandler):
                 "rejected": rejected,
                 "rejection_reasons": rejection_reasons,
             }); return
+        tenant = self._tenant()
+        if not self._claim_recovery(path, payload):
+            return
         self._request_evaluation = payload.get("evaluation")
         if path == "/api/conversations/continue" or (
             path in {"/api/delegate", "/api/reason"} and bool(payload.get("conversation", False))
@@ -2003,38 +3098,25 @@ class Handler(BaseHTTPRequestHandler):
         trace_store = getattr(APP, "debug_traces", None)
         api_trace_id = str(getattr(self, "_debug_trace_id", "") or "")
         if trace_store is not None and api_trace_id:
-            if not getattr(self, "_debug_trace_redacted", False):
-                captured_request = self._safe_debug_trace_request(payload)
-                trace_store.update(api_trace_id, state="running", request=captured_request)
-                trace_store.event(
-                    api_trace_id,
-                    "request_body_captured",
-                    {"content_type": content_type, "capture_status": captured_request.get("capture_status", "captured")},
-                )
-            trace_store.event(api_trace_id, "handler_started", {"action": path, "payload_keys": sorted(str(key) for key in payload)})
-        tenant = self._tenant()
-        self._journal_request_id = str(getattr(self, "_trace_request_id", ""))
-        self._journal_finished = False
+            try:
+                if not getattr(self, "_debug_trace_redacted", False):
+                    captured_request = self._safe_debug_trace_request(payload)
+                    trace_store.update(api_trace_id, state="running", request=captured_request)
+                    trace_store.event(
+                        api_trace_id,
+                        "request_body_captured",
+                        {"content_type": content_type, "capture_status": captured_request.get("capture_status", "captured")},
+                    )
+                trace_store.event(api_trace_id, "handler_started", {"action": path, "payload_keys": sorted(str(key) for key in payload)})
+            except Exception:
+                # Debug persistence is optional and must not strand a claimed request.
+                pass
         try:
-            prior = APP.recovery.lookup(self._journal_request_id, tenant, path)
-            if prior and prior.get("state") in {"done", "failed"} and prior.get("response") is not None:
-                self._journal_finished = True
-                self._send(int(prior.get("status_code") or (200 if prior.get("state") == "done" else 500)), prior["response"]); return
-            if prior and prior.get("state") == "running":
-                wait_seconds = min(2.0, max(0.05, float(APP.config.get("resilience", {}).get("singleflight_wait_timeout_seconds", 1.0))))
-                replay = APP.recovery.wait_for(self._journal_request_id, tenant, path, timeout_seconds=wait_seconds)
-                if replay and replay.get("state") in {"done", "failed"} and replay.get("response") is not None:
-                    self._journal_finished = True
-                    self._send(int(replay.get("status_code") or (200 if replay.get("state") == "done" else 500)), replay["response"]); return
-                self._journal_finished = True
-                self._send(409, {"success": False, "error": "request with this id is already running", "retryable": True, "in_progress": True, "retry_after_seconds": 1, "waited_seconds": wait_seconds}); return
-            if prior and prior.get("state") == "conflict":
-                self._journal_finished = True
-                self._send(409, {"success": False, "error": prior.get("error", "request id conflict")}); return
-            APP.recovery.begin(self._journal_request_id, tenant, path)
-        except Exception:
-            pass
-        try:
+            post_route_ids = select_http_routes("POST", path)
+            post_handler_name = select_post_handler(post_route_ids)
+            if post_handler_name is not None:
+                getattr(self, post_handler_name)(payload)
+                return
             if path == "/api/work-orders":
                 if not getattr(APP, "work_orchestrator", None) or not APP.work_orchestrator.enabled:
                     self._send(403, {"success": False, "unsupported": True, "error": "work orchestrator is disabled", "terminal": True}); return
@@ -2173,13 +3255,23 @@ class Handler(BaseHTTPRequestHandler):
             if delivery is not None:
                 self._send(*delivery); return
             if path == "/api/delegate":
+                if bool(payload.get("conversation", False)):
+                    result = _invoke_cancellable_request(_ACTIVE_CONVERSATIONS, APP.services.delegate, payload, tenant)
+                    self._send(200, result); return
                 self._send(200, APP.services.delegate(payload, tenant)); return
             if path == "/api/conversations/continue":
-                self._send(200, APP.services.continue_conversation(payload, tenant)); return
+                result = _invoke_cancellable_request(_ACTIVE_CONVERSATIONS, APP.services.continue_conversation, payload, tenant)
+                self._send(200, result); return
             if path == "/api/async-jobs":
                 action = str(payload.get("action", "")).strip().lower().replace("-", "_")
                 if action == "submit":
-                    self._send(200, APP.async_jobs.submit(tenant, str(payload.get("job_action", "reason")), payload)); return
+                    if bool(payload.get("conversation", False)):
+                        self._send(400, {"success": False, "error": "conversations require delivery=sync", "terminal": True, "retryable": False}); return
+                    job_payload = dict(payload)
+                    supplied_request_id = self.headers.get("X-LocalAI-Request-ID")
+                    if supplied_request_id:
+                        job_payload["request_id"] = supplied_request_id
+                    self._send(200, APP.async_jobs.submit(tenant, str(payload.get("job_action", "reason")), job_payload)); return
                 if action == "status":
                     self._send(200, APP.async_jobs.status(tenant, str(payload.get("job_id", "")))); return
                 if action == "wait":
@@ -2286,6 +3378,10 @@ class Handler(BaseHTTPRequestHandler):
                         target_status = TaskStatus(target_status_str)
                     except ValueError:
                         self._send(400, {"success": False, "error": f"invalid status {target_status_str}", "terminal": True, "retryable": False}); return
+                    checkpoint_data = payload.get("checkpoint")
+                    if checkpoint_data is not None and not isinstance(checkpoint_data, dict):
+                        self._send(400, {"success": False, "error": "checkpoint must be an object", "terminal": True, "retryable": False}); return
+                    checkpoint = TaskCheckpoint.from_dict(checkpoint_data) if checkpoint_data is not None else None
                     try:
                         task = APP.agent_tasks.transition(
                             str(payload.get("task_id", "")),
@@ -2293,14 +3389,49 @@ class Handler(BaseHTTPRequestHandler):
                             reason=str(payload.get("reason", "")),
                             actor=actor,
                             idempotency_key=idempotency_key,
+                            checkpoint=checkpoint,
                         )
                         self._send(200, {"success": True, "task": task.to_dict()}); return
                     except (KeyError, InvalidTransitionError, CompletionGateError) as exc:
                         self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                 if action == "complete":
                     try:
-                        task = APP.agent_tasks.complete(
-                            str(payload.get("task_id", "")),
+                        task_id = str(payload.get("task_id", ""))
+                        task_state = APP.agent_tasks.get(task_id)
+                        if task_state is None:
+                            raise KeyError(f"Task {task_id} not found")
+                        task_context = getattr(task_state, "context", None)
+                        root = str(
+                            payload.get("root")
+                            or getattr(task_context, "repository_id", "")
+                            or ""
+                        ).strip()
+                        verification_store = getattr(APP, "agent_verification", None)
+                        if verification_store is None:
+                            raise CompletionGateError("completion verification store unavailable")
+                        if not root:
+                            self._send(400, {
+                                "success": False,
+                                "error": "project root is required for task completion verification",
+                                "terminal": True,
+                                "retryable": False,
+                            }); return
+                        current_revision, revision_stop = _completion_revision_or_stop(
+                            root,
+                            getattr(APP, "repo_tools", None),
+                            getattr(APP, "repo_state", None),
+                        )
+                        if revision_stop:
+                            self._send(409, revision_stop); return
+                        from .verification_rules import complete_task_with_project_rules
+
+                        task = complete_task_with_project_rules(
+                            APP.agent_tasks,
+                            verification_store,
+                            task_id,
+                            root=root,
+                            state_dir=verification_store.state_store.db_path.parent,
+                            current_revision=current_revision,
                             reason=str(payload.get("reason", payload.get("value", "completed by agent"))),
                             actor=actor,
                             idempotency_key=idempotency_key,
@@ -2341,6 +3472,8 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(200, {"success": True, "task": task.to_dict()}); return
                     except KeyError as exc:
                         self._send(404, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+                    except CompletionGateError as exc:
+                        self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                 if action == "rollback":
                     try:
                         task = APP.agent_tasks.rollback(
@@ -2390,7 +3523,7 @@ class Handler(BaseHTTPRequestHandler):
                 if action in {"cleanup_worktree", "task_cleanup_worktree"}:
                     t_id = str(payload.get("task_id", ""))
                     del_br = bool(payload.get("delete_branch", True))
-                    self._send(200, APP.agent_tasks.cleanup_worktree(t_id, delete_branch=del_br)); return
+                    self._send(200, APP.agent_tasks.cleanup_worktree(t_id, delete_branch=del_br, actor=self._agent())); return
                 if action in {"reap_expired", "zombie_reap", "recover_zombie_tasks"}:
                     auto_rec = bool(payload.get("auto_recover", False))
                     reaped = APP.agent_tasks.reap_expired_heartbeats(auto_recover=auto_rec)
@@ -2404,8 +3537,24 @@ class Handler(BaseHTTPRequestHandler):
                             pass
                     limit = int(payload.get("limit", 100))
                     include_stale = bool(payload.get("include_stale", False))
-                    tasks = APP.agent_tasks.list_tasks(status=status_filter, limit=limit, include_stale=include_stale)
-                    self._send(200, {"success": True, "tasks": [t.to_dict() for t in tasks]}); return
+                    task_query = payload.get("query")
+                    if task_query is not None and not isinstance(task_query, str):
+                        self._send(400, {
+                            "success": False,
+                            "error": "query must be a string",
+                            "terminal": True,
+                            "retryable": False,
+                        }); return
+                    tasks = APP.agent_tasks.list_tasks(
+                        status=status_filter,
+                        limit=limit,
+                        include_stale=include_stale,
+                        query=task_query,
+                    )
+                    response = {"success": True, "tasks": [t.to_dict() for t in tasks]}
+                    if getattr(tasks, "query_truncated", False):
+                        response["query_truncated"] = True
+                    self._send(200, response); return
                 self._send(400, {"success": False, "error": f"unknown task action '{action}'", "terminal": True, "retryable": False}); return
             if path == "/api/agent-state/memory":
                 if not getattr(APP, "agent_memory", None) or not APP.agent_memory.state_store.enabled:
@@ -2442,12 +3591,19 @@ class Handler(BaseHTTPRequestHandler):
                             kind_val = MemoryKind.FACT
                         raw_scope = str(rec_data.get("scope") or "").lower()
                         requested_scope = _parse_memory_scope(raw_scope)
+                        provenance = dict(rec_data.get("provenance") or {})
+                        requested_root = payload.get("root") or rec_data.get("root") or provenance.get("root")
+                        project_identity = self._memory_project_identity(requested_root)
+                        if requested_root and project_identity is None:
+                            self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
+                        root_val, repository_id_val = project_identity or (None, None)
+                        tenant_val = self._tenant()
                         scope_val, resolved_scope_id, ambiguous_scope = _resolve_memory_scope(
                             requested_scope,
                             scope_id=rec_data.get("scope_id") or payload.get("scope_id"),
-                            root=payload.get("root") or rec_data.get("root"),
-                            repository_id=payload.get("repository_id") or rec_data.get("repository_id"),
-                            tenant=payload.get("tenant") or rec_data.get("tenant"),
+                            root=root_val,
+                            repository_id=repository_id_val,
+                            tenant=tenant_val,
                             task_id=payload.get("task_id") or rec_data.get("task_id"),
                             session_id=payload.get("session_id") or rec_data.get("session_id"),
                             clone_id=payload.get("clone_id") or rec_data.get("clone_id"),
@@ -2468,10 +3624,26 @@ class Handler(BaseHTTPRequestHandler):
                         record_ttl = rec_data.get("ttl_seconds", payload.get("ttl_seconds"))
                         if record_expiry is None and record_ttl is not None and float(record_ttl) > 0:
                             record_expiry = time.time() + float(record_ttl)
-                        provenance = dict(rec_data.get("provenance") or {})
+                        reserved_identity = {"root", "repository_id", "tenant"}
+                        discarded_identity_fields = sorted(
+                            identity_key
+                            for identity_key in reserved_identity
+                            if identity_key in payload
+                            or identity_key in rec_data
+                            or identity_key in provenance
+                        )
+                        for identity_key in reserved_identity:
+                            provenance.pop(identity_key, None)
+                        provenance.pop("discarded_identity_fields", None)
+                        if root_val:
+                            provenance["root"] = root_val
+                        if repository_id_val:
+                            provenance["repository_id"] = repository_id_val
+                        provenance["tenant"] = tenant_val
+                        if discarded_identity_fields:
+                            provenance["discarded_identity_fields"] = discarded_identity_fields
                         for identity_key in (
-                            "root", "repository_id", "tenant", "task_id", "session_id",
-                            "clone_id", "worktree_id", "branch",
+                            "task_id", "session_id", "clone_id", "worktree_id", "branch",
                         ):
                             identity_value = payload.get(identity_key) or rec_data.get(identity_key)
                             if identity_value not in (None, ""):
@@ -2498,9 +3670,12 @@ class Handler(BaseHTTPRequestHandler):
                     scope_raw = payload.get("scope")
                     scope_val = _parse_memory_scope(scope_raw)
                     scope_id_val = payload.get("scope_id")
-                    root_val = payload.get("root")
-                    repository_id_val = payload.get("repository_id")
-                    tenant_val = payload.get("tenant")
+                    requested_root = payload.get("root")
+                    project_identity = self._memory_project_identity(requested_root)
+                    if requested_root and project_identity is None:
+                        self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
+                    root_val, repository_id_val = project_identity or (None, None)
+                    tenant_val = self._tenant()
                     task_id_val = payload.get("task_id")
                     session_id_val = payload.get("session_id")
                     clone_id_val = payload.get("clone_id")
@@ -2542,7 +3717,42 @@ class Handler(BaseHTTPRequestHandler):
                     record_id_val = str(payload.get("record_id", "")).strip()
                     if not record_id_val:
                         self._send(400, {"success": False, "error": "memory delete requires record_id", "terminal": True, "retryable": False}); return
-                    deleted = APP.agent_memory.delete(record_id_val)
+                    requested_root = payload.get("root")
+                    project_identity = self._memory_project_identity(requested_root)
+                    if requested_root and project_identity is None:
+                        self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
+                    root_val, repository_id_val = project_identity or (None, None)
+                    requested_scope = _parse_memory_scope(payload.get("scope"))
+                    tenant_val = None if requested_scope is AgentScope.GLOBAL else self._tenant()
+                    scope_val, scope_id_val, ambiguous_scope = _resolve_memory_scope(
+                        requested_scope,
+                        scope_id=payload.get("scope_id"),
+                        root=root_val,
+                        repository_id=repository_id_val,
+                        tenant=tenant_val,
+                        task_id=payload.get("task_id"),
+                        session_id=payload.get("session_id"),
+                        clone_id=payload.get("clone_id"),
+                        worktree_id=payload.get("worktree_id"),
+                        branch=payload.get("branch"),
+                    )
+                    if ambiguous_scope:
+                        self._send(400, {"success": False, "error": "ambiguous memory scope identity", "terminal": True, "retryable": False}); return
+                    if scope_val is None:
+                        self._send(400, {"success": False, "error": "memory delete requires an explicit scope identity", "terminal": True, "retryable": False}); return
+                    deleted = APP.agent_memory.delete(
+                        record_id_val,
+                        scope=scope_val,
+                        scope_id=str(scope_id_val) if scope_id_val is not None else None,
+                        root=str(root_val or "") or None,
+                        repository_id=str(repository_id_val or "") or None,
+                        tenant=str(tenant_val or "") or None,
+                        task_id=str(payload.get("task_id") or "") or None,
+                        session_id=str(payload.get("session_id") or "") or None,
+                        clone_id=str(payload.get("clone_id") or "") or None,
+                        worktree_id=str(payload.get("worktree_id") or "") or None,
+                        branch=str(payload.get("branch") or "") or None,
+                    )
                     self._send(200 if deleted else 404, {
                         "success": bool(deleted),
                         "deleted": bool(deleted),
@@ -2556,9 +3766,12 @@ class Handler(BaseHTTPRequestHandler):
                     status_val = MemoryStatus(str(payload["status"])) if payload.get("status") else None
                     limit_val = _memory_query_limit(payload.get("limit", 100))
                     scope_id_val = payload.get("scope_id")
-                    root_val = payload.get("root")
-                    repository_id_val = payload.get("repository_id")
-                    tenant_val = payload.get("tenant")
+                    requested_root = payload.get("root")
+                    project_identity = self._memory_project_identity(requested_root)
+                    if requested_root and project_identity is None:
+                        self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
+                    root_val, repository_id_val = project_identity or (None, None)
+                    tenant_val = self._tenant()
                     task_id_val = payload.get("task_id")
                     session_id_val = payload.get("session_id")
                     clone_id_val = payload.get("clone_id")
@@ -3129,7 +4342,7 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/resolve_imports":
                 root = str(payload.get("root", "."))
-                lang = str(payload.get("language", "csharp"))
+                lang = str(payload.get("language", "auto"))
                 syms = payload.get("symbols", [payload.get("symbol")] if payload.get("symbol") else [])
                 if APP.deterministic is not None:
                     self._send(200, APP.services.resolve_imports(root, syms, lang))
@@ -3467,27 +4680,88 @@ class Handler(BaseHTTPRequestHandler):
                     int(payload.get("top_k", 12)),
                     context_lines=int(payload["context_lines"]) if payload.get("context_lines") is not None else None,
                     enrich=bool(payload.get("enrich", False)),
+                    path_hints=payload.get("path_hints"),
                 )); return
             if path == "/api/context/pack":
                 root = str(payload.get("root", ".")); query_text = str(payload.get("query", ""))
-                raw_max_tokens = payload.get("max_tokens", APP.config.get("token_saving", {}).get("default_repo_context_tokens", 4200))
-                if isinstance(raw_max_tokens, bool):
+                configured_tokens = APP.config.get("token_saving", {}).get("default_repo_context_tokens", 8000)
+                raw_max_tokens = payload.get("max_tokens", payload.get("token_budget", configured_tokens))
+                raw_token_budget = payload.get("token_budget")
+                if isinstance(raw_max_tokens, bool) or not isinstance(raw_max_tokens, int):
                     self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "max_tokens must be an integer"}); return
-                try:
-                    max_tokens = int(raw_max_tokens)
-                except (TypeError, ValueError, OverflowError):
-                    self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "max_tokens must be an integer"}); return
-                if max_tokens < 0:
+                if raw_token_budget is not None:
+                    if isinstance(raw_token_budget, bool) or not isinstance(raw_token_budget, int):
+                        self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "token_budget must be an integer"}); return
+                    if raw_max_tokens and raw_token_budget and raw_max_tokens != raw_token_budget:
+                        self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "token_budget and max_tokens must match when both are provided"}); return
+                    raw_max_tokens = raw_token_budget or raw_max_tokens
+                if raw_max_tokens < 0:
                     self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "max_tokens must be non-negative"}); return
+                if raw_max_tokens and not 128 <= raw_max_tokens <= 20_000:
+                    self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "max_tokens must be 0 or between 128 and 20000"}); return
+                max_tokens = raw_max_tokens or max(128, min(int(configured_tokens or 8000), 20_000))
                 mode = str(payload.get("mode", "adaptive")).strip().lower()
                 if mode not in {"full", "fast", "adaptive"}:
                     self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "context mode must be adaptive, full or fast"}); return
+                if "project_config_digest" in payload:
+                    self._send(400, {
+                        "success": False, "terminal": True, "retryable": False,
+                        "error": "project_config_digest is server-resolved",
+                    }); return
+                path_control_fields = ("path_hints", "directory_hints", "exclude_paths", "force_include_paths")
+                path_controls_requested = any(field in payload for field in path_control_fields)
+                path_controls = None
+                project_config_digest = ""
+                if path_controls_requested:
+                    if mode != "adaptive":
+                        self._send(400, {
+                            "success": False, "terminal": True, "retryable": False,
+                            "error": "path controls require adaptive context mode",
+                        }); return
+                    for field in path_control_fields:
+                        if payload.get(field) is not None and not isinstance(payload.get(field), list):
+                            self._send(400, {
+                                "success": False, "terminal": True, "retryable": False,
+                                "error": f"{field} must be a list",
+                            }); return
+                    from .project_config import resolve_project_context
+                    from .state_paths import configured_state_dir
+                    project_config_digest = resolve_project_context(
+                        root, configured_state_dir(APP.config, create=False)
+                    ).config_digest
+                    from .agent_consistency import ConsistencyRequest
+                    try:
+                        path_controls = ConsistencyRequest(
+                            root=root,
+                            path_hints=payload.get("path_hints") or (),
+                            directory_hints=payload.get("directory_hints") or (),
+                            exclude_paths=payload.get("exclude_paths") or (),
+                            force_include_paths=payload.get("force_include_paths") or (),
+                            project_config_digest=project_config_digest,
+                        )
+                    except (TypeError, ValueError) as exc:
+                        self._send(400, {
+                            "success": False, "terminal": True, "retryable": False,
+                            "error": str(exc),
+                        }); return
                 guarded = payload.get("guarded", False)
                 if not isinstance(guarded, bool):
                     self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "guarded must be boolean"}); return
-                guarded_requested = bool(guarded) or bool(str(payload.get("task_id", "")).strip()) or bool(str(payload.get("phase", "")).strip()) or bool(str(payload.get("session_id", "")).strip())
+                guarded_requested = (
+                    bool(guarded) or bool(str(payload.get("task_id", "")).strip())
+                    or bool(str(payload.get("phase", "")).strip())
+                    or bool(str(payload.get("session_id", "")).strip())
+                    or any(bool(str(payload.get(field, "")).strip()) for field in (
+                        "clone_id", "worktree_id", "branch", "repository_id", "repository_revision",
+                    ))
+                    or bool(payload.get("include_diagnostics", False))
+                )
                 if not guarded_requested:
-                    guard_fields = ("focus", "preload_profile", "changed_paths", "base", "staged", "since_hash", "approval", "override_reason", "token_budget", "session_id")
+                    guard_fields = (
+                        "focus", "preload_profile", "changed_paths", "base", "staged", "since_hash",
+                        "approval", "override_reason", "token_budget", "session_id", "clone_id",
+                        "worktree_id", "branch", "repository_id", "repository_revision", "include_diagnostics",
+                    )
                     unexpected = next((field for field in guard_fields if field in payload), None)
                     if unexpected is not None:
                         self._send(400, {"success": False, "terminal": True, "retryable": False, "error": f"guard-related fields require guarded=true, task_id, or phase: {unexpected}"}); return
@@ -3496,11 +4770,22 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "focus must be a list"}); return
                     if payload.get("changed_paths") is not None and not isinstance(payload.get("changed_paths"), list):
                         self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "changed_paths must be a list"}); return
+                    for field, limit in (("focus", 16), ("changed_paths", 64)):
+                        values = payload.get(field)
+                        if values is not None and len(values) > limit:
+                            self._send(400, {"success": False, "terminal": True, "retryable": False, "error": f"{field} exceeds maximum of {limit} items"}); return
+                        if values is not None and any(not isinstance(item, str) for item in values):
+                            self._send(400, {"success": False, "terminal": True, "retryable": False, "error": f"{field} items must be strings"}); return
                     if payload.get("staged") is not None and not isinstance(payload.get("staged"), bool):
                         self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "staged must be boolean"}); return
                     for field in ("task_id", "session_id", "phase", "query", "preload_profile", "base", "since_hash", "override_reason"):
                         if payload.get(field) is not None and not isinstance(payload.get(field), str):
                             self._send(400, {"success": False, "terminal": True, "retryable": False, "error": f"{field} must be string"}); return
+                    for field in ("clone_id", "worktree_id", "branch", "repository_id", "repository_revision"):
+                        if payload.get(field) is not None and not isinstance(payload.get(field), str):
+                            self._send(400, {"success": False, "terminal": True, "retryable": False, "error": f"{field} must be string"}); return
+                    if payload.get("include_diagnostics") is not None and not isinstance(payload.get("include_diagnostics"), bool):
+                        self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "include_diagnostics must be boolean"}); return
                     from .agent_consistency import ConsistencyRequest, normalize_context_phase
                     try:
                         phase = normalize_context_phase(payload.get("phase", ""))
@@ -3530,16 +4815,32 @@ class Handler(BaseHTTPRequestHandler):
                         tenant=tenant,
                         override_reason=str(payload.get("override_reason", "")),
                         approval=approval,
+                        path_hints=path_controls.path_hints if path_controls else (),
+                        directory_hints=path_controls.directory_hints if path_controls else (),
+                        exclude_paths=path_controls.exclude_paths if path_controls else (),
+                        force_include_paths=path_controls.force_include_paths if path_controls else (),
+                        project_config_digest=project_config_digest,
                     )
-                    result = APP.services.adaptive_context_pack(
-                        request,
-                        mode=mode,
-                        since_hash=str(payload.get("since_hash", "")),
-                    )
-                    if isinstance(result, dict) and result.get("success") is False:
+                    has_task_id = bool(str(payload.get("task_id", "")).strip())
+                    try:
+                        result = APP.services.adaptive_context_pack(
+                            request,
+                            mode=mode,
+                            since_hash=str(payload.get("since_hash", "")),
+                        )
+                    except Exception as exc:
+                        result = {
+                            "success": False,
+                            "terminal": False,
+                            "retryable": True,
+                            "degraded": True,
+                            "degraded_reason": "repository_context_unavailable",
+                            "error": f"repository context unavailable: {type(exc).__name__}",
+                        }
+                    repository_failed = isinstance(result, dict) and result.get("success") is False
+                    if repository_failed and not (guarded_requested and has_task_id):
                         status_code = 503 if result.get("retryable") is True else 500
                         self._send(status_code, result); return
-                    has_task_id = bool(str(payload.get("task_id", "")).strip())
                     if guarded_requested and has_task_id and not getattr(APP, "agent_context", None):
                         self._send(503, {
                             "success": False, "terminal": False, "retryable": True,
@@ -3558,7 +4859,12 @@ class Handler(BaseHTTPRequestHandler):
                             "changed_paths": payload.get("changed_paths") or [],
                             "repository_revision": payload.get("repository_revision", payload.get("repo_revision", "")),
                             "since_hash": payload.get("task_since_hash", ""),
-                        }, tenant=tenant)
+                            "clone_id": payload.get("clone_id", ""),
+                            "worktree_id": payload.get("worktree_id", ""),
+                            "branch": payload.get("branch", ""),
+                            "repository_id": payload.get("repository_id", ""),
+                            "include_diagnostics": payload.get("include_diagnostics", False),
+                        }, tenant=tenant, identity=self._agent())
                         try:
                             compiled = APP.agent_context.compile(task_request)
                             unified = compose_task_context(
@@ -3595,10 +4901,24 @@ class Handler(BaseHTTPRequestHandler):
                             result["task_context"] = unified
                             result["task_context_id"] = unified["context_id"]
                     self._send(200, result); return
-                result = APP.services.fast_context(root, query_text, max_tokens) if mode == "fast" else APP.services._hybrid_context(
-                    root, query_text, tenant, payload.get("workspace"), max_tokens,
-                    quality_first=mode == "adaptive",
-                )
+                if mode == "fast":
+                    result = APP.services.fast_context(root, query_text, max_tokens)
+                else:
+                    result = APP.services._hybrid_context(
+                        root, query_text, tenant, payload.get("workspace"), max_tokens,
+                        quality_first=mode == "adaptive",
+                        context_identity={
+                            "path_hints": path_controls.path_hints if path_controls else (),
+                            "directory_hints": path_controls.directory_hints if path_controls else (),
+                            "exclude_paths": path_controls.exclude_paths if path_controls else (),
+                            "force_include_paths": path_controls.force_include_paths if path_controls else (),
+                            "project_config_digest": project_config_digest,
+                        },
+                        path_hints=path_controls.path_hints if path_controls else (),
+                        directory_hints=path_controls.directory_hints if path_controls else (),
+                        exclude_paths=path_controls.exclude_paths if path_controls else (),
+                        force_include_paths=path_controls.force_include_paths if path_controls else (),
+                    )
                 if isinstance(result, dict):
                     result["delivery_mode"] = mode
                 self._send(200, result); return
@@ -3616,7 +4936,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, APP.evidence.get(str(payload.get("evidence_id", "")), verify=bool(payload.get("verify", True)))); return
             if path in ("/api/leases/claim", "/api/leases/claim_batch"):
                 paths = payload.get("paths", [])
-                self._send(200, APP.leases.claim_batch(tenant, str(payload.get("root", ".")), [str(x) for x in paths] if isinstance(paths, list) else [], int(payload.get("ttl_seconds", 900)), str(payload.get("purpose", "agent edit")))); return
+                root = str(payload.get("root", "."))
+                coordination_id = _lease_coordination_id(root)
+                self._send(200, APP.leases.claim_batch(tenant, root, [str(x) for x in paths] if isinstance(paths, list) else [], int(payload.get("ttl_seconds", 900)), str(payload.get("purpose", "agent edit")), coordination_id=coordination_id)); return
             if path == "/api/leases/release":
                 self._send(200, APP.leases.release(tenant, str(payload.get("lease_id", "")))); return
             if path == "/api/leases/renew":
@@ -3633,7 +4955,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/memory/delete":
                 self._send(200, APP.memory.delete(str(payload.get("root", ".")), str(payload.get("key", "")), tenant)); return
             if path == "/api/command":
-                self._send(200, APP.services.command(payload, tenant)); return
+                result = APP.services.command(payload, tenant)
+                status = 409 if isinstance(result, dict) and result.get("outcome_unknown") is True else 200
+                self._send(status, result); return
             if path == "/api/embed":
                 texts = payload.get("texts", payload.get("input", []))
                 if isinstance(texts, str):
@@ -3719,11 +5043,27 @@ class Handler(BaseHTTPRequestHandler):
                 query = str(payload.get("query", ""))
                 top_k = int(payload.get("top_k", 8))
                 self._send(200, APP.rag.docset_search(name, query, tenant, top_k=top_k)); return
-            if path == "/api/telemetry/timeline":
-                limit = int(payload.get("limit", 100)) if isinstance(payload, dict) else 100
-                self._send(200, {"success": True, "timeline": APP.telemetry.get_timeline(limit)}); return
             if path in {"/api/task/transcribe", "/api/transcribe"}:
-                self._send(200, APP.services.transcribe(payload, tenant)); return
+                from .process_utils import ProcessCleanupUnverifiedError
+                token, cancel_event = _ACTIVE_TRANSCRIPTIONS.begin()
+                result: Any = {}
+                cleanup_deferred = False
+                try:
+                    result = APP.services.transcribe(payload, tenant, cancel_event=cancel_event)
+                    self._send(200, result); return
+                except ProcessCleanupUnverifiedError as exc:
+                    cleanup_deferred = True
+                    result = {
+                        "success": False, "reason": "cleanup_unverified", "error": str(exc),
+                        "terminal": False, "retryable": True, "cleanup_unverified": True,
+                    }
+                    _ACTIVE_TRANSCRIPTIONS.defer_process_cleanup(
+                        token, exc.process, tree_termination_confirmed=exc.tree_termination_confirmed,
+                    )
+                    self._send(503, result); return
+                finally:
+                    if not cleanup_deferred:
+                        _ACTIVE_TRANSCRIPTIONS.finish(token, result)
             if path in {"/api/repo/code_invariants", "/api/code_invariants"}:
                 self._send(200, APP.services.code_invariants(str(payload.get("root", ".")), payload.get("path"))); return
             if path in {"/api/repo/generate_dataset", "/api/generate_dataset"}:
@@ -3733,7 +5073,7 @@ class Handler(BaseHTTPRequestHandler):
             if path in {"/api/coord/worktree_lease", "/api/worktree_lease"}:
                 self._send(200, APP.services.worktree_lease(str(payload.get("root", ".")), branch_name=payload.get("branch"))); return
             if path in {"/api/coord/worktree_release", "/api/worktree_release"}:
-                self._send(200, APP.services.worktree_release(str(payload.get("root", ".")), str(payload.get("worktree_path", "")), delete_branch=bool(payload.get("delete_branch", True)), branch_name=payload.get("branch"))); return
+                self._send(200, APP.services.worktree_release(str(payload.get("root", ".")), str(payload.get("worktree_path", "")), delete_branch=bool(payload.get("delete_branch", True)), branch_name=payload.get("branch"), worktree_id=str(payload.get("worktree_id", "")))); return
             if path in {"/api/coord/worktrees", "/api/worktrees"}:
                 self._send(200, APP.services.list_worktrees(str(payload.get("root", ".")))); return
             if path in {"/api/coord/worktree_prune", "/api/worktree_prune"}:
@@ -3744,7 +5084,7 @@ class Handler(BaseHTTPRequestHandler):
                 if act == "spawn":
                     self._send(200, APP.services.spawn_daemon(str(payload.get("command", "")), str(payload.get("cwd", ".")), name=str(payload.get("name", "")), env=payload.get("env"))); return
                 elif act == "stop":
-                    self._send(200, APP.services.stop_daemon(str(payload.get("daemon_id", "")))); return
+                    self._send(200, APP.services.stop_daemon(str(payload.get("daemon_id", "")), task_id=str(payload.get("task_id", "")))); return
                 else:
                     self._send(200, APP.services.daemon_status(payload.get("daemon_id"))); return
             if path in {"/api/command/lint_fix", "/api/lint_fix"}:
