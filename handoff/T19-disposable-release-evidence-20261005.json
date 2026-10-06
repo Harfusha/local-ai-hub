@@ -1,0 +1,75 @@
+{
+  "date": "2026-10-05",
+  "scope": "Disposable candidate artifact/install/SDK evidence; not release approval",
+  "candidate": {
+    "root": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub",
+    "head": "2b33602adef0d030fea66cdcc04ca742c60b2e32",
+    "dirty_entries_all": 320,
+    "production_release_approved": false
+  },
+  "builder": {
+    "path": null,
+    "python": "3.13",
+    "setuptools": "84.0.0",
+    "wheel": "0.48.0",
+    "pip": "24.3.1",
+    "scratch": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t19-release-evidence-bcd449e3c0ea4fd280af2e7c430973d5",
+    "dependency_command": "python.exe -B -m pip install --isolated --disable-pip-version-check --no-input --quiet \"setuptools>=75\" wheel",
+    "dependency_install_exit_code": 0
+  },
+  "artifact_smoke": {
+    "command": "builder-venv\\Scripts\\python.exe -B tests/test_t19_packaged_sdk_smoke.py",
+    "exit_code": 0,
+    "result": "4 unittest cases passed",
+    "package_receipt": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t19-release-evidence-bcd449e3c0ea4fd280af2e7c430973d5\\t19-packaged-sdk-8eo5e8h4\\receipt.json",
+    "package_receipt_sha256": "a6caa93bf43877f282133df8ef952bd6859551fe429d1d3b2dee5014925328aa",
+    "status": "passed",
+    "source_snapshot_sha256": "0781a9ea9585431d9288a73e1180da8be9412525bd5fbc1ec9aebff9381a77ad",
+    "version": "4.0.0",
+    "sdist_sha256": "df6a782dc3199969b94dacfee550d95452969c1b36e79425192a7a668be4f29f",
+    "sdist_path": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t19-release-evidence-bcd449e3c0ea4fd280af2e7c430973d5\\t19-packaged-sdk-8eo5e8h4\\dist\\local_ai_hub-4.0.0.tar.gz",
+    "wheel_sha256": "97415c81e511767fac292e3ce2ebc30344385902435aefbd069978f2c693e96e",
+    "wheel_path": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t19-release-evidence-bcd449e3c0ea4fd280af2e7c430973d5\\t19-packaged-sdk-8eo5e8h4\\dist\\local_ai_hub-4.0.0-py3-none-any.whl",
+    "wheel_built_from_sdist": "df6a782dc3199969b94dacfee550d95452969c1b36e79425192a7a668be4f29f",
+    "installed_version": "4.0.0",
+    "forbidden_events": [],
+    "production_release_approved": false
+  },
+  "docs_sdist": {
+    "command": "Python tarfile byte-compare of docs/INSTALL_PROMPT.md, docs/UPDATE_PROMPT.md, docs/PYTHON_SDK.md against current candidate",
+    "exit_code": 0,
+    "all_three_byte_match": true,
+    "hashes": {
+      "install": "3f953083bfa668f78c62f9e3b216a8672d46f92bfb6f36604dc5b15fe0b4fe5e",
+      "update": "e163c2a146ce4156465ca0bfa59d54d655422c910292efe4f6c3c95fbffe9e03",
+      "sdk": "424b6208a5fc263401d0104128a431d203fd48cd00a36ad12114cc9d042cc250"
+    }
+  },
+  "installer_source_acceptance": {
+    "suite_result": "59 passed, 2 skipped, 3 subtests passed, exit 0",
+    "receipt": "handoff/T19-release-owner-packet-20261005.json",
+    "scope": "install/update contracts, revision pin checks, profile parity, SDK docs/wrappers/scenarios, packaging, rollback, doctor, config isolation, MCP handshake, clean profile, shared daemon"
+  },
+  "prompt_semantic_sync": {
+    "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t19_prompt_profile_parity.py tests/test_t19_project_config_prompts.py tests/test_t19_current_prompt_adoption.py",
+    "exit_code": 1,
+    "result": "18 passed, 2 failed",
+    "mismatch": "Both install/update prompts miss test phrase: HubClient.post forwards typed hints to /api/search and /api/command.",
+    "source_conflict": "src/local_ai_hub/generator.py:26 says HubClient.post forwards typed hints only to /api/search and strips them from /api/command; it also says /api/context/pack does not accept/use hints. T14 owns /api/context/pack; no route/docs edit made."
+  },
+  "host_acceptance": {
+    "status": "NOT_RUN",
+    "reason": "Dirty candidate is not T20 frozen release source; no T20 sdist receipt or disposable-host slot. No install into user machine, service, or root writes."
+  },
+  "files_sha256": {
+    "docs/INSTALL_PROMPT.md": "3f953083bfa668f78c62f9e3b216a8672d46f92bfb6f36604dc5b15fe0b4fe5e",
+    "docs/UPDATE_PROMPT.md": "e163c2a146ce4156465ca0bfa59d54d655422c910292efe4f6c3c95fbffe9e03",
+    "docs/PYTHON_SDK.md": "424b6208a5fc263401d0104128a431d203fd48cd00a36ad12114cc9d042cc250",
+    "src/local_ai_hub/generator.py": "0358a5f3be0815a60592e35fe28509b280a8863b24a6a0a7d9d361e2fb694515",
+    "tests/test_t19_current_prompt_adoption.py": "415ecca5fceb919bc649576f4a3204ffdb801977f20330add46a75fe2e3c97ef",
+    "install.ps1": "7bf18ec28db8a18baf6acc399253ecce9c1ebd980418127d6e48a018cafff0c8",
+    "install.sh": "7cefccc3875039b20106cf7e7397296469414492c9eafda70b309528e40f1bb4",
+    "tests/test_t19_install_contracts.py": "a17619d158dddfd1d663c133b5bd82e126b6c5f15fc3201f6877fb72eaf072a2",
+    "tests/test_t19_verified_install_flow.py": "855c3d092ddccff5e791652f53b6900813d733e5cd9a4dec65f88bf6abf58a38"
+  }
+}

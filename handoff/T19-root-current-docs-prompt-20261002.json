@@ -1,0 +1,79 @@
+{
+  "date": "2026-10-02",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "candidate": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub",
+  "candidate_head": "2b33602adef0d030fea66cdcc04ca742c60b2e32",
+  "scope": [
+    "docs/INSTALLATION.md",
+    "docs/INSTALL_PROMPT.md",
+    "docs/UPDATE_PROMPT.md",
+    "docs/MODEL_CAPABILITIES.md"
+  ],
+  "patch": "T19-root-current-docs-prompt-20261002.patch",
+  "patch_sha256": "53851641f5fa14048ff52f5b26bd5a8822cf28e239b8755e8afce3f7ef6f52dc",
+  "root_writes": false,
+  "excluded_api_context_pack_changed": false,
+  "root_current_preimages": [
+    {
+      "path": "docs/INSTALLATION.md",
+      "root_sha256": "d2c3b909bf2e00d137c1ef73ccf1fb59cdd4089954cc63fd480d894f9044f607",
+      "candidate_sha256": "ec275e8ede2dbe8a24ed4f795ad9cba8a7815fd89e7790e08ab516cc7a3ede38",
+      "root_size": 5838,
+      "candidate_size": 6038
+    },
+    {
+      "path": "docs/INSTALL_PROMPT.md",
+      "root_sha256": "b7c683d483e1276f589ed7fdc8a7a9d863bcf7e37d7f547e728c0f4e80eebb35",
+      "candidate_sha256": "7bc6af155901d203680e9df6df88565648431a2f85928aab96f686d3177fddb3",
+      "root_size": 36376,
+      "candidate_size": 39358
+    },
+    {
+      "path": "docs/UPDATE_PROMPT.md",
+      "root_sha256": "900fc99c3938493e86b6e09f5f36b9a7d2e96156419f3453943ae0b2e6950466",
+      "candidate_sha256": "fe2de700d44db2852f336a54113f964398983d20649b263d3271c4fff3edcc03",
+      "root_size": 25353,
+      "candidate_size": 27960
+    },
+    {
+      "path": "docs/MODEL_CAPABILITIES.md",
+      "root_sha256": "4fbbdfb63dbf01902a5d23045c346a42c28440caf41ccf6057ff43f32db99f69",
+      "candidate_sha256": "09fe472497c3f8f5381ccfefb64b21ca4453c9110f55bb7c22f22bc313487617",
+      "root_size": 4055,
+      "candidate_size": 4132
+    }
+  ],
+  "root_revalidation": {
+    "date": "2026-10-02",
+    "root_head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+    "preimage_hashes_match": false,
+    "candidate_hashes_match": true,
+    "git_apply_check": "failed_stale_preimages_no_write",
+    "failure_paths": [
+      "docs/INSTALLATION.md",
+      "docs/INSTALL_PROMPT.md",
+      "docs/UPDATE_PROMPT.md",
+      "docs/MODEL_CAPABILITIES.md"
+    ],
+    "root_writes": false
+  },
+  "status": "superseded_after_T20_partial_root_integration",
+  "current_root_snapshot": {
+    "docs/INSTALLATION.md": "3802b4f60012f8e5c0eca12673f0d8273fc93e6edeafa03fd6af838b7dbf463d",
+    "docs/INSTALL_PROMPT.md": "340711aaa1f3100f5227e3acee900b497d3a5d30d228eda8418602e6c720bf6b",
+    "docs/UPDATE_PROMPT.md": "a0eb389f6b366f58ffaa98ed3c1d9317896bb9255d5c2d0906142a0ade0d0924",
+    "docs/MODEL_CAPABILITIES.md": "09fe472497c3f8f5381ccfefb64b21ca4453c9110f55bb7c22f22bc313487617"
+  },
+  "root_integration": {
+    "owner": "T20",
+    "integrated_paths": [
+      "docs/INSTALLATION.md",
+      "docs/MODEL_CAPABILITIES.md",
+      "docs/UPDATE_PROMPT.md"
+    ],
+    "pending_overlap": "docs/INSTALL_PROMPT.md",
+    "coordination": "T12 reports its prompt-policy hunks are present in root; T19 full prompt diff mixes T12 policy and T19 documentation hunks.",
+    "next_owner_action": "T20 refreshes remaining root-current prompt integration while preserving T12 policy."
+  }
+}

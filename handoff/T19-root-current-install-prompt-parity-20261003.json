@@ -1,0 +1,85 @@
+{
+  "date": "2026-10-03",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+  "scope": [
+    "docs/INSTALL_PROMPT.md",
+    "docs/UPDATE_PROMPT.md"
+  ],
+  "root_writes": false,
+  "docs": {
+    "docs/INSTALL_PROMPT.md": {
+      "preimage_sha256": "7e5da693aebdfe0bd2f025aa6176e75284701eb4b92fedf636e64a88d7c6573b",
+      "postimage_sha256_lf": "71431a647a718da855f80812de5720e64de8c4a1c493ad75e9dc07a6c4bb235b"
+    },
+    "docs/UPDATE_PROMPT.md": {
+      "preimage_sha256": "50ce34f25602653652235a8267e6ea2d85953bb6541c2ec66de7c40d22a31c97",
+      "postimage_sha256_lf": "22243ea5cec06fef572619be78bf2e3be60f851c4167ae64bd69c4f6f8c9bc65"
+    }
+  },
+  "source_client_sha256": "c2cdc6ef131d9134d39251b7597de84200dcd093118c9a2ec1ce863cb440d50d",
+  "patch_path": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\T19-root-current-install-prompt-parity-20261003.patch",
+  "patch_sha256": "d53c3d6d5e639b439af6725e33afafca005d4fae9b21024faebea9e52f4127b8",
+  "patch_bytes": 1617,
+  "change": "Adds two synchronized lines requiring a passing T04 transport gate before trusting request_not_sent; preserves non-replay rule for outcome_unknown.",
+  "context": "Root source exposes request_not_sent classification; T19 candidate does not, and its own prompts disclose missing T04 integration.",
+  "t13_note": "Root docs retain maintenance safe-job integration/verification blocker; generic safe job actions remain allowed by the mode helper, so blocker remains accurate.",
+  "codegraph_note": "Root config and installation docs already describe optional standalone CodeGraph; no config delta.",
+  "test_simulation": {
+    "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t19_verified_install_flow.py::test_revision_preflight_accepts_exact_clean_commit tests/test_t19_verified_install_flow.py::test_revision_preflight_rejects_wrong_commit tests/test_t19_verified_install_flow.py::test_revision_preflight_rejects_dirty_checkout tests/test_t19_verified_install_flow.py::test_service_bootstrap_reports_only_persistent_success tests/test_t19_install_contracts.py::test_dry_install_copy_keeps_portable_toml_version_models_policy_and_schemas tests/test_t19_install_contracts.py::test_agent_config_merge_is_idempotent_and_parses_every_supported_host tests/test_t19_codegraph_removal.py::test_optional_codegraph_docs_use_current_gcf_extra_without_hub_integration tests/test_t19_codegraph_removal.py::test_uninstall_preserves_standalone_codegraph_mcp_entry",
+    "result": "10 passed in 0.63s",
+    "exit": 0,
+    "scope": "Temporary pytest fixtures only; no actual host install, service start, or root writes."
+  },
+  "root_head_revalidated": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+  "patch_apply_check": {
+    "exit": 0,
+    "current_root": true,
+    "writes": false
+  },
+  "owner_candidate_inputs": {
+    "T03": {
+      "candidate": "C:/Users/Adam/.codex/worktrees/t03-contracts-resume/.local-ai-hub",
+      "head": "ad622f8a90a81e349e94d3402f297f2995e733b2",
+      "source_sha256": {
+        "config.toml.example": "47780f009eb1d0081f90dc8ed5f769cb246de42aa2e191b947d6ec6b79730e70",
+        "src/local_ai_hub/client.py": "e43ba99f5846c4a6ee9a4b92be15666d38f20ab12d0489b22208cb6792a19962"
+      }
+    },
+    "T04": {
+      "candidate": "C:/Users/Adam/.codex/worktrees/t04-integration/.local-ai-hub",
+      "head": "3658d5056354849ddf17883ed04f807f16cc44c1",
+      "source_sha256": {
+        "src/local_ai_hub/client.py": "c7c5ccbeec0e8e970aa13ccdc30ba8c452f8cf8deafd179ed4a83d4a103028e9"
+      }
+    },
+    "T13": {
+      "candidate": "C:/Users/Adam/.codex/worktrees/t13-operational-mode/.local-ai-hub",
+      "head": "6050c41ce5510a6de3eaeb674a180560ea404f24",
+      "source_sha256": {
+        "src/local_ai_hub/operational_mode.py": "4f065bd44116054929f788eb47958a8ec32d420fd889744aef5c52eed7188bf0"
+      }
+    }
+  },
+  "root_contract_verification": {
+    "T03_stdio_schema": {
+      "command": "tests/test_mcp_live_wire_schema.py::test_stdio_handshake_publishes_all_registry_input_and_output_schemas",
+      "result": "passed in combined selector; schema handshake test passed."
+    },
+    "T04_transport": {
+      "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_mcp_live_wire_schema.py::test_stdio_handshake_publishes_all_registry_input_and_output_schemas tests/test_t04_inprocess_transport_acceptance.py tests/test_mcp_task_mode_gate.py tests/test_operational_mode_http_gate.py tests/test_operational_mode.py::test_missing_mode_file_defaults_to_active tests/test_operational_mode.py::test_corrupt_mode_fails_closed_to_maintenance",
+      "result": "3 failed, 13 passed in 7.89s",
+      "failures": [
+        "test_inprocess_safe_request_retries_before_write_with_stable_request_id: _singleflight unexpected request_id argument",
+        "test_request_cancelled_before_send_preserves_id_and_skips_transport: _cancelled_response positional signature mismatch",
+        "test_cancelled_transport_after_possible_write_reports_unknown: transport not invoked"
+      ],
+      "release_effect": "T04 behavior not accepted; prompt patch instructs against relying on request_not_sent until pinned revision passes transport acceptance."
+    },
+    "T13_mode_and_schema": {
+      "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_mcp_task_mode_gate.py tests/test_operational_mode_http_gate.py tests/test_operational_mode.py::test_missing_mode_file_defaults_to_active tests/test_operational_mode.py::test_corrupt_mode_fails_closed_to_maintenance tests/test_mcp_live_wire_schema.py::test_stdio_handshake_publishes_all_registry_input_and_output_schemas",
+      "result": "9 passed in 6.33s",
+      "known_gap": "maintenance helper allows safe job actions; root test test_maintenance_blocks_agent_action_but_preserves_job_status confirms current exception. Keep stricter maintenance gate pending."
+    }
+  }
+}
