@@ -55,3 +55,9 @@ Retained-T13 failure detail: one preprocessing test constructs a preprocessor wi
 Aggregate focused results: **104 passed, 37 failed**. Release acceptance is **NOT VERIFIED**. Historical receipts are not reused as fresh proof.
 
 Changed files versus pinned master: **1,372**, fully listed in `T13-sync-changed-files-20261006.json`. Runtime source changes are confined to `src/local_ai_hub/async_jobs.py` (three retained safety hunks) and `src/local_ai_hub/commands.py` (existing candidate fail-closed repair guard). Remaining changes are tests, source-history handoffs, one plan document and the validation-directory ignore file. Handoff source copies are committed preservation material, not imported runtime modules.
+
+## Committed graph verification
+
+Resolved merge commit: `ebc0e4bc6f2fbb31421dab01dcfa9a22c3e540c1`. Its parents are `4aa2edef7f788602da59ab7cfdf5015cd1b304cb` and pinned master `ca2f86237b1f8ac9ce4f576a308b65b94a24a69c`. `git merge-base --is-ancestor ca2f86237b1f8ac9ce4f576a308b65b94a24a69c HEAD` returned 0. No unresolved files; tracked working tree clean after merge. Only the two explicitly preserved nested checkout artifacts remain untracked. This final handoff update is committed separately on the same ready merge branch.
+
+Additional pre-commit `git diff --cached --check -- src tests tools` compared the entire incoming merge against the old branch HEAD, rather than against pinned master. It reported inherited CRLF whitespace in master files (including dashboard and T10 tests). That broader whitespace check did **not** pass. Pinned-master-relative source/test/tool whitespace check did pass; protected master blobs were kept byte-for-byte, without unrelated formatting changes.
