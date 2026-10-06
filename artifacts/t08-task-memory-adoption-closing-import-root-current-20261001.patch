@@ -1,0 +1,8 @@
+--- a/tests/test_agent_task_memory_adoption.py
++++ b/tests/test_agent_task_memory_adoption.py
+@@ -1,4 +1,5 @@
+ from __future__ import annotations
+ 
++from contextlib import closing
+ from dataclasses import replace
+ from pathlib import Path

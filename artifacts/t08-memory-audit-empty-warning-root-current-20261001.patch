@@ -1,0 +1,12 @@
+--- a/src/local_ai_hub/agent_tasks.py
++++ b/src/local_ai_hub/agent_tasks.py
+@@ -573,7 +573,8 @@
+         if not isinstance(memory_context, Mapping):
+             return
+         items = memory_context.get("items")
+-        if not isinstance(items, list) or not items:
++        warnings = memory_context.get("warnings")
++        if not isinstance(items, list) or (not items and not warnings):
+             return
+         audit = state_data.get("memory_audit")
+         if not isinstance(audit, Mapping):

@@ -1,0 +1,138 @@
+diff --git a/src/local_ai_hub/project_config.py b/src/local_ai_hub/project_config.py
+--- a/src/local_ai_hub/project_config.py
++++ b/src/local_ai_hub/project_config.py
+@@ -239,7 +239,11 @@
+         ordered = tuple(candidates)
+         hints_available = bool(configured_hints or request_hints or saved_hints)
+         hint_used = False
+-        for hints in (saved_hints, request_hints, configured_hints):
++        for hints, learned in (
++            (saved_hints, True),
++            (request_hints, False),
++            (configured_hints, False),
++        ):
+             if not hints:
+                 continue
+             usage = prioritize_paths_with_hints(
+@@ -250,6 +254,7 @@
+                 scope=scope,
+                 repository_revision=repository_revision,
+                 config_digest=self.config_digest,
++                learned=learned,
+             )
+             ordered = usage.paths
+             hint_used = hint_used or usage.hint_used
+@@ -956,6 +961,7 @@
+     scope: str,
+     repository_revision: str,
+     config_digest: str,
++    learned: bool = False,
+ ) -> PathHintUsage:
+     """Move matching candidates first while preserving every original candidate."""
+     original = tuple(candidates)
+@@ -974,7 +980,7 @@
+                 scope=scope,
+                 repository_revision=repository_revision,
+                 config_digest=config_digest,
+-                learned=bool(hint.evidence_id),
++                learned=learned,
+             )
+         )
+     ]
+diff --git a/tests/test_project_path_hints.py b/tests/test_project_path_hints.py
+--- a/tests/test_project_path_hints.py
++++ b/tests/test_project_path_hints.py
+@@ -820,3 +820,34 @@
+         repository_revision="rev-1",
+         config_digest="digest-1",
+     ) is None
++
++def test_request_path_hint_accepts_partial_optional_metadata(
++    tmp_path: Path, monkeypatch
++) -> None:
++    import local_ai_hub.project_config as project_config
++
++    for relative in ("src/main.py", "src/hinted.py"):
++        target = tmp_path / relative
++        target.parent.mkdir(parents=True, exist_ok=True)
++        target.write_text("x", encoding="utf-8")
++    monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: None)
++    context = resolve_project_context(tmp_path, tmp_path / "state")
++
++    usage = context.prioritize_paths(
++        ("src/main.py", "src/hinted.py"),
++        purpose="repository_search",
++        scope="repo_search",
++        repository_revision="rev-1",
++        path_hints=(
++            PathHint(
++                path="src/hinted.py",
++                purpose="repository_search",
++                scope="repo_search",
++                evidence_id="evidence-1",
++            ),
++        ),
++    )
++
++    assert usage.paths == ("src/hinted.py", "src/main.py")
++    assert usage.hint_used is True
++    assert usage.fallback_used is False
+--- a/src/local_ai_hub/client.py
++++ b/src/local_ai_hub/client.py
+@@ -955,7 +955,7 @@
+     ) -> dict[str, Any]:
+         clean_payload = dict(payload or {})
+         route = path.lower().split("?", 1)[0]
+-        if route in {"/api/search", "/api/command"}:
++        if route == "/api/search":
+             explicit_path = isinstance(clean_payload.get("path"), str) and bool(clean_payload["path"].strip())
+             if explicit_path:
+                 clean_payload.pop("path_hints", None)
+--- a/tests/test_client_path_hints.py
++++ b/tests/test_client_path_hints.py
+@@ -14,7 +14,7 @@
+     return HubClient(config_path=str(config), auto_start=False)
+ 
+ 
+-def test_post_forwards_path_hints_to_search_and_command(tmp_path, monkeypatch):
++def test_post_forwards_path_hints_to_search_only(tmp_path, monkeypatch):
+     client = _client(tmp_path)
+     calls = []
+ 
+@@ -36,7 +36,7 @@
+         ),
+         (
+             "/api/command",
+-            {"command": "pytest", "path_hints": list(hints)},
++            {"command": "pytest"},
+             {"timeout": 360.0, "replay_safe": False, "request_id": "command-1"},
+         ),
+     ]
+diff --git a/src/local_ai_hub/repo_tools.py b/src/local_ai_hub/repo_tools.py
+--- a/src/local_ai_hub/repo_tools.py
++++ b/src/local_ai_hub/repo_tools.py
+@@ -1249,6 +1249,7 @@
+         hits: list[dict[str, Any]] = []
+         scanned = 0
+         python_fallback_scanned: int | None = None
++        python_fallback_truncated = False
+         candidate_engine = "python"
+         project_candidates = (
+             list(self.iter_files(str(base), project_settings=project_settings))
+@@ -1310,6 +1311,8 @@
+                 )
+             for path in (project_candidates if project_candidates is not None else self.iter_files(str(base))):
+                 if python_fallback_scanned >= self.python_fallback_max_files:
++                    # The iterator yielded one unscanned path beyond the cap.
++                    python_fallback_truncated = True
+                     break
+                 scanned += 1
+                 python_fallback_scanned += 1
+@@ -1357,6 +1360,7 @@
+         if python_fallback_scanned is not None:
+             result["python_fallback_files_scanned"] = python_fallback_scanned
+             result["python_fallback_file_limit"] = self.python_fallback_max_files
++            result["python_fallback_truncated"] = python_fallback_truncated
+         if candidate_tokens:
+             # Diagnostic only. Local RG-like filtering is not proof that a cloud
+             # agent would otherwise have paid for the candidate snippets.

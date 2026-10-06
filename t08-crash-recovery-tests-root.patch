@@ -1,0 +1,185 @@
+diff --git a/tests/test_agent_t08_crash_after_commit.py b/tests/test_agent_t08_crash_after_commit.py
+--- a/tests/test_agent_t08_crash_after_commit.py
++++ b/tests/test_agent_t08_crash_after_commit.py
+@@ -1,8 +1,12 @@
++import sqlite3
+ import subprocess
+ import sys
+ from pathlib import Path
+ 
+ from local_ai_hub.agent_events import AgentStateStore
++from local_ai_hub.agent_tasks import GoalContract, ScopeContext, TaskStatus, TaskStore
++from local_ai_hub.agent_verification import VerificationReceipt, VerificationStore
++import pytest
+ 
+ 
+ def test_process_exit_after_commit_before_publish_recovers_event(tmp_path):
+@@ -32,8 +36,163 @@
+     )
+ 
+     assert child.returncode == 73, child.stderr
+-    recovered = AgentStateStore(db_path)
+-    events = recovered.events("task:hard-crash", after_seq=0)
+-    assert [event.kind for event in events] == ["task.updated"]
+-    assert events[0].seq == 1
+-    assert recovered.events("task:hard-crash", after_seq=events[0].seq) == []
++    recovered = AgentStateStore(db_path).event_page("task:hard-crash")
++    assert recovered["success"] is True
++    assert [event.kind for event in recovered["events"]] == ["task.updated"]
++    assert recovered["events"][0].seq == 1
++    assert recovered["last_seq"] == recovered["next_seq"] == 1
++
++
++@pytest.mark.parametrize("operation", ["create", "transition"])
++def test_process_exit_after_task_commit_before_publish_recovers_projection_and_cursor(
++    tmp_path, operation
++):
++    db_path = tmp_path / "agent_state.sqlite3"
++    repo_root = Path(__file__).resolve().parents[1]
++    task_id = f"task-hard-crash-{operation}"
++    if operation == "transition":
++        TaskStore(AgentStateStore(db_path)).create(
++            GoalContract(goal="recover committed task transition"),
++            ScopeContext(task_id=task_id),
++            task_id=task_id,
++        )
++
++    script = """
++import os
++import sys
++sys.path.insert(0, sys.argv[4])
++from local_ai_hub.agent_events import AgentStateStore
++from local_ai_hub.agent_tasks import GoalContract, ScopeContext, TaskStatus, TaskStore
++store = AgentStateStore(sys.argv[1])
++store._publish = lambda _event: os._exit(73)
++tasks = TaskStore(store)
++task_id = sys.argv[3]
++if sys.argv[2] == "create":
++    tasks.create(
++        GoalContract(goal="recover committed task creation"),
++        ScopeContext(task_id=task_id),
++        task_id=task_id,
++    )
++else:
++    tasks.transition(
++        task_id, TaskStatus.ACTIVE, reason="hard crash", actor="test",
++        idempotency_key="hard-crash-task-transition",
++    )
++os._exit(74)
++"""
++    child = subprocess.run(
++        [
++            sys.executable,
++            "-B",
++            "-c",
++            script,
++            str(db_path),
++            operation,
++            task_id,
++            str(repo_root / "src"),
++        ],
++        cwd=repo_root,
++        capture_output=True,
++        text=True,
++        timeout=15,
++        check=False,
++    )
++
++    assert child.returncode == 73, child.stderr
++    state_store = AgentStateStore(db_path)
++    recovered_task = TaskStore(state_store).get(task_id)
++    assert recovered_task is not None
++    expected_status = TaskStatus.PLANNED if operation == "create" else TaskStatus.ACTIVE
++    assert recovered_task.status is expected_status
++    page = state_store.event_page(f"task:{task_id}")
++    expected_kinds = ["task.created"]
++    if operation == "transition":
++        expected_kinds.append("task.transitioned")
++    assert [event.kind for event in page["events"]] == expected_kinds
++    assert [event.seq for event in page["events"]] == list(range(1, len(expected_kinds) + 1))
++    assert page["last_seq"] == page["next_seq"] == len(expected_kinds)
++
++
++@pytest.mark.parametrize("phase", ["before_commit", "after_commit"])
++def test_process_exit_during_receipt_write_recovers_atomically(tmp_path, phase):
++    db_path = tmp_path / "agent_state.sqlite3"
++    repo_root = Path(__file__).resolve().parents[1]
++    task_id = f"task-receipt-hard-crash-{phase}"
++    TaskStore(AgentStateStore(db_path)).create(
++        GoalContract(
++            goal="recover receipt write after process exit",
++            acceptance_criteria=("tests",),
++        ),
++        ScopeContext(task_id=task_id),
++        task_id=task_id,
++    )
++
++    script = """
++import os
++import sys
++sys.path.insert(0, sys.argv[3])
++from local_ai_hub.agent_events import AgentStateStore
++from local_ai_hub.agent_tasks import TaskStore
++from local_ai_hub.agent_verification import VerificationReceipt, VerificationStore
++
++store = AgentStateStore(sys.argv[1])
++if sys.argv[2] == "before_commit":
++    original = VerificationStore.record_in_transaction
++    def exit_before_commit(self, con, receipt):
++        result = original(self, con, receipt)
++        os._exit(73)
++    VerificationStore.record_in_transaction = exit_before_commit
++else:
++    store._publish = lambda _event: os._exit(73)
++
++receipt = VerificationReceipt.create(
++    sys.argv[4], "tests", passed=True, evidence_id="hard-exit-evidence"
++)
++VerificationStore(store, task_store=TaskStore(store)).record(receipt)
++os._exit(74)
++"""
++    child = subprocess.run(
++        [
++            sys.executable,
++            "-B",
++            "-c",
++            script,
++            str(db_path),
++            phase,
++            str(repo_root / "src"),
++            task_id,
++        ],
++        cwd=repo_root,
++        capture_output=True,
++        text=True,
++        timeout=15,
++        check=False,
++    )
++
++    assert child.returncode == 73, child.stderr
++    recovered_store = AgentStateStore(db_path)
++    recovered_task = TaskStore(recovered_store).get(task_id)
++    assert recovered_task is not None
++    with sqlite3.connect(db_path) as con:
++        receipt_rows = con.execute(
++            "SELECT receipt_id FROM agent_verification_receipts WHERE task_id=?",
++            (task_id,),
++        ).fetchall()
++
++    if phase == "before_commit":
++        assert recovered_task.verification_receipts == {}
++        assert receipt_rows == []
++        assert recovered_store.events(f"verification:{task_id}") == []
++        assert not any(
++            event.kind == "task.verified"
++            for event in recovered_store.events(f"task:{task_id}")
++        )
++    else:
++        receipt_id = recovered_task.verification_receipts["tests"]
++        assert receipt_rows == [(receipt_id,)]
++        assert [event.kind for event in recovered_store.events(f"verification:{task_id}")].count(
++            "verification.receipt_recorded"
++        ) == 1
++        assert [event.kind for event in recovered_store.events(f"task:{task_id}")].count(
++            "task.verified"
++        ) == 1

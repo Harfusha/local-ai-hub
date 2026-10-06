@@ -1,0 +1,25 @@
+--- a/tests/test_agent_policy.py
++++ b/tests/test_agent_policy.py
+@@ -71,6 +71,22 @@
+     assert decision.requires_approval is False
+ 
+ 
++@pytest.mark.parametrize("action", ["model", "model_inference"])
++def test_local_model_inference_requires_explicit_grant(engine: PolicyEngine, action: str):
++    request = ActionRequest(action=action, target="local-model")
++
++    decision = engine.authorize(request, active_task())
++
++    assert decision.allowed is False
++    assert decision.requires_approval is True
++    assert decision.side_effect_class == "model_execution"
++
++    grant = CapabilityGrant(grant_id="local-model-on-demand", allowed=frozenset({action}))
++    granted = engine.authorize(request, active_task(), grant=grant)
++    assert granted.allowed is True
++    assert granted.requires_approval is False
++
++
+ def test_budget_consumption(engine: PolicyEngine):
+     budget = engine.get_budget("task-1")
+     assert budget.used_tokens == 0

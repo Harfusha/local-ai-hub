@@ -330,6 +330,56 @@ def test_abandon_cancels_inflight_commit_before_artifact_write(monkeypatch: pyte
     worker.join(2)
     assert result == [{"success": False, "terminal": True, "retryable": False, "error_code": "capture_cancelled", "error": "cancelled", "request_id": "cancel-inflight"}]
     assert sink.calls == []
+
+
+def test_expiry_cancels_inflight_commit_before_artifact_write(monkeypatch: pytest.MonkeyPatch) -> None:
+    clock = {"now": 100.0}
+    monkeypatch.setattr(browser_bridge_module.time, "monotonic", lambda: clock["now"])
+    started = threading.Event()
+    release = threading.Event()
+    short_config = config()
+    short_config["browser_bridge"]["capability_ttl_seconds"] = 1
+    sink = ArtifactSink()
+    capability = issue_capture_capability(
+        short_config, origin="chrome-extension://fixture", tenant="tenant-a", tab_id=7, window_id=3
+    )
+    payload = capture_payload()
+    payload["request_id"] = "expire-inflight"
+    assert stage_capture(capability, payload, tenant="tenant-a", config=short_config)["success"] is True
+
+    def delayed_capture(*_args, cancel_check=None, **_kwargs):
+        started.set()
+        release.wait(2)
+        assert cancel_check is not None
+        if cancel_check():
+            return {"success": False, "terminal": True, "retryable": False, "error_code": "capture_cancelled", "error": "expired"}
+        raise AssertionError("expiry was not observed before artifact write")
+
+    monkeypatch.setattr(browser_bridge_module, "capture_to_artifacts", delayed_capture)
+    result: list[dict] = []
+    worker = threading.Thread(
+        target=lambda: result.append(
+            commit_staged_capture(
+                capability,
+                {"origin": "chrome-extension://fixture", "tab_id": 7, "window_id": 3, "request_id": "expire-inflight"},
+                artifacts=sink,
+                tenant="tenant-a",
+                config=short_config,
+            )
+        )
+    )
+    worker.start()
+    assert started.wait(2)
+    clock["now"] = 102.0
+    replacement = issue_capture_capability(
+        short_config, origin="chrome-extension://fixture", tenant="tenant-a", tab_id=7, window_id=3
+    )
+    assert replacement
+    release.set()
+    worker.join(2)
+    assert not worker.is_alive()
+    assert result == [{"success": False, "terminal": True, "retryable": False, "error_code": "capture_cancelled", "error": "expired", "request_id": "expire-inflight"}]
+    assert sink.calls == []
 def test_expired_staged_capture_is_cleaned_without_artifact_commit(monkeypatch: pytest.MonkeyPatch) -> None:
     clock = {"now": 100.0}
     monkeypatch.setattr(browser_bridge_module.time, "monotonic", lambda: clock["now"])
@@ -423,6 +473,49 @@ def test_extension_reports_and_abandons_partial_artifact_commit_failure() -> Non
     assert run_browser_background_case("artifact-failure") == {
         "success": True,
         "case": "artifact-failure-reported-and-abandoned",
+    }
+
+
+def test_extension_reconciles_commit_when_response_is_lost() -> None:
+    assert run_browser_background_case("lost-commit-response") == {
+        "success": True,
+        "case": "lost-commit-response-reconciled",
+    }
+
+
+def test_extension_reconciles_commit_after_http_5xx_response() -> None:
+    assert run_browser_background_case("commit-5xx-response") == {
+        "success": True,
+        "case": "commit-5xx-reconciled",
+    }
+
+
+def test_extension_does_not_cancel_commit_with_ambiguous_in_progress_result() -> None:
+    assert run_browser_background_case("commit-in-progress") == {
+        "success": True,
+        "case": "in-progress-commit-not-cancelled",
+    }
+
+
+def test_extension_preserves_timed_out_commit_outcome() -> None:
+    assert run_browser_background_case("commit-timeout-response") == {
+        "success": True,
+        "case": "timed-out-commit-not-cancelled",
+    }
+
+
+def test_extension_does_not_cancel_commit_when_both_responses_are_lost() -> None:
+    assert run_browser_background_case("commit-response-lost-twice") == {
+        "success": True,
+        "case": "ambiguous-commit-left-uncancelled",
+    }
+
+
+@pytest.mark.parametrize("response_case", ["commit-invalid-shape", "commit-missing-artifact-id", "commit-request-id-mismatch"])
+def test_extension_treats_malformed_commit_response_as_unknown(response_case: str) -> None:
+    assert run_browser_background_case(response_case) == {
+        "success": True,
+        "case": "malformed-commit-remains-unknown",
     }
 
 

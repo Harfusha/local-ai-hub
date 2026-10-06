@@ -1,0 +1,52 @@
+--- a/tests/test_agent_context.py
++++ b/tests/test_agent_context.py
+@@ -237,13 +237,14 @@
+ def test_phase_pack_prioritizes_reuse_for_edit(tmp_path: Path):
+     state_store = AgentStateStore(tmp_path / "state.sqlite3")
+     memory_store = MemoryStore(state_store)
++    repo_root = str(tmp_path / "repository")
+     memory_store.record(MemoryRecord.create(
+         kind=MemoryKind.FACT,
+         scope="task",
+         scope_id="task-1",
+         key="broad fact",
+         value="broad context",
+-        provenance={"tenant": "tenant-1"},
++        provenance={"root": repo_root, "tenant": "tenant-1"},
+     ))
+     memory_store.record(MemoryRecord.create(
+         kind=MemoryKind.REUSABLE_CANDIDATE,
+@@ -252,12 +253,12 @@
+         key="reuse candidate",
+         value="use this exact implementation",
+         symbol_refs=("module.fn",),
+-        provenance={"tenant": "tenant-1"},
++        provenance={"root": repo_root, "tenant": "tenant-1"},
+     ))
+     compiler = ContextCompiler(state_store, memory_store=memory_store)
+ 
+     result = compiler.compile(ContextRequest(
+-        task_id="task-1", tenant="tenant-1", phase="edit", token_budget=80,
++        task_id="task-1", root=repo_root, tenant="tenant-1", phase="edit", token_budget=80,
+     ))
+ 
+     assert result.phase == "edit"
+@@ -474,7 +475,7 @@
+     assert "stale_count=1" in diagnostics.content
+ 
+ 
+-def test_legacy_rootless_memory_is_only_authoritative_without_root(tmp_path: Path):
++def test_legacy_rootless_memory_is_not_included_without_root(tmp_path: Path):
+     state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+     memory_store = MemoryStore(state_store)
+     concrete_root = str(tmp_path / "repository")
+@@ -492,7 +493,8 @@
+     rootless_context = ContextCompiler(state_store=state_store, memory_store=memory_store).compile(
+         ContextRequest(task_id="task-1", tenant="tenant-1", token_budget=120)
+     )
+-    assert legacy.record_id in {element.element_id for element in rootless_context.elements}
++    assert legacy.record_id not in {element.element_id for element in rootless_context.elements}
++    assert not any(element.source_kind == "memory_record" for element in rootless_context.elements)
+ 
+     scoped_context = ContextCompiler(state_store=state_store, memory_store=memory_store).compile(
+         ContextRequest(

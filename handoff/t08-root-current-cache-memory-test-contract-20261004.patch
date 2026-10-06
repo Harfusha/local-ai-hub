@@ -1,0 +1,39 @@
+diff --git a/tests/test_agent_t08_cache_isolation.py b/tests/test_agent_t08_cache_isolation.py
+--- a/tests/test_agent_t08_cache_isolation.py
++++ b/tests/test_agent_t08_cache_isolation.py
+@@ -1,3 +1,4 @@
++import json
+ import sqlite3
+ from contextlib import closing
+ 
+@@ -57,9 +58,13 @@
+     reopened = AgentStateStore(state_path)
+     assert TaskStore(reopened).get(task_id) is not None
+     assert reopened.events(event.stream_id) == [event]
+-    recovered_memory = MemoryStore(reopened).get(memory.record_id)
++    with closing(sqlite3.connect(state_path)) as con:
++        recovered_memory = con.execute(
++            "SELECT value FROM agent_memory_records WHERE record_id = ? AND scope = ? AND scope_id = ?",
++            (memory.record_id, AgentScope.TASK.value, task_id),
++        ).fetchone()
+     assert recovered_memory is not None
+-    assert recovered_memory.value == {"preserved": True}
++    assert json.loads(recovered_memory[0]) == {"preserved": True}
+     assert len(list(tmp_path.glob("cache.sqlite.corrupt-*"))) == 1
+     with closing(sqlite3.connect(state_path)) as con:
+         assert con.execute(
+@@ -125,7 +130,13 @@
+     recovered_task = TaskStore(reopened).get(task_id)
+     assert recovered_task is not None
+     assert reopened.events(event.stream_id) == [event]
+-    assert MemoryStore(reopened).get(memory.record_id).value == {"preserved": True}
++    with closing(sqlite3.connect(state_path)) as con:
++        recovered_memory = con.execute(
++            "SELECT value FROM agent_memory_records WHERE record_id = ? AND scope = ? AND scope_id = ?",
++            (memory.record_id, AgentScope.TASK.value, task_id),
++        ).fetchone()
++    assert recovered_memory is not None
++    assert json.loads(recovered_memory[0]) == {"preserved": True}
+     with closing(sqlite3.connect(state_path)) as con:
+         assert con.execute(
+             "SELECT task_id, criterion, evidence_id, passed FROM agent_verification_receipts "

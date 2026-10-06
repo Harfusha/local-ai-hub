@@ -1,10 +1,14 @@
 # Adaptive Retrieval Orchestrator Implementation Plan
 
+> **Superseded by T19 (2026-09-30):** This plan is historical, not current Hub behavior. CodeGraphContext and KuzuDB are optional standalone tools outside Local AI Hub; neither is a Hub backend, dependency, or preprocessing path. References below that call CodeGraphContext a retrieval backend are superseded design text. Historical live-probe results in rollout records do not establish current support or health. See [current installation guidance](../../INSTALLATION.md) and [architecture](../../ARCHITECTURE.md).
+
+> **Historical plan:** this proposal predates the current architecture. CodeGraphContext/KuzuDB were removed from the Hub and are optional standalone tools only. Do not implement the old CodeGraph integration steps below. The current `/api/context/pack` contract remains the adaptive retrieval contract; use `docs/superpowers/plans/2026-09-22-hub-quality-performance-master-plan.md` for current scope and acceptance criteria.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task with verification checkpoints.
 
 **Goal:** Make context retrieval combine all available repository intelligence and return the highest-quality bounded context before native discovery.
 
-**Architecture:** Keep `/api/context/pack` stable while upgrading its service-layer retrieval to an adaptive ensemble. Deterministic/indexed and exact evidence remain authoritative; optional Serena, CodeGraphContext, RAG, and local-model ranking contribute bounded evidence and diagnostics. Harden lexical fallback separately.
+**Architecture:** Keep `/api/context/pack` on its current adaptive retrieval contract. Deterministic/indexed and exact evidence remain authoritative; optional Serena, RAG, and bounded local-model ranking may contribute evidence and diagnostics. CodeGraphContext/KuzuDB are external standalone tools and are not candidates for Hub integration. Harden lexical fallback separately.
 
 **Tech Stack:** Python 3.11+, pytest, existing CodeIndex, ExternalCodeIntelligence, RAG, evidence store, process utilities, MCP prompt/schema generation.
 
@@ -20,7 +24,7 @@
 
 - [ ] **Step 1: Add tests for backend fan-out and additive provenance.**
 
-  Assert adaptive context collects deterministic, code-index, lexical, semantic, Serena, and CodeGraph candidates when enabled; one backend failure becomes a warning and does not erase successful evidence.
+  Assert adaptive context collects deterministic, code-index, lexical, semantic, and optional Serena candidates when enabled; one backend failure becomes a warning and does not erase successful evidence.
 
 - [ ] **Step 2: Add tests for fusion and diversity.**
 
@@ -72,7 +76,7 @@
 
 - [ ] **Step 2: Run independent backend retrieval with per-backend limits.**
 
-  Always use deterministic and CodeIndex anchors; query Serena and CodeGraphContext whenever available rather than checking task wording; include preprocessor cards and RAG when configured. Catch timeout/malformed responses per backend.
+  Always use deterministic and CodeIndex anchors; query optional Serena when available rather than checking task wording; include preprocessor cards and RAG when configured. Catch timeout/malformed responses per backend.
 
 - [ ] **Step 3: Fuse and deduplicate candidates.**
 
@@ -103,7 +107,7 @@
 
 - [ ] **Step 1: Update MCP descriptions and default mode.**
 
-  State that context is the first repository action and orchestrates deterministic/indexed, Serena, CodeGraphContext, lexical, RAG, and bounded local-model ranking before native reads.
+  State that context is the first repository action and orchestrates deterministic/indexed, optional Serena, lexical, RAG, and bounded local-model ranking before native reads.
 
 - [ ] **Step 2: Update generated agent guidance and skills.**
 

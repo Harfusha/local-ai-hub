@@ -1,0 +1,22 @@
+--- a/src/local_ai_hub/http_server.py
++++ b/src/local_ai_hub/http_server.py
+@@ -2465,14 +2465,15 @@
+                         admission_release = {
+                             "state": "active" if admission_active else "drained",
+                             "inference_active": admission_active,
++                            "source": "async_job_manager",
+                         }
+                     except Exception:
+                         admission_release = {"state": "unavailable", "inference_active": True}
+                 else:
+-                    admission_release = {
+-                        "state": "unavailable", "inference_active": True,
+-                        "reason": "inference_admission_tracking_unavailable",
+-                    }
++                    admission_release = {
++                        "state": "unavailable", "inference_active": True,
++                        "reason": "inference_admission_tracking_unavailable",
++                    }
+                 inference_active = inference_active or bool(admission_release.get("inference_active"))
+             response["whisper_process_release"] = whisper_release
+             response["conversation_release"] = conversation_release

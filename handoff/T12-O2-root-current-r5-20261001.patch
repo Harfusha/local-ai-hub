@@ -1,0 +1,2013 @@
+diff --git a/src/local_ai_hub/services.py b/src/local_ai_hub/services.py
+--- a/src/local_ai_hub/services.py
++++ b/src/local_ai_hub/services.py
+@@ -353,8 +353,10 @@
+     memory_revision: str = "",
+     focus: Any = None,
+     preload_profile: str = "",
++    project_config_digest: str = "",
++    project_namespace: str = "",
+ ) -> str:
+-    return stable_hash({
++    key_data = {
+         "model": model,
+         "prompt": normalize_generation_cache_prompt(prompt),
+         "system": normalize_generation_cache_prompt(system),
+@@ -368,7 +370,11 @@
+         "focus": focus,
+         "preload_profile": preload_profile,
+         "app_version": __version__,
+-    })
++    }
++    if project_config_digest or project_namespace:
++        key_data["project_config_digest"] = project_config_digest
++        key_data["project_namespace"] = project_namespace
++    return stable_hash(key_data)
+ 
+ 
+ def normalize_context_for_hash(context: str) -> str:
+@@ -835,8 +841,23 @@
+         internal: bool = False,
+         use_cache: bool = True,
+         format: Any = None,
++        project_settings: Any | None = None,
++        project_role: str = "",
++        project_config_digest: str = "",
++        project_namespace: str = "",
++        repository_revision: str = "",
++        trace_system_override: str | None = None,
+         cancel_event: threading.Event | None = None,
+     ) -> dict[str, Any]:
++        trace_system = system if trace_system_override is None else str(trace_system_override)
++        if project_settings is not None:
++            model, project_payload = self.model_policy.apply_project_settings(
++                model,
++                {"model": model, "system": system},
++                settings=project_settings,
++                role=project_role,
++            )
++            system = str(project_payload.get("system", system))
+         saving = self.config.get("token_saving", {})
+         resilience = self.config.get("resilience", {})
+         max_tokens = max(64, min(int(max_tokens), int(saving.get("max_local_output_tokens", 8192))))
+@@ -886,11 +907,21 @@
+             think=base_payload.get("think"),
+             execution=execution_scope,
+             format=base_payload.get("format"),
++            repository_revision=repository_revision,
++            project_config_digest=project_config_digest,
++            project_namespace=project_namespace,
+         )
+-        semantic_scope = stable_hash({
++        semantic_scope_data = {
+             "model": model, "system": system, "options": options, "think": base_payload.get("think"), "execution": execution_scope,
+             "context": norm_context_fp, "source": source.split(":", 1)[0], "app_version": __version__,
+-        })
++        }
++        if project_config_digest or project_namespace:
++            semantic_scope_data.update({
++                "repository_revision": repository_revision,
++                "project_config_digest": project_config_digest,
++                "project_namespace": project_namespace,
++            })
++        semantic_scope = stable_hash(semantic_scope_data)
+         started = time.perf_counter()
+         cache_layer = "miss"
+         semantic_score = 0.0
+@@ -963,6 +994,9 @@
+                         background=source.startswith("preprocess:"), preserve_explicit_think=False,
+                     )
+                     trace_observer = observer()
++                    trace_payload = dict(payload)
++                    if project_settings is not None or trace_system_override is not None:
++                        trace_payload["system"] = trace_system
+                     # A scheduler may defer this closure until after a mode change.
+                     try:
+                         from .operational_mode import load_operational_mode
+@@ -975,12 +1009,12 @@
+                     interruptible = getattr(self.runtime, "request_interruptible", None)
+                     if cancel_event is not None and callable(interruptible):
+                         if trace_observer is not None:
+-                            trace_observer.model_request(payload)
++                            trace_observer.model_request(trace_payload)
+                         response = interruptible("/api/generate", payload, should_stop=cancel_event.is_set)
+                         if trace_observer is not None and response.get("response"):
+                             trace_observer.output_delta(str(response["response"]))
+                     elif trace_observer is not None:
+-                        trace_observer.model_request(payload)
++                        trace_observer.model_request(trace_payload)
+                         response = self.runtime.request_stream(
+                             "/api/generate", payload, trace_observer.output_delta,
+                             on_thinking=getattr(trace_observer, "thinking_delta", None),
+@@ -1266,6 +1300,7 @@
+         temperature: float,
+         source: str,
+         priority: int,
++        trace_system: str | None = None,
+         cancel_event: threading.Event | None = None,
+     ) -> dict[str, Any]:
+         if cancel_event is not None and cancel_event.is_set():
+@@ -1273,7 +1308,9 @@
+         if estimate_tokens(prompt) + estimate_tokens(system) > self._conversation_prompt_limit():
+             return self._conversation_error("", "conversation prompt limit exceeded")
+         conversation = self.conversations.start_reserved(tenant, {
+-            "model": route["model"], "system": system, "max_tokens": max_tokens,
++            "model": route["model"], "system": system,
++            "trace_system": system if trace_system is None else trace_system,
++            "max_tokens": max_tokens,
+             "temperature": temperature, "source": source, "priority": priority,
+             "route": dict(route),
+         })
+@@ -1282,7 +1319,8 @@
+         try:
+             result = self._generate(
+                 route["model"], prompt, system, max_tokens, temperature, tenant, source, priority,
+-                internal=True, use_cache=False, cancel_event=cancel_event,
++                internal=True, use_cache=False, trace_system_override=trace_system,
++                cancel_event=cancel_event,
+             )
+         except Exception:
+             self.conversations.discard(conversation.conversation_id, tenant)
+@@ -1327,7 +1365,9 @@
+             result = self._generate(
+                 str(settings["model"]), prompt, str(settings["system"]), int(settings["max_tokens"]),
+                 float(settings["temperature"]), tenant, str(settings["source"]), int(settings["priority"]),
+-                internal=True, use_cache=False, cancel_event=cancel_event,
++                internal=True, use_cache=False,
++                trace_system_override=str(settings.get("trace_system", settings["system"])),
++                cancel_event=cancel_event,
+             )
+         except Exception:
+             self.conversations.abort(conversation_id, tenant)
+@@ -1343,6 +1383,30 @@
+         result["route"] = dict(settings["route"])
+         return result
+ 
++    def _resolve_local_task_project(self, root: Any) -> tuple[Any | None, str, str, str]:
++        root_value = str(root or "").strip()
++        if not root_value:
++            return None, "", "", ""
++        try:
++            from .project_config import resolve_project_context
++            from .state_paths import configured_state_dir
++
++            project = resolve_project_context(
++                root_value,
++                configured_state_dir(getattr(self, "config", {}), create=False),
++            )
++        except Exception:
++            return None, "", "", ""
++
++        snapshot = None
++        try:
++            snapshot = self.repo_tools.git_snapshot(root_value)
++        except Exception:
++            pass
++        revision = str(getattr(snapshot, "repository_revision", "") or "")[:200]
++        namespace = str(project.coordination_id or "")
++        return project, project.config_digest, namespace, revision
++
+     def delegate(
+         self, args: dict[str, Any], tenant: str, *, cancel_event: threading.Event | None = None,
+     ) -> dict[str, Any]:
+@@ -1353,6 +1417,30 @@
+                 return self._conversation_error("", "conversations require delivery=sync")
+         if str(args.get("profile", "")).strip():
+             return self.delegate_profile(args, tenant)
++        project_context, project_config_digest, project_namespace, project_revision = self._resolve_local_task_project(
++            args.get("root") or args.get("cwd", "")
++        )
++        project_settings = project_context.settings if project_context is not None else None
++        project_error_codes = getattr(getattr(project_context, "resolution", None), "error_codes", ())
++        if not isinstance(project_error_codes, (list, tuple)):
++            project_error_codes = ()
++        project_warning = ""
++        if project_error_codes:
++            safe_codes = [
++                code[:80] for code in (str(value) for value in project_error_codes[:8])
++                if re.fullmatch(r"[A-Za-z0-9_.-]+", code)
++            ]
++            code_summary = ", ".join(safe_codes)
++            project_warning = "Project settings invalid; defaults used" + (f" (codes: {code_summary})" if code_summary else ".")
++
++        def attach_project_warning(result: dict[str, Any]) -> dict[str, Any]:
++            if project_warning:
++                warnings = result.get("warnings", [])
++                warnings = list(warnings) if isinstance(warnings, (list, tuple)) else []
++                warnings.append(project_warning)
++                result["warnings"] = warnings
++            return result
++
+         task = str(args.get("task") or args.get("prompt") or "")
+         if bool(args.get("conversation", False)):
+             task = task.strip()
+@@ -1368,6 +1456,17 @@
+         except ValueError as exc:
+             return {"success": False, "error": str(exc), "terminal": True, "retryable": False}
+         task_type = route["task_type"]
++        if task_type in {"code", "review"}:
++            project_role = "heavy_code" if route.get("complexity") == "heavy" else "fast_code"
++        elif task_type == "reasoning":
++            project_role = "reasoning" if route.get("complexity") == "heavy" else "heavy_code"
++        else:
++            project_role = "general"
++        if project_settings is not None:
++            route["model"], _project_payload = self.model_policy.apply_project_settings(
++                route["model"], {"model": route["model"]},
++                settings=project_settings, role=project_role,
++            )
+         operation = str(args.get("operation") or task_type).strip().lower()
+         package = build_prompt(
+             operation=operation,
+@@ -1383,6 +1482,7 @@
+             static_facts=str(args.get("static_facts", "")),
+         )
+         system = package.system
++        trace_system = system
+         # Conversation turns keep the compact transcript protocol so follow-ups
+         # remain lossless; the richer static contract lives in the conversation
+         # system message and one-shot operations use the full package.user form.
+@@ -1392,20 +1492,34 @@
+         source = f"delegate:{task_type}"
+         priority = int(args.get("priority", 5))
+         if bool(args.get("conversation", False)):
+-            return self._start_conversation(
++            if project_settings is not None:
++                _conversation_model, project_payload = self.model_policy.apply_project_settings(
++                    route["model"], {"model": route["model"], "system": system},
++                    settings=project_settings, role=project_role,
++                )
++                system = str(project_payload.get("system", system))
++            result = self._start_conversation(
+                 tenant=tenant, prompt=prompt, route=route, system=system, max_tokens=max_tokens,
+-                temperature=temperature, source=source, priority=priority, cancel_event=cancel_event,
++                temperature=temperature, source=source, priority=priority, trace_system=trace_system,
++                cancel_event=cancel_event,
+             )
++            return attach_project_warning(result)
+         format_val = args.get("format") or args.get("json_schema")
+         result = self._generate(
+             route["model"], prompt, system,
+             max_tokens, temperature, tenant, source, priority,
+             semantic_query=task, semantic_context_fingerprint=stable_hash(context),
+             format=format_val,
++            project_settings=project_settings,
++            project_role=project_role,
++            project_config_digest=project_config_digest,
++            project_namespace=project_namespace,
++            repository_revision=project_revision or str(args.get("repository_revision", "")),
++            use_cache=project_context is None or bool(project_namespace),
+         )
+         result = self._apply_semantic_quality(result, task=task, evidence_paths=args.get("changed_paths") or ())
+         result["route"] = route
+-        return result
++        return attach_project_warning(result)
+ 
+     @staticmethod
+     def _apply_semantic_quality(result: dict[str, Any], *, task: str, evidence_paths: Any) -> dict[str, Any]:
+@@ -6513,9 +6627,12 @@
+         prepared.sort(key=lambda item: (0 if item[1] == active else 1, item[1], item[0]))
+         results: dict[int, dict[str, Any]] = {}
+         default_priority = int(args.get("priority", 5))
++        inherited_root = args.get("root") or args.get("cwd")
+         for i, _model, item in prepared:
+             item = dict(item)
+             item.setdefault("priority", default_priority)
++            if inherited_root and not item.get("root") and not item.get("cwd"):
++                item["root"] = inherited_root
+             try:
+                 results[i] = self.delegate(item, tenant)
+             except Exception as exc:
+diff --git a/src/local_ai_hub/ollama.py b/src/local_ai_hub/ollama.py
+--- a/src/local_ai_hub/ollama.py
++++ b/src/local_ai_hub/ollama.py
+@@ -2118,13 +2118,12 @@
+         should_stop: Any | None = None,
+         deadline: float | None = None,
+     ) -> dict[str, Any]:
+-        """Best-effort, bounded unload of configured models that are currently loaded.
+-
+-        Pause never starts a backend or loads a model. A single deadline covers the
+-        loaded-model query and every unload request; ``should_stop`` cancels between
+-        those operations and is forwarded into interruptible backend requests. The
+-        helper does not issue an inference-cancel request; the backend decides how an
+-        in-flight runner reacts. Failed or timed-out unloads are reported without retrying.
++        """Request bounded unload and verify the resulting loaded-model state.
++
++        Pause never starts a backend or loads a model. One deadline covers both
++        ``/api/ps`` queries and all unload requests. An unload acknowledgement alone
++        is not treated as proof that the model left the loaded set. An empty loaded
++        set does not prove that physical VRAM was reclaimed.
+         """
+         if (
+             isinstance(timeout_seconds, bool)
+@@ -2151,6 +2150,12 @@
+                 "unloaded": unloaded,
+                 "failed": {"operation": "unload cancelled"},
+                 "cancelled": True,
++                "requested": [],
++                "remaining": None,
++                "verified": False,
++                "complete": False,
++                "unverified": True,
++                "physical_vram_reclaimed": False,
+             }
+         if time.monotonic() >= unload_deadline:
+             return {
+@@ -2158,139 +2163,257 @@
+                 "backend_available": False,
+                 "unloaded": unloaded,
+                 "failed": {"operation": "unload deadline exceeded"},
++                "requested": [],
++                "remaining": None,
++                "verified": False,
++                "complete": False,
++                "unverified": True,
++                "physical_vram_reclaimed": False,
+             }
+ 
+-        if ollama_enabled:
++        llama_settings = self.config.get("llama_cpp", {})
++        llama_models = llama_settings.get("models", {}) if isinstance(llama_settings, dict) else {}
++        llama_mode = str(llama_settings.get("mode", "auto")).strip().lower() if isinstance(llama_settings, dict) else "off"
++        llama_configured = llama_mode in {"auto", "on"} and isinstance(llama_models, dict) and bool(llama_models)
++        # Pause checks every configured auto/on endpoint. A failed or empty
++        # convenience probe cannot distinguish an empty inventory from failure.
++        llama_active = llama_configured
++
++        backend_names = (["ollama"] if ollama_enabled else []) + (["llama_cpp"] if llama_active else [])
++        if not backend_names:
++            reason = "no configured llama.cpp models" if not llama_configured else "backend unavailable"
++            return {
++                "success": False, "backend_available": False, "unloaded": unloaded,
++                "failed": {"backend": reason}, "requested": [], "remaining": None,
++                "verified": False, "complete": False, "unverified": True,
++                "physical_vram_reclaimed": False,
++            }
++
++        last_llama_endpoint_status: dict[str, str] = {}
++
++        def read_llama_inventory() -> tuple[list[dict[str, Any]], dict[str, str]]:
++            inventory_reader = getattr(self.llama_cpp, "loaded_model_inventory", None)
++            if callable(inventory_reader):
++                snapshot = inventory_reader(
++                    should_stop=should_stop, deadline=unload_deadline, force_refresh=True,
++                )
++                if not isinstance(snapshot, dict):
++                    raise RuntimeError("llama.cpp inventory incomplete")
++                rows = snapshot.get("models")
++                if not isinstance(rows, list):
++                    raise RuntimeError("llama.cpp inventory incomplete")
++                endpoint_status = snapshot.get("endpoint_status", {})
++                if not isinstance(endpoint_status, dict):
++                    raise RuntimeError("llama.cpp endpoint status unavailable")
++                last_llama_endpoint_status.clear()
++                last_llama_endpoint_status.update({str(key): str(value) for key, value in endpoint_status.items()})
++                if snapshot.get("complete") is not True:
++                    raise RuntimeError("llama.cpp inventory incomplete")
++                return rows, dict(last_llama_endpoint_status)
++            available = self.llama_cpp.available_models(should_stop=should_stop, deadline=unload_deadline)
++            if not available:
++                raise RuntimeError("llama.cpp inventory unavailable")
++            return self.llama_cpp.loaded_model_details(should_stop=should_stop, deadline=unload_deadline), {"legacy": "complete"}
++
++        loaded_rows_by_backend: dict[str, list[dict[str, Any]]] = {}
++        failed_by_backend: dict[str, dict[str, str]] = {name: {} for name in backend_names}
++        backend_inventory_ok: dict[str, bool] = {}
++        backend_inventory_status: dict[str, dict[str, str]] = {}
++        for backend in backend_names:
++            if _stop_requested(should_stop):
++                failed["operation"] = "unload cancelled"
++                break
++            if time.monotonic() >= unload_deadline:
++                failed[backend] = "unload deadline exceeded before inventory"
++                backend_inventory_ok[backend] = False
++                continue
+             try:
+-                response = self.request(
+-                    "/api/ps",
+-                    timeout=max(0.0, unload_deadline - time.monotonic()),
+-                    should_stop=should_stop,
+-                    deadline=unload_deadline,
+-                )
+-            except Exception:
+-                response = {"error": "backend unavailable"}
+-            if _stop_requested(should_stop):
+-                return {
+-                    "success": False,
+-                    "backend_available": False,
+-                    "unloaded": unloaded,
+-                    "failed": {"operation": "unload cancelled"},
+-                    "cancelled": True,
+-                }
+-            if (
+-                not isinstance(response, dict)
+-                or "error" in response
+-                or not isinstance(response.get("models"), list)
+-            ):
+-                return {
+-                    "success": False,
+-                    "backend_available": False,
+-                    "unloaded": unloaded,
+-                    "failed": {"backend": "backend unavailable"},
+-                }
+-            loaded_rows = response["models"]
+-            backend_available = True
+-        else:
+-            adapter_models = self.config.get("llama_cpp", {}).get("models", {})
+-            if not isinstance(adapter_models, dict) or not adapter_models:
+-                return {
+-                    "success": True,
+-                    "backend_available": False,
+-                    "unloaded": unloaded,
+-                    "failed": failed,
+-                }
+-            try:
+-                available_models = self.llama_cpp.available_models(should_stop=should_stop, deadline=unload_deadline)
++                if backend == "ollama":
++                    response = self.request(
++                        "/api/ps", timeout=max(0.0, unload_deadline - time.monotonic()),
++                        should_stop=should_stop, deadline=unload_deadline,
++                    )
++                    if not isinstance(response, dict) or "error" in response or not isinstance(response.get("models"), list):
++                        raise RuntimeError("backend unavailable")
++                    rows = response["models"]
++                    backend_inventory_status[backend] = {"ollama": "complete"}
++                else:
++                    rows, backend_inventory_status[backend] = read_llama_inventory()
+                 if _stop_requested(should_stop):
+                     raise InterruptedError("unload cancelled")
+-                if not available_models or time.monotonic() >= unload_deadline:
+-                    raise TimeoutError("backend unavailable")
+-                loaded_rows = self.llama_cpp.loaded_model_details(should_stop=should_stop, deadline=unload_deadline)
++                loaded_rows_by_backend[backend] = rows
++                backend_inventory_ok[backend] = True
++            except Exception as exc:
++                stopped = _stop_requested(should_stop)
++                failed[backend] = "unload cancelled" if stopped else ("backend unavailable" if isinstance(exc, RuntimeError) else type(exc).__name__)
++                backend_inventory_ok[backend] = False
++                backend_inventory_status[backend] = (
++                    dict(last_llama_endpoint_status) or {"llama.cpp": "unknown"}
++                    if backend == "llama_cpp" else {"ollama": "unknown"}
++                )
++
++        loaded_by_backend: dict[str, list[str]] = {name: [] for name in backend_names}
++        llama_endpoint_by_model: dict[str, str] = {}
++        for backend, rows in loaded_rows_by_backend.items():
++            for row_index, row in enumerate(rows):
++                if not isinstance(row, dict):
++                    failed_by_backend[backend][f"model_row_{row_index}"] = "loaded model row is not an object"
++                    continue
++                model = next(
++                    (value.strip() for field in ("name", "model") if isinstance((value := row.get(field)), str) and value.strip()),
++                    "",
++                )
++                if not model:
++                    failed_by_backend[backend][f"model_row_{row_index}"] = "loaded model row has no usable name or model"
++                    continue
++                if backend == "llama_cpp" and isinstance(row.get("endpoint_url"), str):
++                    endpoint_url = row["endpoint_url"]
++                    previous_endpoint = llama_endpoint_by_model.get(model)
++                    if previous_endpoint and previous_endpoint != endpoint_url:
++                        failed_by_backend[backend][model] = "served model ID is ambiguous across endpoints"
++                        continue
++                    llama_endpoint_by_model[model] = endpoint_url
++                if model not in loaded_by_backend[backend]:
++                    loaded_by_backend[backend].append(model)
++
++        cancelled = bool(_stop_requested(should_stop))
++        requested_by_backend: dict[str, list[str]] = {name: [] for name in backend_names}
++        for backend, models in loaded_by_backend.items():
++            for model_index, model in enumerate(models):
+                 if _stop_requested(should_stop):
+-                    raise InterruptedError("unload cancelled")
+-            except Exception:
+-                cancelled = _stop_requested(should_stop)
+-                failure_key = "operation" if cancelled else "backend"
+-                failure_reason = "unload cancelled" if cancelled else "backend unavailable"
+-                return {
+-                    "success": False,
+-                    "backend_available": False,
+-                    "unloaded": unloaded,
+-                    "failed": {failure_key: failure_reason},
+-                    **({"cancelled": True} if cancelled else {}),
+-                }
+-            backend_available = True
+-
+-        loaded_models: list[str] = []
+-        for row_index, row in enumerate(loaded_rows):
+-            if not isinstance(row, dict):
+-                failed[f"model_row_{row_index}"] = "loaded model row is not an object"
+-                continue
+-            model = ""
+-            for field in ("name", "model"):
+-                value = row.get(field)
+-                if isinstance(value, str) and value.strip():
+-                    model = value.strip()
++                    cancelled = True
++                    for pending in models[model_index:]:
++                        failed_by_backend[backend][pending] = "unload cancelled"
+                     break
+-            if not model:
+-                failed[f"model_row_{row_index}"] = "loaded model row has no usable name or model"
+-                continue
+-            # Preserve model tags (`name:tag`) exactly; strip only surrounding whitespace.
+-            if model not in loaded_models:
+-                loaded_models.append(model)
+-
+-        cancelled = False
+-        for model_index, model in enumerate(loaded_models):
+-            if _stop_requested(should_stop):
+-                failed.update({name: "unload cancelled" for name in loaded_models[model_index:]})
+-                cancelled = True
+-                break
+-            if time.monotonic() >= unload_deadline:
+-                failed[model] = "unload deadline exceeded"
+-                continue
+-            try:
+-                if ollama_enabled:
+-                    remaining = max(0.0, unload_deadline - time.monotonic())
+-                    response = self.request(
+-                        "/api/generate",
+-                        {"model": model, "prompt": "", "keep_alive": 0},
+-                        timeout=remaining,
+-                        should_stop=should_stop,
+-                        deadline=unload_deadline,
+-                    )
+-                    ok = (
+-                        isinstance(response, dict)
+-                        and "error" not in response
+-                        and response.get("done_reason") == "unload"
+-                    )
+-                    if ok:
+-                        self._invalidate_loaded_cache()
+-                else:
+-                    ok = self.unload_model(model, should_stop=should_stop, deadline=unload_deadline)
+-            except Exception as exc:
+-                failed[model] = "unload cancelled" if _stop_requested(should_stop) else type(exc).__name__
++                if time.monotonic() >= unload_deadline:
++                    failed_by_backend[backend][model] = "unload deadline exceeded"
++                    continue
++                requested_by_backend[backend].append(model)
++                try:
++                    if backend == "ollama":
++                        response = self.request(
++                            "/api/generate", {"model": model, "prompt": "", "keep_alive": 0},
++                            timeout=max(0.0, unload_deadline - time.monotonic()),
++                            should_stop=should_stop, deadline=unload_deadline,
++                        )
++                        ok = isinstance(response, dict) and "error" not in response and response.get("done_reason") == "unload"
++                        if ok:
++                            self._invalidate_loaded_cache()
++                    else:
++                        endpoint_url = llama_endpoint_by_model.get(model)
++                        if endpoint_url:
++                            ok = self.llama_cpp.unload_model(
++                                model, endpoint_url=endpoint_url,
++                                should_stop=should_stop, deadline=unload_deadline,
++                            )
++                        else:
++                            ok = self.llama_cpp.unload_model(model, should_stop=should_stop, deadline=unload_deadline)
++                except Exception as exc:
++                    ok = False
++                    failed_by_backend[backend][model] = "unload cancelled" if _stop_requested(should_stop) else type(exc).__name__
++                if not ok and model not in failed_by_backend[backend]:
++                    failed_by_backend[backend][model] = "unload cancelled" if _stop_requested(should_stop) else "unload failed or timed out"
+                 cancelled = cancelled or _stop_requested(should_stop)
+-                continue
+-
+-            if ok:
+-                unloaded.append(model)
+-            else:
+-                stopped = _stop_requested(should_stop)
+-                failed[model] = "unload cancelled" if stopped else "unload failed or timed out"
+-                cancelled = cancelled or stopped
+-
++
++        requested = [model for backend in backend_names for model in requested_by_backend[backend]]
++        for backend, errors in failed_by_backend.items():
++            for key, value in errors.items():
++                failed[f"{backend}:{key}" if len(backend_names) > 1 else key] = value
++
++        remaining_by_backend: dict[str, list[str] | None] = {name: None for name in backend_names}
++        verification_errors: list[str] = []
++        if _stop_requested(should_stop):
++            cancelled = True
++            verification_errors.append("unload cancelled before verification")
++        elif time.monotonic() >= unload_deadline:
++            verification_errors.append("unload deadline exceeded before verification")
++        else:
++            for backend in backend_names:
++                try:
++                    if backend == "ollama":
++                        response = self.request(
++                            "/api/ps", timeout=max(0.0, unload_deadline - time.monotonic()),
++                            should_stop=should_stop, deadline=unload_deadline,
++                        )
++                        if not isinstance(response, dict) or "error" in response or not isinstance(response.get("models"), list):
++                            raise RuntimeError("post-unload /api/ps unavailable")
++                        rows = response["models"]
++                    else:
++                        rows, post_endpoint_status = read_llama_inventory()
++                        backend_inventory_status[backend] = post_endpoint_status
++                    parsed: list[str] = []
++                    for row_index, row in enumerate(rows):
++                        if not isinstance(row, dict):
++                            raise ValueError(f"post-unload model row {row_index} is not an object")
++                        name = next(
++                            (value.strip() for field in ("name", "model") if isinstance((value := row.get(field)), str) and value.strip()),
++                            "",
++                        )
++                        if not name:
++                            raise ValueError(f"post-unload model row {row_index} has no usable name or model")
++                        if name not in parsed:
++                            parsed.append(name)
++                    if _stop_requested(should_stop):
++                        cancelled = True
++                        raise InterruptedError("unload cancelled during verification")
++                    if time.monotonic() >= unload_deadline:
++                        raise TimeoutError("unload deadline exceeded during verification")
++                    remaining_by_backend[backend] = parsed
++                except Exception as exc:
++                    if backend == "llama_cpp":
++                        backend_inventory_status[backend] = dict(last_llama_endpoint_status) or {"llama.cpp": "unknown"}
++                    reason = "unload cancelled during verification" if _stop_requested(should_stop) else str(exc) if isinstance(exc, (RuntimeError, ValueError, TimeoutError)) else f"post-unload verification failed: {type(exc).__name__}"
++                    verification_errors.append(f"{backend}: {reason}")
++
++        remaining_models = None if any(value is None for value in remaining_by_backend.values()) else [
++            model for backend in backend_names for model in (remaining_by_backend[backend] or [])
++        ]
++        if verification_errors:
++            failed["verification"] = "; ".join(verification_errors)
++        verified = (
++            not verification_errors
++            and all(backend_inventory_ok.get(name, False) for name in backend_names)
++            and not any(failed_by_backend.values())
++            and all(name not in (remaining_by_backend[backend] or []) for backend in backend_names for name in requested_by_backend[backend])
++        )
++        inventory_complete = all(backend_inventory_ok.get(name, False) for name in backend_names)
++        complete = remaining_models is not None and not remaining_models and inventory_complete
++        if remaining_models is not None:
++            unloaded = [
++                name for backend in backend_names for name in requested_by_backend[backend]
++                if name not in (remaining_by_backend[backend] or [])
++            ]
++        backend_available = bool(loaded_rows_by_backend)
+         result = {
+-            "success": not failed,
++            "success": complete and not failed,
+             "backend_available": backend_available,
+             "unloaded": unloaded,
+             "failed": failed,
++            "requested": requested,
++            "remaining": remaining_models,
++            "requested_by_backend": requested_by_backend,
++            "remaining_by_backend": remaining_by_backend,
++            "backend_inventory_status": backend_inventory_status,
++            "verified": verified,
++            "complete": complete,
++            "unverified": remaining_models is None or not inventory_complete,
++            "physical_vram_reclaimed": False,
+         }
+         if cancelled:
+             result["cancelled"] = True
+         return result
+ 
+-    def generate(self, model: str, prompt: str, *, system: str | None = None, options: dict[str, Any] | None = None, keep_alive: str | None = None) -> dict[str, Any]:
++    def generate(
++        self,
++        model: str,
++        prompt: str,
++        *,
++        system: str | None = None,
++        options: dict[str, Any] | None = None,
++        keep_alive: str | None = None,
++        project_settings: Any | None = None,
++        role: str = "",
++    ) -> dict[str, Any]:
+         options = dict(options or {})
+         payload: dict[str, Any] = {"model": model, "prompt": prompt, "stream": False, "options": options}
+         # Ollama expects `think` at the request top level.  Accepting it in the
+@@ -2306,13 +2429,28 @@
+             payload["system"] = system
+         if keep_alive:
+             payload["keep_alive"] = keep_alive
++        model, payload = self.model_policy.apply_project_settings(
++            model, payload, settings=project_settings, role=role,
++        )
+         return self.request("/api/generate", payload)
+ 
+-    def chat(self, model: str, messages: list[dict[str, Any]], *, options: dict[str, Any] | None = None, keep_alive: str | None = None) -> dict[str, Any]:
++    def chat(
++        self,
++        model: str,
++        messages: list[dict[str, Any]],
++        *,
++        options: dict[str, Any] | None = None,
++        keep_alive: str | None = None,
++        project_settings: Any | None = None,
++        role: str = "",
++    ) -> dict[str, Any]:
+         options = dict(options or {})
+         payload: dict[str, Any] = {"model": model, "messages": messages, "stream": False, "options": options}
+         if keep_alive:
+             payload["keep_alive"] = keep_alive
++        model, payload = self.model_policy.apply_project_settings(
++            model, payload, settings=project_settings, role=role,
++        )
+         return self.request("/api/chat", payload)
+ 
+     def embeddings(self, model: str, prompt: str) -> dict[str, Any]:
+diff --git a/src/local_ai_hub/model_policy.py b/src/local_ai_hub/model_policy.py
+--- a/src/local_ai_hub/model_policy.py
++++ b/src/local_ai_hub/model_policy.py
+@@ -204,6 +204,90 @@
+             clean["think"] = profile.think
+         return clean, profile
+ 
++    def apply_project_settings(
++        self,
++        model: str,
++        payload: dict[str, Any],
++        *,
++        settings: Any | None,
++        role: str = "",
++    ) -> tuple[str, dict[str, Any]]:
++        """Apply request-scoped project model context to a local-model payload.
++
++        Settings are passed per call and never retained on the shared runtime, so
++        concurrent repositories cannot inherit each other's model profile or prompt.
++        """
++        clean = dict(payload)
++        if settings is None:
++            return model, clean
++
++        def setting(name: str, default: Any = None) -> Any:
++            if isinstance(settings, dict):
++                return settings.get(name, default)
++            return getattr(settings, name, default)
++
++        profile_name = str(setting("model_profile", "balanced") or "balanced").strip().lower()
++        role_key = {
++            "background": "background_code",
++            "background_code": "background_code",
++            "fast": "fast_code",
++            "fast_code": "fast_code",
++            "smart": "heavy_code",
++            "heavy": "heavy_code",
++            "heavy_code": "heavy_code",
++            "reasoning": "reasoning",
++            "general": "general",
++            "vision": "vision",
++        }.get(str(role or "").strip().lower())
++        if role_key is None:
++            matching_roles = [key for key, value in self.models.items() if str(value or "") == str(model or "")]
++            role_key = matching_roles[0] if len(matching_roles) == 1 else None
++
++        if profile_name in {"integrated", "balanced", "high", "max"} and role_key:
++            from .hardware import profile_overrides
++
++            hardware = self.config.get("_hardware", {})
++            current_profile = str(
++                (hardware.get("profile") if isinstance(hardware, dict) else "")
++                or self.config.get("hardware", {}).get("profile", "balanced")
++                or "balanced"
++            ).strip().lower()
++            if current_profile == "auto":
++                current_profile = "balanced"
++            current_models = profile_overrides(current_profile, hardware if isinstance(hardware, dict) else {}).get("models", {})
++            project_models = profile_overrides(profile_name, hardware if isinstance(hardware, dict) else {}).get("models", {})
++            configured_model = str(self.models.get(role_key, "") or "")
++            if (
++                profile_name != current_profile
++                and configured_model
++                and str(model or "") == configured_model
++                and configured_model == str(current_models.get(role_key, "") or "")
++                and project_models.get(role_key)
++            ):
++                model = str(project_models[role_key])
++                clean["model"] = model
++
++        prefix = setting("system_prompt_prefix")
++        if isinstance(prefix, str) and prefix.strip():
++            block = "Untrusted project context (subordinate to system policy):\n" + prefix
++            if "messages" in clean and isinstance(clean.get("messages"), list):
++                messages = [dict(message) if isinstance(message, dict) else message for message in clean["messages"]]
++                system_index = next(
++                    (index for index in range(len(messages) - 1, -1, -1)
++                     if isinstance(messages[index], dict) and str(messages[index].get("role", "")).lower() == "system"),
++                    None,
++                )
++                if system_index is None:
++                    messages.insert(0, {"role": "system", "content": block})
++                else:
++                    existing = messages[system_index].get("content", "")
++                    messages[system_index]["content"] = (str(existing).rstrip() + "\n\n" + block).lstrip()
++                clean["messages"] = messages
++            else:
++                existing = clean.get("system", "")
++                clean["system"] = (str(existing).rstrip() + "\n\n" + block).lstrip()
++        return model, clean
++
+     def summary(self) -> dict[str, Any]:
+         models = []
+         seen: set[str] = set()
+diff --git a/src/local_ai_hub/llama_cpp.py b/src/local_ai_hub/llama_cpp.py
+--- a/src/local_ai_hub/llama_cpp.py
++++ b/src/local_ai_hub/llama_cpp.py
+@@ -528,16 +528,21 @@
+         timeout: float = 0.8,
+         should_stop: Any | None = None,
+         deadline: float | None = None,
++        *,
++        force_refresh: bool = False,
++        strict: bool = False,
+     ) -> dict[str, dict[str, Any]]:
+         now = time.monotonic()
+         request_deadline = now + min(max(0.001, float(timeout)), 1.0)
+         if deadline is not None:
+             request_deadline = min(request_deadline, float(deadline))
+         if request_deadline <= now or _stop_requested(should_stop):
++            if strict:
++                raise TimeoutError("llama.cpp model inventory deadline expired")
+             return {}
+         with self._health_lock:
+             cached = self._models.get(url)
+-            if cached and now - cached[0] < 1.0:
++            if not force_refresh and cached and now - cached[0] < 1.0:
+                 return cached[1]
+         result: dict[str, dict[str, Any]] = {}
+         try:
+@@ -547,12 +552,23 @@
+                 return {}
+             with _open_interruptible_response(req, request_deadline, should_stop) as response, _cancel_response_on_stop(response, should_stop, request_deadline):
+                 body = json.loads(_read_response_body(response, request_deadline, should_stop).decode("utf-8", errors="replace") or "{}")
+-            rows = body.get("data", []) if isinstance(body, dict) else []
+-            if isinstance(rows, list):
+-                result = {str(row.get("id")): row for row in rows if isinstance(row, dict) and row.get("id")}
+-        except Exception:
+-            pass
++            rows = body.get("data") if isinstance(body, dict) else None
++            if not isinstance(rows, list):
++                if strict:
++                    raise ValueError("llama.cpp model inventory response is incomplete")
++            else:
++                for row in rows:
++                    if not isinstance(row, dict) or not isinstance(row.get("id"), str) or not row["id"].strip():
++                        if strict:
++                            raise ValueError("llama.cpp model inventory contains an invalid model row")
++                        continue
++                    result[row["id"].strip()] = row
++        except Exception as exc:
++            if strict:
++                raise RuntimeError("llama.cpp model inventory unavailable") from exc
+         if _stop_requested(should_stop) or time.monotonic() >= request_deadline:
++            if strict:
++                raise TimeoutError("llama.cpp model inventory deadline expired")
+             return {}
+         with self._health_lock:
+             self._models[url] = (time.monotonic(), result)
+@@ -675,39 +691,103 @@
+     def is_online(self) -> bool:
+         return bool(self.available_models())
+ 
++    def loaded_model_inventory(
++        self,
++        *,
++        should_stop: Any | None = None,
++        deadline: float | None = None,
++        force_refresh: bool = False,
++    ) -> dict[str, Any]:
++        models = self.settings.get("models", {})
++        mode = str(self.settings.get("mode", "auto")).strip().lower()
++        if mode == "off" or not models:
++            return {"complete": True, "models": [], "errors": {}, "endpoint_status": {}}
++        if not isinstance(models, dict):
++            return {"complete": False, "models": [], "errors": {"configuration": "invalid model map"}, "endpoint_status": {}}
++
++        by_endpoint: dict[str, list[str]] = {}
++        errors: dict[str, str] = {}
++        endpoint_status: dict[str, str] = {}
++        for model, entry in models.items():
++            selected = self._entry(str(model))
++            if selected is None:
++                errors[str(model)] = "configured endpoint unavailable"
++                endpoint_status[str(model)] = "unknown"
++                continue
++            by_endpoint.setdefault(selected[1], []).append(str(model))
++
++        rows: list[dict[str, Any]] = []
++        for url, configured_names in by_endpoint.items():
++            if _stop_requested(should_stop) or (deadline is not None and time.monotonic() >= deadline):
++                for name in configured_names:
++                    errors[name] = "inventory cancelled or deadline exceeded"
++                    endpoint_status[name] = "unknown"
++                continue
++            try:
++                served = self._model_info(
++                    url, should_stop=should_stop, deadline=deadline,
++                    force_refresh=force_refresh, strict=True,
++                )
++                active_rows: list[dict[str, Any]] = []
++                for served_id, detail in served.items():
++                    status = detail.get("status") if isinstance(detail, dict) else None
++                    state = str(status.get("value", "")).strip().lower() if isinstance(status, dict) else ""
++                    if state not in {"loaded", "loading", "unloaded", "failed", "unavailable"}:
++                        raise ValueError("llama.cpp model inventory omitted a usable load status")
++                    if state in {"loaded", "loading"}:
++                        active_rows.append({
++                            "name": served_id,
++                            "model": served_id,
++                            "status": state,
++                            "parameter_size": "",
++                            "quantization": "GGUF",
++                            "size_bytes": 0,
++                            "vram_bytes": 0,
++                            "cpu_bytes": 0,
++                            "gpu_fraction": 0.0,
++                            "cpu_offload_fraction": 0.0,
++                            "context_length": 0,
++                            "backend": "llama.cpp-sycl",
++                            "endpoint_url": url,
++                        })
++                rows.extend(active_rows)
++                for name in configured_names:
++                    endpoint_status[name] = "complete"
++            except Exception as exc:
++                reason = "cancelled" if _stop_requested(should_stop) else (
++                    "deadline exceeded" if isinstance(exc, TimeoutError) else type(exc).__name__
++                )
++                for name in configured_names:
++                    errors[name] = reason
++                    endpoint_status[name] = "unknown"
++        return {
++            "complete": not errors and len(endpoint_status) == len(models),
++            "models": rows,
++            "errors": errors,
++            "endpoint_status": endpoint_status,
++        }
++
+     def loaded_model_details(
+         self,
+         *,
+         should_stop: Any | None = None,
+         deadline: float | None = None,
++        force_refresh: bool = False,
+     ) -> list[dict[str, Any]]:
+-        models = self.settings.get("models", {})
+-        if not isinstance(models, dict):
+-            return []
+-        rows = []
+-        for model in self.available_models(should_stop=should_stop, deadline=deadline):
+-            if _stop_requested(should_stop) or (deadline is not None and time.monotonic() >= deadline):
+-                break
+-            entry = models.get(model, {})
+-            selected = self._entry(model)
+-            status = self._model_info(
+-                selected[1], should_stop=should_stop, deadline=deadline,
+-            ).get(str(entry.get("served_model") or model), {}).get("status", {}) if selected else {}
+-            if isinstance(status, dict) and str(status.get("value", "")).lower() != "loaded":
+-                continue
+-            rows.append({
+-                "name": model,
+-                "parameter_size": "",
+-                "quantization": "GGUF",
+-                "size_bytes": 0,
+-                "vram_bytes": 0,
+-                "cpu_bytes": 0,
+-                "gpu_fraction": 0.0,
+-                "cpu_offload_fraction": 0.0,
+-                "context_length": int(entry.get("context_length", 0) or 0) if isinstance(entry, dict) else 0,
+-                "backend": "llama.cpp-sycl",
+-            })
+-        return rows
++        if not force_refresh:
++            now = time.monotonic()
++            if now - self._models.get("__loaded_details__", (0.0, {}))[0] < 1.0:
++                cached = self._models.get("__loaded_details__", (0.0, {}))[1]
++                if isinstance(cached, list):
++                    return list(cached)
++        inventory = self.loaded_model_inventory(
++            should_stop=should_stop, deadline=deadline, force_refresh=force_refresh,
++        )
++        if inventory["complete"] is not True:
++            raise RuntimeError("llama.cpp loaded-model inventory is incomplete")
++        rows = inventory["models"]
++        self._models["__loaded_details__"] = (time.monotonic(), rows)
++        return list(rows)
+ 
+     def model_capabilities(self, model: str) -> dict[str, Any] | None:
+         """Expose Ollama-shaped capability metadata for a mapped model.
+@@ -747,14 +827,40 @@
+         self,
+         model: str,
+         *,
++        endpoint_url: str | None = None,
+         should_stop: Any | None = None,
+         deadline: float | None = None,
+     ) -> bool:
+         selected = self._entry(model)
+-        if not selected:
+-            return False
+-        entry, url = selected
+-        alias = str(entry.get("served_model") or model)
++        if selected is None:
++            models = self.settings.get("models", {})
++            if isinstance(models, dict):
++                for configured_name, configured_entry in models.items():
++                    if not isinstance(configured_entry, dict):
++                        continue
++                    if str(configured_entry.get("served_model") or "") == str(model):
++                        selected = self._entry(str(configured_name))
++                        if selected:
++                            break
++        if endpoint_url is not None:
++            requested_url = _loopback_url(endpoint_url)
++            configured_urls = {
++                _loopback_url(entry.get("url"))
++                for entry in self.settings.get("models", {}).values()
++                if isinstance(entry, dict)
++            } if isinstance(self.settings.get("models", {}), dict) else set()
++            if not requested_url or requested_url not in configured_urls:
++                return False
++            selected = ({}, requested_url)
++            alias = str(model or "").strip()
++        elif selected:
++            entry, _url = selected
++            alias = str(model) if str(entry.get("served_model") or "") == str(model) else str(entry.get("served_model") or model)
++        else:
++            return False
++        if not selected or not alias:
++            return False
++        _entry, url = selected
+         try:
+             body = json_dumps({"model": alias}).encode("utf-8")
+             req = Request(f"{url}/models/unload", data=body, headers={"Content-Type": "application/json"})
+diff --git a/tests/test_t12_gaming_pause_loaded_rows.py b/tests/test_t12_gaming_pause_loaded_rows.py
+--- a/tests/test_t12_gaming_pause_loaded_rows.py
++++ b/tests/test_t12_gaming_pause_loaded_rows.py
+@@ -26,11 +26,14 @@
+         {"name": "prefer-name:Q5_K_M", "model": "prefer-name"},
+     ]
+     calls: list[tuple[str, dict | None]] = []
+-
+-    def request(endpoint, payload=None, timeout=None, *, should_stop=None, deadline=None):
++    ps_calls = 0
++
++    def request(endpoint, payload=None, timeout=None, *, should_stop=None, deadline=None):
++        nonlocal ps_calls
+         calls.append((endpoint, payload))
+         if endpoint == "/api/ps":
+-            return {"models": rows}
++            ps_calls += 1
++            return {"models": rows if ps_calls == 1 else []}
+         if endpoint == "/api/generate":
+             return {"done": True, "done_reason": "unload"}
+         pytest.fail(f"gaming pause must not call {endpoint}")
+@@ -49,6 +52,11 @@
+     ]
+     assert result["success"] is True
+     assert result["unloaded"] == expected_models
++    assert result["requested"] == expected_models
++    assert result["remaining"] == []
++    assert result["verified"] is True
++    assert result["complete"] is True
++    assert result["unverified"] is False
+     assert result["failed"] == {}
+     assert [payload["model"] for endpoint, payload in calls if endpoint == "/api/generate"] == expected_models
+     assert all(payload["keep_alive"] == 0 for endpoint, payload in calls if endpoint == "/api/generate")
+@@ -68,11 +76,14 @@
+     stop_check = lambda: False
+     deadline = time.monotonic() + 1.0
+     calls: list[tuple[str, object, object]] = []
+-
+-    def request(endpoint, payload=None, timeout=None, *, should_stop=None, deadline=None):
++    ps_calls = 0
++
++    def request(endpoint, payload=None, timeout=None, *, should_stop=None, deadline=None):
++        nonlocal ps_calls
+         calls.append((endpoint, should_stop, deadline))
+         if endpoint == "/api/ps":
+-            return {"models": [{"name": "external/model:tag"}]}
++            ps_calls += 1
++            return {"models": [{"name": "external/model:tag"}] if ps_calls == 1 else []}
+         if endpoint == "/api/generate":
+             return {"done": True, "done_reason": "unload"}
+         pytest.fail(f"gaming pause must not call {endpoint}")
+@@ -87,7 +98,13 @@
+ 
+     assert result["success"] is True
+     assert result["unloaded"] == ["external/model:tag"]
+-    assert calls == [("/api/ps", stop_check, deadline), ("/api/generate", stop_check, deadline)]
++    assert result["verified"] is True
++    assert result["complete"] is True
++    assert calls == [
++        ("/api/ps", stop_check, deadline),
++        ("/api/generate", stop_check, deadline),
++        ("/api/ps", stop_check, deadline),
++    ]
+ 
+ 
+ def test_gaming_pause_stops_before_query_when_cancelled(
+@@ -112,3 +129,353 @@
+     assert result["success"] is False
+     assert result["cancelled"] is True
+     assert result["unloaded"] == []
++
++
++def test_gaming_pause_reports_exact_remaining_names_when_unload_is_not_verified(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    runtime = OllamaRuntime(
++        {
++            "server": {"state_dir": str(tmp_path), "ollama_url": "http://127.0.0.1:11434"},
++            "ollama": {"enabled": True, "request_attempts": 1},
++            "models": {"fast_code": "configured-fast"},
++        }
++    )
++    ps_calls = 0
++
++    def request(endpoint, payload=None, timeout=None, *, should_stop=None, deadline=None):
++        nonlocal ps_calls
++        if endpoint == "/api/ps":
++            ps_calls += 1
++            if ps_calls == 1:
++                return {"models": [{"name": "configured-fast:Q4_K_M"}]}
++            return {"models": [{"name": "configured-fast:Q4_K_M"}, {"name": "external:tag"}]}
++        if endpoint == "/api/generate":
++            return {"done": True, "done_reason": "unload"}
++        pytest.fail(f"gaming pause must not call {endpoint}")
++
++    monkeypatch.setattr(runtime, "request", request)
++
++    result = runtime.unload_configured_models(timeout_seconds=0.5)
++
++    assert result["success"] is False
++    assert result["requested"] == ["configured-fast:Q4_K_M"]
++    assert result["unloaded"] == []
++    assert result["remaining"] == ["configured-fast:Q4_K_M", "external:tag"]
++    assert result["verified"] is False
++    assert result["complete"] is False
++    assert result["unverified"] is False
++
++
++def test_gaming_pause_marks_post_query_failure_unverified(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    runtime = OllamaRuntime(
++        {
++            "server": {"state_dir": str(tmp_path), "ollama_url": "http://127.0.0.1:11434"},
++            "ollama": {"enabled": True, "request_attempts": 1},
++            "models": {"fast_code": "configured-fast"},
++        }
++    )
++    ps_calls = 0
++
++    def request(endpoint, payload=None, timeout=None, *, should_stop=None, deadline=None):
++        nonlocal ps_calls
++        if endpoint == "/api/ps":
++            ps_calls += 1
++            return {"models": [{"name": "configured-fast:latest"}]} if ps_calls == 1 else {"error": "timeout"}
++        if endpoint == "/api/generate":
++            return {"done": True, "done_reason": "unload"}
++        pytest.fail(f"gaming pause must not call {endpoint}")
++
++    monkeypatch.setattr(runtime, "request", request)
++
++    result = runtime.unload_configured_models(timeout_seconds=0.5)
++
++    assert result["success"] is False
++    assert result["requested"] == ["configured-fast:latest"]
++    assert result["unloaded"] == []
++    assert result["remaining"] is None
++    assert result["verified"] is False
++    assert result["complete"] is False
++    assert result["unverified"] is True
++
++
++def test_gaming_unloads_both_enabled_backends(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    runtime = OllamaRuntime(
++        {
++            "server": {"state_dir": str(tmp_path), "ollama_url": "http://127.0.0.1:11434"},
++            "ollama": {"enabled": True, "request_attempts": 1},
++            "llama_cpp": {"mode": "on", "models": {"llama-model": {"url": "http://127.0.0.1:12438"}}},
++            "models": {"fast_code": "ollama-model"},
++        }
++    )
++    ollama_ps = 0
++    llama_queries = 0
++    llama_unloads: list[str] = []
++    calls: list[str] = []
++
++    class FakeLlamaCpp:
++        def available_models(self, *, should_stop=None, deadline=None):
++            return ["llama-model"]
++
++        def loaded_model_details(self, *, should_stop=None, deadline=None):
++            nonlocal llama_queries
++            llama_queries += 1
++            return [{"name": "llama-model:Q4_K_M"}] if llama_queries == 1 else []
++
++        def unload_model(self, model, *, should_stop=None, deadline=None):
++            llama_unloads.append(model)
++            return True
++
++    def request(endpoint, payload=None, timeout=None, *, should_stop=None, deadline=None):
++        nonlocal ollama_ps
++        calls.append(endpoint)
++        if endpoint == "/api/ps":
++            ollama_ps += 1
++            return {"models": [{"name": "ollama-model:latest"}] if ollama_ps == 1 else []}
++        if endpoint == "/api/generate":
++            return {"done": True, "done_reason": "unload"}
++        pytest.fail(f"gaming pause must not call {endpoint}")
++
++    monkeypatch.setattr(runtime, "request", request)
++    runtime.llama_cpp = FakeLlamaCpp()
++
++    result = runtime.unload_configured_models(timeout_seconds=0.5)
++
++    assert result["success"] is True
++    assert result["requested_by_backend"] == {
++        "ollama": ["ollama-model:latest"],
++        "llama_cpp": ["llama-model:Q4_K_M"],
++    }
++    assert result["remaining_by_backend"] == {"ollama": [], "llama_cpp": []}
++    assert result["complete"] is True
++    assert result["physical_vram_reclaimed"] is False
++    assert llama_unloads == ["llama-model:Q4_K_M"]
++    assert calls == ["/api/ps", "/api/generate", "/api/ps"]
++
++
++def test_gaming_unload_continues_other_backend_after_partial_failure(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    runtime = OllamaRuntime(
++        {
++            "server": {"state_dir": str(tmp_path), "ollama_url": "http://127.0.0.1:11434"},
++            "ollama": {"enabled": True, "request_attempts": 1},
++            "llama_cpp": {"mode": "on", "models": {"llama-model": {"url": "http://127.0.0.1:12438"}}},
++            "models": {"fast_code": "ollama-model"},
++        }
++    )
++    ollama_ps = 0
++    llama_queries = 0
++    llama_unloads: list[str] = []
++
++    class FakeLlamaCpp:
++        def available_models(self, *, should_stop=None, deadline=None):
++            return ["llama-model"]
++
++        def loaded_model_details(self, *, should_stop=None, deadline=None):
++            nonlocal llama_queries
++            llama_queries += 1
++            return [{"name": "llama-model:latest"}] if llama_queries == 1 else []
++
++        def unload_model(self, model, *, should_stop=None, deadline=None):
++            llama_unloads.append(model)
++            return True
++
++    def request(endpoint, payload=None, timeout=None, *, should_stop=None, deadline=None):
++        nonlocal ollama_ps
++        if endpoint == "/api/ps":
++            ollama_ps += 1
++            return {"models": [{"name": "ollama-model:latest"}] if ollama_ps == 1 else [{"name": "ollama-model:latest"}]}
++        if endpoint == "/api/generate":
++            return {"error": "runner rejected unload"}
++        pytest.fail(f"gaming pause must not call {endpoint}")
++
++    monkeypatch.setattr(runtime, "request", request)
++    runtime.llama_cpp = FakeLlamaCpp()
++
++    result = runtime.unload_configured_models(timeout_seconds=0.5)
++
++    assert result["success"] is False
++    assert result["requested_by_backend"]["ollama"] == ["ollama-model:latest"]
++    assert result["requested_by_backend"]["llama_cpp"] == ["llama-model:latest"]
++    assert result["remaining_by_backend"] == {
++        "ollama": ["ollama-model:latest"],
++        "llama_cpp": [],
++    }
++    assert result["verified"] is False
++    assert result["complete"] is False
++    assert result["failed"]["ollama:ollama-model:latest"] == "unload failed or timed out"
++    assert llama_unloads == ["llama-model:latest"]
++
++
++def test_gaming_auto_backend_discovery_failure_cannot_report_success(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    runtime = OllamaRuntime(
++        {
++            "server": {"state_dir": str(tmp_path), "ollama_url": "http://127.0.0.1:11434"},
++            "ollama": {"enabled": True, "request_attempts": 1},
++            "llama_cpp": {"mode": "auto", "models": {"llama-model": {"url": "http://127.0.0.1:12438"}}},
++        }
++    )
++
++    class FakeLlamaCpp:
++        def available_models(self, *, should_stop=None, deadline=None):
++            raise TimeoutError("inventory timed out")
++
++        def loaded_model_details(self, *, should_stop=None, deadline=None):
++            return []
++
++        def unload_model(self, *_args, **_kwargs):
++            pytest.fail("no model may unload without initial inventory")
++
++    monkeypatch.setattr(runtime, "request", lambda endpoint, *_a, **_k: {"models": []} if endpoint == "/api/ps" else pytest.fail(endpoint))
++    runtime.llama_cpp = FakeLlamaCpp()
++
++    result = runtime.unload_configured_models(timeout_seconds=0.5)
++
++    assert result["success"] is False
++    assert result["verified"] is False
++    assert result["complete"] is False
++    assert result["unverified"] is True
++    assert result["failed"]
++    assert "llama_cpp" in result["failed"]
++
++
++def test_gaming_post_unload_inventory_timeout_stays_unverified(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    runtime = OllamaRuntime(
++        {
++            "server": {"state_dir": str(tmp_path), "ollama_url": "http://127.0.0.1:11434"},
++            "ollama": {"enabled": True, "request_attempts": 1},
++            "llama_cpp": {"mode": "on", "models": {"llama-model": {"url": "http://127.0.0.1:12438"}}},
++        }
++    )
++    llama_queries = 0
++    ollama_queries = 0
++
++    class FakeLlamaCpp:
++        def available_models(self, *, should_stop=None, deadline=None):
++            return ["llama-model"]
++
++        def loaded_model_details(self, *, should_stop=None, deadline=None):
++            nonlocal llama_queries
++            llama_queries += 1
++            if llama_queries == 1:
++                return [{"name": "llama-model:latest"}]
++            raise TimeoutError("post-unload inventory timed out")
++
++        def unload_model(self, model, *, should_stop=None, deadline=None):
++            return True
++
++    def request(endpoint, payload=None, **_kwargs):
++        nonlocal ollama_queries
++        if endpoint == "/api/ps":
++            ollama_queries += 1
++            return {"models": []}
++        if endpoint == "/api/generate":
++            return {"done": True, "done_reason": "unload"}
++        pytest.fail(endpoint)
++
++    monkeypatch.setattr(runtime, "request", request)
++    runtime.llama_cpp = FakeLlamaCpp()
++
++    result = runtime.unload_configured_models(timeout_seconds=0.5)
++
++    assert result["success"] is False
++    assert result["requested"] == ["llama-model:latest"]
++    assert result["remaining"] is None
++    assert result["verified"] is False
++    assert result["complete"] is False
++    assert result["unverified"] is True
++
++
++def test_gaming_auto_empty_unknown_llama_inventory_fails_closed(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    runtime = OllamaRuntime(
++        {
++            "server": {"state_dir": str(tmp_path), "ollama_url": "http://127.0.0.1:11434"},
++            "ollama": {"enabled": True, "request_attempts": 1},
++            "llama_cpp": {"mode": "auto", "models": {"llama-model": {"url": "http://127.0.0.1:12438"}}},
++        }
++    )
++
++    class FakeLlamaCpp:
++        def available_models(self, **_kwargs):
++            return []
++
++        def loaded_model_inventory(self, *, force_refresh=False, **_kwargs):
++            assert force_refresh is True
++            return {
++                "complete": False, "models": [], "errors": {"llama-model": "inventory timeout"},
++                "endpoint_status": {"http://127.0.0.1:12438": "unknown"},
++            }
++
++        def unload_model(self, *_args, **_kwargs):
++            pytest.fail("unknown inventory must prevent unload")
++
++    monkeypatch.setattr(
++        runtime,
++        "request",
++        lambda endpoint, *_args, **_kwargs: {"models": []} if endpoint == "/api/ps" else pytest.fail(endpoint),
++    )
++    runtime.llama_cpp = FakeLlamaCpp()
++
++    result = runtime.unload_configured_models(timeout_seconds=0.5)
++
++    assert result["success"] is False
++    assert result["verified"] is False
++    assert result["complete"] is False
++    assert result["physical_vram_reclaimed"] is False
++    assert "llama_cpp" in result["failed"]
++    assert result["backend_inventory_status"]["llama_cpp"] == {"http://127.0.0.1:12438": "unknown"}
++
++
++def test_gaming_unloads_unmapped_llama_served_id_with_fresh_pre_and_post_inventory(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    endpoint = "http://127.0.0.1:12438"
++    runtime = OllamaRuntime(
++        {
++            "server": {"state_dir": str(tmp_path), "ollama_url": "http://127.0.0.1:11434"},
++            "ollama": {"enabled": False},
++            "llama_cpp": {"mode": "auto", "models": {"configured-name": {"url": endpoint}}},
++        }
++    )
++    inventories: list[bool] = []
++    unloaded: list[tuple[str, str | None]] = []
++
++    class FakeLlamaCpp:
++        def loaded_model_inventory(self, *, force_refresh=False, **_kwargs):
++            inventories.append(force_refresh)
++            rows = [{"name": "unmapped-served-id", "endpoint_url": endpoint}] if len(inventories) == 1 else []
++            return {"complete": True, "models": rows, "errors": {}}
++
++        def unload_model(self, model, *, endpoint_url=None, **_kwargs):
++            unloaded.append((model, endpoint_url))
++            return True
++
++    runtime.llama_cpp = FakeLlamaCpp()
++
++    result = runtime.unload_configured_models(timeout_seconds=0.5)
++
++    assert inventories == [True, True]
++    assert unloaded == [("unmapped-served-id", endpoint)]
++    assert result["success"] is True
++    assert result["requested_by_backend"] == {"llama_cpp": ["unmapped-served-id"]}
++    assert result["remaining_by_backend"] == {"llama_cpp": []}
++    assert result["physical_vram_reclaimed"] is False
+diff --git a/tests/test_t12_project_model_consumer.py b/tests/test_t12_project_model_consumer.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_t12_project_model_consumer.py
+@@ -0,0 +1,440 @@
++from __future__ import annotations
++
++from concurrent.futures import ThreadPoolExecutor
++from pathlib import Path
++import threading
++from types import SimpleNamespace
++from unittest.mock import MagicMock
++
++import pytest
++
++import local_ai_hub.ollama as ollama_module
++import local_ai_hub.services as services_module
++from local_ai_hub.ollama import OllamaRuntime
++from local_ai_hub.repo_tools import RepositoryTools
++from local_ai_hub.services import LocalAIServices, generation_cache_key
++from local_ai_hub.trace_context import reset_observer, set_observer
++
++_TEST_SOURCE_ROOT = Path(__file__).resolve().parents[1]
++assert Path(ollama_module.__file__).resolve() == _TEST_SOURCE_ROOT / "src" / "local_ai_hub" / "ollama.py"
++assert Path(services_module.__file__).resolve() == _TEST_SOURCE_ROOT / "src" / "local_ai_hub" / "services.py"
++
++
++def test_project_model_profile_and_prefix_are_request_scoped_for_local_generate(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    runtime = OllamaRuntime(
++        {
++            "server": {"state_dir": str(tmp_path), "ollama_url": "http://127.0.0.1:11434"},
++            "ollama": {"enabled": True},
++            "hardware": {"profile": "balanced"},
++            "_hardware": {"profile": "balanced", "ram": {"total_gb": 32}, "gpus": []},
++            "models": {"general": "qwen2.5-coder:7b"},
++        }
++    )
++    calls: list[tuple[str, dict]] = []
++    monkeypatch.setattr(runtime, "request", lambda endpoint, payload=None, **_kw: calls.append((endpoint, payload)) or {"ok": True})
++
++    runtime.generate(
++        "qwen2.5-coder:7b",
++        "task",
++        system="Base system policy.",
++        role="general",
++        project_settings=SimpleNamespace(
++            model_profile="high",
++            system_prompt_prefix="Repository alpha context.",
++        ),
++    )
++    runtime.generate(
++        "qwen2.5-coder:7b",
++        "repo beta task",
++        system="Base system policy.",
++        role="general",
++        project_settings=SimpleNamespace(
++            model_profile="balanced",
++            system_prompt_prefix="Repository beta context.",
++        ),
++    )
++    runtime.generate("qwen2.5-coder:7b", "no project task", system="Base system policy.", role="general")
++
++    first = calls[0][1]
++    second = calls[1][1]
++    third = calls[2][1]
++    assert first["model"] == "qwen3.5:9b"
++    assert first["system"].startswith("Base system policy.")
++    assert "Untrusted project context (subordinate to system policy):\nRepository alpha context." in first["system"]
++    assert second["model"] == "qwen2.5-coder:7b"
++    assert "Repository beta context." in second["system"]
++    assert "Repository alpha context" not in second["system"]
++    assert "Repository alpha context" not in third["system"]
++    assert "Repository beta context" not in third["system"]
++
++
++def test_project_prompt_prefix_is_attached_to_chat_system_message_only(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++) -> None:
++    runtime = OllamaRuntime(
++        {
++            "server": {"state_dir": str(tmp_path), "ollama_url": "http://127.0.0.1:11434"},
++            "ollama": {"enabled": True},
++            "models": {"general": "local-model"},
++        }
++    )
++    calls: list[tuple[str, dict]] = []
++    monkeypatch.setattr(runtime, "request", lambda endpoint, payload=None, **_kw: calls.append((endpoint, payload)) or {"ok": True})
++
++    runtime.chat(
++        "local-model",
++        [{"role": "system", "content": "System policy."}, {"role": "user", "content": "Question."}],
++        role="general",
++        project_settings=SimpleNamespace(model_profile="balanced", system_prompt_prefix="Project context."),
++    )
++
++    endpoint, payload = calls[0]
++    assert endpoint == "/api/chat"
++    assert payload["messages"][0]["content"].startswith("System policy.")
++    assert "Project context." in payload["messages"][0]["content"]
++    assert "Project context." not in payload["messages"][1]["content"]
++
++
++class _FakeTaskRuntime:
++    def __init__(self) -> None:
++        self.payloads: list[dict] = []
++
++    def is_online(self) -> bool:
++        return True
++
++    def request(self, endpoint, payload=None, **_kwargs):
++        assert endpoint == "/api/generate"
++        self.payloads.append(payload)
++        return {"response": "answer", "done": True}
++
++    def request_stream(self, endpoint, payload, on_chunk, **_kwargs):
++        assert endpoint == "/api/generate"
++        self.payloads.append(payload)
++        on_chunk("answer")
++        return {"response": "answer", "done": True}
++
++
++class _InlineScheduler:
++    def status(self) -> dict:
++        return {}
++
++    def submit(self, _model, _tenant, _source, work, **_kwargs):
++        return work()
++
++
++class _NoopSemanticCache:
++    def get(self, _scope, _query):
++        return None, 0.0
++
++    def set(self, _scope, _query, _value):
++        return None
++
++
++class _RecordingObserver:
++    def __init__(self) -> None:
++        self.requests: list[dict] = []
++
++    def model_request(self, payload) -> None:
++        self.requests.append(payload)
++
++    def output_delta(self, _text: str) -> None:
++        return None
++
++
++def _task_services(tmp_path: Path) -> LocalAIServices:
++    config = {
++        "server": {"state_dir": str(tmp_path / "hub-state"), "request_timeout_seconds": 5},
++        "models": {
++            "background_code": "qwen2.5-coder:1.5b",
++            "fast_code": "qwen2.5-coder:3b",
++            "heavy_code": "qwen2.5-coder:7b",
++            "reasoning": "qwen3.5:9b",
++            "general": "qwen2.5-coder:7b",
++            "vision": "qwen3.5:9b",
++        },
++        "hardware": {"profile": "balanced"},
++        "_hardware": {"profile": "balanced", "ram": {"total_gb": 32}, "gpus": []},
++        "routing": {"prefer_resident_model": False},
++        "cache": {"generation": True, "embeddings": False},
++        "resilience": {"model_fallback_enabled": False, "serve_stale_on_error": False},
++        "token_saving": {"compact_responses": False},
++    }
++    runtime = _FakeTaskRuntime()
++    service = LocalAIServices(
++        config=config,
++        runtime=runtime,
++        scheduler=_InlineScheduler(),
++        embeddings=MagicMock(),
++        artifacts=MagicMock(),
++        telemetry=MagicMock(),
++        repo_tools=RepositoryTools(config),
++    )
++    service.semantic_cache = _NoopSemanticCache()
++    service.runtime = runtime
++    return service
++
++
++def test_local_task_resolves_project_model_and_prompt_without_cross_repo_cache_or_trace_leak(
++    tmp_path: Path,
++) -> None:
++    pytest.importorskip("local_ai_hub.project_config")
++    service = _task_services(tmp_path)
++    repo_a = tmp_path / "repo-a"
++    repo_b = tmp_path / "repo-b"
++    repo_a.mkdir()
++    repo_b.mkdir()
++    project_toml = 'model_profile = "high"\nsystem_prompt_prefix = "Repository-only guidance alpha."\n'
++    (repo_a / ".local-ai.toml").write_text(project_toml, encoding="utf-8")
++    (repo_b / ".local-ai.toml").write_text(project_toml, encoding="utf-8")
++    service.repo_tools.git_snapshot = lambda root: SimpleNamespace(
++        common_dir=str(root), repository_revision="same-revision",
++    )
++    project_a, _digest_a, namespace_a, revision_a = service._resolve_local_task_project(repo_a)
++    project_b, _digest_b, namespace_b, revision_b = service._resolve_local_task_project(repo_b)
++    assert namespace_a == project_a.coordination_id
++    assert namespace_b == project_b.coordination_id
++    assert namespace_a != namespace_b
++    assert revision_a == revision_b == "same-revision"
++    observer = _RecordingObserver()
++    observer_token = set_observer(observer)
++    try:
++        for root in (repo_a, repo_b):
++            result = service.delegate(
++                {"root": str(root), "task": "Explain this project briefly.", "task_type": "general", "complexity": "fast"},
++                tenant="test",
++            )
++            assert result["success"] is True, result
++            assert result["route"]["model"] == "qwen3.5:9b"
++    finally:
++        reset_observer(observer_token)
++
++    runtime = service.runtime
++    assert len(runtime.payloads) == 2
++    assert all(payload["model"] == "qwen3.5:9b" for payload in runtime.payloads)
++    assert all("Repository-only guidance alpha." in payload["system"] for payload in runtime.payloads)
++    assert len(observer.requests) == 2
++    assert all("Repository-only guidance alpha." not in str(payload) for payload in observer.requests)
++    assert all("Repository-only guidance alpha." not in repr(call) for call in service.telemetry.method_calls)
++
++
++@pytest.mark.parametrize("config_text", [None, 'model_profile = "unsupported"\n'])
++def test_local_task_project_context_falls_back_for_missing_or_invalid_config(
++    tmp_path: Path,
++    config_text: str | None,
++) -> None:
++    project_config = pytest.importorskip("local_ai_hub.project_config")
++    service = _task_services(tmp_path)
++    root = tmp_path / ("missing-config" if config_text is None else "invalid-config")
++    root.mkdir()
++    if config_text is not None:
++        (root / ".local-ai.toml").write_text(config_text, encoding="utf-8")
++    service.repo_tools.git_snapshot = lambda _root: SimpleNamespace(common_dir=None, repository_revision="")
++
++    context, digest, namespace, revision = service._resolve_local_task_project(root)
++
++    assert isinstance(context, project_config.ProjectContext)
++    assert context.settings.model_profile == "balanced"
++    assert context.settings.system_prompt_prefix is None
++    assert digest == context.config_digest
++    assert namespace == (context.coordination_id or "")
++    assert revision == ""
++    result = service.delegate(
++        {"root": str(root), "task": "Explain this project.", "task_type": "general", "complexity": "fast"},
++        tenant="test",
++    )
++    assert result["success"] is True, result
++    assert result["route"]["model"] == "qwen2.5-coder:7b"
++    if config_text is not None:
++        assert context.resolution.error_codes
++        assert result["warnings"]
++        assert "defaults used" in result["warnings"][0].lower()
++        assert all(code in result["warnings"][0] for code in context.resolution.error_codes)
++        assert str(root) not in result["warnings"][0]
++        assert "Project-only" not in result["warnings"][0]
++    else:
++        assert not result.get("warnings")
++
++
++def test_reason_and_review_use_project_profile_through_delegate(tmp_path: Path) -> None:
++    pytest.importorskip("local_ai_hub.project_config")
++    service = _task_services(tmp_path)
++    root = tmp_path / "project"
++    root.mkdir()
++    (root / ".local-ai.toml").write_text(
++        'model_profile = "max"\nsystem_prompt_prefix = "Project-only rule."\n',
++        encoding="utf-8",
++    )
++    service.repo_tools.git_snapshot = lambda _root: SimpleNamespace(common_dir=str(root), repository_revision="rev-1")
++
++    reason = service.reason(
++        {"root": str(root), "problem": "Explain the issue.", "complexity": "heavy"},
++        tenant="test",
++    )
++    review = service.review(
++        {"root": str(root), "instructions": "Review this code.", "code": "print(1)", "complexity": "heavy"},
++        tenant="test",
++    )
++    batch = service.batch_delegate(
++        {
++            "root": str(root),
++            "tasks": [{"task": "Explain this project.", "task_type": "general", "complexity": "fast"}],
++        },
++        tenant="test",
++    )
++
++    assert reason["route"]["model"] == "qwen3.5:9b"
++    assert review["route"]["model"] == "qwen3.5:9b"
++    assert batch["success"] is True, batch
++    assert batch["results"][0]["route"]["model"] == "qwen3.5:9b"
++    assert len(service.runtime.payloads) == 3
++    assert all("Project-only rule." in payload["system"] for payload in service.runtime.payloads)
++
++
++def test_local_task_project_profiles_and_prefixes_are_isolated_concurrently(tmp_path: Path) -> None:
++    pytest.importorskip("local_ai_hub.project_config")
++    service = _task_services(tmp_path)
++    repo_a = tmp_path / "concurrent-a"
++    repo_b = tmp_path / "concurrent-b"
++    repo_a.mkdir()
++    repo_b.mkdir()
++    (repo_a / ".local-ai.toml").write_text(
++        'model_profile = "high"\nsystem_prompt_prefix = "Concurrent alpha only."\n',
++        encoding="utf-8",
++    )
++    (repo_b / ".local-ai.toml").write_text(
++        'model_profile = "balanced"\nsystem_prompt_prefix = "Concurrent beta only."\n',
++        encoding="utf-8",
++    )
++    service.repo_tools.git_snapshot = lambda root: SimpleNamespace(
++        common_dir=str(root), repository_revision="same-revision",
++    )
++    barrier = threading.Barrier(2)
++    payloads: list[dict] = []
++    payload_lock = threading.Lock()
++
++    def request(endpoint, payload, **_kwargs):
++        assert endpoint == "/api/generate"
++        barrier.wait(timeout=3)
++        with payload_lock:
++            payloads.append(dict(payload))
++        return {"response": "answer", "done": True}
++
++    service.runtime.request = request
++
++    def invoke(root: Path, tenant: str) -> dict:
++        return service.delegate(
++            {"root": str(root), "task": "Explain this project briefly.", "task_type": "general", "complexity": "fast"},
++            tenant=tenant,
++        )
++
++    with ThreadPoolExecutor(max_workers=2) as pool:
++        future_a = pool.submit(invoke, repo_a, "concurrent-a")
++        future_b = pool.submit(invoke, repo_b, "concurrent-b")
++        result_a = future_a.result(timeout=5)
++        result_b = future_b.result(timeout=5)
++
++    assert result_a["success"] is True, result_a
++    assert result_b["success"] is True, result_b
++    assert result_a["route"]["model"] == "qwen3.5:9b"
++    assert result_b["route"]["model"] == "qwen2.5-coder:7b"
++    assert len(payloads) == 2
++    systems = [str(payload["system"]) for payload in payloads]
++    assert sum("Concurrent alpha only." in system for system in systems) == 1
++    assert sum("Concurrent beta only." in system for system in systems) == 1
++    assert all(not ("Concurrent alpha only." in system and "Concurrent beta only." in system) for system in systems)
++
++
++def test_batch_delegate_inherits_parent_root_for_items_without_project_root(tmp_path: Path, monkeypatch) -> None:
++    service = _task_services(tmp_path)
++    parent_root = str(tmp_path / "parent")
++    explicit_root = str(tmp_path / "item")
++    captured: list[dict] = []
++    monkeypatch.setattr(service, "delegate", lambda item, _tenant: captured.append(dict(item)) or {"success": True})
++
++    result = service.batch_delegate(
++        {
++            "root": parent_root,
++            "cwd": "ignored-parent-cwd",
++            "tasks": [{"task": "one"}, {"task": "two", "root": explicit_root}],
++        },
++        tenant="test",
++    )
++
++    assert result["success"] is True, result
++    assert captured[0]["root"] == parent_root
++    assert captured[1]["root"] == explicit_root
++
++
++def test_generation_cache_key_isolated_by_project_digest_and_repository_revision() -> None:
++    common = {
++        "model": "local-model",
++        "prompt": "task",
++        "system": "system",
++        "options": {},
++        "think": None,
++        "execution": "local",
++    }
++    baseline = generation_cache_key(**common, project_config_digest="digest-a", project_namespace="repo-a", repository_revision="rev-1")
++
++    assert baseline != generation_cache_key(
++        **common, project_config_digest="digest-b", project_namespace="repo-a", repository_revision="rev-1"
++    )
++    assert baseline != generation_cache_key(
++        **common, project_config_digest="digest-a", project_namespace="repo-a", repository_revision="rev-2"
++    )
++
++
++def test_blank_root_falls_back_to_cwd_for_project_settings(tmp_path: Path) -> None:
++    service = _task_services(tmp_path)
++    repo = tmp_path / "cwd-repository"
++    repo.mkdir()
++    (repo / ".local-ai.toml").write_text(
++        'model_profile = "high"\nsystem_prompt_prefix = "Cwd project guidance."\n', encoding="utf-8",
++    )
++    service.repo_tools.git_snapshot = lambda root: SimpleNamespace(
++        common_dir=str(root), repository_revision="cwd-revision",
++    )
++
++    result = service.delegate(
++        {"root": "", "cwd": str(repo), "task": "Explain this project.", "task_type": "general", "complexity": "fast"},
++        tenant="test",
++    )
++
++    assert result["success"] is True, result
++    assert result["route"]["model"] == "qwen3.5:9b"
++    assert "Cwd project guidance." in service.runtime.payloads[0]["system"]
++
++
++def test_conversation_prefix_is_sent_but_redacted_from_start_and_followup_traces(tmp_path: Path) -> None:
++    service = _task_services(tmp_path)
++    repo = tmp_path / "conversation-repository"
++    repo.mkdir()
++    (repo / ".local-ai.toml").write_text(
++        'model_profile = "high"\nsystem_prompt_prefix = "Private repository prompt."\n', encoding="utf-8",
++    )
++    observer = _RecordingObserver()
++    observer_token = set_observer(observer)
++    try:
++        started = service.delegate(
++            {
++                "root": str(repo), "task": "Start a short conversation.", "task_type": "general",
++                "complexity": "fast", "conversation": True,
++            },
++            tenant="test",
++        )
++        assert started["success"] is True, started
++        continued = service.continue_conversation(
++            {"conversation_id": started["conversation_id"], "task": "Continue briefly."}, tenant="test",
++        )
++    finally:
++        reset_observer(observer_token)
++
++    assert continued["success"] is True, continued
++    assert len(service.runtime.payloads) == 2
++    assert all("Private repository prompt." in payload["system"] for payload in service.runtime.payloads)
++    assert len(observer.requests) == 2
++    assert all("Private repository prompt." not in payload["system"] for payload in observer.requests)
+diff --git a/tests/test_t12_llama_model_inventory.py b/tests/test_t12_llama_model_inventory.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_t12_llama_model_inventory.py
+@@ -0,0 +1,97 @@
++from __future__ import annotations
++
++from contextlib import nullcontext
++from pathlib import Path
++import json
++import time
++
++import local_ai_hub.llama_cpp as llama_cpp_module
++from local_ai_hub.llama_cpp import LlamaCppRouter
++
++_TEST_SOURCE_ROOT = Path(__file__).resolve().parents[1]
++assert Path(llama_cpp_module.__file__).resolve() == _TEST_SOURCE_ROOT / "src" / "local_ai_hub" / "llama_cpp.py"
++
++
++def test_loaded_inventory_lists_unmapped_served_ids_and_marks_each_endpoint_status(monkeypatch) -> None:
++    first_url = "http://127.0.0.1:12438"
++    second_url = "http://127.0.0.1:12439"
++    router = LlamaCppRouter(
++        {
++            "llama_cpp": {
++                "mode": "auto",
++                "models": {
++                    "configured-a": {"url": first_url, "served_model": "mapped-a"},
++                    "configured-b": {"url": second_url, "served_model": "mapped-b"},
++                },
++            }
++        }
++    )
++    queried: list[tuple[str, bool]] = []
++
++    def model_info(url, *, force_refresh=False, strict=False, **_kwargs):
++        queried.append((url, force_refresh))
++        if url == second_url:
++            raise TimeoutError("endpoint inventory timeout")
++        return {
++            "mapped-a": {"status": {"value": "loaded"}},
++            "served-only-by-runner": {"status": {"value": "loaded"}},
++            "cold-model": {"status": {"value": "unloaded"}},
++        }
++
++    monkeypatch.setattr(router, "_model_info", model_info)
++
++    inventory = router.loaded_model_inventory(force_refresh=True)
++
++    assert queried == [(first_url, True), (second_url, True)]
++    assert inventory["complete"] is False
++    assert "configured-b" in inventory["errors"]
++    assert {row["name"] for row in inventory["models"]} == {"mapped-a", "served-only-by-runner"}
++    assert all(row["endpoint_url"] == first_url for row in inventory["models"])
++
++
++def test_force_fresh_model_info_ignores_cached_empty_snapshot(monkeypatch) -> None:
++    url = "http://127.0.0.1:12438"
++    router = LlamaCppRouter(
++        {"llama_cpp": {"mode": "auto", "models": {"model": {"url": url}}}}
++    )
++    router._models[url] = (time.monotonic(), {})
++    monkeypatch.setattr(
++        llama_cpp_module,
++        "_open_interruptible_response",
++        lambda *_args, **_kwargs: nullcontext(object()),
++    )
++    monkeypatch.setattr(llama_cpp_module, "_cancel_response_on_stop", lambda *_args, **_kwargs: nullcontext())
++    monkeypatch.setattr(
++        llama_cpp_module,
++        "_read_response_body",
++        lambda *_args, **_kwargs: b'{"data":[{"id":"fresh-served-id","status":{"value":"loaded"}}]}',
++    )
++
++    models = router._model_info(url, force_refresh=True, strict=True)
++
++    assert "fresh-served-id" in models
++    assert models["fresh-served-id"]["status"]["value"] == "loaded"
++
++
++def test_unload_model_routes_unmapped_served_id_to_its_configured_endpoint(monkeypatch) -> None:
++    url = "http://127.0.0.1:12438"
++    router = LlamaCppRouter(
++        {"llama_cpp": {"mode": "auto", "models": {"configured-name": {"url": url}}}}
++    )
++    requests = []
++
++    def open_response(request, *_args, **_kwargs):
++        requests.append((request.full_url, request.data))
++        return nullcontext(object())
++
++    monkeypatch.setattr(llama_cpp_module, "_open_interruptible_response", open_response)
++    monkeypatch.setattr(llama_cpp_module, "_cancel_response_on_stop", lambda *_args, **_kwargs: nullcontext())
++    monkeypatch.setattr(llama_cpp_module, "_read_response_body", lambda *_args, **_kwargs: b'{"success":true}')
++
++    result = router.unload_model(
++        "served-only-by-runner", endpoint_url=url, deadline=time.monotonic() + 1.0,
++    )
++
++    assert result is True
++    assert requests[0][0] == f"{url}/models/unload"
++    assert json.loads(requests[0][1]) == {"model": "served-only-by-runner"}
+

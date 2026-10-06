@@ -1,0 +1,73 @@
+from __future__ import annotations
+
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+
+from local_ai_hub import client as client_module
+from local_ai_hub.client import HubClient
+
+
+def test_thirty_cold_clients_share_service_start_and_readiness(tmp_path, monkeypatch):
+    count = 30
+    state_dir = tmp_path / "state"
+    config_path = tmp_path / "hub.toml"
+    config_path.write_text(
+        f"[server]\nbind='127.0.0.1'\nport=39131\nstate_dir='{state_dir.as_posix()}'\n"
+        "[client]\nstartup_wait_seconds=2\nstartup_poll_seconds=0.01\n",
+        encoding="utf-8",
+    )
+    clients = [HubClient(tenant="", config_path=str(config_path), auto_start=True) for _ in range(count)]
+    for client in clients:
+        client.startup_wait = 2.0
+        client.startup_poll = 0.01
+
+    cold_barrier = threading.Barrier(count)
+    started = threading.Event()
+    probes: dict[int, int] = {}
+    ready_probes: dict[int, int] = {}
+    service_owner: list[int] = []
+    service_calls: list[tuple[list[str], dict[str, object]]] = []
+    lock = threading.Lock()
+
+    def online(_client, _timeout=None):
+        thread_id = threading.get_ident()
+        with lock:
+            probes[thread_id] = probes.get(thread_id, 0) + 1
+            if started.is_set():
+                ready_probes[thread_id] = ready_probes.get(thread_id, 0) + 1
+            first = probes[thread_id] == 1
+        if first:
+            cold_barrier.wait(timeout=5)
+            return False
+        return started.is_set()
+
+    def service_start(command, **kwargs):
+        with lock:
+            service_calls.append((command, kwargs))
+            service_owner.append(threading.get_ident())
+        started.set()
+        return type("Completed", (), {"returncode": 0})()
+
+    monkeypatch.setattr(HubClient, "_online", online)
+    monkeypatch.setattr(client_module.subprocess, "run", service_start)
+    monkeypatch.setattr(client_module, "find_listening_pid", lambda _port: None)
+    monkeypatch.setattr(client_module, "pid_alive", lambda _pid: True)
+    for client in clients:
+        monkeypatch.setattr(
+            client,
+            "_pooled_open",
+            lambda *_args, **_kwargs: b'{"success":true}' if started.is_set() else (_ for _ in ()).throw(ConnectionRefusedError()),
+        )
+
+    with ThreadPoolExecutor(max_workers=count) as pool:
+        results = list(pool.map(lambda pair: pair[1].post("/api/agent-state/context", {"query": str(pair[0])}), enumerate(clients)))
+
+    assert all(result == {"success": True} for result in results)
+    assert len(service_calls) == 1
+    command, kwargs = service_calls[0]
+    assert command[-1] == "start"
+    assert Path(command[-2]) == Path(__file__).resolve().parents[1] / "tools" / "service.py"
+    assert kwargs["env"]["LOCAL_AI_CONFIG"] == str(config_path)
+    assert kwargs["timeout"] <= 2.0
+    assert ready_probes[service_owner[0]] == 1

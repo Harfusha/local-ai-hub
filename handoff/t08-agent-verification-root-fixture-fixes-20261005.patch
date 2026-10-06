@@ -1,0 +1,167 @@
+--- a/tests/test_agent_verification.py
++++ b/tests/test_agent_verification.py
+@@ -1156,6 +1156,12 @@
+         reason="prepare completion check",
+         actor="agent",
+         idempotency_key="activate-offline-receipt-task",
++    )
++    verification_store.record(
++        receipt_for(
++            task.task_id, "tests", owner=task.owner,
++            artifact_store=verification_store.artifact_store,
++        )
+     )
+ 
+     unavailable_state = AgentStateStore(tmp_path / "unavailable" / "agent_state.sqlite3")
+@@ -1333,39 +1339,45 @@
+     )
+ 
+     delivered: list[Any] = []
++    callback_errors: list[Exception] = []
+     original_put_nowait = subscriber.put_nowait
+ 
+     def check_durable_before_delivery(event: Any) -> None:
+-        if event.kind in {"verification.receipt_recorded", "task.verified"}:
+-            current = task_store.get(task.task_id)
+-            assert current is not None
+-            assert current.verification_receipts["tests"] == receipt.receipt_id
+-            verification_events = state_store.event_page(
+-                f"verification:{task.task_id}"
+-            )["events"]
+-            task_events = state_store.event_page(f"task:{task.task_id}")["events"]
+-            assert any(
+-                row.kind == "verification.receipt_recorded"
+-                and row.payload.get("receipt_id") == receipt.receipt_id
+-                for row in verification_events
+-            )
+-            assert any(
+-                row.kind == "task.verified"
+-                and row.payload.get("receipt_id") == receipt.receipt_id
+-                for row in task_events
+-            )
+-            with closing(connect_sqlite(state_store.db_path)) as con:
+-                assert con.execute(
+-                    "SELECT 1 FROM agent_verification_receipts WHERE receipt_id = ?",
+-                    (receipt.receipt_id,),
+-                ).fetchone() is not None
+-        delivered.append(event)
+-        original_put_nowait(event)
++        try:
++            if event.kind in {"verification.receipt_recorded", "task.verified"}:
++                current = task_store.get(task.task_id)
++                assert current is not None
++                assert current.verification_receipts["tests"] == receipt.receipt_id
++                verification_events = state_store.event_page(
++                    f"verification:{task.task_id}"
++                )["events"]
++                task_events = state_store.event_page(f"task:{task.task_id}")["events"]
++                assert any(
++                    row.kind == "verification.receipt_recorded"
++                    and row.payload.get("receipt_id") == receipt.receipt_id
++                    for row in verification_events
++                )
++                assert any(
++                    row.kind == "task.verified"
++                    and row.payload.get("receipt_id") == receipt.receipt_id
++                    for row in task_events
++                )
++                with closing(connect_sqlite(state_store.db_path)) as con:
++                    assert con.execute(
++                        "SELECT 1 FROM agent_verification_receipts WHERE receipt_id = ?",
++                        (receipt.receipt_id,),
++                    ).fetchone() is not None
++        except Exception as exc:
++            callback_errors.append(exc)
++        finally:
++            delivered.append(event)
++            original_put_nowait(event)
+ 
+     monkeypatch.setattr(subscriber, "put_nowait", check_durable_before_delivery)
+     try:
+         verifier.record(receipt)
+ 
++        assert callback_errors == [], callback_errors
+         queued = [subscriber.get_nowait(), subscriber.get_nowait()]
+         assert queued == delivered
+         assert {event.kind for event in queued} == {
+@@ -1509,14 +1521,25 @@
+ 
+ 
+ def test_task_completion_forwards_project_rules_and_durable_generation(
+-    stores: tuple[TaskStore, VerificationStore], monkeypatch: pytest.MonkeyPatch
++    stores: tuple[TaskStore, VerificationStore],
++    monkeypatch: pytest.MonkeyPatch,
++    tmp_path: Path,
+ ):
+     task_store, verifier = stores
++    repo_root = tmp_path / "repo"
++    repo_root.mkdir()
++    state_dir = tmp_path / "state"
++    state_dir.mkdir()
++    (repo_root / ".local-ai.toml").write_text(
++        '[commands]\nlint = "ruff check"\ntest = "python -m pytest"\n'
++        '[verification_rules]\ntest = ["test", "lint"]\n',
++        encoding="utf-8",
++    )
+     task = task_store.create(
+         GoalContract(goal="project completion rules", acceptance_criteria=("test",)),
+         ScopeContext(task_id="project-completion-rules"),
+         task_id="project-completion-rules",
+-        repo_root="C:/repo",
++        repo_root=str(repo_root),
+         repository_revision="rev-1",
+     )
+     task_store.checkpoint(
+@@ -1540,17 +1563,17 @@
+ 
+     monkeypatch.setattr(verifier, "completion", capture)
+ 
++    from local_ai_hub.verification_rules import complete_task_with_project_rules
++
+     with pytest.raises(CompletionGateError, match="lint"):
+-        task_store.complete(
+-            task.task_id,
+-            current_revision="rev-1",
+-            verification_rules=True,
+-            configured_criteria=("lint", "test"),
++        complete_task_with_project_rules(
++            task_store, verifier, task.task_id,
++            root=repo_root, state_dir=state_dir, current_revision="rev-1",
+         )
+ 
+     assert forwarded["current_revision"] == "rev-1"
+     assert forwarded["current_mutation_generation"] == 3
+-    assert forwarded["verification_rules"] is True
++    assert tuple(forwarded["verification_rules"]["test"]) == ("test", "lint")
+     assert forwarded["configured_criteria"] == ("lint", "test")
+ 
+ 
+@@ -1602,8 +1625,13 @@
+         ScopeContext(task_id="task-change-generation"),
+         task_id="task-change-generation",
+     )
++    task_store.checkpoint(
++        "task-change-generation",
++        TaskCheckpoint(state_data={"repository_revision": "rev-1", "mutation_generation": 0}),
++    )
+     verif_store.record(receipt_for(
+-        "task-change-generation", "tests", artifact_store=verif_store.artifact_store
++        "task-change-generation", "tests", repository_revision="rev-1",
++        artifact_store=verif_store.artifact_store,
+     ))
+     verif_store.record_change(
+         ChangeIntent.create("task-change-generation", ("src/module.py",))
+@@ -1658,8 +1686,12 @@
+     with pytest.raises(ValueError, match="trusted evidence"):
+         verif_store.record(receipt)
+ 
+-    with pytest.raises(CompletionGateError, match="evidence"):
++    with pytest.raises(CompletionGateError, match="receipt"):
+         task_store.complete("task-model-pass")
++    rejected = task_store.get("task-model-pass")
++    assert rejected is not None
++    assert rejected.verification_receipts == {}
++    assert rejected.status is not TaskStatus.COMPLETED
+ 
+ 
+ def test_documentation_source_review_does_not_require_command_id(

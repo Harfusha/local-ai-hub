@@ -1,0 +1,47 @@
+{
+  "task": "T10 retrieval correctness and fixture coverage continuation",
+  "date": "2026-10-01",
+  "scope": "tests only; no production source edits",
+  "uncovered_cases": [
+    "No T10 dead-code fixture checked entrypoint exclusion, test-file exclusion, and a truly unreferenced symbol together.",
+    "Affected-test selection had only a pytest fixture despite source support for pytest, dotnet, npm, cargo, and go.",
+    "OpenAPI YAML and invariant JSON had no lexical repository-search fixtures.",
+    "Java and PHP file extensions mapped to generic parsing but lacked fallback callgraph parity cases."
+  ],
+  "tests": {
+    "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t10_retrieval_fixture_matrix.py tests/test_t10_fallback_callgraph_parity.py tests/test_t10_ast_impact_acceptance.py tests/test_t10_python_fallback_budget.py tests/test_affected_tests.py",
+    "result": "26 passed in 3.28s",
+    "status": "passed"
+  },
+  "patch": {
+    "path": "C:\\Users\\Adam\\.codex\\worktrees\\t10-path-hints\\.local-ai-hub\\artifacts\\handoff\\t10-retrieval-fixture-matrix-20261001.patch",
+    "sha256": "89F5EC77F0230E4AEB3C47B8E7A081441EC5451849CC334CB7D9B020BF8EE95B",
+    "bytes": 6482
+  },
+  "changed_files": {
+    "tests/test_t10_fallback_callgraph_parity.py": "E0DD5A7DA09FF33D6E0A8C50DC15BB87033F13495907683EA91A0C8C2F40830E",
+    "tests/test_t10_retrieval_fixture_matrix.py": "4B843BA75C1092BB730404CD4E68B7C3AD1B03D4B74BB0999A26FB7C7E5C310C"
+  },
+  "root_handoff": {
+    "apply_check": "passed before integration",
+    "root_code_index_sha256_at_check": "17381446B55B80D28C06387FD972CC907CE2F5E9D01506FBD5955080D90D1741",
+    "integration_status": "pending T20 review and apply",
+    "root_mutated_by_this_task": false,
+    "post_apply_diff_check": "passed",
+    "commit": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+    "commit_subject": "test: add retrieval fixture coverage matrix",
+    "root_head_verified": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+    "root_writes_by_this_agent": false,
+    "root_integration_by_t20": true,
+    "root_test_result_reported_by_t20": "26 passed in 6.57s",
+    "root_postimage_sha256": {
+      "tests/test_t10_fallback_callgraph_parity.py": "B2F6E35A8BB46ED7E57895C9A6827EAB41B6311FE142679BAB7896DB3457E108",
+      "tests/test_t10_retrieval_fixture_matrix.py": "243A378E72EF993EB75D13DC8B724BC908A58C49FBD345B33E7B9355EE82859C"
+    }
+  },
+  "scope_limits": [
+    "No 100k benchmark; T02 owns that benchmark and exclusive CPU slot.",
+    "API and invariant fixtures prove lexical YAML/JSON search only, not semantic API/invariant graph extraction.",
+    "Broader backend on/off/crash/timeout and latency/coverage matrix remains open."
+  ]
+}

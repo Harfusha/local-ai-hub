@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from .json_utils import dumps as json_dumps
 
+import errno
 import hashlib
 import json
+import base64
+import math
 import os
 import queue
 import re
@@ -23,7 +26,15 @@ from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, quick
 _PATH_RE = re.compile(r"(?:(?:[A-Za-z]:\\\\|/)(?:[^\s:'\"<>|]+[/\\\\])+[^\s:'\"<>|]*)")
 _LONG_TOKEN_RE = re.compile(r"\b(?:[A-Fa-f0-9]{24,}|[A-Za-z0-9_\-]{48,})\b")
 _WINDOWS_PATH_RE = re.compile(r"\b[A-Za-z]:[\\/][^\s<>|\"']+")
-_POSIX_PATH_RE = re.compile(r"(?<![\w:])/(?:[^/\s]+/)+[^/\s]*")
+_UNC_PATH_RE = re.compile(r"\\\\[^\\/\s]+\\[^\\/\s]+(?:\\[^\s<>|\"']*)?")
+_POSIX_PATH_RE = re.compile(
+    r"(?<![\w:])/(?:[^/\s]+/)+[^/\s]*|(?<![\w:])/(?:[^/\s/]*\.[^/\s/]+)"
+)
+_SENSITIVE_METADATA_VALUE_RE = re.compile(
+    r"(?i)[\"']?(prompt|source(?:_text)?|input(?:_text)?|completion|output(?:_text)?|"
+    r"response(?:_body)?|request(?:_body)?|body|payload|content|api[_-]?key|token|"
+    r"password|secret|authorization)[\"']?\s*([=:])\s*.*$"
+)
 _SAVINGS_SOURCE_ALLOWLIST = frozenset({
     "cache_hit", "cache_or_local_reuse", "context_compaction", "delegated_context",
     "deterministic_outline", "local_compute", "measured_context", "reused",
@@ -31,6 +42,85 @@ _SAVINGS_SOURCE_ALLOWLIST = frozenset({
 })
 _DECISION_DETAIL_LIMIT = 24
 _MAX_METADATA_LENGTH = 160
+_MAX_TELEMETRY_REPORT_BYTES = 256 * 1024 - 64  # reserve space for HTTP envelope
+_REPORT_TRIMMABLE_LISTS = (
+    "runtime_snapshots", "daily", "by_agent", "by_model", "provider_token_usage",
+    "by_operation", "execution_routes", "cache_layers", "hotspots", "routes", "cache", "bypass",
+    "error_fingerprints",
+)
+
+
+def _encode_error_page_cursor(snapshot_id: int, snapshot_cutoff: float, row: tuple[Any, ...] | list[Any]) -> str:
+    values = [int(snapshot_id), float(snapshot_cutoff), *(str(value or "") for value in row[:4])]
+    raw = json_dumps(values, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _decode_error_page_cursor(cursor: str | None) -> tuple[int, float, str, str, str, str] | None:
+    if cursor in (None, ""):
+        return None
+    if len(cursor) > 1024:
+        raise ValueError("error_cursor is too long")
+    try:
+        raw = base64.b64decode(cursor + "=" * (-len(cursor) % 4), altchars=b"-_", validate=True)
+        values = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("error_cursor is invalid") from exc
+    if (
+        not isinstance(values, list) or len(values) != 6
+        or isinstance(values[0], bool) or not isinstance(values[0], int) or values[0] < 0
+        or isinstance(values[1], bool) or not isinstance(values[1], (int, float))
+        or not math.isfinite(float(values[1]))
+        or any(not isinstance(value, str) or len(value) > 160 for value in values[2:])
+    ):
+        raise ValueError("error_cursor is invalid")
+    return (values[0], float(values[1]), *values[2:])
+
+
+
+def _bound_telemetry_report(report: dict[str, Any]) -> dict[str, Any]:
+    """Keep telemetry report JSON below the public response budget."""
+    truncated: list[str] = []
+    encoded = json_dumps(report).encode("utf-8")
+    for field in _REPORT_TRIMMABLE_LISTS:
+        values = report.get(field)
+        if not isinstance(values, list):
+            continue
+        while len(encoded) > _MAX_TELEMETRY_REPORT_BYTES and values:
+            del values[max(0, len(values) // 2):]
+            if field not in truncated:
+                truncated.append(field)
+            report["response_truncated_fields"] = truncated
+            if field == "error_fingerprints":
+                page = report.get("error_fingerprints_page")
+                if isinstance(page, dict):
+                    next_offset = int(page.get("offset", 0)) + len(values)
+                    page["next_offset"] = (
+                        next_offset if "cursor" not in page and next_offset < int(page.get("total", 0)) else None
+                    )
+                    if "next_cursor" in page:
+                        if values:
+                            last = values[-1]
+                            page["next_cursor"] = _encode_error_page_cursor(
+                                int(page.get("snapshot_id", 0)), float(page.get("snapshot_cutoff", 0)), (
+                                last.get("fingerprint", ""), last.get("error_type", ""),
+                                last.get("component", ""), last.get("operation", ""),
+                            ))
+                            page["has_more"] = True
+                        else:
+                            page["next_cursor"] = page.get("cursor") or None
+                            page["has_more"] = page["next_cursor"] is not None
+            encoded = json_dumps(report).encode("utf-8")
+    if len(encoded) > _MAX_TELEMETRY_REPORT_BYTES:
+        return {
+            "generated_at": report.get("generated_at"),
+            "window_days": report.get("window_days"),
+            "scope": report.get("scope"),
+            "response_truncated": True,
+        }
+    if truncated:
+        report["response_truncated"] = True
+    return report
 _MAX_DURATION_MS = 86_400_000.0
 
 
@@ -65,6 +155,9 @@ def _percentile(values: list[float], pct: float) -> float:
     if not values:
         return 0.0
     ordered = sorted(float(x) for x in values)
+    if pct == 0.50 and len(ordered) % 2 == 0:
+        middle = len(ordered) // 2
+        return round((ordered[middle - 1] + ordered[middle]) / 2, 1)
     idx = max(0, min(len(ordered) - 1, int(round((len(ordered) - 1) * pct))))
     return round(ordered[idx], 1)
 
@@ -96,17 +189,56 @@ def _tail_latency(rows: list[tuple[Any, ...]], key_name: str) -> list[dict[str, 
 
 
 def _safe_error_message(value: Any) -> str:
-    """Keep error diagnostics useful without persisting project/source content."""
-    text = str(value or "").replace("\r", " ").replace("\n", " ")[:1200]
-    text = _PATH_RE.sub("<path>", text)
-    text = _LONG_TOKEN_RE.sub("<token>", text)
-    return " ".join(text.split())[:500]
+    """Return a bounded reason from an allowlist; never persist exception text."""
+    if isinstance(value, TimeoutError):
+        reason = "operation timed out"
+    elif isinstance(value, ConnectionError):
+        reason = "connection failed"
+    elif isinstance(value, json.JSONDecodeError):
+        reason = "invalid JSON"
+    elif isinstance(value, FileNotFoundError):
+        reason = "file not found"
+    elif isinstance(value, PermissionError):
+        reason = "permission denied"
+    elif isinstance(value, ValueError):
+        reason = "invalid value or argument"
+    elif isinstance(value, TypeError):
+        reason = "invalid type"
+    elif isinstance(value, OSError):
+        if value.errno == errno.ENOENT:
+            reason = "file not found"
+        elif value.errno in {errno.EACCES, errno.EPERM}:
+            reason = "permission denied"
+        elif value.errno == errno.EEXIST:
+            reason = "file already exists"
+        elif value.errno == errno.ENOTDIR:
+            reason = "path component is not a directory"
+        else:
+            reason = "operating system failure"
+    elif isinstance(value, RuntimeError):
+        reason = "operation failed"
+    else:
+        reason = "unexpected failure"
+    error_type = type(value).__name__ if isinstance(value, BaseException) else "Error"
+    safe_type = _safe_error_metadata(error_type, 48) or "Error"
+    return f"{safe_type}: {reason}"[:96]
 
 
-def _error_fingerprint(error_type: str, component: str, operation: str, message: str) -> str:
-    # Strip volatile numbers so the same failure groups together across requests.
-    stable = re.sub(r"\b\d+\b", "#", message.lower())
-    raw = f"{error_type}|{component}|{operation}|{stable}".encode("utf-8", "replace")
+_SAFE_ERROR_CODE_MESSAGES = {
+    "local_backend_transport": "local backend transport failure",
+    "local_model_error": "local model inference failed",
+    "model_request_timeout": "model request timed out",
+    "circuit_open": "model circuit open",
+    "http_request_failed": "HTTP request failed",
+    "http_stream_failed": "HTTP stream failed",
+}
+
+
+def _error_fingerprint(error_type: str, component: str, operation: str, error_code: str = "") -> str:
+    # Fingerprint only sanitized classification labels, never free-form error text.
+    labels = (_safe_error_metadata(value) for value in (error_type, component, operation, error_code))
+    stable = [value.casefold() for value in labels]
+    raw = "|".join(stable).encode("utf-8", "replace")
     return hashlib.sha256(raw).hexdigest()[:16]
 
 
@@ -120,6 +252,7 @@ def _safe_metadata(value: Any, limit: int = _MAX_METADATA_LENGTH) -> str:
         text,
     )
     text = _WINDOWS_PATH_RE.sub("<path>", text)
+    text = _UNC_PATH_RE.sub("<path>", text)
 
     def redact_posix(match: re.Match[str]) -> str:
         candidate = match.group(0)
@@ -128,6 +261,23 @@ def _safe_metadata(value: Any, limit: int = _MAX_METADATA_LENGTH) -> str:
     text = _POSIX_PATH_RE.sub(redact_posix, text)
     text = _LONG_TOKEN_RE.sub("<token>", text)
     return " ".join(text.split())[:limit]
+
+
+def _safe_error_metadata(value: Any, limit: int = _MAX_METADATA_LENGTH) -> str:
+    """Redact sensitive labeled payloads as well as paths in error classifications."""
+    text = _safe_metadata(value, limit)
+    text = re.sub(r"(?i)/api/[^\s,;\"']+", "<path>", text)
+    text = _SENSITIVE_METADATA_VALUE_RE.sub(r"\1\2[redacted]", text)
+    return " ".join(text.split())[:limit]
+
+
+def _safe_error_code(error: Any) -> str:
+    """Retain only bounded numeric codes; never hash free-form exception attributes."""
+    for attribute in ("status_code", "errno", "code"):
+        value = getattr(error, attribute, None)
+        if type(value) is int and -65_535 <= value <= 65_535:
+            return f"{attribute}:{value}"
+    return ""
 
 
 def _bounded_number(value: Any, *, integer: bool = False, maximum: float = _MAX_DURATION_MS) -> int | float:
@@ -565,23 +715,26 @@ class TelemetryStore:
             oldest = int(self._live_events[0].get("seq", 0)) if self._live_events else cursor
         return {"success": True, "cursor": cursor, "oldest": oldest, "events": events}
 
-    def _enqueue(self, kind: str, payload: dict[str, Any]) -> None:
+    def _enqueue(self, kind: str, payload: dict[str, Any]) -> bool:
         if not self.enabled:
-            return
-        self._publish_live(kind, payload)
+            return False
         # Reserve the queue sequence before publishing the item.  The writer
         # thread may consume a freshly queued item immediately; incrementing
         # afterwards lets flush() observe processed >= queued and return before
         # the item is actually visible in SQLite.
         with self._stats_lock:
             self._stats["queued"] += 1
-        try:
-            self._queue.put_nowait((kind, payload))
-        except queue.Full:
-            # Observability must never become a back-pressure source for foreground work.
-            with self._stats_lock:
+            try:
+                self._queue.put_nowait((kind, payload))
+            except queue.Full:
+                # Observability must never become a back-pressure source for foreground work.
                 self._stats["queued"] -= 1
                 self._stats["dropped"] += 1
+                return False
+            # Keep accepted queue order aligned with the live feed. The writer can
+            # dequeue now, but cannot publish completion stats until this lock releases.
+            self._publish_live(kind, payload)
+            return True
 
     def record_live(self, kind: str = "live", **event: Any) -> None:
         if not self.enabled:
@@ -714,12 +867,12 @@ class TelemetryStore:
             "decision_grade": history.get("decision_grade", {}),
         }
 
-    def record(self, **event: Any) -> None:
+    def record(self, **event: Any) -> bool:
         ctx = current_trace_context()
         for key in ("request_id", "trace_id", "agent", "tenant"):
             if not event.get(key) and ctx.get(key):
                 event[key] = ctx[key]
-        self._enqueue("event", self._clean_event(event))
+        return self._enqueue("event", self._clean_event(event))
 
     def record_http(self, **event: Any) -> None:
         event["event_type"] = "http"
@@ -729,7 +882,7 @@ class TelemetryStore:
         event["event_type"] = "stage"
         self.record(**event)
 
-    def record_tool_accounting(self, event: dict[str, Any]) -> None:
+    def record_tool_accounting(self, event: dict[str, Any]) -> bool:
         """Record one agent-visible MCP call without storing arguments or output.
 
         Signed net deltas are stored independently from inference context reduction.
@@ -737,10 +890,10 @@ class TelemetryStore:
         dashboard can explain the accounting without double counting.
         """
         if not isinstance(event, dict):
-            return
+            raise TypeError("tool accounting event must be an object")
         tool_name = event.get("tool")
         if isinstance(tool_name, str) and tool_name[:160] == "local_ai_telemetry":
-            return
+            return False
         breakdown = event.get("savings_breakdown") if isinstance(event.get("savings_breakdown"), dict) else {}
         clean_breakdown_json = _clean_savings_breakdown(breakdown)
         clean_breakdown = json.loads(clean_breakdown_json) if clean_breakdown_json else {}
@@ -750,7 +903,7 @@ class TelemetryStore:
         output_source = _clean_savings_source(event.get("output_savings_source", ""))
         gross_input = max(0, int(event.get("gross_input_tokens_avoided_est", 0) or 0))
         gross_output = max(0, int(event.get("gross_output_tokens_avoided_est", 0) or 0))
-        self.record(
+        accepted = self.record(
             event_type="tool_accounting",
             tenant=str(event.get("tenant", ""))[:160],
             agent=str(event.get("agent", ""))[:80],
@@ -777,10 +930,11 @@ class TelemetryStore:
             output_savings_source=output_source,
             savings_breakdown_json=json_dumps(clean_breakdown, separators=(",", ":"), sort_keys=True),
         )
+        return accepted
 
-    def record_system(self, action: str, *, success: bool = True, duration_ms: float = 0.0, **event: Any) -> None:
+    def record_system(self, action: str, *, success: bool = True, duration_ms: float = 0.0, **event: Any) -> bool:
         event.update({"event_type": "system", "action": action, "success": success, "duration_ms": duration_ms})
-        self.record(**event)
+        return self.record(**event)
 
     def record_error(
         self,
@@ -791,6 +945,8 @@ class TelemetryStore:
         request_id: str = "",
         tenant: str = "",
         agent: str = "",
+        error_type_override: str = "",
+        error_code_override: str = "",
         retryable: bool = False,
         recovered: bool = False,
     ) -> str:
@@ -800,19 +956,31 @@ class TelemetryStore:
         request_id = request_id or str(ctx.get("request_id") or "")
         tenant = tenant or str(ctx.get("tenant") or "")
         agent = agent or str(ctx.get("agent") or "")
-        error_type = type(error).__name__ if isinstance(error, BaseException) else "Error"
-        message = _safe_error_message(error)
-        fp = _error_fingerprint(error_type, component, operation, message)
+        error_type = error_type_override or (type(error).__name__ if isinstance(error, BaseException) else "Error")
+        safe_request_id = _safe_error_metadata(request_id, 96)
+        safe_tenant = _safe_error_metadata(tenant, 160)
+        safe_agent = _safe_error_metadata(agent, 80)
+        safe_component = _safe_error_metadata(component, 120)
+        safe_operation = _safe_error_metadata(operation, 160)
+        safe_error_type = _safe_error_metadata(error_type, 120)
+        safe_error_code = error_code_override if error_code_override in _SAFE_ERROR_CODE_MESSAGES else _safe_error_code(error)
+        message = (
+            f"{safe_error_type}: {_SAFE_ERROR_CODE_MESSAGES[error_code_override]}"
+            if error_code_override in _SAFE_ERROR_CODE_MESSAGES
+            else _safe_error_message(error)
+        )[:96]
+        fp = _error_fingerprint(safe_error_type, safe_component, safe_operation, safe_error_code)
         payload = {
-            "created_at": time.time(), "request_id": request_id[:96], "tenant": tenant[:160], "agent": agent[:80],
-            "component": str(component)[:120], "operation": str(operation)[:160], "error_type": error_type[:120],
+            "created_at": time.time(), "request_id": safe_request_id, "tenant": safe_tenant, "agent": safe_agent,
+            "component": safe_component, "operation": safe_operation, "error_type": safe_error_type,
             "fingerprint": fp, "safe_message": message, "retryable": 1 if retryable else 0,
             "recovered": 1 if recovered else 0,
         }
         self._enqueue("error", payload)
         self.record(
-            event_type="error", tenant=tenant, agent=agent, request_id=request_id,
-            action=f"{component}:{operation}", success=False, error_type=error_type, error_fingerprint=fp,
+            event_type="error", tenant=safe_tenant, agent=safe_agent, request_id=safe_request_id,
+            action=f"{safe_component}:{safe_operation}", success=False,
+            error_type=safe_error_type, error_fingerprint=fp,
         )
         return fp
 
@@ -1169,11 +1337,12 @@ class TelemetryStore:
         busy_retries = 0
         while not self._stop.is_set() or not self._queue.empty() or batch:
             try:
-                try:
-                    item = self._queue.get(timeout=self.flush_interval_seconds)
-                    batch.append(item)
-                except queue.Empty:
-                    pass
+                if not batch:
+                    try:
+                        item = self._queue.get(timeout=self.flush_interval_seconds)
+                        batch.append(item)
+                    except queue.Empty:
+                        pass
                 while len(batch) < self.batch_size:
                     try:
                         batch.append(self._queue.get_nowait())
@@ -1198,7 +1367,9 @@ class TelemetryStore:
                         self._stats["dropped"] += len(batch)
                         batch.clear()
                         busy_retries = 0
-                sleep_dur = 0.05 if self._stop.is_set() else min(1.0, self.flush_interval_seconds * 2)
+                retry_multiplier = max(1, busy_retries) if is_busy else 2
+                retry_delay = min(1.0, self.flush_interval_seconds * retry_multiplier)
+                sleep_dur = 0.05 if self._stop.is_set() else retry_delay
                 time.sleep(sleep_dur)
 
     def flush(self, timeout: float = 3.0) -> bool:
@@ -1641,7 +1812,10 @@ class TelemetryStore:
         self._summary_cache[key] = {"time": now, "data": res}
         return res
 
-    def report(self, days: int = 30, *, recent_errors: int = 25, scope: str = "window", _flush: bool = True) -> dict[str, Any]:
+    def report(
+        self, days: int = 30, *, recent_errors: int = 25, error_offset: int = 0,
+        error_cursor: str | None = None, scope: str = "window", _flush: bool = True,
+    ) -> dict[str, Any]:
         """Produce a prompt/source-free diagnostic report suitable for sharing."""
         if not self.enabled:
             return {"enabled": False}
@@ -1650,6 +1824,12 @@ class TelemetryStore:
             flush_complete = self.flush(1.0)
         days = max(1, min(int(days), self.rollup_retention_days))
         cutoff, scope = self._scope_cutoff(days, scope)
+        error_limit = max(1, min(int(recent_errors), 100))
+        error_offset = max(0, min(int(error_offset), 100_000))
+        cursor_requested = error_cursor is not None
+        cursor_values = _decode_error_page_cursor(error_cursor)
+        if cursor_requested and error_offset:
+            raise ValueError("error_offset cannot be combined with error_cursor")
         with closing(self._connect()) as con:
             by_agent = con.execute(
                 """SELECT CASE WHEN agent='' THEN 'unknown' ELSE agent END,
@@ -1686,11 +1866,48 @@ class TelemetryStore:
                    FROM events WHERE created_at>=? AND event_type='http' AND route<>''
                    GROUP BY route,task_type,complexity ORDER BY COUNT(*) DESC LIMIT 40""", (cutoff,)
             ).fetchall()
-            errors = con.execute(
-                """SELECT fingerprint,error_type,component,operation,COUNT(*),MAX(created_at),MAX(safe_message),SUM(retryable),SUM(recovered)
-                   FROM errors WHERE created_at>=? GROUP BY fingerprint,error_type,component,operation ORDER BY COUNT(*) DESC,MAX(created_at) DESC LIMIT ?""",
-                (cutoff, max(1, min(int(recent_errors), 100))),
-            ).fetchall()
+            error_select = """SELECT fingerprint,error_type,component,operation,COUNT(*),MAX(created_at),MAX(safe_message),SUM(retryable),SUM(recovered)
+                              FROM errors WHERE created_at>=?"""
+            if cursor_requested:
+                if cursor_values is None:
+                    error_snapshot_cutoff = cutoff
+                    error_snapshot_id = int(con.execute(
+                        "SELECT COALESCE(MAX(id),0) FROM errors WHERE created_at>=?", (error_snapshot_cutoff,),
+                    ).fetchone()[0])
+                    error_rows = con.execute(
+                        error_select + " AND id<=? GROUP BY fingerprint,error_type,component,operation "
+                        "ORDER BY fingerprint,error_type,component,operation LIMIT ?",
+                        (error_snapshot_cutoff, error_snapshot_id, error_limit + 1),
+                    ).fetchall()
+                else:
+                    error_snapshot_id, error_snapshot_cutoff, *group_cursor = cursor_values
+                    error_rows = con.execute(
+                        error_select + " AND id<=? AND (fingerprint,error_type,component,operation)>(?,?,?,?) "
+                        "GROUP BY fingerprint,error_type,component,operation ORDER BY fingerprint,error_type,component,operation LIMIT ?",
+                        (error_snapshot_cutoff, error_snapshot_id, *group_cursor, error_limit + 1),
+                    ).fetchall()
+                error_total = int(con.execute(
+                    """SELECT COUNT(*) FROM (
+                           SELECT 1 FROM errors WHERE created_at>=? AND id<=?
+                           GROUP BY fingerprint,error_type,component,operation
+                       )""",
+                    (error_snapshot_cutoff, error_snapshot_id),
+                ).fetchone()[0])
+            else:
+                error_rows = con.execute(
+                    error_select + " GROUP BY fingerprint,error_type,component,operation "
+                    "ORDER BY COUNT(*) DESC,MAX(created_at) DESC LIMIT ? OFFSET ?",
+                    (cutoff, error_limit + 1, error_offset),
+                ).fetchall()
+                error_total = int(con.execute(
+                    """SELECT COUNT(*) FROM (
+                           SELECT 1 FROM errors WHERE created_at>=?
+                           GROUP BY fingerprint,error_type,component,operation
+                       )""",
+                    (cutoff,),
+                ).fetchone()[0])
+            error_has_more = len(error_rows) > error_limit
+            errors = error_rows[:error_limit]
             daily = con.execute(
                 """SELECT day,event_type,SUM(events),SUM(duration_ms),SUM(queue_wait_ms),
                           SUM(cache_hits),SUM(fallback_count),SUM(degraded_count),SUM(CASE WHEN success=0 THEN events ELSE 0 END),
@@ -1757,7 +1974,7 @@ class TelemetryStore:
             hotspots.append({"type": "reliability", "signal": "frequent_ollama_retries", "count": summary["retry_count"]})
         if summary.get("writer", {}).get("dropped", 0):
             hotspots.append({"type": "observability", "signal": "telemetry_queue_drops", "count": summary["writer"]["dropped"]})
-        return {
+        report = {
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "window_days": days,
             "scope": scope,
@@ -1821,6 +2038,25 @@ class TelemetryStore:
                  "last_seen": float(r[5]), "safe_message": r[6], "retryable_count": int(r[7]), "recovered_count": int(r[8])}
                 for r in errors
             ],
+            "error_fingerprints_page": {
+                "offset": error_offset,
+                "limit": error_limit,
+                "total": error_total,
+                "next_offset": (
+                    error_offset + len(errors)
+                    if not cursor_requested and error_offset + len(errors) < error_total else None
+                ),
+                **({
+                    "cursor": error_cursor or "",
+                    "snapshot_id": error_snapshot_id,
+                    "snapshot_cutoff": error_snapshot_cutoff,
+                    "has_more": error_has_more,
+                    "next_cursor": _encode_error_page_cursor(
+                        error_snapshot_id, error_snapshot_cutoff, errors[-1][:4]
+                    )
+                    if error_has_more and errors else None,
+                } if cursor_requested else {}),
+            },
             "daily": [
                 {
                     "day": r[0], "accounting": r[1], "events": int(r[2]),
@@ -1855,6 +2091,7 @@ class TelemetryStore:
             ),
             "decision_grade": summary.get("decision_grade", {}),
         }
+        return _bound_telemetry_report(report)
 
     def tail(self, limit: int = 20) -> list[dict[str, Any]]:
         if not self.enabled:
@@ -1913,6 +2150,52 @@ class TelemetryStore:
             ).fetchall()
         values = [float(row[0] or 0.0) for row in rows]
         return {"samples": len(values), "p95_duration_ms": _percentile(values, 0.95)}
+
+    def get_timeline_page(self, limit: int = 100, *, before_id: int | None = None, _flush: bool = True) -> dict[str, Any]:
+        """Return a recent chronological page, with a cursor for older events."""
+        if not self.enabled:
+            return {"timeline": [], "next_cursor": None, "has_more": False}
+        if _flush:
+            self.flush(0.2)
+        try:
+            limit = max(1, min(int(limit), 500))
+        except (TypeError, ValueError, OverflowError):
+            limit = 100
+        try:
+            cursor = min(2**63 - 1, max(0, int(before_id))) if before_id is not None else None
+        except (TypeError, ValueError, OverflowError):
+            cursor = None
+        with closing(self._connect()) as con:
+            sql = """SELECT id, created_at, event_type, tenant, agent, action, duration_ms, success,
+                          avoided_cloud_tokens, error_type
+                   FROM events"""
+            values: tuple[Any, ...] = ()
+            if cursor is not None:
+                sql += " WHERE id < ?"
+                values = (cursor,)
+            rows = con.execute(sql + " ORDER BY id DESC LIMIT ?", (*values, limit + 1)).fetchall()
+        has_more = len(rows) > limit
+        page_rows = list(reversed(rows[:limit]))
+        timeline = [
+            {
+                "id": int(row[0]),
+                "timestamp": float(row[1]),
+                "event_type": str(row[2]),
+                "tenant": str(row[3]),
+                "agent": str(row[4]),
+                "action": str(row[5]),
+                "duration_ms": float(row[6] or 0),
+                "success": bool(row[7]),
+                "net_tokens_saved": int(row[8] or 0),
+                "error_type": str(row[9] or ""),
+            }
+            for row in page_rows
+        ]
+        return {
+            "timeline": timeline,
+            "next_cursor": int(page_rows[0][0]) if has_more and page_rows else None,
+            "has_more": has_more,
+        }
 
     def get_timeline(self, limit: int = 100, *, _flush: bool = True) -> list[dict[str, Any]]:
         """Return chronological timeline of agent operations for session replay and visualization."""

@@ -1,0 +1,80 @@
+{
+  "date": "2026-10-03",
+  "scope": "T19 root-current install/update/docs/CodeGraph standalone packaging patch",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf",
+  "root_writes": false,
+  "patch_path": "C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\T19-root-current-install-docs-packaging-20261003-v2.patch",
+  "patch_sha256": "4353272262a888c297318883d31bd3ef32c09c463c0fea7336f68e0936a76955",
+  "patch_bytes": 32543,
+  "supersedes": "Preliminary overlay artifact created in this turn; final v2 patch is only handoff target.",
+  "changed_paths": [
+    "docs/INSTALL_PROMPT.md",
+    "docs/UPDATE_PROMPT.md",
+    "docs/PYTHON_SDK.md",
+    "docs/T19_CLEAN_HOST_INSTALLER_CYCLE.md",
+    "docs/T19_RELEASE_VALIDATION_RUNBOOK.md"
+  ],
+  "preimage_sha256_worktree": {
+    "docs/INSTALL_PROMPT.md": "7e5da693aebdfe0bd2f025aa6176e75284701eb4b92fedf636e64a88d7c6573b",
+    "docs/UPDATE_PROMPT.md": "50ce34f25602653652235a8267e6ea2d85953bb6541c2ec66de7c40d22a31c97",
+    "docs/PYTHON_SDK.md": null,
+    "docs/T19_CLEAN_HOST_INSTALLER_CYCLE.md": "a037dae1d9942c76f15b7f0801f647e9fc5879b74b9e41d206d308432a0ad49a",
+    "docs/T19_RELEASE_VALIDATION_RUNBOOK.md": "53ec31aa3f646308c21c0f5101123880b583513597389f5b32e8bc5541972d63"
+  },
+  "postimage_sha256_lf": {
+    "docs/INSTALL_PROMPT.md": "8fcfdf21a1610aea2ea1f87696de01b19259d160b487d94415284fab5dbbf44d",
+    "docs/UPDATE_PROMPT.md": "7e69ac0bda1b93462df93395a8e3c462746434fcca648a5ab1ffed0da8916f89",
+    "docs/PYTHON_SDK.md": "f974fc2cefc2c2be56945ec713af94223790fc44418ba583a5a7eafc510819e2",
+    "docs/T19_CLEAN_HOST_INSTALLER_CYCLE.md": "2346381bd256cd24bbc57cca1815ad035229926e10613449edecf787bdaf9855",
+    "docs/T19_RELEASE_VALIDATION_RUNBOOK.md": "369429b1957885b913da9d18ecd78ca10cfd55f3668bc28af62e353083c2b7c6"
+  },
+  "packaging": {
+    "MANIFEST.in_sha256": "bcbb4d098a772c2c6bfd57feddcd5ce5daf65da69ee1ac7c9d74f1bcc306e854",
+    "rule": "recursive-include docs *.md",
+    "manifest_edit_required": false,
+    "sdk_doc_in_sdist": true
+  },
+  "CodeGraph": "Hub removal retained; existing standalone pip/MCP section in INSTALLATION remains; prompts link it; no runtime edits",
+  "static_source_contracts": {
+    "HubClient_public_methods": 42,
+    "missing_methods": [],
+    "literal_API_routes": 48,
+    "missing_routes": [],
+    "pyproject_extras": [
+      "dev",
+      "intel-accelerators",
+      "local-nlp",
+      "performance",
+      "profiling",
+      "token-economy"
+    ],
+    "missing_extras": [],
+    "root_request_kwargs_match": true,
+    "path_hints_match": true,
+    "health_contract_match": true,
+    "installer_revision_pin_truthful": true,
+    "manual_release_sha_clean_tree": true,
+    "no_duplicate_restart": true,
+    "MCP_process_identity_gate": true,
+    "Windows_Linux_sdist_hash_gate": true,
+    "cross_version_update_gate": true,
+    "CodeGraph_standalone_and_not_setup": true,
+    "result": "PASS: all 13 checks; inline Python AST/text comparison, not pytest"
+  },
+  "git_apply_check": {
+    "command": "git -C 'C:\\Users\\Adam\\.local-ai-hub' apply --check 'C:\\Users\\Adam\\.codex\\worktrees\\t19-docs-rollout\\.local-ai-hub\\handoff\\T19-root-current-install-docs-packaging-20261003-v2.patch'",
+    "result": "PASS (exit 0, no output; fresh run after patch generation)",
+    "root_changed_by_check": false
+  },
+  "tests": "not run; wait for T20 GO",
+  "install_update_acceptance": "not run; wait for T20 GO",
+  "open_gates": [
+    "install wrappers do not enforce expected source SHA",
+    "cross-version upgrade needs T20 baseline and target artifact pair",
+    "reported MCP/daemon loaded-code identity mismatch unresolved",
+    "persistent service acceptance separate because cycle uses --skip-service"
+  ],
+  "root_dirty_status": "Existing dirty files preserved; only status/hash inspection; patch remains unapplied.",
+  "exact_apply_check_exit_code": 0
+}
