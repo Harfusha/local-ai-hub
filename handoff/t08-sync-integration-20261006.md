@@ -3,6 +3,11 @@
 Scope: only C:/Users/Adam/.codex/worktrees/t08-agent-os/.local-ai-hub.
 Branch: codex/sync-t08-agent-os-20261006. No root checkout edits, master ref writes,
 push, stash, reset, clean, new worktree, installation or release suite.
+Resolved merge commit: 93fd7626c7bc51aa4bceecf3dfbfe78af49a8371.
+Post-merge gates: pinned master, original HEAD and dirty checkpoint are ancestors;
+index and tracked worktree clean, no unresolved entries. 1118 paths differ from
+pinned master, including preserved artifacts; 43 src/test files (+4133/-534 lines).
+Final syntax/AST rerun inspected 43 paths, zero syntax failures.
 User explicitly authorized native fallback after terminal Hub failure; no Hub retry.
 Native subagent review was unavailable (thread limit); integration remained single-owner.
 Token-economizer bounded slices and surgical apply_patch edits were used; its missing
