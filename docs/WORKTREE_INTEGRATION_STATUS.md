@@ -126,6 +126,37 @@ state isolation without changing the user's live mode. The third test
 confirms a protected error string is truncated at the 128-token budget.
 No test expectation weakened and no repeat of this command was launched.
 
+## Further reconciliations
+
+- T13 `b30a6dde` integrated: older source/tests/handoffs committed, newer
+  master operational admission and safety retained. Three async safety hunks
+  and a fail-closed auto-repair guard retained. Worker checks: 104 passed /
+  37 failed; syntax passed for 118 files. Live mode unchanged.
+- T12 `8ab07a6c` integrated: runtime routing, bounded inventory/unload,
+  scheduler cancellation and benchmark changes reconciled. Worker checks:
+  138 passed / 2 failed, 45 passed / 1 failed, benchmark 10 passed with six
+  executions blocked by the external-state guard. Runtime acceptance,
+  deadline and identity fixture gaps remain in the owner integration note.
+- T14 render-order `53198c04` integrated. Production source matches pinned
+  master; original test/history preserved. Eight focused tests and scoped
+  whitespace passed. Inherited context-budget acceptance remains open.
+- T06 write-set `1c311c65` integrated. Older helper/protocol hunks are
+  superseded by current master scoped cache invalidation, incident capture,
+  provenance and uncertainty guards; original source checkpoint remains.
+  Original rollback regression retained, not weakened. Targeted execution:
+  two failures / 77 deselected (missing `failure_kind`); later cache assertions
+  not reached. Exact command in its handoff note.
+- T08 `3bbc4f1c` integrated at `2ee2a0a0`. Four source/test overlaps resolved
+  manually: keep T05 durable promotion publication and sanitization, T08
+  auto-link/other atomic mutations, explicit caller-ID replay lookup, and
+  T05 trusted HTTP mutation identity. Both conflicting global-memory tests
+  retained separately; older cross-tenant expectations need review, not a
+  weaker runtime policy. Source checkpoints retain all original protocols.
+  Worker syntax: 43 files passed. Worker targeted batch 18 passed / 7 failed;
+  two fixture follow-ups passed. Fresh root integration check is pending.
+- Active owners now: T10 path hints Lorentz; T21 config Chandrasekhar;
+  T19 docs Ptolemy; T14 isolated snippet Peirce; historical fefe Ohm.
+
 ## Rules for the remainder
 
 - Preserve each original HEAD and dirty tracked content in a checkpoint ref
