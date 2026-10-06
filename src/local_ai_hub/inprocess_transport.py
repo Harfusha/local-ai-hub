@@ -7,6 +7,7 @@ import time
 from email.message import Message
 from http import HTTPStatus
 from typing import Any, Mapping
+from urllib.parse import parse_qs, urlparse
 from urllib.error import HTTPError
 
 from .config import load_config
@@ -208,6 +209,18 @@ class InProcessTransport:
             if cancel_before_dispatch.is_set():
                 raise InProcessTransportFailure("in-process request timed out before dispatch")
             dispatched.set()
+        parsed_path = urlparse(path)
+        if (
+            method == "GET"
+            and not requires_heavy_work
+            and parsed_path.path == "/api/repo/topology"
+        ):
+            if not handler._require_authorized():
+                return handler._memory_status, handler.wfile.getvalue(), handler._memory_headers
+            query = parse_qs(parsed_path.query)
+            root = (query.get("root") or [""])[0]
+            handler._send(200, app.services.repo_topology(root))
+            return handler._memory_status, handler.wfile.getvalue(), handler._memory_headers
         if method == "GET":
             handler.do_GET()
         else:

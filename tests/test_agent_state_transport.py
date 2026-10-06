@@ -655,6 +655,58 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
         app.close()
 
 
+def test_http_verification_route_rejects_passed_receipt_without_evidence(tmp_path: Path):
+    import json
+    import threading
+    import urllib.error
+    import urllib.request
+
+    from local_ai_hub import http_server
+
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        f'[server]\nbind = "127.0.0.1"\nport = 11502\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        "\n[agent_state]\nenabled = true\n",
+        encoding="utf-8",
+    )
+    app = LocalAIApp(str(cfg_path))
+    previous = http_server.APP
+    http_server.APP = app
+    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        payload = json.dumps({
+            "action": "receipt",
+            "receipt": {
+                "receipt_id": "route-receipt-no-evidence",
+                "task_id": "route-task",
+                "criterion": "focused test",
+                "passed": True,
+            },
+        }).encode("utf-8")
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/verification",
+            data=payload,
+            headers={"Content-Type": "application/json", "Connection": "close"},
+            method="POST",
+        )
+        with pytest.raises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(request)
+        result = json.loads(error.value.read().decode("utf-8"))
+        assert error.value.code == 400
+        assert result["error"] == "passed verification receipt requires evidence_id"
+        assert result["terminal"] is True
+        assert result["retryable"] is False
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+        gc.collect()
+        http_server.APP = previous
+        app.close()
+
+
 def test_http_context_transport_preserves_diagnostics_flag(tmp_path: Path):
     import json
     import threading
@@ -993,3 +1045,64 @@ def test_dashboard_agent_os_tab():
     assert 'loadAgentOsView' in DASHBOARD_HTML
     assert 'renderAgentOsView' in DASHBOARD_HTML
     assert 'agentStateCard' in DASHBOARD_HTML
+
+
+def test_http_verification_route_requires_boolean_passed(tmp_path: Path):
+    import json
+    import threading
+    import urllib.error
+    import urllib.request
+
+    from local_ai_hub import http_server
+
+    cfg_path = tmp_path / "config.toml"
+    cfg_path.write_text(
+        f'[server]\nbind = "127.0.0.1"\nport = 11501\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        "\n[agent_state]\nenabled = true\n",
+        encoding="utf-8",
+    )
+    app = LocalAIApp(str(cfg_path))
+    previous = http_server.APP
+    http_server.APP = app
+    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    def post(receipt):
+        payload = json.dumps({"action": "receipt", "receipt": receipt}).encode("utf-8")
+        request = urllib.request.Request(
+            f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/verification",
+            data=payload,
+            headers={"Content-Type": "application/json", "Connection": "close"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request) as response:
+                return response.status, json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode("utf-8"))
+
+    try:
+        invalid_receipts = (
+            {"task_id": "route-task", "criterion": "focused test"},
+            {"task_id": "route-task", "criterion": "focused test", "passed": "false"},
+            {"receipt_id": "route-receipt-text", "task_id": "route-task", "criterion": "focused test", "passed": "false"},
+            {"receipt_id": "route-receipt-int", "task_id": "route-task", "criterion": "focused test", "passed": 1},
+        )
+        for receipt in invalid_receipts:
+            status, result = post(receipt)
+            assert status == 400
+            assert result["success"] is False
+            assert result["terminal"] is True
+            assert result["retryable"] is False
+
+        status, result = post({"task_id": "route-task", "criterion": "focused test", "passed": False})
+        assert status == 200
+        assert result["receipt"]["passed"] is False
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
+        gc.collect()
+        http_server.APP = previous
+        app.close()

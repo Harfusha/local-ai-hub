@@ -298,6 +298,10 @@ class MCPStdioClient:
         self._stderr = deque(maxlen=80)
         if not proc:
             return
+
+        # A request timeout has no remaining budget for process-tree teardown.
+        # Detach state now, then reap in the background so cleanup cannot extend
+        # the caller's explicit deadline.
         if deadline is not None and time.monotonic() >= deadline:
             threading.Thread(
                 target=self._cleanup_process,
