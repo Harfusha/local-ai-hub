@@ -8,8 +8,9 @@
 - Durable checkpoint ref: refs/heads/codex/sync-t02-checkpoint-20261006.
 - Checkpoint commit: b276cd0295a0856c25d13ed443206c9547f5f689.
 - Initial master pin: 614a6a50ac2a3e4106270136cb8e584e770c3752.
-- Latest requested pin: fbc965f568105e1a8d3dc03ae4c9da5531a9617e; resolved read-only from fbc965f5 and merged once.
-- Later orchestrator-observed master drift: f161b91fe08ef5211cb09d499571b0ae5b6d2278. Not incorporated: the one requested latest-master merge had already incorporated fbc965f5 before this subsequent drift was observed.
+- Previously incorporated latest pin: fbc965f568105e1a8d3dc03ae4c9da5531a9617e; resolved read-only from fbc965f5 and merged once in the original synchronization.
+- Final separately authorized sync pin: 9b794d7fa24abb179a17d87e14becdfa7fc8cd50; clean merge from pre-sync HEAD 7c58a5a2689b5d6de0be8a684011ff7706da4f23, including this note update.
+- Earlier orchestrator-observed drift f161b91fe08ef5211cb09d499571b0ae5b6d2278 is now incorporated through the final sync pin; its ancestry was verified.
 - Initial resolved merge: 21bbd39f; latest merge: 30fda4f5a99e83410adff8e583b9b77ed7fa9b1b.
 - Original exact status, paths, byte counts, SHA-256: handoff/T02-sync-original-manifest-20261006.json.
 - All seven original untracked docs/handoff files were committed as raw Git blobs with --no-filters before merging. Final verification hashed checkpoint blob bytes directly: 7/7 matched original SHA-256.
@@ -43,6 +44,7 @@ Offline Hugging Face settings and PYTHONDONTWRITEBYTECODE=1 set. Temporary test 
 python -B tools/benchmark_surfaces.py --help: exit 0; no checkpoint/resume options.
 Known incomplete compatibility: tools/run_t02_matrix.py still emits --checkpoint, --checkpoint-batch-size and optional --resume. The inherited documentation/runner contract therefore cannot establish a runnable full matrix against current master. Kept original task source/docs committed; no new checkpoint feature or benchmark run introduced.
 No full release suite, matrix measurement, deployment, GPU inference, or performance acceptance claimed.
+Final sync: no conflicts; no code changes or test reruns required. Existing matrix-runner checkpoint-flag incompatibility above remains open. Before merging, all nine original untracked artifact SHA-256 values matched the manifest; repeat the same preservation check after the final commit.
 git -c core.whitespace=cr-at-eol diff --check <latest-pin> HEAD: passed before this note.
 Both pinned commits are ancestors; no unresolved entries; tracked working/index deltas clean before adding this note.
 
