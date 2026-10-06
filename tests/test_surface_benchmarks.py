@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import gc
 import json
+import hashlib
 import os
 import sqlite3
 import subprocess
@@ -9,6 +10,7 @@ import sys
 import threading
 import time
 import uuid
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -195,11 +197,34 @@ def _async_jobs_lifecycle_snapshot(scratch_root: Path) -> dict[str, object]:
             continue
         try:
             uri = f"{database_path.resolve().as_uri()}?mode=ro"
-            with sqlite3.connect(uri, uri=True, timeout=0.05) as connection:
+            with closing(sqlite3.connect(uri, uri=True, timeout=0.05)) as connection:
                 table_exists = connection.execute(
                     "SELECT 1 FROM sqlite_master WHERE type='table' AND name='async_jobs'"
                 ).fetchone() is not None
-            schema = {"async_jobs_table_exists": table_exists}
+                queue_rows: list[dict[str, object]] = []
+                if table_exists:
+                    available = {
+                        str(row[1])
+                        for row in connection.execute("PRAGMA table_info(async_jobs)").fetchall()
+                    }
+                    fields = (
+                        "job_id", "tenant", "action", "task_id", "state", "cancel_requested",
+                        "dispatch_not_before", "lease_until", "created_at", "updated_at",
+                    )
+                    selected = [field for field in fields if field in available]
+                    if {"job_id", "tenant", "action"}.issubset(selected):
+                        order_by = "created_at DESC" if "created_at" in selected else "job_id"
+                        rows = connection.execute(
+                            f"SELECT {', '.join(selected)} FROM async_jobs "
+                            "WHERE tenant = ? AND action = ? "
+                            f"ORDER BY {order_by} LIMIT 50",
+                            ("benchmark", "reason"),
+                        ).fetchall()
+                        queue_rows = [dict(zip(selected, row)) for row in rows]
+            schema = {
+                "async_jobs_table_exists": table_exists,
+                "benchmark_queue_rows": queue_rows,
+            }
         except sqlite3.Error as exc:
             schema = {"read_only_probe_error": f"{type(exc).__name__}: {exc}"}
         observed.append({
@@ -218,6 +243,34 @@ def _async_jobs_lifecycle_snapshot(scratch_root: Path) -> dict[str, object]:
         "sqlite_worker_alive": any(manager["sqlite_worker_alive"] for manager in observed),
         "managers": observed,
     }
+
+
+def test_async_jobs_lifecycle_snapshot_includes_benchmark_queue_rows(tmp_path: Path) -> None:
+    manager = AsyncJobManager(
+        {"server": {"state_dir": str(tmp_path)}},
+        scheduler=None,
+        artifacts=None,
+        executor=lambda _action, _payload, _tenant: {"success": True},
+    )
+    try:
+        submitted = manager.submit(
+            "benchmark", "reason", {"task": "T02 snapshot probe"},
+            dispatch_delay_seconds=30,
+        )
+        assert submitted.get("success") is True
+        job_id = str(submitted["job_id"])
+
+        snapshot = _async_jobs_lifecycle_snapshot(tmp_path)
+
+        observed = next(item for item in snapshot["managers"] if item["database_path"] == str(manager.path))
+        queue_rows = observed["benchmark_queue_rows"]
+        row = next(item for item in queue_rows if item["job_id"] == job_id)
+        assert row["tenant"] == "benchmark"
+        assert row["state"] == "queued"
+        assert row["cancel_requested"] == 0
+        assert "payload_json" not in row
+    finally:
+        manager.close()
 
 
 def _comparison_diagnostic(
@@ -467,22 +520,22 @@ def test_queue_admission_failure_retains_phase_and_reason(tmp_path: Path, monkey
         rag_chunks=2,
         repetitions=1,
         light_repetitions=1,
-        paired_repetitions=1,
+        comparison_repetitions=1,
         concurrency=(1,),
     )
 
     stage = result["stages"]["hub_queue_admission"]
     assert stage["status"] == "failed"
     assert stage["error_count"] == 1
-    assert stage["error_samples"] == [{
-        "phase": "submit",
-        "type": "RuntimeError",
-        "message": "async job admission failed",
-        "reported_error": True,
-        "state": "rejected",
-        "reason": "resource_pressure",
-        "pressure_level": "critical",
-    }]
+    assert stage["error_types"] == ["RuntimeError"]
+    assert stage["error_reasons"] == {"submit_rejected": 1}
+    assert len(stage["failed_samples"]) == 1
+    diagnostic = stage["failed_samples"][0]
+    assert diagnostic["error_type"] == "RuntimeError"
+    assert diagnostic["error_reason"] == "submit_rejected"
+    assert diagnostic["submit"]["success"] is False
+    assert diagnostic["submit"]["state"] == "rejected"
+    assert diagnostic["submit"]["admission_reason"] == "resource_pressure"
     assert "SENTINEL_PAYLOAD_SECRET" not in repr(result)
 
 
@@ -509,18 +562,18 @@ def test_queue_admission_exception_redacts_exception_text(tmp_path: Path, monkey
         rag_chunks=2,
         repetitions=1,
         light_repetitions=1,
-        paired_repetitions=1,
+        comparison_repetitions=1,
         concurrency=(1,),
     )
 
     stage = result["stages"]["hub_queue_admission"]
     assert stage["status"] == "failed"
     assert stage["error_count"] == 1
-    assert stage["error_samples"] == [{
-        "phase": "submit",
-        "type": "RuntimeError",
-        "message": "async job submit raised an exception",
-    }]
+    assert stage["error_types"] == ["RuntimeError"]
+    assert stage["error_reasons"] == {"exception_RuntimeError": 1}
+    assert len(stage["failed_samples"]) == 1
+    assert stage["failed_samples"][0]["error_type"] == "RuntimeError"
+    assert stage["failed_samples"][0]["error_reason"] == "exception_RuntimeError"
     assert "SENTINEL_EXCEPTION_SECRET" not in repr(result)
 
 
@@ -3068,6 +3121,9 @@ def test_cli_wall_timeout_returns_incomplete_receipt_without_state_artifact(
     assert payload == {
         "success": False, "status": "incomplete",
         "error": "benchmark_timeout", "timeout_seconds": 1.0,
+        "record_complete": False, "return_code": 124,
+        "stdout": {"byte_count": 0, "sha256": hashlib.sha256(b"").hexdigest()},
+        "stderr": {"byte_count": 0, "sha256": hashlib.sha256(b"").hexdigest()},
     }
     assert calls["timeout"] == 1.0
     assert not state_dir.exists()
@@ -3099,9 +3155,33 @@ def test_cli_worker_enforces_wall_timeout_against_real_hung_child(
     assert payload == {
         "success": False, "status": "incomplete",
         "error": "benchmark_timeout", "timeout_seconds": 1.5,
+        "record_complete": False, "return_code": 124,
+        "stdout": {"byte_count": 0, "sha256": hashlib.sha256(b"").hexdigest()},
+        "stderr": {"byte_count": 0, "sha256": hashlib.sha256(b"").hexdigest()},
     }
     assert elapsed >= 1.0
     assert elapsed < 4.5
+
+
+def test_cli_worker_cancellation_never_reports_successful_record(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str],
+) -> None:
+    record = {"success": True, "record_path": "benchmark.json", "comparison": {"status": "passed"}}
+
+    def cancelled(command: list[str], **kwargs: Any) -> Any:
+        return surface_benchmarks.subprocess.CompletedProcess(
+            command, 130, stdout=json.dumps(record), stderr="cancelled",
+        )
+
+    monkeypatch.setattr(surface_benchmarks.subprocess, "run", cancelled)
+    exit_code = surface_benchmarks._run_cli_worker(["benchmark-worker"], timeout_seconds=1.0)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert exit_code == 130
+    assert payload["success"] is False
+    assert payload["status"] == "cancelled"
+    assert payload["record_path"] == "benchmark.json"
+    assert payload["worker_return_code"] == 130
 
 
 def test_concurrent_benchmark_future_wait_has_a_deadline() -> None:

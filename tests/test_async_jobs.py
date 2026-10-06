@@ -191,6 +191,28 @@ def test_recovery_requeues_persisted_job_once(tmp_path):
     manager.close()
 
 
+def test_recovery_keeps_unkeyed_running_job_outcome_unknown(tmp_path):
+    manager, scheduler = _manager(tmp_path)
+    dispatched = []
+    manager._dispatch = dispatched.append
+    now = time.time()
+    with closing(manager._connect()) as con:
+        con.execute(
+            "INSERT INTO async_jobs(job_id,tenant,action,request_hash,payload_json,state,attempts,created_at,updated_at,expires_at) VALUES(?,?,?,?,?,'running',1,?,?,?)",
+            ("unkeyed-persisted", "tenant-a", "reason", "unkeyed-persisted-hash", '{"task":"resume"}', now, now, now + 600),
+        )
+        con.commit()
+
+    assert manager.recover() == 0
+    status = manager.status("tenant-a", "unkeyed-persisted")
+    assert status["state"] == "outcome_unknown"
+    assert status["terminal"] is True
+    assert status["retryable"] is False
+    assert dispatched == []
+    assert scheduler.calls == []
+    manager.close()
+
+
 def test_completed_job_returns_artifact_backed_result(tmp_path):
     manager, _scheduler = _manager(tmp_path)
     submitted = manager.submit("tenant-a", "reason", {"task": "finish"})
@@ -254,7 +276,7 @@ def test_recovered_async_job_reopens_terminal_trace(tmp_path, monkeypatch):
     try:
         now = time.time()
         trace_id = store.start(kind="async_job", tenant="tenant-a", action="reason", source="async-job")
-        store.update(trace_id, request={"task": "recover me"})
+        store.update(trace_id, request={"task": "recover me", "request_id": "trace-recovery-1"})
         with closing(manager._connect()) as con:
             con.execute(
                 "INSERT INTO async_jobs(job_id,tenant,action,request_hash,payload_json,state,created_at,updated_at,expires_at,trace_id) VALUES(?,?,?,?,?,'running',?,?,?,?)",
@@ -628,6 +650,35 @@ def test_tick_keeps_cancelled_job_cancelled_after_execution_lease_expires(tmp_pa
         assert status["state"] == result["state"] == "cancelled"
         assert status["terminal"] is result["terminal"] is True
         assert status["retryable"] is result["retryable"] is False
+    finally:
+        manager.close()
+
+
+def test_tick_does_not_dispatch_during_delayed_submit_registration_gap(tmp_path, monkeypatch):
+    manager, _scheduler = _manager(tmp_path)
+    dispatched = []
+    original_event = manager._event
+    should_tick = True
+
+    def _event_then_tick(job_id):
+        nonlocal should_tick
+        event = original_event(job_id)
+        if should_tick:
+            should_tick = False
+            manager.tick()
+        return event
+
+    monkeypatch.setattr(manager, "_event", _event_then_tick)
+    monkeypatch.setattr(manager, "_dispatch", lambda job_id: dispatched.append(job_id))
+    try:
+        submitted = manager.submit(
+            "tenant-a", "reason", {"task": "delayed-dispatch"},
+            dispatch_delay_seconds=30,
+        )
+
+        assert submitted["success"] is True
+        assert dispatched == []
+        assert manager.status("tenant-a", submitted["job_id"])["state"] == "queued"
     finally:
         manager.close()
 
