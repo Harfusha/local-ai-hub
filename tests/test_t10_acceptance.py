@@ -28,7 +28,12 @@ class _SnapshotReader:
     ignore_dirs: set[str] = set()
 
     @staticmethod
-    def _read_snapshot(path: Path) -> tuple[str, list[str]]:
+    def _read_snapshot(
+        path: Path,
+        *,
+        stat: os.stat_result | None = None,
+        force: bool = False,
+    ) -> tuple[str, list[str]]:
         source = Path(path).read_bytes()
         return hashlib.sha256(source).hexdigest(), source.decode("utf-8", errors="replace").splitlines()
 
