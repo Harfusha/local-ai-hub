@@ -23,6 +23,13 @@ Historical snapshot: statuses, hashes, and receipts below belong to their record
 - A T06 three-way stash apply conflicted in three paths that were clean before the attempt; only those exact paths were restored to `HEAD`, leaving no unmerged entries. Stash itself remained intact.
 - No tests or release gates ran in this reconciliation. Release remains **NO-GO** pending owner-bound integration and current receipts.
 
+### Stash audit follow-up — 2026-10-07, master `eb9621fc`
+
+- The seven non-merge branches remain preserved as `archived/codex/*`; no branch commits or worktrees were deleted.
+- Three parallel, read-only reviews compared all 35 stash entries present at audit start against master and dirty root paths. Five confirmed redundant snapshots were moved from `git stash list` to exact recoverable refs: `64a794a60a0c5198de571e1163fe96d18f44fda0`, `bafb739b3c31c2204b243b4691970bf750388612`, `3e4f81d95b896a43ab4a5f72774a0f2e0f8e8df3`, `824700cac31a1d19f00cf4b24a2a43b1b020b11e`, and `2030eb9d3e04cbbf17720d5f0f5f5ea3aae7f320`, each under `refs/archive/stashes/2026-10-07/<full-sha>`. Total: 15 recoverable archived snapshots, 30 active stash entries. No stash content was destroyed.
+- No source hunk was applied: reviewed snapshots were redundant, overlapped dirty root/active owners, weakened newer safeguards, or contained candidate hunks needing owner-specific verification. Open candidates include T18 trace/SSE pagination (`12beabe20f72bae37ca4c82b7c2443b5d5c80a6f`), context-pack benchmark instrumentation (`0e3b712ed0a9df1182bf862166faeec54c39218b`), accelerator release (`f6037b1b8f5bbbb23fb4b69bba7552612a6135f6`), and isolated cancellation/logging behavior (`2d7a7a3e68117419f1d4d25603fb173ac663c127`). These remain preserved pending focused review.
+- Current root dirty files and `agent_state.sqlite` remain untouched. The remaining stash set is retained; this is not release acceptance. No tests/release checks ran; release remains **NO-GO**.
+
 ## Global Constraints
 
 - Preserve existing root dirty changes; integrate only exact, attributable hunks.
