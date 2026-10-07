@@ -893,6 +893,12 @@ class LocalAIApp:
 
         def cached_snapshot(cached: dict[str, Any], now: float, *, stale: bool = False) -> dict[str, Any]:
             result = deepcopy(cached["data"])
+            if "agent_state" in result:
+                result["agent_state"], _ = dependency(
+                    "agent_state",
+                    self._agent_state_summary,
+                    result["agent_state"],
+                )
             result["snapshot_cached"] = True
             result["status_age_ms"] = max(0, int((now - cached["time"]) * 1000))
             if stale:
