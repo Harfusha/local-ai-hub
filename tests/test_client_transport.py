@@ -26,6 +26,42 @@ def _client(tmp_path):
     return HubClient(config_path=str(config), auto_start=False)
 
 
+def test_auto_start_timeout_terminates_and_reaps_only_its_child(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    client.startup_wait = 0.05
+    client.startup_poll = 0.01
+    launched = []
+    terminated = []
+
+    class Child:
+        pid = 43210
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            self.returncode = -15
+            return self.returncode
+
+    child = Child()
+    monkeypatch.setattr(client, "_online", lambda _timeout=None: False)
+    monkeypatch.setattr(client_module, "find_listening_pid", lambda _port: None)
+    monkeypatch.setattr(client_module.subprocess, "Popen", lambda *_args, **_kwargs: launched.append(child) or child)
+    monkeypatch.setattr(client_module, "_retain_detached_child", lambda _process: None)
+    monkeypatch.setattr(
+        client_module,
+        "terminate_tree",
+        lambda pid, **_kwargs: terminated.append(pid) or True,
+        raising=False,
+    )
+
+    assert client.ensure_server(timeout=0.05) is False
+    assert launched == [child]
+    assert terminated == [child.pid]
+    assert child.returncode is not None
+
+
 def test_client_get_non_object_json_uses_complete_invalid_response(tmp_path, monkeypatch):
     client = _client(tmp_path)
     monkeypatch.setattr(client, "_pooled_open", lambda *_args, **_kwargs: b"[]")
