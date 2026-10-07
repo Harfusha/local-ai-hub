@@ -405,3 +405,7 @@ T08's 40 tracked root paths and 22 root-level untracked tests were compared to c
 - T18 source/test blobs match master; no missing owned source hunk. Its exact debug/content receipt is **10 passed**; branch remains 11 commits behind with 349 untracked artifacts, so no fast-forward. Runtime/HTTP/telemetry acceptance remains open.
 - T09 exact recovery snapshot is absent; restore failed. T20's assigned checkout is not a Git repository and its registered restore failed `ENOENT`; no release benchmark/GO. T01/T04/T05/T07/T08/T10/T14/T16/T17/T19 have separately reported missing/invalid assigned worktrees; no substitute checkout or destructive cleanup used.
 
+### T31 hash-path verification — 2026-10-07, master `0474cfd4`
+
+Master already has a canonical large-element `orjson` fast path in `CompiledContext.etag()` while preserving the legacy SHA-1 ETag bytes for canonical and fallback values. On the existing `t31-element-id-hash` worktree fast-forwarded to `0474cfd4`, `python -m pytest -q --tb=short tests/test_agent_context.py::test_context_etag_matches_legacy_canonical_json_without_json_dumps tests/test_agent_context.py::test_context_etag_keeps_stdlib_spelling_for_noncanonical_values` → **7 passed in 0.48s**. This verifies equivalence, not measured speed; no benchmark run and no production source change. The current implementation concerns `CompiledContext.etag`, not an `element_id` generator; confirm whether the reported wording intended this path before marking the broader performance item done.
+
