@@ -107,6 +107,17 @@ def test_vision_result_rejects_confidence_outside_contract() -> None:
     assert "confidence" in result.error["message"]
 
 
+def test_vision_result_rejects_confidence_below_contract() -> None:
+    result = parse_vision_result(
+        '{"summary":"bad","findings":[{"id":"f1","severity":"low",'
+        '"category":"layout","problem":"bad","confidence":-0.5,'
+        '"evidence":["visible layout issue"]}]}'
+    )
+
+    assert result.terminal is True
+    assert "confidence" in result.error["message"]
+
+
 def test_grounded_vision_rejects_dom_ids_absent_from_supplied_dom() -> None:
     result = parse_vision_result(
         '{"summary":"button issue","findings":[{"id":"f1",'

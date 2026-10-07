@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlsplit
 
-from .process_utils import find_listening_pid, pid_alive, process_identity
+from .process_utils import find_listening_pid, pid_alive, process_identity, terminate_tree
 from typing import Any, Mapping, Protocol, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -692,6 +692,21 @@ class HubClient:
                     return True
                 time.sleep(min(self.startup_poll, remaining()))
             ready = self._online(remaining())
+            if (
+                not ready
+                and process.poll() is None
+                and not find_listening_pid(port)
+            ):
+                # Reap only the child created by this attempt. A listener may
+                # belong to a Hub that is still warming, so never kill then.
+                try:
+                    terminate_tree(process.pid, process_group=process.pid, grace_seconds=1.0)
+                except OSError:
+                    pass
+                try:
+                    process.wait(timeout=1.0)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
             keep_lock = not ready
             return ready
         finally:
