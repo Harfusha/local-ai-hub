@@ -373,3 +373,9 @@ T03's seven-file untracked handoff packet was parsed and reviewed. Status fields
 
 Current inventory after T17 extraction: **6 active stashes, 39 archive refs**. No stash object deleted.
 
+### T04/T05 stash closeout — 2026-10-07, master `c2281ade`
+
+- T04 stash `26ece570afb5af2f853b91aeb6d8136618c32312`: current client/MCP/SSE tests cover or exceed its transport contracts; current OS-held startup lock supersedes its PID/nonce guard. The stash has no unique missing behavior or test; archived recoverably at `refs/archive/stashes/2026-10-07/26ece570afb5af2f853b91aeb6d8136618c32312`. Cross-process contention/stale-lock tests remain a separate current acceptance gap; this stash does not supply them.
+- T05 stash `4948724725da96c9141da6d7ae83d9fbf1d9536c`: comparison found no stash-only test assertion among six differing tests; current root-scoped memory/Agent State cases exist, and older source snapshots would remove newer code. Archived recoverably at `refs/archive/stashes/2026-10-07/4948724725da96c9141da6d7ae83d9fbf1d9536c`. Dirty root memory/server edits were not modified.
+- Current inventory: **4 active stashes, 41 archive refs**. Full stash commits and parent payloads remain recoverable. No T04/T05 source hunk applied.
+
