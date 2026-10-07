@@ -385,3 +385,7 @@ Current inventory after T17 extraction: **6 active stashes, 39 archive refs**. N
 - T02 worktree `t02-quality-baseline-resume` was clean and strictly behind; fast-forwarded to current master `6ef9792c` and verified clean/ahead=0/behind=0. T02 owner reports fresh benchmark acceptance blocked by absent T20 serial-slot grant, uncertain T15 concurrency, and missing pinned command/input/config. Benchmark not run. T20 was asked to verify the slot and either grant an exact safe window or report the blocker.
 - Seven branch refs remain under `archived/`; 41 stash archive refs preserve complete commit parents. The four active stashes above are not release acceptance. Root dirty edits and `agent_state.sqlite` remain untouched; release remains **NO-GO**.
 
+### T08 snapshot archive follow-up — 2026-10-07, master `d46c6519`
+
+T08's 40 tracked root paths and 22 root-level untracked tests were compared to current master; all T08 queue behaviors have current source/tests, and the focused suite passed **48 tests**. The remaining 769 nested `artifacts/`/`handoff/` source-test snapshots were not semantically audited individually; retained byte-for-byte inside the recoverable stash object, not deleted. Stash `6c6c6c9d524855d57c0d71f8b40cbf1c3e5a1ae8` moved to `refs/archive/stashes/2026-10-07/6c6c6c9d524855d57c0d71f8b40cbf1c3e5a1ae8`; T08 acceptance remains open. Current inventory: **3 active stashes, 42 archive refs**. Seven `archived/` branches and all linked worktrees remain.
+
