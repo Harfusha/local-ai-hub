@@ -324,3 +324,7 @@ T18's existing owner reviewed both stash commits in `C:\Users\Adam\.codex\worktr
 
 The original stash commits and their untracked parent trees remain reachable. No T18 tests ran because the owner found no missing patch to apply. Current counts after this verification: **25 active stashes, 20 archive refs**. T04/T05/T08/T14 owner checkout blockers remain; their source/handoff candidates were not changed.
 
+## 2026-10-07 T12 llama.cpp transport integration
+
+T12 owner confirmed the prior benchmark failure: `HTTPResponse.peek()` calls `response.fp.peek()`, but `_InterruptibleSocketReader` lacked `peek()`. Integrated the exact owner commit `cbde7f3e079438f5908ccf4dbfe43b9db22f7799`, whose parent was master `1438a0e2b0c8e6b5c52c63687390b922d22b3e04`; only `src/local_ai_hub/llama_cpp.py` and `tests/test_t12_llama_cpp_transport.py` changed. The regression test was red before the fix (`AttributeError`), then green. Owner worktree file suite: **12 passed**. Root after fast-forward: `python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t12_llama_cpp_transport.py` => **12 passed in 3.41s**. Live model benchmark, latency, and RAM acceptance remain **NOT VERIFIED**; no model or daemon was started. T12 remains open until performance acceptance is measured.
+
