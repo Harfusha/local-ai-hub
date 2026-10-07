@@ -35,6 +35,12 @@ def _get_json(url: str, timeout: float = 1.5) -> dict:
         return json.loads(response.read().decode("utf-8"))
 
 
+def _read_tail(path: Path, limit: int = 4000) -> str:
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")[-limit:]
+    except OSError:
+        return ""
+
 
 def _undefined_globals() -> list[str]:
     """Catch runtime NameErrors that bytecode compilation alone cannot detect."""
@@ -97,8 +103,9 @@ def main() -> int:
 
         env = os.environ.copy()
         env["PYTHONPATH"] = str(SRC) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+        env["LOCAL_AI_CONFIG"] = str(cfg_path)
         proc = subprocess.Popen(
-            [sys.executable, "-m", "local_ai_hub", "--config", str(cfg_path)],
+            [sys.executable, "-m", "local_ai_hub.supervisor"],
             cwd=str(ROOT),
             env=env,
             stdout=subprocess.PIPE,
@@ -117,8 +124,12 @@ def main() -> int:
                 except Exception:
                     time.sleep(0.1)
             if health is None:
-                out, err = proc.communicate(timeout=1)
-                raise RuntimeError(f"hub failed to become healthy: rc={proc.returncode} stdout={out[-2000:]} stderr={err[-4000:]}")
+                supervisor_log = _read_tail(state / "supervisor.log", 2000)
+                hub_stderr = _read_tail(state / "logs" / "hub_stderr.log", 4000)
+                raise RuntimeError(
+                    f"hub failed to become healthy: supervisor_rc={proc.poll()} "
+                    f"supervisor_log={supervisor_log} hub_stderr={hub_stderr}"
+                )
             checks.append({"name": "http-health", "ok": health.get("success") is True and health.get("version") == __version__, "health": health})
             capabilities = _get_json(f"http://127.0.0.1:{port}/api/capabilities", timeout=3.0)
             checks.append({"name": "http-capabilities", "ok": capabilities.get("success") is True})

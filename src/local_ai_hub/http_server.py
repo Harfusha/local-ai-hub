@@ -41,7 +41,7 @@ from .agent_verification import VerificationReceipt
 from .task_context import build_context_request, compose_task_context
 from .agent_learning import ImprovementCandidate, SLOObservation
 from .operation_contracts import normalize_transport_error
-from .json_utils import dumps as json_dumps
+from .json_utils import dumps as json_dumps, loads as json_loads
 from .process_utils import process_owner_state
 
 from .browser_bridge import (
