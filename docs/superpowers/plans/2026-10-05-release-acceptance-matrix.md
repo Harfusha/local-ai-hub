@@ -379,3 +379,9 @@ Current inventory after T17 extraction: **6 active stashes, 39 archive refs**. N
 - T05 stash `4948724725da96c9141da6d7ae83d9fbf1d9536c`: comparison found no stash-only test assertion among six differing tests; current root-scoped memory/Agent State cases exist, and older source snapshots would remove newer code. Archived recoverably at `refs/archive/stashes/2026-10-07/4948724725da96c9141da6d7ae83d9fbf1d9536c`. Dirty root memory/server edits were not modified.
 - Current inventory: **4 active stashes, 41 archive refs**. Full stash commits and parent payloads remain recoverable. No T04/T05 source hunk applied.
 
+### Remaining owner stashes and T02 slot — 2026-10-07, master `6ef9792c`
+
+- Active stashes are `ac0b245438a975ab465266bbed892674100f4dd6` (T14 `/api/context/pack` owner packet unavailable), `f6037b1b8f5bbbb23fb4b69bba7552612a6135f6` (T13 incomplete historical benchmark evidence; no unique mode hunk; candidate preprocessing would reintroduce `shell=True`), `6c6c6c9d524855d57c0d71f8b40cbf1c3e5a1ae8` (T08 key contracts/tested; 769 nested historical source/test snapshots remain unaudited), and `032f0414b19103998196acb030106ec77e734f12` (T02 partial historical matrix; useful current test intent already ported). Kept active; no payload discarded or applied wholesale.
+- T02 worktree `t02-quality-baseline-resume` was clean and strictly behind; fast-forwarded to current master `6ef9792c` and verified clean/ahead=0/behind=0. T02 owner reports fresh benchmark acceptance blocked by absent T20 serial-slot grant, uncertain T15 concurrency, and missing pinned command/input/config. Benchmark not run. T20 was asked to verify the slot and either grant an exact safe window or report the blocker.
+- Seven branch refs remain under `archived/`; 41 stash archive refs preserve complete commit parents. The four active stashes above are not release acceptance. Root dirty edits and `agent_state.sqlite` remain untouched; release remains **NO-GO**.
+
