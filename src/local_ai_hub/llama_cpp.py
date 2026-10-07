@@ -602,6 +602,16 @@ class LlamaCppRouter:
             if cached and now - cached[0] < 1.0:
                 return cached[1]
         healthy = False
+        parsed = urlsplit(url)
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        host = parsed.hostname or "127.0.0.1"
+        try:
+            with socket.create_connection((host, port), timeout=0.04):
+                pass
+        except OSError:
+            with self._health_lock:
+                self._health[url] = (time.monotonic(), False)
+            return False
         try:
             req = Request(f"{url}/health", headers={"Accept": "application/json"})
             remaining = request_deadline - time.monotonic()
@@ -611,10 +621,10 @@ class LlamaCppRouter:
                 healthy = 200 <= int(getattr(response, "status", 200)) < 300
         except Exception:
             healthy = False
-        if _stop_requested(should_stop) or time.monotonic() >= request_deadline:
-            return False
         with self._health_lock:
             self._health[url] = (time.monotonic(), healthy)
+        if _stop_requested(should_stop) or time.monotonic() >= request_deadline:
+            return False
         return healthy
 
     def _model_info(

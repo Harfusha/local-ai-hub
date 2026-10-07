@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import errno
 import os
+import sys
 import tempfile
 import threading
 import time
@@ -22,6 +23,24 @@ _LOCK_FILENAME = "operational_mode.lock"
 _LOCK = threading.RLock()
 _WRITER_LOCK_TIMEOUT_SECONDS = 5.0
 _REPLACE_RETRY_SECONDS = 1.0
+_IN_PROCESS_RELEASE_DEADLINE_SECONDS = 3.0
+
+
+def _empty_torch_cuda_cache(timeout_seconds: float, **_kwargs: object) -> dict[str, object]:
+    """Best-effort cleanup for an already-loaded torch CUDA runtime only."""
+    torch = sys.modules.get("torch")
+    cuda = getattr(torch, "cuda", None) if torch is not None else None
+    is_available = getattr(cuda, "is_available", None)
+    empty_cache = getattr(cuda, "empty_cache", None)
+    if not callable(is_available) or not callable(empty_cache) or not is_available():
+        return {"success": True, "state": "not_applicable", "verified": False}
+    if timeout_seconds <= 0:
+        return {"success": False, "state": "timed_out", "verified": False}
+    try:
+        empty_cache()
+    except Exception as exc:
+        return {"success": False, "state": "failed", "verified": False, "error": type(exc).__name__}
+    return {"success": True, "state": "requested", "verified": False}
 
 
 @contextmanager
@@ -192,7 +211,7 @@ def operational_mode_gate_error(
     mode = snapshot.mode if snapshot is not None else "maintenance"
     degraded = snapshot is None or snapshot.degraded
     safe_job_actions = {"status", "wait", "result", "cancel", "evaluation_report"}
-    if not degraded and mode in {"gaming", "maintenance"} and action.strip().lower().replace("-", "_") in safe_job_actions:
+    if not degraded and mode == "gaming" and action.strip().lower().replace("-", "_") in safe_job_actions:
         return None
     if not degraded and mode == "gaming" and not requires_heavy_work:
         return None

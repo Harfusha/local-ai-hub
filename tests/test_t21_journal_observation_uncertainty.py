@@ -8,6 +8,25 @@ from local_ai_hub import http_server
 from local_ai_hub.resilience import RecoveryJournal
 
 
+def test_invalid_recovery_claim_fails_closed_before_mutation(monkeypatch):
+    responses = []
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(
+        config={}, recovery=SimpleNamespace(begin=lambda *_args, **_kwargs: None)
+    ))
+    monkeypatch.setattr(http_server.Handler, "_tenant", lambda self: "tenant-a")
+    monkeypatch.setattr(http_server.Handler, "_agent", lambda self: "agent-a")
+    monkeypatch.setattr(
+        http_server.Handler, "_send", lambda self, status, data: responses.append((status, data))
+    )
+    handler = object.__new__(http_server.Handler)
+    handler._trace_request_id = "invalid-recovery-claim"
+
+    assert handler._claim_recovery("/api/command/run", {"command": "mutate"}) is False
+    assert handler._journal_finished is True
+    assert responses[0][0] == 503
+    assert responses[0][1]["outcome_unknown"] is False
+
+
 @pytest.mark.parametrize("prior_outcome", ["done", "failed", "running"])
 def test_observation_failure_of_existing_mutation_is_terminal_unknown(
     tmp_path, monkeypatch, prior_outcome

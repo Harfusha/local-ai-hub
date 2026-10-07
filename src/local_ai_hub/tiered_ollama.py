@@ -326,7 +326,9 @@ class TieredOllamaRuntime:
         }
 
     def is_online(self) -> bool:
-        return bool(self.fast.is_online() or self.smart.is_online())
+        if bool(self.config.get("smart_ollama", {}).get("enabled", False)):
+            return bool(self.fast.is_online() or self.smart.is_online())
+        return bool(self.fast.is_online())
 
     def ensure_running(self) -> bool:
         return bool(self.fast.ensure_running())
@@ -423,8 +425,11 @@ class TieredOllamaRuntime:
 
     def managed_profile_status(self) -> dict[str, Any]:
         fast = dict(self.fast.managed_profile_status())
-        smart = dict(self.smart.managed_profile_status())
-        smart["owned"] = True
+        if bool(self.config.get("smart_ollama", {}).get("enabled", False)):
+            smart = dict(self.smart.managed_profile_status())
+            smart["owned"] = True
+        else:
+            smart = {"managed": False, "enabled": False}
         return {
             "fast": fast,
             "smart": smart,

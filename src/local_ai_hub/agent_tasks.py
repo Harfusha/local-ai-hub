@@ -1483,12 +1483,8 @@ class TaskStore:
         except CompletionGateError:
             raise
         except Exception as exc:
-            receipt_ids = ", ".join(
-                f"'{receipt_id}' for '{criterion}'"
-                for criterion, receipt_id in task.verification_receipts.items()
-            ) or "required criteria"
             raise CompletionGateError(
-                f"Cannot transition to COMPLETED: verification storage could not validate {receipt_ids}: {exc}"
+                "Cannot transition to COMPLETED: verification completion evaluation failed"
             ) from exc
 
         complete = result.get("complete", False) if isinstance(result, Mapping) else getattr(result, "complete", False)

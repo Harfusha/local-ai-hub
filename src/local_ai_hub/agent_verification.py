@@ -1533,6 +1533,8 @@ class VerificationStore:
             task_state = self.task_store.get(task_id)
             if task_state:
                 required_criteria = list(task_state.contract.acceptance_criteria)
+            else:
+                task_missing = True
         state_data = task_state.checkpoint.state_data if task_state else {}
         trusted_current_revision = str(current_revision or repository_revision or "").strip()
         expected_revision = trusted_current_revision or str(
@@ -1643,6 +1645,17 @@ class VerificationStore:
                 complete=False,
                 satisfied_criteria=(),
                 unsatisfied_criteria=tuple(required_criteria),
+                stale_criteria=tuple(),
+                receipts=visible_receipts,
+            )
+        elif task_missing:
+            gated = CompletionResult(
+                task_id=task_id,
+                complete=False,
+                satisfied_criteria=(),
+                unsatisfied_criteria=tuple(dict.fromkeys(
+                    receipt.criterion for receipt in visible_receipts
+                )),
                 stale_criteria=tuple(),
                 receipts=visible_receipts,
             )

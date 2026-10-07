@@ -6,6 +6,7 @@ import hashlib
 import os
 import platform
 import shutil
+import socket
 import subprocess
 import tarfile
 import tempfile
@@ -319,7 +320,17 @@ class LlamaCppManagedRuntime:
         return bool(pid_alive(pid) and name in {"llama-server", "llama-server.exe"})
 
     def is_online(self) -> bool:
-        _, url = self._port_and_url()
+        mode = str(self.llama_config.get("mode", "auto")).strip().lower()
+        if mode in {"off", "disabled"}:
+            return False
+        if mode == "on" and not self._managed_pid_alive():
+            return False
+        port, url = self._port_and_url()
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.05):
+                pass
+        except OSError:
+            return False
         try:
             with urlopen(f"{url}/health", timeout=0.8) as response:
                 if not 200 <= int(getattr(response, "status", 200)) < 300:

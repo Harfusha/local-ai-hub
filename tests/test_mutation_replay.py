@@ -32,8 +32,29 @@ def _broker(tmp_path) -> CommandBroker:
     )
 
 
+def _register_task_worktree(broker: CommandBroker, task_id: str, root) -> None:
+    task = SimpleNamespace(
+        checkpoint=SimpleNamespace(
+            state_data={"worktree": {"worktree_path": str(root), "success": True}}
+        )
+    )
+    broker.task_store = SimpleNamespace(get=lambda requested_id: task if requested_id == task_id else None)
+
+
+def _use_test_transaction(broker: CommandBroker, monkeypatch, root) -> None:
+    # These tests cover repair/replay policy; transaction lifecycle has its own tests.
+    monkeypatch.setattr(broker, "_transaction_root_for_context", lambda _transaction_id: root)
+    monkeypatch.setattr(
+        broker,
+        "_run_private_transaction",
+        lambda **kwargs: kwargs["operation"](root, "test-transaction"),
+    )
+
+
 def test_repair_loop_replays_explicitly_safe_validation(tmp_path, monkeypatch) -> None:
     broker = _broker(tmp_path)
+    _register_task_worktree(broker, "task-1", tmp_path)
+    _use_test_transaction(broker, monkeypatch, tmp_path)
     command = "python -m pytest -q tests/test_example.py"
     executions: list[str] = []
     generated: list[str] = []
@@ -57,12 +78,14 @@ def test_repair_loop_replays_explicitly_safe_validation(tmp_path, monkeypatch) -
         command,
         tmp_path,
         "tenant",
+        task_id="task-1",
         max_attempts=1,
+        paths=["repair_candidate.txt"],
         fix_generator=generate,
         initial_result={"success": False, "outcome_unknown": False},
     )
 
-    assert result["success"] is True
+    assert result["success"] is True, result
     assert result["repaired"] is True
     assert executions == [command]
     assert generated == [command]
@@ -70,6 +93,8 @@ def test_repair_loop_replays_explicitly_safe_validation(tmp_path, monkeypatch) -
 
 def test_repair_loop_does_not_replay_unclassified_validation(tmp_path, monkeypatch) -> None:
     broker = _broker(tmp_path)
+    _register_task_worktree(broker, "task-1", tmp_path)
+    _use_test_transaction(broker, monkeypatch, tmp_path)
     command = "python -m pytest -q tests/test_example.py"
     executions: list[str] = []
     generated: list[str] = []
@@ -84,7 +109,9 @@ def test_repair_loop_does_not_replay_unclassified_validation(tmp_path, monkeypat
         command,
         tmp_path,
         "tenant",
+        task_id="task-1",
         max_attempts=1,
+        paths=["repair_candidate.txt"],
         fix_generator=lambda cmd, *_args: generated.append(cmd) or {"repair_candidate.txt": "candidate"},
         initial_result={"success": False, "outcome_unknown": False},
     )
@@ -98,6 +125,8 @@ def test_repair_loop_does_not_replay_unclassified_validation(tmp_path, monkeypat
 
 def test_repair_loop_honors_explicit_replay_unsafe_classification(tmp_path, monkeypatch) -> None:
     broker = _broker(tmp_path)
+    _register_task_worktree(broker, "task-1", tmp_path)
+    _use_test_transaction(broker, monkeypatch, tmp_path)
     command = "powershell -NoProfile -Command Invoke-Pester"
     executions: list[str] = []
     generated: list[str] = []
@@ -121,7 +150,9 @@ def test_repair_loop_honors_explicit_replay_unsafe_classification(tmp_path, monk
         command,
         tmp_path,
         "tenant",
+        task_id="task-1",
         max_attempts=1,
+        paths=["repair_candidate.txt"],
         fix_generator=generate,
         initial_result={"success": False, "outcome_unknown": False},
     )
@@ -135,6 +166,8 @@ def test_repair_loop_honors_explicit_replay_unsafe_classification(tmp_path, monk
 
 def test_repair_loop_does_not_replay_failed_mutating_command(tmp_path, monkeypatch) -> None:
     broker = _broker(tmp_path)
+    _register_task_worktree(broker, "task-1", tmp_path)
+    _use_test_transaction(broker, monkeypatch, tmp_path)
     executions: list[str] = []
     generator_calls: list[str] = []
 
@@ -152,7 +185,9 @@ def test_repair_loop_does_not_replay_failed_mutating_command(tmp_path, monkeypat
         "git add changed.py",
         str(tmp_path),
         "tenant",
+        task_id="task-1",
         max_attempts=2,
+        paths=["changed.py"],
         fix_generator=generate,
     )
 
@@ -165,6 +200,8 @@ def test_repair_loop_does_not_replay_failed_mutating_command(tmp_path, monkeypat
 
 def test_repair_loop_stops_after_timed_out_command_outcome_is_unknown(tmp_path, monkeypatch) -> None:
     broker = _broker(tmp_path)
+    _register_task_worktree(broker, "task-1", tmp_path)
+    _use_test_transaction(broker, monkeypatch, tmp_path)
     command = "python -m pytest -q"
     executions: list[str] = []
     generator_calls: list[str] = []
@@ -189,7 +226,9 @@ def test_repair_loop_stops_after_timed_out_command_outcome_is_unknown(tmp_path, 
         command,
         str(tmp_path),
         "tenant",
+        task_id="task-1",
         max_attempts=3,
+        paths=["changed.py"],
         fix_generator=generate,
     )
 
@@ -203,12 +242,16 @@ def test_repair_loop_stops_after_timed_out_command_outcome_is_unknown(tmp_path, 
 @pytest.mark.parametrize("status", [{"timed_out": True}, {"in_progress": True}])
 def test_repair_loop_skips_timed_out_or_running_command(tmp_path, monkeypatch, status) -> None:
     broker = _broker(tmp_path)
+    _register_task_worktree(broker, "task-1", tmp_path)
+    _use_test_transaction(broker, monkeypatch, tmp_path)
     generator_calls: list[str] = []
     monkeypatch.setattr(broker, "run", lambda *_args, **_kwargs: pytest.fail("must not replay command"))
     result = broker.repair_loop(
         "python -m pytest -q",
         str(tmp_path),
         "tenant",
+        task_id="task-1",
+        paths=["changed.py"],
         initial_result={"success": False, **status},
         fix_generator=lambda command, *_args: generator_calls.append(command) or {"changed.py": "value=1"},
     )
@@ -554,6 +597,7 @@ def test_response_is_journaled_before_a_client_disconnect(tmp_path, monkeypatch)
     monkeypatch.setattr(http_server.Handler, "send_header", lambda self, _key, _value: None)
     monkeypatch.setattr(http_server.Handler, "end_headers", lambda self: None)
     handler = object.__new__(http_server.Handler)
+    handler.headers = {}
     handler._journal_request_id = "req-1"
     handler._journal_finished = False
     handler._telemetry_finished = True
@@ -1272,6 +1316,7 @@ def test_send_normalizes_http_error_before_journaling_and_serializing(monkeypatc
     monkeypatch.setattr(http_server.Handler, "send_header", lambda self, _name, _value: None)
     monkeypatch.setattr(http_server.Handler, "end_headers", lambda self: None)
     handler = object.__new__(http_server.Handler)
+    handler.headers = {}
     handler._journal_request_id = "req-send-error"
     handler._journal_finished = False
     handler._telemetry_finished = True
@@ -1313,6 +1358,16 @@ def test_http_partial_publish_failure_replays_without_dispatching_twice(
     tmp_path, monkeypatch, path: str, payload: dict[str, Any], expected_call: str
 ) -> None:
     journal = RecoveryJournal(tmp_path)
+    payload = dict(payload)
+    task_root = str(tmp_path.resolve())
+    tenant = http_server._derive_root_tenant(
+        "tenant", task_root, "stable-journal-test-derivation-secret"
+    )
+    task = SimpleNamespace(
+        context=SimpleNamespace(repository_id=task_root, session_id=tenant)
+    )
+    if path == "/api/agent-state/tasks":
+        payload["root"] = task_root
     calls: list[str] = []
 
     def failed_publish(label: str) -> dict[str, Any]:
@@ -1324,7 +1379,11 @@ def test_http_partial_publish_failure_replays_without_dispatching_twice(
         raise KeyError("checkpoint failed after partial publish")
 
     app = SimpleNamespace(
-        config={},
+        config={"security": {
+            "allowed_roots": [task_root],
+            "tenant_derivation_key": "stable-journal-test-derivation-secret",
+            "api_token_principal": "tenant",
+        }},
         recovery=journal,
         async_jobs=SimpleNamespace(inference_admission=lambda _action: nullcontext()),
         rag=SimpleNamespace(
@@ -1339,6 +1398,7 @@ def test_http_partial_publish_failure_replays_without_dispatching_twice(
         ),
         agent_tasks=SimpleNamespace(
             state_store=SimpleNamespace(enabled=True),
+            get=lambda task_id: task if task_id == "task-1" else None,
             checkpoint=failed_checkpoint,
         ),
         services=SimpleNamespace(command=lambda *_args, **_kwargs: failed_publish("command")),
@@ -1364,10 +1424,10 @@ def test_http_partial_publish_failure_replays_without_dispatching_twice(
     for _ in range(2):
         handler = object.__new__(http_server.Handler)
         handler.path = path
-        handler.headers = {"Content-Type": "application/json"}
+        handler.headers = {"Content-Type": "application/json", "X-LocalAI-Tenant": "tenant"}
         http_server.Handler.do_POST(handler)
 
-    assert calls == [expected_call]
+    assert calls == [expected_call], responses
     assert len(responses) == 2
     assert responses[1] == responses[0]
 
@@ -1584,9 +1644,9 @@ def test_confirmed_restart_request_is_not_replayed(tmp_path, monkeypatch) -> Non
         (
             "/api/agent-state/learning",
             {"action": "observe", "candidate_id": "candidate-1", "observation": {"latency_ms": 1}},
-            "learning-observe",
+            "learning-blocked",
         ),
-        ("/api/agent-state/cleanup", {"retention_days": 7}, "agent-state-cleanup"),
+        ("/api/agent-state/cleanup", {"retention_days": 7}, "cleanup-blocked"),
         (
             "/api/agent-state/tasks",
             {"action": "cleanup_worktree", "task_id": "task-1"},
@@ -1598,6 +1658,16 @@ def test_http_request_journal_replays_action_mutations_once(
     tmp_path, monkeypatch, path: str, payload: dict[str, Any], expected_call: str
 ) -> None:
     journal = RecoveryJournal(tmp_path)
+    payload = dict(payload)
+    task_root = str(tmp_path.resolve())
+    task_tenant = http_server._derive_root_tenant(
+        "tenant", task_root, "stable-journal-test-derivation-secret"
+    )
+    task = SimpleNamespace(
+        context=SimpleNamespace(repository_id=task_root, session_id=task_tenant)
+    )
+    if path == "/api/agent-state/tasks":
+        payload["root"] = task_root
     calls: list[str] = []
     responses: list[tuple[int, dict[str, Any]]] = []
 
@@ -1606,13 +1676,21 @@ def test_http_request_journal_replays_action_mutations_once(
         return result if result is not None else {"success": True, "effect": name}
 
     app = SimpleNamespace(
-        config={"agent_state": {"retention_days": 30}},
+        config={
+            "agent_state": {"retention_days": 30},
+            "security": {
+                "allowed_roots": [task_root],
+                "tenant_derivation_key": "stable-journal-test-derivation-secret",
+                "api_token_principal": "tenant",
+            },
+        },
         recovery=journal,
         rag=SimpleNamespace(),
         agent_state=SimpleNamespace(enabled=True, cleanup=lambda **_kwargs: effect("agent-state-cleanup")),
         agent_tasks=SimpleNamespace(
             enabled=True,
             state_store=SimpleNamespace(enabled=True),
+            get=lambda task_id: task if task_id == "task-1" else None,
             cleanup_worktree=lambda *_args, **_kwargs: effect("worktree-cleanup"),
         ),
         agent_learning=SimpleNamespace(
@@ -1634,7 +1712,7 @@ def test_http_request_journal_replays_action_mutations_once(
     )
 
     def respond(self, status: int, data: dict[str, Any]) -> None:
-        if not getattr(self, "_journal_finished", False):
+        if getattr(self, "_journal_request_id", None) and not getattr(self, "_journal_finished", False):
             journal.finish(
                 "req-action-family",
                 http_server._journal_outcome_success(status, data),
@@ -1649,8 +1727,20 @@ def test_http_request_journal_replays_action_mutations_once(
     for _ in range(2):
         handler = object.__new__(http_server.Handler)
         handler.path = path
-        handler.headers = {"Content-Type": "application/json"}
+        handler.headers = {"Content-Type": "application/json", "X-LocalAI-Tenant": "tenant"}
         http_server.Handler.do_POST(handler)
+
+    if path in {"/api/agent-state/learning", "/api/agent-state/cleanup"}:
+        assert [status for status, _data in responses] == [403, 403]
+        assert calls == []
+        assert journal.lookup(
+            "req-action-family",
+            "tenant",
+            path,
+            identity="agent-a",
+            payload_fingerprint=journal.fingerprint_payload(payload),
+        ) is None
+        return
 
     assert calls == [expected_call]
     assert len(responses) == 2
@@ -1689,7 +1779,7 @@ def test_live_client_does_not_journal_typed_unknown_command_as_success(tmp_path,
         http_server,
         "APP",
         SimpleNamespace(
-            config={"observability": {}},
+            config={"observability": {}, "security": {"api_token_principal": "tenant"}},
             recovery=journal,
             telemetry=telemetry,
             logger=logging.getLogger("test.typed-unknown-command"),
@@ -1773,7 +1863,7 @@ def test_http_retry_after_restart_is_unknown_and_never_redispatches(tmp_path, mo
         http_server,
         "APP",
         SimpleNamespace(
-            config={"observability": {}},
+            config={"observability": {}, "security": {"api_token_principal": "tenant"}},
             recovery=restarted,
             telemetry=telemetry,
             logger=logging.getLogger("test.restart-outcome-unknown"),

@@ -303,7 +303,7 @@ def test_api_search_forwards_path_hints_to_repo_search(monkeypatch):
     app = SimpleNamespace(
         config={},
         debug_traces=None,
-        recovery=Recovery(),
+        recovery=None,
         services=Services(),
     )
     handler = http_server.Handler.__new__(http_server.Handler)

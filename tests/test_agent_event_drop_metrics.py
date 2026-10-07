@@ -14,11 +14,11 @@ def test_publish_reports_exact_per_stream_ranges_for_queue_overflow(tmp_path):
 
     assert store.dropped_event_count == 3
     gap = subscriber.get_nowait()
-    assert gap.stream_id == "agent_state"
-    assert gap.kind == "agent_state.gap"
+    assert gap.stream_id == "task-2"
+    assert gap.kind == "stream.gap"
     assert gap.seq is None
-    assert gap.payload["streams_truncated"] is False
-    assert gap.payload["streams"] == [
+    assert gap.payload["gap_ranges_truncated"] is False
+    assert gap.payload["gap_ranges"] == [
         {"stream_id": "task-1", "from_seq": 1, "to_seq": 1},
         {"stream_id": "task-2", "from_seq": 5, "to_seq": 6},
     ]
@@ -34,10 +34,10 @@ def test_queue_overflow_bounds_gap_ranges_and_marks_omitted_streams(tmp_path):
         store._publish(event)
 
     gap = subscriber.get_nowait()
-    assert gap.kind == "agent_state.gap"
-    assert len(gap.payload["streams"]) == 128
-    assert gap.payload["streams_truncated"] is True
-    assert gap.payload["streams"][-1] == {"stream_id": "task-128", "from_seq": 128, "to_seq": 128}
+    assert gap.kind == "stream.gap"
+    assert len(gap.payload["gap_ranges"]) == 128
+    assert gap.payload["gap_ranges_truncated"] is True
+    assert gap.payload["gap_ranges"][-1] == {"stream_id": "task-128", "from_seq": 128, "to_seq": 128}
     assert store.dropped_event_count == 130
 
 
@@ -55,10 +55,10 @@ def test_queue_overflow_preserves_truncation_when_replacing_gap_marker(tmp_path)
     store._publish(retained_stream_event)
 
     gap = subscriber.get_nowait()
-    assert gap.kind == "agent_state.gap"
-    assert len(gap.payload["streams"]) == 128
-    assert gap.payload["streams_truncated"] is True
-    assert gap.payload["streams"][-1] == {
+    assert gap.kind == "stream.gap"
+    assert len(gap.payload["gap_ranges"]) == 128
+    assert gap.payload["gap_ranges_truncated"] is True
+    assert gap.payload["gap_ranges"][-1] == {
         "stream_id": "task-128",
         "from_seq": 1,
         "to_seq": 2,

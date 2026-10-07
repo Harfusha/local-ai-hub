@@ -246,7 +246,7 @@ def test_malformed_executor_result_fails_job_without_retry(tmp_path):
         manager.close()
 
 
-def test_async_job_trace_links_prompt_scheduler_and_terminal_state(tmp_path):
+def test_async_job_trace_links_metadata_scheduler_and_terminal_state(tmp_path):
     config = {"server": {"state_dir": str(tmp_path / "state")}, "async_jobs": {"wait_max_seconds": 90}, "debug_traces": {"enabled": True}}
     store = DebugTraceStore(config)
     scheduler = _Scheduler()
@@ -255,7 +255,9 @@ def test_async_job_trace_links_prompt_scheduler_and_terminal_state(tmp_path):
     submitted = manager.submit("tenant-a", "reason", {"task": "trace me", "context": "full context"})
     assert manager.wait("tenant-a", submitted["job_id"], 3)["state"] == "done"
     detail = store.detail(submitted["trace_id"])
-    assert detail["session"]["request"]["task"] == "trace me"
+    assert detail["session"]["request"] == {"capture_status": "metadata_only", "field_count": 2}
+    assert "task" not in detail["session"]["request"]
+    assert "context" not in detail["session"]["request"]
     assert detail["session"]["async_job_id"] == submitted["job_id"]
     assert detail["session"]["scheduler_job_id"] == ""
     assert detail["session"]["state"] == "done"

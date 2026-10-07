@@ -557,7 +557,13 @@ class Supervisor:
 
 
 def main() -> int:
-    return Supervisor(os.environ.get("LOCAL_AI_CONFIG")).run()
+    config_path = os.environ.get("LOCAL_AI_CONFIG")
+    if "--config" in sys.argv:
+        try:
+            config_path = sys.argv[sys.argv.index("--config") + 1]
+        except IndexError:
+            pass
+    return Supervisor(config_path).run()
 
 
 if __name__ == "__main__":

@@ -368,8 +368,10 @@ def test_context_etag_matches_legacy_canonical_json_without_json_dumps(monkeypat
     legacy.update(pack.repo_revision.encode("utf-8"))
     legacy.update(pack.request_identity_digest.encode("ascii", errors="ignore"))
     for element in pack.elements:
+        element_data = element.to_dict(compact=False)
+        element_data.pop("freshness", None)
         serialized = json.dumps(
-            element.to_dict(compact=False),
+            element_data,
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -417,8 +419,10 @@ def test_context_etag_keeps_stdlib_spelling_for_noncanonical_values(provenance):
     legacy.update(pack.repo_revision.encode("utf-8"))
     legacy.update(pack.request_identity_digest.encode("ascii", errors="ignore"))
     for element in pack.elements:
+        element_data = element.to_dict(compact=False)
+        element_data.pop("freshness", None)
         serialized = json.dumps(
-            element.to_dict(compact=False),
+            element_data,
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),

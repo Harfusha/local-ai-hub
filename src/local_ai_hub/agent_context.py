@@ -141,6 +141,10 @@ class CompiledContext:
         h.update(self.request_identity_digest.encode("ascii", errors="ignore"))
         for el in self.elements:
             element_data = el.to_dict(compact=False)
+            # Freshness is a ranking hint, not context identity. In particular,
+            # changed-path elements receive a wall-clock freshness on each compile;
+            # including it would make identical requests impossible to delta-cache.
+            element_data.pop("freshness", None)
             if (
                 len(el.content) >= 768
                 and json_backend_name() == "orjson"

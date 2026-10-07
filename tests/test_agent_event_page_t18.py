@@ -16,9 +16,9 @@ EVENT_FIELDS = {
 }
 
 
-def _append(store: AgentStateStore, count: int = 3) -> None:
+def _append(store: AgentStateStore, count: int = 3, stream_id: str = "stream-1") -> None:
     for index in range(1, count + 1):
-        result = store.append(AgentEvent.create("stream-1", "task.updated", {"step": index}, f"key-{index}"))
+        result = store.append(AgentEvent.create(stream_id, "task.updated", {"step": index}, f"key-{index}"))
         assert result.error is None
 
 
@@ -71,11 +71,12 @@ def test_event_page_reports_gaps_and_resets_cursor_past_last_seq(tmp_path) -> No
 
 def test_http_events_route_returns_event_page_envelope(monkeypatch, tmp_path) -> None:
     store = AgentStateStore(tmp_path / "agent_state.sqlite3")
-    _append(store)
+    _append(store, stream_id="task:task-1")
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={}, agent_state=store))
     monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(http_server.Handler, "_bind_task_event_query", lambda *_args, **_kwargs: True)
     handler = http_server.Handler.__new__(http_server.Handler)
-    handler.path = "/api/agent-state/events?stream_id=stream-1&after_seq=1&limit=1"
+    handler.path = "/api/agent-state/events?stream_id=task%3Atask-1&after_seq=1&limit=1"
     handler.client_address = ("127.0.0.1", 12345)
     handler.headers = {}
     handler._begin_trace = lambda _path: None
@@ -94,7 +95,7 @@ def test_http_events_route_returns_event_page_envelope(monkeypatch, tmp_path) ->
     assert payload["events"][0]["seq"] == 2
     assert set(payload["events"][0]) == EVENT_FIELDS
 
-    handler.path = "/api/agent-state/events?stream_id=stream-1&after_seq=invalid&limit=0"
+    handler.path = "/api/agent-state/events?stream_id=task%3Atask-1&after_seq=invalid&limit=0"
     handler.responses.clear()
     handler.do_GET()
     status, payload = handler.responses[0]
@@ -105,7 +106,7 @@ def test_http_events_route_returns_event_page_envelope(monkeypatch, tmp_path) ->
 
     disabled = AgentStateStore(tmp_path / "disabled.sqlite3", enabled=False)
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={}, agent_state=disabled))
-    handler.path = "/api/agent-state/events?stream_id=stream-1&after_seq=8"
+    handler.path = "/api/agent-state/events?stream_id=task%3Atask-1&after_seq=8"
     handler.responses.clear()
     handler.do_GET()
     status, payload = handler.responses[0]
@@ -117,7 +118,7 @@ def test_http_events_route_returns_event_page_envelope(monkeypatch, tmp_path) ->
 
 def test_http_event_page_is_serialized_over_live_http(monkeypatch, tmp_path) -> None:
     store = AgentStateStore(tmp_path / "agent_state.sqlite3")
-    _append(store)
+    _append(store, stream_id="task:task-1")
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={}, agent_state=store))
     monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args, **_kwargs: None)
 
@@ -125,11 +126,14 @@ def test_http_event_page_is_serialized_over_live_http(monkeypatch, tmp_path) -> 
         def _require_authorized(self) -> bool:
             return True
 
+        def _bind_task_event_query(self, _query) -> bool:
+            return True
+
     server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), TestHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        url = f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/events?stream_id=stream-1&after_seq=1&limit=1"
+        url = f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/events?stream_id=task%3Atask-1&after_seq=1&limit=1"
         with urllib.request.urlopen(url, timeout=3) as response:
             payload = json.loads(response.read().decode("utf-8"))
         assert payload["success"] is True
@@ -145,6 +149,7 @@ def test_http_event_page_is_serialized_over_live_http(monkeypatch, tmp_path) -> 
 def _route_event_page(monkeypatch, store: AgentStateStore, query: str):
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={}, agent_state=store))
     monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(http_server.Handler, "_bind_task_event_query", lambda *_args, **_kwargs: True)
     handler = http_server.Handler.__new__(http_server.Handler)
     handler.path = "/api/agent-state/events?" + query
     handler.client_address = ("127.0.0.1", 12345)
@@ -241,7 +246,7 @@ def test_http_event_page_forwards_snapshot_upper_bound(monkeypatch) -> None:
     )
 
     assert status == 200
-    assert store.received_kwargs == {"stream_id": "stream-1", "after_seq": "1", "limit": 10, "through_seq": "3"}
+    assert store.received_kwargs == {"stream_id": "stream-1", "after_seq": 1, "limit": 10, "through_seq": "3"}
 
 
 def test_http_event_page_metadata_oversize_returns_413_without_advancing_cursor(monkeypatch, tmp_path) -> None:

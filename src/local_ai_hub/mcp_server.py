@@ -197,8 +197,37 @@ def _classify_mcp_operation(tool_name: str, arguments: dict[str, Any]) -> tuple[
         tool_name == "local_ai_artifact"
         or (tool_name == "local_ai_status" and action in {"brief", "cache", "telemetry"})
         or (tool_name == "local_ai_repo" and action in {"map", "code_index"})
+        or (
+            tool_name == "local_ai_command"
+            and action in {
+                "cancel", "classify", "discover", "stats", "daemon_status",
+                "mock_server_status", "preflight",
+            }
+        )
     )
     return action, not lightweight_read
+
+
+def _operational_mode_rejection(
+    action: str, *, requires_heavy_work: bool = True,
+) -> dict[str, Any] | None:
+    try:
+        snapshot = load_operational_mode(configured_state_dir(CFG, create=False))
+    except Exception:
+        snapshot = OperationalModeSnapshot(
+            "maintenance", 0, None, degraded=True,
+            error="operational mode state is unavailable",
+        )
+    if (
+        snapshot.mode == "gaming"
+        and not snapshot.degraded
+        and bool(getattr(FEATURES, "speculative_lint", False))
+        and action == "speculative_lint"
+    ):
+        return None
+    return operational_mode_gate_error(
+        snapshot, action, requires_heavy_work=requires_heavy_work,
+    )
 
 
 try:
@@ -380,6 +409,22 @@ def _input_schema_with_action_aliases(tool_name: str, schema: dict[str, Any]) ->
     if not isinstance(selector_schema, dict):
         return result
     selector_schema["enum"] = list(_action_values_with_aliases(tool_name, FEATURES))
+
+    if tool_name == "local_ai_task":
+        result.setdefault("properties", {})["request_id"] = {
+            "type": "string",
+            "default": "",
+            "description": "Stable async-job idempotency key and request correlation ID.",
+        }
+        non_async_actions = sorted(actions - {"submit", "status", "wait", "result", "cancel"})
+        if non_async_actions:
+            result.setdefault("allOf", []).append({
+                "if": {
+                    "properties": {"action": {"enum": non_async_actions}},
+                    "required": ["action"],
+                },
+                "then": {"not": {"required": ["request_id"]}},
+            })
 
     conditions = result.setdefault("allOf", [])
     by_action = {
@@ -748,10 +793,10 @@ def _repo_action_type(features: Any) -> Any:
     return Literal.__getitem__(_action_values_with_aliases("local_ai_repo", features))
 
 
-RepoAction: TypeAlias = _repo_action_type(FEATURES)
+RepoAction: TypeAlias = _repo_action_type(None)
 RagAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_rag"))
 CommandAction: TypeAlias = Literal.__getitem__(_action_values_with_aliases("local_ai_command", FEATURES))
-CoordAction: TypeAlias = Literal.__getitem__(_action_values_with_aliases("local_ai_coord", FEATURES))
+CoordAction: TypeAlias = Literal.__getitem__(_action_values_with_aliases("local_ai_coord", None))
 StatusDetail: TypeAlias = Literal.__getitem__(operation_actions("local_ai_status"))
 _STATUS_ACTION_ALIASES = ("status", "health", "check", "info")
 StatusAction: TypeAlias = Literal.__getitem__(
@@ -767,6 +812,10 @@ ArtifactAction: TypeAlias = Literal[*operation_actions("local_ai_artifact")]
 
 
 def _invalid_action(tool: str, action: str, valid: tuple[str, ...], guidance: str) -> dict[str, Any]:
+    if tool == "local_ai_task":
+        return contract_error(
+            f"Unknown {tool} action '{action}'. Use the action enum advertised by the MCP schema. {guidance}"
+        )
     return contract_error(
         f"Unknown {tool} action '{action}'. Valid actions: {', '.join(valid)}. {guidance}"
     )
@@ -1317,13 +1366,20 @@ class _ProtocolAccountingReporter:
     def _send(self, events: list[dict[str, Any]]) -> None:
         if not events:
             return
+        try:
+            mode_state_dir = configured_state_dir(CFG, create=False)
+            mode_snapshot = load_operational_mode(mode_state_dir)
+            if mode_snapshot.mode != "active":
+                return
+        except Exception:
+            pass
         operational_token = _CURRENT_OPERATIONAL_CONTEXT.set(("telemetry", False))
         try:
             # batch_id prevents HubClient single-flight from coalescing two
             # numerically identical accounting batches from concurrent MCP clients.
             CLIENT.post(
                 "/api/telemetry/tool-accounting",
-                {"batch_id": f"{os.getpid()}-{time.time_ns()}", "events": events},
+                {"batch_id": f"{os.getpid()}-{time.time_ns()}", "events": list(events)},
                 timeout=0.25,
             )
         except Exception:
@@ -1810,6 +1866,13 @@ def local_ai_task(
     local model. Skip when: local-model tasks are disabled or Codex-owned
     subagent orchestration is the right owner; Local AI Hub does not route or manage native Codex agents."""
     action = _resolve_action("task", action)
+    if action not in _action_values_with_aliases("local_ai_task", FEATURES):
+        return _invalid_action(
+            "local_ai_task",
+            action,
+            _action_values_with_aliases("local_ai_task", FEATURES),
+            "Use Local AI Hub only for bounded local-model work; use Codex-owned orchestration for peer subagents.",
+        )
     try:
         from local_ai_hub.operational_mode import (
             load_operational_mode,
@@ -1830,12 +1893,46 @@ def local_ai_task(
     )
     if mode_rejection is not None:
         return mode_rejection
+    if conversation and action not in {"delegate", "explore", "reason"}:
+        return {"success": False, "error": "Conversations support delegate, explore, reason and continue only", "terminal": True, "retryable": False}
+    if conversation and delivery.strip().lower() != "sync":
+        return {"success": False, "error": "Conversations require delivery=sync", "terminal": True, "retryable": False}
     if action in {"submit", "status", "wait", "result", "cancel"} and not getattr(FEATURES, "async_jobs", False):
         return {
             "success": False,
             "unsupported": True,
             "error": "Async job lifecycle is disabled (async_jobs.enabled=false)",
         }
+    if action in {"status", "wait", "result", "cancel"}:
+        payload: dict[str, Any] = {"action": action, "job_id": job_id}
+        transport_timeout = _timeout("quick")
+        if action == "wait":
+            quick_timeout = max(0.0, float(_timeout("quick")))
+            client_timeout = max(
+                0.0,
+                float(getattr(CLIENT, "max_request_timeout", quick_timeout)),
+            )
+            configured_wait = max(
+                0.0,
+                float(CFG.get("async_jobs", {}).get("wait_max_seconds", 90)),
+            )
+            requested_wait = max(0.0, float(timeout_seconds or 90))
+            effective_wait = min(
+                requested_wait,
+                configured_wait,
+                max(0.0, client_timeout - quick_timeout),
+            )
+            payload["timeout_seconds"] = effective_wait
+            transport_timeout = min(client_timeout, effective_wait + quick_timeout)
+        return _compact(
+            CLIENT.post(
+                "/api/async-jobs",
+                payload,
+                timeout=transport_timeout,
+                request_id=request_id or None,
+            ),
+            "status",
+        )
     # The static contract requires summary, evidence, analysis, limitations
     # and next step. Requests below this floor routinely truncate after a
     # generic preamble, especially on 7b/9b models. Clamp instead of rejecting
@@ -1882,16 +1979,23 @@ def local_ai_task(
             }
         if action not in {"delegate", "explore", "reason", "review", "second_opinion", "submit"}:
             return {"success": False, "unsupported": True, "error": "Ollama profiles support delegate, explore, reason, review, second_opinion and submit only"}
-    if conversation and action not in {"delegate", "explore", "reason"}:
-        return {"success": False, "error": "Conversations support delegate, explore, reason and continue only", "terminal": True, "retryable": False}
-    if conversation and delivery.strip().lower() != "sync":
-        return {"success": False, "error": "Conversations require delivery=sync", "terminal": True, "retryable": False}
-    if action in {"submit", "status", "wait", "result", "cancel"}:
-        return _compact(CLIENT.post("/api/async-jobs", {
+    if action == "submit":
+        submit_payload: dict[str, Any] = {
             "action": action, "job_action": job_action, "job_id": job_id, "timeout_seconds": timeout_seconds,
             "task": task, "context": context, "candidate": candidate, "complexity": complexity,
             "max_tokens": max_tokens, "tasks": tasks or [], "profile": profile, "root": root, "workspace": workspace,
-        }, timeout=_timeout("quick"), request_id=request_id or None), "status")
+        }
+        if request_id:
+            submit_payload["request_id"] = request_id
+        return _compact(
+            CLIENT.post(
+                "/api/async-jobs",
+                submit_payload,
+                timeout=_timeout("quick"),
+                request_id=request_id or None,
+            ),
+            "status",
+        )
     budgeted_actions = {"continue", "delegate", "explore", "reason", "review", "second_opinion", "compress"}
     if task_id.strip() and action in budgeted_actions and ROOT_FAMILY_BUDGET.default_limit:
         family_key = hashlib.sha1(_client_root(root).encode("utf-8", "replace"), usedforsecurity=False).hexdigest()[:16]
@@ -3059,12 +3163,24 @@ def _hide_disabled_batch_schema(mcp_runtime: Any, tool: Any) -> None:
         repo_tool = mcp_runtime._tool_manager._tools.get("local_ai_repo")
         if repo_tool is not None:
             properties = repo_tool.parameters.get("properties", {})
+            schema = operation_tool_input_schema("local_ai_repo", FEATURES)
+            repo_tool.parameters.clear()
+            repo_tool.parameters.update(schema)
+            properties = repo_tool.parameters.get("properties", {})
             properties.pop("edits", None)
             properties.pop("dry_run", None)
-    tool.__signature__ = inspect.Signature([
-        parameter for parameter in inspect.signature(tool).parameters.values()
-        if parameter.name not in {"edits", "dry_run"}
-    ])
+    action_type = _repo_action_type(FEATURES)
+    annotations = getattr(tool, "__annotations__", None)
+    if isinstance(annotations, dict):
+        annotations["action"] = action_type
+    parameters = []
+    for parameter in inspect.signature(tool).parameters.values():
+        if parameter.name in {"edits", "dry_run"}:
+            continue
+        if parameter.name == "action":
+            parameter = parameter.replace(annotation=action_type)
+        parameters.append(parameter)
+    tool.__signature__ = inspect.Signature(parameters)
 
 
 # Keep one public MCP tool while exposing rollout fields only in enabled schemas.
@@ -3174,9 +3290,17 @@ def local_ai_command(
     reuse_key: str = "",
 ) -> dict[str, Any]:
     """Bounded command broker. Set snapshot=true to record a best-effort Git snapshot. For action=run only, rollback_on_failure=true requires paths to list the flat, relative files directly under cwd that may be restored or removed; missing/unsafe paths reject execution. It cannot be combined with auto_fix. Rollback preserves all files outside that explicit scope. Other command and streaming behavior remains bounded and tenant-scoped. Use when: a repeatable test, lint, typecheck, build, analysis, or safe read-only command is needed. Skip when: no command is needed or a fresh cached result already answers it."""
+    action = _resolve_action("command", action)
+    _, requires_heavy_work = _classify_mcp_operation(
+        "local_ai_command", {"action": action},
+    )
+    mode_rejection = _operational_mode_rejection(
+        action, requires_heavy_work=requires_heavy_work,
+    )
+    if mode_rejection is not None:
+        return mode_rejection
     if not FEATURES.commands:
         return {"success": False, "unsupported": True, "error": "local_ai_command is disabled in configuration"}
-    action = _resolve_action("command", action)
     eff_cwd = _client_root(cwd)
     host_timeout = _timeout("long")
     configured_command_timeout = int(CFG.get("commands", {}).get("timeout_seconds", 1800))

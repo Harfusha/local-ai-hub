@@ -1489,7 +1489,7 @@ class MemoryStore:
         if (
             requested_scope == AgentScope.REPOSITORY.value
             or (not requested_scope and str(repository_id or "").strip())
-        ) and not str(root or "").strip():
+        ) and not str(root or "").strip() and not str(repository_id or "").strip():
             return None
         if any(value is not None for value in (scope, scope_id, root, repository_id, tenant)) or any(
             str(value or "").strip() for value in (task_id, session_id, clone_id, worktree_id, branch)
@@ -1838,6 +1838,8 @@ class MemoryStore:
         if tenant_agnostic_global:
             if scope_val != AgentScope.GLOBAL.value:
                 raise ValueError("tenant-agnostic memory lookup is only valid for GLOBAL scope")
+            # GLOBAL sharing deliberately ignores transport tenant; repository
+            # and root identity filters above still constrain root-bound reads.
         elif tenant:
             if scope_val == AgentScope.GLOBAL.value:
                 sql += (
@@ -1851,7 +1853,7 @@ class MemoryStore:
             sql += f" AND ({provenance_tenant} IS NULL OR {provenance_tenant} = '')"
         if scope_val == AgentScope.REPOSITORY.value and (
             not (root or repository_id)
-            or (scope is not None and not tenant and not repository_id)
+            or (scope is not None and not tenant and not repository_id and not record_id)
         ):
             sql += " AND 0"
         if scope_val == AgentScope.TASK.value:
@@ -1863,10 +1865,7 @@ class MemoryStore:
             # Unscoped searches must not recover task rows by key or record ID.
             sql += " AND scope != ?"
             params.append(AgentScope.TASK.value)
-        if scope_val == AgentScope.SESSION.value and (
-            (tenant and not session_id_val)
-            or (scope is not None and session_id_val and not tenant)
-        ):
+        if scope_val == AgentScope.SESSION.value and (not tenant or not session_id_val):
             sql += " AND 0"
         for identity_value, identity_scope in identity_scopes:
             if identity_scope == scope_val:

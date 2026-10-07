@@ -163,6 +163,27 @@ def test_unbound_client_tenant_header_cannot_choose_principal(monkeypatch):
     assert http_server.Handler._tenant(handler) == "api-token-default"
 
 
+def test_rootless_memory_binding_rejects_untrusted_tenant_header(monkeypatch):
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={
+        "security": {"api_token": "unbound-token-long"}
+    }))
+    handler = _handler({
+        "X-LocalAI-Token": "unbound-token-long",
+        "X-LocalAI-Tenant": "tenant-spoof",
+    })
+    responses = []
+    handler._send = lambda status, payload: responses.append((status, payload))
+
+    assert http_server.Handler._authorized(handler, "read") is True
+    assert http_server.Handler._bind_principal_tenant(handler) is False
+    assert responses[0][0] == 403
+
+    trusted = _handler({"X-LocalAI-Token": "unbound-token-long"})
+    assert http_server.Handler._authorized(trusted, "read") is True
+    assert http_server.Handler._bind_principal_tenant(trusted) is True
+    assert trusted._authorization_tenant == "api-token-default"
+
+
 def test_missing_credentials_fail_closed_and_legacy_global_token_remains(monkeypatch):
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"security": {}}))
     anonymous = _handler({})
@@ -874,6 +895,29 @@ def test_root_scope_rejects_spoofed_header_or_body_tenant(tmp_path, monkeypatch)
     }) is False
     assert body_errors[0][0] == 403
 
+    for candidate in (
+        {"root": str(root), "scope": "repository", "record": {"tenant": "tenant-spoof"}},
+        {"root": str(root), "scope": "repository", "provenance": {"tenant": "tenant-spoof"}},
+        {"root": str(root), "scope": "repository", "record": {"provenance": {"tenant": "tenant-spoof"}}},
+    ):
+        handler = _handler({})
+        errors = []
+        handler._send = lambda status, payload: errors.append((status, payload))
+        assert http_server.Handler._bind_memory_payload(handler, candidate) is False
+        assert errors[0][0] == 403
+
+    for candidate in (
+        {"scope": "global", "tenant": "tenant-spoof"},
+        {"scope": "global", "record": {"tenant": "tenant-spoof"}},
+        {"scope": "global", "provenance": {"tenant": "tenant-spoof"}},
+        {"scope": "global", "record": {"provenance": {"tenant": "tenant-spoof"}}},
+    ):
+        handler = _handler({})
+        errors = []
+        handler._send = lambda status, payload: errors.append((status, payload))
+        assert http_server.Handler._bind_memory_payload(handler, candidate) is False
+        assert errors[0][0] == 403
+
 
 def test_root_scope_fails_closed_for_missing_nonexistent_and_symlink_roots(tmp_path, monkeypatch):
     allowed = tmp_path / "allowed"
@@ -909,6 +953,14 @@ def test_root_scope_fails_closed_for_missing_nonexistent_and_symlink_roots(tmp_p
     handler._send = lambda status, payload: errors.append((status, payload))
     assert http_server.Handler._bind_root_tenant(handler, str(allowed)) is None
     assert errors[0][0] == 403
+
+    scoped_task_handler = _handler({})
+    scoped_task_errors = []
+    scoped_task_handler._send = lambda status, payload: scoped_task_errors.append((status, payload))
+    assert http_server.Handler._bind_task_payload(scoped_task_handler, {
+        "root": str(tmp_path / "missing-task-root"), "task_id": "task-a",
+    }) is False
+    assert scoped_task_errors[0][0] == 403
 
 
 def test_fixed_api_token_tenant_remains_principal_namespace(tmp_path, monkeypatch):
@@ -947,6 +999,14 @@ def test_rootless_global_memory_is_forced_into_principal_scope(monkeypatch):
     assert payload["scope"] == "session"
     assert payload["scope_id"] == "tenant-alice"
     assert payload["tenant"] == "tenant-alice"
+
+    query = {"scope": ["global"]}
+    query_handler = _handler({})
+    assert http_server.Handler._bind_memory_query(query_handler, query) is True
+    assert query["scope"] == ["session"]
+    assert query["scope_id"] == ["tenant-alice"]
+    assert query["session_id"] == ["tenant-alice"]
+    assert query["tenant"] == ["tenant-alice"]
 
     denied = _handler({})
     responses = []
@@ -1064,6 +1124,7 @@ def test_verification_scope_requires_existing_task_owned_by_root(tmp_path, monke
 
 @pytest.mark.parametrize("action", ["receipt", "completion"])
 def test_verification_routes_reject_foreign_task_before_access(tmp_path, monkeypatch, action):
+    monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args, **_kwargs: None)
     root_a = tmp_path / "root-a"
     root_b = tmp_path / "root-b"
     root_a.mkdir()
@@ -1083,7 +1144,10 @@ def test_verification_routes_reject_foreign_task_before_access(tmp_path, monkeyp
             "allowed_roots": [str(tmp_path)],
         }},
         agent_tasks=SimpleNamespace(get=lambda task_id: task if task_id == "task-a" else None),
-        recovery=SimpleNamespace(lookup=lambda *_args: None, begin=lambda *_args: None),
+        recovery=SimpleNamespace(
+            lookup=lambda *_args, **_kwargs: None,
+            begin=lambda *_args, **_kwargs: None,
+        ),
         agent_verification=SimpleNamespace(
             state_store=SimpleNamespace(enabled=True),
             record=lambda receipt: calls.append(("receipt", receipt)),
@@ -1092,11 +1156,11 @@ def test_verification_routes_reject_foreign_task_before_access(tmp_path, monkeyp
     )
     payload = {"action": action, "root": str(root_b), "task_id": "task-a"}
     if action == "receipt":
-        payload["receipt"] = {"task_id": "task-a", "criterion": "owned task"}
+        payload["receipt"] = {"task_id": "task-a", "criterion": "owned task", "passed": True}
 
     responses = _dispatch_post(monkeypatch, "/api/agent-state/verification", payload, app)
 
-    assert responses[0][0] == 404
+    assert responses[0][0] == 404, responses[0]
     assert calls == []
 
 
@@ -1991,6 +2055,70 @@ def test_direct_hub_serve_rejects_unowned_parent_before_bind(tmp_path, monkeypat
 
     with pytest.raises(RuntimeError, match="identity-verified supervisor"):
         http_server.serve(None)
+
+
+def test_supervisor_owner_publication_race_waits_for_identity_record(tmp_path, monkeypatch):
+    state_dir = tmp_path.resolve()
+    owner_pid = process_utils.process_parent_pid()
+    assert owner_pid is not None
+
+    def owner_state(owner, actual_state_dir, role):
+        assert actual_state_dir == state_dir
+        assert role == "supervisor"
+        return "owned" if owner.get("pid") == owner_pid else "unknown"
+
+    monkeypatch.setattr(http_server, "process_owner_state", owner_state)
+
+    def publish_owner():
+        time.sleep(0.05)
+        (state_dir / "supervisor.owner.json").write_text(
+            json.dumps({"pid": owner_pid}), encoding="utf-8",
+        )
+
+    publisher = threading.Thread(target=publish_owner)
+    publisher.start()
+    try:
+        http_server._require_owned_supervisor_parent(state_dir)
+    finally:
+        publisher.join(timeout=1.0)
+    assert not publisher.is_alive()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows hidden process-group parent PID")
+def test_process_parent_pid_tracks_direct_parent_across_hidden_process_groups():
+    source_root = Path(__file__).parents[1]
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(source_root / "src") + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
+    )
+    child_code = (
+        "import time; "
+        "from local_ai_hub.process_utils import process_parent_pid; "
+        "time.sleep(0.2); "
+        "print(process_parent_pid())"
+    )
+    wrapper_code = "\n".join((
+        "import os, subprocess, sys",
+        "from local_ai_hub.process_utils import hidden_run_kwargs, process_parent_pid",
+        f"child = subprocess.Popen([sys.executable, '-c', {child_code!r}], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **hidden_run_kwargs(detached=True))",
+        "snapshot_parent = process_parent_pid(child.pid)",
+        "stdout, stderr = child.communicate(timeout=5)",
+        "if child.returncode != 0: raise SystemExit(stderr)",
+        "child_parent = int(stdout.strip())",
+        "print(f'{os.getpid()}\\t{child.pid}\\t{child_parent}\\t{snapshot_parent}')",
+    ))
+    wrapper = subprocess.run(
+        [sys.executable, "-c", wrapper_code], cwd=source_root, env=env,
+        capture_output=True, timeout=10,
+        **process_utils.hidden_run_kwargs(text=True),
+    )
+    assert wrapper.returncode == 0, wrapper.stderr
+    wrapper_pid, child_pid, child_parent_pid, snapshot_parent = (
+        int(value) for value in wrapper.stdout.strip().split("\t")
+    )
+    assert child_pid != wrapper_pid
+    assert snapshot_parent == wrapper_pid
+    assert child_parent_pid == wrapper_pid
 
 
 def test_hub_pid_resolver_emits_only_identity_verified_owner(tmp_path, monkeypatch):

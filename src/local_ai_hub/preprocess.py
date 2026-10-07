@@ -1355,7 +1355,15 @@ class ProjectPreprocessor:
             return con.execute("SELECT * FROM projects WHERE root=?", (self._root(root),)).fetchone()
 
     def _project_settings(self, root: str) -> Any:
-        return resolve_project_config(root).settings
+        _api, context = self._project_config_context(root)
+        return context.settings if context is not None else resolve_project_config(root).settings
+
+    def _project_phase_allowed(self, root: str, phase: str) -> bool:
+        api, context = self._project_config_context(root)
+        if context is None:
+            return phase_is_allowed(resolve_project_config(root).settings, phase)
+        checker = getattr(api, "phase_is_allowed", phase_is_allowed)
+        return bool(checker(context.settings, phase))
 
     def _project_path_allowed(
         self,
@@ -1382,9 +1390,11 @@ class ProjectPreprocessor:
         special_filenames = getattr(self.repo_tools, "special_filenames", set())
         if extensions and Path(relative).suffix.lower() not in extensions and Path(relative).suffix.lower() not in project_extensions and Path(relative).name.lower() not in special_filenames:
             hard_denied = True
-        return path_is_allowed(
+        api, _context = self._project_config_context(root)
+        checker = getattr(api, "path_is_allowed", path_is_allowed)
+        return checker(
             root,
-            relative,
+            Path(root) / relative,
             settings,
             phase=phase,
             soft_ignored=any(part.lower() in ignored_dirs for part in parts[:-1]),
@@ -2101,7 +2111,7 @@ class ProjectPreprocessor:
         }.get(phase)
         if optional_phase is not None:
             project_phase, next_phase = optional_phase
-            if not phase_is_allowed(self._project_settings(root), project_phase):
+            if not self._project_phase_allowed(root, project_phase):
                 if phase == "code_index" and self.code_index is not None:
                     try:
                         self.code_index.prune(root, [])
@@ -2281,7 +2291,7 @@ class ProjectPreprocessor:
                 "structure": [(path, Path(path).suffix.lower()) for path in all_paths],
                 "models": {k: self.config.get("models", {}).get(k) for k in ("fast_code", "heavy_code", "reasoning")},
                 "analyzer": __version__,
-                "project_config": resolve_project_config(root).config_digest,
+                "project_config": getattr(self._project_config_context(root)[1], "config_digest", ""),
             })
         inventory_hash = stable_hash({"previous": row.get("inventory_hash"), "dirty": sorted(content_changed)})
         if not content_changed:
@@ -2319,8 +2329,9 @@ class ProjectPreprocessor:
 
     def _step_inventory(self, row: dict[str, Any]) -> bool:
         root = str(row["root"])
-        resolution = resolve_project_config(root)
-        settings = resolution.settings
+        _api, project_context = self._project_config_context(root)
+        settings = project_context.settings if project_context is not None else resolve_project_config(root).settings
+        config_digest = str(getattr(project_context, "config_digest", ""))
         if not Path(root).exists():
             self.unregister(root, purge_data=True)
             return True
@@ -2382,7 +2393,7 @@ class ProjectPreprocessor:
             "structure": structure,
             "models": {k: self.config.get("models", {}).get(k) for k in ("fast_code", "heavy_code", "reasoning")},
             "analyzer": __version__,
-            "project_config": resolution.config_digest,
+            "project_config": config_digest,
             "project_type": getattr(settings, "project_type", None),
             "solution_path": getattr(settings, "solution_path", None),
             "language_overrides": getattr(settings, "language_overrides", {}),
@@ -2399,7 +2410,7 @@ class ProjectPreprocessor:
                 uncarded = con.execute("SELECT COUNT(*) FROM file_refs WHERE root=? AND card_key IS NULL", (root,)).fetchone()[0]
                 unragged = (
                     con.execute("SELECT COUNT(*) FROM file_refs WHERE root=? AND (rag_hash IS NULL OR rag_hash<>content_hash)", (root,)).fetchone()[0]
-                    if phase_is_allowed(settings, "rag")
+                    if self._project_phase_allowed(root, "rag")
                     else 0
                 )
             if uncarded == 0 and unragged == 0:
@@ -3210,9 +3221,12 @@ class ProjectPreprocessor:
     def _run_background_generate(self, model: str, prompt: str, system: str, schema: dict[str, Any], max_tokens: int, source: str) -> dict[str, Any]:
         from .operational_mode import load_operational_mode, operational_mode_gate_error
 
-        state_dir = getattr(self, "state_dir", None)
+        state_dir = getattr(self, "state_dir", None) or self.config.get("server", {}).get("state_dir")
         if state_dir is not None:
-            mode = load_operational_mode(state_dir)
+            try:
+                mode = load_operational_mode(state_dir)
+            except Exception:
+                mode = None
             rejection = operational_mode_gate_error(mode, "preprocess")
             if rejection is not None:
                 return rejection
@@ -3242,8 +3256,18 @@ class ProjectPreprocessor:
                 output_tokens=int(max_tokens), background=True, preserve_explicit_think=False,
             )
             # A queued scheduler closure must recheck mode at the runtime handoff.
-            if not self._background_work_allowed():
-                return {"success": False, "preempted": True, "error_code": "operational_mode_paused", "error": "background inference start blocked by operational mode"}
+            if state_dir is not None:
+                try:
+                    mode = load_operational_mode(state_dir)
+                except Exception:
+                    mode = None
+                rejection = operational_mode_gate_error(mode, "preprocess")
+                if rejection is not None:
+                    return {
+                        **rejection,
+                        "preempted": True,
+                        "error_code": "operational_mode_paused",
+                    }
             response = self.runtime.request_interruptible(
                 "/api/generate", payload, self.scheduler.foreground_busy,
                 timeout=float(self.cfg.get("background_request_timeout_seconds", 300)),

@@ -1805,18 +1805,19 @@ class OllamaRuntime:
         now = time.monotonic()
         if now - self._meta_cache_at.get("version", 0) < 5.0 and "version" in self._meta_cache:
             return self._meta_cache.get("version")
-        result = self.request("/api/version", timeout=1.0)
-        v = result.get("version") if "error" not in result else None
-        if v is not None:
-            self._meta_cache["version"] = v
-            self._meta_cache_at["version"] = now
-        if v:
-            return v
+        v = None
+        if bool(self.config.get("ollama", {}).get("enabled", False)):
+            result = self.request("/api/version", timeout=1.0)
+            v = result.get("version") if "error" not in result else None
+            if v:
+                self._meta_cache["version"] = v
+                self._meta_cache_at["version"] = now
+                return v
         if self.llama_cpp.is_online():
-            self._meta_cache["version"] = self._llama_version_label()
-            self._meta_cache_at["version"] = now
-            return self._meta_cache["version"]
-        return self._meta_cache.get("version")
+            v = self._llama_version_label()
+        self._meta_cache["version"] = v
+        self._meta_cache_at["version"] = now
+        return v
 
     def _online_llama_cpp_models(self) -> list[str] | None:
         router = getattr(self, "llama_cpp", None)
@@ -2299,6 +2300,17 @@ class OllamaRuntime:
         unloaded: list[str] = []
         failed: dict[str, str] = {}
         ollama_enabled = bool(self.config.get("ollama", {}).get("enabled", False))
+        ollama_endpoint = str(
+            getattr(self, "base_url", "")
+            or self.config.get("server", {}).get("ollama_url", "")
+            or "default"
+        ).rstrip("/")
+
+        def request_ollama(endpoint: str, payload: dict[str, Any] | None) -> dict[str, Any]:
+            remaining = max(0.0, unload_deadline - time.monotonic())
+            return self.request_interruptible(
+                endpoint, payload, should_stop, timeout=remaining,
+            )
 
         if _stop_requested(should_stop):
             return {
@@ -2392,10 +2404,7 @@ class OllamaRuntime:
                 continue
             try:
                 if backend == "ollama":
-                    response = self.request(
-                        "/api/ps", timeout=max(0.0, unload_deadline - time.monotonic()),
-                        should_stop=should_stop, deadline=unload_deadline,
-                    )
+                    response = request_ollama("/api/ps", {})
                     if not isinstance(response, dict) or "error" in response or not isinstance(response.get("models"), list):
                         raise RuntimeError("backend unavailable")
                     rows = response["models"]
@@ -2420,7 +2429,7 @@ class OllamaRuntime:
         requested_by_endpoint: dict[str, list[str]] = {}
         remaining_by_endpoint: dict[str, list[str] | None] = {}
         if "ollama" in backend_names:
-            remaining_by_endpoint[f"ollama:{self.base_url}"] = None
+            remaining_by_endpoint[f"ollama:{ollama_endpoint}"] = None
         for endpoint_url in last_llama_urls:
             remaining_by_endpoint[f"llama_cpp:{endpoint_url}"] = None
         for backend, rows in loaded_rows_by_backend.items():
@@ -2441,7 +2450,7 @@ class OllamaRuntime:
                     if backend == "ollama":
                         backend_inventory_status[backend] = {"ollama": "unknown"}
                     continue
-                endpoint_url = self.base_url if backend == "ollama" else str(row.get("endpoint_url", "")).strip()
+                endpoint_url = ollama_endpoint if backend == "ollama" else str(row.get("endpoint_url", "")).strip()
                 if not endpoint_url:
                     failed_by_backend[backend][f"model_row_{row_index}"] = "loaded llama.cpp row has no endpoint identity"
                     backend_inventory_ok[backend] = False
@@ -2470,10 +2479,8 @@ class OllamaRuntime:
                 requested_by_endpoint.setdefault(f"{backend}:{endpoint_url}", []).append(model)
                 try:
                     if backend == "ollama":
-                        response = self.request(
+                        response = request_ollama(
                             "/api/generate", {"model": model, "prompt": "", "keep_alive": 0},
-                            timeout=max(0.0, unload_deadline - time.monotonic()),
-                            should_stop=should_stop, deadline=unload_deadline,
                         )
                         ok = isinstance(response, dict) and "error" not in response and response.get("done_reason") == "unload"
                         if ok:
@@ -2506,14 +2513,11 @@ class OllamaRuntime:
             for backend in backend_names:
                 try:
                     if backend == "ollama":
-                        response = self.request(
-                            "/api/ps", timeout=max(0.0, unload_deadline - time.monotonic()),
-                            should_stop=should_stop, deadline=unload_deadline,
-                        )
+                        response = request_ollama("/api/ps", {})
                         if not isinstance(response, dict) or "error" in response or not isinstance(response.get("models"), list):
                             raise RuntimeError("post-unload /api/ps unavailable")
                         rows = response["models"]
-                        endpoint_rows = {self.base_url: []}
+                        endpoint_rows = {ollama_endpoint: []}
                     else:
                         rows, post_endpoint_status = read_llama_inventory()
                         backend_inventory_status[backend] = post_endpoint_status
@@ -2528,7 +2532,7 @@ class OllamaRuntime:
                         )
                         if not name:
                             raise ValueError(f"post-unload model row {row_index} has no usable name or model")
-                        endpoint_url = self.base_url if backend == "ollama" else str(row.get("endpoint_url", "")).strip()
+                        endpoint_url = ollama_endpoint if backend == "ollama" else str(row.get("endpoint_url", "")).strip()
                         if not endpoint_url or endpoint_url not in endpoint_rows:
                             raise ValueError(f"post-unload model row {row_index} has unknown endpoint identity")
                         endpoint_rows[endpoint_url].append(name)
@@ -2570,7 +2574,7 @@ class OllamaRuntime:
         endpoint_receipts: dict[str, dict[str, Any]] = {}
         for backend in backend_names:
             endpoints = (
-                {self.base_url: backend_inventory_status.get(backend, {}).get("ollama", "unknown")}
+                {ollama_endpoint: backend_inventory_status.get(backend, {}).get("ollama", "unknown")}
                 if backend == "ollama" else (last_llama_urls or {"llama.cpp": "unknown"})
             )
             for endpoint_id, endpoint_state in endpoints.items():

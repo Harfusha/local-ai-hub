@@ -12,6 +12,7 @@ from local_ai_hub import code_index as code_index_module
 from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.repo_tools import RepositoryTools
 from local_ai_hub.retrieval import fuse_ranked_paths
+from local_ai_hub import treesitter_parser
 from local_ai_hub.treesitter_parser import is_treesitter_available, parse_treesitter
 
 
@@ -48,6 +49,9 @@ def test_tree_sitter_loader_only_loads_dispatched_languages(monkeypatch) -> None
         get_parser=lambda language: object(),
     )
     monkeypatch.setitem(sys.modules, "tree_sitter_language_pack", fake_pack)
+    # Exercise lazy language loading independently of the Windows/Python 3.13+
+    # safety guard, which intentionally disables native Tree-sitter there.
+    monkeypatch.setattr(treesitter_parser.os, "name", "posix")
     monkeypatch.setattr(treesitter_parser, "_INIT_ATTEMPTED", False)
     monkeypatch.setattr(treesitter_parser, "_PARSERS", {})
     monkeypatch.setattr(treesitter_parser, "_LANGUAGES", {})
@@ -174,6 +178,37 @@ def test_treesitter_extracts_direct_call_edges(language: str, source: str, calle
     )
 
 
+@pytest.mark.parametrize(
+    ("language", "source", "caller"),
+    [
+        ("python", "def caller():\n    f()\n", "caller"),
+        ("csharp", "class Handler { void Caller() { f(); } }", "Caller"),
+        ("typescript", "function caller() { f(); }", "caller"),
+        ("javascript", "function caller() { f(); }", "caller"),
+        ("go", "package api\nfunc caller() { f() }", "caller"),
+        ("rust", "fn caller() { f(); }", "caller"),
+        ("java", "class Handler { void caller() { f(); } }", "caller"),
+        ("cpp", "class Handler { public: void caller() { f(); } };", "caller"),
+    ],
+)
+def test_treesitter_keeps_single_character_calls_in_function_scope(
+    language: str, source: str, caller: str
+) -> None:
+    if not is_treesitter_available(language):
+        pytest.skip(f"Tree-sitter parser unavailable for {language}")
+
+    parsed = parse_treesitter(source, language)
+
+    assert parsed is not None
+    _symbols, _refs, edges = parsed
+    assert any(
+        edge.get("kind") == "calls"
+        and edge.get("dst") == "f"
+        and str(edge.get("src", "")).endswith(caller)
+        for edge in edges
+    )
+
+
 def test_code_index_finds_typescript_arrow_callers(tmp_path) -> None:
     if not is_treesitter_available("typescript"):
         pytest.skip("Tree-sitter parser unavailable for typescript")
@@ -199,9 +234,16 @@ def test_code_index_finds_typescript_arrow_callers(tmp_path) -> None:
     ],
 )
 def test_code_index_fallback_keeps_java_cpp_calls_with_degraded_parser_status(
-    tmp_path, language, source, caller, callee
+    tmp_path, language, source, caller, callee, monkeypatch
 ) -> None:
-    assert is_treesitter_available(language) is False
+    monkeypatch.setattr(
+        treesitter_parser,
+        "parse_treesitter_with_status",
+        lambda _source, _language: {
+            "result": None, "status": "unavailable", "parser": "tree_sitter",
+            "fallback_reason": "parser_unavailable", "syntax_error_count": 0,
+        },
+    )
     index = CodeIndex({"server": {"state_dir": str(tmp_path / f"state-{language}")}}, repo_tools=None)
 
     _symbols, _refs, edges, diagnostic = index._parse_file_content_report(source, language)
@@ -723,5 +765,5 @@ def test_call_edge_analyzer_version_rejects_stale_parse_blobs(tmp_path) -> None:
         )
         con.commit()
 
-    assert code_index_module._PARSER_ANALYZER_VERSION == f"{code_index_module.__version__}:call-edges-v12-named-arrow-callers"
+    assert code_index_module._PARSER_ANALYZER_VERSION == f"{code_index_module.__version__}:call-edges-v13-scoped-fallback"
     assert index._parse_blob_get("same-content", "rust") is None

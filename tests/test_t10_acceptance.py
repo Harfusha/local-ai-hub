@@ -222,9 +222,22 @@ def test_index_update_replaces_import_and_call_dependencies(tmp_path: Path) -> N
     assert all(item["path"] != "consumer.py" for item in after["likely_dependents"])
     assert index.find_callers(str(root), "SharedNeedle")["callers"] == []
 
-def test_code_index_reports_syntax_failure_and_parser_fallback_outcomes(tmp_path: Path) -> None:
+def test_code_index_reports_syntax_failure_and_parser_fallback_outcomes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
     if not is_treesitter_available("python"):
         pytest.skip("Tree-sitter parser unavailable for Python")
+    parse_with_status = treesitter_parser.parse_treesitter_with_status
+
+    def parser_with_java_unavailable(source: str, language: str) -> dict[str, object]:
+        if language == "java":
+            return {
+                "result": None, "status": "unavailable", "parser": "tree_sitter",
+                "fallback_reason": "parser_unavailable", "syntax_error_count": 0,
+            }
+        return parse_with_status(source, language)
+
+    monkeypatch.setattr(treesitter_parser, "parse_treesitter_with_status", parser_with_java_unavailable)
     index, root = _new_index(tmp_path)
     broken = root / "src" / "broken.py"
     unsupported = root / "src" / "Legacy.java"
@@ -1538,6 +1551,35 @@ def test_csharp_multiline_expression_body_keeps_call_in_method(monkeypatch, tmp_
     assert any(edge["src"].endswith("M") and edge["dst"] == "SaveResult" for edge in edges)
 
 
+@pytest.mark.parametrize(
+    ("language", "source", "expected_call"),
+    [
+        ("python", 'def caller():\n    # phantomComment()\n    text = "phantomString()"\n    realCall()\n', "realCall"),
+        ("csharp", 'class Handler { void Caller() { // phantomComment()\n /* phantomBlock() */ var text = "phantomString()"; service.RealCall(); } }', "RealCall"),
+        ("cpp", 'class Handler { public: void caller() { // phantomComment()\n const char* text = "phantomString()"; service.realCall(); } };', "realCall"),
+        ("typescript", 'function caller() { /* phantomComment() */ const text = "phantomString()"; return service.realCall(); }', "realCall"),
+        ("tsx", 'function caller() { /* phantomComment() */ const text = "phantomString()"; return service.realCall(); }', "realCall"),
+        ("javascript", 'function caller() { /* phantomComment() */ const text = `phantomTemplate()`; return service.realCall(); }', "realCall"),
+        ("go", 'package api\nfunc caller() { /* phantomComment() */ note := `phantomRaw()`; service.RealCall() }', "RealCall"),
+        ("rust", 'fn caller() { /* phantom_comment() */ let note = r##"phantom_raw()"##; service.real_call(); }', "real_call"),
+        ("java", 'class Handler { void caller() { /* phantomComment() */ String text = "phantomString()"; service.realCall(); } }', "realCall"),
+    ],
+)
+def test_treesitter_masks_comments_and_literals_before_call_extraction(
+    language: str, source: str, expected_call: str
+) -> None:
+    if not is_treesitter_available(language):
+        pytest.skip(f"Tree-sitter parser unavailable for {language}")
+
+    parsed = parse_treesitter(source, language)
+
+    assert parsed is not None
+    _symbols, _refs, edges = parsed
+    calls = [str(edge.get("dst", "")) for edge in edges if edge.get("kind") == "calls"]
+    assert any(target.endswith(expected_call) for target in calls)
+    assert not any("phantom" in target.lower() for target in calls)
+
+
 @pytest.mark.parametrize(("filename", "language"), [("view.tsx", "tsx"), ("module.cpp", "cpp")])
 def test_file_extension_dispatches_matching_treesitter_language(
     filename: str, language: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
@@ -1557,7 +1599,10 @@ def test_file_extension_dispatches_matching_treesitter_language(
 
     monkeypatch.setattr(treesitter_parser, "parse_treesitter_with_status", unavailable_parser)
 
-    _symbols, _refs, _edges, report = index._parse_file_content_report("function caller() { target(); }", index._lang(filename))
+    language_for_file = index._language_for_path(filename, None)
+    _symbols, _refs, _edges, report = index._parse_file_content_report(
+        "function caller() { target(); }", language_for_file
+    )
 
     assert dispatched == [language]
     assert report["fallback_used"] is True

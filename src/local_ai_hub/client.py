@@ -671,7 +671,7 @@ class HubClient:
                     pyw_candidate = Path(sys.executable).parent / "pythonw.exe"
                     if pyw_candidate.exists():
                         py_exe = str(pyw_candidate)
-                cmd = [py_exe, "-m", "local_ai_hub", "--config", config_path]
+                cmd = [py_exe, "-m", "local_ai_hub.supervisor", "--config", config_path]
                 try:
                     from .process_utils import hidden_run_kwargs
                     popen_kwargs = hidden_run_kwargs(detached=True)
@@ -790,6 +790,16 @@ class HubClient:
             raise ValueError("root must resolve to an existing directory")
         return resolved
 
+    def _root_sandbox_enabled(self) -> bool:
+        security = self.config.get("security", {})
+        return bool(
+            isinstance(security, dict) and (
+                security.get("allowed_roots")
+                or security.get("tenant_derivation_key")
+                or security.get("api_token")
+            )
+        )
+
     def _root_scoped_tenant(self, roots: list[Any]) -> tuple[str | None, dict[str, Any] | None]:
         security = self.config.get("security", {})
         try:
@@ -895,6 +905,9 @@ class HubClient:
             )
 
         principal = self._principal_tenant()
+        if not self._root_sandbox_enabled():
+            effective_tenant = next((str(h).strip() for h in tenant_hints if h not in (None, "")), principal)
+            return effective_tenant, None
         effective_tenant = principal
         if task_route:
             effective_tenant, error = self._root_scoped_tenant(roots)
@@ -1273,27 +1286,34 @@ class HubClient:
     ) -> dict[str, Any]:
         clean_payload = dict(payload or {})
         route = path.lower().split("?", 1)[0]
-        if route in {"/api/search", "/api/command"}:
+        if route == "/api/search":
             explicit_path = isinstance(clean_payload.get("path"), str) and bool(clean_payload["path"].strip())
             if explicit_path:
                 clean_payload.pop("path_hints", None)
-            elif path_hints is not None:
-                records = []
-                for hint in path_hints[:64]:
-                    if isinstance(hint, Mapping):
-                        record = dict(hint)
-                    else:
-                        record = {
-                            key: getattr(hint, key)
-                            for key in _PATH_HINT_FIELDS
-                            if hasattr(hint, key) and getattr(hint, key) is not None
-                        }
-                    if any(not isinstance(record.get(key), str) for key in _PATH_HINT_REQUIRED_FIELDS):
-                        continue
-                    if any(key in record and not isinstance(record[key], str) for key in _PATH_HINT_FIELDS):
-                        continue
-                    records.append({key: value for key, value in record.items() if key in _PATH_HINT_FIELDS})
-                clean_payload["path_hints"] = records
+            else:
+                raw_path_hints = path_hints if path_hints is not None else clean_payload.get("path_hints")
+                if raw_path_hints is not None:
+                    records = []
+                    if isinstance(raw_path_hints, Sequence) and not isinstance(
+                        raw_path_hints, (str, bytes, bytearray)
+                    ):
+                        for hint in raw_path_hints[:64]:
+                            if isinstance(hint, Mapping):
+                                record = dict(hint)
+                            else:
+                                record = {
+                                    key: getattr(hint, key)
+                                    for key in _PATH_HINT_FIELDS
+                                    if hasattr(hint, key) and getattr(hint, key) is not None
+                                }
+                            if any(not isinstance(record.get(key), str) for key in _PATH_HINT_REQUIRED_FIELDS):
+                                continue
+                            if any(key in record and not isinstance(record[key], str) for key in _PATH_HINT_FIELDS):
+                                continue
+                            records.append({key: value for key, value in record.items() if key in _PATH_HINT_FIELDS})
+                    clean_payload["path_hints"] = records
+        else:
+            clean_payload.pop("path_hints", None)
         replay_safe = self._post_replay_safe(path, clean_payload)
         if request_id is None:
             return self.request(

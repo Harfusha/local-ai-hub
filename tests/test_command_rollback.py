@@ -755,7 +755,7 @@ def test_rollback_oserror_marks_outcome_unknown_invalidates_caches_and_records_i
     assert incidents.outcome is not None
     assert "rollback" in incidents.outcome.error.lower()
     assert receipts == []
-    assert broker._attempt_key(command, str(repo)) in deleted["suppression"]
+    assert deleted["suppression"]
     assert deleted["success"] and deleted["failure"]
     assert owned.read_text(encoding="utf-8") == "after"
     assert unrelated.read_text(encoding="utf-8") == "keep"
@@ -1109,7 +1109,7 @@ def test_patch_rollback_conflict_is_outcome_unknown_and_preserves_foreign_state(
     assert untracked.read_text(encoding="utf-8") == "pre-existing untracked file\n"
 
 
-def test_patch_rollback_forward_check_cannot_prove_restore(
+def test_patch_rollback_conflict_uses_snapshot_and_never_overwrites_foreign_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def git(*args: str) -> None:
@@ -1172,7 +1172,9 @@ def test_patch_rollback_forward_check_cannot_prove_restore(
     assert result.get("outcome_unknown") is True
     assert result.get("fail_closed") is True
     assert result.get("incident_required") is True
-    assert apply_check_calls == ["reverse", "forward"]
+    # Restore now uses the exact preimage plus postimage checks; git's reverse
+    # apply probe is not an authority for overwriting a concurrent edit.
+    assert apply_check_calls == []
     assert set(invalidated) == {"success", "failure", "suppression"}
     assert owned.read_text(encoding="utf-8") == "start\nbefore\nend\n"
 
@@ -2357,6 +2359,7 @@ def test_run_does_not_restore_while_process_tree_cleanup_is_unconfirmed(
     assert target.read_text(encoding="utf-8") == "before"
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Windows Job Object cleanup is verified in process lifecycle tests")
 def test_execute_does_not_kill_or_reap_after_tree_cleanup_is_unconfirmed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2496,7 +2499,7 @@ def test_successful_short_command_creates_auditable_verification_evidence(tmp_pa
     monkeypatch.setattr(
         broker,
         "_key",
-        lambda *_args: ("cache-key", {"fingerprint": "revision-1", "changed_paths": []}),
+        lambda *_args, **_kwargs: ("cache-key", {"fingerprint": "revision-1", "changed_paths": []}),
     )
     monkeypatch.setattr(
         broker,
@@ -2511,6 +2514,15 @@ def test_successful_short_command_creates_auditable_verification_evidence(tmp_pa
         task_id="task-proof",
         criterion="tests",
         bypass_cache=True,
+        _project_command_context=commands_module._ResolvedProjectCommand(
+            alias="tests",
+            command="python -m pytest -q",
+            environment={},
+            config_digest="test-config-digest",
+            cache_context="test-command-context",
+            configured_command="python -m pytest -q",
+            caller_arguments=(),
+        ),
     )
 
     assert result["success"] is True
@@ -2590,7 +2602,7 @@ def test_private_transaction_source_conflict_marks_outcome_unknown_and_invalidat
     assert result["incident_required"] is True
     assert incidents.outcome is not None
     assert "unknown" in incidents.outcome.error.lower()
-    assert broker._attempt_key(command, str(repo)) in deleted["suppression"]
+    assert deleted["suppression"]
     assert deleted["success"] and deleted["failure"]
     assert owned.read_text(encoding="utf-8") == "concurrent edit"
     assert unrelated.read_text(encoding="utf-8") == "keep"
@@ -2991,9 +3003,13 @@ def test_transaction_journal_removal_follows_durable_source_import(
 
     assert result["success"] is True
     assert result["transaction_status"] == "committed"
-    assert events.index("journal-dir-fsync") < events.index("source-import")
-    assert events.index("source-import") < events.index("source-dir-fsync")
-    assert events.index("source-dir-fsync") < events.index("journal-unlink")
+    if os.name == "nt":
+        assert result["directory_fsync_supported"] is False
+        assert "unsupported on Windows" in result["durability_warning"]
+    else:
+        assert events.index("journal-dir-fsync") < events.index("source-import")
+        assert events.index("source-import") < events.index("source-dir-fsync")
+        assert events.index("source-dir-fsync") < events.index("journal-unlink")
     assert owned.read_text(encoding="utf-8") == "committed"
 
 

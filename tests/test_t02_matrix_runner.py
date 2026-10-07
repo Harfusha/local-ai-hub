@@ -1,5 +1,9 @@
 from pathlib import Path
+import hashlib
 import os
+import re
+import subprocess
+import sys
 
 import pytest
 
@@ -19,7 +23,7 @@ def test_acceptance_matrix_covers_six_workloads_times_four_concurrency_levels() 
     }
 
 
-def test_acceptance_command_is_offline_checkpointed_and_never_infers(tmp_path: Path) -> None:
+def test_acceptance_command_is_offline_and_never_infers(tmp_path: Path) -> None:
     command = run_t02_matrix.build_command(
         python="python",
         repository_root=tmp_path / "repo",
@@ -33,9 +37,39 @@ def test_acceptance_command_is_offline_checkpointed_and_never_infers(tmp_path: P
     assert "--concurrency" in command
     start = command.index("--concurrency") + 1
     assert command[start:start + 4] == ["1", "4", "16", "32"]
-    assert "--checkpoint" in command
+    assert "--state-dir" in command
+    assert "--scratch-dir" in command
+    assert "--comparison-repetitions" in command
+    assert "--checkpoint" not in command
     assert "--resume" not in command
+    assert "--checkpoint-batch-size" not in command
+    assert "--paired-repetitions" not in command
     assert "--inference" not in command
+
+
+def test_generated_command_options_exist_in_benchmark_cli(tmp_path: Path) -> None:
+    repository = Path(__file__).resolve().parents[1]
+    command = run_t02_matrix.build_command(
+        python=sys.executable,
+        repository_root=repository,
+        output_dir=tmp_path / "evidence",
+        file_count=10_000,
+        rag_chunk_count=100_000,
+        phase="acceptance",
+    )
+    help_result = subprocess.run(
+        [sys.executable, str(repository / "tools" / "benchmark_surfaces.py"), "--help"],
+        cwd=repository,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert help_result.returncode == 0, help_result.stderr
+    supported_options = set(re.findall(r"(?<![\w-])--[a-zA-Z0-9][a-zA-Z0-9-]*", help_result.stdout))
+    generated_options = {argument for argument in command if argument.startswith("--")}
+
+    assert generated_options <= supported_options
 
 
 def test_resume_skips_only_receipted_completed_workloads() -> None:
@@ -207,10 +241,7 @@ def test_matrix_orchestrator_records_all_cases_and_aggregate(tmp_path: Path, mon
         file_count = int(command[command.index("--files") + 1])
         rag_chunk_count = int(command[command.index("--rag-chunks") + 1])
         state_dir = Path(command[command.index("--state-dir") + 1])
-        checkpoint = Path(command[command.index("--checkpoint") + 1])
         state_dir.mkdir(parents=True, exist_ok=True)
-        checkpoint.parent.mkdir(parents=True, exist_ok=True)
-        checkpoint.write_text("checkpoint", encoding="utf-8")
         record_path = state_dir / f"{file_count}-{rag_chunk_count}.json"
         record = _complete_record(file_count, rag_chunk_count)
         record["record_path"] = str(record_path)
@@ -228,4 +259,9 @@ def test_matrix_orchestrator_records_all_cases_and_aggregate(tmp_path: Path, mon
     assert result["quality_acceptance"] == "blocked_real_input_evidence"
     assert len(calls) == 6
     assert all("--inference" not in command for command in calls)
-    assert all(case["command"] and case["checkpoint_sha256"] for case in manifest["cases"].values())
+    assert all(
+        case["command"]
+        and case["record_sha256"] == hashlib.sha256(Path(case["record_path"]).read_bytes()).hexdigest()
+        for case in manifest["cases"].values()
+    )
+    assert all(case["checkpoint_sha256"] is None for case in manifest["cases"].values())
