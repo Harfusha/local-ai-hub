@@ -10,6 +10,19 @@ Historical snapshot: statuses, hashes, and receipts below belong to their record
 
 **Spec:** `docs/superpowers/plans/2026-09-22-hub-quality-performance-master-plan.md`, current release instructions, and the user's appended audits and release criteria.
 
+### Current reconciliation addendum — 2026-10-07, master `795478fc`
+
+- Reconciliation base verified at `795478fcd2da65f5dedf5b110f75bcce23565894`; six pre-existing tracked dirty paths plus untracked runtime `agent_state.sqlite` were preserved. This addendum is committed separately; no matrix dirty path remains. Do not reconstruct the older 182/192 count.
+- All seven non-merge refs were renamed under `refs/heads/archived/codex/`; exact commit objects and their existing worktree contents remain. No branch content was merged by this operation.
+- Stash reconciliation: 35 entries remain in `git stash list`; ten reviewed duplicate/superseded snapshots are recoverable under `refs/archive/stashes/2026-10-07/<full-sha>`. No useful unique source hunk has been applied yet.
+- Archived stash SHAs: `6ddc114366c0a0b8c7bb3db6ed05dd3dd0e3b134`, `57ffaded43a46e0021008959021b828e1e955ecb`, `4b54e7af38f10c676acf03b066162064db40bd13`, `2f3c83021780e97ebd7d6103155b948b0e9f7638`, `6545a24f28655982ad3907b87b04c87ef5dea100`, `f98585be9d7f7951cb3a1c2bc4dd52bc207ba7bd`, `4a492099b133e2b295e9ddf690f409fb8e78a222`, `18008cd3d2d4191399ad5eebc21e9e74a6983359`, `5aad8c4301bbc1b311c1d6ca36faf4ced245d337`, `3634e724f9c0184d0a46bc8b774ed85a048ddf6d`.
+- Supersession evidence: master already contains the T06 rollback fail-closed and daemon-policy regressions; T07 replay-safety coverage is newer/stronger; CodeGraph ignore and preprocessing `shell=False` behavior/tests exist; T15 project config/path-hint tests are broader and preserve newer validation/identity behavior. These stash entries were removed from the active stash list only after creating exact archive refs.
+- Vision stash `001d5c3227fde5136cb3453c4bb36ec8622b03fa` was reviewed and rejected: its `vision()` remains 703 lines versus 206 in master, alters behavior, mixes T17/T28 ownership, and handoff says no tests were run. Do not apply it as a refactor.
+- Agent OS stash `3634e724f9c0184d0a46bc8b774ed85a048ddf6d` has no safe missing hunk: master has stricter verification behavior and equivalent resume/completion/idempotency tests; remaining paths overlap preserved dirty root or lack current hash-bound receipts. It is recoverable by archive ref, not discarded.
+- T14 checkout/artifact remains unavailable; T05/T08 memory-related stash ownership/receipts remain unverified. Keep those stashes intact; do not bypass `/api/context/pack` ownership or dirty-root overlaps.
+- A T06 three-way stash apply conflicted in three paths that were clean before the attempt; only those exact paths were restored to `HEAD`, leaving no unmerged entries. Stash itself remained intact.
+- No tests or release gates ran in this reconciliation. Release remains **NO-GO** pending owner-bound integration and current receipts.
+
 ## Global Constraints
 
 - Preserve existing root dirty changes; integrate only exact, attributable hunks.
