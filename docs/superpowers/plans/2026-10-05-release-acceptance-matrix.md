@@ -275,7 +275,7 @@ All 30 audited stashes had a base, index, and untracked parent; index deltas wer
 | `ab172d846888d2984959a06ac7272f5907abb533` | `refs/archive/stashes/2026-10-07/ab172d846888d2984959a06ac7272f5907abb533` | No tracked delta; untracked work-fencing migration was superseded by the current implementation. |
 | `a9d199006a82f2448f348cc5ec5717257e58ee91` | `refs/archive/stashes/2026-10-07/a9d199006a82f2448f348cc5ec5717257e58ee91` | Surface inventory/API coverage extraction already superseded by master. |
 
-Current inventory: **27 active stashes, 18 archive refs** under `refs/archive/stashes/2026-10-07/`. The other 27 remain active because their unique value or ownership was not disproved; they were neither dropped nor force-applied. Audit dispositions:
+Inventory at first checkpoint: **27 active stashes, 18 archive refs** under `refs/archive/stashes/2026-10-07/`. Subsequent T18 owner verification archived two more, leaving **25 active stashes and 20 archive refs**. The remaining 25 stay active because their unique value or ownership was not disproved; they were neither dropped nor force-applied. Audit dispositions:
 
 | Stash SHA | Owner/scope | Current disposition and blocker |
 |---|---|---|
@@ -283,8 +283,8 @@ Current inventory: **27 active stashes, 18 archive refs** under `refs/archive/st
 | `382a17cbec4f557584264bd7199dbe3f91349f47` | T21 project config/path hints | Broad changes include `client.py` and `http_server.py`, both dirty in root; exact owner checkout unavailable in this pass. |
 | `77a09517d3fb3d8cd81e94550c6b2a081d11c487` | Historical master-plan reconstruction | One plan artifact differs from the current copy; source value not established, so retained. |
 | `c6918ee7e8eaf032cb9acd22924fbb2b3cffe758` | T19 release/install/docs | Broad 51-path snapshot; 37 paths differ from its saved tree at master and server/client paths overlap root dirt. |
-| `e4fdc272b9fbcbc7ac3d58f1b9b4ded55de830c6` | T18 dashboard/telemetry | Overlaps dirty `http_server.py`; exact owner review pending. |
-| `12beabe20f72bae37ca4c82b7c2443b5d5c80a6f` | T18 dashboard/API | Overlaps the other T18 stash and dirty `http_server.py`; exact owner review pending. |
+| `e4fdc272b9fbcbc7ac3d58f1b9b4ded55de830c6` | T18 dashboard/telemetry | Owner later verified every tracked patch matches master integration `816354853a`; now retained under an archive ref, not active. |
+| `12beabe20f72bae37ca4c82b7c2443b5d5c80a6f` | T18 dashboard/API | Owner later verified every tracked patch matches master integration `fcb49e482c`; now retained under an archive ref, not active. |
 | `001d5c3227fde5136cb3453c4bb36ec8622b03fa` | T17 vision/transcription | Overlaps other T17 snapshots; no isolated owner packet. |
 | `ef2709e29cf3f1f5e7d3ee964d9bf4862cd080fc` | T17 vision/browser | Overlaps other T17 snapshots and dirty `http_server.py`; index parent contains 17 paths. |
 | `c0a198821d1b4cac811303740c0511b093f22149` | T16 orchestration/project identity | Adds a `coordination_id` variant; overlaps dirty HTTP server and another candidate. |
@@ -307,9 +307,20 @@ Current inventory: **27 active stashes, 18 archive refs** under `refs/archive/st
 | `9148573ab1e7c51b1f18c7d988b61d92cf7c66cb` | T03 handoff/acceptance | Seven handoff artifacts, base diverges from master; retained as evidence, not applied as source. |
 | `4e48862b9a0e2664e4ed1f83911b9d9feaa24e10` | Model routing/runtime | Broad 31-path snapshot; master already has interruptible socket handling, remaining value unverified. |
 
-The five existing task chats were resumed for owner adjudication. T04, T05, T08, and T14 each reported their exact assigned checkout unavailable/not a Git repo; no substitute was used and their stashes remain untouched. T18 is still active in its existing chat reviewing its two snapshots. None of those owners supplied a source patch or test receipt during this checkpoint. These are blockers, not `done` tasks.
+The existing task chats were resumed for owner adjudication. T04, T05, T08, and T14 each reported their exact assigned checkout unavailable/not a Git repo; no substitute was used and their stashes remain untouched. T18 completed its review: its two tracked stash patches match master integrations, and no source patch or tests were needed. Its 349 untracked worktree files remain preserved. T04/T05/T08/T14 remain blocked, not `done`.
 
 The seven non-merge branches retain their commits and now use the required `archived/` prefix: `archived/codex/sync-55ed-20261006`, `archived/codex/sync-hub-audit-repairs-20261006`, `archived/codex/sync-t03-master-20261006`, `archived/codex/sync-t11-recovery-v2-20261006`, `archived/codex/sync-t13-lifecycle-8429-20261006`, `archived/codex/sync-t17-multimodal-resume-20261006`, and `archived/codex/sync-t21-project-config-20261006`. Branches were renamed only; their worktrees were not deleted.
 
 No stash change was applied because no source hunk passed both ownership and current-root conflict review. No test receipt was produced by this stash pass; the release remains open and the active stashes remain available for subsequent exact-owner reconciliation.
+
+## 2026-10-07 T18 stash-owner verification
+
+T18's existing owner reviewed both stash commits in `C:\Users\Adam\.codex\worktrees\t18-status-dashboard\.local-ai-hub`, with zero tracked dirty files and 349 untracked files preserved. At review time the checkout matched master code HEAD `ed0ad195457e53e728e90851aa269f31a220d38d`; the root has since advanced by a documentation-only commit.
+
+| Stash | Owner evidence | Disposition |
+|---|---|---|
+| `e4fdc272b9fbcbc7ac3d58f1b9b4ded55de830c6` | 21 tracked paths; patch SHA-256 `c81b2f4f1056ededba6220700f5902989441322cd4064bfdbc39f0752d2f4111`; patch ID `78915dbe70d6aaf6e6d7a35bb52b22261adbe42e`; each file patch matched master integration `816354853a`. | Archived at `refs/archive/stashes/2026-10-07/e4fdc272b9fbcbc7ac3d58f1b9b4ded55de830c6`. No source application; owner found no missing T18 hunk. |
+| `12beabe20f72bae37ca4c82b7c2443b5d5c80a6f` | 19 tracked paths; patch SHA-256 `d63405f28cd1ab121ff4a0eaf8fac1374e83db892bd7952d4df328d62ffe7189`; patch ID `1212e4fa355fdb51e98ff2f7f6b2a8cd4416c11b`; each file patch matched master integration `fcb49e482c`. Remaining event-page test behavior, including `has_more`, is covered by the current event shape. | Archived at `refs/archive/stashes/2026-10-07/12beabe20f72bae37ca4c82b7c2443b5d5c80a6f`. No source application; owner found no missing T18 hunk. |
+
+The original stash commits and their untracked parent trees remain reachable. No T18 tests ran because the owner found no missing patch to apply. Current counts after this verification: **25 active stashes, 20 archive refs**. T04/T05/T08/T14 owner checkout blockers remain; their source/handoff candidates were not changed.
 
