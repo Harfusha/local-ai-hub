@@ -143,16 +143,16 @@ def test_live_mcp_schema_publishes_action_conditions_and_output_schema() -> None
 def test_live_mcp_schemas_match_registry_for_every_public_tool() -> None:
     from local_ai_hub import mcp_server
     from local_ai_hub.operation_contracts import (
-        OPERATION_CONTRACTS,
         operation_tool_input_schema,
         operation_tool_output_schema,
     )
 
     registered = mcp_server.mcp._tool_manager._tools
     wire_tools = {tool.name: tool for tool in asyncio.run(mcp_server.mcp.list_tools())}
-    assert set(wire_tools) == set(OPERATION_CONTRACTS)
+    enabled_tools = set(mcp_server.FEATURES.enabled_tools)
+    assert set(wire_tools) == enabled_tools
 
-    for name in OPERATION_CONTRACTS:
+    for name in enabled_tools:
         expected_input = mcp_server._input_schema_with_action_aliases(
             name, operation_tool_input_schema(name, mcp_server.FEATURES)
         )

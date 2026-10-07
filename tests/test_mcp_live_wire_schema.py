@@ -123,9 +123,10 @@ def test_stdio_handshake_publishes_all_registry_input_and_output_schemas() -> No
     assert process.returncode == 0, "".join(stderr_lines)[-2000:]
     assert initialize.get("result", {}).get("protocolVersion") == "2025-06-18"
     wire_tools = {tool["name"]: tool for tool in tool_list["result"]["tools"]}
-    assert set(wire_tools) == set(OPERATION_CONTRACTS)
+    enabled_tools = set(mcp_server.FEATURES.enabled_tools)
+    assert set(wire_tools) == enabled_tools
 
-    for name in OPERATION_CONTRACTS:
+    for name in enabled_tools:
         expected_input = mcp_server._input_schema_with_action_aliases(
             name, operation_tool_input_schema(name, mcp_server.FEATURES)
         )
