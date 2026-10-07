@@ -409,3 +409,13 @@ T08's 40 tracked root paths and 22 root-level untracked tests were compared to c
 
 Master already has a canonical large-element `orjson` fast path in `CompiledContext.etag()` while preserving the legacy SHA-1 ETag bytes for canonical and fallback values. On the existing `t31-element-id-hash` worktree fast-forwarded to `0474cfd4`, `python -m pytest -q --tb=short tests/test_agent_context.py::test_context_etag_matches_legacy_canonical_json_without_json_dumps tests/test_agent_context.py::test_context_etag_keeps_stdlib_spelling_for_noncanonical_values` → **7 passed in 0.48s**. This verifies equivalence, not measured speed; no benchmark run and no production source change. The current implementation concerns `CompiledContext.etag`, not an `element_id` generator; confirm whether the reported wording intended this path before marking the broader performance item done.
 
+### Active stash closeout — 2026-10-07, master `64c4e33a`
+
+The three remaining active stashes were reviewed against committed master and their original base, with separate read-only reviews. No source hunk met the bar for new accepted behavior:
+
+- `ac0b245438a975ab465266bbed892674100f4dd6` (T14 context/retrieval): context identity, response budgeting, path hints, and tests are already present in master with stronger guards. Older snippet packing differs but is not a demonstrated acceptance gap. `/api/context/pack` was not changed.
+- `f6037b1b8f5bbbb23fb4b69bba7552612a6135f6` (T13 mode/async): mode admission, cancellation, lifecycle, and accelerator release behavior are present in master; remaining broad hunks conflict with newer code. The only clean unique test asserts documentation already present.
+- `032f0414b19103998196acb030106ec77e734f12` (T02 benchmark): current master has stricter benchmark allowlists and equivalent/newer tests. Generated corpora and receipts are historical inputs, not release evidence.
+
+Each original stash commit, including its index/untracked parents and payloads, is preserved under `refs/archive/stashes/2026-10-07/<full-sha>`; the active stash list is empty. The three are recoverable, not deleted. No stash source changes were applied. The seven non-merge branches already retain their commits under `archived/codex/*`; no worktree was removed. Root dirty files and `agent_state.sqlite` remain untouched. Full-suite validation on clean master worktree `t31-element-id-hash` is still running and has emitted many failures; release is **NO-GO** until the run completes and failures are triaged.
+
