@@ -324,6 +324,34 @@ class LlamaCppInterruptibleTransportTests(unittest.TestCase):
             server.server_close()
             server_thread.join(1)
 
+    def test_interruptible_response_peek_is_non_consuming(self):
+        body = b"ollama metadata"
+
+        class _BodyHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _BodyHandler)
+        server.daemon_threads = True
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        deadline = time.monotonic() + 2
+        try:
+            request = Request(f"http://127.0.0.1:{server.server_port}/metadata")
+            with _open_interruptible_response(request, deadline, None) as response:
+                self.assertEqual(response.peek(6)[:6], body[:6])
+                self.assertEqual(_read_response_body(response, deadline), body)
+        finally:
+            server.shutdown()
+            server.server_close()
+            server_thread.join(1)
+
     def test_interruptible_response_honors_configured_http_proxy(self):
         observed_targets: list[str] = []
 

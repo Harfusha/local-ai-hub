@@ -131,6 +131,16 @@ class _InterruptibleSocketReader:
         del self._buffer[:take]
         return value
 
+    def peek(self, size: int = -1) -> bytes:
+        """Return buffered response bytes without consuming them."""
+        if self._closed:
+            raise ValueError("peek from closed response")
+        if not self._buffer and not self._eof:
+            self._receive()
+        if size is None or size < 0:
+            return bytes(self._buffer)
+        return bytes(self._buffer[:size])
+
     def readline(self, size: int = -1) -> bytes:
         while True:
             newline = self._buffer.find(b"\n")
