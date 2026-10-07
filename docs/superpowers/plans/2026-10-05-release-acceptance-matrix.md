@@ -389,3 +389,12 @@ Current inventory after T17 extraction: **6 active stashes, 39 archive refs**. N
 
 T08's 40 tracked root paths and 22 root-level untracked tests were compared to current master; all T08 queue behaviors have current source/tests, and the focused suite passed **48 tests**. The remaining 769 nested `artifacts/`/`handoff/` source-test snapshots were not semantically audited individually; retained byte-for-byte inside the recoverable stash object, not deleted. Stash `6c6c6c9d524855d57c0d71f8b40cbf1c3e5a1ae8` moved to `refs/archive/stashes/2026-10-07/6c6c6c9d524855d57c0d71f8b40cbf1c3e5a1ae8`; T08 acceptance remains open. Current inventory: **3 active stashes, 42 archive refs**. Seven `archived/` branches and all linked worktrees remain.
 
+### Parallel task restart and current-master receipts — 2026-10-07, master `4459bb33`
+
+- Existing T01–T21 chats were resumed; archived T03/T11 chats were restored. No duplicate task/chat created. Root dirty paths remain untouched.
+- T01 current-master receipt: `python -m pytest -q --tb=short tests/test_surface_inventory.py` → **774 passed in 78.15s**. T01 task remains open pending owner disposition of full acceptance; assigned `1938` checkout is absent.
+- T02 current-master receipt: `python -m pytest -q --tb=short tests/test_t02_repeat_pytest.py` → **8 passed in 0.23s**; worktree clean at `4459bb33`. Benchmark not run: T20 has no verified serial slot/window or exact command/input/config pins.
+- T03 remains **review/partial**: e809 is dirty/divergent; exact async_jobs/T13 test hunk isolation and post-fix combined receipt remain missing. No source copied.
+- T12 reports T12 blobs match master; checkout is 11 commits behind and has untracked scratch, so no fast-forward. Prior focused receipts were not rerun; live latency/VRAM and T02 baseline remain open.
+- T04/T05/T08/T10/T14/T17/T19 and T16 report missing or invalid assigned checkouts; no substitute checkout used. T18 continues hash/acceptance review. Release remains **NO-GO**.
+
