@@ -263,3 +263,53 @@ The exact T11 post-fix command is recorded in the orchestrator turn and must be 
 - T14 root follow-up (2026-10-05): added `tests/test_context_path_hints_skip_unbounded_scan.py`; test-first RED **1 failed / 1.19s**, then removed full-repository `iter_files()` recall enumeration and disabled the broad lexical fallback when explicit path controls are active. Added `tests/test_context_pack_render_order.py`; test-first RED **1 failed / 1.05s** proved text/provenance order diverged. Integrated only the reviewed isolated `services.py` hunk that reorders complete already-budgeted lexical blocks to evidence order before RAG append. Focused command `python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_context_pack_render_order.py tests/test_adaptive_retrieval.py tests/test_context_delivery.py tests/test_context_pack_budget_e2e.py tests/test_context_path_hints_skip_unbounded_scan.py tests/test_context_snippet_budget_audit.py` => **60 passed / 22.07s**. Path controls now avoid the known whole-repo scan; explicit bounded fallback when all indexes are absent remains unimplemented. No `ContextPlan`, global deadline, focus/changed-path ranking or live benchmark acceptance yet. Root `services.py` is dirty from other tasks; only the narrow audited hunk above is ours.
 - T14 root-current file pins after these scoped edits: `services.py` SHA-256 `7F00AB9442631DB8C861BF8C24200223D9670DD09BFE043CA102E7E379384793` (pre-ordering root SHA `C6E33DC01F0710B278735AABB91CEE039CC8DD5D6A7496D8F962EC9E171ECEFD`; Tesla isolated source SHA `13B679E2C6801ADBDB0FD3052332CEAC4393A147CF3DEA51FB6F07F176E54B4C`, not byte-identical because root carries other changes); `repo_tools.py` SHA-256 `5FF1EB03EFA1043C0B48E05CA0FC9C37A7976C862140BD6A8ECE698113D93CE7` (pre-edit SHA `360734CEB316A8A9FC698C19C1098D88FC591170DBBF5F3B67DB6608CD3A6A36`). New root tests: render-order `E5A149D696BB2B972E2511634FB6C1A432E0552459108378B94B4C0BE0365652`; no-unbounded-scan `2AB49A06902E78A7951DD39F67BFCFF48CB540AC0989E8C2B31C3BC6B1E41CB6`; whole-snippet `CFF825022929BE0F54D142D382ADD3A89D0D22D346C986543C5ED2F53DB1608A`.
 
+## 2026-10-07 stash and branch reconciliation
+
+This checkpoint supersedes the older stash counts and branch-name claims above. It records an audit of the 30 stash entries present at the start of this pass against root HEAD `ed0ad195457e53e728e90851aa269f31a220d38d`. Root worktree changes were preserved: `docs/WORKTREE_INTEGRATION_STATUS.md`, `src/local_ai_hub/agent_memory.py`, `src/local_ai_hub/async_jobs.py`, `src/local_ai_hub/client.py`, `src/local_ai_hub/http_server.py`, `tests/test_agent_state_transport.py`, and untracked `agent_state.sqlite`. No source hunk from a stash was applied. No tests or release checks were run.
+
+All 30 audited stashes had a base, index, and untracked parent; index deltas were empty. Their untracked payloads remain reachable from the stash commits. Three stashes were verified as superseded/redundant and moved from the active stash list to immutable-by-convention archive refs. Each ref points to the original full stash commit, preserving its parent trees and payload:
+
+| Archived stash | Archive ref | Disposition |
+|---|---|---|
+| `97d2d9fed7cf42cfd28fbfae7e770bcceb575a43` | `refs/archive/stashes/2026-10-07/97d2d9fed7cf42cfd28fbfae7e770bcceb575a43` | Deterministic trace guards and bounded vision findings already present in master with regression tests. |
+| `ab172d846888d2984959a06ac7272f5907abb533` | `refs/archive/stashes/2026-10-07/ab172d846888d2984959a06ac7272f5907abb533` | No tracked delta; untracked work-fencing migration was superseded by the current implementation. |
+| `a9d199006a82f2448f348cc5ec5717257e58ee91` | `refs/archive/stashes/2026-10-07/a9d199006a82f2448f348cc5ec5717257e58ee91` | Surface inventory/API coverage extraction already superseded by master. |
+
+Current inventory: **27 active stashes, 18 archive refs** under `refs/archive/stashes/2026-10-07/`. The other 27 remain active because their unique value or ownership was not disproved; they were neither dropped nor force-applied. Audit dispositions:
+
+| Stash SHA | Owner/scope | Current disposition and blocker |
+|---|---|---|
+| `f05d3603072c63ff38857649db95e299cb341b76` | T17 vision/browser | Master contains the vision decomposition and most untracked files match, but tracked browser/service changes overlap other T17 snapshots; retained for owner review. |
+| `382a17cbec4f557584264bd7199dbe3f91349f47` | T21 project config/path hints | Broad changes include `client.py` and `http_server.py`, both dirty in root; exact owner checkout unavailable in this pass. |
+| `77a09517d3fb3d8cd81e94550c6b2a081d11c487` | Historical master-plan reconstruction | One plan artifact differs from the current copy; source value not established, so retained. |
+| `c6918ee7e8eaf032cb9acd22924fbb2b3cffe758` | T19 release/install/docs | Broad 51-path snapshot; 37 paths differ from its saved tree at master and server/client paths overlap root dirt. |
+| `e4fdc272b9fbcbc7ac3d58f1b9b4ded55de830c6` | T18 dashboard/telemetry | Overlaps dirty `http_server.py`; exact owner review pending. |
+| `12beabe20f72bae37ca4c82b7c2443b5d5c80a6f` | T18 dashboard/API | Overlaps the other T18 stash and dirty `http_server.py`; exact owner review pending. |
+| `001d5c3227fde5136cb3453c4bb36ec8622b03fa` | T17 vision/transcription | Overlaps other T17 snapshots; no isolated owner packet. |
+| `ef2709e29cf3f1f5e7d3ee964d9bf4862cd080fc` | T17 vision/browser | Overlaps other T17 snapshots and dirty `http_server.py`; index parent contains 17 paths. |
+| `c0a198821d1b4cac811303740c0511b093f22149` | T16 orchestration/project identity | Adds a `coordination_id` variant; overlaps dirty HTTP server and another candidate. |
+| `2d7a7a3e68117419f1d4d25603fb173ac663c127` | T08 Agent OS | Missing assigned Git checkout; TTL, terminal-task filtering, repeated completion validation, generation blockers, and handoff/cancel receipts remain unverified. |
+| `ac0b245438a975ab465266bbed892674100f4dd6` | T14 context/retrieval | Includes context-budget changes; assigned T14 checkout unavailable. `/api/context/pack` was not edited. |
+| `f6037b1b8f5bbbb23fb4b69bba7552612a6135f6` | T13 operational/GPU behavior | Broad snapshot overlaps dirty async, client, and HTTP files; no owned packet. |
+| `75a8ff394d29fb0ad76cd6e73ab2111956b9658d` | T13 lifecycle/context | Broad lifecycle snapshot; source ownership and exact acceptance not established. |
+| `2a1b3f1f8e53deb4db949d5808bdda10d8c05c58` | T10 retrieval/performance | Retrieval hunk is older than master: it removes configurable source weights that master supports. Remaining broad snapshot not proven useful. |
+| `16269603f281615ba125f5c80cc38c04a7acca98` | Agent state/process | `sqlite_support.py` matches master; remaining paths were not fully compared and overlap agent-state work. |
+| `b5ba0c89d548447b9293d4d5085d01919e0f92a0` | Agent events/project identity | Another `coordination_id` variant; overlaps the T16 candidate and remains unverified. |
+| `6c6c6c9d524855d57c0d71f8b40cbf1c3e5a1ae8` | Agent state/memory | Large cross-domain snapshot overlaps dirty `agent_memory.py`, `async_jobs.py`, `http_server.py`, and tests. |
+| `4a1c242bffdbb969cec19f364775a206be8312c6` | Command broker/client | Broad source/test snapshot overlaps dirty client and HTTP files; no safe isolated hunk identified. |
+| `4948724725da96c9141da6d7ae83d9fbf1d9536c` | T05 shared memory/identity | Assigned T05 checkout missing; overlaps dirty agent memory, HTTP, and transport test; no owner attribution or hunk-level receipt. |
+| `1977b2a9d7b40a8e2502ea4555d4bbdc75708d6f` | T04 client transport | Assigned T04 checkout missing; overlaps dirty client. |
+| `26ece570afb5af2f853b91aeb6d8136618c32312` | T04 transport/API | Assigned T04 checkout missing; overlaps dirty client and HTTP server. |
+| `c9c8720a8e885c06618b6b345e6f63ee8b74206a` | Transport/async contracts | Overlaps dirty async jobs, client, HTTP server, and transport tests. |
+| `8e236830ca52f231e47d9c3b963a8b9c0bb38c4b` | T02 quality/performance | Artifact-only matrix-runner material; uniqueness/acceptance not established. |
+| `0e3b712ed0a9df1182bf862166faeec54c39218b` | T14 context-pack benchmark | Contains a live benchmark test/tool; exact T14 checkout missing, so owner must adjudicate before application. |
+| `032f0414b19103998196acb030106ec77e734f12` | T02 benchmark/surface | Broad benchmark changes overlap dirty async jobs; benchmark receipt not established. |
+| `9148573ab1e7c51b1f18c7d988b61d92cf7c66cb` | T03 handoff/acceptance | Seven handoff artifacts, base diverges from master; retained as evidence, not applied as source. |
+| `4e48862b9a0e2664e4ed1f83911b9d9feaa24e10` | Model routing/runtime | Broad 31-path snapshot; master already has interruptible socket handling, remaining value unverified. |
+
+The five existing task chats were resumed for owner adjudication. T04, T05, T08, and T14 each reported their exact assigned checkout unavailable/not a Git repo; no substitute was used and their stashes remain untouched. T18 is still active in its existing chat reviewing its two snapshots. None of those owners supplied a source patch or test receipt during this checkpoint. These are blockers, not `done` tasks.
+
+The seven non-merge branches retain their commits and now use the required `archived/` prefix: `archived/codex/sync-55ed-20261006`, `archived/codex/sync-hub-audit-repairs-20261006`, `archived/codex/sync-t03-master-20261006`, `archived/codex/sync-t11-recovery-v2-20261006`, `archived/codex/sync-t13-lifecycle-8429-20261006`, `archived/codex/sync-t17-multimodal-resume-20261006`, and `archived/codex/sync-t21-project-config-20261006`. Branches were renamed only; their worktrees were not deleted.
+
+No stash change was applied because no source hunk passed both ownership and current-root conflict review. No test receipt was produced by this stash pass; the release remains open and the active stashes remain available for subsequent exact-owner reconciliation.
+
