@@ -19,7 +19,7 @@ def live_api(tmp_path, monkeypatch):
         f'state_dir = "{state_dir.as_posix()}"\n'
         f'\n[security]\napi_token = "test-api-token"\n'
         f'api_token_tenant = "test-principal"\n'
-        f'tenant_derivation_key = "test-derivation-key"\n'
+        f'tenant_derivation_key = "test-derivation-key-material-32-bytes-min"\n'
         f'allowed_roots = ["{tmp_path.as_posix()}"]\n',
         encoding="utf-8",
     )
