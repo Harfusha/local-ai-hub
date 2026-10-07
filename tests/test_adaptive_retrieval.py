@@ -424,6 +424,12 @@ def test_rag_exception_degrades_and_keeps_evidence_traceable(tmp_path: Path) -> 
                 "scanned_files": 1,
             }
 
+        @staticmethod
+        def context_pack_paths(
+            root: str, query: str, _paths: list[str], *, max_tokens: int, top_k: int,
+        ) -> dict:
+            return FakeRepoTools.context_pack(root, query, max_tokens=max_tokens, top_k=top_k)
+
     class FakeRag:
         @staticmethod
         def workspace_id(_root: str) -> str:

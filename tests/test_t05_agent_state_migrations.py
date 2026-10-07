@@ -299,7 +299,7 @@ def test_migration_ddl_failure_rolls_back_after_backup_and_retry_succeeds(tmp_pa
         def execute(self, sql, parameters=()):
             nonlocal partial_ddl_seen, failure_injected
             statement = " ".join(str(sql).split()).casefold()
-            if statement.startswith("create table if not exists agent_event_schema_versions"):
+            if "create table if not exists agent_event_schema_versions" in statement:
                 result = super().execute(sql, parameters)
                 partial_ddl_seen = True
                 return result

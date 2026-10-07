@@ -66,21 +66,64 @@ def make_trusted_repository(parent: Path) -> tuple[Path, str]:
     return root, revision
 
 
+def record_test_receipt(
+    store: TaskStore,
+    task: TaskState,
+    *,
+    repository_revision: str = "rev-1",
+    mutation_generation: int = 0,
+    artifact_store: ArtifactStore | None = None,
+) -> ArtifactStore:
+    artifacts = artifact_store or ArtifactStore(store.state_store.db_path.parent / "artifacts")
+    command_id = f"cmd-{task.task_id}"
+    proof = {
+        "kind": "work_command_verification",
+        "passed": True,
+        "task_id": task.task_id,
+        "owner": task.owner,
+        "criterion": "tests",
+        "command_id": command_id,
+        "exit_code": 0,
+        "repository_revision": repository_revision,
+        "mutation_generation": mutation_generation,
+        "result": {"success": True, "exit_code": 0},
+    }
+    evidence_id = artifacts.put_json(proof, task.owner, "command_verification")
+    VerificationStore(
+        store.state_store, task_store=store, artifact_store=artifacts
+    ).record(
+        VerificationReceipt.create(
+            task.task_id,
+            "tests",
+            evidence_id=evidence_id,
+            command_id=command_id,
+            owner=task.owner,
+            repository_revision=repository_revision,
+            mutation_generation=mutation_generation,
+            evidence_type="test",
+        )
+    )
+    return artifacts
+
+
 def prepare_project_rule_completion(
     store: TaskStore,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     *,
     with_revision: bool = True,
+    with_receipt: bool = True,
 ) -> TaskState:
     repo_root, revision = make_trusted_repository(tmp_path)
-    task = store.create(contract_with_criteria("tests"), task_context())
+    task = store.create(
+        contract_with_criteria("tests"),
+        ScopeContext(repository_id=str(repo_root), branch="main", task_id="task-1"),
+        repo_root=str(repo_root),
+        repository_revision=revision if with_revision else "",
+    )
     store.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="agent", idempotency_key="a")
     store.transition(task.task_id, TaskStatus.VERIFYING, reason="ready", actor="agent", idempotency_key="v")
-    state_data = {
-        "worktree": {"repo_root": str(repo_root)},
-        "repo_root": str(repo_root),
-    }
+    state_data = {"mutation_generation": 0}
     if with_revision:
         state_data["repository_revision"] = revision
     store.checkpoint(
@@ -89,11 +132,16 @@ def prepare_project_rule_completion(
         actor="agent",
         idempotency_key="project-root",
     )
-    VerificationStore(store.state_store, task_store=store).record(
-        VerificationReceipt.create(task.task_id, "tests", evidence_id="ev-tests")
-    )
+    if with_receipt:
+        record_test_receipt(
+            store,
+            task,
+            repository_revision=revision if with_revision else "rev-1",
+        )
     project_config = ModuleType("local_ai_hub.project_config")
+    project_config.ProjectSettings = SimpleNamespace
     project_config.resolve_project_context = lambda root, state_dir: SimpleNamespace(
+        config_digest="",
         settings=SimpleNamespace(
             verification_rules={"tests": ("test",)}, commands={"test": "pytest"}
         )
@@ -327,23 +375,18 @@ def test_completed_succeeds_when_verified(
     store: TaskStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     repo_root, revision = make_trusted_repository(tmp_path)
-    task = store.create(contract_with_criteria("tests"), task_context())
+    task = store.create(
+        contract_with_criteria("tests"),
+        ScopeContext(repository_id=str(repo_root), branch="main", task_id="task-1"),
+        repo_root=str(repo_root),
+        repository_revision=revision,
+    )
     store.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="agent", idempotency_key="a")
     store.transition(task.task_id, TaskStatus.VERIFYING, reason="ready", actor="agent", idempotency_key="v")
-    store.checkpoint(
-        task.task_id,
-        TaskCheckpoint(state_data={
-            "worktree": {"repo_root": str(repo_root)},
-            "repo_root": str(repo_root),
-            "repository_revision": revision,
-        }),
-        actor="agent",
-        idempotency_key="project-root",
-    )
     # Completion requires durable verification evidence, not projection-only receipt IDs.
     store.checkpoint(
         task.task_id,
-        TaskCheckpoint(state_data={"repository_revision": "rev-1", "mutation_generation": 0}),
+        TaskCheckpoint(state_data={"repository_revision": revision, "mutation_generation": 0}),
         actor="agent",
         idempotency_key="verify-revision",
     )
@@ -357,7 +400,7 @@ def test_completed_succeeds_when_verified(
         "criterion": "tests",
         "command_id": command_id,
         "exit_code": 0,
-        "repository_revision": "rev-1",
+        "repository_revision": revision,
         "mutation_generation": 0,
         "result": {"success": True, "exit_code": 0},
     }
@@ -367,13 +410,15 @@ def test_completed_succeeds_when_verified(
     ).record(
         VerificationReceipt.create(
             task.task_id, "tests", evidence_id=evidence_id, command_id=command_id,
-            owner=task.owner, repository_revision="rev-1", mutation_generation=0,
+            owner=task.owner, repository_revision=revision, mutation_generation=0,
             evidence_type="test",
         )
     )
 
     project_config = ModuleType("local_ai_hub.project_config")
+    project_config.ProjectSettings = SimpleNamespace
     project_config.resolve_project_context = lambda root, state_dir: SimpleNamespace(
+        config_digest="",
         settings=SimpleNamespace(verification_rules={}, commands={})
     )
     monkeypatch.setitem(sys.modules, "local_ai_hub.project_config", project_config)
@@ -390,13 +435,88 @@ def test_completed_succeeds_when_verified(
         ):
             assert verification_rules == {}
             assert configured_criteria == ()
-            return VerificationStore(store.state_store, task_store=store).completion(
+            return VerificationStore(
+                store.state_store, task_store=store, artifact_store=artifact_store
+            ).completion(
                 task_id, current_revision=current_revision
             )
 
     store.set_verification_store(CurrentVerifierAdapter())
     completed = store.transition(task.task_id, TaskStatus.COMPLETED, reason="all passed", actor="agent", idempotency_key="c")
     assert completed.status == TaskStatus.COMPLETED
+
+
+def test_repeated_complete_revalidates_completed_task_with_trusted_project_evaluator(
+    store: TaskStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    repo_root, revision = make_trusted_repository(tmp_path)
+    task = store.create(
+        contract_with_criteria("tests"),
+        ScopeContext(repository_id=str(repo_root), branch="main", task_id="revalidate-complete"),
+        repo_root=str(repo_root),
+        repository_revision=revision,
+    )
+    store.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="agent", idempotency_key="a")
+    store.transition(task.task_id, TaskStatus.VERIFYING, reason="ready", actor="agent", idempotency_key="v")
+    store.checkpoint(
+        task.task_id,
+        TaskCheckpoint(state_data={"repository_revision": revision, "mutation_generation": 0}),
+        actor="agent",
+        idempotency_key="verify-revision",
+    )
+    VerificationStore(store.state_store, task_store=store).record(
+        VerificationReceipt.create(
+            task.task_id, "tests", evidence_id="ev-tests", evidence_type="source_review"
+        )
+    )
+    project_config = ModuleType("local_ai_hub.project_config")
+    project_config.ProjectSettings = SimpleNamespace
+    project_config.resolve_project_context = lambda root, state_dir: SimpleNamespace(
+        config_digest="trusted-project-config",
+        settings=SimpleNamespace(verification_rules={"tests": ("test",)}, commands={"test": "pytest"})
+    )
+    monkeypatch.setitem(sys.modules, "local_ai_hub.project_config", project_config)
+
+    class ChangingVerifier:
+        calls = 0
+
+        def completion(
+            self,
+            task_id,
+            *,
+            current_revision,
+            current_mutation_generation,
+            verification_rules,
+            configured_criteria,
+            configured_commands,
+            project_config_digest,
+            configured_environment_sha256,
+            project_root,
+        ):
+            self.calls += 1
+            assert task_id == task.task_id
+            assert current_revision
+            assert verification_rules == {"tests": ("test",)}
+            assert configured_criteria == ("test",)
+            assert configured_commands == {"test": "pytest"}
+            assert project_root == repo_root
+            if self.calls == 1:
+                return SimpleNamespace(complete=True, unsatisfied_criteria=(), stale_criteria=())
+            return SimpleNamespace(complete=False, unsatisfied_criteria=("tests",), stale_criteria=())
+
+    verifier = ChangingVerifier()
+    store.set_verification_store(verifier)
+    completed = store.complete(task.task_id, actor="release-agent", idempotency_key="complete")
+    assert completed.status is TaskStatus.COMPLETED
+    events_before_retry = store.state_store.events(f"task:{task.task_id}")
+
+    with pytest.raises(CompletionGateError, match="tests"):
+        store.complete(task.task_id, actor="release-agent", idempotency_key="complete")
+
+    current = store.get(task.task_id)
+    assert current is not None and current.status is TaskStatus.COMPLETED
+    assert verifier.calls == 2
+    assert store.state_store.events(f"task:{task.task_id}") == events_before_retry
 
 
 def test_historical_transition_idempotency_reuse_by_different_actor_is_rejected(store: TaskStore):
@@ -508,7 +628,9 @@ def test_completed_forwards_project_rules_to_verification_completion(
         idempotency_key="project-root",
     )
     VerificationStore(store.state_store, task_store=store).record(
-        VerificationReceipt.create(task.task_id, "tests", evidence_id="ev-tests")
+            VerificationReceipt.create(
+                task.task_id, "tests", evidence_id="ev-tests", command_id="cmd-tests"
+            )
     )
 
     resolved = {}
@@ -516,6 +638,7 @@ def test_completed_forwards_project_rules_to_verification_completion(
     def resolve_project_context(root, state_dir):
         resolved.update(root=root, state_dir=state_dir)
         return SimpleNamespace(
+            config_digest="test-config-digest",
             settings=SimpleNamespace(
                 verification_rules={"tests": ("test",)},
                 commands={"test": "pytest"},
@@ -523,6 +646,7 @@ def test_completed_forwards_project_rules_to_verification_completion(
         )
 
     project_config = ModuleType("local_ai_hub.project_config")
+    project_config.ProjectSettings = SimpleNamespace
     project_config.resolve_project_context = resolve_project_context
     monkeypatch.setitem(sys.modules, "local_ai_hub.project_config", project_config)
 
@@ -538,6 +662,10 @@ def test_completed_forwards_project_rules_to_verification_completion(
             current_mutation_generation,
             verification_rules,
             configured_criteria,
+            configured_commands,
+            project_config_digest,
+            configured_environment_sha256,
+            project_root,
         ):
             self.calls.append((
                 task_id,
@@ -545,6 +673,10 @@ def test_completed_forwards_project_rules_to_verification_completion(
                 current_mutation_generation,
                 verification_rules,
                 configured_criteria,
+                configured_commands,
+                project_config_digest,
+                configured_environment_sha256,
+                project_root,
             ))
             return SimpleNamespace(complete=True, unsatisfied_criteria=(), stale_criteria=())
 
@@ -554,14 +686,18 @@ def test_completed_forwards_project_rules_to_verification_completion(
     completed = store.transition(
         task.task_id, TaskStatus.COMPLETED, reason="verified", actor="agent", idempotency_key="c"
     )
-
     assert completed.status is TaskStatus.COMPLETED
     assert Path(resolved["root"]) == repo_root
     assert Path(resolved["state_dir"]) == store.state_store.db_path.parent
-    assert verifier.calls == [(task.task_id, revision, 4, {"tests": ("test",)}, ("test",))]
+    call = verifier.calls[0]
+    assert call[:5] == (task.task_id, revision, 4, {"tests": ("test",)}, ("test",))
+    assert call[5] == {"test": "pytest"}
+    assert call[6] == "test-config-digest"
+    assert len(call[7]["test"]) == 64
+    assert Path(call[8]) == repo_root
 
 
-def test_completed_skips_nonapplicable_project_rules_without_repository_revision(
+def test_nonapplicable_project_rule_does_not_bypass_missing_repository_revision(
     store: TaskStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     repo_root, _revision = make_trusted_repository(tmp_path)
@@ -575,11 +711,17 @@ def test_completed_skips_nonapplicable_project_rules_without_repository_revision
         actor="agent",
         idempotency_key="project-rules-without-revision",
     )
-    verifications = VerificationStore(store.state_store, task_store=store)
-    verifications.record(VerificationReceipt.create(task.task_id, "tests", evidence_id="ev-tests"))
+    artifacts = record_test_receipt(
+        store, task, repository_revision="rev-1", mutation_generation=4
+    )
+    verifications = VerificationStore(
+        store.state_store, task_store=store, artifact_store=artifacts
+    )
 
     project_config = ModuleType("local_ai_hub.project_config")
+    project_config.ProjectSettings = SimpleNamespace
     project_config.resolve_project_context = lambda root, state_dir: SimpleNamespace(
+        config_digest="",
         settings=SimpleNamespace(
             verification_rules={"lint": ("lint",)}, commands={"lint": "ruff"}
         )
@@ -607,11 +749,12 @@ def test_completed_skips_nonapplicable_project_rules_without_repository_revision
             return verifications.completion(task_id, current_revision=current_revision)
 
     store.set_verification_store(NonapplicableRuleVerifier())
-    completed = store.transition(
-        task.task_id, TaskStatus.COMPLETED, reason="verified", actor="agent", idempotency_key="c"
-    )
-
-    assert completed.status is TaskStatus.COMPLETED
+    with pytest.raises(CompletionGateError, match="criterion 'tests' receipt"):
+        store.transition(
+            task.task_id, TaskStatus.COMPLETED, reason="verified", actor="agent", idempotency_key="c"
+        )
+    current = store.get(task.task_id)
+    assert current is not None and current.status is TaskStatus.VERIFYING
     assert calls == [("", 4, {"lint": ("lint",)}, ("lint",))]
 
 
@@ -688,6 +831,10 @@ def test_completed_rejects_non_boolean_verifier_result(
             current_mutation_generation,
             verification_rules,
             configured_criteria,
+            configured_commands,
+            project_config_digest,
+            configured_environment_sha256,
+            project_root,
         ):
             return {"complete": complete}
 
@@ -718,13 +865,21 @@ def test_completion_verifier_failure_does_not_complete_task_or_add_receipt(
             current_mutation_generation,
             verification_rules,
             configured_criteria,
+            configured_commands,
+            project_config_digest,
+            configured_environment_sha256,
+            project_root,
         ):
             if failure_mode == "raises":
                 raise RuntimeError("verification command failed")
             return {"complete": False, "unsatisfied_criteria": ("tests",)}
 
     store.set_verification_store(FailingVerifier())
-    expected_message = "evaluator failed" if failure_mode == "raises" else "rejected completion"
+    expected_message = (
+        "verification completion evaluation failed"
+        if failure_mode == "raises"
+        else "criterion 'tests' receipt"
+    )
 
     with pytest.raises(CompletionGateError, match=expected_message):
         store.transition(
@@ -744,24 +899,28 @@ def test_completed_fails_closed_when_project_config_cannot_resolve(
     store: TaskStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     repo_root, revision = make_trusted_repository(tmp_path)
-    task = store.create(contract_with_criteria("tests"), task_context())
+    task = store.create(
+        contract_with_criteria("tests"),
+        ScopeContext(repository_id=str(repo_root), branch="main", task_id="task-1"),
+        repo_root=str(repo_root),
+        repository_revision=revision,
+    )
     store.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="agent", idempotency_key="a")
     store.transition(task.task_id, TaskStatus.VERIFYING, reason="ready", actor="agent", idempotency_key="v")
     store.checkpoint(
         task.task_id,
-        TaskCheckpoint(state_data={
-            "worktree": {"repo_root": str(repo_root)},
-            "repo_root": str(repo_root),
-            "repository_revision": revision,
-        }),
+        TaskCheckpoint(state_data={"mutation_generation": 0}),
         actor="agent",
-        idempotency_key="project-root",
+        idempotency_key="verify-revision",
     )
     VerificationStore(store.state_store, task_store=store).record(
-        VerificationReceipt.create(task.task_id, "tests", evidence_id="ev-tests")
+        VerificationReceipt.create(
+            task.task_id, "tests", evidence_id="ev-tests", command_id="cmd-tests"
+        )
     )
 
     project_config = ModuleType("local_ai_hub.project_config")
+    project_config.ProjectSettings = SimpleNamespace
 
     def fail_resolution(root, state_dir):
         raise RuntimeError("project config missing")
@@ -776,12 +935,12 @@ def test_completed_fails_closed_when_project_config_cannot_resolve(
 
 
 def test_completed_uses_receipts_when_no_project_root_is_available(store: TaskStore):
-    task = store.create(contract_with_criteria("tests"), task_context())
+    task = store.create(
+        contract_with_criteria("tests"), ScopeContext(task_id="no-project-root")
+    )
     store.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="agent", idempotency_key="a")
     store.transition(task.task_id, TaskStatus.VERIFYING, reason="ready", actor="agent", idempotency_key="v")
-    VerificationStore(store.state_store, task_store=store).record(
-        VerificationReceipt.create(task.task_id, "tests", evidence_id="ev-tests")
-    )
+    record_test_receipt(store, task)
 
     completed = store.transition(
         task.task_id, TaskStatus.COMPLETED, reason="verified", actor="agent", idempotency_key="c"

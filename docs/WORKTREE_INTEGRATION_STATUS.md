@@ -982,3 +982,131 @@ removal attempt was rejected by the command safety layer before execution;
 read-only checks confirm all three directories remain. No alternative delete
 path used. Release gate stays blocked pending approved cleanup or a verified
 packaging-only exclusion.
+
+2026-10-06: commit `93bcfd8` updates defaults parity to compare parsed TOML
+values, ignoring line-ending-only drift while retaining real value-drift
+failure. Regression test passed: `python -B -m pytest -q -p
+no:cacheprovider --tb=short tests/test_release_check_defaults_parity.py`
+(1 passed). The release gate remains blocked on generated `.pyc`/`.pyo`
+caches. Cleanup was rejected before execution; no files removed. Other root
+dirty paths, all worktree changes, and 45 stashes remain unmodified pending
+ownership/content reconciliation.
+
+## New owner packet — T03 wire-schema tests (2026-10-06)
+
+- Owner branch packet: `24549f7236f3781da5a814d0b460d47612a6fbea`, parent
+  `90e6f2957489b272f03cd0f3550149907f24bbf7`; changed only
+  `tests/test_mcp_contract_dispatch.py` and `tests/test_mcp_live_wire_schema.py`.
+- T03 merged current master `93bcfd8a` into its clean task branch at
+  `22948c83942b66683788e73c5ad3393f105ef458`; no conflicts. Branch delta from
+  master remained those two test files. Patch SHA-256:
+  `779c071c93595ad660f62f0bdd2a59e9b0cdbfb044c66ac225558cb17e0d1866`.
+- Integrated to master as `3f2d2d7e` (`test(mcp): account for action aliases
+  in wire schemas`). Master verification:
+  `python -B -m pytest -q -p no:cacheprovider --tb=short
+  tests/test_mcp_contract_dispatch.py tests/test_mcp_live_wire_schema.py -k
+  "not cold_starts_isolated_hub_and_cleans_up"` → **21 passed, 1 deselected**.
+- Full two-file run returned failure but broker output was truncated; exact
+  failure not captured. T03's isolated cold-start test previously failed with
+  `outcome_unknown`; it was not rerun. Cause unresolved. T03 remains `review`,
+  not `done`; retain cold-start acceptance blocker.
+
+### Current release-gate refresh
+
+After `93bcfd8a` and `3f2d2d7e`,
+`python -B tools/release_check.py --allow-installed --json` returns
+`success=false`. Current `workspace-hygiene` violations are exactly
+`cache.sqlite3`, `evidence.sqlite3`, and `rag.sqlite3` (runtime/build payload).
+No `.pyc`/`.pyo` violation appears in this invocation. Databases are preserved;
+no reset, removal, or packaging exclusion performed. Release remains blocked
+until committed source passes the release gate while local DB state stays safe.
+## 2026-10-06 continuation — T19 packet and task-worktree ownership
+
+- Master now includes T19-owned commit `363d585f` (cherry-picked owner commit
+  `f268309924c8c37c6286da2d655cd93c3fa6f109`, parent `93bcfd8ab6011bd860fa5fdc85475a4496cc33be`).
+  Changed paths: `docs/PYTHON_SDK.md`, `tests/test_t19_codegraph_removal.py`,
+  `tests/test_t19_doctor_optional_status.py`, `tests/test_t19_sdk_docs.py`.
+  Owner reported 19 focused tests passing; root rerun of those three test files
+  passed: `16 passed in 1.03s`. Wider T19 acceptance remains open: owner reported
+  `71 passed, 7 failed, 2 skipped`; shared schema/prompt/preflight/cancel-job
+  contracts and `/api/context/pack` ownership remain unresolved.
+- Current root: `master` at `363d585f`, 487 commits ahead of `origin/master`.
+  Root dirty paths remain `docs/WORKTREE_INTEGRATION_STATUS.md`,
+  `src/local_ai_hub/agent_memory.py`, `src/local_ai_hub/async_jobs.py`,
+  `src/local_ai_hub/http_server.py`, `tests/test_agent_state_transport.py`,
+  and untracked `agent_state.sqlite`; preserved.
+- Fresh Git census before T19 integration: 60 worktrees, 12 dirty, 5 local
+  branch refs with commits not reachable from master, 45 stashes. Post-integration
+  root recount: 60 worktrees, 11 dirty, 6 refs with commits not reachable from
+  master, 45 stashes. The added sixth ref is T19's original `f2683099` commit;
+  its patch is already cherry-picked to master as `363d585f`, so this is SHA
+  ancestry divergence, not an unapplied T19 change. Counts overlap; no automatic
+  integration implied.
+- Task-agent worktree recovery attempts found parent-side candidate attachments
+  but task-owner `attach_worktree` checks rejected them as owned by other tasks.
+  Static branch diffs also disproved name-only ownership: candidate `t13` held
+  T08 verification changes, `t17` held stash archive payload, `t18` held T05
+  migration-test changes, and `t16` had no unique commits and was 77 behind.
+  No candidate was edited or tested; respective agents were told to stop.
+- T12 owner commit `a08d6f1d98fdc94a22521b6b1b1b92dee3690d97` (parent
+  `3f2d2d7e`) changes only `src/local_ai_hub/scheduler.py`; it is not yet
+  integrated. Owner reports prior focused scheduler/VRAM/tiered-runtime suite
+  `73/73`; latest three deadline regressions pass `3/3`. Branch still has an
+  owner-edited `tests/test_local_model_availability.py` plus foreign untracked
+  `.handoff/scratch-root-a411/`; scratch is preserved. Latest T12 suite passes
+  `73/73`; separate routing check has one config-bound failure,
+  `test_health_probe_timeout_rejects_absurd_values`, and owner is committing a
+  `test_health_probe_timeout_rejects_absurd_values`; owner is committing a
+  one-line test-fixture update. Await verified follow-up packet before
+  integration. T19 scoped commits are integrated, but T19 remains blocked on
+  root-scoped verification. T03 verified HTTP allowlist gates are correct and
+  made no changes; missing high-level SDK `verify_receipt`/
+  `verify_completion` root propagation belongs to T04 `client.py`. T04 confirmed
+  assigned path `393c` is not a Git checkout (no `.git`, `client.py`, or tests);
+  no substitute checkout accessed, no edits/tests. T19 fixture also must
+  configure `security.allowed_roots` once T04 packet is available.
+  T20 release acceptance is pending. Do not claim release readiness.
+- T19 follow-up commit `b274e250f5e972116c2adbb4356a87744fc2f949` was
+  cherry-picked to master as `3584c99a`. It changes five T19 test files only:
+  install contracts, project-config prompts, prompt-profile parity, SDK
+  scenarios, and shared-daemon rollout. Owner branch was clean; commit parent
+  was `f268309924c8c37c6286da2d655cd93c3fa6f109`; `git diff --check` passed.
+  Master rerun of those five files: `14 passed, 1 failed`; failure is
+  `test_seven_sdk_workflows_have_measured_production_route_outcomes`, receiving
+  `root_not_allowed`. T19's synced-branch investigation confirmed the fixture
+  omits `security.allowed_roots` and root on `task_create`, but the later
+  `verify_receipt`/`verify_completion` calls cannot carry root at all; HTTP gates
+  these routes on allowed root. T19 made no source change; this is handed to T03
+  for a secure SDK/HTTP contract fix, preserving rejection of unapproved roots.
+- T12 status correction (supersedes earlier unintegrated-packet snapshot):
+  commits `a08d6f1d98fdc94a22521b6b1b1b92dee3690d97` and
+  `282a5624f3e5980e588045787507a72691813080` are on master as `1402bc93` and
+  `135677af`. Root scheduler/VRAM/tiered-runtime gate: `73 passed in 5.86s`.
+  Separate routing/config run: `82 passed, 1 failed`,
+  `test_health_probe_timeout_rejects_absurd_values` (outside scheduler scope).
+  T12 still NO-GO: T02 baseline and live profile/performance evidence missing.
+  `.handoff/scratch-root-a411/` remains preserved in task worktree.
+
+## 2026-10-06: root dirty and stash ownership audit
+
+Read-only inventory at master `9de8a2ad44cafd333f56154771afe7f6f65401c7`:
+
+- Root has five tracked dirty paths: this status ledger; `src/local_ai_hub/agent_memory.py`; `src/local_ai_hub/async_jobs.py`; `src/local_ai_hub/http_server.py`; `tests/test_agent_state_transport.py`.
+- Root also has untracked `agent_state.sqlite` (40,960 bytes); runtime database, not a source commit.
+- Git inventory: 60 registered worktrees, 11 dirty including root, 59 HEADs differ from root, 150 local branches, 45 unique stash objects. Dirty worktrees contain 1,354 untracked paths total, including root's database. Counts are inventory, not merge count.
+- Current root dirty diff totals 196 additions / 60 deletions. No root change was staged, committed, stashed, or discarded.
+
+Root hunk ownership and evidence:
+
+- `docs/WORKTREE_INTEGRATION_STATUS.md`: base blob `5abfdaccaa6f97d47cda8ad20f5526aa882d47b1`, working blob `5125ab817d189e7c7a2a0054350b9c2a026397f5`, diff SHA-256 `5789ecaa057fc3537e9d615e2d2e0d87f0da56adcb51028fe173a6ee531b767e`, append-only 104-line hunk at +985. T20 disclaims authorship. Coordinator ownership not independently established; recorded receipts are historical, not rerun here.
+- `src/local_ai_hub/http_server.py`: base blob `1dfc9aebcc32e7393c169629ef1b7ea9feb73aba`, working blob `e351ebf8886d80e8c6679fac68f8895c9fac311d`, diff SHA-256 `648DFD57FA150468B5A698C75A10B981946DB13BF925469ABF90A370B150AD6D`, root patch ID `8858a1abfa3687a426c1cf4c59b10e331b0f0f68`, 15 hunks (+74/-52). T04 stash file blob `65d920368cb7c12ba41a02414255bd7083b61673`, stash patch ID `0db529c798ba9023b16039874650b5b2bae6de44`; neither matches root working blob/patch. T04 branch `codex/sync-t04-integration-20261006` HEAD `90e6f2957489b272f03cd0f3550149907f24bbf7` has file blob `88fcfbd0586485dc64016338ae5ae147d5c45b9a`; T14 branch at the same HEAD has the same blob. Hunk-level `-U0` stable-patch-id comparison: 15 root hunks vs 9 T04 stash hunks, zero exact whole-hunk matches. This does not rule out partial overlap or establish authorship. T04 found no T04 ownership receipt; T13 checkout unavailable; T14 could not inspect its hunk. T04 reports `/api/context/pack` untouched. `git diff --check` passed; tests not run. Do not transfer or commit without owner attribution.
+- `tests/test_agent_state_transport.py`: base blob `793c6916c7e7ab6b9fbb3fa1fae502c8db8f98e3`, working blob `768b1074bba2a09100249acfcaed52176f85ae88`, diff SHA-256 `CFD16DC13532418EE660AC39691AB2386681EE33B482E9AC634F5DD2303E23E1`; changes test `test_http_memory_get_is_scope_and_root_isolated`. Registered parent candidate `t05-identity-recovery` has the base blob, not the dirty working blob; T05 owner does not recognize it as its own artifact. T05 has only a historical same-name test receipt without byte/hash match; T08's historical overlay did not change the file; T09 finds no ownership match. Exact owner and current receipt remain unverified.
+- `src/local_ai_hub/agent_memory.py`: one deleted guard line; root dirty blob `f2cec25c8b568e5eb548926925baed7f7bfdb5dd` differs from candidate `t05-identity-recovery` blob `e14fa4a4fa373d484213a1cba0f745992a7ea3f7`. Candidate is not recognized by T05 as its owned artifact. Hunk authorship and current test receipt remain unverified.
+- `src/local_ai_hub/async_jobs.py`: dirty root blob `303700da7b39507e3472246fa1e7f272871a291b` changes `field_count` to `len(request_hash_payload)`; master base blob `2fdd7a2fcdba9f130e3e19a1131bb49196d3dfb4`. Parent-managed `t13-lifecycle-8429` HEAD `6caa721db06c9c5e6399c9a1bdc9762c0718e03d` has the base blob; `t13-operational-mode` HEAD `90e6f2957489b272f03cd0f3550149907f24bbf7` has different blob `fafd18bfbcdb0cdf7e330a8b5ef1e2e273d947dd`. T13 disclaims ownership of both artifacts and does not confirm this hunk. Owner and current test receipt remain unverified.
+
+Stash disposition:
+
+- No stash applied, popped, dropped, or deleted. All 45 refs have distinct stash object IDs.
+- T04 stash `26ece570afb5af2f853b91aeb6d8136618c32312` has historical metadata of 10 tracked + 139 untracked paths and mixed T04/T03/T07/T08/T10/T13/T21 ownership; no current-master hunk proof. Whole-stash application unsafe.
+- Owner audits for T07 `3634e724f9c0`, T10 `2a1b3f1f8e53`, T13 `75a8ff394d29` / `824700cac31a`, T16 `c0a198821d1b`, T17 `f05d3603072c`, T18 `12beabe20f72`, and T21 `382a17cbec4f` were blocked by missing or foreign-owned checkouts. Contents and master-equivalence remain unverified.
+- Release/master acceptance stays open. Do not mark these paths or stashes integrated until an owner supplies an immutable packet with exact base/blob hashes and relevant test receipts.

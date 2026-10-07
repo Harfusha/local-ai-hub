@@ -244,10 +244,8 @@ class ContextLedger:
             "freshness": "unavailable",
         }
         if previous and previous["digest"] == digest:
-            # Until the scoped materialization action is exposed, always return
-            # inline context instead of a raw artifact reference.
             return {
-                "status": "materialized", "context": inline_context,
+                "status": "unchanged", "context": None,
                 **context_metadata, **pointer, "etag": digest,
             }
         added = [item for item in ids if not previous or item not in previous.get("evidence_ids", [])]

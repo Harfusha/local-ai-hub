@@ -120,7 +120,15 @@ def migrate_legacy_lease_database(state_dir: Path) -> Path:
                 con.execute("COMMIT")
                 return target
 
+            source_tables = {
+                str(row[0])
+                for row in con.execute(
+                    "SELECT name FROM lease_backup.sqlite_master WHERE type='table'"
+                )
+            }
             for table, columns in expected_columns.items():
+                if table not in source_tables:
+                    continue
                 source_columns = {
                     str(row[1]) for row in con.execute(f"PRAGMA lease_backup.table_info({table})")
                 }
@@ -141,6 +149,8 @@ def migrate_legacy_lease_database(state_dir: Path) -> Path:
                        PRIMARY KEY(tenant, blocked_by, requested_path))"""
             )
             for table, keys in (("leases", ("lease_id", "path")), ("lease_waits", ("tenant", "blocked_by", "requested_path"))):
+                if table not in source_tables:
+                    continue
                 all_columns = expected_columns[table]
                 join = " AND ".join(f"current.{key} = legacy.{key}" for key in keys)
                 conflict = " OR ".join(
@@ -242,7 +252,6 @@ class ScopeLeaseStore:
                         con,
                         self.path,
                         expected,
-                        complete_groups=(tuple(expected),),
                         required_unique={
                             "leases": (("lease_id", "path"),),
                             "lease_waits": (wait_key,),

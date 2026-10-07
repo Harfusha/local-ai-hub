@@ -275,7 +275,7 @@ def test_non_cacheable_read_command_coalesces_existing_singleflight(tmp_path, mo
     classification = broker.classify(command)
     assert classification["class"] == "read"
     assert classification["cacheable"] is False
-    key, _ = broker._key(command, str(tmp_path), classification)
+    key, _ = broker._key(command, str(tmp_path), classification, tenant="tenant", timeout=broker.timeout)
     completed = threading.Event()
     completed.set()
     broker._inflight[key] = completed

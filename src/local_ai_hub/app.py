@@ -734,6 +734,7 @@ class LocalAIApp:
 
             def read(key: str, callback, fallback):
                 diagnostic: dict[str, Any] = {}
+                dep_deadline = time.monotonic() + max(0.0, float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS))
                 value, healthy = _status_dependency(
                     callback,
                     fallback,
@@ -742,7 +743,7 @@ class LocalAIApp:
                     inflight=self._status_dependency_inflight,
                     slots=self._status_dependency_slots,
                     executor=self._status_dependency_executor,
-                    deadline=deadline,
+                    deadline=dep_deadline,
                     diagnostic=diagnostic,
                 )
                 dependency_status[key] = {

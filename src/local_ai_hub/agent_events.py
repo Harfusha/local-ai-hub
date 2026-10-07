@@ -26,6 +26,8 @@ from .sqlite_support import (
     retry_busy,
 )
 
+_MAX_EVENT_GAP_RANGES = 128
+
 @dataclass(frozen=True)
 class AgentEvent:
     event_id: str
@@ -1314,10 +1316,15 @@ class AgentStateStore:
 
                 by_stream: dict[str, list[tuple[int, int]]] = {}
                 lost_count = 0
+                newly_lost_count = 0
+                gap_ranges_truncated = False
                 for item in dropped:
                     ranges = item.payload.get("gap_ranges", []) if item.kind == "stream.gap" else []
                     if item.kind == "stream.gap":
                         lost_count += int(item.payload.get("lost_count", 0) or 0)
+                        gap_ranges_truncated = gap_ranges_truncated or bool(
+                            item.payload.get("gap_ranges_truncated", False)
+                        )
                     for gap in ranges:
                         if not isinstance(gap, Mapping):
                             continue
@@ -1328,6 +1335,7 @@ class AgentStateStore:
                     if item.kind != "stream.gap" and item.seq is not None:
                         by_stream.setdefault(item.stream_id, []).append((int(item.seq), int(item.seq)))
                         lost_count += 1
+                        newly_lost_count += 1
 
                 # A one-slot queue cannot carry both the gap marker and the newest event.
                 # In that case the marker includes the newest sequence as lost, so a
@@ -1336,6 +1344,7 @@ class AgentStateStore:
                     if event.seq is not None:
                         by_stream.setdefault(event.stream_id, []).append((int(event.seq), int(event.seq)))
                     lost_count += 1
+                    newly_lost_count += 1
 
                 gap_ranges: list[dict[str, int | str]] = []
                 for stream_id, intervals in by_stream.items():
@@ -1349,6 +1358,9 @@ class AgentStateStore:
                         {"stream_id": stream_id, "from_seq": start, "to_seq": end}
                         for start, end in merged
                     )
+                if len(gap_ranges) > _MAX_EVENT_GAP_RANGES:
+                    gap_ranges_truncated = True
+                    gap_ranges = gap_ranges[:_MAX_EVENT_GAP_RANGES]
 
                 marker = AgentEvent.create(
                     stream_id=event.stream_id,
@@ -1356,6 +1368,7 @@ class AgentStateStore:
                     payload={
                         "reason": "subscriber queue overflow",
                         "gap_ranges": gap_ranges,
+                        "gap_ranges_truncated": gap_ranges_truncated,
                         "lost_count": lost_count,
                         "replay_required": self.enabled,
                         "cursor": event.seq,
@@ -1368,9 +1381,9 @@ class AgentStateStore:
                         q.put_nowait(event)
                 except Exception:
                     dead_queues.append(q)
-                if lost_count:
+                if newly_lost_count:
                     with self._drop_count_lock:
-                        self._dropped_event_count += lost_count
+                        self._dropped_event_count += newly_lost_count
             except Exception:
                 dead_queues.append(q)
         if dead_queues:
@@ -1539,6 +1552,24 @@ class AgentStateStore:
 
 
     def events(self, stream_id: str, after_seq: int = 0, limit: int = 1000) -> list[AgentEvent]:
+        # Keep initialization/migration failures visible to the state-store caller.
+        # event_page deliberately converts read failures to a bounded API envelope;
+        # performing schema setup first preserves the original migration error and
+        # lets callers safely retry without mistaking it for an empty/unavailable page.
+        if self.enabled and self.db_path.exists():
+            try:
+                self._ensure_schema()
+            except DurableSchemaMismatchError as exc:
+                # Preserve the established opaque response for this legacy layout;
+                # other durable-schema failures retain their actionable diagnosis.
+                mismatch = " ".join(exc.mismatches)
+                if mismatch == (
+                    "unsupported agent_state schema object definition: table agent_events"
+                ):
+                    raise RuntimeError(
+                        "event_page_unavailable: Event page could not be read."
+                    ) from None
+                raise
         page = self.event_page(stream_id, after_seq=after_seq, limit=limit)
         if page["success"] is not True:
             error = page["error"]

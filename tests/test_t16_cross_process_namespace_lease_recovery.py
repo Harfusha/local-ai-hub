@@ -126,7 +126,7 @@ def test_two_process_linked_worktree_lease_expiry_reclaim_rejects_stale_commit(
     assert isolated["claim"]["success"] is True
 
     # Expire the persisted advisory lease deterministically; no wall-clock sleep.
-    con = sqlite3.connect(state_dir / "leases.sqlite3")
+    con = sqlite3.connect(state_dir / "agent_state.sqlite")
     try:
         updated = con.execute(
             "UPDATE leases SET expires_at=0 WHERE lease_id=? AND tenant='owner-a'",

@@ -27,6 +27,7 @@ _WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_./:-]{1,80}")
 _MAX_DIRECTORY_HINT_FILES = 64
 _MAX_PATH_CONTROLS = 64
 _HARD_SEARCH_DIRS = frozenset({".git", ".local-ai-hub", ".serena", ".codegraphcontext"})
+_UNSET_GIT_INVENTORY = object()
 _SYMBOL_PATTERNS = [
     re.compile(r"^\s*(?:async\s+)?def\s+([A-Za-z_]\w*)"),
     re.compile(r"^\s*class\s+([A-Za-z_]\w*)"),
@@ -892,7 +893,13 @@ class RepositoryTools:
 
     def snapshot_stats(self) -> dict[str, Any]:
         with self._snapshot_lock:
-            snapshot = {"entries": len(self._snapshots), "bytes": self._snapshot_bytes, "hits": self.snapshot_hits, "misses": self.snapshot_misses}
+            snapshot = {
+                "entries": len(self._snapshots),
+                "bytes": self._snapshot_bytes,
+                "hits": self.snapshot_hits,
+                "misses": self.snapshot_misses,
+                "verified_rehashes": self.snapshot_verified_rehashes,
+            }
         with self._git_files_lock:
             now = time.monotonic()
             snapshot["git_files"] = {
@@ -1274,6 +1281,7 @@ class RepositoryTools:
 
     def _iter_project_search_files(
         self, base: Path, project_settings: Any, max_depth: int,
+        *, git_inventory: Any = _UNSET_GIT_INVENTORY,
     ) -> Iterable[Path]:
         limit = max(1, min(int(self.max_files), 100_000))
         _text, _binary, _forced, maximum = self._project_settings_values(project_settings)
@@ -1290,7 +1298,11 @@ class RepositoryTools:
             if yielded >= limit:
                 return
 
-        git_files = self._git_files(base)
+        git_files = (
+            self._git_files(base)
+            if git_inventory is _UNSET_GIT_INVENTORY
+            else git_inventory
+        )
         if git_files is not None:
             candidates = git_files
         else:
@@ -1339,6 +1351,7 @@ class RepositoryTools:
     def search(
         self, root: str, query: str, top_k: int = 12, context_lines: int | None = None,
         *, project_settings: Any | None = None,
+        git_inventory: Any = _UNSET_GIT_INVENTORY,
     ) -> dict[str, Any]:
         base = self._root(root)
         terms = self._terms(query)
@@ -1353,12 +1366,15 @@ class RepositoryTools:
         truncation_reasons: list[str] = []
         candidate_limit = max(1, self.max_hits * 4)
         candidate_engine = "python"
-        project_candidates = (
-            list(self.iter_files(
-                str(base), project_settings=project_settings, max_files=candidate_limit + 1,
-            ))
-            if project_settings is not None else None
-        )
+        project_candidates = None
+        if project_settings is not None:
+            project_candidates = []
+            for path in self._iter_project_search_files(
+                base, project_settings, 25, git_inventory=git_inventory,
+            ):
+                if len(project_candidates) >= candidate_limit + 1:
+                    break
+                project_candidates.append(path)
         if project_candidates is None:
             candidates, accelerator_failed = self._ripgrep_candidates(
                 base, terms, candidate_limit + 1,
@@ -1432,11 +1448,7 @@ class RepositoryTools:
                 self._git_stats["python_search_fallbacks"] = min(
                     1_000_000, self._git_stats["python_search_fallbacks"] + 1
                 )
-            fallback_paths = (
-                project_candidates if project_candidates is not None else self.iter_files(
-                    str(base), max_files=self.python_fallback_max_files + 1,
-                )
-            )
+            fallback_paths = project_candidates if project_candidates is not None else self.iter_files(str(base))
             for path in fallback_paths:
                 if python_fallback_scanned >= self.python_fallback_max_files:
                     truncation_reasons.append("file_limit")
@@ -1508,7 +1520,10 @@ class RepositoryTools:
         }
         if python_fallback_scanned is not None:
             result["python_fallback_files_scanned"] = python_fallback_scanned
+            result["python_fallback_scanned_files"] = python_fallback_scanned
             result["python_fallback_file_limit"] = self.python_fallback_max_files
+            result["python_fallback_limit"] = self.python_fallback_max_files
+            result["python_fallback_truncated"] = "file_limit" in truncation_reasons
         if candidate_tokens:
             # Diagnostic only. Local RG-like filtering is not proof that a cloud
             # agent would otherwise have paid for the candidate snippets.
@@ -2249,6 +2264,7 @@ class RepositoryTools:
         force_include_paths: list[str] | tuple[str, ...] = (),
         max_directory_files: int = _MAX_DIRECTORY_HINT_FILES,
         project_settings: Any | None = None,
+        git_inventory: Any = _UNSET_GIT_INVENTORY,
     ) -> dict[str, Any]:
         """Search explicit files and bounded content below caller-supplied directories."""
         from .project_config import path_is_allowed, resolve_project_context
@@ -2266,7 +2282,8 @@ class RepositoryTools:
                 "success": False, "root": str(base), "error": "project_policy_unavailable",
                 "results": [], "scanned_files": 0, "targeted": True,
             }
-        git_inventory = self._git_files(base)
+        if git_inventory is _UNSET_GIT_INVENTORY:
+            git_inventory = self._git_files(base)
         if git_inventory is None and (base / ".git").exists():
             return {
                 "success": False, "root": str(base), "error": "git_inventory_unavailable",
@@ -2297,15 +2314,17 @@ class RepositoryTools:
                 return {"success": False, "error": str(exc)}
             controls.append((field, normalized))
         directory_values, excluded_values, forced_values = (item[1] for item in controls)
-        try:
-            normalized_inputs = [
-                self._validated_context_path(base, value, "paths") for value in paths[:_MAX_PATH_CONTROLS]
-            ]
-            normalized_inputs.extend(
-                self._validated_context_path(base, value, "force_include_paths") for value in forced_values
-            )
-        except ValueError as exc:
-            return {"success": False, "error": str(exc)}
+        normalized_inputs: list[tuple[str, Path]] = []
+        for value in paths[:_MAX_PATH_CONTROLS]:
+            try:
+                normalized_inputs.append(self._validated_context_path(base, value, "paths"))
+            except ValueError:
+                # A caller-supplied candidate is only a hint. Ignore unsafe or
+                # stale hints rather than failing the whole bounded search.
+                continue
+        normalized_inputs.extend(
+            self._validated_context_path(base, value, "force_include_paths") for value in forced_values
+        )
 
         if isinstance(max_directory_files, bool):
             return {"success": False, "error": "max_directory_files must be an integer"}

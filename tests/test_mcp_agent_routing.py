@@ -46,6 +46,8 @@ def test_public_action_parameters_are_explicit_literals() -> None:
     }
     if not local_ai_mcp.FEATURES.speculative_lint:
         expected["local_ai_command"].discard("speculative_lint")
+    if not getattr(local_ai_mcp.FEATURES, "vision", False):
+        expected["local_ai_task"].discard("vision")
     for name, values in expected.items():
         annotation = get_type_hints(getattr(local_ai_mcp, name))["action"]
         assert get_origin(annotation) is Literal, name
@@ -57,9 +59,15 @@ def test_public_action_parameters_are_explicit_literals() -> None:
 
 def test_live_mcp_catalog_uses_feature_specific_batch_schema(tmp_path: Path, monkeypatch) -> None:
     disabled_config = tmp_path / "disabled.toml"
-    disabled_config.write_text("[features]\nbatch_replacement = false\n", encoding="utf-8")
+    disabled_config.write_text(
+        '[features]\nbatch_replacement = false\n\n[server]\nauto_start_ollama = true\n\n[models]\nfast_code = "test-model"\n',
+        encoding="utf-8",
+    )
     enabled_config = tmp_path / "enabled.toml"
-    enabled_config.write_text("[features]\nbatch_replacement = true\n", encoding="utf-8")
+    enabled_config.write_text(
+        '[features]\nbatch_replacement = true\n\n[server]\nauto_start_ollama = true\n\n[models]\nfast_code = "test-model"\n',
+        encoding="utf-8",
+    )
     try:
         monkeypatch.setenv("LOCAL_AI_CONFIG", str(disabled_config))
         importlib.reload(local_ai_mcp)
@@ -76,9 +84,11 @@ def test_live_mcp_catalog_uses_feature_specific_batch_schema(tmp_path: Path, mon
         monkeypatch.setenv("LOCAL_AI_CONFIG", str(enabled_config))
         importlib.reload(local_ai_mcp)
         enabled_schema = local_ai_mcp.mcp._tool_manager._tools["local_ai_repo"].parameters["properties"]
+        async_task_schema = local_ai_mcp.mcp._tool_manager._tools["local_ai_task"].parameters["properties"]
         assert "batch_replace" in enabled_schema["action"]["enum"]
         assert "edits" in enabled_schema
         assert "dry_run" in enabled_schema
+        assert "request_id" in async_task_schema
         assert "edits" in inspect.signature(local_ai_mcp.local_ai_repo).parameters
         assert "dry_run" in inspect.signature(local_ai_mcp.local_ai_repo).parameters
         enabled_action = get_type_hints(local_ai_mcp.local_ai_repo)["action"]
@@ -295,8 +305,26 @@ def test_successful_repo_evidence_exposes_typed_semantic_handoff(monkeypatch) ->
 
 
 def test_async_task_submit_reuses_explicit_request_id(monkeypatch) -> None:
+    original_features = local_ai_mcp.FEATURES
+
+    class FeaturesProxy:
+        tasks = True
+        async_jobs = True
+
+        def __getattr__(self, name):
+            return getattr(original_features, name)
+
+        @staticmethod
+        def has_any_model():
+            return True
+
+    features = FeaturesProxy()
+    monkeypatch.setattr(local_ai_mcp, "FEATURES", features)
     assert "request_id" in inspect.signature(local_ai_mcp.local_ai_task).parameters
-    schema = local_ai_mcp.mcp._tool_manager._tools["local_ai_task"].parameters["properties"]
+    schema = local_ai_mcp._input_schema_with_action_aliases(
+        "local_ai_task",
+        local_ai_mcp.operation_tool_input_schema("local_ai_task", features),
+    )["properties"]
     assert "request_id" in schema
     calls: list[tuple[str, dict, dict]] = []
 
@@ -809,7 +837,7 @@ def test_async_job_controls_bypass_model_execution_gate(monkeypatch):
     class Client:
         max_request_timeout = 90
 
-        def post(self, path, payload, timeout):
+        def post(self, path, payload, timeout, request_id=None):
             captured.update(path=path, payload=payload, timeout=timeout)
             return {"success": True, "job_id": payload["job_id"], "state": "completed"}
 
@@ -866,7 +894,7 @@ def test_async_job_wait_transport_deadline_covers_capped_wait(monkeypatch):
     class Client:
         max_request_timeout = 90
 
-        def post(self, path, payload, timeout):
+        def post(self, path, payload, timeout, request_id=None):
             captured.update(path=path, payload=payload, timeout=timeout)
             return {"success": True, "job_id": payload["job_id"], "state": "running"}
 
@@ -888,11 +916,20 @@ def test_async_job_wait_transport_deadline_covers_capped_wait(monkeypatch):
 def test_async_job_submit_forwards_body_request_id(monkeypatch):
     captured = {}
 
-    def fake_post(path, payload, timeout):
-        captured.update(path=path, payload=payload, timeout=timeout)
+    def fake_post(path, payload, timeout, request_id=None):
+        captured.update(path=path, payload=payload, timeout=timeout, request_id=request_id)
         return {"success": True, "job_id": "job-123"}
 
     monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
+    monkeypatch.setattr(
+        local_ai_mcp,
+        "FEATURES",
+        type(
+            "Features",
+            (),
+            {"tasks": True, "status": True, "async_jobs": True, "has_any_model": lambda self: True},
+        )(),
+    )
     monkeypatch.setattr(local_ai_mcp, "_load_task_context", lambda **_kwargs: ("", {"success": True}))
     monkeypatch.setattr(local_ai_mcp, "_compact", lambda value, _kind: value)
     result = local_ai_mcp.local_ai_task(
@@ -902,6 +939,7 @@ def test_async_job_submit_forwards_body_request_id(monkeypatch):
     assert captured["path"] == "/api/async-jobs"
     assert captured["payload"]["request_id"] == "stable-submit-1"
     assert captured["payload"]["job_action"] == "review"
+    assert captured["request_id"] == "stable-submit-1"
 
 
 def test_async_job_submit_rejects_conversation_before_http(monkeypatch):

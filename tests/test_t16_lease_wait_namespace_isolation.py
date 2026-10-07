@@ -75,7 +75,7 @@ def test_legacy_wait_edges_migrate_to_namespace_inclusive_primary_key(tmp_path: 
         con.close()
 
     store = ScopeLeaseStore(state_dir)
-    con = sqlite3.connect(db_path)
+    con = sqlite3.connect(store.path)
     try:
         con.execute(
             "INSERT INTO lease_waits VALUES(?,?,?,?,?)",

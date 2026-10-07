@@ -55,6 +55,9 @@ def test_run_affected_applies_project_mapping_and_path_hints_safely(
     class Broker:
         command: str | None = None
 
+        def authorize_auxiliary_action(self, *_args, **_kwargs):
+            return {"allowed": True}
+
         def run(self, command: str, *_args, **_kwargs) -> dict[str, object]:
             self.command = command
             return {"success": True}
@@ -223,7 +226,9 @@ def test_run_affected_fails_closed_when_uncertain_and_test_matrix_missing(
     monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: None)
     services = LocalAIServices.__new__(LocalAIServices)
     services.config = {"server": {"state_dir": str(tmp_path / "runtime")}}
-    services.commands = object()
+    services.commands = SimpleNamespace(
+        authorize_auxiliary_action=lambda *_args, **_kwargs: {"allowed": True}
+    )
     services.agent_state = None
     services._repo_cache_state = lambda _root: {
         "fingerprint": "revision-1",
@@ -411,7 +416,7 @@ def test_repo_search_prioritizes_verified_project_path_hint_without_narrowing(
         def search(self, *_args, **_kwargs):
             return {"success": True, "results": []}
 
-        def search_paths(self, _root, query, paths, top_k, context_lines=None):
+        def search_paths(self, _root, query, paths, top_k, context_lines=None, **_kwargs):
             self.observed_paths = list(paths)
             return {"success": True, "results": [{"path": path} for path in paths[:top_k]]}
 
@@ -536,7 +541,7 @@ def test_repo_search_keeps_full_original_candidate_window_when_adding_hints(
         def search(self, *_args, **_kwargs):
             return {"success": True, "results": []}
 
-        def search_paths(self, _root, _query, paths, _top_k, context_lines=None):
+        def search_paths(self, _root, _query, paths, _top_k, context_lines=None, **_kwargs):
             self.observed_paths = list(paths)
             return {"success": True, "results": []}
 
@@ -616,7 +621,7 @@ def test_repo_search_hint_hit_does_not_skip_broader_results(
                 ],
             }
 
-        def search_paths(self, _root, _query, paths, _top_k, context_lines=None):
+        def search_paths(self, _root, _query, paths, _top_k, context_lines=None, **_kwargs):
             self.targeted_paths = list(paths)
             return {
                 "success": True,
@@ -755,7 +760,7 @@ def test_repo_search_hints_respect_gitignore_and_searchable_file_rules(
     assert [item["path"] for item in result["results"]] == [
         "templates/element/button.php"
     ]
-    assert inventory_calls == 2
+    assert inventory_calls == 1
 
 
 def test_search_paths_skips_unresolvable_git_inventory_entries(

@@ -859,12 +859,28 @@ class LocalAIServices:
         trace_system_override: str | None = None,
         cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
-        from .operational_mode import load_operational_mode, operational_mode_gate_error
+        from .operational_mode import (
+            OperationalModeSnapshot,
+            load_operational_mode,
+            operational_mode_gate_error,
+        )
 
+        admission_action = source.split(":", 1)[0].strip().replace("-", "_")
+        known_actions = {
+            "delegate", "reason", "review", "review_diff", "second_opinion",
+            "compress", "route", "batch", "embed", "rerank", "transcribe",
+            "vision", "benchmark", "complete_code", "scaffold", "speculative_draft",
+            "generate_tests", "solve", "eval_suite", "prompt_eval", "eval_drift",
+        }
+        if admission_action not in known_actions:
+            admission_action = "delegate"
         state_dir = self.config.get("server", {}).get("state_dir")
         if state_dir:
-            mode = load_operational_mode(state_dir)
-            rejection = operational_mode_gate_error(mode, "inference")
+            try:
+                mode = load_operational_mode(state_dir)
+            except Exception:
+                mode = None
+            rejection = operational_mode_gate_error(mode, admission_action)
             if rejection is not None:
                 return rejection
         trace_system = system if trace_system_override is None else str(trace_system_override)
@@ -1013,15 +1029,6 @@ class LocalAIServices:
                         error_code_override=failed["error_code"],
                         retryable=failed["retryable"], recovered=recovered,
                     )
-            admission_action = source.split(":", 1)[0].strip().replace("-", "_")
-            known_actions = {
-                "delegate", "reason", "review", "review_diff", "second_opinion",
-                "compress", "route", "batch", "embed", "rerank", "transcribe",
-                "vision", "benchmark", "complete_code", "scaffold", "speculative_draft",
-                "generate_tests", "solve", "eval_suite", "prompt_eval", "eval_drift",
-            }
-            if admission_action not in known_actions:
-                admission_action = "delegate"
             for index, candidate in enumerate(candidates):
                 breaker_key = f"model:{candidate}"
                 if not self.breakers.allow(breaker_key):
@@ -1063,31 +1070,6 @@ class LocalAIServices:
                     trace_payload = dict(payload)
                     if project_settings is not None or trace_system_override is not None:
                         trace_payload["system"] = trace_system
-                    # A scheduler may defer this closure until after a mode change.
-                    try:
-                        from .operational_mode import (
-                            OperationalModeSnapshot,
-                            load_operational_mode,
-                            operational_mode_gate_error,
-                        )
-                    except Exception:
-                        mode_rejection = {
-                            "success": False,
-                            "mode": "maintenance",
-                            "error": "hub paused: maintenance mode active",
-                            "terminal": False,
-                            "retryable": True,
-                            "retry_after_seconds": 5,
-                        }
-                    else:
-                        try:
-                            mode = load_operational_mode(configured_state_dir(self.config, create=False))
-                        except Exception:
-                            mode = None
-                        mode_rejection = operational_mode_gate_error(mode, admission_action)
-                    if mode_rejection is not None:
-                        mode_pause_result = mode_rejection
-                        return mode_rejection
                     def request_candidate() -> dict[str, Any]:
                         stream = getattr(self.runtime, "request_stream", None)
                         if callable(stream):
@@ -1147,6 +1129,16 @@ class LocalAIServices:
                                 return rejection
                             response = request_candidate()
                     else:
+                        # Minimal/test runtimes may not provide the shared admission
+                        # lock, so refresh the mode immediately before the handoff.
+                        try:
+                            mode = load_operational_mode(configured_state_dir(self.config, create=False))
+                        except Exception:
+                            mode = None
+                        mode_rejection = operational_mode_gate_error(mode, admission_action)
+                        if mode_rejection is not None:
+                            mode_pause_result = mode_rejection
+                            return mode_rejection
                         response = request_candidate()
                     if (cancel_event is not None and cancel_event.is_set()) or response.get("preempted") is True:
                         return cancelled_result()
@@ -2879,6 +2871,34 @@ class LocalAIServices:
                 "terminal": True,
                 "retryable": False,
             }
+        if project_context.resolution.error_codes:
+            return {
+                "success": False,
+                "root": root,
+                "error": "project_policy_unavailable",
+                "results": [],
+                "terminal": True,
+                "retryable": False,
+            }
+        try:
+            hint_root = Path(root).expanduser().resolve(strict=True)
+        except (OSError, RuntimeError, ValueError):
+            hint_root = None
+        inventory_loader = getattr(self.repo_tools, "_git_files", None)
+        file_inventory = (
+            inventory_loader(hint_root)
+            if hint_root is not None and callable(inventory_loader)
+            else None
+        )
+        if hint_root is not None and (hint_root / ".git").exists() and file_inventory is None:
+            return {
+                "success": False,
+                "root": root,
+                "error": "git_inventory_unavailable",
+                "results": [],
+                "terminal": True,
+                "retryable": False,
+            }
         search_scope = scope if isinstance(scope, str) else "repository_search"
         request_hints: list[PathHint] = []
         allowed_hint_fields = {
@@ -2910,6 +2930,21 @@ class LocalAIServices:
                     )
                 ):
                     request_hints.append(hint)
+        try:
+            workspace_state = self._repo_cache_state(root) or {}
+        except Exception:
+            workspace_state = {}
+        repository_revision = (
+            str(workspace_state.get("fingerprint") or "")
+            if not workspace_state.get("stale") and not workspace_state.get("degraded")
+            else ""
+        )
+        saved_hints = project_context.path_hints(
+            purpose="repository_search",
+            scope=search_scope,
+            repository_revision=repository_revision,
+        )
+        effective_hints = [*saved_hints, *request_hints]
         request_hint_digest = stable_hash([
             {
                 "path": hint.path,
@@ -2921,17 +2956,8 @@ class LocalAIServices:
                 "config_digest": hint.config_digest,
                 "expires_at": hint.expires_at,
             }
-            for hint in request_hints
+            for hint in effective_hints
         ])
-        try:
-            workspace_state = self._repo_cache_state(root) or {}
-        except Exception:
-            workspace_state = {}
-        repository_revision = (
-            str(workspace_state.get("fingerprint") or "")
-            if not workspace_state.get("stale") and not workspace_state.get("degraded")
-            else ""
-        )
         if self.learner is not None:
             try: self.learner.record(root, query)
             except Exception: pass
@@ -2963,17 +2989,12 @@ class LocalAIServices:
             if action == "include"
         )
         try:
-            hint_root = Path(root).expanduser().resolve(strict=True)
-            inventory_loader = getattr(self.repo_tools, "_git_files", None)
-            file_inventory = (
-                inventory_loader(hint_root) if callable(inventory_loader) else None
-            )
             extension_is_searchable = getattr(
                 self.repo_tools, "_path_extension_is_searchable", None
             )
             ignored_dirs = getattr(self.repo_tools, "ignore_dirs", set())
             seen_hint_paths: set[str] = set()
-            for hint in request_hints:
+            for hint in effective_hints:
                 target = validate_path_hint(
                     hint_root,
                     hint,
@@ -3044,6 +3065,7 @@ class LocalAIServices:
             full_result = self.repo_tools.search(
                 root, query, candidate_limit, context_lines=eff_ctx_lines,
                 project_settings=project_context.settings,
+                git_inventory=file_inventory,
             )
             if not isinstance(full_result, dict) or not full_result.get("success", True):
                 result = dict(full_result) if isinstance(full_result, dict) else {
@@ -3056,6 +3078,7 @@ class LocalAIServices:
             if paths:
                 try:
                     search_options = {"project_settings": project_context.settings}
+                    search_options["git_inventory"] = file_inventory
                     if hinted_force_include:
                         search_options["force_include_paths"] = list(force_include_patterns)
                     targeted = (
@@ -3150,6 +3173,10 @@ class LocalAIServices:
                 repository_revision=repository_revision,
                 config_digest=project_context.config_digest,
             )
+            hint_used = configured_usage.hint_used or request_usage.hint_used
+            hint_fallback_used = (
+                configured_usage.fallback_used or request_usage.fallback_used
+            ) and not hint_used
             path_rank = {path: rank for rank, path in enumerate(request_usage.paths)}
             allowed_results.sort(
                 key=lambda item: path_rank.get(str(item["path"]), len(path_rank))
@@ -3160,6 +3187,11 @@ class LocalAIServices:
                 paths
                 and any(str(item.get("path")) in set(paths) for item in allowed_results)
             )
+            result["path_hint_usage"] = {
+                "hint_used": hint_used,
+                "fallback_used": hint_fallback_used,
+                "hint_helped": None,
+            }
             if enrich:
                 result["enriched"] = True
                 for hit in result.get("results", [])[:top_k]:
@@ -5588,7 +5620,7 @@ class LocalAIServices:
             except Exception as exc:
                 retrieval_warnings.append(f"lexical completeness pass degraded: {type(exc).__name__}")
         try:
-            if candidate_paths:
+            if path_controls_active and candidate_paths:
                 candidate_paths = list(dict.fromkeys(candidate_paths))
                 pack_kwargs: dict[str, Any] = {
                     "max_tokens": lexical_tokens,

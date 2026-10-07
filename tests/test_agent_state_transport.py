@@ -421,14 +421,28 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
     repo_one.mkdir()
     repo_two.mkdir()
     app = LocalAIApp(str(cfg_path))
+    for task_id, root, tenant in (
+        ("task-one", repo_one, "tenant-1"),
+        ("task-two", repo_two, "tenant-2"),
+        ("task-rich", repo_one, "tenant-1"),
+    ):
+        created = app.agent_tasks.create(
+            GoalContract(goal="Memory scope fixture"),
+            ScopeContext(task_id=task_id, repository_id=str(root), session_id=tenant),
+            task_id=task_id,
+        )
+        assert created.context.repository_id == str(root)
+        assert created.context.session_id == tenant
+        assert app.agent_tasks.get(task_id) is not None
     rich_record = MemoryRecord.create(
         kind="finding",
         scope=AgentScope.TASK,
-        scope_id="task-rich",
+        scope_id=http_server._task_memory_scope_id("tenant-1", "task-rich"),
         key="rich",
         value="rich-task",
         provenance={
             "root": str(repo_one),
+            "tenant": "tenant-1",
             "repository_id": "repository-rich",
             "clone_id": "clone-rich",
             "worktree_id": "worktree-rich",
@@ -436,11 +450,11 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
         },
     )
     records = (
-        MemoryRecord.create(kind="finding", scope=AgentScope.TASK, scope_id="task-one", key="shared", value="task-one"),
-        MemoryRecord.create(kind="finding", scope=AgentScope.TASK, scope_id="task-two", key="shared", value="task-two"),
-        MemoryRecord.create(kind="finding", scope=AgentScope.TASK, key="shared", value="legacy-task"),
-        MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="session-one", key="shared", value="session-one"),
-        MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="session-two", key="shared", value="session-two"),
+        MemoryRecord.create(kind="finding", scope=AgentScope.TASK, scope_id=http_server._task_memory_scope_id("tenant-1", "task-one"), key="shared", value="task-one", provenance={"root": str(repo_one), "tenant": "tenant-1"}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.TASK, scope_id=http_server._task_memory_scope_id("tenant-2", "task-two"), key="shared", value="task-two", provenance={"root": str(repo_two), "tenant": "tenant-2"}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.TASK, key="shared", value="legacy-task", provenance={"root": str(repo_one), "tenant": "tenant-1"}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="session-one", key="shared", value="session-one", provenance={"tenant": "session-one"}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="session-two", key="shared", value="session-two", provenance={"tenant": "session-two"}),
         MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, key="shared", value="legacy-session"),
         MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="tenant-1", key="tenant-shared", value="tenant-one", provenance={"tenant": "tenant-1"}),
         MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="tenant-2", key="tenant-shared", value="tenant-two", provenance={"tenant": "tenant-2"}),
@@ -451,6 +465,7 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
             key="session-rich",
             value="session-rich-value",
             provenance={
+                "root": str(repo_one),
                 "tenant": "tenant-rich",
                 "clone_id": "clone-session",
                 "worktree_id": "worktree-session",
@@ -459,9 +474,9 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
         ),
         rich_record,
         MemoryRecord.create(kind="finding", scope=AgentScope.GLOBAL, key="global-tenant-independent", value="global-value", provenance={"root": str(repo_one), "repository_id": "repository-global"}),
-        MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one", provenance={"root": str(repo_one), "repository_id": "repository-one"}),
-        MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one-missing-id", provenance={"root": str(repo_one)}),
-        MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-two", provenance={"root": str(repo_two), "repository_id": "repository-two"}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one", provenance={"root": str(repo_one), "repository_id": "repository-one", "tenant": "api-token-default"}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one-missing-id", provenance={"root": str(repo_one), "tenant": "api-token-default"}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-two", provenance={"root": str(repo_two), "repository_id": "repository-two", "tenant": "api-token-default"}),
         MemoryRecord.create(kind="finding", scope=AgentScope.GLOBAL, key="global-tenant-independent", value="global-value", provenance={"root": str(repo_one), "repository_id": "repository-global", "tenant": "legacy-tenant"}),
     )
     for record in records:
@@ -476,7 +491,10 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
         query = urllib.parse.urlencode(params)
         request = urllib.request.Request(
             f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/memory?{query}",
-            headers={"Connection": "close"},
+            headers={
+                "Connection": "close",
+                **({"X-LocalAI-Tenant": str(params["tenant"])} if params.get("tenant") else {}),
+            },
             method="GET",
         )
         with urllib.request.urlopen(request) as response:
@@ -493,19 +511,19 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
             return json.loads(response.read().decode("utf-8"))
 
     try:
-        task_result = get(scope="task", scope_id="task-one", key="shared")
+        task_result = get(scope="task", scope_id="task-one", key="shared", root=str(repo_one), tenant="tenant-1")
         assert [item["value"] for item in task_result["records"]] == ["task-one"]
-        session_result = get(scope="session", scope_id="session-one", key="shared")
+        session_result = get(scope="session", scope_id="session-one", key="shared", tenant="session-one")
         assert [item["value"] for item in session_result["records"]] == ["session-one"]
-        task_without_scope = get(task_id="task-one", key="shared")
+        task_without_scope = get(task_id="task-one", key="shared", root=str(repo_one), tenant="tenant-1")
         assert [item["value"] for item in task_without_scope["records"]] == ["task-one"]
-        session_without_scope = get(session_id="session-one", key="shared")
+        session_without_scope = get(session_id="session-one", key="shared", tenant="session-one")
         assert [item["value"] for item in session_without_scope["records"]] == ["session-one"]
         repo_without_scope = get(root=str(repo_one), key="shared")
         assert {item["value"] for item in repo_without_scope["records"]} == {"repo-one", "repo-one-missing-id"}
         other_repo_without_scope = get(root=str(repo_two), key="shared")
         assert [item["value"] for item in other_repo_without_scope["records"]] == ["repo-two"]
-        repository_id_without_scope = get(repository_id="repository-one", key="shared")
+        repository_id_without_scope = get(repository_id="repository-one", key="shared", root=str(repo_one))
         assert [item["value"] for item in repository_id_without_scope["records"]] == ["repo-one"]
         tenant_without_scope = get(tenant="tenant-1", key="tenant-shared")
         assert [item["value"] for item in tenant_without_scope["records"]] == ["tenant-one"]
@@ -535,6 +553,7 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
             "scope_id": "task-rich",
             "task_id": "task-rich",
             "root": str(repo_one),
+            "tenant": "tenant-1",
             "repository_id": "repository-rich",
             "clone_id": "clone-rich",
             "worktree_id": "worktree-rich",
@@ -556,7 +575,7 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
                 "tenant": "tenant-1",
                 "key": "tenant-shared",
             })
-        assert tenant_ambiguous.value.code == 400
+        assert tenant_ambiguous.value.code == 403
         with pytest.raises(urllib.error.HTTPError) as invalid_scope:
             get(scope="not-a-scope", key="shared")
         assert invalid_scope.value.code == 400
@@ -581,6 +600,7 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
             "scope": "session",
             "scope_id": "session-rich",
             "session_id": "session-rich",
+            "root": str(repo_one),
             "tenant": "tenant-rich",
             "clone_id": "clone-session",
             "worktree_id": "worktree-session",
@@ -595,12 +615,16 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
             "record_id": records[0].record_id,
             "scope": "task",
             "scope_id": "task-one",
+            "root": str(repo_one),
+            "tenant": "tenant-1",
         })
         assert direct["record"]["value"] == "task-one"
         direct_without_scope = post({
             "action": "get",
             "record_id": records[0].record_id,
             "task_id": "task-one",
+            "root": str(repo_one),
+            "tenant": "tenant-1",
         })
         assert direct_without_scope["record"]["value"] == "task-one"
         with pytest.raises(urllib.error.HTTPError) as mismatch:
@@ -609,6 +633,8 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
                 "record_id": records[0].record_id,
                 "scope": "task",
                 "scope_id": "task-two",
+                "root": str(repo_one),
+                "tenant": "tenant-1",
             })
         assert mismatch.value.code == 404
         with pytest.raises(urllib.error.HTTPError) as task_mismatch_without_scope:
@@ -616,6 +642,8 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
                 "action": "get",
                 "record_id": records[0].record_id,
                 "task_id": "task-two",
+                "root": str(repo_one),
+                "tenant": "tenant-1",
             })
         assert task_mismatch_without_scope.value.code == 404
 
@@ -633,6 +661,7 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
                 scope_id="task-rich",
                 task_id="task-rich",
                 root=str(repo_one),
+                tenant="tenant-1",
                 repository_id="repository-rich",
                 clone_id="clone-rich",
                 worktree_id="worktree-rich",
@@ -647,7 +676,8 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
                 session_id="session-one",
             )
             assert mcp_ambiguous["success"] is False
-            assert mcp_ambiguous["status_code"] == 400
+            # Rootless task lookups are intentionally hidden as not found.
+            assert mcp_ambiguous["status_code"] == 404
         finally:
             mcp_server.CLIENT = previous_mcp_client
             mcp_client.close()
@@ -657,41 +687,47 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
                 "record_id": rich_record.record_id,
                 "scope": "task",
                 "scope_id": "another-task",
+                "root": str(repo_one),
+                "tenant": "tenant-1",
             })
         assert delete_mismatch.value.code == 404
         deleted = post({
             "action": "delete",
-            "record_id": rich_record.record_id,
+            "record_id": records[0].record_id,
             "scope": "task",
-            "scope_id": "task-rich",
+            "scope_id": "task-one",
+            "task_id": "task-one",
+            "root": str(repo_one),
+            "tenant": "tenant-1",
         })
         assert deleted["success"] is True
         assert deleted["deleted"] is True
         with pytest.raises(urllib.error.HTTPError) as delete_without_scope:
-            post({"action": "delete", "record_id": records[-2].record_id})
+            post({"action": "delete", "record_id": records[-3].record_id})
         assert delete_without_scope.value.code == 400
         with pytest.raises(urllib.error.HTTPError) as delete_repository_mismatch:
             post({
                 "action": "delete",
-                "record_id": records[-2].record_id,
+                "record_id": records[-3].record_id,
                 "scope": "repository",
                 "root": str(repo_two),
             })
         assert delete_repository_mismatch.value.code == 404
         deleted_by_root = post({
             "action": "delete",
-            "record_id": records[-2].record_id,
+            "record_id": records[-3].record_id,
             "scope": "repository",
             "root": str(repo_one),
         })
         assert deleted_by_root["deleted"] is True
-        deleted_by_repository_id = post({
-            "action": "delete",
-            "record_id": records[-1].record_id,
-            "scope": "repository",
-            "repository_id": "repository-two",
-        })
-        assert deleted_by_repository_id["deleted"] is True
+        with pytest.raises(urllib.error.HTTPError) as repository_delete_without_root:
+            post({
+                "action": "delete",
+                "record_id": records[-2].record_id,
+                "scope": "repository",
+                "repository_id": "repository-two",
+            })
+        assert repository_delete_without_root.value.code == 400
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -717,6 +753,13 @@ def test_http_verification_route_rejects_passed_receipt_without_evidence(tmp_pat
         encoding="utf-8",
     )
     app = LocalAIApp(str(cfg_path))
+    repo_root = tmp_path / "verification-repo"
+    repo_root.mkdir()
+    app.agent_tasks.create(
+        GoalContract(goal="Verification receipt fixture"),
+        ScopeContext(task_id="route-task", repository_id=str(repo_root), session_id="api-token-default"),
+        task_id="route-task",
+    )
     previous = http_server.APP
     http_server.APP = app
     server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
@@ -725,6 +768,8 @@ def test_http_verification_route_rejects_passed_receipt_without_evidence(tmp_pat
     try:
         payload = json.dumps({
             "action": "receipt",
+            "task_id": "route-task",
+            "root": str(repo_root),
             "receipt": {
                 "receipt_id": "route-receipt-no-evidence",
                 "task_id": "route-task",
@@ -816,7 +861,7 @@ def test_http_memory_delete_requires_verified_worktree_scope(tmp_path: Path):
             scope=AgentScope.WORKTREE,
             scope_id="worktree-one",
         ).value == "preserve me"
-        deleted = post({"action": "delete", "record_id": global_record.record_id})
+        deleted = post({"action": "delete", "record_id": global_record.record_id, "scope": "global"})
         assert deleted["deleted"] is True
     finally:
         server.shutdown()
@@ -980,8 +1025,7 @@ def test_http_memory_transport_preserves_expiry_and_ttl(tmp_path: Path):
             "idempotency_key": "expiry-explicit",
             "record": {
                 "kind": "finding",
-                "scope": "task",
-                "scope_id": "task-expiry",
+                "scope": "global",
                 "key": "explicit-expiry",
                 "value": "v",
                 "expires_at": expires_at,
@@ -997,8 +1041,7 @@ def test_http_memory_transport_preserves_expiry_and_ttl(tmp_path: Path):
             "ttl_seconds": 120,
             "record": {
                 "kind": "finding",
-                "scope": "task",
-                "scope_id": "task-expiry",
+                "scope": "global",
                 "key": "ttl-expiry",
                 "value": "v",
             },
@@ -1011,8 +1054,7 @@ def test_http_memory_transport_preserves_expiry_and_ttl(tmp_path: Path):
             "idempotency_key": "expiry-unspecified",
             "record": {
                 "kind": "finding",
-                "scope": "task",
-                "scope_id": "task-expiry",
+                "scope": "global",
                 "key": "no-expiry",
                 "value": "v",
             },
@@ -1182,6 +1224,13 @@ def test_http_verification_route_requires_boolean_passed(tmp_path: Path):
         encoding="utf-8",
     )
     app = LocalAIApp(str(cfg_path))
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    app.agent_tasks.create(
+        GoalContract(goal="Receipt schema fixture"),
+        ScopeContext(task_id="route-task", repository_id=str(repo), session_id="api-token-default"),
+        task_id="route-task",
+    )
     previous = http_server.APP
     http_server.APP = app
     server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
@@ -1189,7 +1238,7 @@ def test_http_verification_route_requires_boolean_passed(tmp_path: Path):
     thread.start()
 
     def post(receipt):
-        payload = json.dumps({"action": "receipt", "receipt": receipt}).encode("utf-8")
+        payload = json.dumps({"action": "receipt", "root": str(repo), "receipt": receipt}).encode("utf-8")
         request = urllib.request.Request(
             f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/verification",
             data=payload,

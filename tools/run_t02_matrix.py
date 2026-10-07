@@ -73,7 +73,6 @@ def build_command(
     file_count: int,
     rag_chunk_count: int,
     phase: str,
-    resume: bool = False,
 ) -> list[str]:
     """Build one offline benchmark invocation with external durable paths."""
     if (file_count, rag_chunk_count) not in EXPECTED_CASES:
@@ -85,21 +84,18 @@ def build_command(
     key = case_key(file_count, rag_chunk_count)
     repetitions = 3 if phase == "smoke" else 30
     light_repetitions = 10 if phase == "smoke" else 1_000
-    paired_repetitions = 3 if phase == "smoke" else 30
+    comparison_repetitions = 3 if phase == "smoke" else 30
     command = [
         python, str(root / "tools" / "benchmark_surfaces.py"),
         "--state-dir", str(output / "state"),
         "--scratch-dir", str(output / "scratch" / key),
-        "--checkpoint", str(output / "checkpoints" / f"{key}.json"),
         "--files", str(file_count), "--rag-chunks", str(rag_chunk_count),
         "--repetitions", str(repetitions),
         "--light-repetitions", str(light_repetitions),
-        "--paired-repetitions", str(paired_repetitions),
+        "--comparison-repetitions", str(comparison_repetitions),
         "--concurrency", *(str(level) for level in CONCURRENCY_LEVELS),
-        "--checkpoint-batch-size", "25", "--full",
+        "--full",
     ]
-    if resume:
-        command.append("--resume")
     return command
 
 
@@ -331,7 +327,7 @@ def run_matrix(
         command = build_command(
             python=python, repository_root=root, output_dir=output,
             file_count=file_count, rag_chunk_count=rag_chunk_count,
-            phase=phase, resume=resume and checkpoint.exists(),
+            phase=phase,
         )
         result = subprocess.run(
             command, cwd=root, capture_output=True, text=True, check=False,

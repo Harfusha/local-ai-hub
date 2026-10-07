@@ -15,7 +15,7 @@ def _client(tmp_path, port=39123):
     return HubClient(config_path=str(config), auto_start=False)
 
 
-def test_post_forwards_path_hints_to_search_and_command(tmp_path, monkeypatch):
+def test_post_forwards_path_hints_to_search_only(tmp_path, monkeypatch):
     client = _client(tmp_path)
     calls = []
 
@@ -37,7 +37,7 @@ def test_post_forwards_path_hints_to_search_and_command(tmp_path, monkeypatch):
         ),
         (
             "/api/command",
-            {"command": "pytest", "path_hints": list(hints)},
+            {"command": "pytest"},
             {"timeout": 360.0, "replay_safe": False, "request_id": "command-1", "tenant": None, "cancel_event": None},
         ),
     ]
@@ -215,7 +215,7 @@ def test_post_caps_path_hints_and_drops_unlisted_fields(tmp_path, monkeypatch):
         for index in range(65)
     )
 
-    client.post("/api/command", {"command": "pytest"}, path_hints=hints)
+    client.post("/api/search", {"query": "needle"}, path_hints=hints)
 
     records = calls[0]["path_hints"]
     assert len(records) == 64

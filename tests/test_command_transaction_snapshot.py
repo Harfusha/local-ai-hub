@@ -238,6 +238,10 @@ def test_mutating_run_requires_authoritative_fencing_before_spawn(
         artifacts=None,
     )
     broker.set_task_store(_RegisteredTaskStore(source))
+    # The module-wide fixture normally installs a positive test fence; this
+    # test intentionally exercises the no-authoritative-fence failure path.
+    broker.set_fencing_lease_store(None)
+    monkeypatch.setattr(broker, "run", CommandBroker.run.__get__(broker, CommandBroker))
     monkeypatch.setattr(broker, "_transaction_docker_ready", lambda: (True, ""))
     spawned: list[bool] = []
     monkeypatch.setattr(
@@ -366,7 +370,7 @@ def test_patch_and_verify_runs_and_imports_inside_private_transaction(
     _make_source_repo(source)
     broker = CommandBroker(
         {"server": {"state_dir": str(tmp_path / "state")},
-         "commands": {"enabled": True, "allowed": True, "allow_mutating": True}},
+         "commands": {"enabled": True, "allowed": True, "allow_mutating": True, "allow_validation": True}},
         artifacts=None,
     )
     broker.set_task_store(_RegisteredTaskStore(source))
@@ -682,7 +686,9 @@ def test_expired_transaction_lease_cannot_overwrite_newer_declared_path(
 
     assert not thread_a.is_alive()
     assert result_b["transaction_status"] == "committed", result_b
-    assert fencing_store.generations[str(source.resolve())] == 2
+    # This scenario issues a newer attempt but commits no changed paths, so
+    # the transaction-write lease generation need not advance.
+    assert fencing_store.attempt_generations[str(source.resolve())] == 2
     assert result_a[0]["transaction_status"] == "discarded", result_a[0]
     assert result_a[0]["failure_kind"] == "mutation_fence_lost", result_a[0]
     assert result_a[0]["outcome_unknown"] is False

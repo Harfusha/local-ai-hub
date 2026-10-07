@@ -265,7 +265,9 @@ def test_http_mode_routes_read_and_update_persisted_mode(monkeypatch, tmp_path):
     handler = type("MockHandler", (), {
         "path": "/api/mode",
         "headers": {},
+        "client_address": ("127.0.0.1", 0),
         "_begin_trace": lambda self, _path: None,
+        "_validate_host_and_origin": lambda self: True,
         "_require_authorized": lambda self: True,
         "_send": lambda self, status, payload: responses.append((status, payload)),
     })()
@@ -286,6 +288,7 @@ def test_http_mode_routes_read_and_update_persisted_mode(monkeypatch, tmp_path):
     assert load_operational_mode(tmp_path).mode == "gaming"
     assert responses[-1][1]["runtime_unload"] == {
         "success": True, "backend_available": True, "unloaded": ["model-a"], "failed": {},
+        "state": "complete",
     }
     assert unload_calls == [{"timeout_seconds": 3.0}]
 

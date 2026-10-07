@@ -410,7 +410,11 @@ def test_run_hidden_bounds_drain_when_descendant_keeps_pipes_open(monkeypatch):
     )
     monkeypatch.setattr(process_utils.os, "name", "posix")
     monkeypatch.setattr(process_utils.subprocess, "Popen", lambda *a, **k: process)
-    monkeypatch.setattr(process_utils, "terminate_tree", lambda pid: True)
+    monkeypatch.setattr(
+        process_utils,
+        "terminate_tree",
+        lambda pid, **kwargs: True,
+    )
 
     with pytest.raises(subprocess.TimeoutExpired):
         process_utils.run_hidden(["tool"], capture_output=True, timeout=0.01)
@@ -457,14 +461,12 @@ def test_run_hidden_cancellation_terminates_tree_and_drains_output(monkeypatch):
     calls = []
     monkeypatch.setattr(process_utils.os, "name", "posix")
     monkeypatch.setattr(process_utils.subprocess, "Popen", lambda *a, **k: process)
-    monkeypatch.setattr(
-        process_utils,
-        "terminate_tree",
-        lambda pid, *, process_group=None, grace_seconds=5.0: calls.append(
-            (pid, process_group, grace_seconds)
-        )
-        or True,
-    )
+    def terminate_tree(pid, *, process_group=None, grace_seconds=5.0):
+        calls.append((pid, process_group, grace_seconds))
+        process.returncode = -9
+        return True
+
+    monkeypatch.setattr(process_utils, "terminate_tree", terminate_tree)
 
     with pytest.raises(process_utils.ProcessCancelledError) as raised:
         process_utils.run_hidden(

@@ -115,20 +115,41 @@ def test_receipt_identity_metadata_survives_restart(tmp_path: Path):
         ScopeContext(task_id="receipt-metadata-task"),
         task_id="receipt-metadata-task",
     )
+    task_store.checkpoint(
+        task.task_id,
+        TaskCheckpoint(state_data={"mutation_generation": 3}),
+        actor="agent",
+        idempotency_key="metadata-generation",
+    )
+    artifact_store = ArtifactStore(tmp_path / "artifacts")
+    receipt = receipt_for(
+        task.task_id,
+        "tests",
+        owner=task.owner,
+        mutation_generation=3,
+        repository_revision="rev-1",
+        artifact_store=artifact_store,
+    )
     receipt = VerificationReceipt.create(
         task.task_id,
         "tests",
-        evidence_id="evidence-metadata",
+        evidence_id=receipt.evidence_id,
+        command_id=receipt.command_id,
         owner=task.owner,
         mutation_generation=3,
+        repository_revision="rev-1",
         evidence_type="test",
         details={"source": "test"},
     )
-    VerificationStore(state_store, task_store=task_store).record(receipt)
+    VerificationStore(
+        state_store, task_store=task_store, artifact_store=artifact_store
+    ).record(receipt)
 
     restarted_store = AgentStateStore(db_path)
     completion = VerificationStore(
-        restarted_store, task_store=TaskStore(restarted_store)
+        restarted_store,
+        task_store=TaskStore(restarted_store),
+        artifact_store=artifact_store,
     ).completion(task.task_id)
 
     restored = completion.receipts[0]
@@ -221,6 +242,39 @@ def test_verification_receipt_parser_requires_explicit_boolean_passed(passed_fie
     payload = {"receipt_id": "receipt-1", "task_id": "task-1", "criterion": "tests", **passed_fields}
     with pytest.raises(ValueError, match="passed"):
         VerificationReceipt.from_dict(payload)
+
+
+@pytest.mark.parametrize("mutation_generation", [True, 1.0, -1, "1"])
+def test_verification_receipt_parser_rejects_invalid_mutation_generation(mutation_generation):
+    payload = {
+        "receipt_id": "receipt-1",
+        "task_id": "task-1",
+        "criterion": "tests",
+        "passed": True,
+        "mutation_generation": mutation_generation,
+    }
+
+    with pytest.raises(ValueError, match="mutation_generation"):
+        VerificationReceipt.from_dict(payload)
+
+
+@pytest.mark.parametrize("details", [None, "not-a-mapping", ["not", "a", "mapping"]])
+def test_verification_receipt_parser_rejects_non_mapping_details(details):
+    payload = {
+        "receipt_id": "receipt-1",
+        "task_id": "task-1",
+        "criterion": "tests",
+        "passed": True,
+        "details": details,
+    }
+
+    with pytest.raises(ValueError, match="details"):
+        VerificationReceipt.from_dict(payload)
+
+
+def test_verification_receipt_parser_rejects_non_mapping_payload():
+    with pytest.raises(TypeError, match="must be a mapping"):
+        VerificationReceipt.from_dict(["not", "a", "mapping"])
 
 
 def test_verifier_exception_cannot_become_a_passing_receipt(
@@ -1232,7 +1286,7 @@ def test_completion_fails_closed_when_sqlite_receipt_store_cannot_open(
     unavailable_state.db_path = unavailable_path
     task_store.set_verification_store(unavailable_verifier)
 
-    with pytest.raises(CompletionGateError, match="verification storage could not validate"):
+    with pytest.raises(CompletionGateError, match="verification completion evaluation failed"):
         task_store.complete(task.task_id)
 
     current = task_store.get(task.task_id)

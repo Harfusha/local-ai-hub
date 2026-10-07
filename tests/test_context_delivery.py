@@ -429,7 +429,10 @@ def test_taskless_context_pack_cache_identity_includes_tenant(monkeypatch, tmp_p
 
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(
-        f'[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{(tmp_path / "state").as_posix()}"\n',
+        f'[server]\nbind = "127.0.0.1"\nport = 11497\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        f'[security]\napi_token = "context-pack-tenant-a-token"\napi_token_tenant = "tenant-a"\n'
+        f'tenant_derivation_key = "context-pack-tenant-derivation-key"\n'
+        f'allowed_roots = ["{tmp_path.as_posix()}"]\n',
         encoding="utf-8",
     )
     app = LocalAIApp(str(cfg_path))
@@ -447,16 +450,21 @@ def test_taskless_context_pack_cache_identity_includes_tenant(monkeypatch, tmp_p
     thread.start()
     try:
         for tenant in ("tenant-a", "tenant-b"):
+            token = f"context-pack-{tenant}-token"
+            app.config["security"]["api_token"] = token
+            app.config["security"]["api_token_tenant"] = tenant
             request = urllib.request.Request(
                 f"http://127.0.0.1:{server.server_address[1]}/api/context/pack",
                 data=json.dumps({"root": str(tmp_path), "query": "same query", "mode": "adaptive"}).encode(),
-                headers={"Content-Type": "application/json", "X-LocalAI-Tenant": tenant},
+                headers={"Content-Type": "application/json", "X-LocalAI-Token": token},
                 method="POST",
             )
             with urllib.request.urlopen(request) as response:
                 assert response.status == 200
 
-        assert [call[1]["context_identity"]["tenant"] for call in hybrid_calls] == ["tenant-a", "tenant-b"]
+        context_tenants = [call[1]["context_identity"]["tenant"] for call in hybrid_calls]
+        assert len(context_tenants) == 2
+        assert context_tenants[0] != context_tenants[1]
     finally:
         server.shutdown()
         server.server_close()

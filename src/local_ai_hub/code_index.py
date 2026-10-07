@@ -26,7 +26,7 @@ MAX_IMPACT_DEPENDENTS = 100_000
 
 IDENT = re.compile(r"\b[A-Za-z_$][A-Za-z0-9_$]{2,}\b")
 GENERIC_DEF = re.compile(r"^\s*(?:(?:public|private|protected|internal|static|final|async|export|abstract|virtual|override|sealed|readonly)\s+)*(class|interface|trait|enum|struct|record|function|func|fn|def|type)\s+([A-Za-z_$][A-Za-z0-9_$]*)")
-IMPORT = re.compile(r"^\s*(?:from\s+([\w.]+)\s+import|import\s+([\w./@-]+)|(?:use|require|require_once|include|include_once|using)\s*\(?[\'\"]?([^\'\";]+)[\'\"]?\)?)")
+IMPORT = re.compile(r"^\s*(?:from\s+([\w.]+)\s+import|import\s+([\w./@-]+)|(?:use|require_once|include_once|require|include|using)\b\s*\(?\s*[\'\"]?([^\'\";]+)[\'\"]?\s*\)?)")
 ARROW_DEF = re.compile(r"^\s*(?:(?:export|default|public|private|protected|internal|static|readonly|const|let|var)\s+)*([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][A-Za-z0-9_$]*)\s*=>")
 INLINE_ARROW_DEF = re.compile(r"(?<![\w$])(?:(?:export|default|public|private|protected|internal|static|readonly|const|let|var)\s+)*([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)|[A-Za-z_$][A-Za-z0-9_$]*)\s*=>")
 GO_METHOD = re.compile(r"^\s*func\s*(?:\([^)]*\)\s*)?([A-Za-z_][A-Za-z0-9_]*)\s*\(")
@@ -913,6 +913,7 @@ class CodeIndex:
         self._rev_cache = {}
         self._rev_lock = threading.Lock()
         self._parse_blob_l1 = MemoryLRUCache(max_entries=4096, ttl_seconds=3600)
+        self._parse_diagnostic = threading.local()
         self._query_l1 = MemoryLRUCache(max_entries=2048, ttl_seconds=1800)
         self._impact_result_l1 = MemoryLRUCache(max_entries=512, ttl_seconds=1800)
         self._impact_path_format_l1 = MemoryLRUCache(max_entries=256, ttl_seconds=1800)
@@ -1041,7 +1042,7 @@ class CodeIndex:
             ".py": "python",
             ".cs": "csharp",
             ".ts": "typescript",
-            ".tsx": "tsx",
+            ".tsx": "typescript",
             ".js": "javascript",
             ".jsx": "javascript",
             ".php": "php",
@@ -1069,7 +1070,14 @@ class CodeIndex:
     @staticmethod
     def _language_for_path(path: str, settings: Any | None) -> str:
         from .treesitter_parser import language_for_path
-
+        suffix = Path(path).suffix.lower()
+        overrides = getattr(settings, "language_overrides", {}) if settings is not None else {}
+        for language, override in overrides.items() if hasattr(overrides, "items") else ():
+            extensions = override.get("text_extensions", ()) if hasattr(override, "get") else ()
+            if suffix in {str(extension).lower() for extension in extensions}:
+                return str(language).strip().lower()
+        if suffix == ".tsx":
+            return "tsx"
         return language_for_path(path, CodeIndex._lang(path), settings)
 
     def _remove_indexed_paths(self, root: str, paths: list[str]) -> None:
@@ -1244,7 +1252,7 @@ class CodeIndex:
         refs: list[dict[str, Any]] = []
         edges: list[dict[str, Any]] = []
 
-        lines = text.splitlines()
+        lines = _mask_non_code(text, "csharp").splitlines()
         brace_pairs, next_open = self._brace_metadata(lines)
 
         class_re = re.compile(
@@ -1310,10 +1318,15 @@ class CodeIndex:
                         b = base.strip().split("<")[0].strip()
                         if b:
                             edges.append({"src": name_path, "dst": b, "kind": "inherits" if "class" in kind else "implements", "line": i})
-                continue
+                curr_container = "/".join(c[0] for c in container_stack)
+                method_text = line[cm.end():]
+                class_body_open = method_text.find("{")
+                if class_body_open >= 0:
+                    method_text = method_text[class_body_open + 1:]
+            else:
+                method_text = line
 
-            method_text = line
-            if i < len(lines) and re.match(r"^\s*\{", lines[i]):
+            if not cm and i < len(lines) and re.match(r"^\s*\{", lines[i]):
                 method_text += "\n" + lines[i]
             mm = method_re.match(method_text)
             if (
@@ -1379,13 +1392,13 @@ class CodeIndex:
                     symbol["_body_close_position"] = close_position
 
         call_pattern = re.compile(r"\b([A-Za-z_$][A-Za-z0-9_$]{2,})\s*\(")
-        declaration_lines = {int(symbol["line"]) for symbol in syms}
         call_owners = self._call_owners_by_line(syms, len(lines))
         for i, line in enumerate(lines, 1):
-            cleaned = line.split("//")[0]
+            cleaned = line
+            declaration_spans = _declaration_call_spans(cleaned)
             for m in call_pattern.finditer(cleaned):
                 cname = m.group(1)
-                if cname not in _CONTROL_NAMES and i not in declaration_lines:
+                if cname.lower() not in _CONTROL_NAMES and m.span(1) not in declaration_spans:
                     refs.append({"name": cname, "line": i, "kind": "call"})
                     edges.append({
                         "src": _call_edge_source(syms, i, column=m.start(1), source_line=line),
@@ -1402,7 +1415,8 @@ class CodeIndex:
         syms: list[dict[str, Any]] = []
         refs: list[dict[str, Any]] = []
         edges: list[dict[str, Any]] = []
-        lines = text.splitlines()
+        raw_lines = text.splitlines()
+        lines = _mask_non_code(text, lang).splitlines()
         brace_pairs, next_open = self._brace_metadata(lines)
 
         ns_pattern = re.compile(r"^\s*namespace\s+([A-Za-z0-9_\\]+)")
@@ -1421,7 +1435,7 @@ class CodeIndex:
                 declarations.append((m.group(1), m.group(2)))
             else:
                 for pattern in (ARROW_DEF, GO_METHOD, TYPED_METHOD, JS_METHOD):
-                    mm = pattern.match(line)
+                    mm = pattern.search(line) if pattern is TYPED_METHOD else pattern.match(line)
                     if mm and mm.group(1).lower() not in _CONTROL_NAMES:
                         declarations.append(("function", mm.group(1)))
                         break
@@ -1445,7 +1459,7 @@ class CodeIndex:
                     "docstring": "",
                 })
 
-            im = IMPORT.match(line)
+            im = IMPORT.match(raw_lines[i - 1]) if line.strip() else None
             if im:
                 dst = next((x for x in im.groups() if x), "")
                 edges.append({"src": "<module>", "dst": dst, "kind": "imports", "line": i})
@@ -1474,12 +1488,12 @@ class CodeIndex:
             syms.append(s)
 
         call_re = re.compile(r"\b([A-Za-z_$][A-Za-z0-9_$]{2,})\s*\(")
-        declaration_lines = {int(symbol["line"]) for symbol in syms}
         call_owners = self._call_owners_by_line(syms, len(lines))
         for i, line in enumerate(lines, 1):
+            declaration_spans = _declaration_call_spans(line)
             for m in call_re.finditer(line):
                 name = m.group(1)
-                if name.lower() not in _CONTROL_NAMES and i not in declaration_lines:
+                if name.lower() not in _CONTROL_NAMES and m.span(1) not in declaration_spans:
                     refs.append({"name": name, "line": i, "kind": "call"})
                     edges.append({
                         "src": _call_edge_source(syms, i, column=m.start(1), source_line=line),
@@ -1540,7 +1554,8 @@ class CodeIndex:
 
 
     def _parse_file_content(self, text: str, lang: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-        symbols, refs, edges, _diagnostic = self._parse_file_content_report(text, lang)
+        symbols, refs, edges, diagnostic = self._parse_file_content_report(text, lang)
+        self._parse_diagnostic.value = diagnostic
         return symbols, refs, edges
 
     def _parse_blob_get(self, content_hash: str, language: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]] | None:
@@ -1676,7 +1691,8 @@ class CodeIndex:
         parsed = parsed_with_report[0] if parsed_with_report is not None else None
         if parsed is None:
             text = "\n".join(lines)
-            syms, refs, edges, parse_outcome = self._parse_file_content_report(text, lang)
+            syms, refs, edges = self._parse_file_content(text, lang)
+            parse_outcome = dict(getattr(self._parse_diagnostic, "value", {}))
             self._parse_blob_put(content_hash, lang, syms, refs, edges, parse_outcome)
         else:
             syms, refs, edges = parsed
@@ -1835,7 +1851,8 @@ class CodeIndex:
             path, content_hash, lang, lines = cand
             parsed = blob_map.get((content_hash, lang))
             if parsed is None:
-                syms, refs, edges, diagnostic = self._parse_file_content_report("\n".join(lines), lang)
+                syms, refs, edges = self._parse_file_content("\n".join(lines), lang)
+                diagnostic = dict(getattr(self._parse_diagnostic, "value", {}))
                 row_blob = (content_hash, _PARSER_ANALYZER_VERSION, lang, json_dumps({"symbols": syms, "refs": refs, "edges": edges, "parse_outcome": diagnostic}, ensure_ascii=False, separators=(",", ":")), now)
             else:
                 syms, refs, edges, diagnostic = parsed
@@ -1877,7 +1894,13 @@ class CodeIndex:
                 con.commit()
             self._advance_query_cache_generation()
         self._status_cache.pop(c_root, None)
-        return {"success": True, "files_processed": len(files_to_insert), "cached": cached, "symbols": len(syms_to_insert), "refs": len(refs_to_insert), "edges": len(edges_to_insert), "parse_blob_hits": len(candidates) - len(parse_blob_rows)}
+        indexed_paths = [str(item[1]) for item in files_to_insert]
+        return {
+            "success": True, "files_processed": len(files_to_insert), "cached": cached,
+            "symbols": len(syms_to_insert), "refs": len(refs_to_insert), "edges": len(edges_to_insert),
+            "parse_blob_hits": len(candidates) - len(parse_blob_rows),
+            "parse_outcomes": self._parse_outcomes_for_paths(c_root, indexed_paths),
+        }
 
     @staticmethod
     def _query_terms(query: str) -> list[str]:
@@ -2571,11 +2594,15 @@ class CodeIndex:
                         remaining = max_symbols - len(symbol_rows)
                         fetched_symbols = con.execute(
                             f"SELECT path,name,kind,line,name_path FROM symbols WHERE root=? AND path IN ({placeholders}) ORDER BY path,line LIMIT ?",
-                            (resolved_root, *chunk, remaining + 1),
+                            (resolved_root, *chunk, remaining),
                         ).fetchall()
-                        if len(fetched_symbols) > remaining:
-                            symbols_truncated = True
-                        symbol_rows.extend(fetched_symbols[:remaining])
+                        if len(fetched_symbols) == remaining:
+                            has_more_symbols = con.execute(
+                                f"SELECT 1 FROM symbols WHERE root=? AND path IN ({placeholders}) ORDER BY path,line LIMIT 1 OFFSET ?",
+                                (resolved_root, *chunk, remaining),
+                            ).fetchone()
+                            symbols_truncated = has_more_symbols is not None
+                        symbol_rows.extend(fetched_symbols)
                     elif not symbols_truncated:
                         later_symbol = con.execute(
                             f"SELECT 1 FROM symbols WHERE root=? AND path IN ({placeholders}) LIMIT 1",
@@ -2612,10 +2639,14 @@ class CodeIndex:
                         item["mentions"] += int(r["mentions"] or 0)
                     edge_rows = con.execute(
                         f"SELECT path,dst,kind FROM edges WHERE root=? AND dst IN ({name_placeholders}) LIMIT ?",
-                        (resolved_root, *names, dependent_scan_limit + 1),
+                        (resolved_root, *names, dependent_scan_limit),
                     ).fetchall()
-                    if len(edge_rows) > dependent_scan_limit:
-                        dependent_source_truncated = True
+                    if len(edge_rows) == dependent_scan_limit:
+                        has_more_edges = con.execute(
+                            f"SELECT 1 FROM edges WHERE root=? AND dst IN ({name_placeholders}) LIMIT 1 OFFSET ?",
+                            (resolved_root, *names, dependent_scan_limit),
+                        ).fetchone()
+                        dependent_source_truncated = has_more_edges is not None
                     for r in edge_rows[:dependent_scan_limit]:
                         path = self._norm_rel(str(r["path"]))
                         if path in changed:
@@ -2969,7 +3000,7 @@ class CodeIndex:
         result_limit = max(0, int(limit))
         escaped_sym = _escape_like_literal(sym)
         try:
-            with self._lock, closing(self._connect()) as con:
+            with closing(self._connect()) as con:
                 rows = con.execute(
                     """SELECT src, dst, kind, path, line FROM edges
                        WHERE root=? AND kind='calls'
@@ -3017,7 +3048,7 @@ class CodeIndex:
         result_limit = max(0, int(limit))
         escaped_sym = _escape_like_literal(sym)
         try:
-            with self._lock, closing(self._connect()) as con:
+            with closing(self._connect()) as con:
                 rows = con.execute(
                     """SELECT src, dst, kind, path, line FROM edges
                        WHERE root=? AND kind='calls'

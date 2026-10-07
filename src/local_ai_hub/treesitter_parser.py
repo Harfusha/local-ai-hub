@@ -19,6 +19,7 @@ _PARSERS: dict[str, Any] = {}
 _LANGUAGES: dict[str, Any] = {}
 _INIT_ATTEMPTED = False
 _PARSER_LOCK = threading.RLock()
+_LAZY_LANGUAGE_PACKS = {"java": "java", "cpp": "cpp"}
 
 
 def _init_treesitter() -> bool:
@@ -49,8 +50,6 @@ def _init_treesitter_once() -> bool:
             "python": "python",
             "go": "go",
             "rust": "rust",
-            "java": "java",
-            "cpp": "cpp",
         }
         for internal_key, tslp_key in mapping.items():
             try:
@@ -129,10 +128,35 @@ def _init_treesitter_once() -> bool:
     return bool(_PARSERS)
 
 
+def _load_lazy_language_pack(language: str) -> bool:
+    pack_language = _LAZY_LANGUAGE_PACKS.get(language)
+    if not pack_language:
+        return False
+    with _PARSER_LOCK:
+        if language in _PARSERS:
+            return True
+        try:
+            import tree_sitter_language_pack as tslp
+
+            if not tslp.has_language(pack_language):
+                return False
+            parsed_language = tslp.get_language(pack_language)
+            parser = tslp.get_parser(pack_language)
+        except Exception as exc:
+            logger.debug("Tree-sitter %s grammar unavailable: %s", pack_language, exc)
+            return False
+        _LANGUAGES[language] = parsed_language
+        _PARSERS[language] = parser
+        return True
+
+
 def is_treesitter_available(lang: str) -> bool:
     if not _INIT_ATTEMPTED:
         _init_treesitter()
     norm = lang.lower().strip()
+    lazy_language = "cpp" if norm == "c++" else norm
+    if lazy_language in _LAZY_LANGUAGE_PACKS:
+        _load_lazy_language_pack(lazy_language)
     if norm in ("cs", "csharp"):
         return "csharp" in _PARSERS
     if norm in ("ts", "typescript"):
@@ -192,6 +216,9 @@ def parse_treesitter_with_status(text: str, language: str) -> dict[str, Any]:
         "rs": "rust", "rust": "rust",
         "java": "java", "cpp": "cpp", "c++": "cpp",
     }.get(norm)
+
+    if key in _LAZY_LANGUAGE_PACKS and key not in _PARSERS:
+        _load_lazy_language_pack(key)
 
     if not key or key not in _PARSERS:
         return {"result": None, "status": "unavailable", "parser": "tree_sitter", "fallback_reason": "parser_unavailable", "syntax_error_count": 0}
@@ -419,7 +446,7 @@ def _extract_csharp(
             if fn_node:
                 fn_text = _node_text(fn_node, source_bytes)
                 leaf_name = fn_text.split(".")[-1]
-                if leaf_name and len(leaf_name) > 2 and leaf_name[0].isalpha():
+                if leaf_name and leaf_name[0].isalpha():
                     refs.append({
                         "name": leaf_name,
                         "line": node.start_point.row + 1,
@@ -754,7 +781,7 @@ def _extract_js_ts(
             if fn_node:
                 fn_text = _node_text(fn_node, source_bytes)
                 leaf_name = fn_text.split(".")[-1]
-                if leaf_name and len(leaf_name) > 1 and leaf_name[0].isalpha():
+                if leaf_name and leaf_name[0].isalpha():
                     refs.append({
                         "name": leaf_name,
                         "line": node.start_point.row + 1,
@@ -869,7 +896,7 @@ def _extract_python(
             if fn_node:
                 fn_text = _node_text(fn_node, source_bytes)
                 leaf_name = fn_text.split(".")[-1]
-                if leaf_name and len(leaf_name) > 1 and leaf_name[0].isalpha():
+                if leaf_name and leaf_name[0].isalpha():
                     refs.append({
                         "name": leaf_name,
                         "line": node.start_point.row + 1,
@@ -1001,7 +1028,7 @@ def _extract_go(
             if fn_node:
                 fn_text = _node_text(fn_node, source_bytes)
                 leaf_name = fn_text.split(".")[-1]
-                if leaf_name and len(leaf_name) > 1 and leaf_name[0].isalpha():
+                if leaf_name and leaf_name[0].isalpha():
                     refs.append({
                         "name": leaf_name,
                         "line": node.start_point.row + 1,
@@ -1101,7 +1128,7 @@ def _extract_rust(
             if fn_node:
                 fn_text = _node_text(fn_node, source_bytes)
                 leaf_name = fn_text.split("::")[-1].split(".")[-1].rstrip("!")
-                if leaf_name and len(leaf_name) > 1 and leaf_name[0].isalpha():
+                if leaf_name and leaf_name[0].isalpha():
                     refs.append({
                         "name": leaf_name,
                         "line": node.start_point.row + 1,
@@ -1109,7 +1136,7 @@ def _extract_rust(
                     })
                     edges.append({
                         "src": curr_func or "<module>",
-                        "dst": leaf_name,
+                        "dst": fn_text.rstrip("!"),
                         "kind": "calls",
                         "line": node.start_point.row + 1,
                     })

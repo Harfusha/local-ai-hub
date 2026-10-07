@@ -238,6 +238,66 @@ def process_identity(pid: int) -> dict[str, Any] | None:
         return None
 
 
+def process_parent_pid(pid: int | None = None) -> int | None:
+    """Return the direct parent PID, using the Windows process table on Windows.
+
+    CPython's os.getppid() can report the console ancestor for a hidden
+    process launched in a new process group, rather than its direct creator.
+    """
+    target_pid = os.getpid() if pid is None else pid
+    if isinstance(target_pid, bool) or not isinstance(target_pid, int) or target_pid <= 0:
+        return None
+    if os.name != "nt":
+        return os.getppid() if target_pid == os.getpid() else None
+
+    try:
+        from ctypes import wintypes
+
+        class PROCESSENTRY32W(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", ctypes.c_size_t),
+                ("th32ModuleID", wintypes.DWORD),
+                ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", wintypes.LONG),
+                ("dwFlags", wintypes.DWORD),
+                ("szExeFile", wintypes.WCHAR * 260),
+            ]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
+        kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+        kernel32.Process32FirstW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+        kernel32.Process32FirstW.restype = wintypes.BOOL
+        kernel32.Process32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(PROCESSENTRY32W)]
+        kernel32.Process32NextW.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+
+        snapshot = kernel32.CreateToolhelp32Snapshot(0x00000002, 0)  # TH32CS_SNAPPROCESS
+        snapshot_value = snapshot if isinstance(snapshot, int) else snapshot.value
+        if not snapshot_value or snapshot_value == ctypes.c_void_p(-1).value:
+            return None
+        try:
+            entry = PROCESSENTRY32W()
+            entry.dwSize = ctypes.sizeof(entry)
+            found = kernel32.Process32FirstW(snapshot, ctypes.byref(entry))
+            while found:
+                if int(entry.th32ProcessID) == target_pid:
+                    parent_pid = int(entry.th32ParentProcessID)
+                    return parent_pid if parent_pid > 0 else None
+                entry.dwSize = ctypes.sizeof(entry)
+                found = kernel32.Process32NextW(snapshot, ctypes.byref(entry))
+            return None
+        finally:
+            kernel32.CloseHandle(snapshot)
+    except Exception:
+        return None
+
+
 def process_owner_record(pid: int, state_dir: str | Path, role: str) -> dict[str, Any] | None:
     """Bind process identity to one Local AI Hub state directory and role."""
     identity = process_identity(pid)
@@ -666,9 +726,54 @@ def terminate_tree(
             return cp.returncode in {0, 128}
         except Exception:
             return not pid_alive(pid)
-    # POSIX process groups have no stable signal handle here. A numeric PGID (or
-    # PID fallback) can be reused after an ownership check and before killpg/kill.
-    # Fail closed until cleanup is passed a continuously held owner capability.
+    # A process group is the caller's explicit tree-ownership capability. Never
+    # fall back to the leader PID: it may have exited and been reused while the
+    # group still contains descendants.
+    if process_group is None or isinstance(process_group, bool):
+        return False
+    try:
+        group_id = int(process_group)
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if group_id <= 0:
+        return False
+
+    try:
+        os.killpg(group_id, signal.SIGTERM)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+
+    deadline = time.monotonic() + max(0.5, min(grace_seconds, 5.0))
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(0.05, remaining))
+
+    # Escalate only while the same numeric group is still verifiably present.
+    # ESRCH means it disappeared; EPERM or any other error is unverifiable.
+    try:
+        os.killpg(group_id, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+
+    try:
+        os.killpg(group_id, signal.SIGKILL)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
+
+    try:
+        os.killpg(group_id, 0)
+    except ProcessLookupError:
+        return True
+    except OSError:
+        return False
     return False
 
 
@@ -953,13 +1058,15 @@ def _terminate_and_drain(
                 final_stderr = final_drain_error.stderr
         except Exception:
             pass
+        # Stop waiting on inherited pipes even when tree cleanup is unverified.
+        # Closing our read ends bounds this call; it does not claim child exit.
+        for stream in (process.stdout, process.stderr):
+            if stream is not None:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
         if cleanup_confirmed:
-            for stream in (process.stdout, process.stderr):
-                if stream is not None:
-                    try:
-                        stream.close()
-                    except OSError:
-                        pass
             if os.name == "nt":
                 try:
                     process.kill()

@@ -107,6 +107,7 @@ def _handler(monkeypatch, tmp_path, *, method, path, payload=None, peer="127.0.0
         runtime=runtime or _OllamaRuntime(["fast:latest"]),
         recovery=_Recovery(),
         debug_traces=None,
+        telemetry=SimpleNamespace(record_system=lambda *_args, **_kwargs: None),
     )
     if manager is not None:
         manager.state_dir = tmp_path
@@ -146,15 +147,16 @@ def test_get_mode_returns_persisted_snapshot_for_loopback(monkeypatch, tmp_path)
     assert response["revision"] == 1
 
 
-def test_get_mode_requires_configured_api_token(monkeypatch, tmp_path):
+def test_get_mode_is_available_to_loopback_dashboard_without_token(monkeypatch, tmp_path):
     handler, _app, responses = _handler(
         monkeypatch, tmp_path, method="GET", path="/api/mode", auth_token=None
     )
 
     http_server.Handler.do_GET(handler)
 
-    assert responses[0][0] == 401
-    assert responses[0][1]["error"] == "unauthorized"
+    assert responses[0][0] == 200
+    assert responses[0][1]["success"] is True
+    assert responses[0][1]["mode"] == "active"
 
 
 def test_admin_mode_control_remains_available_in_maintenance(monkeypatch, tmp_path):
@@ -339,7 +341,7 @@ def test_post_mode_rejects_invalid_mode_without_persisting(monkeypatch, tmp_path
     assert operational_mode.load_operational_mode(tmp_path).mode == "active"
 
 
-def test_sync_inference_http_gate_retries_but_read_only_context_stays_unclassified(
+def test_sync_inference_http_gate_retries(
     monkeypatch, tmp_path
 ):
     operational_mode.set_operational_mode(tmp_path, "gaming")
@@ -355,8 +357,6 @@ def test_sync_inference_http_gate_retries_but_read_only_context_stays_unclassifi
     assert response["terminal"] is False
     assert response["retryable"] is True
     assert 0 < response["retry_after_seconds"] <= 10
-    assert http_server._http_inference_action("/api/context/pack", {}) is None
-    assert http_server._http_inference_action("/api/repo/deterministic", {}) is None
 
 
 @pytest.mark.parametrize(

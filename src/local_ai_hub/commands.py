@@ -949,7 +949,16 @@ def _snapshot_patch_targets(
                 except (OSError, TypeError, ValueError) as exc:
                     raise ValueError("cannot preserve file access time during patch snapshot") from exc
             elif os.name == "nt":
-                _restore_windows_atime(fd, target, info.st_atime_ns)
+                # The CRT descriptor is intentionally read-only, so SetFileTime
+                # on its handle fails with ERROR_ACCESS_DENIED. Restore through
+                # the path only after confirming it still names the pinned file.
+                current = target.stat(follow_symlinks=False)
+                if (current.st_dev, current.st_ino) != (final.st_dev, final.st_ino):
+                    raise ValueError(f"patch target changed while restoring access time: {relative}")
+                os.utime(
+                    target,
+                    ns=(info.st_atime_ns, info.st_mtime_ns),
+                )
         finally:
             os.close(fd)
         total_bytes += read_size
@@ -1106,7 +1115,7 @@ def _restore_patch_targets(
             target.unlink()
         fd, temp_name = tempfile.mkstemp(prefix=".local-ai-patch-rollback-", dir=str(target.parent))
         try:
-            with os.fdopen(fd, "wb") as destination:
+            with os.fdopen(fd, "wb", closefd=False) as destination:
                 destination.write(file_snapshot.content or b"")
                 destination.flush()
                 os.fsync(destination.fileno())
@@ -1118,14 +1127,21 @@ def _restore_patch_targets(
                 for attr_name, attr_value in file_snapshot.xattrs.items():
                     os.setxattr(temp_name, attr_name, attr_value)
             if file_snapshot.windows_dacl is not None:
-                _set_windows_dacl(temp_name, file_snapshot.windows_dacl)
+                _set_windows_dacl_path(temp_name, file_snapshot.windows_dacl, fd)
             if file_snapshot.atime_ns is not None and file_snapshot.mtime_ns is not None:
                 if os.name == "nt":
                     os.utime(temp_name, ns=(file_snapshot.atime_ns, file_snapshot.mtime_ns))
                 else:
                     os.utime(temp_name, ns=(file_snapshot.atime_ns, file_snapshot.mtime_ns), follow_symlinks=False)
+            os.close(fd)
+            fd = -1
             os.replace(temp_name, target)
         finally:
+            if fd >= 0:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
             try:
                 os.unlink(temp_name)
             except FileNotFoundError:
@@ -1175,6 +1191,44 @@ def _set_windows_dacl(fd: int, descriptor: bytes) -> None:
     security_descriptor = ctypes.create_string_buffer(descriptor)
     if not advapi32.SetKernelObjectSecurity(msvcrt.get_osfhandle(fd), 0x4, security_descriptor):
         raise OSError(ctypes.get_last_error(), "cannot restore rollback target DACL")
+
+
+def _set_windows_dacl_path(path: str | Path, descriptor: bytes, expected_fd: int) -> None:
+    """Restore a DACL on a verified temp file using a handle with WRITE_DAC."""
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    create_file = kernel32.CreateFileW
+    create_file.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    ]
+    create_file.restype = wintypes.HANDLE
+    handle = create_file(
+        str(path), 0x00040000 | 0x00000080, 0x1 | 0x2, None, 3,
+        0x00200000 | 0x08000000, None,
+    )
+    invalid_handle = ctypes.c_void_p(-1).value
+    if handle == invalid_handle:
+        raise OSError(ctypes.get_last_error(), "cannot open rollback temp file for DACL restore")
+    raw_handle = int(handle)
+    try:
+        attributes, _reparse_tag = _windows_handle_attributes(raw_handle)
+        if attributes & 0x400 or _windows_handle_identity(raw_handle) != _windows_handle_identity(
+            msvcrt.get_osfhandle(expected_fd)
+        ):
+            raise OSError("rollback temp file identity changed before DACL restore")
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        set_security = advapi32.SetKernelObjectSecurity
+        set_security.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p]
+        set_security.restype = wintypes.BOOL
+        security_descriptor = ctypes.create_string_buffer(descriptor)
+        if not set_security(wintypes.HANDLE(raw_handle), 0x4, security_descriptor):
+            raise OSError(ctypes.get_last_error(), "cannot restore rollback target DACL")
+    finally:
+        _close_rollback_root(raw_handle)
 
 
 def _restore_windows_file_attributes(fd: int, mode: int | None) -> None:
@@ -1802,7 +1856,17 @@ def _snapshot_rollback_scope(
                         except (OSError, TypeError, ValueError) as exc:
                             raise ValueError("cannot preserve file access time during rollback snapshot") from exc
                     elif os.name == "nt":
-                        _restore_windows_atime(fd, opened_stat.st_atime_ns)
+                        target_path = root.joinpath(*parts)
+                        current = target_path.lstat()
+                        if (
+                            stat.S_ISLNK(current.st_mode)
+                            or (current.st_dev, current.st_ino) != (final_stat.st_dev, final_stat.st_ino)
+                        ):
+                            raise ValueError(f"rollback target changed while restoring access time: {raw[:160]}")
+                        os.utime(
+                            target_path,
+                            ns=(opened_stat.st_atime_ns, opened_stat.st_mtime_ns),
+                        )
                     xattrs: dict[str, bytes] = {}
                     metadata_size = 0
                     if os.name != "nt" and hasattr(os, "listxattr"):
@@ -2875,6 +2939,7 @@ class CommandBroker:
         self._transaction_state_dir = state_dir / "command-transactions"
         self._transaction_leases = ScopeLeaseStore(state_dir)
         self._active_transaction_roots: dict[str, Path] = {}
+        self._active_transaction_sources: dict[str, Path] = {}
         self._transaction_roots_lock = threading.RLock()
         self._daemon_state_dir = state_dir / "daemons"
         self._daemon_registry_path = self._daemon_state_dir / "registry.json"
@@ -3592,7 +3657,6 @@ class CommandBroker:
                 "cached": cached,
             }
             if project_bound:
-                proof["command"] = command
                 binding = {
                     "project_alias": project_alias,
                     "project_config_digest": project_config_digest,
@@ -4238,10 +4302,14 @@ class CommandBroker:
             classifications = []
             for _, subcmd in seq_parts:
                 sub_res = self.classify(subcmd)
-                if not sub_res.get("allowed"):
-                    return sub_res
                 classifications.append(sub_res)
             classes = [result.get("class", "unknown") for result in classifications]
+            dangerous = next((result for result in classifications if result.get("class") == "dangerous"), None)
+            if dangerous is not None:
+                return dangerous
+            blocked = next((result for result in classifications if not result.get("allowed")), None)
+            if blocked is not None:
+                return blocked
             order = ["dangerous", "unknown", "mutating", "build", "validation", "read"]
             for o in order:
                 if o in classes:
@@ -4428,7 +4496,7 @@ class CommandBroker:
                 if dash_m in {"local_ai_hub", "local_ai_hub.generator"}:
                     return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": f"python -m {dash_m} dynamic artifacts generator"}
                 if dash_m == "pip":
-                    pip_sub = [t.lower() for t in tokens[2:] if not t.startswith("-")]
+                    pip_sub = [t.lower() for t in tokens[idx + 2:] if not t.startswith("-")]
                     pip_action = pip_sub[0] if pip_sub else ""
                     if pip_action in {"list", "show", "check"} or any(flag in lower for flag in {"--version", "-v"}):
                         return {"class": "read", "cacheable": True, "allowed": bool(cfg.get("allow_read", True)), "reason": f"python -m pip {pip_action or 'info'}"}
@@ -4472,6 +4540,60 @@ class CommandBroker:
                             )
                         return False
 
+                    safe_module_names: set[str] = set()
+                    literal_bound_names: set[str] = set()
+                    unsafe_bound_names: set[str] = set()
+                    shadowed_names: set[str] = set()
+                    for candidate in ast.walk(tree):
+                        if isinstance(candidate, ast.Import):
+                            safe_module_names.update(
+                                alias.asname or alias.name.split(".", 1)[0]
+                                for alias in candidate.names
+                                if alias.name == "sys"
+                            )
+                        elif isinstance(candidate, ast.Name) and isinstance(candidate.ctx, ast.Store):
+                            shadowed_names.add(candidate.id)
+                        elif isinstance(candidate, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                            shadowed_names.add(candidate.name)
+
+                        targets: list[ast.AST] = []
+                        value: ast.AST | None = None
+                        if isinstance(candidate, ast.Assign):
+                            targets, value = candidate.targets, candidate.value
+                        elif isinstance(candidate, ast.AnnAssign):
+                            targets, value = [candidate.target], candidate.value
+                        elif isinstance(candidate, ast.NamedExpr):
+                            targets, value = [candidate.target], candidate.value
+                        elif isinstance(candidate, ast.AugAssign):
+                            targets = [candidate.target]
+                        target_names = {
+                            target.id for target in targets if isinstance(target, ast.Name)
+                        }
+                        shadowed_names.update(target_names)
+                        if value is not None:
+                            if _literal_only(value):
+                                literal_bound_names.update(target_names)
+                            else:
+                                unsafe_bound_names.update(target_names)
+                        elif target_names:
+                            unsafe_bound_names.update(target_names)
+
+                    safe_value_names = (literal_bound_names - unsafe_bound_names) | safe_module_names
+
+                    def _safe_inline_value(node: ast.AST) -> bool:
+                        if _literal_only(node):
+                            return True
+                        if isinstance(node, ast.Name):
+                            return node.id in safe_value_names
+                        if isinstance(node, ast.Attribute):
+                            current: ast.AST = node
+                            while isinstance(current, ast.Attribute):
+                                if current.attr.startswith("_"):
+                                    return False
+                                current = current.value
+                            return isinstance(current, ast.Name) and current.id in safe_module_names
+                        return False
+
                     for node in ast.walk(tree):
                         if isinstance(node, ast.Call):
                             func_name = ""
@@ -4493,8 +4615,9 @@ class CommandBroker:
                             if (
                                 not isinstance(node.func, ast.Name)
                                 or func_name not in safe_builtin_calls
-                                or not all(_literal_only(arg) for arg in node.args)
-                                or not all(_literal_only(keyword.value) for keyword in node.keywords)
+                                or func_name in shadowed_names
+                                or not all(_safe_inline_value(arg) for arg in node.args)
+                                or not all(_safe_inline_value(keyword.value) for keyword in node.keywords)
                             ):
                                 return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": f"python -c inline code has unverified call: {func_name or 'dynamic'}"}
                         elif isinstance(node, ast.Import):
@@ -4819,26 +4942,28 @@ class CommandBroker:
         rollback_paths: Sequence[str] | None = None,
     ) -> None:
         result.update({
+            "failure_kind": "rollback_incomplete",
             "rolled_back": False,
             "rollback_paths": list(rollback_paths or ()),
             "rollback_error": str(error)[:512],
             "outcome_unknown": True,
             "fail_closed": True,
             "incident_required": True,
+            "terminal": True,
             "cache_hit": False,
             "coalesced": False,
             "retryable": False,
         })
         invalidation_errors: list[str] = []
-        for cache, cache_key in (
+        for cache, key in (
             (self.success_cache, command_key),
             (self.failure_cache, command_key),
             (self.suppression_cache, attempt_key),
         ):
             try:
-                deleted = cache.delete(cache_key)
-                if deleted is False:
+                if cache.delete(key) is False:
                     invalidation_errors.append("cache delete reported failure")
+                cache.clear()
             except Exception as cache_exc:
                 invalidation_errors.append(str(cache_exc)[:160])
         with self._lock:
@@ -5719,6 +5844,10 @@ class CommandBroker:
             active = self._active_transaction_roots.get(transaction_id)
         return active if active is not None else (self._transaction_state_dir / transaction_id)
 
+    def _transaction_source_for_context(self, transaction_id: str) -> Path | None:
+        with self._transaction_roots_lock:
+            return self._active_transaction_sources.get(transaction_id)
+
     @staticmethod
     def _transaction_file_matches(left: RollbackFileSnapshot, right: RollbackFileSnapshot) -> bool:
         return (
@@ -6137,6 +6266,17 @@ class CommandBroker:
             }
 
         source = Path(canonical_root(source_root)).resolve(strict=True)
+        if work_attempt_fence is None:
+            return {
+                "success": False,
+                "transaction_id": transaction_id,
+                "transaction_status": "discarded",
+                "failure_kind": "work_attempt_fence_required",
+                "mutation_fence_required": True,
+                "outcome_unknown": False,
+                "terminal": True,
+                "retryable": False,
+            }
         try:
             attempt_payload = self._assert_work_attempt_fence(
                 work_attempt_fence, task_id=task_id, resource=source
@@ -6276,6 +6416,7 @@ class CommandBroker:
             )
             with self._transaction_roots_lock:
                 self._active_transaction_roots[transaction_id] = transaction_root.resolve(strict=True)
+                self._active_transaction_sources[transaction_id] = source
             if callable(operation):
                 try:
                     execution = operation(transaction_root, transaction_id)
@@ -6493,68 +6634,86 @@ class CommandBroker:
                             for path in changed_paths
                         },
                     }
-                    with self._fenced_transaction_commit(
-                        work_attempt_fence,
-                        task_id=task_id,
-                        source=source,
-                        paths=changed_paths,
-                        owner_id=f"command-import:{task_id}:{transaction_id}:{uuid.uuid4().hex}",
-                        namespace_kwargs=namespace_kwargs,
-                    ) as (fencing_lease, commit_attempt_payload):
-                        journal_payload["attempt_fence"] = commit_attempt_payload
-                        journal_payload["fencing"] = {
-                            "lease_id": fencing_lease.lease_id,
-                            "fencing_token": fencing_lease.fencing_token,
-                        }
-                        directory_fsync_supported = self._persist_transaction_journal(
-                            journal_path, journal_payload
-                        )
-                        try:
-                            _restore_rollback_scope(str(source), import_snapshot)
-                        except Exception as import_error:
-                            restored = self._recover_partial_transaction_import(
-                                source, source_snapshot, transaction_snapshot, changed_paths
+                    commit_started = False
+                    try:
+                        with self._fenced_transaction_commit(
+                            work_attempt_fence,
+                            task_id=task_id,
+                            source=source,
+                            paths=changed_paths,
+                            owner_id=f"command-import:{task_id}:{transaction_id}:{uuid.uuid4().hex}",
+                            namespace_kwargs=namespace_kwargs,
+                        ) as (fencing_lease, commit_attempt_payload):
+                            journal_payload["attempt_fence"] = commit_attempt_payload
+                            journal_payload["fencing"] = {
+                                "lease_id": fencing_lease.lease_id,
+                                "fencing_token": fencing_lease.fencing_token,
+                            }
+                            directory_fsync_supported = self._persist_transaction_journal(
+                                journal_path, journal_payload
                             )
-                            if restored:
-                                directory_fsync_supported = (
-                                    self._fsync_rollback_directories(source, changed_paths)
-                                    and directory_fsync_supported
+                            commit_started = True
+                            try:
+                                _restore_rollback_scope(str(source), import_snapshot)
+                            except Exception as import_error:
+                                restored = self._recover_partial_transaction_import(
+                                    source, source_snapshot, transaction_snapshot, changed_paths
                                 )
+                                if restored:
+                                    directory_fsync_supported = (
+                                        self._fsync_rollback_directories(source, changed_paths)
+                                        and directory_fsync_supported
+                                    )
+                                    self._remove_transaction_journal(journal_path, journal_payload)
+                                    result.update({
+                                        "success": False,
+                                        "transaction_status": "discarded",
+                                        "failure_kind": "import_failed",
+                                        "outcome_unknown": False,
+                                        "retryable": False,
+                                        "terminal": True,
+                                        "rolled_back": True,
+                                        "error": f"transaction output import failed; source restored: {str(import_error)[:384]}",
+                                    })
+                                    return result
+                                raise OSError(f"transaction output import failed: {str(import_error)[:384]}") from import_error
+                            verify_snapshot, verify_error = _snapshot_rollback_scope(
+                                str(source), changed_paths
+                            )
+                            if verify_error or verify_snapshot is None:
+                                raise OSError(verify_error or "cannot verify imported transaction outputs")
+                            try:
+                                for path in changed_paths:
+                                    if not self._transaction_file_matches(
+                                        verify_snapshot.files[path], transaction_snapshot.files[path]
+                                    ):
+                                        raise OSError(f"imported transaction output changed: {path}")
+                            finally:
+                                _close_rollback_root(verify_snapshot.root_guard)
+                            directory_fsync_supported = (
+                                self._fsync_rollback_directories(source, changed_paths)
+                                and directory_fsync_supported
+                            )
+                            directory_fsync_supported = (
                                 self._remove_transaction_journal(journal_path, journal_payload)
-                                result.update({
-                                    "success": False,
-                                    "transaction_status": "discarded",
-                                    "failure_kind": "import_failed",
-                                    "outcome_unknown": False,
-                                    "retryable": False,
-                                    "terminal": True,
-                                    "rolled_back": True,
-                                    "error": f"transaction output import failed; source restored: {str(import_error)[:384]}",
-                                })
-                                return result
-                            raise OSError(f"transaction output import failed: {str(import_error)[:384]}") from import_error
+                                and directory_fsync_supported
+                            )
+                    except (RuntimeError, ValueError) as exc:
+                        if commit_started:
+                            raise
+                        result.update({
+                            "success": False,
+                            "transaction_status": "discarded",
+                            "failure_kind": "mutation_fence_lost",
+                            "outcome_unknown": False,
+                            "rolled_back": True,
+                            "source_unchanged": True,
+                            "retryable": False,
+                            "terminal": True,
+                            "error": str(exc)[:512],
+                        })
+                        return result
 
-                        verify_snapshot, verify_error = _snapshot_rollback_scope(
-                            str(source), changed_paths
-                        )
-                        if verify_error or verify_snapshot is None:
-                            raise OSError(verify_error or "cannot verify imported transaction outputs")
-                        try:
-                            for path in changed_paths:
-                                if not self._transaction_file_matches(
-                                    verify_snapshot.files[path], transaction_snapshot.files[path]
-                                ):
-                                    raise OSError(f"imported transaction output changed: {path}")
-                        finally:
-                            _close_rollback_root(verify_snapshot.root_guard)
-                        directory_fsync_supported = (
-                            self._fsync_rollback_directories(source, changed_paths)
-                            and directory_fsync_supported
-                        )
-                        directory_fsync_supported = (
-                            self._remove_transaction_journal(journal_path, journal_payload)
-                            and directory_fsync_supported
-                        )
                 result.update({
                     "success": True,
                     "transaction_status": "committed",
@@ -6619,6 +6778,7 @@ class CommandBroker:
                 shutil.rmtree(transaction_root, ignore_errors=True)
             with self._transaction_roots_lock:
                 self._active_transaction_roots.pop(transaction_id, None)
+                self._active_transaction_sources.pop(transaction_id, None)
             if not retain_lease:
                 self._transaction_leases.release(transaction_name, str(lease.get("lease_id") or ""))
 
@@ -7138,14 +7298,21 @@ class CommandBroker:
             return {
                 "success": False,
                 "error": "mutating transaction requires a current work attempt fence",
+                "failure_kind": "mutation_fence_unavailable",
                 "mutation_fence_required": True,
+                "outcome_unknown": False,
                 "terminal": True,
                 "retryable": False,
             }
         if _work_attempt_fence is not None:
             try:
+                fence_resource = cwd
+                if _transaction_context:
+                    fence_resource = self._transaction_source_for_context(_transaction_context)
+                    if fence_resource is None:
+                        raise ValueError("private transaction source identity is unavailable")
                 self._assert_work_attempt_fence(
-                    _work_attempt_fence, task_id=task_id, resource=cwd
+                    _work_attempt_fence, task_id=task_id, resource=fence_resource
                 )
             except (AttributeError, OSError, TypeError, ValueError, RuntimeError) as exc:
                 return {
@@ -8273,11 +8440,9 @@ class CommandBroker:
         classification = self.classify(command)
         replay_safe = bool(classification.get("replay_safe", False))
         if classification.get("class") == "mutating":
-            outcome_unknown = bool(
-                initial.get("outcome_unknown")
-                or initial.get("timed_out")
-                or initial.get("cancelled")
-            )
+            # A failed mutating command can leave partial effects inside its
+            # private transaction even when the command process exited cleanly.
+            outcome_unknown = True
             return {
                 "success": False,
                 "repaired": False,

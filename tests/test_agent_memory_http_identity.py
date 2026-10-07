@@ -30,7 +30,7 @@ def test_http_global_memory_identity_ignores_transport_tenant_but_keeps_scope(tm
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = 39131\nstate_dir = "{state_dir.as_posix()}"\n\n'
-        "[agent_state]\nenabled = true\n",
+        "[agent_state]\nenabled = true\n\n[security]\napi_token_tenant = \"codex\"\n",
         encoding="utf-8",
     )
     app = LocalAIApp(str(config_path))
@@ -117,8 +117,8 @@ def test_http_global_memory_identity_ignores_transport_tenant_but_keeps_scope(tm
             "tenant": "other-tenant",
         }
         status, denied_tenant = post(session_payload)
-        assert status == 200
-        assert denied_tenant["record"]["record_id"] == session_record.record_id
+        assert status == 403
+        assert denied_tenant["error_code"] == "tenant_binding_mismatch"
 
         owned_global_payload = {
             "record_id": owned_global_record.record_id,
@@ -131,7 +131,7 @@ def test_http_global_memory_identity_ignores_transport_tenant_but_keeps_scope(tm
         assert status == 404
         assert denied_owned_global["success"] is False
         status, found_owned_global = post({**owned_global_payload, "action": "get", "tenant": "owner-tenant"})
-        assert status == 404
+        assert status == 403
         assert found_owned_global["success"] is False
 
         delete_payload = {
@@ -210,7 +210,7 @@ def test_http_memory_get_and_mutations_bind_transport_tenant_and_project_identit
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = 39132\nstate_dir = "{state_dir.as_posix()}"\n\n'
-        "[agent_state]\nenabled = true\n",
+        "[agent_state]\nenabled = true\n\n[security]\napi_token_tenant = \"attacker\"\n",
         encoding="utf-8",
     )
     app = LocalAIApp(str(config_path))
@@ -349,7 +349,7 @@ def test_http_memory_get_and_mutations_bind_transport_tenant_and_project_identit
                 "tenant": "victim",
             },
         )
-        assert status == 400
+        assert status == 403
         assert unresolved_project["success"] is False
 
         status, denied_find = request(
@@ -390,7 +390,7 @@ def test_http_memory_get_and_mutations_bind_transport_tenant_and_project_identit
                 "tenant": "victim",
             },
         )
-        assert status == 404
+        assert status == 403
         assert denied_post_get["success"] is False
 
         status, created = request(
@@ -470,7 +470,7 @@ def test_http_memory_get_and_mutations_bind_transport_tenant_and_project_identit
                 "tenant": "victim",
             },
         )
-        assert status == 404
+        assert status == 403
         assert denied_delete["success"] is False
         assert memory.get(
             victim.record_id,
@@ -491,9 +491,15 @@ def test_http_memory_get_and_mutations_bind_transport_tenant_and_project_identit
                 "tenant": "victim",
             },
         )
-        assert status == 200
-        assert deleted["deleted"] is True
-        assert memory.get(victim.record_id) is None
+        assert status == 403
+        assert deleted["success"] is False
+        assert memory.get(
+            victim.record_id,
+            scope=AgentScope.GLOBAL,
+            root=str(repo_a),
+            repository_id="server-repo-a",
+            tenant="victim",
+        ) is not None
         assert project_resolutions
         assert all(state == state_dir.resolve() for _, state in project_resolutions)
     finally:
@@ -544,7 +550,7 @@ def test_http_memory_public_identity_blocks_spoofed_origin_and_foreign_queries(t
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = 39133\nstate_dir = "{state_dir.as_posix()}"\n\n'
-        "[agent_state]\nenabled = true\n",
+        "[agent_state]\nenabled = true\n\n[security]\napi_token_tenant = \"tenant-a\"\n",
         encoding="utf-8",
     )
     app = LocalAIApp(str(config_path))
@@ -652,7 +658,7 @@ def test_http_memory_public_identity_blocks_spoofed_origin_and_foreign_queries(t
             },
             tenant="tenant-b",
         )
-        assert status == 404
+        assert status == 403
         assert hidden_by_tenant["success"] is False
 
         status, hidden_by_root = request(
@@ -676,8 +682,8 @@ def test_http_memory_public_identity_blocks_spoofed_origin_and_foreign_queries(t
             },
             tenant="tenant-b",
         )
-        assert status == 200
-        assert tenant_list["records"] == []
+        assert status == 403
+        assert tenant_list["success"] is False
 
         status, spoofed_query_tenant = request(
             "GET",
@@ -702,7 +708,7 @@ def test_http_memory_public_identity_blocks_spoofed_origin_and_foreign_queries(t
             },
             tenant="tenant-b",
         )
-        assert status == 404
+        assert status == 403
         assert hidden_post_get["success"] is False
 
         status, post_find = request(
@@ -715,8 +721,8 @@ def test_http_memory_public_identity_blocks_spoofed_origin_and_foreign_queries(t
                 "tenant": "tenant-b",
             },
         )
-        assert status == 200
-        assert [item["record_id"] for item in post_find["records"]] == [tenant_owned.record_id]
+        assert status == 403
+        assert post_find["success"] is False
 
         status, usable_legacy = request(
             "GET",
@@ -794,9 +800,23 @@ def test_http_memory_public_identity_blocks_spoofed_origin_and_foreign_queries(t
             },
             tenant="tenant-b",
         )
-        assert status == 200
-        assert authorized_delete["deleted"] is True
-        assert app.agent_memory.get(tenant_owned.record_id) is None
+        assert status == 403
+        assert authorized_delete["success"] is False
+        assert app.agent_memory.get(
+            tenant_owned.record_id,
+            scope=AgentScope.GLOBAL,
+            root=str(repo_a.resolve()),
+            repository_id=repo_a_id,
+            tenant="tenant-a",
+        ) is not None
+
+        assert app.agent_memory.get(
+            tenant_owned.record_id,
+            scope=AgentScope.GLOBAL,
+            root=str(repo_a.resolve()),
+            repository_id=repo_a_id,
+            tenant="tenant-a",
+        ) is not None
     finally:
         server.shutdown()
         thread.join(timeout=5)

@@ -122,7 +122,7 @@ From the repository root:
 
 ```bash
 python tools/release_check.py
-python -m compileall -q src mcp tools tests
+python -m compileall -q src tools tests
 python -m pytest -q
 python tools/selftest.py
 ```

@@ -36,6 +36,7 @@ def _settings(*, excluded=("private/**",), skipped=(), overrides=None, project_t
         exclude_paths=(),
         force_include_paths=(),
         preprocess_exclude_paths=tuple(excluded),
+        path_overrides={},
         text_extensions=(),
         binary_extensions=(),
         max_file_size_bytes=maximum_size,
@@ -299,11 +300,13 @@ def test_candidate_consumers_with_real_root_project_config(tmp_path, monkeypatch
         sys.path.insert(0, str(overlay_source))
         import local_ai_hub
         assert Path(local_ai_hub.__file__).resolve() == (overlay_source / "local_ai_hub" / "__init__.py").resolve()
+        # Keep candidate modules isolated while resolving the authoritative
+        # root project_config imported by preprocess during module loading.
+        local_ai_hub.__path__.insert(0, str(root_package))
         from local_ai_hub.code_index import CodeIndex
         from local_ai_hub.preprocess import ProjectPreprocessor
         from local_ai_hub.repo_tools import RepositoryTools
         from local_ai_hub import treesitter_parser
-        local_ai_hub.__path__.insert(0, str(root_package))
         import local_ai_hub.project_config as project_config
         assert Path(project_config.__file__).resolve() == (root_package / "project_config.py").resolve()
         root_module_sha256 = hashlib.sha256(Path(project_config.__file__).read_bytes()).hexdigest()
@@ -596,7 +599,7 @@ def test_candidate_consumers_with_real_root_project_config(tmp_path, monkeypatch
 
             real_popen = subprocess.Popen
             def diagnostic_popen(command, *args, **kwargs):
-                if command == "fixture-command":
+                if command == ["fixture-command"]:
                     return DiagnosticProcess()
                 return real_popen(command, *args, **kwargs)
 

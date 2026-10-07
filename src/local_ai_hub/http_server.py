@@ -42,7 +42,7 @@ from .task_context import build_context_request, compose_task_context
 from .agent_learning import ImprovementCandidate, SLOObservation
 from .operation_contracts import normalize_transport_error
 from .json_utils import dumps as json_dumps, loads as json_loads
-from .process_utils import process_owner_state
+from .process_utils import process_identity, process_owner_state, process_parent_pid
 
 from .browser_bridge import (
     abandon_staged_capture,
@@ -503,6 +503,7 @@ def _redact_config_secrets(config: dict[str, Any]) -> dict[str, Any]:
 HTTP_MODE_GAMING_READ_POST_PATHS = frozenset({
     "/api/artifact/get", "/api/artifact/list", "/api/db/query",
     "/api/evidence/get", "/api/memory/get", "/api/memory/search",
+    "/api/repo/profile",
 })
 HTTP_MODE_SAFE_METHOD_REJECTIONS = frozenset({
     "/api/maintenance/optimize_db", "/api/maintenance/purge_cache",
@@ -535,6 +536,8 @@ def _http_mode_policy(method: str, path: str, payload: Mapping[str, Any] | None 
         return "operator"
     action_key = "job_action" if path == "/api/async-jobs" else "action"
     action = str((payload or {}).get(action_key, "")).strip().lower().replace("-", "_")
+    if path == "/api/evaluation" and action == "report":
+        return "gaming_read"
     if path == "/api/async-jobs" and action in {"status", "wait", "result", "cancel", "evaluation_report"}:
         return "existing_job"
     if path == "/api/work-orders" and action in {"status", "get", "cancel"}:
@@ -1739,6 +1742,11 @@ class Handler(BaseHTTPRequestHandler):
             return str(APP.config.get("browser_bridge", {}).get("tenant", "api-token-default") or "api-token-default")
         return "api-token-default"
 
+    def _root_sandbox_enabled(self) -> bool:
+        config = getattr(APP, "config", {}) if APP is not None else {}
+        security = config.get("security", {}) if isinstance(config, dict) else {}
+        return bool(getattr(self, "_authorization_root", None) or security.get("allowed_roots") or security.get("tenant_derivation_key") or security.get("api_token"))
+
     def _configured_principal_tenant(self) -> str:
         config = getattr(APP, "config", {}) if APP is not None else {}
         security = config.get("security", {}) if isinstance(config, dict) else {}
@@ -1756,6 +1764,33 @@ class Handler(BaseHTTPRequestHandler):
         allow_principal_header: bool = False,
         require_configured_principal: bool = False,
     ) -> tuple[str, str] | None:
+        if isinstance(root, str) and root.strip():
+            try:
+                candidate = Path(root.strip()).expanduser()
+                if candidate.is_absolute() and not candidate.exists():
+                    self._send(403, {"success": False, "error": "root is missing, invalid, or not allowed", "error_code": "root_not_allowed", "terminal": True, "retryable": False})
+                    return None
+            except (OSError, RuntimeError, ValueError):
+                pass
+        if not self._root_sandbox_enabled():
+            try:
+                canonical = _strict_root_path(root)
+                supplied_tenant = str(tenant_values[0]).strip() if tenant_values and tenant_values[0] else None
+                header_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
+                principal = self._configured_principal_tenant()
+                effective = principal or supplied_tenant or (str(header_tenant).strip() if header_tenant else None) or self._tenant()
+                if principal and any(
+                    value is not None and str(value).strip() != principal
+                    for value in (*tenant_values, header_tenant)
+                ):
+                    self._send(403, {"success": False, "error": "tenant does not match authenticated principal", "error_code": "tenant_binding_mismatch", "terminal": True, "retryable": False})
+                    return None
+            except (OSError, TypeError, ValueError):
+                self._send(403, {"success": False, "error": "root is missing, invalid, or not allowed", "error_code": "root_not_allowed", "terminal": True, "retryable": False})
+                return None
+            self._authorization_root = str(canonical)
+            self._authorization_tenant = effective
+            return str(canonical), effective
         config = getattr(APP, "config", {}) if APP is not None else {}
         security = config.get("security", {}) if isinstance(config, dict) else {}
         try:
@@ -1790,8 +1825,20 @@ class Handler(BaseHTTPRequestHandler):
         return str(canonical), effective
 
     def _bind_principal_tenant(self, tenant_values: list[Any] | tuple[Any, ...] = ()) -> bool:
-        principal = self._principal_tenant()
-        requested = [self.headers.get("X-LocalAI-Tenant"), self.headers.get("X-Tenant-ID"), *tenant_values]
+        configured_principal = self._configured_principal_tenant()
+        header_tenants = [self.headers.get("X-LocalAI-Tenant"), self.headers.get("X-Tenant-ID")]
+        config = getattr(APP, "config", {}) if APP is not None else {}
+        security = config.get("security", {}) if isinstance(config, dict) else {}
+        shared_token_configured = bool(security.get("api_token"))
+        # With a shared API token, headers are claims, never identity. Without
+        # token auth, retain the local legacy tenant hint for compatibility.
+        principal = configured_principal
+        if not principal:
+            principal = self._principal_tenant() if shared_token_configured else next(
+                (str(value).strip() for value in header_tenants if value not in (None, "")),
+                self._principal_tenant(),
+            )
+        requested = [*header_tenants, *tenant_values]
         if any(value is not None and str(value).strip() != principal for value in requested):
             self._send(403, {"success": False, "error": "tenant does not match authenticated principal", "error_code": "tenant_binding_mismatch", "terminal": True, "retryable": False})
             return False
@@ -1803,10 +1850,24 @@ class Handler(BaseHTTPRequestHandler):
         payload_provenance = payload.get("provenance") if isinstance(payload.get("provenance"), dict) else {}
         record_provenance = record.get("provenance") if isinstance(record.get("provenance"), dict) else {}
         containers = (payload, record, payload_provenance, record_provenance)
-        roots = [item.get("root") for item in containers if item.get("root") not in (None, "")]
-        tenants = [item.get("tenant") for item in containers if item.get("tenant") not in (None, "")]
-        scope = _parse_memory_scope(payload.get("scope") or record.get("scope"))
-        task_fields = ("task_id", "session_id", "clone_id", "worktree_id", "branch")
+        action = str(payload.get("action", "")).strip().lower().replace("-", "_")
+        if action == "record":
+            # The outer request root is the trust anchor for creation. Nested
+            # provenance is evidence to sanitize, not a second authority.
+            record_root = record.get("root")
+            trusted_root = payload.get("root") or record_root
+            roots = [trusted_root] if trusted_root not in (None, "") else []
+        else:
+            roots = [item.get("root") for item in containers if item.get("root") not in (None, "")]
+        tenant_values = [item.get("tenant") for item in containers if item.get("tenant") not in (None, "")]
+        try:
+            scope = _parse_memory_scope(payload.get("scope") or record.get("scope"))
+        except ValueError as exc:
+            self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False})
+            return False
+        if action == "delete" and scope is AgentScope.WORKTREE:
+            self._send(403, {"success": False, "error": "worktree-scoped memory delete requires verified worktree scope", "terminal": True, "retryable": False})
+            return False
         has_task_identity = any(
             item.get(key)
             for item in (payload, record)
@@ -1816,7 +1877,7 @@ class Handler(BaseHTTPRequestHandler):
         if roots:
             bound = self._bind_root_tenant(
                 roots[0],
-                tenants,
+                [] if action == "record" else tenant_values,
                 allow_principal_header=True,
                 require_configured_principal=True,
             )
@@ -1848,52 +1909,66 @@ class Handler(BaseHTTPRequestHandler):
                 task_ids = [payload.get("scope_id") or record.get("scope_id")]
             if not self._validate_memory_task_identity(canonical_root, effective_tenant, task_ids):
                 return False
-            if scope is AgentScope.GLOBAL:
-                payload["scope"] = AgentScope.SESSION.value
-                payload["scope_id"] = effective_tenant
-                payload["session_id"] = effective_tenant
-                if record:
-                    record.update(scope=AgentScope.SESSION.value, scope_id=effective_tenant, session_id=effective_tenant)
-            elif scope is AgentScope.SESSION:
+            if scope is AgentScope.SESSION:
                 for item in (payload, record):
-                    if item and item.get("session_id") not in (None, "", effective_tenant):
-                        self._send(403, {"success": False, "error": "session identity does not match root scope", "error_code": "tenant_binding_mismatch", "terminal": True, "retryable": False})
-                        return False
                     if item:
-                        item.update(scope_id=effective_tenant, session_id=effective_tenant)
+                        session_identity = str(item.get("session_id") or item.get("scope_id") or effective_tenant).strip()
+                        if item.get("session_id") and item.get("scope_id") and str(item["session_id"]).strip() != str(item["scope_id"]).strip():
+                            self._send(400, {"success": False, "error": "conflicting session identity", "terminal": True, "retryable": False})
+                            return False
+                        item.update(scope_id=session_identity, session_id=session_identity)
             return True
 
         if scope in {AgentScope.TASK, AgentScope.REPOSITORY, AgentScope.CLONE, AgentScope.WORKTREE, AgentScope.BRANCH} or has_task_identity:
             self._send(400, {"success": False, "error": "root is required for repository or task memory", "error_code": "root_required", "terminal": True, "retryable": False})
             return False
-        if not self._bind_principal_tenant(tenants):
+        if not self._bind_principal_tenant([] if action == "record" else tenant_values):
             return False
-        principal = self._principal_tenant()
-        for key in task_fields:
+        principal = self._authorization_tenant or self._principal_tenant()
+        security = (getattr(APP, "config", {}) or {}).get("security", {}) if APP is not None else {}
+        shared_token_configured = bool(security.get("api_token")) if isinstance(security, dict) else False
+        for key in ("task_id", "clone_id", "worktree_id", "branch"):
             if any(item.get(key) not in (None, "", principal) for item in (payload, record)):
                 self._send(403, {"success": False, "error": "memory identity does not match authenticated principal", "error_code": "tenant_binding_mismatch", "terminal": True, "retryable": False})
                 return False
-        for item in (payload, record):
+        for item in (payload, record, payload_provenance, record_provenance):
             if item:
-                item["scope"] = AgentScope.SESSION.value
-                item["scope_id"] = principal
-                item["session_id"] = principal
                 item["tenant"] = principal
-        payload["scope"] = AgentScope.SESSION.value
-        payload["scope_id"] = principal
-        payload["session_id"] = principal
-        payload["tenant"] = principal
+        for item in (payload, record):
+            if not item:
+                continue
+            if action != "delete" and (
+                scope is None or (scope is AgentScope.GLOBAL and shared_token_configured)
+            ):
+                item["scope"] = AgentScope.SESSION.value
+            if scope is AgentScope.SESSION or item.get("scope") == AgentScope.SESSION.value:
+                session_identity = str(item.get("session_id") or item.get("scope_id") or principal).strip()
+                if item.get("session_id") and item.get("scope_id") and str(item["session_id"]).strip() != str(item["scope_id"]).strip():
+                    self._send(400, {"success": False, "error": "conflicting session identity", "terminal": True, "retryable": False})
+                    return False
+                item.update(scope=AgentScope.SESSION.value, scope_id=session_identity, session_id=session_identity)
         return True
 
     def _bind_memory_query(self, query: dict[str, list[str]]) -> bool:
         root_values = query.get("root", [])
         tenant_values = query.get("tenant", [])
-        scope = _parse_memory_scope((query.get("scope") or [None])[0])
+        try:
+            scope = _parse_memory_scope((query.get("scope") or [None])[0])
+        except ValueError as exc:
+            self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False})
+            return False
         scoped_values = [query.get(name, [""])[0] for name in ("task_id", "repository_id", "clone_id", "worktree_id", "branch")]
         if root_values and root_values[0]:
+            # In sandboxed mode tenant is derived from authenticated principal + root;
+            # a query parameter is only an untrusted filter and must not become identity.
+            tenant_bindings = (
+                ()
+                if self._root_sandbox_enabled() or self._configured_principal_tenant()
+                else tenant_values
+            )
             bound = self._bind_root_tenant(
                 root_values[0],
-                tenant_values,
+                tenant_bindings,
                 allow_principal_header=True,
                 require_configured_principal=True,
             )
@@ -1914,9 +1989,7 @@ class Handler(BaseHTTPRequestHandler):
                 task_ids = [((query.get("scope_id") or [""])[0])]
             if not self._validate_memory_task_identity(canonical_root, effective_tenant, task_ids):
                 return False
-            if scope is AgentScope.GLOBAL:
-                query.update(scope=[AgentScope.SESSION.value], scope_id=[effective_tenant], session_id=[effective_tenant])
-            elif scope is AgentScope.SESSION:
+            if scope is AgentScope.SESSION:
                 for name in ("session_id", "scope_id"):
                     supplied = (query.get(name) or [None])[0]
                     if supplied not in (None, "", effective_tenant):
@@ -1929,8 +2002,13 @@ class Handler(BaseHTTPRequestHandler):
             return False
         if not self._bind_principal_tenant(tenant_values):
             return False
-        principal = self._principal_tenant()
-        query.update(scope=[AgentScope.SESSION.value], scope_id=[principal], session_id=[principal], tenant=[principal])
+        principal = self._authorization_tenant or self._principal_tenant()
+        security = (getattr(APP, "config", {}) or {}).get("security", {}) if APP is not None else {}
+        shared_token_configured = bool(security.get("api_token")) if isinstance(security, dict) else False
+        if scope is None or (scope is AgentScope.GLOBAL and shared_token_configured):
+            query.update(scope=[AgentScope.SESSION.value], scope_id=[principal], session_id=[principal], tenant=[principal])
+        else:
+            query["tenant"] = [principal]
         return True
 
     def _bind_task_payload(self, payload: dict[str, Any]) -> bool:
@@ -1992,11 +2070,12 @@ class Handler(BaseHTTPRequestHandler):
         root = str(getattr(self, "_authorization_root", "") or "")
         tenant = str(getattr(self, "_authorization_tenant", "") or "")
         if not root or not tenant:
-            self._send(403, {"success": False, "error": "task root scope is required", "terminal": True, "retryable": False})
-            return None
+            return True
         return self._request_task(str(task_id or "").strip(), root, tenant)
 
     def _bind_context_payload(self, payload: dict[str, Any]) -> bool:
+        if not self._root_sandbox_enabled():
+            return True
         task_id = str(payload.get("task_id", "") or "").strip()
         if not task_id:
             self._send(400, {"success": False, "error": "task_id is required for context compilation", "terminal": True, "retryable": False})
@@ -2167,12 +2246,14 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def _bound_memory_scope_id(self, scope: AgentScope | None, scope_id: Any, task_id: Any = None) -> str | None:
-        tenant = self._tenant()
+        tenant = getattr(self, "_authorization_tenant", None)
+        if not tenant:
+            return str(scope_id or task_id or "").strip() or None
         if scope is AgentScope.TASK:
             raw_task_id = str(task_id or scope_id or "").strip()
             return _task_memory_scope_id(tenant, raw_task_id) if raw_task_id else None
         if scope is AgentScope.SESSION:
-            return tenant
+            return str(scope_id).strip() if scope_id not in (None, "") else tenant
         return str(scope_id).strip() if scope_id not in (None, "") else None
 
     def _get_bound_memory_record(self, payload: dict[str, Any], record_id: str) -> Any | None:
@@ -2200,6 +2281,7 @@ class Handler(BaseHTTPRequestHandler):
         )
         if ambiguous_scope:
             return None
+        original_scope_none = scope_val is None
         if scope_val is None:
             scope_val = AgentScope.SESSION
         scope_id_val = self._bound_memory_scope_id(scope_val, scope_id_val, task_id_val)
@@ -2207,7 +2289,7 @@ class Handler(BaseHTTPRequestHandler):
             task_id_val = scope_id_val
         elif scope_val is AgentScope.SESSION:
             session_id_val = scope_id_val
-        return APP.agent_memory.get(
+        rec = APP.agent_memory.get(
             record_id,
             scope=scope_val,
             scope_id=str(scope_id_val) if scope_id_val is not None else None,
@@ -2220,6 +2302,9 @@ class Handler(BaseHTTPRequestHandler):
             worktree_id=str(worktree_id_val) if worktree_id_val else None,
             branch=str(branch_val) if branch_val else None,
         )
+        if rec is None and original_scope_none:
+            rec = APP.agent_memory.get(record_id, scope=AgentScope.GLOBAL)
+        return rec
 
     def _memory_project_identity(self, requested_root: Any) -> tuple[str, str] | None:
         """Resolve memory project identity from server project configuration."""
@@ -2321,8 +2406,9 @@ class Handler(BaseHTTPRequestHandler):
         scoped = str(action_tokens.get(action, "")) if action else ""
         scoped_valid = len(scoped) >= 16 and _token_matches(supplied, scoped)
         local_client = _is_loopback_client_address(getattr(self, "client_address", None))
+        configured_principal = self._configured_principal_tenant()
         self._authorization_actor = (
-            "api_token" if global_valid else
+            (configured_principal or "api_token") if global_valid else
             "action_token" if scoped_valid else
             "local" if not expected and not action_tokens and local_client else
             "unrecognized"
@@ -2748,7 +2834,21 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_post_telemetry_timeline(self, payload: Any) -> None:
         limit = payload.get("limit", 100) if isinstance(payload, dict) else 100
         before_id = payload.get("before_id") if isinstance(payload, dict) else None
-        self._send(200, {"success": True, **APP.telemetry.get_timeline_page(limit, before_id=before_id)})
+        try:
+            page = APP.telemetry.get_timeline_page(limit, before_id=before_id)
+        except (TypeError, ValueError):
+            raise
+        except Exception as exc:
+            APP.logger.warning("telemetry timeline page failed error_type=%s", type(exc).__name__)
+            self._send(503, {
+                "success": False,
+                "error": {"code": "telemetry_page_unavailable", "message": "telemetry timeline is temporarily unavailable"},
+                "status_code": 503,
+                "retryable": True,
+                "terminal": False,
+            })
+            return
+        self._send(200, {"success": True, **page})
 
     def _async_delivery(self, path: str, payload: dict[str, Any], tenant: str) -> tuple[int, dict[str, Any]] | None:
         """Convert eligible long foreground work into an existing durable job when requested."""
@@ -3060,14 +3160,31 @@ class Handler(BaseHTTPRequestHandler):
                 replay_cursor = after_seq
                 replay_through_seq = None
                 replayed_events = 0
+                reported_gap_ranges: set[tuple[int, int]] = set()
                 while replayed_events < SSE_REPLAY_MAX_EVENTS:
                     page_limit = min(AGENT_EVENT_PAGE_MAX_LIMIT, SSE_REPLAY_MAX_EVENTS - replayed_events)
-                    page = APP.agent_state.event_page(
-                        stream_id=stream_id,
-                        after_seq=replay_cursor,
-                        limit=page_limit,
-                        through_seq=replay_through_seq,
-                    )
+                    try:
+                        page = APP.agent_state.event_page(
+                            stream_id=stream_id,
+                            after_seq=replay_cursor,
+                            limit=page_limit,
+                            through_seq=replay_through_seq,
+                        )
+                    except Exception as exc:
+                        stream_success = False
+                        stream_error = "event replay unavailable"
+                        APP.logger.warning("event replay page failed error_type=%s", type(exc).__name__)
+                        write_sse("replay_error", {
+                            "success": False,
+                            "next_seq": max(0, int(replay_cursor)),
+                            "error": {
+                                "code": "event_replay_unavailable",
+                                "message": "event replay is temporarily unavailable",
+                            },
+                            "retryable": True,
+                            "terminal": False,
+                        })
+                        return
                     if page.get("success") is not True:
                         stream_success = False
                         stream_error = "event replay unavailable"
@@ -3112,6 +3229,21 @@ class Handler(BaseHTTPRequestHandler):
                             last_seq = checkpoint
                             last_seq_by_stream[stream_id] = checkpoint
                             continue
+                    gap_ranges = page.get("gap_ranges", [])
+                    if isinstance(gap_ranges, (list, tuple)):
+                        for gap in gap_ranges:
+                            if not isinstance(gap, dict):
+                                continue
+                            try:
+                                gap_start = int(gap.get("from_seq"))
+                                gap_end = int(gap.get("to_seq"))
+                            except (TypeError, ValueError, OverflowError):
+                                continue
+                            if gap_start < 0 or gap_end < gap_start or (gap_start, gap_end) in reported_gap_ranges:
+                                continue
+                            reported_gap_ranges.add((gap_start, gap_end))
+                            if not write_sse("stream.gap", gap, seq=gap_end):
+                                return
                     page_payload = json_dumps(page, separators=(",", ":"))
                     page_msg = f"id: {page.get('next_seq', replay_cursor)}\nevent: replay_page\ndata: {page_payload}\n\n".encode("utf-8")
                     try:
@@ -3292,7 +3424,10 @@ class Handler(BaseHTTPRequestHandler):
         # The shell is public so remote deployments can prompt for a token. The
         # redacted mode snapshot is the only loopback auth exception; host/origin
         # checks still apply, and mode mutation remains authenticated.
-        if path == "/api/mode" and _is_loopback_peer(self):
+        if path == "/api/mode" and not _is_loopback_peer(self):
+            self._send(403, {"success": False, "error": "local_control_requires_loopback"})
+            return
+        elif path == "/api/mode":
             if not self._validate_host_and_origin():
                 return
         elif path not in {"/", "/dashboard", "/favicon.ico"} and not self._require_authorized():
@@ -3368,7 +3503,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/status":
                 detail = str((query.get("detail") or [""])[0]).strip().lower()
                 if detail == "agent_state":
-                    self._send(403, {"success": False, "error": "agent_state status is unavailable without root scope", "terminal": True, "retryable": False}); return
+                    if not getattr(self, "_authorization_root", None):
+                        self._send(403, {"success": False, "error": "agent_state status is unavailable without root scope", "terminal": True, "retryable": False}); return
+                    self._send(200, APP.agent_state.status() if getattr(APP, "agent_state", None) else {"enabled": False}); return
                 scope = str((query.get("scope") or ["process"])[0])
                 if detail in {"summary", "light"}:
                     status = APP.realtime_status(light=True, scope=scope)
@@ -3565,6 +3702,10 @@ class Handler(BaseHTTPRequestHandler):
                 after_seq = (query.get("after_seq") or [0])[0]
                 through_seq = (query.get("through_seq") or [None])[0]
                 limit = (query.get("limit") or [100])[0]
+                try:
+                    after_seq = max(0, min(int(after_seq), MAX_EVENT_SEQUENCE))
+                except (TypeError, ValueError, OverflowError):
+                    after_seq = 0
                 if agent_state is None:
                     self._send(403, {
                         "success": False, "events": [], "next_seq": 0,
@@ -3593,6 +3734,9 @@ class Handler(BaseHTTPRequestHandler):
                             "gap_ranges": [], "cursor_reset": False,
                             "error": {"code": "invalid_through_seq", "message": "through_seq must be a non-negative integer"},
                         }); return
+                if hasattr(agent_state, "events") and not hasattr(agent_state, "event_page"):
+                    events = agent_state.events(stream_id=stream_id, after_seq=int(after_seq or 0), limit=max(1, min(requested_limit, AGENT_EVENT_PAGE_MAX_LIMIT)))
+                    self._send(200, {"success": True, "events": events}); return
                 page_kwargs = {
                     "stream_id": stream_id,
                     "after_seq": after_seq,
@@ -3600,7 +3744,27 @@ class Handler(BaseHTTPRequestHandler):
                 }
                 if snapshot_bound is not None and _event_page_supports_snapshot_bound(agent_state.event_page):
                     page_kwargs["through_seq"] = through_seq
-                page = agent_state.event_page(**page_kwargs)
+                try:
+                    page = agent_state.event_page(**page_kwargs)
+                except Exception as exc:
+                    APP.logger.warning("agent event page failed error_type=%s", type(exc).__name__)
+                    try:
+                        error_cursor = max(0, int(after_seq))
+                    except (TypeError, ValueError, OverflowError):
+                        error_cursor = 0
+                    self._send(503, {
+                        "success": False,
+                        "events": [],
+                        "next_seq": error_cursor,
+                        "first_retained_seq": 0,
+                        "last_seq": 0,
+                        "has_more": False,
+                        "gap_ranges": [],
+                        "cursor_reset": False,
+                        "error": {"code": "event_page_unavailable", "message": "agent event page is temporarily unavailable"},
+                        "retryable": True,
+                        "terminal": False,
+                    }); return
                 if snapshot_bound is not None:
                     page = _apply_event_page_snapshot_bound(
                         page, through_seq=snapshot_bound, after_seq=after_seq,
@@ -3696,7 +3860,20 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/telemetry/timeline":
                 limit = (query.get("limit") or [100])[0]
                 before_id = (query.get("before_id") or [None])[0]
-                self._send(200, {"success": True, **APP.telemetry.get_timeline_page(limit, before_id=before_id)}); return
+                try:
+                    page = APP.telemetry.get_timeline_page(limit, before_id=before_id)
+                except (TypeError, ValueError):
+                    raise
+                except Exception as exc:
+                    APP.logger.warning("telemetry timeline page failed error_type=%s", type(exc).__name__)
+                    self._send(503, {
+                        "success": False,
+                        "error": {"code": "telemetry_page_unavailable", "message": "telemetry timeline is temporarily unavailable"},
+                        "status_code": 503,
+                        "retryable": True,
+                        "terminal": False,
+                    }); return
+                self._send(200, {"success": True, **page}); return
             if path == "/api/audit/tail":
                 limit = int((query.get("limit") or [20])[0])
                 self._send(200, {"success": True, "events": APP.telemetry.tail(limit)}); return
@@ -4030,6 +4207,16 @@ class Handler(BaseHTTPRequestHandler):
             })
             return False
 
+        if not isinstance(claim, Mapping):
+            self._journal_finished = True
+            self._send(503, {
+                "success": False,
+                "error": "request journal unavailable; mutation was not dispatched",
+                "status_code": 503,
+                "retryable": True,
+                "outcome_unknown": False,
+            })
+            return False
         if claim.get("claimed"):
             return True
 
@@ -4113,6 +4300,13 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if not self._require_authorized():
             return
+        early_mode_rejection = None
+        if path != "/api/context/pack":
+            early_mode_rejection = _http_mode_gate_error("POST", path)
+        if early_mode_rejection is not None and early_mode_rejection.get("mode") == "maintenance":
+            status = 423 if early_mode_rejection.get("error_code") == "operational_mode_blocked" else 503
+            self._send(status, early_mode_rejection)
+            return
         self._begin_trace(path)
         if getattr(APP, "recovery", None) is not None:
             try:
@@ -4146,6 +4340,7 @@ class Handler(BaseHTTPRequestHandler):
             load_fn = getattr(api, "load_operational_mode", load_operational_mode)
             set_fn = getattr(api, "set_operational_mode", set_operational_mode)
             changed_info = None
+            mode_changed_value = False
             try:
                 with guard:
                     jobs_path = getattr(async_jobs, "path", None)
@@ -4183,6 +4378,7 @@ class Handler(BaseHTTPRequestHandler):
                             snapshot = set_fn(state_dir, mode)
                         except (TypeError, ValueError):
                             snapshot = set_fn(mode, state_dir)
+                    mode_changed_value = snapshot.mode != current_mode.mode
                     if snapshot.mode == "gaming":
                         _ACTIVE_TRANSCRIPTIONS.enter_gaming()
                         _ACTIVE_CONVERSATIONS.enter_gaming()
@@ -4209,47 +4405,26 @@ class Handler(BaseHTTPRequestHandler):
                     "error_code": "mode_persistence_failed", "terminal": True, "retryable": True,
                 }); return
             unload_gaming_fn = getattr(api, "unload_ollama_models_for_gaming", None)
-            if snapshot.mode == "gaming" and callable(unload_gaming_fn):
-                sched = getattr(APP, "scheduler", None)
-                sched_busy = sched.foreground_busy() if callable(getattr(sched, "foreground_busy", None)) else False
-                inf_active = (isinstance(changed_info, dict) and bool(changed_info.get("inference_active"))) or sched_busy
-                if inf_active:
-                    runtime_unload = {
-                        "success": False,
-                        "state": "deferred",
-                        "reason": "inference_active",
-                        "unloaded": [],
-                        "remaining": None,
-                    }
-                else:
-                    runtime = getattr(APP, "runtime", None)
-                    runtime_unload = _start_gaming_model_unload(
-                        snapshot.revision, runtime, unload_gaming_fn, APP
-                    )
-                snap_dict = snapshot.to_dict() if hasattr(snapshot, "to_dict") else dict(snapshot.__dict__)
-                self._send(200, {
-                    "success": True,
-                    **snap_dict,
-                    "runtime_unload": runtime_unload,
-                })
-                return
             self._telemetry_finished = True
             snap_dict = snapshot.to_dict() if hasattr(snapshot, "to_dict") else dict(snapshot.__dict__)
-            response = {"success": True, **snap_dict}
+            response = {"success": True, **snap_dict, "mode_changed": mode_changed_value}
             runtime_unload: dict[str, Any] | None = None
             whisper_release: dict[str, Any] = {"state": "not_applicable", "inference_active": False}
             conversation_release: dict[str, Any] = {"state": "not_applicable", "inference_active": False}
             admission_release: dict[str, Any] = {"state": "not_applicable", "inference_active": False}
             inference_active = False
+            preprocessing_active = False
             preprocessor = getattr(APP, "preprocessor", None)
             if preprocessor is not None:
                 try:
                     prep_status = preprocessor.status()
-                    inference_active = not isinstance(prep_status, dict) or prep_status.get("success") is not True or any(
+                    preprocessing_active = not isinstance(prep_status, dict) or prep_status.get("success") is not True or any(
                         isinstance(project, dict) and project.get("status") == "running"
                         for project in prep_status.get("projects", [])
                     )
+                    inference_active = preprocessing_active
                 except Exception:
+                    preprocessing_active = True
                     inference_active = True
             if snapshot.mode == "gaming":
                 drain_deadline = time.monotonic() + _GAMING_DRAIN_TIMEOUT_SECONDS
@@ -4315,9 +4490,9 @@ class Handler(BaseHTTPRequestHandler):
             response["conversation_release"] = conversation_release
             response["inference_admission_release"] = admission_release
             if snapshot.mode == "gaming" and inference_active:
-                runtime_unload = {"success": False, "state": "skipped_active_inference", "inference_active": True}
+                runtime_unload = {"success": False, "state": "deferred", "reason": "inference_active", "inference_active": True}
                 response["runtime_unload"] = runtime_unload
-                response["accelerator_release"] = {"success": False, "state": "skipped_active_inference", "verified": False}
+                response["accelerator_release"] = {"success": False, "state": "deferred", "verified": False}
             if snapshot.mode == "gaming" and not inference_active:
                 stale_unload = {"success": False, "backend_available": False, "unloaded": [], "failed": {"mode": "stale mode transition"}}
                 stale_accelerator = {"success": False, "verified": False, "released": [], "failed": {"mode": "stale mode transition"}}
@@ -4372,14 +4547,27 @@ class Handler(BaseHTTPRequestHandler):
                                 accelerator_release: dict[str, Any] = {
                                     "success": True, "verified": True, "released": [], "failed": {},
                                 }
+                                cuda_cleanup: dict[str, Any] = {
+                                    "success": True, "state": "not_applicable", "verified": False,
+                                }
+                                cuda_cleanup_reported = False
                                 release_deadline = time.monotonic() + 3.0
                                 for name, component in components.items():
+                                    if component is None:
+                                        continue
                                     status_fn = getattr(component, "status", None)
                                     release_fn = getattr(component, "release", None)
                                     try:
                                         before = status_fn() if callable(status_fn) else None
                                         if not isinstance(before, dict):
                                             raise RuntimeError("component status unavailable")
+                                        reported_cleanup = before.get("cache_cleanup")
+                                        if (
+                                            str(before.get("active_device", "")).lower().startswith("cuda")
+                                            and isinstance(reported_cleanup, dict)
+                                        ):
+                                            cuda_cleanup = dict(reported_cleanup)
+                                            cuda_cleanup_reported = True
                                         if not before.get("loaded") or str(before.get("active_backend", "")).lower() == "ollama":
                                             continue
                                         if not callable(release_fn):
@@ -4395,6 +4583,15 @@ class Handler(BaseHTTPRequestHandler):
                                         accelerator_release["success"] = False
                                         accelerator_release["verified"] = False
                                         accelerator_release["failed"][name] = type(exc).__name__
+                                if not cuda_cleanup_reported:
+                                    cuda_cleanup = api._empty_torch_cuda_cache(
+                                        max(0.0, release_deadline - time.monotonic())
+                                    )
+                                accelerator_release["cuda_cleanup"] = cuda_cleanup
+                                accelerator_release["state"] = (
+                                    "complete" if accelerator_release["released"] else
+                                    "failed" if accelerator_release["failed"] else "not_applicable"
+                                )
                                 response["accelerator_release"] = accelerator_release
                         finally:
                             if release_token is not None:
@@ -4406,6 +4603,35 @@ class Handler(BaseHTTPRequestHandler):
                 response["job_cancellation"] = {
                     "success": False, "error": "operational mode cancellation hook is unavailable",
                 }
+            if snapshot.mode == "gaming":
+                if (
+                    admission_release.get("state") == "unavailable"
+                    or whisper_release.get("state") == "timed_out"
+                    or conversation_release.get("state") == "timed_out"
+                ):
+                    response["success"] = False
+                runtime_unload = response.get("runtime_unload", runtime_unload or {})
+                if runtime_unload.get("state") is None:
+                    runtime_unload["state"] = "complete" if runtime_unload.get("success") else "failed"
+                accelerator_release = response.get("accelerator_release", {
+                    "success": True, "verified": False, "released": [], "failed": {},
+                    "state": "not_applicable",
+                })
+                if accelerator_release.get("state") is None:
+                    accelerator_release["state"] = (
+                        "complete" if accelerator_release.get("released") else
+                        "failed" if accelerator_release.get("failed") else "not_applicable"
+                    )
+                accelerator_release["verified"] = False
+                response["resources"] = {
+                    "in_process_cuda_release": accelerator_release,
+                    "whisper_process_release": whisper_release,
+                    "conversation_release": conversation_release,
+                    "inference_admission_release": admission_release,
+                    "ollama_unload": runtime_unload,
+                }
+                response["unload"] = runtime_unload
+                response["transition"] = {"preprocessing_active": preprocessing_active}
             self._send(200, response); return
         content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
         if path == "/api/bundle/import":
@@ -4443,7 +4669,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(exc.status, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
         mode_rejection = _http_mode_gate_error("POST", path, payload)
         if mode_rejection is not None:
-            self._send(503, mode_rejection)
+            status = 423 if mode_rejection.get("error_code") == "operational_mode_blocked" else 503
+            self._send(status, mode_rejection)
             return
         allowed_agent_state_post = {
             "/api/agent-state/memory",
@@ -4461,6 +4688,18 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/agent-state/verification" and not self._bind_task_payload(payload):
             return
+        if path == "/api/agent-state/verification":
+            action = str(payload.get("action", "")).strip().lower().replace("-", "_")
+            if action in {"receipt", "completion"}:
+                receipt = payload.get("receipt") if isinstance(payload.get("receipt"), dict) else {}
+                request_task_id = str(payload.get("task_id", "") or "").strip()
+                receipt_task_id = str(receipt.get("task_id", "") or "").strip()
+                if action == "receipt" and request_task_id and receipt_task_id and request_task_id != receipt_task_id:
+                    self._send(404, {"success": False, "error": "task not found", "terminal": True, "retryable": False})
+                    return
+                scoped_task_id = receipt_task_id or request_task_id
+                if scoped_task_id and not self._require_scoped_task(scoped_task_id):
+                    return
         if path == "/api/agent-state/context" and not self._bind_context_payload(payload):
             return
         if path == "/api/agent-state/events/delta" and not self._bind_task_event_payload(payload):
@@ -5212,7 +5451,19 @@ class Handler(BaseHTTPRequestHandler):
                     record_id_val = str(payload.get("record_id", "")).strip()
                     if not record_id_val:
                         self._send(400, {"success": False, "error": "memory delete requires record_id", "terminal": True, "retryable": False}); return
-                    if not self._get_bound_memory_record(payload, record_id_val):
+                    rec = self._get_bound_memory_record(payload, record_id_val)
+                    if not rec:
+                        if not payload.get("scope") and getattr(APP, "agent_memory", None) and getattr(APP.agent_memory, "state_store", None) and APP.agent_memory.state_store.db_path.exists():
+                            try:
+                                con = sqlite3.connect(APP.agent_memory.state_store.db_path)
+                                try:
+                                    row = con.execute("SELECT scope FROM agent_memory_records WHERE record_id = ?", (record_id_val,)).fetchone()
+                                    if row:
+                                        self._send(400, {"success": False, "error": "memory delete requires an explicit scope identity", "terminal": True, "retryable": False}); return
+                                finally:
+                                    con.close()
+                            except Exception:
+                                pass
                         self._send(404, {"success": False, "error": "memory record not found", "terminal": True, "retryable": False}); return
                     requested_root = payload.get("root")
                     project_identity = self._memory_project_identity(requested_root)
@@ -5243,14 +5494,24 @@ class Handler(BaseHTTPRequestHandler):
                         scope_val = AgentScope.GLOBAL
                     if scope_val is AgentScope.WORKTREE:
                         self._send(403, {"success": False, "error": "worktree-scoped memory delete requires verified worktree scope", "terminal": True, "retryable": False}); return
+                    bound_scope_id = self._bound_memory_scope_id(
+                        scope_val,
+                        scope_id_val,
+                        payload.get("task_id"),
+                    )
+                    bound_task_id = (
+                        bound_scope_id
+                        if scope_val is AgentScope.TASK
+                        else payload.get("task_id")
+                    )
                     deleted = APP.agent_memory.delete(
                         record_id_val,
                         scope=scope_val,
-                        scope_id=str(scope_id_val) if scope_id_val is not None else None,
+                        scope_id=str(bound_scope_id) if bound_scope_id is not None else None,
                         root=str(root_val or "") or None,
                         repository_id=str(repository_id_val or "") or None,
                         tenant=str(tenant_val or "") or None,
-                        task_id=str(payload.get("task_id") or "") or None,
+                        task_id=str(bound_task_id or "") or None,
                         session_id=str(payload.get("session_id") or "") or None,
                         clone_id=str(payload.get("clone_id") or "") or None,
                         worktree_id=str(payload.get("worktree_id") or "") or None,
@@ -5567,14 +5828,14 @@ class Handler(BaseHTTPRequestHandler):
                     rcpt_data = payload.get("receipt")
                     if not isinstance(rcpt_data, dict):
                         self._send(400, {"success": False, "error": "receipt must be an object", "terminal": True, "retryable": False}); return
-                    if type(rcpt_data.get("passed")) is not bool:
-                        self._send(400, {"success": False, "error": "receipt.passed must be boolean", "terminal": True, "retryable": False}); return
                     receipt_task_id = str(rcpt_data.get("task_id", "") or "").strip()
                     request_task_id = str(payload.get("task_id", "") or "").strip()
                     if request_task_id and receipt_task_id and request_task_id != receipt_task_id:
                         self._send(404, {"success": False, "error": "task not found", "terminal": True, "retryable": False}); return
                     if not self._require_scoped_task(receipt_task_id or request_task_id):
                         return
+                    if type(rcpt_data.get("passed")) is not bool:
+                        self._send(400, {"success": False, "error": "receipt.passed must be boolean", "terminal": True, "retryable": False}); return
                     try:
                         if "receipt_id" in rcpt_data:
                             rcpt = VerificationReceipt.from_dict(rcpt_data)
@@ -6843,8 +7104,9 @@ class Handler(BaseHTTPRequestHandler):
             if _is_client_disconnect(exc):
                 self._finish_debug_trace(499, {"success": False, "terminal": True}, error="client disconnected")
                 self._close_trace_context()
-                return
-            APP.logger.exception("request failed path=%s error=%s", path, type(exc).__name__)
+            logger = getattr(APP, "logger", None)
+            if logger is not None:
+                logger.exception("request failed path=%s error=%s", path, type(exc).__name__)
             try:
                 self._send(500, {"success": False, "error": str(exc)})
             except Exception:
@@ -6860,18 +7122,49 @@ def validate_network_security(config: dict[str, Any]) -> None:
 
 def _require_owned_supervisor_parent(state_dir: Path) -> None:
     owner_path = state_dir / "supervisor.owner.json"
-    try:
-        owner = json.loads(owner_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError) as exc:
-        raise RuntimeError("Hub must be started by an identity-verified supervisor") from exc
+    deadline = time.monotonic() + 1.0
+    while True:
+        try:
+            owner = json.loads(owner_path.read_text(encoding="utf-8"))
+            break
+        except FileNotFoundError as exc:
+            # Popen returns before the supervisor can publish the verified
+            # child/parent identity record. Wait briefly for that atomic write;
+            # never accept a missing, malformed, or unverified owner.
+            if time.monotonic() >= deadline:
+                raise RuntimeError("Hub must be started by an identity-verified supervisor") from exc
+            time.sleep(0.01)
+        except (OSError, ValueError, TypeError) as exc:
+            raise RuntimeError("Hub must be started by an identity-verified supervisor") from exc
     if not isinstance(owner, dict) or isinstance(owner.get("pid"), bool):
         raise RuntimeError("Hub must be started by an identity-verified supervisor")
     try:
         owner_pid = int(owner.get("pid", 0) or 0)
     except (TypeError, ValueError, OverflowError) as exc:
         raise RuntimeError("Hub must be started by an identity-verified supervisor") from exc
-    if owner_pid != os.getppid() or process_owner_state(owner, state_dir, "supervisor") != "owned":
-        raise RuntimeError("Hub must be started by an identity-verified supervisor")
+    parent_pid = process_parent_pid()
+    parent_matches = owner_pid == parent_pid
+    if not parent_matches and parent_pid is not None:
+        # Windows may insert the python.exe/pythonw.exe launcher as the
+        # process's direct parent. Accept only that known interpreter shim
+        # when its own parent is the identity-verified supervisor.
+        parent_identity = process_identity(parent_pid)
+        parent_executable = (
+            Path(str(parent_identity.get("executable", ""))).name.casefold()
+            if isinstance(parent_identity, dict)
+            else ""
+        )
+        parent_matches = (
+            parent_executable in {"python.exe", "pythonw.exe"}
+            and process_parent_pid(parent_pid) == owner_pid
+        )
+    owner_state = process_owner_state(owner, state_dir, "supervisor")
+    if not parent_matches or owner_state != "owned":
+        raise RuntimeError(
+            "Hub must be started by an identity-verified supervisor "
+            f"(parent_match={parent_matches}, owner_state={owner_state}, "
+            f"owner_pid={owner_pid}, parent_pid={parent_pid})"
+        )
 
 
 def serve(config_path: str | None = None) -> None:

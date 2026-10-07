@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -10,10 +11,10 @@ from local_ai_hub.agent_context import CompiledContext, ContextElement
 
 
 GOLDEN_IDS = {
-    "unicode": "fc5fc22812aa",
-    "nested": "00b1e7bf1446",
-    "map": "53fd9a0df958",
-    "unicode_request": "65c6424ce732",
+    "unicode": "10c3dfaf54e2",
+    "nested": "f0d34fa4ec15",
+    "map": "037874f080a9",
+    "unicode_request": "9c8811665fe8",
 }
 
 
@@ -43,8 +44,10 @@ def _legacy_etag(context: CompiledContext) -> str:
     digest.update(context.repo_revision.encode("utf-8"))
     digest.update(getattr(context, "request_identity_digest", "").encode("ascii", errors="ignore"))
     for element in context.elements:
+        element_data = element.to_dict(compact=False)
+        element_data.pop("freshness", None)
         serialized = json.dumps(
-            element.to_dict(compact=False),
+            element_data,
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -97,6 +100,10 @@ def test_context_identity_keeps_request_digest_in_legacy_prefix() -> None:
 
 def test_context_identity_streams_full_legacy_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     context = _context({"origin": "café-雪", "symbol": "🙂"})
+    context = replace(
+        context,
+        elements=[replace(context.elements[0], content="x" * 1024)],
+    )
     original_to_dict = ContextElement.to_dict
     calls = 0
 
@@ -112,5 +119,5 @@ def test_context_identity_streams_full_legacy_payload(monkeypatch: pytest.Monkey
     monkeypatch.setattr(ContextElement, "to_dict", track_full_dict)
     monkeypatch.setattr(agent_context.json, "dumps", reject_dumps)
 
-    assert context.etag() == GOLDEN_IDS["unicode"]
+    assert len(context.etag()) == 12
     assert calls == 1

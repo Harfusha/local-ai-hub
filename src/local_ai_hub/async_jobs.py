@@ -766,7 +766,7 @@ class AsyncJobManager:
                 trace_id = self.debug_traces.start(kind="async_job", tenant=tenant, action=action, source="async-job")
                 self.debug_traces.update(
                     trace_id,
-                    request={"capture_status": "metadata_only", "field_count": len(clean)},
+                    request={"capture_status": "metadata_only", "field_count": len(request_hash_payload)},
                 )
                 self.debug_traces.link(trace_id, async_job_id=job_id)
                 with self._lock, closing(self._connect()) as con:

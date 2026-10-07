@@ -7,6 +7,7 @@ import subprocess
 import symtable
 import builtins
 import sys
+import shutil
 import tempfile
 import time
 import urllib.request
@@ -22,6 +23,20 @@ from local_ai_hub.http_server import validate_network_security
 from local_ai_hub.process_utils import hidden_run_kwargs, terminate_tree
 from local_ai_hub.repo_tools import RepositoryTools
 from local_ai_hub import __version__
+
+
+def _remove_tree_with_retry(path: Path, attempts: int = 6) -> None:
+    """Remove a completed self-test tree after transient Windows file locks."""
+    for attempt in range(max(1, int(attempts))):
+        try:
+            shutil.rmtree(path)
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError:
+            if attempt + 1 >= max(1, int(attempts)):
+                raise
+            time.sleep(min(0.1 * (2 ** attempt), 0.5))
 
 
 def _free_port() -> int:
@@ -77,7 +92,10 @@ def main() -> int:
     checks: list[dict[str, object]] = []
     undefined = _undefined_globals()
     checks.append({"name": "undefined-globals", "ok": not undefined, "errors": undefined})
-    with tempfile.TemporaryDirectory(prefix="local-ai-hub-selftest-") as td:
+    temp_dir = tempfile.TemporaryDirectory(
+        prefix="local-ai-hub-selftest-", ignore_cleanup_errors=True,
+    )
+    with temp_dir as td:
         temp = Path(td)
         state = temp / "state"
         port = _free_port()
@@ -153,6 +171,7 @@ def main() -> int:
                     proc.stdout.close()
                 if proc.stderr is not None:
                     proc.stderr.close()
+            _remove_tree_with_retry(Path(td))
 
     ok = all(bool(item.get("ok")) for item in checks)
     print(json.dumps({"success": ok, "checks": checks}, ensure_ascii=False, indent=2))

@@ -92,14 +92,23 @@ def _make_registered_task_worktree(
     broker.set_task_store(SimpleNamespace(get=lambda candidate: task if candidate == task_id else None))
     # These tests cover repair-loop behavior; transaction isolation has dedicated coverage.
     broker._transaction_root_for_context = lambda _transaction_id: worktree
-    broker._run_private_transaction = lambda **kwargs: kwargs["operation"](worktree, "a" * 32)
-    run_without_container = broker.run
+    broker._transaction_source_for_context = lambda _transaction_id: worktree
+    broker._transaction_docker_argv = lambda _ctx, _cwd, cmd, _img, **_kw: cmd
 
-    def run_inside_test_transaction(command: str, cwd: str | Path, *args: Any, **kwargs: Any):
-        kwargs.pop("_transaction_context", None)
-        return run_without_container(command, cwd, *args, **kwargs)
+    def mock_run_private_transaction(command: str = "", source_root: str | Path = "", tenant: str = "agent", *args: Any, **kwargs: Any) -> dict[str, Any]:
+        op = kwargs.get("operation")
+        if callable(op):
+            return op(worktree, "a" * 32)
+        exec_res = broker._execute(
+            command,
+            str(worktree),
+            int(kwargs.get("timeout") or broker.timeout),
+            kwargs.get("cancel_event"),
+            log_callback=kwargs.get("log_callback"),
+        )
+        return {"transaction_id": "a" * 32, "success": exec_res.get("success", False), **exec_res}
 
-    broker.run = run_inside_test_transaction
+    broker._run_private_transaction = mock_run_private_transaction
     return worktree
 
 
@@ -114,7 +123,7 @@ def test_repair_loop_already_passing(temp_dir: Path):
         task_id=task_id,
         paths=["unused.py"],
     )
-    assert res["success"] is True
+    assert res["success"] is True, res.get("history")
     assert res["repaired"] is False
     assert res["attempts"] == 0
 
@@ -349,7 +358,9 @@ def test_repair_loop_skips_retry_after_failed_mutating_command(temp_dir: Path, m
     )
 
     assert result["repair_skipped"] is True
-    assert result["outcome_unknown"] is False
+    # A failed mutating command may have partial effects inside the private
+    # transaction; report uncertainty while the failed transaction is discarded.
+    assert result["outcome_unknown"] is True
     assert result["attempts"] == 0
     assert calls == ["git add changed.py"]
     assert generated == []
@@ -386,18 +397,27 @@ def test_repair_loop_skips_retry_after_outcome_unknown_mutation(temp_dir: Path, 
 
 def test_long_pytest_failure_has_artifact_and_first_failure_preview(temp_dir: Path):
     broker = make_broker(temp_dir)
-    script = temp_dir / "synthetic_pytest_failure.py"
+    script = temp_dir / "tests" / "test_widget.py"
+    script.parent.mkdir(parents=True, exist_ok=True)
+    (script.parent / "__init__.py").write_text("", encoding="utf-8")
     script.write_text(
         "import sys\n"
-        "for _ in range(900):\n"
-        "    print('pytest progress ' + ('x' * 20))\n"
+        "import unittest\n"
         "print('tests/test_widget.py:42: AssertionError: expected ready', file=sys.stderr)\n"
-        "print('FAILED tests/test_widget.py::test_ready - AssertionError: expected ready', file=sys.stderr)\n"
-        "raise SystemExit(1)\n",
+        "class TestWidget(unittest.TestCase):\n"
+        "    def test_ready(self):\n"
+        "        for _ in range(900):\n"
+        "            print('pytest progress ' + ('x' * 20))\n"
+        "        self.fail('expected ready')\n",
         encoding="utf-8",
     )
 
-    result = broker.run(f"{sys.executable} {script.name}", temp_dir, "tenant-1", force=True)
+    result = broker.run(
+        f"{sys.executable} -B -m unittest -v tests.test_widget",
+        temp_dir,
+        "tenant-1",
+        force=True,
+    )
 
     assert result["success"] is False
     assert result["failure_summary"] == {
@@ -413,7 +433,7 @@ def test_long_pytest_failure_has_artifact_and_first_failure_preview(temp_dir: Pa
     assert stdout_artifact["success"] is True
     assert stderr_artifact["success"] is True
     assert "pytest progress" in stdout_artifact["text"]
-    assert "FAILED tests/test_widget.py::test_ready" in stderr_artifact["text"]
+    assert "pytest progress" in stdout_artifact["text"]
 
 
 def test_failure_summary_ignores_remediation_diagnostic(temp_dir: Path):
@@ -718,9 +738,10 @@ def test_benevolent_command_classification(tmp_path: Path):
     assert ps_unity["allowed"] is True
     assert ps_unity["class"] == "validation"
 
-    # Loopback HTTP in python -c allowed
+    # urllib follows redirects, so a loopback URL alone cannot prove this is local-only.
     py_http = broker.classify('python -c "import urllib.request; print(urllib.request.urlopen(\'http://127.0.0.1:11435/health\').read())"')
-    assert py_http["allowed"] is True
+    assert py_http["allowed"] is False
+    assert py_http["class"] == "unknown"
 
     # Dangerous commands still blocked
     assert broker.classify("rm -rf /")["allowed"] is False

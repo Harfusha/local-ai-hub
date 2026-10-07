@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 
 from local_ai_hub.code_index import CodeIndex
+from local_ai_hub import treesitter_parser
 from local_ai_hub.preprocess import ProjectPreprocessor
 from local_ai_hub.repo_tools import RepositoryTools
 from local_ai_hub.treesitter_parser import is_treesitter_available
@@ -58,6 +59,36 @@ def test_tree_sitter_language_edges_reach_sqlite_callers_and_callees(
         and edge["callee"].casefold().endswith(callee.casefold())
         for edge in callees
     ), callees
+
+
+@pytest.mark.parametrize(
+    ("language", "filename", "source", "caller", "callee"),
+    [
+        ("csharp", "runner.cs", "class Runner {\n    void Caller() { Target(); }\n    void Target() {}\n}", "Caller", "Target"),
+        ("java", "Runner.java", "class Runner {\n    void caller() { target(); }\n    void target() {}\n}", "caller", "target"),
+        ("typescript", "runner.tsx", "function caller() { target(); }\nfunction target() {}", "caller", "target"),
+        ("cpp", "runner.cpp", "void target() {}\nvoid caller() { target(); }", "caller", "target"),
+    ],
+)
+def test_fallback_call_edges_keep_calls_on_declaration_lines(
+    tmp_path: Path, monkeypatch, language: str, filename: str, source: str, caller: str, callee: str,
+) -> None:
+    monkeypatch.setattr(
+        treesitter_parser,
+        "parse_treesitter_with_status",
+        lambda *_args, **_kwargs: {"result": None, "status": "unavailable", "fallback_reason": "test_stub"},
+    )
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / filename).write_text(source, encoding="utf-8")
+    config = {"server": {"state_dir": str(tmp_path / "state")}}
+    index = CodeIndex(config, RepositoryTools(config))
+
+    assert index.update_files_batch(str(root), [filename])["success"] is True
+    callers = index.find_callers(str(root), callee)["callers"]
+    callees = index.find_callees(str(root), caller)["callees"]
+    assert any(row["caller"].endswith(caller) and row["callee"].endswith(callee) for row in callers), callers
+    assert any(row["caller"].endswith(caller) and row["callee"].endswith(callee) for row in callees), callees
 
 
 def test_call_queries_exclude_non_call_graph_edges(tmp_path: Path) -> None:
