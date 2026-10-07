@@ -93,6 +93,18 @@ def _decode_output(value: str | bytes | None) -> str:
     return value.decode("utf-8", errors="replace") if isinstance(value, bytes) else value
 
 
+def _failed_node_ids(output: str) -> list[str]:
+    node_ids: list[str] = []
+    for line in output.splitlines():
+        summary = line.strip()
+        if not summary.startswith("FAILED "):
+            continue
+        node_id = summary.removeprefix("FAILED ").split(" - ", 1)[0].strip()
+        if node_id and node_id not in node_ids:
+            node_ids.append(node_id)
+    return node_ids
+
+
 def run_repetitions(
     *,
     selector: str,
@@ -173,6 +185,7 @@ def run_repetitions(
                 "duration_seconds": duration,
                 "outcome": outcome,
                 "return_code": return_code,
+                "failed_node_ids": _failed_node_ids(output),
                 "log": str(log_path),
                 "log_sha256": _sha256(log_path),
             })
