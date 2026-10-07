@@ -10,6 +10,8 @@ import sqlite3
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from local_ai_hub.deterministic import DeterministicEngine
 
 
