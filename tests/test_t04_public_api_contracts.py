@@ -25,7 +25,7 @@ def live_api(tmp_path, monkeypatch):
     )
     app = LocalAIApp(str(config))
     monkeypatch.setattr(http_server, "APP", app)
-    client = HubClient(config_path=str(config), auto_start=False)
+    client = HubClient(config_path=str(config), auto_start=False, tenant="test-principal")
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
