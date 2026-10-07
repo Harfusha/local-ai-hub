@@ -35,6 +35,7 @@ Historical snapshot: statuses, hashes, and receipts below belong to their record
 - T12 owner pulse: exact `4816` worktree has no T12 commits beyond master and no tracked edits; its one untracked `.handoff/scratch-root-a411/` is a nested repository with a modified `ollama.py`, preserved and under owner review. T12 config/routing receipts are historical; live latency/VRAM profile acceptance remains open.
 - T15 resumed in its existing task after clean `fefe` fast-forward to master; no new receipt yet. T04 (`393c`), T14 (`0c2e`), T16 (`aad5`), and T20 (`ec50`) exact task paths currently lack Git checkouts; their similarly named registered worktrees were not substituted. T14 `/api/context/pack` remains untouched.
 - Root still has six pre-existing tracked dirty paths and untracked `agent_state.sqlite`; preserved. No current-root test, install, or release gate ran. Release remains **NO-GO**.
+- Dirty-root security hold: current uncommitted `client.py`/`http_server.py` hunks disable root-sandbox binding when security config is absent, accept caller/header tenant identity, and add global-memory fallback; `agent_memory.py` also relaxes repository/session scope filters. The owner and receipts remain unverified. Preserve these hunks, but do not stage, commit, or release them until a hash-bound owner review proves tenant/repository isolation. `async_jobs.py` trace-count and event compatibility hunks likewise remain unowned.
 
 ## Global Constraints
 
