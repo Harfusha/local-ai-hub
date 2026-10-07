@@ -398,3 +398,10 @@ T08's 40 tracked root paths and 22 root-level untracked tests were compared to c
 - T12 reports T12 blobs match master; checkout is 11 commits behind and has untracked scratch, so no fast-forward. Prior focused receipts were not rerun; live latency/VRAM and T02 baseline remain open.
 - T04/T05/T08/T10/T14/T17/T19 and T16 report missing or invalid assigned checkouts; no substitute checkout used. T18 continues hash/acceptance review. Release remains **NO-GO**.
 
+### Owner review follow-up — 2026-10-07, master `4256b94c`
+
+- T11's archived branch is 2 commits ahead/39 behind master, but both branch commits have patch-equivalents in master; no branch rewrite/merge needed. Existing offline receipt: 165 passed, 3 skipped; real CrossEncoder acceptance remains open. Archived T11 branch stays preserved.
+- T15's own worktree fast-forwarded cleanly to master `4459bb33` (zero divergence at check); no unique T15 source hunk. Tests/benchmark not rerun; acceptance still waits on T20 slot and current paired-performance evidence.
+- T18 source/test blobs match master; no missing owned source hunk. Its exact debug/content receipt is **10 passed**; branch remains 11 commits behind with 349 untracked artifacts, so no fast-forward. Runtime/HTTP/telemetry acceptance remains open.
+- T09 exact recovery snapshot is absent; restore failed. T20's assigned checkout is not a Git repository and its registered restore failed `ENOENT`; no release benchmark/GO. T01/T04/T05/T07/T08/T10/T14/T16/T17/T19 have separately reported missing/invalid assigned worktrees; no substitute checkout or destructive cleanup used.
+
