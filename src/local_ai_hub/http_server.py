@@ -2250,7 +2250,7 @@ class Handler(BaseHTTPRequestHandler):
     def _tenant_binding_allowed(self) -> bool:
         if APP is None:
             return True
-        path = str(getattr(self, "path", ""))
+        path = urlparse(str(getattr(self, "path", ""))).path
         security = APP.config.get("security", {})
         bound_tenant = getattr(self, "_authorization_tenant", None)
         requested_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
@@ -2589,13 +2589,7 @@ class Handler(BaseHTTPRequestHandler):
             ):
                 raise RequestBodyError(f"{name} must be a finite number from {minimum:g} to {maximum:g}")
 
-        if path == "/api/chat/completions":
-            messages = payload.get("messages")
-            if not isinstance(messages, list) or not messages or len(messages) > 128:
-                raise RequestBodyError("messages must be a non-empty list of at most 128 entries")
-            if len(json_dumps(messages, default=str)) > 1_000_000:
-                raise RequestBodyError("messages exceed 1000000 characters", 413)
-        elif path == "/api/embed":
+        if path == "/api/embed":
             values = payload.get("texts", payload.get("input", []))
             values = [values] if isinstance(values, str) else values
             if not isinstance(values, list) or len(values) > 256:
