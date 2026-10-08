@@ -1,0 +1,5 @@
+[server]
+port=39123
+state_dir='C:/Users/Adam/.codex/worktrees/t04-integration/.local-ai-hub/artifacts/t04-sync-pytest-20261006/test_pre_send_retry_with_ambig0/state'
+[client]
+max_request_timeout_seconds=5
