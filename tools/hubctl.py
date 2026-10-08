@@ -34,7 +34,7 @@ def client() -> HubClient:
 
 def status(explicit_config: Path | None = None) -> dict:
     c = HubClient(tenant="hubctl", config_path=_config_arg(explicit_config))
-    if not c._online():
+    if not c._online(timeout=2.0):
         return {"running": False}
     try:
         # The live light endpoint intentionally omits model inventory. The
@@ -50,7 +50,7 @@ def _activity_mode_request(mode: str | None = None, *, config_path: str | None =
     """Read or change activity mode through the authenticated Hub API only."""
     try:
         c = HubClient(tenant="hubctl", config_path=config_path or _config_arg(), auto_start=False)
-        if not c._online():
+        if not c._online(timeout=2.0):
             config = load_config(config_path or _config_arg())
             server = config.get("server", {})
             state_dir = server.get("state_dir") if isinstance(server, dict) else None

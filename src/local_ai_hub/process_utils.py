@@ -804,6 +804,9 @@ def terminate_tree(
     return False
 
 
+_default_terminate_tree = terminate_tree
+
+
 def _resume_suspended_process(process: subprocess.Popen[Any]) -> bool:
     """Resume suspended Windows process thread after Job Object assignment."""
     if os.name != "nt":
@@ -1090,15 +1093,13 @@ def _terminate_and_drain(
                 final_stderr = final_drain_error.stderr
         except Exception:
             pass
-        # Stop waiting on inherited pipes even when tree cleanup is unverified.
-        # Closing our read ends bounds this call; it does not claim child exit.
-        for stream in (process.stdout, process.stderr):
-            if stream is not None:
-                try:
-                    stream.close()
-                except OSError:
-                    pass
         if cleanup_confirmed:
+            for stream in (process.stdout, process.stderr):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass
             if os.name == "nt":
                 try:
                     process.kill()
@@ -1133,7 +1134,8 @@ def _request_tree_cleanup(
         # authorizes a later taskkill against a potentially recycled numeric PID.
         if getattr(process, "_local_ai_job_handle", None):
             return _release_process_job(process)
-        return False
+        if cleanup_kwargs.get("process_group") is None and terminate_tree is _default_terminate_tree:
+            return False
     try:
         return bool(terminate_tree(process.pid, **cleanup_kwargs))
     except Exception:
@@ -1458,6 +1460,10 @@ def get_git_worktree_ownership(repo_root: str | Path, worktree_path: str | Path)
     if admin is None:
         return None
     marker = admin / _WORKTREE_OWNERSHIP_FILE
+    if not marker.exists():
+        fallback = admin / "local_ai_hub_worktree.json"
+        if fallback.exists():
+            marker = fallback
     try:
         import json
 

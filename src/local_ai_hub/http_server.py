@@ -23,6 +23,53 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from . import __version__
 from .app import LocalAIApp
+
+_STATUS_DEPENDENCY_TIMEOUT_SECONDS = 0.25
+_STATUS_TOTAL_BUDGET_SECONDS = 1.0
+
+
+def _status_dependency(callback, fallback, *, key, lock, inflight, slots, timeout_seconds=None):
+    timeout = _STATUS_DEPENDENCY_TIMEOUT_SECONDS if timeout_seconds is None else max(0.0, float(timeout_seconds))
+    if timeout <= 0:
+        return fallback, False
+    executor = getattr(APP, "_status_dependency_executor", None)
+    if executor is not None:
+        try:
+            from .app import _status_dependency as app_status_dep
+            return app_status_dep(
+                callback, fallback, key=key, lock=lock, inflight=inflight,
+                slots=slots, executor=executor, deadline=time.monotonic() + timeout,
+            )
+        except Exception:
+            pass
+    if not hasattr(slots, "acquire") or not slots.acquire(blocking=False):
+        return fallback, False
+    outcome = {}
+    completed = threading.Event()
+
+    def run() -> None:
+        try:
+            outcome["value"] = callback()
+        except Exception as exc:
+            outcome["error"] = exc
+        finally:
+            with lock:
+                if inflight.get(key) is outcome:
+                    del inflight[key]
+            try:
+                slots.release()
+            finally:
+                completed.set()
+
+    with lock:
+        inflight[key] = outcome
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    if not completed.wait(timeout=timeout):
+        return fallback, False
+    if "error" in outcome:
+        return fallback, False
+    return outcome.get("value", fallback), True
 from .scheduler import ModelUnavailableError, QueueFullError
 from .debug_traces import DebugTraceObserver
 from .trace_context import reset_context, reset_observer, set_context, set_observer
@@ -1296,6 +1343,23 @@ class LocalAIHTTPServer(ThreadingHTTPServer):
 
 class Handler(BaseHTTPRequestHandler):
     DEBUG_TRACE_REQUEST_CAPTURE_BYTES = 8 * 1024
+    _ADMIN_ACTIONS = {
+        "db.query": ({"GET", "POST"}, "/api/db/query", None),
+        "debug_traces.list": ({"GET"}, "/api/debug-traces", None),
+        "debug_traces.detail": ({"GET"}, "/api/debug-traces/", None),
+        "config.read": ({"GET"}, "/api/config", None),
+        "config.update": ({"POST"}, "/api/config/update", "update"),
+        "config.reset": ({"POST"}, "/api/config/update", "reset"),
+        "control.restart_hub": ({"POST"}, "/api/control", "restart_hub"),
+        "control.stop_service": ({"POST"}, "/api/control", "stop_service"),
+        "maintenance.optimize_db": ({"POST"}, "/api/maintenance/optimize_db", None),
+        "maintenance.purge_cache": ({"POST"}, "/api/maintenance/purge_cache", None),
+        "maintenance.resolve_errors": ({"POST"}, "/api/maintenance/resolve_errors", None),
+        "models.list": ({"GET", "POST"}, "/api/models/manage", "list"),
+        "models.pull": ({"POST"}, "/api/models/manage", "pull"),
+        "models.delete": ({"POST"}, "/api/models/manage", "delete"),
+        "bundle.import": ({"POST"}, "/api/bundle/import", None),
+    }
     _DEBUG_TRACE_SENSITIVE_KEY = re.compile(
         r"(?:^|[_\-.])(?:root|target[_-]?root|repo[_-]?root|repository[_-]?id|tenant|token|api[_-]?(?:key|token)|access[_-]?token|refresh[_-]?token|auth[_-]?token|id[_-]?token|bearer[_-]?token|authorization|secret|password|passwd|credential|cookie|set[-_]?cookie|private[-_]?key|privatekey|passphrase|pem|ssh[-_]?key|certificate)(?:$|[_\-.])",
         re.IGNORECASE,
@@ -1309,6 +1373,11 @@ class Handler(BaseHTTPRequestHandler):
             self.connection.settimeout(max(1.0, keepalive))
         except Exception:
             pass
+
+    def handle(self) -> None:
+        """Handle exactly one request per thread and release socket immediately."""
+        self.close_connection = True
+        self.handle_one_request()
 
     def handle_one_request(self) -> None:
         """Handle a single HTTP request, releasing idle keep-alive sockets fast."""
@@ -1334,10 +1403,12 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 pass
             if not self.parse_request():
+                self.close_connection = True
                 return
             mname = 'do_' + self.command
             if not hasattr(self, mname):
                 self.send_error(501, f"Unsupported method ({self.command!r})")
+                self.close_connection = True
                 return
             method = getattr(self, mname)
             method()
@@ -1403,6 +1474,8 @@ class Handler(BaseHTTPRequestHandler):
         except OSError as exc:
             if not _is_client_disconnect(exc):
                 raise
+        finally:
+            self.close_connection = True
 
     server_version = f"LocalAIHub/{__version__}"
 
@@ -1612,6 +1685,9 @@ class Handler(BaseHTTPRequestHandler):
         self._request_path = path
         self._request_started = time.perf_counter()
         self._telemetry_finished = False
+        self._admin_operation = ""
+        self._admin_audited = False
+        self._admin_payload = {}
         self._trace_context_token = set_context(request_id=request_id, trace_id=trace_id, agent=self._agent(), tenant=self._tenant())
         self._debug_trace_id = ""
         self._debug_observer_token = None
@@ -1734,6 +1810,17 @@ class Handler(BaseHTTPRequestHandler):
         bound_tenant = getattr(self, "_authorization_tenant", None)
         if bound_tenant:
             return str(bound_tenant)
+        principal = self._configured_principal_tenant()
+        if principal:
+            return principal
+        config = getattr(APP, "config", {}) if APP is not None else {}
+        security = config.get("security", {}) if isinstance(config, dict) else {}
+        if isinstance(security, dict) and security.get("api_token"):
+            return "api-token-default"
+        if getattr(self, "headers", None):
+            header_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
+            if header_tenant:
+                return str(header_tenant).strip()
         return self._principal_tenant()
 
     def _principal_tenant(self) -> str:
@@ -1741,14 +1828,29 @@ class Handler(BaseHTTPRequestHandler):
         principal = self._configured_principal_tenant()
         if principal:
             return principal
+        config = getattr(APP, "config", {}) if APP is not None else {}
+        security = config.get("security", {}) if isinstance(config, dict) else {}
+        if isinstance(security, dict) and security.get("api_token"):
+            fallback = "api-token-default"
+        elif path.startswith("/api/agent-state/") or path.startswith("/api/agent_state/"):
+            fallback = "api-token-default"
+        else:
+            fallback = "http-default"
         if APP is not None and (path.startswith("/api/browser/") or path == "/api/vision/review"):
-            return str(APP.config.get("browser_bridge", {}).get("tenant", "api-token-default") or "api-token-default")
-        return "api-token-default"
+            return str(APP.config.get("browser_bridge", {}).get("tenant", fallback) or fallback)
+        return fallback
 
     def _root_sandbox_enabled(self) -> bool:
         config = getattr(APP, "config", {}) if APP is not None else {}
         security = config.get("security", {}) if isinstance(config, dict) else {}
-        return bool(getattr(self, "_authorization_root", None) or security.get("allowed_roots") or security.get("tenant_derivation_key") or security.get("api_token"))
+        if not isinstance(security, dict):
+            security = {}
+        return bool(
+            getattr(self, "_authorization_root", None)
+            or security.get("allowed_roots")
+            or security.get("tenant_derivation_key")
+            or security.get("api_token")
+        )
 
     def _configured_principal_tenant(self) -> str:
         config = getattr(APP, "config", {}) if APP is not None else {}
@@ -2054,17 +2156,23 @@ class Handler(BaseHTTPRequestHandler):
     def _task_matches_request(task: Any, root: str, tenant: str) -> bool:
         context = getattr(task, "context", None)
         try:
-            return (
-                context is not None
-                and str(_strict_root_path(str(getattr(context, "repository_id", "")))) == root
-                and str(getattr(context, "session_id", "")) == tenant
+            if context is None or not root or not tenant:
+                return False
+            task_root = str(getattr(context, "repository_id", "") or "").strip()
+            task_tenant = str(getattr(context, "session_id", "") or "").strip()
+            return bool(task_root and task_tenant) and (
+                str(_strict_root_path(task_root)) == str(_strict_root_path(root))
+                and task_tenant == tenant
             )
         except (OSError, TypeError, ValueError):
             return False
 
     def _request_task(self, task_id: str, root: str, tenant: str) -> Any | None:
         task = APP.agent_tasks.get(task_id) if APP is not None and getattr(APP, "agent_tasks", None) else None
-        if task is None or not self._task_matches_request(task, root, tenant):
+        if task is None:
+            self._send(404, {"success": False, "error": "task not found", "terminal": True, "retryable": False})
+            return None
+        if self._root_sandbox_enabled() and not self._task_matches_request(task, root, tenant):
             self._send(404, {"success": False, "error": "task not found", "terminal": True, "retryable": False})
             return None
         return task
@@ -2327,7 +2435,7 @@ class Handler(BaseHTTPRequestHandler):
             root = str(Path(context.root).resolve(strict=True))
             if hasattr(context, "resolution"):
                 shared_ns = getattr(getattr(context, "settings", None), "shared_namespace", None)
-                has_git = _real_git_common_dir(Path(context.root)) is not None
+                has_git = getattr(project_config_module, "_git_common_dir", _real_git_common_dir)(Path(context.root)) is not None
                 if not shared_ns and not has_git:
                     return root, ""
             repository_id = str(getattr(context, "coordination_id", "") or "").strip()
@@ -2433,7 +2541,7 @@ class Handler(BaseHTTPRequestHandler):
             ):
                 self._authorization_status = 403
                 return False
-            self._authorization_tenant = self._principal_tenant()
+            self._authorization_tenant = configured_principal or None
             self._authorization_status = 200
             return True
         if expected or action_tokens:
@@ -2487,6 +2595,65 @@ class Handler(BaseHTTPRequestHandler):
             # Audit transport failure is reported, never silently accepted.
             self._admin_result_audit_accepted = False
         return self._admin_result_audit_accepted
+
+    def _authorize_admin_action(self, operation: str) -> bool:
+        """Require a globally authenticated request and an exact action/method route."""
+        rule = self._ADMIN_ACTIONS.get(str(operation))
+        if rule is None or not getattr(self, "_authorization_succeeded", False):
+            self._send(403 if rule is not None else 400, {"success": False, "error": "admin action not authorized"})
+            return False
+        methods, expected_path, expected_action = rule
+        actual_path = urlparse(str(getattr(self, "path", ""))).path
+        path_matches = actual_path == expected_path
+        if expected_path.endswith("/"):
+            path_matches = actual_path.startswith(expected_path) and actual_path.count("/") == expected_path.count("/")
+        if str(getattr(self, "command", "")) not in methods:
+            self._send(
+                405,
+                {"success": False, "status_code": 405, "error": "method not allowed for admin action"},
+                headers={"Allow": ", ".join(sorted(methods))},
+            )
+            return False
+        if not path_matches:
+            self._send(403, {"success": False, "error": "admin action does not match route"})
+            return False
+        if expected_action is not None and str(getattr(self, "command", "")) == "POST":
+            payload = getattr(self, "_admin_payload", {})
+            default_action = "update" if operation == "config.update" else "list" if operation == "models.list" else ""
+            action = str(payload.get("action", default_action)).strip().lower().replace("-", "_") if isinstance(payload, dict) else ""
+            if action != expected_action:
+                self._send(403, {"success": False, "error": "admin action does not match request"})
+                return False
+        self._admin_operation = str(operation)
+        self._admin_audited = False
+        return True
+
+    def _audit_admin_action(self, status: int, data: Any = None) -> bool:
+        """Record only fixed operation and outcome metadata; never request content."""
+        if getattr(self, "_admin_audited", False):
+            return True
+        operation = str(getattr(self, "_admin_operation", ""))
+        if not operation:
+            return True
+        if APP is None:
+            return False
+        try:
+            elapsed_ms = max(0.0, (time.perf_counter() - float(getattr(self, "_request_started", time.perf_counter()))) * 1000)
+            accepted = APP.telemetry.record_system(
+                f"admin.{operation}",
+                success=200 <= int(status) < 300,
+                duration_ms=elapsed_ms,
+                status_code=int(status),
+            )
+        except Exception:
+            accepted = False
+        if accepted is True:
+            self._admin_audited = True
+            return True
+        logger = getattr(APP, "logger", None)
+        if logger is not None:
+            logger.error("admin audit event not accepted operation=%s", operation)
+        return False
 
     def _validate_host_and_origin(self) -> bool:
         """Validate Host and Origin headers to protect against DNS rebinding and cross-origin attacks."""
@@ -2816,6 +2983,13 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/vision/review":
             if "prompt" in payload:
                 text(payload["prompt"], "prompt", 20000)
+        elif path in {"/api/coord/pubsub_poll", "/api/pubsub_poll"}:
+            if "after_seq" in payload:
+                bounded_integer(payload["after_seq"], "after_seq", 0, (1 << 63) - 1)
+            if "limit" in payload:
+                bounded_integer(payload["limit"], "limit", 1, 1000)
+            if "since_timestamp" in payload:
+                bounded_number(payload["since_timestamp"], "since_timestamp", 0.0, 1e12)
         evaluation = payload.get("evaluation")
         if evaluation is not None:
             if not isinstance(evaluation, dict):
@@ -2959,15 +3133,25 @@ class Handler(BaseHTTPRequestHandler):
         return 200, result
 
     def _send(self, status: int, data: Any, *, headers: Mapping[str, str] | None = None) -> None:
-        audit_accepted = self._audit_admin_result(status)
-        mutation = str(getattr(self, "command", "GET")).upper() not in {"GET", "HEAD", "OPTIONS"}
-        if mutation and not audit_accepted and 200 <= status < 400 and isinstance(data, dict):
-            status = 503
-            data = {**data, "success": False, "error": "admin result audit unavailable; operation may have completed",
-                    "outcome_unknown": True, "terminal": True, "retryable": False}
+        operation = str(getattr(self, "_admin_operation", ""))
+        if operation:
+            audit_recorded = self._audit_admin_action(status, data)
+            if not audit_recorded and isinstance(data, dict):
+                data = dict(data)
+                data["audit_accepted"] = False
+                if 200 <= int(status) < 300:
+                    data.setdefault("warning", "operation may have completed but audit event was not accepted for queuing")
+        if getattr(self, "_admin_action", ""):
+            audit_accepted = self._audit_admin_result(status)
+            mutation = str(getattr(self, "command", "GET")).upper() not in {"GET", "HEAD", "OPTIONS"}
+            if mutation and not audit_accepted and 200 <= status < 400 and isinstance(data, dict):
+                status = 503
+                data = {**data, "success": False, "error": "admin result audit unavailable; operation may have completed",
+                        "outcome_unknown": True, "terminal": True, "retryable": False}
         if status >= 400:
             data = normalize_transport_error(status, data)
-        response_request_id = self.headers.get("X-LocalAI-Request-ID", "")
+        request_headers = getattr(self, "headers", None)
+        response_request_id = request_headers.get("X-LocalAI-Request-ID", "") if hasattr(request_headers, "get") else ""
         if (
             isinstance(data, dict)
             and "request_id" not in data
@@ -3052,6 +3236,7 @@ class Handler(BaseHTTPRequestHandler):
             if not _is_client_disconnect(exc):
                 raise
         finally:
+            self.close_connection = True
             if not getattr(self, "_debug_trace_finished", False):
                 self._finish_debug_trace(status, data)
             self._close_trace_context()
@@ -3108,14 +3293,75 @@ class Handler(BaseHTTPRequestHandler):
         # It is safe to apply only with an explicit stream filter; an unscoped
         # cursor could otherwise resume one stream inside another.
         headers = getattr(self, "headers", {})
-        last_event_id = str(headers.get("Last-Event-ID", "") or "").strip()
-        if stream_id and last_event_id.isascii() and last_event_id.isdecimal():
+        last_event_id_header = str(headers.get("Last-Event-ID", "") if hasattr(headers, "get") else "" or "").strip()
+        effective_last_event_id = last_event_id_header or last_event_id
+        prefixed_cursor = bool(stream_id and ":" in effective_last_event_id)
+
+        if stream_id and effective_last_event_id:
+            parsed = _parse_agent_event_cursor(effective_last_event_id)
+            if parsed is not None:
+                parsed_stream, parsed_seq = parsed
+                if parsed_stream == stream_id:
+                    after_seq = parsed_seq
+            elif effective_last_event_id.isascii() and effective_last_event_id.isdecimal():
+                try:
+                    resume_seq = int(effective_last_event_id)
+                    if 0 <= resume_seq <= (1 << 63) - 1:
+                        after_seq = resume_seq
+                except (TypeError, ValueError, OverflowError):
+                    pass
+
+        def send_initial_error(status: int, payload: Mapping[str, Any]) -> None:
             try:
-                resume_seq = int(last_event_id)
-            except (TypeError, ValueError, OverflowError):
-                resume_seq = -1
-            if 0 <= resume_seq <= (1 << 63) - 1:
-                after_seq = resume_seq
+                body = _json_bytes(payload)
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Connection", "close")
+                self.send_header("Content-Length", str(len(body)))
+                self._common_headers()
+                self.end_headers()
+                self.wfile.write(body)
+                self.wfile.flush()
+            except OSError:
+                pass
+            self._finish_stream_request(False, error=str(payload.get("error", "initial event page failed")))
+
+        initial_page: dict[str, Any] | None = None
+        if stream_id and after_seq >= 0:
+            if not hasattr(APP.agent_state, "event_page"):
+                send_initial_error(503, {
+                    "success": False,
+                    "error": {"code": "event_page_unavailable", "message": "Event page could not be read."},
+                    "next_seq": after_seq,
+                    "terminal": False,
+                    "retryable": True,
+                })
+                return
+            first_limit = min(AGENT_EVENT_PAGE_MAX_LIMIT, SSE_REPLAY_MAX_EVENTS)
+            try:
+                initial_page = APP.agent_state.event_page(
+                    stream_id=stream_id,
+                    after_seq=after_seq,
+                    limit=first_limit,
+                )
+            except Exception:
+                send_initial_error(503, {
+                    "success": False,
+                    "error": {"code": "event_page_unavailable", "message": "Event page could not be read."},
+                    "next_seq": after_seq,
+                    "terminal": False,
+                    "retryable": True,
+                })
+                return
+            if not isinstance(initial_page, dict) or initial_page.get("success") is not True:
+                send_initial_error(503, initial_page if isinstance(initial_page, dict) else {
+                    "success": False,
+                    "error": {"code": "event_page_unavailable", "message": "Event page could not be read."},
+                    "next_seq": after_seq,
+                    "terminal": False,
+                    "retryable": True,
+                })
+                return
 
         # Bound maximum stream duration to prevent holding worker threads indefinitely
         app_cfg = getattr(APP, "config", {}) or {}
@@ -3157,9 +3403,19 @@ class Handler(BaseHTTPRequestHandler):
                     return last_seq_by_stream.get(stream_id, last_seq)
                 return max([after_seq, *last_seq_by_stream.values()])
 
+            def format_seq(seq: int | None) -> str:
+                if seq is None:
+                    return ""
+                if prefixed_cursor and stream_id:
+                    return _encode_agent_event_cursor(stream_id, seq)
+                return str(seq)
+
             def write_sse(event_name: str, payload: Mapping[str, Any], seq: int | None = None) -> bool:
                 nonlocal stream_success, stream_error, last_delivered_seq
-                event_id = f"id: {seq}\n" if seq is not None else ""
+                if seq is not None:
+                    event_id = f"id: {seq}\n" if event_name == "replay_page" else f"id: {format_seq(seq)}\n"
+                else:
+                    event_id = ""
                 msg = (
                     f"{event_id}event: {event_name}\n"
                     f"data: {json_dumps(payload, separators=(',', ':'))}\n\n"
@@ -3180,46 +3436,73 @@ class Handler(BaseHTTPRequestHandler):
                 replay_through_seq = None
                 replayed_events = 0
                 reported_gap_ranges: set[tuple[int, int]] = set()
+                first_page = True
                 while replayed_events < SSE_REPLAY_MAX_EVENTS:
-                    page_limit = min(AGENT_EVENT_PAGE_MAX_LIMIT, SSE_REPLAY_MAX_EVENTS - replayed_events)
-                    try:
-                        page = APP.agent_state.event_page(
-                            stream_id=stream_id,
-                            after_seq=replay_cursor,
-                            limit=page_limit,
-                            through_seq=replay_through_seq,
-                        )
-                    except Exception as exc:
-                        stream_success = False
-                        stream_error = "event replay unavailable"
-                        APP.logger.warning("event replay page failed error_type=%s", type(exc).__name__)
-                        write_sse("replay_error", {
-                            "success": False,
-                            "next_seq": max(0, int(replay_cursor)),
-                            "error": {
-                                "code": "event_replay_unavailable",
-                                "message": "event replay is temporarily unavailable",
-                            },
-                            "retryable": True,
-                            "terminal": False,
-                        })
-                        return
-                    if page.get("success") is not True:
-                        stream_success = False
-                        stream_error = "event replay unavailable"
-                        payload = json_dumps(page, separators=(",", ":"))
+                    if first_page and initial_page is not None:
+                        page = initial_page
+                        first_page = False
+                    else:
+                        page_limit = min(AGENT_EVENT_PAGE_MAX_LIMIT, SSE_REPLAY_MAX_EVENTS - replayed_events)
                         try:
-                            self.wfile.write(f"event: replay_error\ndata: {payload}\n\n".encode("utf-8"))
-                            self.wfile.flush()
-                        except OSError:
-                            stream_error = "client disconnected"
-                        return
+                            if replay_through_seq is not None:
+                                try:
+                                    page = APP.agent_state.event_page(
+                                        stream_id=stream_id,
+                                        after_seq=replay_cursor,
+                                        limit=page_limit,
+                                        through_seq=replay_through_seq,
+                                    )
+                                except TypeError:
+                                    page = APP.agent_state.event_page(
+                                        stream_id=stream_id,
+                                        after_seq=replay_cursor,
+                                        limit=page_limit,
+                                    )
+                            else:
+                                page = APP.agent_state.event_page(
+                                    stream_id=stream_id,
+                                    after_seq=replay_cursor,
+                                    limit=page_limit,
+                                )
+                        except Exception as exc:
+                            stream_success = False
+                            stream_error = "event replay unavailable"
+                            APP.logger.warning("event replay page failed error_type=%s", type(exc).__name__)
+                            write_sse("error", {
+                                "success": False,
+                                "next_seq": max(0, int(replay_cursor)),
+                                "error": {
+                                    "code": "event_replay_unavailable",
+                                    "message": "event replay is temporarily unavailable",
+                                },
+                                "retryable": True,
+                                "terminal": False,
+                            })
+                            return
+                        if not isinstance(page, dict) or page.get("success") is not True:
+                            stream_success = False
+                            stream_error = "event replay unavailable"
+                            err_payload = page if isinstance(page, dict) else {
+                                "success": False,
+                                "next_seq": max(0, int(replay_cursor)),
+                                "error": {
+                                    "code": "event_replay_unavailable",
+                                    "message": "event replay is temporarily unavailable",
+                                },
+                                "retryable": True,
+                                "terminal": False,
+                            }
+                            write_sse("error", err_payload)
+                            return
+
                     if replay_through_seq is None:
                         raw_high_water = page.get("last_seq", replay_cursor)
                         replay_through_seq = max(0, int(replay_cursor if raw_high_water is None else raw_high_water))
-                        if replay_cursor > replay_through_seq:
+                        if replay_cursor > replay_through_seq or (page.get("cursor_reset") is True and prefixed_cursor):
                             first_retained = max(0, int(page.get("first_retained_seq", 0) or 0))
                             checkpoint = min(max(0, first_retained - 1), replay_through_seq)
+                            if prefixed_cursor and page.get("next_seq") is not None:
+                                checkpoint = int(page["next_seq"])
                             cursor_reset = {
                                 "requested_after_seq": replay_cursor,
                                 "last_seq": replay_through_seq,
@@ -3233,24 +3516,42 @@ class Handler(BaseHTTPRequestHandler):
                                     "missing_through_seq": min(first_retained - 1, replay_through_seq),
                                     "first_available_seq": first_retained,
                                 })
-                            reset_msg = (
-                                f"id: {checkpoint}\nevent: replay_cursor_reset\ndata: "
-                                f"{json_dumps(cursor_reset, separators=(',', ':'))}\n\n"
-                            ).encode("utf-8")
-                            try:
-                                self.wfile.write(reset_msg)
-                                self.wfile.flush()
-                            except OSError:
-                                stream_success = False
-                                stream_error = "client disconnected"
+                            reset_event_name = "cursor_reset" if prefixed_cursor else "replay_cursor_reset"
+                            if not write_sse(reset_event_name, cursor_reset, seq=checkpoint):
                                 return
                             replay_cursor = checkpoint
                             last_seq = checkpoint
                             last_seq_by_stream[stream_id] = checkpoint
-                            continue
-                    replay_entries = []
+                            if prefixed_cursor:
+                                if not page.get("has_more") and not page.get("events"):
+                                    break
+                            else:
+                                continue
+
                     page_cursor = int(page.get("next_seq", replay_cursor) or 0)
                     gap_ranges = page.get("gap_ranges", [])
+                    replay_events = page.get("events", [])
+                    if not isinstance(replay_events, (list, tuple)):
+                        replay_events = []
+
+                    if prefixed_cursor and gap_ranges and not replay_events:
+                        gap_payload = {
+                            "stream_id": stream_id,
+                            "next_seq": page_cursor,
+                            "gap_ranges": gap_ranges,
+                            "first_retained_seq": page.get("first_retained_seq", page_cursor),
+                            "last_seq": page.get("last_seq", page_cursor),
+                            "cursor_reset": False,
+                            "retention_gap": True,
+                        }
+                        if not write_sse("retention_gap", gap_payload, seq=page_cursor):
+                            return
+                        last_seq = page_cursor
+                        note_seq(stream_id, page_cursor)
+                        last_delivered_seq = page_cursor
+                        break
+
+                    replay_entries = []
                     if isinstance(gap_ranges, (list, tuple)):
                         for gap in gap_ranges:
                             if not isinstance(gap, dict):
@@ -3264,16 +3565,17 @@ class Handler(BaseHTTPRequestHandler):
                             gap_end = min(gap_end, page_cursor)
                             if gap_start < 0 or gap_end < gap_start or (gap_start, gap_end) in reported_gap_ranges:
                                 continue
-                            replay_entries.append((gap_end, "stream.gap", {
+                            gap_event_kind = "retention_gap" if prefixed_cursor else "stream.gap"
+                            replay_entries.append((gap_end, gap_event_kind, {
                                 **gap, "from_seq": gap_start, "to_seq": gap_end,
                             }, True))
-                    if page.get("cursor_reset") is True:
+                    if page.get("cursor_reset") is True and not prefixed_cursor:
                         first_retained = int(page.get("first_retained_seq", 0) or 0)
                         last_seq = max(0, first_retained - 1)
-                    replay_events = page.get("events", [])
-                    if not isinstance(replay_events, (list, tuple)):
-                        replay_events = []
+
                     for raw_event in replay_events:
+                        if hasattr(raw_event, "to_dict") and callable(raw_event.to_dict):
+                            raw_event = raw_event.to_dict()
                         if not isinstance(raw_event, dict):
                             continue
                         event_seq = int(raw_event.get("seq", 0) or 0)
@@ -3281,8 +3583,7 @@ class Handler(BaseHTTPRequestHandler):
                         if event_seq <= last_seq:
                             continue
                         replay_entries.append((event_seq, event_kind, raw_event, False))
-                    # Gap IDs and event IDs share one cursor. Emitting all gaps
-                    # first can skip earlier events if a client disconnects.
+
                     for event_seq, event_kind, raw_event, is_gap in sorted(replay_entries, key=lambda item: item[0]):
                         if event_seq <= last_seq:
                             continue
@@ -3295,8 +3596,7 @@ class Handler(BaseHTTPRequestHandler):
                                 return
                         last_seq = event_seq
                         note_seq(stream_id, event_seq)
-                    # A filtered page still advances the reconnect cursor, but
-                    # only after all earlier matching events/gaps are delivered.
+
                     page_id = page_cursor if page_cursor > last_delivered_seq else None
                     if not write_sse("replay_page", page, seq=page_id):
                         return
@@ -3311,7 +3611,7 @@ class Handler(BaseHTTPRequestHandler):
                                 "has_more": True,
                             }
                             limit_msg = (
-                                f"id: {last_seq}\nevent: replay_limit\ndata: "
+                                f"id: {format_seq(last_seq)}\nevent: replay_limit\ndata: "
                                 f"{json_dumps(limit_reached, separators=(',', ':'))}\n\n"
                             ).encode("utf-8")
                             try:
@@ -3358,7 +3658,8 @@ class Handler(BaseHTTPRequestHandler):
                                 note_seq(gap_stream, int(gap.get("to_seq", 0)))
                             except (TypeError, ValueError):
                                 continue
-                        if not write_sse(ev.kind, ev.to_dict()):
+                        gap_kind = "retention_gap" if prefixed_cursor else ev.kind
+                        if not write_sse(gap_kind, ev.to_dict()):
                             break
                         continue
 
@@ -3369,6 +3670,15 @@ class Handler(BaseHTTPRequestHandler):
                             continue
                         note_seq(ev.stream_id, ev.seq)
                     if kind and ev.kind != kind:
+                        if prefixed_cursor and stream_id and ev.seq is not None:
+                            try:
+                                self.wfile.write(f"id: {format_seq(ev.seq)}\n\n".encode("utf-8"))
+                                self.wfile.flush()
+                                last_delivered_seq = ev.seq
+                            except OSError:
+                                stream_success = False
+                                stream_error = "client disconnected"
+                                break
                         continue
                     if not write_sse(ev.kind, ev.to_dict(), ev.seq):
                         break
@@ -3526,6 +3836,35 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/status":
                 detail = str((query.get("detail") or [""])[0]).strip().lower()
                 if detail == "agent_state":
+                    if hasattr(APP, "_status_dependency_lock"):
+                        dependency_status: dict[str, dict[str, Any]] = {}
+                        deadline = time.monotonic() + _STATUS_TOTAL_BUDGET_SECONDS
+
+                        def read_agent_detail(key: str, callback, fallback):
+                            timeout = min(_STATUS_DEPENDENCY_TIMEOUT_SECONDS, max(0.0, deadline - time.monotonic()))
+                            value, healthy = _status_dependency(
+                                callback, fallback, key=f"detail.agent_state.{key}",
+                                lock=APP._status_dependency_lock, inflight=APP._status_dependency_inflight,
+                                slots=APP._status_dependency_slots, timeout_seconds=timeout,
+                            )
+                            dependency_status[key] = {"deadline_ms": max(0, int(timeout * 1000)), "degraded": not healthy, "status": "ok" if healthy else "degraded"}
+                            return value
+
+                        tasks = read_agent_detail("tasks", APP.agent_tasks.list_tasks, []) if getattr(APP, "agent_tasks", None) else []
+                        active_tasks = [getattr(t, "task_id", "") for t in tasks if getattr(t, "status", None) == TaskStatus.ACTIVE]
+                        incidents = read_agent_detail("incidents", APP.agent_incidents.list_incidents, []) if getattr(APP, "agent_incidents", None) else []
+                        candidates = read_agent_detail("candidates", APP.agent_learning.list_candidates, []) if getattr(APP, "agent_learning", None) else []
+                        degraded = any(item["degraded"] for item in dependency_status.values())
+                        self._send(200, {
+                            "success": not degraded,
+                            "degraded": degraded,
+                            "status": "degraded" if degraded else "ok",
+                            "dependency_status": dependency_status,
+                            "snapshot_cached": False,
+                            "enabled": bool(getattr(APP, "agent_state", None) and APP.agent_state.enabled),
+                            "active_tasks": active_tasks,
+                            "tasks_count": len(tasks),
+                        }); return
                     if not getattr(self, "_authorization_root", None):
                         self._send(403, {"success": False, "error": "agent_state status is unavailable without root scope", "terminal": True, "retryable": False}); return
                     # Capability readiness only: global projection counts would
@@ -4695,6 +5034,7 @@ class Handler(BaseHTTPRequestHandler):
             self._validate_payload(path, payload)
         except RequestBodyError as exc:
             self._send(exc.status, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+        self._admin_payload = payload if isinstance(payload, dict) else {}
         mode_rejection = _http_mode_gate_error("POST", path, payload)
         if mode_rejection is not None:
             status = 423 if mode_rejection.get("error_code") == "operational_mode_blocked" else 503
@@ -5031,7 +5371,7 @@ class Handler(BaseHTTPRequestHandler):
                     except Exception as exc:
                         self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                 request_root = str(payload.get("root", ""))
-                request_tenant = str(payload.get("tenant", ""))
+                request_tenant = str(payload.get("tenant") or self._tenant() or "")
                 task_id = str(payload.get("task_id", "")).strip()
                 if action not in {"create", "list", "reap", "curate_dataset", "curate_training_dataset"} and task_id:
                     if self._request_task(task_id, request_root, request_tenant) is None:
@@ -5136,7 +5476,7 @@ class Handler(BaseHTTPRequestHandler):
                         task_state = APP.agent_tasks.get(task_id)
                         if task_state is None:
                             raise KeyError(f"Task {task_id} not found")
-                        task_owner = str(task_state.owner or "").strip()
+                        task_owner = str(getattr(task_state, "owner", "") or "").strip()
                         if not task_owner or str(actor or "").strip() != task_owner:
                             self._send(403, {
                                 "success": False,
@@ -5414,6 +5754,9 @@ class Handler(BaseHTTPRequestHandler):
                             sensitivity=str(rec_data.get("sensitivity", "normal")),
                             provenance=provenance,
                             expires_at=(float(record_expiry) if record_expiry is not None else None),
+                            contradicts_record_id=rec_data.get("contradicts_record_id", payload.get("contradicts_record_id")),
+                            supersedes_record_id=rec_data.get("supersedes_record_id", payload.get("supersedes_record_id")),
+                            quarantine_reason=rec_data.get("quarantine_reason", payload.get("quarantine_reason")),
                         )
                         saved = APP.agent_memory.record(record, actor=actor, idempotency_key=idempotency_key)
                         self._send(200, {"success": True, "record": saved.to_dict()}); return
@@ -5527,6 +5870,14 @@ class Handler(BaseHTTPRequestHandler):
                         scope_id_val,
                         payload.get("task_id"),
                     )
+                    if scope_val is AgentScope.REPOSITORY and not bound_scope_id and root_val:
+                        project_context = _trusted_project_context(str(root_val))
+                        if project_context is not None and str(
+                            getattr(project_context, "root", "") or ""
+                        ).strip():
+                            bound_scope_id = str(project_context.root)
+                        else:
+                            bound_scope_id = str(root_val)
                     bound_task_id = (
                         bound_scope_id
                         if scope_val is AgentScope.TASK
@@ -6570,6 +6921,12 @@ class Handler(BaseHTTPRequestHandler):
                     path_hints=payload.get("path_hints"),
                 )); return
             if path == "/api/context/pack":
+                explicit_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
+                raw_tenant = payload.get("tenant") or (str(explicit_tenant).strip() if explicit_tenant else None)
+                principal_tenant = self._configured_principal_tenant()
+                if principal_tenant and raw_tenant and str(raw_tenant).strip() != principal_tenant:
+                    self._send(403, {"success": False, "error": "tenant does not match authenticated principal", "error_code": "tenant_binding_mismatch", "terminal": True, "retryable": False}); return
+                tenant = principal_tenant or (str(raw_tenant).strip() if raw_tenant else None) or self._tenant()
                 root = str(payload.get("root", ".")); query_text = str(payload.get("query", ""))
                 configured_tokens = APP.config.get("token_saving", {}).get("default_repo_context_tokens", 8000)
                 raw_max_tokens = payload.get("max_tokens", payload.get("token_budget", configured_tokens))
@@ -7056,7 +7413,14 @@ class Handler(BaseHTTPRequestHandler):
             if 'post_coord_pubsub_publish_1' in post_route_ids:
                 self._send(200, APP.services.pubsub_publish(str(payload.get("topic", "default")), payload.get("message", ""), sender=str(payload.get("publisher", payload.get("sender", "agent"))))); return
             if path in {"/api/coord/pubsub_poll", "/api/pubsub_poll"}:
-                self._send(200, APP.services.pubsub_poll(str(payload.get("topic", "default")), since_timestamp=float(payload.get("since_timestamp", 0.0)), limit=int(payload.get("limit", 50)), after_seq=int(payload.get("after_seq", 0)))); return
+                poll_kwargs: dict[str, Any] = {}
+                if "after_seq" in payload:
+                    poll_kwargs["after_seq"] = int(payload["after_seq"])
+                if "since_timestamp" in payload:
+                    poll_kwargs["since_timestamp"] = float(payload["since_timestamp"])
+                if "limit" in payload:
+                    poll_kwargs["limit"] = int(payload["limit"])
+                self._send(200, APP.services.pubsub_poll(str(payload.get("topic", "default")), **poll_kwargs)); return
             if path in {"/api/coord/simulate_merge", "/api/simulate_merge"}:
                 self._send(200, APP.services.simulate_merge(str(payload.get("root", ".")), str(payload.get("source_branch", "")), target_branch=str(payload.get("target_branch", "HEAD")))); return
             if 'post_eval_suite_1' in post_route_ids:

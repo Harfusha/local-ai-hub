@@ -2577,13 +2577,15 @@ class LocalAIServices:
                         "error": "Whisper CLI became unavailable before it could run.",
                     }
                 if proc.returncode != 0:
+                    err_text = str(proc.stderr or "").strip() or f"Whisper CLI exited with status {proc.returncode}."
                     return {
                         "success": False,
                         "audio_path": str(p),
                         "model": model,
                         "engine": "whisper_cli",
                         "reason": "process_failed",
-                        "error": f"Whisper CLI exited with status {proc.returncode}.",
+                        "returncode": proc.returncode,
+                        "error": err_text,
                     }
 
                 output_path = Path(output_dir) / f"{p.stem}.json"
@@ -2656,6 +2658,7 @@ class LocalAIServices:
                 "model": model,
                 "engine": "whisper_cli",
                 "reason": "timeout",
+                "retryable": True,
                 "error": "Whisper CLI timed out before transcription completed.",
             }
         except Exception:
@@ -4133,12 +4136,22 @@ class LocalAIServices:
         topic: str,
         since_timestamp: float = 0.0,
         limit: int = 50,
-        after_seq: int = 0,
+        after_seq: int | None = None,
+        **kwargs: Any,
     ) -> dict[str, Any]:
+        import inspect
         from .agent_events import SwarmPubSub
-        return SwarmPubSub.get_default(state_store=self.agent_state).poll(
-            topic, since_timestamp=since_timestamp, limit=limit, after_seq=after_seq
-        )
+        bus = SwarmPubSub.get_default(state_store=self.agent_state)
+        sig = inspect.signature(bus.poll)
+        poll_kwargs: dict[str, Any] = {}
+        if "after_seq" in sig.parameters:
+            poll_kwargs["after_seq"] = after_seq if after_seq is not None else 0
+        if "limit" in sig.parameters:
+            poll_kwargs["limit"] = limit
+        if "since_timestamp" in sig.parameters:
+            if "since_timestamp" in kwargs or since_timestamp != 0.0 or "after_seq" not in sig.parameters:
+                poll_kwargs["since_timestamp"] = since_timestamp
+        return bus.poll(topic, **poll_kwargs)
 
     def synthesize_commit(self, root: str, hint: str = "", task_id: str = "") -> dict[str, Any]:
         tasks_data: list[dict[str, Any]] = []

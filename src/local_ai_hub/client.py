@@ -516,11 +516,15 @@ class HubClient:
 
     def _online(self, timeout: float | None = None) -> bool:
         try:
-            health_timeout = self.health_timeout if timeout is None else min(self.health_timeout, max(0.0, timeout))
+            health_timeout = self.health_timeout if timeout is None else max(0.0, float(timeout))
             if health_timeout <= 0:
                 return False
             headers = {"X-LocalAI-Token": self.api_token} if self.api_token else {}
             with urlopen(Request(f"{self.base_url}/health", headers=headers), timeout=health_timeout) as response:
+                try:
+                    response.read()
+                except Exception:
+                    pass
                 return response.status == 200
         except HTTPError as exc:
             # 503 from the bounded HTTP admission gate proves the singleton is alive
@@ -801,13 +805,10 @@ class HubClient:
 
     def _root_sandbox_enabled(self) -> bool:
         security = self.config.get("security", {})
-        return bool(
-            isinstance(security, dict) and (
-                security.get("allowed_roots")
-                or security.get("tenant_derivation_key")
-                or security.get("api_token")
-            )
-        )
+        if not isinstance(security, dict):
+            return False
+        allowed_roots = security.get("allowed_roots")
+        return bool(isinstance(allowed_roots, list) and allowed_roots)
 
     def _root_scoped_tenant(self, roots: list[Any]) -> tuple[str | None, dict[str, Any] | None]:
         security = self.config.get("security", {})
@@ -915,7 +916,7 @@ class HubClient:
 
         principal = self._principal_tenant()
         if not self._root_sandbox_enabled():
-            effective_tenant = next((str(h).strip() for h in tenant_hints if h not in (None, "")), principal)
+            effective_tenant = next((str(h).strip() for h in tenant_hints if h not in (None, "")), self.tenant or principal)
             return effective_tenant, None
         effective_tenant = principal
         if task_route:

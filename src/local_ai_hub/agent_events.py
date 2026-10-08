@@ -2008,6 +2008,7 @@ class SwarmPubSub:
                         "sender": str(payload.get("sender") or event.get("actor") or ""),
                         "timestamp": float(event.get("created_at") or 0.0),
                         "payload": payload.get("message", {}),
+                        "seq": event.get("seq") or 0,
                         "sequence": event.get("seq") or 0,
                     })
                 else:
@@ -2018,20 +2019,42 @@ class SwarmPubSub:
                         "sender": str(payload.get("sender", getattr(event, "actor", ""))),
                         "timestamp": float(getattr(event, "created_at", 0.0)),
                         "payload": payload.get("message", {}),
+                        "seq": getattr(event, "seq", 0),
                         "sequence": getattr(event, "seq", 0),
                     })
+            first_retained = page.get("first_retained_seq")
+            req_after = max(0, int(after_seq))
+            last_seq = page.get("last_seq")
+            retention_gap = bool(
+                first_retained is not None
+                and first_retained > (req_after + 1)
+            )
+            has_gap = bool(retention_gap or page.get("gap_ranges"))
+            if retention_gap:
+                gap = {
+                    "reason": "retention",
+                    "requested_after_seq": req_after,
+                    "first_retained_seq": first_retained,
+                    "last_seq": last_seq,
+                }
+            elif page.get("gap_ranges"):
+                gap = page["gap_ranges"][0]
+            else:
+                gap = None
+
             return {
                 "success": True,
                 "topic": clean_topic,
                 "count": len(messages),
                 "messages": messages,
                 "cursor": page["next_seq"],
-                "after_seq": max(0, int(after_seq)),
-                "first_retained_seq": page["first_retained_seq"],
-                "last_seq": page["last_seq"],
+                "after_seq": req_after,
+                "first_retained_seq": first_retained,
+                "last_seq": last_seq,
                 "has_more": page["has_more"],
                 "gap_ranges": page["gap_ranges"],
-                "gap": page["gap_ranges"][0] if page["gap_ranges"] else None,
+                "gap": gap,
+                "has_gap": has_gap,
                 "cursor_reset": page["cursor_reset"],
                 "durable": True,
                 "replay_available": True,
@@ -2063,6 +2086,7 @@ class SwarmPubSub:
                 "reason": "ephemeral retention",
                 "first_retained_timestamp": first_timestamp,
             } if retention_gap else None,
+            "has_gap": retention_gap,
             "durable": False,
             "replay_available": False,
         }

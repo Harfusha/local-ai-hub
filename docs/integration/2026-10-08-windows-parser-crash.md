@@ -53,3 +53,21 @@ do not restore the language-pack bypass based only on mocked import tests.
 
 Full-suite, long-duration, model quality, and final release acceptance remain open.
 No durable databases or user worktrees were deleted or reset.
+
+## Post-fix service reload
+
+- Fix commit `193b601e` landed at 2026-10-08 13:59:49 +02:00. The observed
+  Python 3.13.2 access violation at 13:55:28 preceded that fix.
+- `python -B -m pytest -q -p no:cacheprovider --tb=short
+  tests/test_treesitter_windows_crash_guard.py`: 2 passed, 0.20 s.
+- The supervisor-owned HTTP worker was still pre-fix (PID 44640, started
+  13:57:58). `python -B tools/hubctl.py restart` returned `restarted`; the
+  replacement worker was PID 37964, started 14:20:57.
+- `local_ai_status(action="brief")` after restart: success, v4.0.0,
+  `degraded=false`. Windows Application Error query found 0 Python crashes
+  from 14:20:57 through 14:22:26 (89-second observation only).
+- A cached `hubctl status` response still named old PID 44640; do not treat
+  that cached PID as fresh process evidence. A later direct process query
+  confirmed PID 44640 was gone and the replacement worker was present.
+- This proves the new worker loaded after the fix and survived the bounded
+  observation, not long-duration stability or final release acceptance.

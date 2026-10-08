@@ -1216,7 +1216,7 @@ class RepositoryTools:
 
             if not path_is_allowed(
                 base, resolved, project_settings, phase="search",
-                soft_ignored=soft_ignored, size_bytes=size_bytes,
+                soft_ignored=soft_ignored and not force_include, size_bytes=size_bytes,
             ):
                 return False
             return self._path_extension_is_searchable(resolved, project_settings=project_settings)
@@ -2284,7 +2284,13 @@ class RepositoryTools:
             }
         if git_inventory is _UNSET_GIT_INVENTORY:
             git_inventory = self._git_files(base)
-        if git_inventory is None and (base / ".git").exists():
+        git_metadata = base / ".git"
+        valid_git_metadata = (
+            (git_metadata.is_dir() and (git_metadata / "HEAD").is_file())
+            or git_metadata.is_file()
+            or (base / ".gitignore").is_file()
+        )
+        if git_inventory is None and valid_git_metadata:
             return {
                 "success": False, "root": str(base), "error": "git_inventory_unavailable",
                 "results": [], "scanned_files": 0, "targeted": True,
@@ -2386,11 +2392,12 @@ class RepositoryTools:
                 relative = path.relative_to(base)
             except ValueError:
                 continue
-            if self._is_ignored_relative_path(relative):
+            forced = self._path_control_matches(rel, forced_values)
+            if self._is_ignored_relative_path(relative) and not forced:
                 continue
             if not path.is_file():
                 continue
-            if git_paths is not None and rel not in git_paths and not path_is_allowed(
+            if git_paths is not None and rel not in git_paths and not forced and not path_is_allowed(
                 base, rel, project_settings, phase="search", soft_ignored=True,
             ):
                 continue

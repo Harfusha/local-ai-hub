@@ -881,7 +881,8 @@ def test_root_tenant_is_stable_per_principal_and_separates_same_task_id(tmp_path
     assert http_server.Handler._task_matches_request(task_a, str(root_b.resolve()), tenant_b) is False
 
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(
-        agent_tasks=SimpleNamespace(get=lambda task_id: task_a if task_id == "same-task" else None)
+        config=app.config,
+        agent_tasks=SimpleNamespace(get=lambda task_id: task_a if task_id == "same-task" else None),
     ))
     allowed = _handler({})
     assert http_server.Handler._request_task(allowed, "same-task", str(root_a.resolve()), tenant_a) is task_a
@@ -891,6 +892,57 @@ def test_root_tenant_is_stable_per_principal_and_separates_same_task_id(tmp_path
     denied._send = lambda status, payload: responses.append((status, payload))
     assert http_server.Handler._request_task(denied, "same-task", str(root_b.resolve()), tenant_b) is None
     assert responses[0][0] == 404
+
+
+def test_task_access_sandbox_fails_closed_without_allowed_roots(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    tenant = "tenant-bound"
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={
+        "security": {
+            "api_token": "a-long-test-token-value",
+            "tenant_derivation_key": "stable-test-derivation-secret-0123456789",
+        }
+    }))
+    handler = _handler({})
+
+    task = SimpleNamespace(context=SimpleNamespace(
+        repository_id=str(root.resolve()), session_id=tenant,
+    ))
+    rootless_task = SimpleNamespace(context=SimpleNamespace(
+        repository_id="", session_id=tenant,
+    ))
+    tenantless_task = SimpleNamespace(context=SimpleNamespace(
+        repository_id=str(root.resolve()), session_id="",
+    ))
+
+    assert http_server.Handler._root_sandbox_enabled(handler) is True
+    assert http_server.Handler._task_matches_request(task, str(root.resolve()), tenant) is True
+    assert http_server.Handler._task_matches_request(rootless_task, str(root.resolve()), tenant) is False
+    assert http_server.Handler._task_matches_request(tenantless_task, str(root.resolve()), tenant) is False
+
+
+def test_task_completion_rejects_missing_owner(tmp_path, monkeypatch):
+    root = tmp_path / "repo"
+    root.mkdir()
+    task = SimpleNamespace(owner="", context=SimpleNamespace(
+        repository_id=str(root.resolve()), session_id="api-token-default",
+    ))
+    app = SimpleNamespace(
+        config={"server": {"state_dir": str(tmp_path)}},
+        agent_tasks=SimpleNamespace(get=lambda _task_id: task),
+        agent_verification=object(),
+    )
+    app.agent_tasks.state_store = SimpleNamespace(enabled=True)
+    responses = _dispatch_post(
+        monkeypatch,
+        "/api/agent-state/tasks",
+        {"action": "complete", "task_id": "ownerless", "root": str(root)},
+        app,
+    )
+
+    assert responses[0][0] == 403
+    assert responses[0][1]["error_code"] == "task_owner_mismatch"
 
 
 def test_root_scope_rejects_spoofed_header_or_body_tenant(tmp_path, monkeypatch):

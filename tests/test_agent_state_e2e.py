@@ -1,18 +1,17 @@
 from __future__ import annotations
 
 import sqlite3
+import json
 import subprocess
 import sys
 import time
 from pathlib import Path
-from types import SimpleNamespace
 import pytest
 
 from local_ai_hub.app import LocalAIApp
 from local_ai_hub.agent_events import AgentEvent
 from local_ai_hub.agent_tasks import GoalContract, TaskStatus, TaskCheckpoint, CompletionGateError
 from local_ai_hub.agent_identity import ScopeContext
-from local_ai_hub.agent_verification import VerificationReceipt
 from local_ai_hub.agent_incidents import IncidentFingerprint, ToolOutcome
 
 
@@ -37,21 +36,20 @@ retention_days = 14
     return LocalAIApp(str(cfg_path))
 
 
-def _install_empty_project_verification_config(monkeypatch: pytest.MonkeyPatch) -> None:
-    project_config = SimpleNamespace(
-        resolve_project_context=lambda root, state_dir: SimpleNamespace(
-            settings=SimpleNamespace(verification_rules={}, commands={})
-        )
-    )
-    monkeypatch.setitem(sys.modules, "local_ai_hub.project_config", project_config)
-
-
 def make_trusted_repository(parent: Path, rules: str) -> tuple[Path, str]:
     root = parent / "repo"
-    root.mkdir()
+    test_dir = root / "tests"
+    test_dir.mkdir(parents=True)
+    (test_dir / "test_smoke.py").write_text(
+        "def test_smoke():\n    assert 1 + 1 == 2\n", encoding="utf-8"
+    )
+    (root / "lint_target.py").write_text("value = 1\n", encoding="utf-8")
+    python = json.dumps(sys.executable)
+    test_argv = f'[{python}, "-B", "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests/test_smoke.py"]'
+    lint_argv = f'[{python}, "-B", "-m", "pyflakes", "lint_target.py"]'
     (root / ".local-ai.toml").write_text(
-        '[commands.test]\nargv = ["python", "-B", "-c", "print(1)"]\n'
-        '[commands.lint]\nargv = ["python", "-B", "-c", "print(1)"]\n'
+        f"[commands.test]\nargv = {test_argv}\n"
+        f"[commands.lint]\nargv = {lint_argv}\n"
         f"[verification_rules]\n{rules}\n",
         encoding="utf-8",
     )
@@ -68,12 +66,10 @@ def make_trusted_repository(parent: Path, rules: str) -> tuple[Path, str]:
 
 def test_interrupted_task_resumes_with_fresh_evidence_and_no_duplicate_command(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ):
-    _install_empty_project_verification_config(monkeypatch)
-    repo_root, revision = make_trusted_repository(tmp_path, 'suite_passed = ["test"]')
+    repo_root, revision = make_trusted_repository(tmp_path, 'test = ["test"]')
     app = app_with_agent_state(tmp_path)
-    contract = GoalContract(goal="Interrupted Goal", acceptance_criteria=("suite_passed",))
+    contract = GoalContract(goal="Interrupted Goal", acceptance_criteria=("test",))
     ctx = ScopeContext(repository_id=str(repo_root), task_id="task-resume-1")
     t = app.agent_tasks.create(
         contract, ctx, task_id="task-resume-1", actor="agent", idempotency_key="cr-1",
@@ -92,33 +88,42 @@ def test_interrupted_task_resumes_with_fresh_evidence_and_no_duplicate_command(
     )
     app.agent_tasks.checkpoint(t.task_id, chk, actor="agent", idempotency_key="chk-1")
 
-    # Record trusted command proof
-    command_id = "cmd-resume-tests"
-    repository_revision = "rev-1"
-    proof = {
-        "kind": "work_command_verification",
-        "passed": True,
-        "task_id": t.task_id,
-        "owner": t.owner,
-        "criterion": "suite_passed",
-        "command_id": command_id,
-        "exit_code": 0,
-        "repository_revision": repository_revision,
-        "mutation_generation": 0,
-        "result": {"success": True, "exit_code": 0},
-    }
-    evidence_id = app.artifacts.put_json(proof, t.owner, "command_verification")
-    rcpt = VerificationReceipt.create(
+    command_result = app.commands.run_project_command(
+        "test",
+        str(repo_root),
+        tenant=t.owner,
         task_id=t.task_id,
-        criterion="suite_passed",
-        passed=True,
-        evidence_id=evidence_id,
-        command_id=command_id,
-        owner=t.owner,
-        repository_revision=repository_revision,
-        evidence_type="test",
+        criterion="test",
+        timeout=30,
+        force=True,
     )
-    app.agent_verification.record(rcpt)
+    assert command_result.get("success") is True, {
+        key: command_result.get(key)
+        for key in ("error", "project_command_error", "reason", "status", "message", "retryable", "terminal")
+    }
+    receipt = command_result.get("verification_receipt")
+    assert isinstance(receipt, dict), {
+        key: command_result.get(key)
+        for key in ("success", "error", "verification_receipt_warning", "task_id", "criterion", "project_command_error")
+    }
+    assert receipt["evidence_type"] == "test"
+    state = app.agent_tasks.get(t.task_id)
+    assert state is not None
+    state_data = dict(state.checkpoint.state_data)
+    state_data["repository_revision"] = receipt["repository_revision"]
+    app.agent_tasks.checkpoint(
+        t.task_id,
+        TaskCheckpoint(
+            phase=state.checkpoint.phase,
+            next_action=state.checkpoint.next_action,
+            affected_paths=state.checkpoint.affected_paths,
+            evidence_ids=state.checkpoint.evidence_ids,
+            blockers=state.checkpoint.blockers,
+            state_data=state_data,
+        ),
+        actor="agent",
+        idempotency_key="command-revision",
+    )
 
     # Simulate restart by instantiating new app on same state_dir
     app.close()
@@ -133,6 +138,9 @@ def test_interrupted_task_resumes_with_fresh_evidence_and_no_duplicate_command(
     app2.agent_tasks.transition(t.task_id, TaskStatus.VERIFYING, reason="verifying", actor="agent", idempotency_key="tx-v")
     completed = app2.agent_tasks.transition(t.task_id, TaskStatus.COMPLETED, reason="done", actor="agent", idempotency_key="tx-complete")
     assert completed.status is TaskStatus.COMPLETED
+    assert app2.commands.get_command_execution_record(
+        receipt["command_id"], tenant=t.owner, task_id=t.task_id, repository_root=str(repo_root)
+    ) is not None
     app2.close()
 
 
@@ -169,14 +177,13 @@ def test_busy_database_returns_bounded_retryable_result_without_corrupting_event
     app.close()
 
 
-def test_e2e_completion_gate_enforcement(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    _install_empty_project_verification_config(monkeypatch)
+def test_e2e_completion_gate_enforcement(tmp_path: Path):
     repo_root, revision = make_trusted_repository(
         tmp_path,
-        'tests_pass = ["test"]\nlint_pass = ["lint"]',
+        'test = ["test"]\nlint = ["lint"]',
     )
     app = app_with_agent_state(tmp_path)
-    contract = GoalContract(goal="Gated Goal", acceptance_criteria=("tests_pass", "lint_pass"))
+    contract = GoalContract(goal="Gated Goal", acceptance_criteria=("test", "lint"))
     ctx = ScopeContext(repository_id=str(repo_root), task_id="task-gate-1")
     t = app.agent_tasks.create(
         contract, ctx, task_id="task-gate-1", actor="agent", idempotency_key="g-cr",
@@ -199,50 +206,63 @@ def test_e2e_completion_gate_enforcement(tmp_path: Path, monkeypatch: pytest.Mon
     with pytest.raises(CompletionGateError):
         app.agent_tasks.transition(t.task_id, TaskStatus.COMPLETED, reason="premature", actor="agent", idempotency_key="g-fail")
 
-    # Record trusted test proof
-    test_command_id = "cmd-tests"
-    repository_revision = "rev-1"
-    test_proof = {
-        "kind": "work_command_verification",
-        "passed": True,
-        "task_id": t.task_id,
-        "owner": t.owner,
-        "criterion": "tests_pass",
-        "command_id": test_command_id,
-        "exit_code": 0,
-        "repository_revision": repository_revision,
-        "mutation_generation": 0,
-        "result": {"success": True, "exit_code": 0},
-    }
-    test_evidence = app.artifacts.put_json(test_proof, t.owner, "command_verification")
-    r1 = VerificationReceipt.create(
-        task_id=t.task_id, criterion="tests_pass", passed=True, evidence_id=test_evidence,
-        command_id=test_command_id, owner=t.owner,
-        repository_revision=repository_revision, mutation_generation=0, evidence_type="test",
+    test_result = app.commands.run_project_command(
+        "test",
+        str(repo_root),
+        tenant=t.owner,
+        task_id=t.task_id,
+        criterion="test",
+        timeout=30,
+        force=True,
     )
-    app.agent_verification.record(r1)
+    assert test_result.get("success") is True, {
+        key: test_result.get(key)
+        for key in ("error", "project_command_error", "reason", "status", "message", "retryable", "terminal")
+    }
+    test_receipt = test_result.get("verification_receipt")
+    assert isinstance(test_receipt, dict), {
+        key: test_result.get(key)
+        for key in ("success", "error", "verification_receipt_warning", "task_id", "criterion", "project_command_error")
+    }
+    state = app.agent_tasks.get(t.task_id)
+    assert state is not None
+    state_data = dict(state.checkpoint.state_data)
+    state_data["repository_revision"] = test_receipt["repository_revision"]
+    app.agent_tasks.checkpoint(
+        t.task_id,
+        TaskCheckpoint(
+            phase=state.checkpoint.phase,
+            next_action=state.checkpoint.next_action,
+            affected_paths=state.checkpoint.affected_paths,
+            evidence_ids=state.checkpoint.evidence_ids,
+            blockers=state.checkpoint.blockers,
+            state_data=state_data,
+        ),
+        actor="agent",
+        idempotency_key="test-command-revision",
+    )
 
-    # Still missing lint_pass
+    # Still missing lint receipt.
     with pytest.raises(CompletionGateError):
         app.agent_tasks.transition(t.task_id, TaskStatus.COMPLETED, reason="still missing", actor="agent", idempotency_key="g-fail2")
 
-    # Record trusted review proof
-    review_proof = {
-        "kind": "work_source_review",
-        "passed": True,
-        "task_id": t.task_id,
-        "owner": t.owner,
-        "repository_revision": repository_revision,
-        "mutation_generation": 0,
-        "criteria": ["lint_pass"],
-    }
-    review_evidence = app.artifacts.put_json(review_proof, t.owner, "source_review")
-    r2 = VerificationReceipt.create(
-        task_id=t.task_id, criterion="lint_pass", passed=True, evidence_id=review_evidence,
-        owner=t.owner, repository_revision=repository_revision,
-        mutation_generation=0, evidence_type="source_review",
+    lint_result = app.commands.run_project_command(
+        "lint",
+        str(repo_root),
+        tenant=t.owner,
+        task_id=t.task_id,
+        criterion="lint",
+        timeout=30,
+        force=True,
     )
-    app.agent_verification.record(r2)
+    assert lint_result.get("success") is True, {
+        key: lint_result.get(key)
+        for key in ("error", "project_command_error", "reason", "status", "message", "retryable", "terminal")
+    }
+    lint_receipt = lint_result.get("verification_receipt")
+    assert isinstance(lint_receipt, dict), lint_result
+    assert lint_receipt["evidence_type"] == "source_review"
+    assert lint_receipt["repository_revision"] == test_receipt["repository_revision"]
 
     # Now completion succeeds
     done = app.agent_tasks.transition(t.task_id, TaskStatus.COMPLETED, reason="all verified", actor="agent", idempotency_key="g-ok")

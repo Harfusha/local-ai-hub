@@ -5200,11 +5200,12 @@ class CommandBroker:
         callback_queue: queue.Queue[tuple[str, str] | None] | None = None
         callback_thread: threading.Thread | None = None
         callback_dropped_chars = 0
+        callback_chunks_dropped = 0
         callback_drop_lock = threading.Lock()
         callback_start_failed = False
 
         def _queue_log_callback(stream_name: str, text: str) -> None:
-            nonlocal callback_dropped_chars
+            nonlocal callback_dropped_chars, callback_chunks_dropped
             if callback_queue is None:
                 return
             if len(text) > 16_384:
@@ -5216,9 +5217,10 @@ class CommandBroker:
             except queue.Full:
                 with callback_drop_lock:
                     callback_dropped_chars += len(text)
+                    callback_chunks_dropped += 1
 
         if log_callback:
-            callback_queue = queue.Queue(maxsize=64)
+            callback_queue = queue.Queue(maxsize=_COMMAND_LOG_QUEUE_MAX_CHUNKS)
 
             def _dispatch_log_callbacks() -> None:
                 while True:
@@ -5544,6 +5546,7 @@ class CommandBroker:
                 if item is not None:
                     with callback_drop_lock:
                         callback_dropped_chars += len(item[1])
+                        callback_chunks_dropped += 1
                 callback_queue.task_done()
             callback_queue.put_nowait(None)
             callback_thread.join(timeout=0.05)
@@ -5576,6 +5579,7 @@ class CommandBroker:
                 "shell_startup_ms": round((process_started - started) * 1000, 3),
                 "stream_capture_ms": round((capture_finished - process_started) * 1000, 3),
             },
+            "log_chunks_dropped": callback_chunks_dropped,
             **({"log_callback_dropped_chars": callback_dropped_chars} if callback_dropped_chars else {}),
             **({"log_callback_delivery_unconfirmed": True} if callback_delivery_unconfirmed else {}),
             **(
@@ -7275,6 +7279,32 @@ class CommandBroker:
             if not force and not bypass_cache and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
             return result
+        cwd_path = Path(cwd).expanduser().resolve(strict=False)
+        if not cwd_path.is_dir():
+            result = {
+                "success": False,
+                "error": f"working directory does not exist: {cwd_path}",
+                "preflight": True,
+                "terminal": True,
+                "retryable": False,
+            }
+            if not force and not bypass_cache and not is_mutating:
+                self.suppression_cache.set(attempt_key, result)
+            return result
+        if _transaction_context:
+            unavailable = None
+        elif argv_override is not None:
+            unavailable = self._unavailable_executable(command, cwd, argv_override=argv_override)
+        else:
+            unavailable = self._unavailable_executable(command, cwd)
+        if unavailable:
+            result = {
+                "success": False, "error": f"command executable is unavailable: {unavailable}",
+                "exit_code": 127, "classification": classification, "preflight": True, "terminal": True, "retryable": False,
+            }
+            if not force and not bypass_cache and not is_mutating:
+                self.suppression_cache.set(attempt_key, result)
+            return self._compact(result, tenant, command)
         if (is_mutating or auto_fix or rollback_on_failure) and not _transaction_context:
             worktree_error = self._require_task_worktree(task_id, cwd, original_command, require_git_identity=True)
             if worktree_error:
@@ -7345,40 +7375,6 @@ class CommandBroker:
                     "retryable": False,
                     "budget_exhausted": True,
                 }
-        cwd_path = Path(cwd).expanduser().resolve(strict=False)
-        if not cwd_path.is_dir():
-            result = {
-                "success": False,
-                "error": f"working directory does not exist: {cwd_path}",
-                "preflight": True,
-                "terminal": True,
-                "retryable": False,
-            }
-            if not force and not bypass_cache and not is_mutating:
-                self.suppression_cache.set(attempt_key, result)
-            return result
-        if _transaction_context:
-            unavailable = None
-        elif argv_override is not None:
-            unavailable = self._unavailable_executable(command, cwd, argv_override=argv_override)
-        else:
-            unavailable = self._unavailable_executable(command, cwd)
-        if unavailable:
-            result = {
-                "success": False, "error": f"command executable is unavailable: {unavailable}",
-                "exit_code": 127, "classification": classification, "preflight": True, "terminal": True, "retryable": False,
-            }
-            if not force and not bypass_cache and not is_mutating:
-                self.suppression_cache.set(attempt_key, result)
-            return self._compact(result, tenant, command)
-        if not Path(cwd).is_dir():
-            result = {
-                "success": False, "error": f"working directory does not exist: {cwd}",
-                "exit_code": 1, "classification": classification, "preflight": True, "terminal": True, "retryable": False,
-            }
-            if not force and not bypass_cache and not is_mutating:
-                self.suppression_cache.set(attempt_key, result)
-            return self._compact(result, tenant, command)
         try:
             key, state = self._key(
                 command, cwd, classification,
@@ -8404,6 +8400,51 @@ class CommandBroker:
         If all attempts fail, cleanly rolls back all modified files to pristine state.
         """
         cwd_path = Path(cwd).resolve(strict=True) if _transaction_context else Path(canonical_root(cwd))
+        if initial_result is not None:
+            if initial_result.get("success"):
+                return {
+                    "success": True,
+                    "repaired": False,
+                    "attempts": 0,
+                    "result": initial_result,
+                    "message": "command passed without repair",
+                }
+            classification = self.classify(command)
+            replay_safe = bool(classification.get("replay_safe", False))
+            if classification.get("class") == "mutating":
+                return {
+                    "success": False,
+                    "repaired": False,
+                    "repair_skipped": True,
+                    "outcome_unknown": True,
+                    "retryable": False,
+                    "terminal": True,
+                    "attempts": 0,
+                    "result": initial_result,
+                    "error": "repair loop skipped after failed mutating command; private transaction will be discarded",
+                }
+            outcome_uncertain = bool(
+                initial_result.get("outcome_unknown")
+                or initial_result.get("timed_out")
+                or initial_result.get("cancelled")
+            )
+            if outcome_uncertain or not replay_safe:
+                uncertain = dict(initial_result)
+                out_unk = (
+                    bool(initial_result["outcome_unknown"])
+                    if "outcome_unknown" in initial_result
+                    else outcome_uncertain
+                )
+                uncertain["outcome_unknown"] = out_unk
+                return {
+                    "success": False,
+                    "repaired": False,
+                    "repair_skipped": True,
+                    "outcome_unknown": out_unk,
+                    "attempts": 0,
+                    "result": uncertain,
+                    "message": "repair skipped because command outcome or side effects are not safe to replay",
+                }
         if _transaction_context:
             transaction_root = self._transaction_root_for_context(_transaction_context).resolve(strict=True)
             if cwd_path != transaction_root:

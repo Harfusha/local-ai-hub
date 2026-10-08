@@ -656,7 +656,7 @@ class RAGStore:
 
     @staticmethod
     def _workspace_project_config_key(
-        scope_key: str, workspace: str, root_identity: str
+        scope_key: str, workspace: str, root_identity: str = ""
     ) -> str:
         return "workspace_project_config:" + stable_hash({
             "tenant": scope_key, "workspace": workspace, "root": root_identity,

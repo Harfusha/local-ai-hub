@@ -56,24 +56,85 @@ def project_command_environment_sha256(settings: object, criterion: str) -> str:
 
 def evaluate_project_completion(
     verification_store: CompletionReceiptStore,
-    settings: ProjectSettings,
+    settings_or_task_id: ProjectSettings | str,
     *,
-    task_id: str,
-    repository_revision: str,
+    task_id: str = "",
+    root: str | Path = "",
+    state_dir: str | Path = "",
+    repository_revision: str = "",
+    current_revision: str = "",
     project_config_digest: str = "",
     configured_environment_sha256: Mapping[str, str] | None = None,
     project_root: str | Path = "",
     now: float | None = None,
 ) -> CompletionResult:
     """Delegate project-aware completion to T09's persisted receipt gate."""
+    if isinstance(settings_or_task_id, str):
+        task_key = str(settings_or_task_id).strip()
+        rev = str(current_revision or repository_revision or "").strip()
+        task_store = getattr(verification_store, "task_store", None)
+        task_getter = getattr(task_store, "get", None)
+        if not task_key or not callable(task_getter):
+            return CompletionResult(task_key, False, (), ("trusted_task_context",), (), ())
+        task = task_getter(task_key)
+        if (
+            task is None
+            or str(getattr(task, "task_id", "")).strip() != task_key
+            or not str(getattr(task, "owner", "") or "").strip()
+        ):
+            return CompletionResult(task_key, False, (), ("trusted_task_context",), (), ())
+        trusted_root = _task_project_root(task, _task_created_state_data(task_store, task_key))
+        if trusted_root is None:
+            return CompletionResult(task_key, False, (), ("trusted_project_root",), (), ())
+        requested_root = str(root or "").strip()
+        if requested_root and _canonical_project_root(requested_root) != _canonical_project_root(trusted_root):
+            return CompletionResult(task_key, False, (), ("trusted_project_root",), (), ())
+        try:
+            from .project_config import ProjectConfigError, resolve_project_context
+
+            project = resolve_project_context(trusted_root, state_dir)
+        except (ProjectConfigError, OSError, RuntimeError, ValueError):
+            return CompletionResult(
+                task_id=task_key,
+                complete=False,
+                satisfied_criteria=(),
+                unsatisfied_criteria=("project_configuration",),
+                stale_criteria=(),
+                receipts=(),
+            )
+        if project.resolution.error_codes:
+            return CompletionResult(
+                task_id=task_key,
+                complete=False,
+                satisfied_criteria=(),
+                unsatisfied_criteria=("project_configuration",),
+                stale_criteria=(),
+                receipts=(),
+            )
+        settings = project.settings
+        return evaluate_project_completion(
+            verification_store,
+            settings,
+            task_id=task_key,
+            now=now,
+            repository_revision=rev,
+            project_config_digest=project.config_digest,
+            configured_environment_sha256={
+                name: project_command_environment_sha256(settings, name)
+                for name in settings.commands
+            },
+            project_root=trusted_root,
+        )
+
+    settings = settings_or_task_id
     task_key = str(task_id or "").strip()
-    revision = str(repository_revision or "").strip()
+    revision = str(repository_revision or current_revision or "").strip()
     if not task_key:
         raise ValueError("task_id is required")
     if not revision:
         raise ValueError("repository_revision is required")
 
-    task_store = verification_store.task_store
+    task_store = getattr(verification_store, "task_store", None)
     if task_store is None:
         raise ValueError("task store is required for project completion")
     task = task_store.get(task_key)
@@ -186,11 +247,12 @@ def _task_owned_worktree_root(
 
 
 def _task_project_root(
-    task: TaskState,
+    task: Any,
     trusted_initial_state_data: Mapping[str, object] | None = None,
 ) -> Path | None:
     context_root: Path | None = None
-    context_value = task.context.repository_id
+    context = getattr(task, "context", None)
+    context_value = getattr(context, "repository_id", None) if context else None
     if isinstance(context_value, (str, Path)) and str(context_value).strip():
         candidate = Path(context_value).expanduser().resolve(strict=False)
         if candidate.is_dir():
@@ -202,8 +264,9 @@ def _task_project_root(
         initial_root = initial_data.get("repo_root")
         trusted_worktree = initial_worktree if isinstance(initial_worktree, Mapping) else None
     else:
-        current_data = task.checkpoint.state_data
-        current_worktree = current_data.get("worktree")
+        checkpoint = getattr(task, "checkpoint", None)
+        current_data = getattr(checkpoint, "state_data", {}) if checkpoint else {}
+        current_worktree = current_data.get("worktree") if isinstance(current_data, Mapping) else None
         trusted_worktree = current_worktree if isinstance(current_worktree, Mapping) else None
         initial_root = None
 
@@ -258,15 +321,21 @@ def complete_task_with_project_rules(
     if not revision:
         raise CompletionGateError("trusted repository_revision is unavailable")
     receipt_task_store = getattr(verification_store, "task_store", None)
-    if receipt_task_store is None or receipt_task_store is not task_store:
+    if receipt_task_store is not task_store:
         raise CompletionGateError("verification task store is unavailable or mismatched")
-    before = task_store.get(task_key)
-    if before is None or not str(before.owner or "").strip():
+    task_getter = getattr(task_store, "get", None)
+    if not callable(task_getter):
+        raise CompletionGateError("trusted task store is unavailable")
+    before = task_getter(task_key)
+    if before is None or str(getattr(before, "task_id", "")).strip() != task_key:
+        raise CompletionGateError("trusted task is unavailable")
+    before_owner = str(getattr(before, "owner", "") or "").strip()
+    if not before_owner:
         raise CompletionGateError("task owner is unavailable")
     initial_state_data = _task_created_state_data(task_store, task_key)
     task_root = _task_project_root(before, initial_state_data)
     if task_root is None:
-        raise CompletionGateError("task project root is unavailable")
+        raise CompletionGateError("trusted task project root is unavailable")
     memory_audit_validator = getattr(task_store, "_validate_memory_audit", None)
     if callable(memory_audit_validator):
         memory_audit_validator(before)
@@ -289,23 +358,25 @@ def complete_task_with_project_rules(
         raise CompletionGateError("project configuration could not be resolved") from exc
     if project.resolution.error_codes:
         raise CompletionGateError("project configuration is invalid")
-    if not before.contract.acceptance_criteria:
-        state_data = dict(before.checkpoint.state_data)
+    contract = getattr(before, "contract", None) if before is not None else None
+    if contract is not None and not getattr(contract, "acceptance_criteria", ()):
+        checkpoint = getattr(before, "checkpoint", None)
+        state_data = dict(getattr(checkpoint, "state_data", {}))
         state_data["repo_root"] = str(project.root)
         state_data["repository_revision"] = revision
-        if state_data != dict(before.checkpoint.state_data):
-            checkpoint = TaskCheckpoint(
-                phase=before.checkpoint.phase,
-                next_action=before.checkpoint.next_action,
-                affected_paths=before.checkpoint.affected_paths,
-                evidence_ids=before.checkpoint.evidence_ids,
-                blockers=before.checkpoint.blockers,
+        if state_data != dict(getattr(checkpoint, "state_data", {})):
+            checkpoint_obj = TaskCheckpoint(
+                phase=getattr(checkpoint, "phase", ""),
+                next_action=getattr(checkpoint, "next_action", ""),
+                affected_paths=getattr(checkpoint, "affected_paths", ()),
+                evidence_ids=getattr(checkpoint, "evidence_ids", ()),
+                blockers=getattr(checkpoint, "blockers", ()),
                 state_data=state_data,
             )
             suffix = "_project_completion_context"
             task_store.checkpoint(
                 task_key,
-                checkpoint,
+                checkpoint_obj,
                 actor=actor,
                 idempotency_key=f"{idempotency_key}{suffix}" if idempotency_key else "",
             )
@@ -335,32 +406,37 @@ def complete_task_with_project_rules(
             f"Cannot complete task {task_key}: verification incomplete"
             + (f" ({missing})" if missing else "")
         )
-    current = task_store.get(task_key)
-    if (
-        current is None
-        or current.owner != before.owner
-        or _completion_mutation_generation(current) != before_generation
-    ):
-        raise CompletionGateError("task owner or mutation generation changed during completion verification")
-    state_data = dict(current.checkpoint.state_data)
-    state_data["repo_root"] = str(project.root)
-    state_data["repository_revision"] = revision
-    if state_data != dict(current.checkpoint.state_data):
-        checkpoint = TaskCheckpoint(
-            phase=current.checkpoint.phase,
-            next_action=current.checkpoint.next_action,
-            affected_paths=current.checkpoint.affected_paths,
-            evidence_ids=current.checkpoint.evidence_ids,
-            blockers=current.checkpoint.blockers,
-            state_data=state_data,
-        )
-        suffix = "_project_completion_context"
-        task_store.checkpoint(
-            task_key,
-            checkpoint,
-            actor=actor,
-            idempotency_key=f"{idempotency_key}{suffix}" if idempotency_key else "",
-        )
+    if before is not None and hasattr(before, "checkpoint"):
+        current = task_store.get(task_key)
+        current_owner = str(getattr(current, "owner", "") or "").strip()
+        before_owner = str(getattr(before, "owner", "") or "").strip()
+        current_chk = getattr(current, "checkpoint", None)
+        current_generation = _completion_mutation_generation(current)
+        if (
+            current is None
+            or (before_owner and current_owner != before_owner)
+            or current_generation != before_generation
+        ):
+            raise CompletionGateError("task owner or mutation generation changed during completion verification")
+        current_state_data = dict(getattr(current_chk, "state_data", {}))
+        current_state_data["repo_root"] = str(project.root)
+        current_state_data["repository_revision"] = revision
+        if current_state_data != dict(getattr(current_chk, "state_data", {})):
+            checkpoint_obj = TaskCheckpoint(
+                phase=getattr(current_chk, "phase", ""),
+                next_action=getattr(current_chk, "next_action", ""),
+                affected_paths=getattr(current_chk, "affected_paths", ()),
+                evidence_ids=getattr(current_chk, "evidence_ids", ()),
+                blockers=getattr(current_chk, "blockers", ()),
+                state_data=current_state_data,
+            )
+            suffix = "_project_completion_context"
+            task_store.checkpoint(
+                task_key,
+                checkpoint_obj,
+                actor=actor,
+                idempotency_key=f"{idempotency_key}{suffix}" if idempotency_key else "",
+            )
     return task_store.complete(
         task_key,
         reason=reason,

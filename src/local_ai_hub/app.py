@@ -382,7 +382,7 @@ class LocalAIApp:
             verification_store=self.agent_verification,
             telemetry=self.telemetry,
         )
-        self.services.inference_admission = self.async_jobs.inference_admission
+        self._bind_service_inference_admission()
         self.speculative_lint = SpeculativeLintQueue(self.async_jobs, self.config)
         self.commands = CommandBroker(self.config, self.artifacts, self.repo_state)
         self.commands.set_incident_store(self.agent_incidents)
@@ -538,6 +538,10 @@ class LocalAIApp:
                 self.telemetry.record_error("watchdog", "health_loop", exc, retryable=True, recovered=True)
                 self.logger.warning("watchdog iteration failed: %s", type(exc).__name__)
 
+    def _bind_service_inference_admission(self) -> None:
+        if hasattr(self, "services") and hasattr(self, "async_jobs"):
+            self.services.inference_admission = self.async_jobs.inference_admission
+
     def _start_resilience_watchdog(self) -> None:
         cfg = self.config.get("resilience", {})
         if not bool(cfg.get("watchdog_enabled", True)):
@@ -549,7 +553,10 @@ class LocalAIApp:
         with self.async_jobs.inference_admission(action) as rejection:
             if rejection is not None:
                 return rejection
-            return self._execute_async_task_admitted(action, payload, tenant)
+            runner = getattr(self, "_execute_async_task_admitted", None)
+            if callable(runner):
+                return runner(action, payload, tenant)
+            return LocalAIApp._execute_async_task_admitted(self, action, payload, tenant)
 
     def _execute_async_task_admitted(self, action: str, payload: dict[str, Any], tenant: str) -> dict[str, Any]:
         async_payload = dict(payload)
@@ -1044,6 +1051,7 @@ class LocalAIApp:
             res = {
                 "success": not degraded, "snapshot_cached": False, "degraded": degraded, "dependency_status": dependency_status,
                 "hub_pid": os.getpid(), "hub_online": True, "version": __version__,
+                "uptime_seconds": max(0, int(time.time() - self.started_at)),
                 "ollama_online": online, "ollama_status": ollama_status, "online": online, "ollama_version": version,
                 "installed_models": installed, "loaded_models": loaded, "loaded_model_details": loaded_details, "models": dict(self.config["models"]),
                 "model_execution": model_execution, "ollama_profile": ollama_profile,
@@ -1676,17 +1684,23 @@ class LocalAIApp:
                         record_data = dict(rdata)
                         scope_value = str(record_data.get("scope", "")).strip().lower()
                         provenance = record_data.get("provenance")
-                        if target_root_path and scope_value in {"repo", "repository"}:
+                        if scope_value in {"repo", "repository"}:
                             source_root = provenance.get("root") if isinstance(provenance, dict) else None
                             if not source_root:
-                                return None, "repository memory provenance root is required for project import"
-                            if not source_root_path:
-                                return None, "project bundle root is required for repository memory import"
-                            if _normalise_scope_root(str(source_root)) != _normalise_scope_root(source_root_path):
-                                return None, "repository memory provenance does not match bundle root"
+                                return None, "repository memory provenance root is required for import"
+                            if target_root_path:
+                                if not source_root_path:
+                                    return None, "project bundle root is required for repository memory import"
+                                if _normalise_scope_root(str(source_root)) != _normalise_scope_root(source_root_path):
+                                    return None, "repository memory provenance does not match bundle root"
+                                imported_root = target_root_path
+                            else:
+                                imported_root = str(
+                                    Path(str(source_root)).expanduser().resolve(strict=False)
+                                ).replace("\\", "/")
                             rebased_provenance = dict(provenance)
-                            rebased_provenance["source_root"] = str(source_root)
-                            rebased_provenance["root"] = target_root_path
+                            rebased_provenance.setdefault("source_root", str(source_root))
+                            rebased_provenance["root"] = imported_root
                             record_data["provenance"] = rebased_provenance
                         from_dict = getattr(MemoryRecord, "from_dict", None)
                         if callable(from_dict) and all(
