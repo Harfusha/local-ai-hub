@@ -43,7 +43,7 @@ def _record_command(
     project_environment_sha256 = hashlib.sha256(b"{}").hexdigest()
     configured_command_sha256 = hashlib.sha256(command_text.encode("utf-8")).hexdigest()
     if criterion in {"test", "lint"}:
-        resolved = app.commands._resolve_project_command(criterion, str(project_root))
+        resolved = app.commands._resolve_project_command(criterion, str(repository_root))
         configured = resolved.configured_command
         if isinstance(configured, CommandInvocation):
             configured_text = json.dumps(
@@ -309,11 +309,7 @@ def test_task_completion_http_receipt_and_memory_matrix(
             revision=revision,
             command_id=f"cmd-{case}-lint",
             project_config_digest=project_config_digest,
-<<<<<<< HEAD
             repository_root=project_root,
-=======
-            project_root=project_root,
->>>>>>> archived/codex/sync-hub-audit-repairs-20261006
         )
 
     if memory_context is not None:
