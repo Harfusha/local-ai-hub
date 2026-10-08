@@ -335,6 +335,44 @@ def test_global_memory_delete_ignores_transport_tenant_but_keeps_scope(store: Me
     assert store.get(global_record.record_id, scope=AgentScope.GLOBAL) is None
 
 
+def test_repository_memory_delete_accepts_trusted_root_when_legacy_repository_id_is_absent(store: MemoryStore):
+    record = store.record(MemoryRecord.create(
+        kind=MemoryKind.FACT,
+        scope=AgentScope.REPOSITORY,
+        key="legacy-repository-identity",
+        value="same repository root",
+        provenance={"root": "C:/repo-a", "tenant": "tenant-1"},
+    ), actor="user")
+
+    assert store.delete(
+        record.record_id,
+        scope=AgentScope.REPOSITORY,
+        root="C:/repo-a",
+        repository_id="coordination-repo-a",
+        tenant="tenant-1",
+    ) is True
+    assert store.get(record.record_id, scope=AgentScope.REPOSITORY, root="C:/repo-a") is None
+
+    conflicting = store.record(MemoryRecord.create(
+        kind=MemoryKind.FACT,
+        scope=AgentScope.REPOSITORY,
+        key="conflicting-repository-identity",
+        value="different repository identity",
+        provenance={
+            "root": "C:/repo-a",
+            "repository_id": "different-repository",
+            "tenant": "tenant-1",
+        },
+    ), actor="user")
+    assert store.delete(
+        conflicting.record_id,
+        scope=AgentScope.REPOSITORY,
+        root="C:/repo-a",
+        repository_id="coordination-repo-a",
+        tenant="tenant-1",
+    ) is False
+
+
 def test_scoped_memory_delete_still_enforces_tenant(store: MemoryStore):
     session_record = store.record(MemoryRecord.create(
         kind=MemoryKind.FACT,

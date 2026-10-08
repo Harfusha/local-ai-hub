@@ -2421,6 +2421,18 @@ class MemoryStore:
                             if (not actual or _normalise_scope_root(actual) != _normalise_scope_root(expected)) and repo_id != expected:
                                 con.execute("COMMIT")
                                 return False, None
+                        elif identity_key == "repository_id" and not actual:
+                            # Older repository records may predate this optional
+                            # provenance field. A matching trusted physical root
+                            # still binds them; a present but different ID does not.
+                            trusted_root = identity_values["root"]
+                            record_root = str(provenance.get("root", "") or "").strip()
+                            if not trusted_root or not record_root or (
+                                _normalise_scope_root(record_root)
+                                != _normalise_scope_root(trusted_root)
+                            ):
+                                con.execute("COMMIT")
+                                return False, None
                         elif actual != expected:
                             con.execute("COMMIT")
                             return False, None

@@ -5900,14 +5900,6 @@ class Handler(BaseHTTPRequestHandler):
                         scope_id_val,
                         payload.get("task_id"),
                     )
-                    if scope_val is AgentScope.REPOSITORY and not bound_scope_id and root_val:
-                        project_context = _trusted_project_context(str(root_val))
-                        if project_context is not None and str(
-                            getattr(project_context, "root", "") or ""
-                        ).strip():
-                            bound_scope_id = str(project_context.root)
-                        else:
-                            bound_scope_id = str(root_val)
                     bound_task_id = (
                         bound_scope_id
                         if scope_val is AgentScope.TASK
