@@ -55,8 +55,14 @@ def _version_from_init(root: Path) -> str:
 _INSTALLED_ENV_DIRS = {".venv", "tool-envs", "state", ".serena", ".agents", ".superpowers", ".worktrees"}
 
 
-def _iter_release_hygiene_violations(root: Path, *, post_test: bool = False, allow_installed: bool = False) -> Iterable[str]:
-    """Yield release-tree violations.
+def _iter_release_hygiene_violations(
+    root: Path, *, post_test: bool = False, allow_installed: bool = False,
+    strict_tree: bool = False,
+) -> Iterable[str]:
+    """Yield working-tree or strict release-tree violations.
+
+    Working-tree checks ignore disposable Python and pytest caches. Use
+    ``strict_tree`` for a release tree, where generated caches are forbidden.
 
     ``post_test`` tolerates only known test/install caches that are expected to be
     cleaned before packaging. Runtime databases, local configuration, generated
@@ -65,6 +71,8 @@ def _iter_release_hygiene_violations(root: Path, *, post_test: bool = False, all
     ``allow_installed`` additionally allows managed runtime/tool environments
     (``.venv``, ``tool-envs``, ``state``) present in active developer checkouts.
     """
+    if strict_tree and (post_test or allow_installed):
+        raise ValueError("strict_tree cannot allow test or installed payloads")
     if allow_installed:
         post_test = True
 
@@ -72,6 +80,11 @@ def _iter_release_hygiene_violations(root: Path, *, post_test: bool = False, all
         rel = path.relative_to(root).as_posix()
         parts = path.relative_to(root).parts
         if ".git" in parts:
+            continue
+        if not strict_tree and (
+            "__pycache__" in parts or ".pytest_cache" in parts
+            or (path.is_file() and path.suffix in {".pyc", ".pyo"})
+        ):
             continue
         if allow_installed:
             if parts and parts[0] in _INSTALLED_ENV_DIRS:
@@ -116,7 +129,7 @@ def _iter_release_hygiene_violations(root: Path, *, post_test: bool = False, all
             yield f"runtime/build payload: {rel}"
 
 
-def run_checks(root: Path, *, expected_version: str | None = None, post_test: bool = False, allow_installed: bool = False) -> dict[str, object]:
+def run_checks(root: Path, *, expected_version: str | None = None, post_test: bool = False, allow_installed: bool = False, strict_tree: bool = False) -> dict[str, object]:
     errors: list[str] = []
     checks: list[dict[str, object]] = []
 
@@ -187,7 +200,9 @@ def run_checks(root: Path, *, expected_version: str | None = None, post_test: bo
     checks.append({"name": "public-docs", "ok": not missing_docs, "missing": missing_docs})
     errors.extend(f"missing public release file: {item}" for item in missing_docs)
 
-    hygiene = list(_iter_release_hygiene_violations(root, post_test=post_test, allow_installed=allow_installed))
+    hygiene = list(_iter_release_hygiene_violations(
+        root, post_test=post_test, allow_installed=allow_installed, strict_tree=strict_tree,
+    ))
     checks.append({"name": "workspace-hygiene", "ok": not hygiene, "violations": hygiene})
     errors.extend(hygiene)
 
@@ -333,10 +348,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--expected-version", default=None, help="require package metadata to match this version (leading v is accepted)")
     parser.add_argument("--post-test", action="store_true", help="allow only known test/install caches while still rejecting runtime side effects")
     parser.add_argument("--allow-installed", action="store_true", help="allow managed tool environments (.venv, tool-envs, state) in live checkouts")
+    parser.add_argument("--strict-tree", action="store_true", help="reject generated caches when validating a clean release tree")
     parser.add_argument("--live-smoke", action="store_true", help="also require bounded live Hub, model, async-job and Agent OS evidence")
     args = parser.parse_args(argv)
+    if args.strict_tree and (args.post_test or args.allow_installed):
+        parser.error("--strict-tree cannot be combined with --post-test or --allow-installed")
     root = args.root.expanduser().resolve()
-    result = run_checks(root, expected_version=args.expected_version, post_test=args.post_test, allow_installed=args.allow_installed)
+    result = run_checks(root, expected_version=args.expected_version, post_test=args.post_test, allow_installed=args.allow_installed, strict_tree=args.strict_tree)
     if args.live_smoke:
         live = run_live_smoke(root)
         result["live_smoke"] = live

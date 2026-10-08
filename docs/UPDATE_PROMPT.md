@@ -90,6 +90,8 @@ Start conversations synchronously with `POST /api/delegate` or `POST /api/reason
 
 If this checkout includes `docs/PYTHON_SDK.md`, consult it for the Python package's `HubClient`, install extras, and replay/error contracts before writing Python integration code.
 
+Working-checkout release checks ignore disposable Python/pytest caches already covered by `.gitignore`. Use `python tools/release_check.py --allow-installed` in a live installed checkout. Use `--strict-tree` for a clean release tree; never combine it with `--post-test` or `--allow-installed`. Do not delete caches merely to make an ordinary checkout check pass.
+
 ### PHASE 3: VERIFY SERVICE, MCP, AND HEALTH
 
 Verify `hubctl.py service-status` and exactly one platform user-service entry: Windows Task Scheduler `LocalAIHubSupervisor`, macOS LaunchAgent `com.localai.hub`, or Linux systemd user unit `local-ai-hub.service`. Reconcile the existing registration; do not register a service per agent, chat, or worktree. A `detached-fallback` result does not prove reboot-persistent service acceptance. Setup exits nonzero if registration fails or is only detached fallback. Preserve the installer output, inspect the same service-manager entry and logs, and recover or rerun using the same clean verified SHA; do not claim update complete until one persistent service is confirmed.
