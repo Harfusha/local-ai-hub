@@ -275,39 +275,6 @@ def test_verification_receipt_parser_rejects_non_mapping_payload():
         VerificationReceipt.from_dict(["not", "a", "mapping"])
 
 
-@pytest.mark.parametrize("mutation_generation", [True, 1.0, -1, "1"])
-def test_verification_receipt_parser_rejects_invalid_mutation_generation(mutation_generation):
-    payload = {
-        "receipt_id": "receipt-1",
-        "task_id": "task-1",
-        "criterion": "tests",
-        "passed": True,
-        "mutation_generation": mutation_generation,
-    }
-
-    with pytest.raises(ValueError, match="mutation_generation"):
-        VerificationReceipt.from_dict(payload)
-
-
-@pytest.mark.parametrize("details", [None, "not-a-mapping", ["not", "a", "mapping"]])
-def test_verification_receipt_parser_rejects_non_mapping_details(details):
-    payload = {
-        "receipt_id": "receipt-1",
-        "task_id": "task-1",
-        "criterion": "tests",
-        "passed": True,
-        "details": details,
-    }
-
-    with pytest.raises(ValueError, match="details"):
-        VerificationReceipt.from_dict(payload)
-
-
-def test_verification_receipt_parser_rejects_non_mapping_payload():
-    with pytest.raises(TypeError, match="must be a mapping"):
-        VerificationReceipt.from_dict(["not", "a", "mapping"])
-
-
 def test_verifier_exception_cannot_become_a_passing_receipt(
     stores: tuple[TaskStore, VerificationStore],
 ):
