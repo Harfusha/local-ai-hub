@@ -121,6 +121,11 @@ Local model policy: Model routing follows the active hardware profile and user o
 
 ## Validation
 
+Working-checkout release checks ignore generated Python/pytest caches covered by
+`.gitignore`. Use `--allow-installed` for a live checkout with managed environments
+and state. Use `--strict-tree` when validating a clean release tree; it cannot be
+combined with `--post-test` or `--allow-installed`.
+
 From the repository root:
 
 ```bash

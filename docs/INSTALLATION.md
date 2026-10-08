@@ -96,3 +96,5 @@ python -c 'import importlib.metadata as m,json,urllib.request; h=json.load(urlli
 ```
 
 `python tools/selftest.py` and `python -m pytest -q` are source-checkout checks, separate from installed-instance verification. `python tools/hubctl.py clean` removes repository caches and build artifacts; it is not an installation check.
+
+`python tools/release_check.py` ignores disposable `__pycache__`, `.pyc`, `.pyo`, and `.pytest_cache` files in a working checkout; Git already ignores them. Use `--allow-installed` for a live checkout containing managed environments and runtime state. Validate a clean release tree with `--strict-tree`, which rejects these caches and cannot be combined with `--post-test` or `--allow-installed`. Build outputs and unrelated runtime payloads remain checked according to the selected mode.

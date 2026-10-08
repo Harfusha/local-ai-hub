@@ -1,5 +1,40 @@
 # Local AI Hub Release Acceptance Matrix
 
+## Current primary-agent verification — 2026-10-08, after `58ab6305`
+
+- T20 remains active / NO-GO. Full `python -B -m pytest -q --tb=short -p no:cacheprovider`
+  did not deliver a result before the MCP transport's 900-second deadline. Its
+  observed pytest process subsequently exited. No full-suite pass or test count
+  is claimed. The cache policy was changed during that diagnostic run, so it is
+  not a receipt for the updated candidate.
+- Runtime status is now healthy: `tools/service.py status` reports `running`,
+  `hub_online=true`, `hub_ready=true`, `ollama_online=true`, and zero supervisor
+  restarts. The earlier stopping metadata was transient and is no longer an open
+  supervisor defect. Installed v4.0.0 and dependencies were verified in the
+  preceding integration run; current bounded Hub status is online, not degraded.
+- Cache-policy ownership: primary agent on master; `tools/release_check.py`,
+  `tests/test_release_check_working_tree.py`, `.github/workflows/release.yml`,
+  `AGENTS.md`, `docs/INSTALLATION.md`, `docs/INSTALL_PROMPT.md`, and
+  `docs/UPDATE_PROMPT.md`. Normal checks ignore disposable Python/pytest caches;
+  `--strict-tree` keeps release-tree validation strict. `.gitignore` already
+  contains `__pycache__/` and `*.py[cod]`. Two initial regression tests failed
+  before the fix; the final new regression file passed 4 tests.
+- Broader cache/release regression command:
+  `python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_release_check_working_tree.py tests/test_release_check_defaults_parity.py tests/test_release_runtime.py tests/test_release_hardening.py tests/test_surface_and_packaging.py -k "hygiene or release_gate or release_workflow or defaults_consistency or working_tree or strict_release_tree or release_check_allow_installed"`
+  returned **13 passed, 28 deselected in 24.03s**. `git diff --check` passed.
+- `python -B tools/release_check.py --allow-installed --expected-version 4.0.0`
+  returned **release-check: OK** after the cache fix. The ignored, untracked
+  installation `build/` payload was preserved by moving it to
+  `state/release-workspace-20261008/build-install-58ab6305`; no cache or user data
+  was deleted. A clean packaged release still requires `--strict-tree` validation.
+- Fresh Git inventory before the owned cache patch: **61 worktrees, 0 dirty,
+  0 missing, 1 current, 57 behind, 3 divergent**. The divergent detached heads
+  each contain one preservation commit: T08 `7bd58337`, mode `02cc5cc8`,
+  T18 `8db4f3bf`. T08's proposed merge adds duplicate receipt parser tests;
+  mode's proposed merged tree matches master; T18's remaining conflicts are in
+  evolved SSE replay handling. They still require actual merge/verification;
+  the inventory alone is not integration evidence.
+
 ## 2026-10-08 integration delta
 
 - T11 transport slice only: integrated commit `420bebaf` from owner commit
