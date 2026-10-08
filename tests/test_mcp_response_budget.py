@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from local_ai_hub import mcp_server
 from local_ai_hub.token_accounting import json_tokens
 
@@ -59,14 +61,17 @@ def test_command_rollback_scope_reaches_api_payload(monkeypatch, tmp_path) -> No
 
 def test_command_rollback_rejects_non_run_action_before_dispatch(monkeypatch) -> None:
     monkeypatch.setattr(mcp_server.FEATURES, "commands", True)
+    monkeypatch.setattr(mcp_server.CLIENT, "post", lambda *a, **k: pytest.fail("invalid rollback dispatched"))
 
     result = mcp_server.local_ai_command(
-        action="speculative_lint",
+        action="discover",
         rollback_on_failure=True,
         paths=["owned.py"],
     )
 
     assert result["rollback_unsupported_action"] is True
+    assert result["terminal"] is True
+    assert result["retryable"] is False
 
 
 def test_telemetry_status_projection_keeps_slow_paths_and_omits_bulk_report() -> None:
@@ -318,6 +323,9 @@ def test_command_response_budget_keeps_execution_disposition_within_limit(monkey
     finally:
         mcp_server._CURRENT_RESPONSE_OPTIONS.reset(token)
 
+    # The instrumented tool removes private accounting before returning to MCP.
+    result, measured = mcp_server.pop_accounting(result)
+    assert measured["raw_response_tokens_est"] > measured["projected_response_tokens_est"]
     assert json_tokens(result) <= 128
     assert result["success"] is False
     assert result["terminal"] is True
