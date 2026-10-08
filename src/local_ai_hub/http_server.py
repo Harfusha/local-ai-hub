@@ -3311,20 +3311,51 @@ class Handler(BaseHTTPRequestHandler):
                 except (TypeError, ValueError, OverflowError):
                     pass
 
-        def send_initial_error(status: int, payload: Mapping[str, Any]) -> None:
+        q = None
+
+        def send_initial_error(_status: int, _payload: Mapping[str, Any]) -> None:
             try:
-                body = _json_bytes(payload)
-                self.send_response(status)
-                self.send_header("Content-Type", "application/json; charset=utf-8")
+                if q is not None:
+                    try:
+                        APP.agent_state.unsubscribe(q)
+                    except Exception as exc:
+                        APP.logger.warning("event stream unsubscribe failed error_type=%s", type(exc).__name__)
+                try:
+                    next_seq = max(0, int(after_seq))
+                except (TypeError, ValueError, OverflowError):
+                    next_seq = 0
+                body = _json_bytes({
+                    "success": False,
+                    "next_seq": next_seq,
+                    "error": {
+                        "code": "event_replay_unavailable",
+                        "message": "Event replay is temporarily unavailable.",
+                    },
+                    "retryable": True,
+                    "terminal": False,
+                })
+                frame = b"event: replay_error\ndata: " + body + b"\n\n"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache")
                 self.send_header("Connection", "close")
-                self.send_header("Content-Length", str(len(body)))
                 self._common_headers()
                 self.end_headers()
-                self.wfile.write(body)
+                self.wfile.write(frame)
                 self.wfile.flush()
             except OSError:
                 pass
-            self._finish_stream_request(False, error=str(payload.get("error", "initial event page failed")))
+            self._finish_stream_request(False, error="event replay unavailable")
+
+        try:
+            q = APP.agent_state.subscribe(maxsize=200)
+        except Exception as exc:
+            APP.logger.warning("event stream subscribe failed error_type=%s", type(exc).__name__)
+            send_initial_error(503, {
+                "success": False,
+                "error": {"code": "event_replay_unavailable", "message": "Event replay is temporarily unavailable."},
+            })
+            return
 
         initial_page: dict[str, Any] | None = None
         if stream_id and after_seq >= 0:
@@ -3383,7 +3414,6 @@ class Handler(BaseHTTPRequestHandler):
 
         stream_success = True
         stream_error = ""
-        q = APP.agent_state.subscribe(maxsize=200)
         try:
             # Subscribe before fetching history. An event appended in the replay
             # window is then either replayed or queued; duplicate queued events
