@@ -7,7 +7,7 @@ import local_ai_hub.http_server as http_server
 
 
 def test_read_only_db_query_stops_after_bounded_sqlite_work(monkeypatch, tmp_path) -> None:
-    database = tmp_path / "agent_state.sqlite3"
+    database = tmp_path / "agent_state.sqlite"
     connection = sqlite3.connect(database)
     try:
         connection.execute("CREATE TABLE numbers (value INTEGER NOT NULL)")
@@ -28,7 +28,7 @@ def test_read_only_db_query_stops_after_bounded_sqlite_work(monkeypatch, tmp_pat
 
 
 def test_read_only_db_query_caps_returned_rows_at_100(monkeypatch, tmp_path) -> None:
-    database = tmp_path / "agent_state.sqlite3"
+    database = tmp_path / "agent_state.sqlite"
     connection = sqlite3.connect(database)
     try:
         connection.execute("CREATE TABLE numbers (value INTEGER NOT NULL)")
@@ -47,7 +47,7 @@ def test_read_only_db_query_caps_returned_rows_at_100(monkeypatch, tmp_path) -> 
 
 
 def test_read_only_db_query_rejects_results_over_byte_budget(monkeypatch, tmp_path) -> None:
-    database = tmp_path / "agent_state.sqlite3"
+    database = tmp_path / "agent_state.sqlite"
     connection = sqlite3.connect(database)
     try:
         connection.execute("CREATE TABLE payloads (value TEXT NOT NULL)")
