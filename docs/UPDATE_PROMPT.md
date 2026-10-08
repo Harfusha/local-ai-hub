@@ -262,4 +262,9 @@ and automatic routing advice. Request specific details with `extra_fields` or an
 `response_profile="debug"`; use artifacts for complete logs. Outcome, safety, context
 identity, and evidence fields remain available. Explicit status reports remain supported.
 
+SSE replay uses numeric Last-Event-ID with an explicit stream filter. Consume replay
+events/gaps in cursor order; replay_page advances the cursor only after safe delivery,
+including filtered pages. Reset the cursor when changing the stream or kind filter.
+Supervisor health reason codes belong to operator diagnostics, not normal agent output.
+
 `disable_llm_card_synthesis` applies to fallback synthesis for unparsed file cards only. Module and project cards use separate `prefer_deterministic_modules` and `prefer_deterministic_project` settings; background LLM synthesis may still run when deterministic card generation does not satisfy its acceptance conditions.
