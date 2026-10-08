@@ -23,8 +23,10 @@ from .process_utils import (
     hidden_run_kwargs,
     open_pidfd,
     pid_alive,
+    process_identity,
     process_owner_record,
     process_owner_state,
+    process_parent_pid,
     terminate_owned_process,
     terminate_process_handle,
 )
@@ -271,6 +273,32 @@ class Supervisor:
             return False
         return process_owner_state(owner, self.state_dir, "hub") == "owned"
 
+    def _listener_is_owned(self, listener_pid: int | None) -> bool:
+        """Recognize the owned interpreter behind a Windows venv launcher."""
+        if not self._owned_hub_child():
+            return False
+        if listener_pid == int(self.child.pid):
+            return True
+        if sys.platform != "win32" or not isinstance(listener_pid, int) or isinstance(listener_pid, bool):
+            return False
+        launcher = process_identity(int(self.child.pid))
+        worker = process_identity(listener_pid)
+        if not isinstance(launcher, dict) or not isinstance(worker, dict):
+            return False
+        interpreter = Path(str(launcher.get("executable", ""))).name.casefold()
+        if interpreter not in {"python.exe", "pythonw.exe"}:
+            return False
+        if (Path(str(worker.get("executable", ""))).name.casefold() != interpreter
+                or worker.get("pid") != listener_pid
+                or worker.get("creation_identity") is None
+                or process_parent_pid(listener_pid) != int(self.child.pid)):
+            return False
+        # Recheck both identities after reading the relationship. Unknown/reused
+        # PIDs must never turn a foreign listener into a healthy managed Hub.
+        return (process_identity(listener_pid) == worker
+                and process_identity(int(self.child.pid)) == launcher
+                and self._owned_hub_child())
+
     def hub_online(self) -> bool:
         if not self.child_ready or not self._owned_hub_child():
             return False
@@ -287,11 +315,13 @@ class Supervisor:
                 if response.status != 200:
                     return False
             listener_pid = find_listening_pid(int(server.get("port", 11435)))
-            return listener_pid == int(self.child.pid)
+            return self._listener_is_owned(listener_pid)
         except HTTPError as exc:
             # Admission-control 503 means the process is alive and intentionally
             # shedding load. Recycling it here would amplify overload into restart churn.
-            return exc.code == 503
+            return exc.code == 503 and self._listener_is_owned(
+                find_listening_pid(int(server.get("port", 11435)))
+            )
         except Exception:
             return False
 
@@ -317,7 +347,7 @@ class Supervisor:
                 if not isinstance(payload, dict) or payload.get("ready") is not True:
                     return False
             listener_pid = find_listening_pid(int(server.get("port", 11435)))
-            return listener_pid == int(self.child.pid)
+            return self._listener_is_owned(listener_pid)
         except Exception:
             return False
 
