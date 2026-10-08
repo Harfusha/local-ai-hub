@@ -3229,6 +3229,8 @@ class Handler(BaseHTTPRequestHandler):
                             last_seq = checkpoint
                             last_seq_by_stream[stream_id] = checkpoint
                             continue
+                    replay_entries = []
+                    page_cursor = int(page.get("next_seq", replay_cursor) or 0)
                     gap_ranges = page.get("gap_ranges", [])
                     if isinstance(gap_ranges, (list, tuple)):
                         for gap in gap_ranges:
@@ -3239,13 +3241,17 @@ class Handler(BaseHTTPRequestHandler):
                                 gap_end = int(gap.get("to_seq"))
                             except (TypeError, ValueError, OverflowError):
                                 continue
+                            gap_start = max(gap_start, last_seq + 1)
+                            gap_end = min(gap_end, page_cursor)
                             if gap_start < 0 or gap_end < gap_start or (gap_start, gap_end) in reported_gap_ranges:
                                 continue
-                            reported_gap_ranges.add((gap_start, gap_end))
-                            if not write_sse("stream.gap", gap, seq=gap_end):
-                                return
+                            replay_entries.append((gap_end, "stream.gap", {
+                                **gap, "from_seq": gap_start, "to_seq": gap_end,
+                            }, True))
                     page_payload = json_dumps(page, separators=(",", ":"))
-                    page_msg = f"id: {page.get('next_seq', replay_cursor)}\nevent: replay_page\ndata: {page_payload}\n\n".encode("utf-8")
+                    # Page metadata must not advance EventSource's reconnect cursor
+                    # before the individual replay events have been delivered.
+                    page_msg = f"event: replay_page\ndata: {page_payload}\n\n".encode("utf-8")
                     try:
                         self.wfile.write(page_msg)
                         self.wfile.flush()
@@ -3264,19 +3270,23 @@ class Handler(BaseHTTPRequestHandler):
                             continue
                         event_seq = int(raw_event.get("seq", 0) or 0)
                         event_kind = str(raw_event.get("kind", ""))
-                        if event_seq <= last_seq or (kind and event_kind != kind):
+                        if event_seq <= last_seq:
                             continue
+                        replay_entries.append((event_seq, event_kind, raw_event, False))
+                    # Gap IDs and event IDs share one cursor. Emitting all gaps
+                    # first can skip earlier events if a client disconnects.
+                    for event_seq, event_kind, raw_event, is_gap in sorted(replay_entries, key=lambda item: item[0]):
+                        if event_seq <= last_seq:
+                            continue
+                        if is_gap:
+                            if not write_sse(event_kind, raw_event, seq=event_seq):
+                                return
+                            reported_gap_ranges.add((raw_event["from_seq"], raw_event["to_seq"]))
+                        elif not kind or event_kind == kind:
+                            if not write_sse(event_kind, raw_event, seq=event_seq):
+                                return
                         last_seq = event_seq
                         note_seq(stream_id, event_seq)
-                        payload = json_dumps(raw_event, separators=(",", ":"))
-                        msg = f"id: {event_seq}\nevent: {event_kind}\ndata: {payload}\n\n".encode("utf-8")
-                        try:
-                            self.wfile.write(msg)
-                            self.wfile.flush()
-                        except OSError:
-                            stream_success = False
-                            stream_error = "client disconnected"
-                            return
                     replayed_events += len(replay_events)
                     next_cursor = int(page.get("next_seq", replay_cursor) or 0)
                     has_more = page.get("has_more") is True
