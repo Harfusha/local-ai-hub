@@ -316,6 +316,9 @@ class MemoryRecord:
         path_refs: tuple[str, ...] | list[str] = (),
         symbol_refs: tuple[str, ...] | list[str] = (),
         related_task: str | None = None,
+        contradicts_record_id: str | None = None,
+        supersedes_record_id: str | None = None,
+        quarantine_reason: str | None = None,
     ) -> MemoryRecord:
         if isinstance(kind, str):
             try:
@@ -354,9 +357,9 @@ class MemoryRecord:
             source=source,
             evidence_ids=tuple(evidence_ids),
             sensitivity=sensitivity,
-            contradicts_record_id=None,
-            supersedes_record_id=None,
-            quarantine_reason=None,
+            contradicts_record_id=contradicts_record_id,
+            supersedes_record_id=supersedes_record_id,
+            quarantine_reason=quarantine_reason,
             provenance=provenance_data,
             created_at=now,
             updated_at=now,
