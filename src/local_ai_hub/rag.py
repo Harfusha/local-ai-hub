@@ -1063,9 +1063,12 @@ class RAGStore:
             }
         project_context = self.project_context(root_path)
         if not self._project_phase_allowed(project_context, "rag"):
+            target_ws = workspace or self.workspace_id(str(root_path))
+            removed = self.prune_missing(root_path, tenant, target_ws, [])
             return {
-                "success": True, "workspace": workspace or self.workspace_id(str(root_path)),
+                "success": True, "workspace": target_ws,
                 "skipped": True, "reason": "project phase disabled",
+                "removed_paths": removed, "processed_paths": [],
             }
         workspace = workspace or self.workspace_id(str(root_path))
         scope_key = self._scope_key(tenant)
@@ -1852,9 +1855,12 @@ class RAGStore:
             return {"success": False, "error": f"root directory does not exist: {root_path}"}
         project_context = self.project_context(root_path)
         if not self._project_phase_allowed(project_context, "rag"):
+            target_ws = workspace or self.workspace_id(str(root_path))
+            removed = self.prune_missing(root, tenant, target_ws, [])
             return {
-                "success": True, "workspace": workspace or self.workspace_id(str(root_path)),
+                "success": True, "workspace": target_ws,
                 "skipped": True, "reason": "project phase disabled", "done": True,
+                "removed_paths": removed,
                 "processed_files": 0,
             }
         workspace = workspace or self.workspace_id(str(root_path))

@@ -108,7 +108,9 @@ def test_explicit_rag_ingestion_removes_policy_rejected_source_paths(
     store = RAGStore(_config(tmp_path))
     workspace = store.workspace_id(str(root.resolve()))
     scope = store._scope_key("tenant")
-    digest_key = store._workspace_project_config_key(scope, workspace)
+    digest_key = store._workspace_project_config_key(
+        scope, workspace, store._project_root_identity(root)
+    )
     rejected = ["private/secret.py", "payload.binx", "large.py"]
     with closing(store._connect()) as con:
         con.execute(
@@ -210,7 +212,9 @@ def test_rag_policy_digest_prunes_excluded_chunks_and_invalidates_identity(
     store = RAGStore(_config(tmp_path))
     workspace = store.workspace_id(str(root.resolve()))
     scope = store._scope_key("tenant")
-    digest_key = store._workspace_project_config_key(scope, workspace)
+    digest_key = store._workspace_project_config_key(
+        scope, workspace, store._project_root_identity(root)
+    )
     source_stat = (root / "private" / "secret.py").stat()
     with closing(store._connect()) as con:
         con.execute(
