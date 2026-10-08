@@ -34,6 +34,11 @@ def _seed_durable_rows(db_path: Path, artifact_dir: Path):
         key="migration-marker",
         value="keep durable memory",
         source="test",
+        provenance={
+            "root": str(db_path.parent.resolve()),
+            "tenant": "test-owner",
+            "task_id": task.task_id,
+        },
     ), actor="test")
 
     artifacts = ArtifactStore(artifact_dir)
@@ -103,9 +108,24 @@ def test_current_unversioned_agent_state_migrates_with_verified_backup_and_resta
     reopened_tasks = TaskStore(reopened_state)
     reopened_memory = MemoryStore(reopened_state)
     reopened_verifications = VerificationStore(reopened_state, task_store=reopened_tasks)
+    with closing(sqlite3.connect(db_path)) as connection:
+        restored_memory_row = connection.execute(
+            "SELECT record_id, scope, scope_id, sensitivity, value, provenance "
+            "FROM agent_memory_records WHERE record_id=?",
+            (memory.record_id,),
+        ).fetchone()
+    assert restored_memory_row is not None
     assert reopened_tasks.get(task.task_id).contract.goal == task.contract.goal
     assert reopened_state.events(task.task_id) == [event.with_seq(1), *reopened_state.events(task.task_id)[1:]]
-    assert reopened_memory.get(memory.record_id, scope=memory.scope, scope_id=task.task_id).value == memory.value
+    restored_memory = reopened_memory.get(
+        memory.record_id,
+        scope=memory.scope,
+        task_id=task.task_id,
+        root=str(db_path.parent.resolve()),
+        tenant="test-owner",
+    )
+    assert restored_memory is not None, restored_memory_row
+    assert restored_memory.value == memory.value
     assert any(row.receipt_id == receipt.receipt_id for row in reopened_verifications.completion(task.task_id).receipts)
 
 
@@ -136,10 +156,10 @@ def test_migration_backup_failure_prevents_schema_version_write(tmp_path: Path, 
         connection.execute("PRAGMA user_version=0")
         connection.commit()
 
-    def fail_backup(self, source):
+    def fail_backup(cls, source):
         raise OSError("injected durable backup failure")
 
-    monkeypatch.setattr(AgentStateStore, "_verified_migration_backup", fail_backup)
+    monkeypatch.setattr(AgentStateStore, "_verified_backup", classmethod(fail_backup))
     with pytest.raises(OSError, match="injected durable backup failure"):
         AgentStateStore(db_path)._ensure_schema()
 

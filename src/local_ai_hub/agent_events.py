@@ -681,7 +681,7 @@ class AgentStateStore:
         """Migrate known v0 layouts only; callers preflight nonempty files read-only."""
         initial = cls._classify_schema(con)
         version, layout = initial[:2]
-        if layout == "current":
+        if layout == "current" and version == cls._SCHEMA_VERSION:
             return
 
         if existed_before_open:
