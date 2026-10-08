@@ -226,6 +226,17 @@ def _canonical_project_root(root: str | Path) -> str:
     return os.path.normcase(str(Path(root).expanduser().resolve(strict=False)))
 
 
+def _completion_mutation_generation(task: object) -> int:
+    checkpoint = getattr(task, "checkpoint", None)
+    state_data = getattr(checkpoint, "state_data", None)
+    if not isinstance(state_data, Mapping):
+        raise CompletionGateError("trusted task checkpoint is unavailable")
+    generation = state_data.get("mutation_generation", 0)
+    if isinstance(generation, bool) or not isinstance(generation, int) or generation < 0:
+        raise CompletionGateError("trusted task mutation_generation is invalid")
+    return generation
+
+
 def complete_task_with_project_rules(
     task_store: TaskStore,
     verification_store: CompletionReceiptStore,
@@ -304,7 +315,7 @@ def complete_task_with_project_rules(
             actor=actor,
             idempotency_key=idempotency_key,
         )
-    before_generation = before.checkpoint.state_data.get("mutation_generation", 0)
+    before_generation = _completion_mutation_generation(before)
     result = evaluate_project_completion(
         verification_store,
         project.settings,
@@ -328,7 +339,7 @@ def complete_task_with_project_rules(
     if (
         current is None
         or current.owner != before.owner
-        or current.checkpoint.state_data.get("mutation_generation", 0) != before_generation
+        or _completion_mutation_generation(current) != before_generation
     ):
         raise CompletionGateError("task owner or mutation generation changed during completion verification")
     state_data = dict(current.checkpoint.state_data)
