@@ -69,6 +69,8 @@ python tools/doctor.py
 
 Confirm the old daemon stopped before starting, then verify the active version, mode, selected backend, and service identity. Preserve `config.toml` and `server.state_dir`; do not reset durable state as part of a routine restart.
 
+On Windows, the preferred persistent service identity is Task Scheduler task `LocalAIHubSupervisor`. If task registration is blocked, `tools/service.py install` may use the per-user Run-key fallback `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\LocalAIHubSupervisor` (`windows-user-startup`). Verify which identity is active; a detached process alone is not reboot-persistent service registration.
+
 | Extra | Declared packages |
 | --- | --- |
 | `local-nlp` | `sentence-transformers` |
