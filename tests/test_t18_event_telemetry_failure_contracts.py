@@ -7,6 +7,8 @@ import queue
 from types import SimpleNamespace
 from urllib.parse import urlencode
 
+import pytest
+
 from local_ai_hub import http_server
 
 
@@ -79,15 +81,27 @@ def test_event_page_provider_failure_returns_retryable_page_error(monkeypatch, t
     assert payload["retryable"] is True
 
 
-def test_event_stream_provider_failure_emits_retryable_replay_error(monkeypatch):
+@pytest.mark.parametrize("failure_page", [1, 2])
+def test_event_stream_provider_failure_emits_retryable_replay_error(monkeypatch, failure_page):
     class BrokenEventStore:
         enabled = True
         unsubscribed = False
+        pages = 0
 
         def subscribe(self, maxsize=200):
             return queue.Queue(maxsize=maxsize)
 
         def event_page(self, **_kwargs):
+            self.pages += 1
+            if self.pages < failure_page:
+                return {
+                    "success": True,
+                    "events": [{"seq": 8, "stream_id": "task:task-1", "kind": "task.created", "payload": {}}],
+                    "next_seq": 8,
+                    "last_seq": 9,
+                    "has_more": True,
+                    "gap_ranges": [],
+                }
             raise TimeoutError("database wait expired")
 
         def unsubscribe(self, _subscriber):
@@ -117,10 +131,14 @@ def test_event_stream_provider_failure_emits_retryable_replay_error(monkeypatch)
 
     output = handler.wfile.getvalue().decode("utf-8")
     assert "event: replay_error" in output
-    data = next(line[6:] for line in output.splitlines() if line.startswith("data: "))
+    error_frame = next(frame for frame in output.split("\n\n") if "event: replay_error" in frame)
+    data = next(line[6:] for line in error_frame.splitlines() if line.startswith("data: "))
     payload = json.loads(data)
     assert payload["error"]["code"] == "event_replay_unavailable"
     assert payload["retryable"] is True
+    assert payload["terminal"] is False
+    assert payload["next_seq"] == (7 if failure_page == 1 else 8)
+    assert store.pages == failure_page
     assert store.unsubscribed is True
     assert finishes and finishes[0][0] is False
 

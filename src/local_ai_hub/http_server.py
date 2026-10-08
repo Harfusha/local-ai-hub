@@ -3498,7 +3498,7 @@ class Handler(BaseHTTPRequestHandler):
                             stream_success = False
                             stream_error = "event replay unavailable"
                             APP.logger.warning("event replay page failed error_type=%s", type(exc).__name__)
-                            write_sse("error", {
+                            write_sse("replay_error", {
                                 "success": False,
                                 "next_seq": max(0, int(replay_cursor)),
                                 "error": {
@@ -3522,7 +3522,7 @@ class Handler(BaseHTTPRequestHandler):
                                 "retryable": True,
                                 "terminal": False,
                             }
-                            write_sse("error", err_payload)
+                            write_sse("replay_error", err_payload)
                             return
 
                     if replay_through_seq is None:
