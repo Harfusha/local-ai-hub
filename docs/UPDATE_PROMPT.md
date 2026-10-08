@@ -257,4 +257,9 @@ Diagram ingestion requires an existing `image_path` with a supported image exten
 
 ### LLM card synthesis scope
 
+Ordinary MCP agent responses omit telemetry, diagnostics, raw command streams, timing,
+and automatic routing advice. Request specific details with `extra_fields` or an explicit
+`response_profile="debug"`; use artifacts for complete logs. Outcome, safety, context
+identity, and evidence fields remain available. Explicit status reports remain supported.
+
 `disable_llm_card_synthesis` applies to fallback synthesis for unparsed file cards only. Module and project cards use separate `prefer_deterministic_modules` and `prefer_deterministic_project` settings; background LLM synthesis may still run when deterministic card generation does not satisfy its acceptance conditions.
