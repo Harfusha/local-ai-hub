@@ -867,6 +867,10 @@ _RELIABILITY_PROTECTED_KEYS = (
     "success", "terminal", "retryable", "degraded", "stale",
     "fallback_used", "evidence", "evidence_ids", "cancelled", "cancel_requested", "cancel_reason",
 )
+_COMMAND_PROTECTED_KEYS = (
+    "exit_code", "summary", "request_id", "execution_id", "artifact_id", "artifact_ids",
+    "outcome_unknown", "request_not_sent", "in_progress", "timed_out",
+)
 _REUSE_DIGESTS: OrderedDict[str, str] = OrderedDict()
 _REUSE_VALUES: OrderedDict[str, Any] = OrderedDict()
 _GUARDED_CONTEXT_TOP_LEVEL = frozenset({
@@ -1004,6 +1008,10 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
     rejection = _subminimum_budget_rejection(options)
     if rejection is not None:
         return rejection
+    if options.get("tool") == "local_ai_command":
+        value = _agent_output(value, "local_ai_command", {
+            **options, "extra_fields": extra_fields,
+        })
     raw_value = value
     exact_artifact_text = None
     oversized_artifact_page = False
@@ -1054,6 +1062,7 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
             *_RELIABILITY_PROTECTED_KEYS,
             *(_CONTEXT_PROTECTED_KEYS if task_kind in {"context", "context_compile"} else ()),
             *(_STATUS_PROTECTED_KEYS if task_kind == "status" else ()),
+            *(_COMMAND_PROTECTED_KEYS if task_kind == "command" else ()),
         )))
         compacted = budget_response(
             compacted,
@@ -3867,6 +3876,7 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
         protected = (
             _CONTEXT_PROTECTED_KEYS if action in {"context", "context_compile"}
             else _STATUS_PROTECTED_KEYS if name == "local_ai_status"
+            else _COMMAND_PROTECTED_KEYS if name == "local_ai_command"
             else ()
         )
         original_tokens = json_tokens(_mcp_wire_view(value, structured=True))
