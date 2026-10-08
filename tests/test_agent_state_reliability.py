@@ -118,10 +118,6 @@ def test_task_heartbeat_and_extended_reap(tmp_path: Path) -> None:
     task_store.transition(t_blocked.task_id, TaskStatus.BLOCKED, reason="block", actor="agent", idempotency_key="block_b")
     trace_context.reset_context(tenant_token)
 
-    trace_context.reset_context(tenant_token)
-
-    trace_context.reset_context(tenant_token)
-
     # Manually backdate heartbeats after transitions complete
     with closing(sqlite3.connect(db)) as con:
         con.execute(
@@ -205,14 +201,15 @@ def test_event_store_schema_and_publish_overflow(tmp_path: Path) -> None:
     assert len(items) <= 2
     gap_ranges = [
         item_range
-        for item in items if item.kind == "agent_state.gap"
-        for item_range in item.payload.get("streams", [])
+        for item in items if item.kind == "stream.gap"
+        for item_range in item.payload.get("gap_ranges", [])
     ]
     assert gap_ranges
     assert all(
         any(item_range["stream_id"] == "s1" and item_range["from_seq"] <= seq <= item_range["to_seq"] for item_range in gap_ranges)
-        for seq in range(1, 6)
+        for seq in range(1, 5)
     )
+    assert any(item.kind == "test.evt" and item.seq == 5 for item in items)
 
 
 def test_store_concurrency_locks(tmp_path: Path) -> None:
