@@ -399,6 +399,79 @@ def test_completed_succeeds_when_verified(
     assert completed.status == TaskStatus.COMPLETED
 
 
+def test_repeated_complete_revalidates_completed_task_with_trusted_project_evaluator(
+    store: TaskStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    repo_root, revision = make_trusted_repository(tmp_path)
+    task = store.create(
+        contract_with_criteria("tests"),
+        ScopeContext(repository_id=str(repo_root), branch="main", task_id="revalidate-complete"),
+        repo_root=str(repo_root),
+        repository_revision=revision,
+    )
+    store.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="agent", idempotency_key="a")
+    store.transition(task.task_id, TaskStatus.VERIFYING, reason="ready", actor="agent", idempotency_key="v")
+    store.checkpoint(
+        task.task_id,
+        TaskCheckpoint(state_data={"repository_revision": revision, "mutation_generation": 0}),
+        actor="agent",
+        idempotency_key="verify-revision",
+    )
+    VerificationStore(store.state_store, task_store=store).record(
+        VerificationReceipt.create(
+            task.task_id, "tests", evidence_id="ev-tests", evidence_type="source_review"
+        )
+    )
+    project_config = ModuleType("local_ai_hub.project_config")
+    project_config.ProjectSettings = SimpleNamespace
+    project_config.resolve_project_context = lambda root, state_dir: SimpleNamespace(
+        config_digest="trusted-project-config",
+        settings=SimpleNamespace(verification_rules={"tests": ("test",)}, commands={"test": "pytest"})
+    )
+    monkeypatch.setitem(sys.modules, "local_ai_hub.project_config", project_config)
+
+    class ChangingVerifier:
+        calls = 0
+
+        def completion(
+            self,
+            task_id,
+            *,
+            current_revision,
+            current_mutation_generation,
+            verification_rules,
+            configured_criteria,
+            configured_commands,
+            project_config_digest,
+            configured_environment_sha256,
+            project_root,
+        ):
+            self.calls += 1
+            assert task_id == task.task_id
+            assert current_revision
+            assert verification_rules == {"tests": ("test",)}
+            assert configured_criteria == ("test",)
+            assert configured_commands == {"test": "pytest"}
+            assert project_root == repo_root
+            if self.calls == 1:
+                return SimpleNamespace(complete=True, unsatisfied_criteria=(), stale_criteria=())
+            return SimpleNamespace(complete=False, unsatisfied_criteria=("tests",), stale_criteria=())
+
+    verifier = ChangingVerifier()
+    store.set_verification_store(verifier)
+    completed = store.complete(task.task_id, actor="release-agent", idempotency_key="complete")
+    assert completed.status is TaskStatus.COMPLETED
+    events_before_retry = store.state_store.events(f"task:{task.task_id}")
+
+    with pytest.raises(CompletionGateError, match="tests"):
+        store.complete(task.task_id, actor="release-agent", idempotency_key="complete")
+
+    current = store.get(task.task_id)
+    assert current is not None and current.status is TaskStatus.COMPLETED
+    assert verifier.calls == 2
+    assert store.state_store.events(f"task:{task.task_id}") == events_before_retry
+
+
 def test_historical_transition_idempotency_reuse_by_different_actor_is_rejected(store: TaskStore):
     task = store.create(contract_with_criteria(), task_context())
     store.transition(
