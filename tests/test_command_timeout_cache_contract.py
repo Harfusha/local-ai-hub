@@ -65,7 +65,7 @@ def test_singleflight_waiter_preserves_owner_timeout_without_trusting_outcome(
     monkeypatch.setattr(
         broker,
         "_key",
-        lambda *_args: ("shared-key", {"fingerprint": "fixed", "changed_paths": []}),
+        lambda *_args, **_kwargs: ("shared-key", {"fingerprint": "fixed", "changed_paths": []}),
     )
     owner_started = threading.Event()
     release_owner = threading.Event()
