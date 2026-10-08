@@ -2284,6 +2284,7 @@ class RepositoryTools:
             }
         if git_inventory is _UNSET_GIT_INVENTORY:
             git_inventory = self._git_files(base)
+<<<<<<< HEAD
         git_metadata = base / ".git"
         valid_git_metadata = (
             (git_metadata.is_dir() and (git_metadata / "HEAD").is_file())
@@ -2291,6 +2292,9 @@ class RepositoryTools:
             or (base / ".gitignore").is_file()
         )
         if git_inventory is None and valid_git_metadata:
+=======
+        if git_inventory is None and (base / ".git").exists():
+>>>>>>> archived/codex/sync-t21-project-config-20261006
             return {
                 "success": False, "root": str(base), "error": "git_inventory_unavailable",
                 "results": [], "scanned_files": 0, "targeted": True,
