@@ -10,13 +10,56 @@ import sqlite3
 import threading
 import time
 from contextlib import closing
+from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import parse_qsl, urlencode, urlsplit
 
 import pytest
 
 from local_ai_hub import http_server
 from local_ai_hub.debug_traces import DebugTraceStore
 from local_ai_hub.telemetry import TelemetryStore
+
+
+_EVENT_TEST_ROOT = str(Path(__file__).resolve().parents[1])
+_EVENT_TEST_TENANT = "tenant-t18-event-test"
+
+
+def _install_event_route_app(monkeypatch, agent_state, extra_config=None):
+    task_ids = ("one", "task-1")
+    agent_tasks = {
+        task_id: SimpleNamespace(
+            context=SimpleNamespace(
+                repository_id=_EVENT_TEST_ROOT,
+                session_id=_EVENT_TEST_TENANT,
+            )
+        )
+        for task_id in task_ids
+    }
+    config = {"security": {"api_token_tenant": _EVENT_TEST_TENANT}}
+    config.update(extra_config or {})
+    monkeypatch.setattr(
+        http_server,
+        "APP",
+        SimpleNamespace(
+            agent_state=agent_state,
+            agent_tasks=agent_tasks,
+            config=config,
+            logger=SimpleNamespace(
+                warning=lambda *args, **kwargs: None,
+                exception=lambda *args, **kwargs: None,
+            ),
+        ),
+    )
+
+
+def _prepare_event_route(handler, path):
+    parsed = urlsplit(path)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query.update(root=_EVENT_TEST_ROOT, tenant=_EVENT_TEST_TENANT)
+    handler.path = f"{parsed.path}?{urlencode(query)}"
+    if not hasattr(handler, "headers"):
+        handler.headers = {}
 
 
 def test_telemetry_timeline_is_recent_and_cursor_pages_older_rows(tmp_path):
@@ -86,10 +129,10 @@ def test_event_page_reports_empty_retention_gap_and_future_cursor(tmp_path):
 
 
 def test_agent_event_list_route_returns_canonical_page_and_retention_gaps(monkeypatch):
-    event = {"event_id": "event-6", "stream_id": "task-1", "kind": "task.progress", "seq": 6}
+    event = {"event_id": "event-6", "stream_id": "task:task-1", "kind": "task.progress", "seq": 6}
     page = {
         "success": True,
-        "events": [SimpleNamespace(to_dict=lambda: event)],
+        "events": [event],
         "next_seq": 6,
         "first_retained_seq": 4,
         "last_seq": 10,
@@ -108,9 +151,9 @@ def test_agent_event_list_route_returns_canonical_page_and_retention_gaps(monkey
         event_page=event_page,
         events=lambda **kwargs: pytest.fail("legacy event list bypassed event_page"),
     )
-    monkeypatch.setattr(http_server, "APP", SimpleNamespace(agent_state=state))
+    _install_event_route_app(monkeypatch, state)
     handler = http_server.Handler.__new__(http_server.Handler)
-    handler.path = "/api/agent-state/events?stream_id=task-1&after_seq=2&limit=37"
+    _prepare_event_route(handler, "/api/agent-state/events?stream_id=task:task-1&after_seq=2&limit=37")
     handler.command = "GET"
     handler._begin_trace = lambda path: None
     handler._require_authorized = lambda: True
@@ -120,7 +163,7 @@ def test_agent_event_list_route_returns_canonical_page_and_retention_gaps(monkey
 
     handler.do_GET()
 
-    assert calls == [("task-1", 2, 37)]
+    assert calls == [("task:task-1", 2, 37)]
     assert responses[0][0] == 200
     assert responses[0][1]["events"] == [event]
     assert responses[0][1]["next_seq"] == 6
@@ -131,15 +174,19 @@ def test_agent_event_list_route_returns_canonical_page_and_retention_gaps(monkey
 @pytest.mark.parametrize("page_reader", ["missing", "raises"])
 def test_agent_event_list_route_fails_closed_without_usable_event_page(monkeypatch, page_reader):
     legacy_calls = []
-    state = SimpleNamespace(enabled=True, events=lambda **kwargs: legacy_calls.append(kwargs) or [])
+    state = SimpleNamespace(
+        enabled=True,
+        event_page=None,
+        events=lambda **kwargs: legacy_calls.append(kwargs) or [],
+    )
     if page_reader == "raises":
         def event_page(*args, **kwargs):
             raise RuntimeError("page read failed")
 
         state.event_page = event_page
-    monkeypatch.setattr(http_server, "APP", SimpleNamespace(agent_state=state))
+    _install_event_route_app(monkeypatch, state)
     handler = http_server.Handler.__new__(http_server.Handler)
-    handler.path = "/api/agent-state/events?stream_id=task-1&after_seq=1&limit=2"
+    _prepare_event_route(handler, "/api/agent-state/events?stream_id=task:task-1&after_seq=1&limit=2")
     handler.command = "GET"
     handler._begin_trace = lambda path: None
     handler._require_authorized = lambda: True
@@ -154,10 +201,10 @@ def test_agent_event_list_route_fails_closed_without_usable_event_page(monkeypat
 
 
 def test_agent_event_list_route_preserves_canonical_gap_ranges(monkeypatch):
-    event = {"event_id": "event-4", "stream_id": "task-1", "kind": "task.progress", "seq": 4}
+    event = {"event_id": "event-4", "stream_id": "task:task-1", "kind": "task.progress", "seq": 4}
     page = {
         "success": True,
-        "events": [SimpleNamespace(to_dict=lambda: event)],
+        "events": [event],
         "next_seq": 4,
         "last_seq": 8,
         "first_retained_seq": 4,
@@ -166,9 +213,9 @@ def test_agent_event_list_route_preserves_canonical_gap_ranges(monkeypatch):
         "cursor_reset": False,
     }
     state = SimpleNamespace(enabled=True, event_page=lambda *args, **kwargs: page)
-    monkeypatch.setattr(http_server, "APP", SimpleNamespace(agent_state=state))
+    _install_event_route_app(monkeypatch, state)
     handler = http_server.Handler.__new__(http_server.Handler)
-    handler.path = "/api/agent-state/events?stream_id=task-1&after_seq=2"
+    _prepare_event_route(handler, "/api/agent-state/events?stream_id=task:task-1&after_seq=2")
     handler.command = "GET"
     handler._begin_trace = lambda path: None
     handler._require_authorized = lambda: True
@@ -184,7 +231,7 @@ def test_agent_event_list_route_preserves_canonical_gap_ranges(monkeypatch):
     assert responses[0][1]["gap_ranges"] == [{"from_seq": 3, "to_seq": 3}]
 
 
-def test_agent_event_sse_uses_scoped_last_event_id_with_event_page(monkeypatch):
+def test_agent_event_sse_uses_numeric_last_event_id_with_explicit_stream_filter(monkeypatch):
     import io
     import queue
     from local_ai_hub.agent_events import AgentEvent
@@ -198,7 +245,7 @@ def test_agent_event_sse_uses_scoped_last_event_id_with_event_page(monkeypatch):
         def subscribe(self, maxsize=200):
             return queue.Queue(maxsize=maxsize)
 
-        def event_page(self, stream_id, *, after_seq, limit):
+        def event_page(self, stream_id, *, after_seq, limit, through_seq=None):
             calls.append((stream_id, after_seq, limit))
             return {
                 "success": True,
@@ -214,10 +261,10 @@ def test_agent_event_sse_uses_scoped_last_event_id_with_event_page(monkeypatch):
         def unsubscribe(self, subscriber):
             return None
 
-    monkeypatch.setattr(http_server, "APP", SimpleNamespace(agent_state=State(), config={"server": {"max_stream_duration_seconds": 1}}))
+    _install_event_route_app(monkeypatch, State(), {"server": {"max_stream_duration_seconds": 1}})
     handler = http_server.Handler.__new__(http_server.Handler)
-    handler.headers = {"Last-Event-ID": "task%3Aone:6"}
-    handler.path = "/api/agent-state/events/stream?stream_id=other&after_seq=2&timeout=0.01"
+    handler.headers = {"Last-Event-ID": "6"}
+    _prepare_event_route(handler, "/api/agent-state/events/stream?stream_id=task:one&after_seq=2&timeout=0.01")
     handler.command = "GET"
     handler._begin_trace = lambda path: None
     handler._require_authorized = lambda: True
@@ -232,14 +279,14 @@ def test_agent_event_sse_uses_scoped_last_event_id_with_event_page(monkeypatch):
     handler.do_GET()
     output = handler.wfile.getvalue().decode("utf-8")
 
-    assert calls == [("task:one", 6, 1000)]
-    assert "id: task%3Aone:7" in output
+    assert calls == [("task:one", 6, 100)]
+    assert "id: 7" in output
 
 
-def test_agent_event_sse_route_accepts_saved_cursor_query_fallback(monkeypatch):
-    monkeypatch.setattr(http_server, "APP", SimpleNamespace(agent_state=SimpleNamespace(enabled=True)))
+def test_agent_event_sse_route_forwards_saved_cursor_query(monkeypatch):
+    _install_event_route_app(monkeypatch, SimpleNamespace(enabled=True))
     handler = http_server.Handler.__new__(http_server.Handler)
-    handler.path = "/api/agent-state/events/stream?stream_id=other&after_seq=2&last_event_id=task%253Aone%3A7"
+    _prepare_event_route(handler, "/api/agent-state/events/stream?stream_id=task:one&after_seq=2&last_event_id=7")
     handler.command = "GET"
     handler.headers = {}
     handler._begin_trace = lambda path: None
@@ -250,7 +297,13 @@ def test_agent_event_sse_route_accepts_saved_cursor_query_fallback(monkeypatch):
 
     handler.do_GET()
 
-    assert calls == [{"stream_id": "task:one", "kind": "", "after_seq": 7, "timeout": 0.0}]
+    assert calls == [{
+        "stream_id": "task:one",
+        "kind": "",
+        "after_seq": 2,
+        "timeout": 0.0,
+        "last_event_id": "7",
+    }]
 
 
 def test_agent_event_sse_prefers_header_and_pages_replay_with_gap_metadata(monkeypatch):
@@ -290,17 +343,17 @@ def test_agent_event_sse_prefers_header_and_pages_replay_with_gap_metadata(monke
         def subscribe(self, maxsize=200):
             return queue.Queue(maxsize=maxsize)
 
-        def event_page(self, stream_id, *, after_seq, limit):
+        def event_page(self, stream_id, *, after_seq, limit, through_seq=None):
             calls.append((stream_id, after_seq, limit))
             return pages.pop(0)
 
         def unsubscribe(self, subscriber):
             return None
 
-    monkeypatch.setattr(http_server, "APP", SimpleNamespace(agent_state=State(), config={"server": {"max_stream_duration_seconds": 1}}))
+    _install_event_route_app(monkeypatch, State(), {"server": {"max_stream_duration_seconds": 1}})
     handler = http_server.Handler.__new__(http_server.Handler)
-    handler.headers = {"Last-Event-ID": "task%3Aone:3"}
-    handler.path = "/api/agent-state/events/stream?stream_id=task%3Aone&after_seq=2&timeout=0.1"
+    handler.headers = {"Last-Event-ID": "3"}
+    _prepare_event_route(handler, "/api/agent-state/events/stream?stream_id=task%3Aone&after_seq=2&timeout=0.1")
     handler.command = "GET"
     handler._begin_trace = lambda path: None
     handler._require_authorized = lambda: True
@@ -684,9 +737,9 @@ def test_agent_event_list_route_preserves_provider_page_failure(monkeypatch):
         "retryable": True,
     }
     state = SimpleNamespace(enabled=True, event_page=lambda *args, **kwargs: error_page)
-    monkeypatch.setattr(http_server, "APP", SimpleNamespace(agent_state=state))
+    _install_event_route_app(monkeypatch, state)
     handler = http_server.Handler.__new__(http_server.Handler)
-    handler.path = "/api/agent-state/events?stream_id=task-1&after_seq=2"
+    _prepare_event_route(handler, "/api/agent-state/events?stream_id=task:task-1&after_seq=2")
     handler.command = "GET"
     handler._begin_trace = lambda path: None
     handler._require_authorized = lambda: True
