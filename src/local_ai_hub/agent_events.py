@@ -1088,6 +1088,8 @@ class AgentStateStore:
             raise RuntimeError("agent_state is disabled")
         if not bool(getattr(con, "in_transaction", False)):
             raise RuntimeError("append_in_transaction requires a caller-owned transaction")
+        if not self._initialized:
+            raise ValueError("schema must be initialized before opening a caller-owned transaction")
         payload = json_dumps(event.payload, separators=(",", ":"))
         payload_bytes = payload.encode("utf-8")
         if len(payload_bytes) > self.max_payload_bytes:

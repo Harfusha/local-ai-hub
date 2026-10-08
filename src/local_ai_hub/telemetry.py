@@ -1310,24 +1310,44 @@ class TelemetryStore:
             con.execute("DELETE FROM daily_rollups WHERE day<?", (rollup_cutoff,))
             con.commit()
 
-    def resolve_errors(self) -> dict[str, Any]:
+    def resolve_errors(self, *, timeout_seconds: float = 2.0) -> dict[str, Any]:
         """Acknowledge and clear all recorded operational failures, errors, crashes, and unclean sessions."""
         if not self.enabled:
             return {"enabled": False}
-        self.flush(1.0)
-        with closing(self._connect()) as con:
-            with con:
-                events_cur = con.execute("UPDATE events SET success=1, error_type='' WHERE success=0;")
-                resolved_events = events_cur.rowcount
-                errors_cur = con.execute("DELETE FROM errors;")
-                cleared_errors = errors_cur.rowcount
-                sessions_cur = con.execute("UPDATE process_sessions SET exit_clean=1 WHERE exit_clean=0;")
-                cleaned_sessions = sessions_cur.rowcount
-                con.execute("DELETE FROM daily_rollups WHERE success=0;")
+        duration = float(timeout_seconds)
+        if not math.isfinite(duration) or duration <= 0:
+            raise ValueError("timeout_seconds must be a positive finite number")
+        deadline = time.monotonic() + min(10.0, duration)
+
+        def remaining() -> float:
+            budget = deadline - time.monotonic()
+            if budget <= 0:
+                raise TimeoutError("telemetry resolution time budget exceeded")
+            return budget
+
+        try:
+            if not self.flush(min(1.0, remaining())):
+                raise TimeoutError("telemetry resolution time budget exceeded")
+            with closing(connect_sqlite(self.path, timeout_seconds=min(1.0, remaining()))) as con:
+                con.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
                 try:
-                    con.execute("PRAGMA wal_checkpoint(TRUNCATE);")
-                except Exception:
-                    pass
+                    with con:
+                        remaining()
+                        resolved_events = con.execute("UPDATE events SET success=1, error_type='' WHERE success=0;").rowcount
+                        remaining()
+                        cleared_errors = con.execute("DELETE FROM errors;").rowcount
+                        remaining()
+                        cleaned_sessions = con.execute("UPDATE process_sessions SET exit_clean=1 WHERE exit_clean=0;").rowcount
+                        remaining()
+                        con.execute("DELETE FROM daily_rollups WHERE success=0;")
+                        remaining()
+                finally:
+                    con.set_progress_handler(None, 0)
+        except (TimeoutError, sqlite3.Error) as exc:
+            if isinstance(exc, TimeoutError) or is_busy_error(exc) or "interrupted" in str(exc).lower():
+                return {"success": False, "degraded": True, "retryable": True,
+                        "error": "telemetry resolution time budget exceeded"}
+            raise
         if hasattr(self, "_summary_cache"):
             self._summary_cache.clear()
         with self._live_lock:

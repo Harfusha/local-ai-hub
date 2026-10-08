@@ -7242,14 +7242,26 @@ class LocalAIServices:
                 return {"success": False, "error": str(exc)}
         return {"success": True, "purged_entries": deleted_entries, "days_threshold": days}
 
-    def resolve_all_errors(self) -> dict[str, Any]:
+    def resolve_all_errors(self, *, timeout_seconds: float = 2.0) -> dict[str, Any]:
         """Acknowledge and resolve all operational failures, crashes, errors, and agent incidents."""
+        deadline = time.monotonic() + max(0.001, min(10.0, float(timeout_seconds)))
+
+        def remaining() -> float:
+            budget = deadline - time.monotonic()
+            if budget <= 0:
+                raise TimeoutError("error resolution time budget exceeded")
+            return budget
+
         telemetry_res: dict[str, Any] = {}
+        retryable = False
         if self.telemetry:
             try:
-                telemetry_res = self.telemetry.resolve_errors()
+                telemetry_res = self.telemetry.resolve_errors(timeout_seconds=remaining())
+            except TimeoutError:
+                telemetry_res = {"success": False, "retryable": True, "error": "telemetry resolution time budget exceeded"}
             except Exception as exc:
-                telemetry_res = {"error": str(exc)}
+                telemetry_res = {"success": False, "error_type": type(exc).__name__}
+            retryable = bool(telemetry_res.get("retryable"))
 
         resolved_incidents = 0
         if self.incident_store:
