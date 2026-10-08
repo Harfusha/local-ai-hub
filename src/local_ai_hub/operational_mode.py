@@ -192,7 +192,7 @@ def operational_mode_gate_error(
     mode = snapshot.mode if snapshot is not None else "maintenance"
     degraded = snapshot is None or snapshot.degraded
     safe_job_actions = {"status", "wait", "result", "cancel", "evaluation_report"}
-    if not degraded and mode in {"gaming", "maintenance"} and action.strip().lower().replace("-", "_") in safe_job_actions:
+    if not degraded and mode == "gaming" and action.strip().lower().replace("-", "_") in safe_job_actions:
         return None
     if not degraded and mode == "gaming" and not requires_heavy_work:
         return None
