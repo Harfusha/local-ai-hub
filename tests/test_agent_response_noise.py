@@ -46,6 +46,35 @@ def test_accounting_send_resets_original_context_when_module_context_changes(mon
     assert replacement.get() == ("", True)
 
 
+@pytest.mark.parametrize("profile", ["minimal", "compact"])
+def test_command_failure_preserves_decision_fields_without_log_ballast(monkeypatch, tmp_path, profile):
+    import asyncio
+    import json
+
+    monkeypatch.setattr(mcp_server, "load_operational_mode", lambda _: OperationalModeSnapshot("active", 0, None))
+    monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **kw: None)
+    monkeypatch.setattr(mcp_server.FEATURES, "commands", True)
+    monkeypatch.setattr(mcp_server.CLIENT, "post", lambda *args, **kwargs: {
+        "success": False, "exit_code": 1, "request_id": "req-test-failure",
+        "outcome_unknown": False, "timed_out": False,
+        "error": "one assertion failed", "summary": "1 failed, 4 passed",
+        "stdout": "private output " * 4000,
+        "diagnostics": [{"message": "private diagnostic " * 1000}],
+        "phase_timings_ms": {"startup": 12},
+    })
+    contents, _ = asyncio.run(mcp_server.mcp.call_tool("local_ai_command", {
+        "action": "run", "command": "python -m pytest -q", "cwd": str(tmp_path),
+        "response_profile": profile, "max_response_tokens": 1000,
+    }))
+    result = json.loads(contents[0].text)
+    assert result["success"] is False
+    assert result["exit_code"] == 1
+    assert result["error"] == "one assertion failed"
+    assert result["request_id"] == "req-test-failure"
+    assert result["outcome_unknown"] is False
+    assert not set(result) & {"stdout", "diagnostics", "phase_timings_ms"}
+
+
 @pytest.mark.parametrize("profile", ["", "minimal", "compact", "delta"])
 def test_mcp_boundary_omits_infrastructure_noise_and_preserves_outcome(monkeypatch, profile):
     recorded = []
