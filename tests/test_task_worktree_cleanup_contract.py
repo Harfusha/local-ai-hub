@@ -174,6 +174,18 @@ def test_task_cleanup_rejects_tampered_ownership_metadata(tmp_path: Path, field:
         "ttl_seconds": float(original["ttl_seconds"]) + 60,
     }
     tampered[field] = changed[field]
+    if field == "repo_root":
+        with pytest.raises(ValueError, match="worktree repo_root is server-managed"):
+            tasks.checkpoint(
+                task.task_id,
+                TaskCheckpoint(state_data={**task.checkpoint.state_data, "worktree": tampered}),
+                actor="owner-a",
+                idempotency_key=f"tamper-{field}",
+            )
+        assert tasks.get(task.task_id).checkpoint.state_data["worktree"] == original
+        assert worktree.is_dir()
+        assert tasks.cleanup_worktree(task.task_id, actor="owner-a")["success"] is True
+        return
     tasks.checkpoint(
         task.task_id,
         TaskCheckpoint(state_data={**task.checkpoint.state_data, "worktree": tampered}),

@@ -1008,6 +1008,28 @@ def test_completed_uses_task_context_repo_root_without_worktree_checkpoint(
     assert resolved["root"] == repo_root
 
 
+def test_checkpoint_rejects_client_change_to_nested_worktree_repo_root(
+    store: TaskStore, tmp_path: Path
+):
+    repo_root = tmp_path / "repository"
+    foreign_root = tmp_path / "foreign"
+    repo_root.mkdir()
+    foreign_root.mkdir()
+    task = store.create(
+        contract_with_criteria("tests"),
+        ScopeContext(repository_id=str(repo_root), branch="main", task_id="task-root-guard"),
+        repo_root=str(repo_root),
+    )
+
+    with pytest.raises(ValueError, match="worktree repo_root is server-managed"):
+        store.checkpoint(
+            task.task_id,
+            TaskCheckpoint(state_data={"worktree": {"repo_root": str(foreign_root)}}),
+            actor=task.owner,
+            idempotency_key="spoof-worktree-root",
+        )
+
+
 def test_completed_forwards_project_rules_to_compatible_verifier(
     store: TaskStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
