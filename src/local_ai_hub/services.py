@@ -7269,10 +7269,18 @@ class LocalAIServices:
                 resolved_incidents = self.incident_store.resolve_all(
                     verified_fix="Resolved by operator",
                     root_cause="Operator manual resolve",
+                    timeout_seconds=remaining(),
                 )
+            except TimeoutError:
+                resolved_incidents = -1
+                retryable = True
             except Exception:
                 resolved_incidents = -1
 
+        success = telemetry_res.get("success", True) is not False and resolved_incidents >= 0
+        if not success:
+            return {"success": False, "degraded": True, "retryable": retryable,
+                    "telemetry": telemetry_res, "resolved_incidents": resolved_incidents}
         try:
             state_dir = Path(self.config["server"]["state_dir"])
             sup_status_path = state_dir / "supervisor.status.json"
