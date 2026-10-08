@@ -7525,7 +7525,7 @@ class CommandBroker:
                             waiter_result[flag] = True
                 return self._compact(waiter_result, tenant, command)
             result = dict(last_result)
-            result.update({"cache_hit": True, "coalesced": True, "classification": classification, "repo_state": state, "repository_revision": str(state.get("fingerprint", ""))})
+            result.update({"cache_hit": False, "coalesced": True, "classification": classification, "repo_state": state, "repository_revision": str(state.get("fingerprint", ""))})
             return self._compact(result, tenant, command)
 
         # Acquire rollback handles only after every preflight and early-return path.
