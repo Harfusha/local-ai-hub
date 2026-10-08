@@ -299,7 +299,7 @@ def test_successful_repo_evidence_exposes_typed_semantic_handoff(monkeypatch) ->
     monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
     monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *_args, **_kwargs: {"success": True, "matches": []})
 
-    result = local_ai_mcp.local_ai_repo(action="search", query="routing")
+    result = local_ai_mcp.local_ai_repo(action="search", query="routing", extra_fields=["routing"])
 
     assert result["routing"]["semantic_handoff"] == semantic_handoff_hint("local_ai_repo", "search", True)
 
@@ -355,7 +355,7 @@ def test_status_disabled_repo_evidence_omits_status_bypass_metadata(monkeypatch)
     monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
     monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *_args, **_kwargs: {"success": True})
 
-    result = local_ai_mcp.local_ai_repo(action="search", query="routing")
+    result = local_ai_mcp.local_ai_repo(action="search", query="routing", extra_fields=["routing"])
 
     assert "local_ai_status" not in repr(result)
     assert result["routing"]["semantic_handoff"] == semantic_handoff_hint(
@@ -377,7 +377,7 @@ def test_non_dict_routing_is_preserved_with_semantic_handoff(
         lambda *_args, **_kwargs: {"success": True, "routing": existing_routing},
     )
 
-    result = local_ai_mcp.local_ai_repo(action="search", query="routing")
+    result = local_ai_mcp.local_ai_repo(action="search", query="routing", extra_fields=["routing"])
 
     assert result["routing"]["value"] == existing_routing
     assert result["routing"]["semantic_handoff"] == semantic_handoff_hint(
@@ -393,7 +393,7 @@ def test_repo_evidence_recommendation_preserves_used_adoption(monkeypatch, tmp_p
     monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
     monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *_args, **_kwargs: {"success": True})
 
-    local_ai_mcp.local_ai_repo(action="search", query="routing")
+    local_ai_mcp.local_ai_repo(action="search", query="routing", extra_fields=["routing"])
 
     totals = store.report(days=1)["totals"]
     assert totals["used"] == 1
@@ -408,7 +408,7 @@ def test_prepopulated_handoff_is_not_counted_as_new_recommendation(monkeypatch, 
     existing_hint = {"required": False, "tool": "external", "actions": [], "bypass_tool": "", "bypass_action": ""}
     monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *_args, **_kwargs: {"success": True, "routing": {"semantic_handoff": existing_hint}})
 
-    result = local_ai_mcp.local_ai_repo(action="search", query="routing")
+    result = local_ai_mcp.local_ai_repo(action="search", query="routing", extra_fields=["routing"])
 
     assert result["routing"]["semantic_handoff"]
     assert store.report(days=1)["totals"]["recommended"] == 0

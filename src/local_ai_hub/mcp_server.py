@@ -32,6 +32,7 @@ from local_ai_hub.compact import compact_result
 from local_ai_hub.response_budget import (
     _CONTEXT_PROTECTED_KEYS,
     _budget_rejection,
+    _reconcile_existing_budget,
     budget_response,
     delta_response,
     result_id,
@@ -1501,6 +1502,35 @@ def _record_tool_accounting(
         pass
 
 
+_AGENT_DIAGNOSTIC_FIELDS = frozenset({
+    "telemetry", "debug", "diagnostics", "diagnostic_artifacts", "raw", "stdout", "stderr",
+    "phase_timings_ms", "duration_ms", "token_efficiency", "retrieval", "routing",
+    "model_trace", "trace", "prompt_budget", "net_cloud_token_delta_est", "cache_hits",
+    "coalesced_waiters", "context_budget_factor",
+})
+
+
+def _agent_output(value: Any, tool: str, arguments: dict[str, Any]) -> Any:
+    """Keep internal observations out of ordinary agent responses.
+
+    Canonical API results and telemetry stay intact. Explicit debug/status requests
+    and individually requested extra fields retain their existing access controls.
+    """
+    if not isinstance(value, dict):
+        return value
+    if str(arguments.get("response_profile") or "").lower() == "debug":
+        return _reconcile_existing_budget(value) or value
+    action = str(arguments.get("action") or arguments.get("detail") or "").lower()
+    if tool == "local_ai_status" and action in {"cache", "telemetry", "full", "agent_state"}:
+        return _reconcile_existing_budget(value) or value
+    requested = set(arguments.get("extra_fields") or ())
+    if action in {"diagnostics", "route", "stats"}:
+        requested.update({"diagnostics", "routing", "telemetry"})
+    result = {key: item for key, item in value.items()
+              if key not in _AGENT_DIAGNOSTIC_FIELDS or key in requested}
+    return _reconcile_existing_budget(result) or result
+
+
 def _instrumented_tool():
     def decorator(fn: Any) -> Any:
         signature = inspect.signature(fn)
@@ -1575,7 +1605,9 @@ def _instrumented_tool():
                 _CURRENT_RESPONSE_OPTIONS.reset(response_token)
                 _CURRENT_OPERATIONAL_CONTEXT.reset(operational_token)
             clean, measured = pop_accounting(result)
-            if isinstance(clean, dict) and clean.get("success") is True:
+            if (isinstance(clean, dict) and clean.get("success") is True
+                    and ("routing" in (arguments.get("extra_fields") or ())
+                         or arguments.get("response_profile") == "debug")):
                 hint = semantic_handoff_hint(
                     fn.__name__,
                     str(arguments.get("action") or "").lower(),
@@ -1599,6 +1631,7 @@ def _instrumented_tool():
                     if routing_added and (requested_tokens <= 0 or json_tokens(candidate) <= requested_tokens):
                         clean = candidate
                         handoff_added = True
+            clean = _agent_output(clean, fn.__name__, arguments)
             _record_adoption(fn.__name__, arguments, clean, (time.monotonic() - started) * 1000, recommended=handoff_added)
             pending = _PENDING_MCP_ACCOUNTING.get()
             if pending is None:
@@ -3795,6 +3828,7 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
         return None
 
     def _mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) -> Any:
+        value = _agent_output(value, name, arguments)
         options = {
             "max_response_tokens": arguments.get("max_response_tokens", 0),
             "response_profile": arguments.get("response_profile", ""),
