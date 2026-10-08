@@ -1,0 +1,177 @@
+{
+  "schema_version": 1,
+  "status": "interrupted_before_first_case_completed",
+  "candidate_head": "a7b0868ac964fd14e160001024e6e0ecaaf4e9db",
+  "source_sha256": {
+    "tools/benchmark_surfaces.py": "E93F2BBDA52B62018D8F2AE4C4F148F0CCB7E24C37F3A3C3F1EBEEB0D7412457",
+    "src/local_ai_hub/async_jobs.py": "6C245F4A52C4D1FD2A0D5AC50DFA6CE3E018B9CD2A400F27241690CC8BC97F0A",
+    "tests/test_surface_benchmarks.py": "F4E0D299384B3B3C9443390EC1001ED6B6F38D5606C0B45D8D774DED816DCF00"
+  },
+  "slot": "T20 revoked after initial misrouted grant; no further execution authorized",
+  "batch_requested": {
+    "cases": [
+      {
+        "rag_chunks": 100000,
+        "files": 100
+      },
+      {
+        "rag_chunks": 100000,
+        "files": 10000
+      },
+      {
+        "rag_chunks": 10000,
+        "files": 100000
+      },
+      {
+        "rag_chunks": 100000,
+        "files": 100000
+      }
+    ],
+    "light_repetitions": 1000,
+    "comparison_repetitions": 30,
+    "concurrency": [
+      16,
+      32
+    ],
+    "gpu": false,
+    "per_case_timeout_seconds": 420
+  },
+  "execution": {
+    "started_case": {
+      "rag_chunks": 100000,
+      "files": 100
+    },
+    "termination": "Ctrl+C immediately after T20 revoked slot",
+    "matching_benchmark_process_remaining": false,
+    "completed_measurement_records": 0,
+    "usable_metrics_emitted": false,
+    "stdout_sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855",
+    "stderr_sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855",
+    "command_sha256": "876D3D932C7753C965E0D35B8471F285AD70F664680F3E747FEDA7DABCAD6630",
+    "state_dir": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t02-20261001-220946-files-100-rag-100000-state",
+    "scratch_dir": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t02-20261001-220946-files-100-rag-100000-scratch",
+    "scratch_top_level": [
+      "local-ai-hub-benchmark-2l5mx7th"
+    ]
+  },
+  "follow_up": "Await a new explicit T20 slot for the exact T02 thread ID before restarting any measurement.",
+  "diagnostic_followup": {
+    "purpose": "minimal reproduction of known 2-of-25 queue-cancellation and following scratch-cleanup sequence",
+    "command": "C:\\Python313\\python.exe -B -m pytest -q -p no:cacheprovider --tb=short tests/test_surface_benchmarks.py::test_queue_admission_probe_cancels_before_delayed_dispatch_registration_race tests/test_surface_benchmarks.py::test_run_benchmark_is_isolated_and_preserves_existing_scratch_data",
+    "result": "2 passed in 25.89s",
+    "exit_code": 0,
+    "stdout": "evidence/minimal-2of25-sequence.stdout.txt",
+    "stdout_sha256": "7E5B56053C1C99DE29770C29119066AFABACF1B8BC0EB20F1C0B16021DC9447B",
+    "stderr_sha256": "E3B0C44298FC1C149AFBF4F4C8996FB92427AE41E4649B934CA495991B7852B855",
+    "test_source_sha256": "F4E0D299384B3B3C9443390EC1001ED6B6F38D5606C0B45D8D774DED816DCF00",
+    "test_expectations_changed": false,
+    "interpretation": "Known sequence did not reproduce in current candidate. Historical baseline red/green selector receipt supports dispatch-registration cancellation race fix; exact original 25-node selection remains unavailable."
+  },
+  "historical_2of25_evidence": {
+    "original_receipt": "C:\\Users\\Adam\\AppData\\Local\\Temp\\codex-t02-flake-20260930T201729-b78b0be9.json",
+    "original_receipt_sha256": "F602295B4B953034F4DADACE78AF297E448FD4AA8DA28343BCB7C091B4D07FE2",
+    "attempts_target": 25,
+    "attempts_retained": 3,
+    "attempts": [
+      {
+        "n": 1,
+        "seconds": 55.919,
+        "finding": "live worker async-job-fe63de95 after manager close; cleanup pending; sqlite errors 0"
+      },
+      {
+        "n": 2,
+        "seconds": 114.666,
+        "finding": "queue cancel regression: expected cancelled, got running"
+      },
+      {
+        "n": 3,
+        "seconds": 89.5,
+        "finding": "live worker async-job-b6bb8fe2 after candidate close; cleanup pending; sqlite errors 0"
+      }
+    ],
+    "regression_receipt": "handoff/T02-queue-cancel-race-2026-10-01-v1/receipt.json",
+    "regression_receipt_sha256": "8CBB9B99A21AF3C9663E2A3A5DFEB1E89CE8D57BC853FEE09F3DBBC55C290895",
+    "static_code_facts": "Benchmark queue probe submits with dispatch_delay_seconds=30 then cancels. Old test injects tick after DB commit before Timer registration. Current tick query and _dispatch guard both require dispatch_not_before<=now.",
+    "bounded_conclusion": "Delayed-dispatch cancellation race confirmed by isolated baseline RED/current GREEN. Historical scratch leaks are consistent with that race and the same delayed queue probe, but receipt does not correlate leaked thread job IDs to probe jobs. Exact historical run count/25-node list is unavailable. Do not claim every 2/25 failure is explained."
+  },
+  "checkpoint_2026_10_02": {
+    "task_status": "blocked",
+    "candidate_head": "a7b0868ac964fd14e160001024e6e0ecaaf4e9db",
+    "goal_status": "blocked",
+    "historical_flake": {
+      "receipt_sha256": "F602295B4B953034F4DADACE78AF297E448FD4AA8DA28343BCB7C091B4D07FE2",
+      "attempts_target": 25,
+      "attempts_retained": 3,
+      "attempt_1": {
+        "nodeid": "tests/test_surface_benchmarks.py::test_run_benchmark_is_isolated_and_preserves_existing_scratch_data",
+        "live_worker": "async-job-fe63de95",
+        "manager_shutdown": true,
+        "sqlite_operational_errors": 0,
+        "database_path": "C:\\Users\\Adam\\AppData\\Local\\Temp\\pytest-of-Adam\\pytest-9192\\test_benchmark_records_service0\\scratch\\local-ai-hub-benchmark-u7vv5ef1\\hub-state\\async_jobs.sqlite3",
+        "database_present_at_2026_10_02": false
+      },
+      "attempt_3": {
+        "nodeid": "tests/test_surface_benchmarks.py::test_run_benchmark_is_isolated_and_preserves_existing_scratch_data",
+        "live_worker": "async-job-b6bb8fe2",
+        "manager_shutdown": true,
+        "sqlite_operational_errors": 0,
+        "database_path": "C:\\Users\\Adam\\AppData\\Local\\Temp\\pytest-of-Adam\\pytest-9194\\test_run_benchmark_is_isolated0\\synthetic\\local-ai-hub-benchmark-k942llwa\\hub-state\\async_jobs.sqlite3",
+        "database_present_at_2026_10_02": false
+      },
+      "missing_artifact": "Per-attempt async_jobs.sqlite3 snapshots or equivalent event logs linking each live worker job_id/task_id to the benchmark queue-probe submit/cancel request. Temp DB paths are absent, so attempt 1/3 linkage cannot be verified.",
+      "attempt_2_cause": "Directly verified delayed-dispatch registration race: expected cancelled, observed running; isolated RED/GREEN receipt retained."
+    },
+    "model_free_receipt_audit": {
+      "manifest": "handoff/T02-root-current-acceptance-2026-10-01-v1/acceptance-manifest.json",
+      "measured_cases": 2,
+      "required_cases": 6,
+      "unmeasured_cases": [
+        "100/100000",
+        "10000/100000",
+        "100000/10000",
+        "100000/100000"
+      ],
+      "plan_grade": false,
+      "paired_candidate_baseline_available": false,
+      "records_sha256_verified": 2,
+      "checksum_mismatches": 0,
+      "verified_records": [
+        {
+          "case": "100/10000",
+          "sha256": "7b05e439d374c0f6654f3bfd67f01e4f85eeadf0c0036d1ccec525bf98b5f0c3"
+        },
+        {
+          "case": "10000/10000",
+          "sha256": "9b142b7533ae7f31f119a966ac82646a39bfa3727b3dfb7ad939e6f01a319efb"
+        }
+      ]
+    },
+    "action": "Keep task blocked; no reruns or benchmark until paired CPU slot and missing attempt DB/log artifacts are supplied."
+  },
+  "combined_flake_sequence_2026_10_02": {
+    "command": "C:\\Python313\\python.exe -B -m pytest -q -p no:cacheprovider --tb=short tests/test_surface_benchmarks.py::test_queue_admission_probe_cancels_before_delayed_dispatch_registration_race tests/test_surface_benchmarks.py::test_run_benchmark_is_isolated_and_preserves_existing_scratch_data tests/test_surface_benchmarks.py::test_benchmark_rejects_duplicate_concurrency_and_unbounded_samples",
+    "selectors": [
+      "test_queue_admission_probe_cancels_before_delayed_dispatch_registration_race",
+      "test_run_benchmark_is_isolated_and_preserves_existing_scratch_data",
+      "test_benchmark_rejects_duplicate_concurrency_and_unbounded_samples"
+    ],
+    "result": "3 passed in 30.01s",
+    "exit_code": 0,
+    "stdout": "handoff/T02-model-free-remaining-20261001-220946/evidence/queue-race-reduced-sequence-20261002.stdout.txt",
+    "stdout_sha256": "E325E55E6157AC124CB9392B95CB72142968C352604C3257B10489F69A4595AC",
+    "stderr_sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855",
+    "command_file_sha256": "87377EBB4B3B990EF41438C8B05C6E544B73A31DEA4B98ED6EA9DB36E899618A",
+    "test_expectations_changed": false,
+    "source_files_changed": false,
+    "interpretation": "Candidate passes deterministic queue race selector followed by the benchmark scratch lifecycle and downstream admission guard. This narrows current regression risk but does not recover attempt 1/3 deleted DB correlation."
+  },
+  "disposition_2026_10_02": {
+    "last_test": "queue-race-reduced-sequence-20261002",
+    "last_result": "3 passed in 30.01s",
+    "last_command": "C:\\Python313\\python.exe -B -m pytest -q -p no:cacheprovider --tb=short tests/test_surface_benchmarks.py::test_queue_admission_probe_cancels_before_delayed_dispatch_registration_race tests/test_surface_benchmarks.py::test_run_benchmark_is_isolated_and_preserves_existing_scratch_data tests/test_surface_benchmarks.py::test_benchmark_rejects_duplicate_concurrency_and_unbounded_samples",
+    "live_process_check": "NO_T02_TEST_OR_BENCHMARK_PROCESS",
+    "cpu_slot": "released for T15 measured command-broker acceptance via T20",
+    "root_cause": "attempt 2 delayed-dispatch registration race confirmed by baseline RED/current GREEN; attempts 1 and 3 remain unlinked to queue probe because their SQLite snapshots are missing",
+    "next_safe_work": "T15 may use slot. T02 should not rerun tests or benchmarks; resume only if missing attempt DB/event receipts are recovered or T20 assigns new paired matrix slot."
+  }
+}

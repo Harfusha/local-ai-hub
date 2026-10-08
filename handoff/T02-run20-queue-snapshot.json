@@ -1,0 +1,209 @@
+{
+  "date": "2026-10-01",
+  "candidate_head": "a7b0868ac964fd14e160001024e6e0ecaaf4e9db",
+  "historical_test_node": "tests/test_surface_benchmarks.py::test_run_benchmark_retains_busy_scratch_without_cleanup_watcher",
+  "historical_pytest_result": "1 failed, 89 passed in 109.43s",
+  "failed_stage": "hub_queue_admission",
+  "expected_probe_count": 9,
+  "captured_cancel_responses": [
+    {
+      "job_id": "dc82c35d1daa4c92884d5c20b1e0cc45",
+      "before_state": "queued",
+      "response_state": "cancelled",
+      "response_success": true,
+      "after_state": "cancelled",
+      "cancel_requested": 1,
+      "attempts": 0
+    },
+    {
+      "job_id": "41c1991fcd7d43af81381f74e320e337",
+      "before_state": "queued",
+      "response_state": "cancelled",
+      "response_success": true,
+      "after_state": "cancelled",
+      "cancel_requested": 1,
+      "attempts": 0
+    },
+    {
+      "job_id": "a81afbbd65c241bdbc37d91519c2c4fb",
+      "before_state": "queued",
+      "response_state": "cancelled",
+      "response_success": true,
+      "after_state": "cancelled",
+      "cancel_requested": 1,
+      "attempts": 0
+    },
+    {
+      "job_id": "85cfdabd26054f1a84a511c1f3a9f299",
+      "before_state": "queued",
+      "response_state": "cancelled",
+      "response_success": true,
+      "after_state": "cancelled",
+      "cancel_requested": 1,
+      "attempts": 0
+    },
+    {
+      "job_id": "552605efde744b3a9efab8a385fb30c0",
+      "before_state": "queued",
+      "response_state": "cancelled",
+      "response_success": true,
+      "after_state": "cancelled",
+      "cancel_requested": 1,
+      "attempts": 0
+    },
+    {
+      "job_id": "969088f125bd441f8037d0c330a3105e",
+      "before_state": "queued",
+      "response_state": "cancelled",
+      "response_success": true,
+      "after_state": "cancelled",
+      "cancel_requested": 1,
+      "attempts": 0
+    },
+    {
+      "job_id": "1f639eec96844c4797d0e3ec912ad5e6",
+      "before_state": "queued",
+      "response_state": "cancelled",
+      "response_success": true,
+      "after_state": "cancelled",
+      "cancel_requested": 1,
+      "attempts": 0
+    },
+    {
+      "job_id": "0a57cbe5ae8d486e8804185bc0f30292",
+      "before_state": "queued",
+      "response_state": "cancelled",
+      "response_success": true,
+      "after_state": "cancelled",
+      "cancel_requested": 1,
+      "attempts": 0
+    }
+  ],
+  "manager_close_before": {
+    "shutdown": false,
+    "thread_count": 1,
+    "delayed_ids": [
+      "fe0edd9a0e99407da72bfc2c0d68b5d0"
+    ],
+    "job_state_counts": {
+      "queued": 1,
+      "outcome_unknown": 1,
+      "cancelled": 8
+    },
+    "job_rows": [
+      {
+        "job_id": "fe0edd9a0e99407da72bfc2c0d68b5d0",
+        "state": "queued"
+      },
+      {
+        "job_id": "4b4ed40bbf5e4c228aa8ea03b0a6ca59",
+        "state": "outcome_unknown"
+      },
+      {
+        "job_id": "dc82c35d1daa4c92884d5c20b1e0cc45",
+        "state": "cancelled"
+      },
+      {
+        "job_id": "41c1991fcd7d43af81381f74e320e337",
+        "state": "cancelled"
+      },
+      {
+        "job_id": "85cfdabd26054f1a84a511c1f3a9f299",
+        "state": "cancelled"
+      },
+      {
+        "job_id": "a81afbbd65c241bdbc37d91519c2c4fb",
+        "state": "cancelled"
+      },
+      {
+        "job_id": "552605efde744b3a9efab8a385fb30c0",
+        "state": "cancelled"
+      },
+      {
+        "job_id": "969088f125bd441f8037d0c330a3105e",
+        "state": "cancelled"
+      },
+      {
+        "job_id": "0a57cbe5ae8d486e8804185bc0f30292",
+        "state": "cancelled"
+      },
+      {
+        "job_id": "1f639eec96844c4797d0e3ec912ad5e6",
+        "state": "cancelled"
+      }
+    ]
+  },
+  "manager_close_after": {
+    "shutdown": true,
+    "thread_count": 0,
+    "delayed_ids": [],
+    "job_state_counts": {
+      "cancelled": 9,
+      "outcome_unknown": 1
+    },
+    "job_rows": [
+      {
+        "job_id": "fe0edd9a0e99407da72bfc2c0d68b5d0",
+        "state": "cancelled"
+      },
+      {
+        "job_id": "4b4ed40bbf5e4c228aa8ea03b0a6ca59",
+        "state": "outcome_unknown"
+      },
+      {
+        "job_id": "dc82c35d1daa4c92884d5c20b1e0cc45",
+        "state": "cancelled"
+      },
+      {
+        "job_id": "41c1991fcd7d43af81381f74e320e337",
+        "state": "cancelled"
+      },
+      {
+        "job_id": "85cfdabd26054f1a84a511c1f3a9f299",
+        "state": "cancelled"
+      },
+      {
+        "job_id": "a81afbbd65c241bdbc37d91519c2c4fb",
+        "state": "cancelled"
+      },
+      {
+        "job_id": "552605efde744b3a9efab8a385fb30c0",
+        "state": "cancelled"
+      },
+      {
+        "job_id": "969088f125bd441f8037d0c330a3105e",
+        "state": "cancelled"
+      },
+      {
+        "job_id": "0a57cbe5ae8d486e8804185bc0f30292",
+        "state": "cancelled"
+      },
+      {
+        "job_id": "1f639eec96844c4797d0e3ec912ad5e6",
+        "state": "cancelled"
+      }
+    ]
+  },
+  "missing_explicit_cancel_event": {
+    "job_id": "fe0edd9a0e99407da72bfc2c0d68b5d0",
+    "state_before_close": "queued",
+    "delayed_before_close": true,
+    "state_after_close": "cancelled",
+    "sample_id_inference": "likely first level-1 / iteration-0 / slot-0 probe from code order; exact sample_id was not persisted"
+  },
+  "sentinel_rows_consistent_with_fixture": [
+    {
+      "job_id": "4b4ed40bbf5e4c228aa8ea03b0a6ca59",
+      "state": "outcome_unknown"
+    }
+  ],
+  "cause_boundary": "One submitted delayed row remained queued until manager.close cancelled it. Eight other explicit cancel responses were success=true/state=cancelled. Historical output does not preserve the missing probe result or stage error_reasons.",
+  "unknowns": [
+    "Whether submit returned a non-success response despite committed row, cancel raised before trace emission, or tracer missed the response.",
+    "Exact normalized error_reason and exception type for missing sample."
+  ],
+  "instrumented_root_selector": "1 passed in 15.50s; no failing-sample diagnostic emitted; confirms fixture can pass, not historical RCA.",
+  "source_log": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t02-25-7117a0910dab4182b039eb030be65540\\combined\\ordered-20.stderr.log",
+  "source_log_sha256": "962636E4CC52143A9409CE9F3CC31AA5A41FAEC7A37C9A2A39E7398EC78E538C",
+  "raw_prompts_included": false
+}

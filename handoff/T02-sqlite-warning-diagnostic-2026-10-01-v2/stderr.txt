@@ -1,0 +1,2 @@
+T02_LIFECYCLE {"nodeid": "tests/test_surface_benchmarks.py::test_run_benchmark_is_isolated_and_preserves_existing_scratch_data", "open_managers": [], "outcome": "passed"}
+T02_LIFECYCLE {"nodeid": "tests/test_surface_benchmarks.py::test_component_baselines_measure_graph_rag_batch_parent_seed_and_serena", "open_managers": [], "outcome": "passed"}

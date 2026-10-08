@@ -1,0 +1,442 @@
+FF                                                                       [100%]
+================================== FAILURES ===================================
+_____ test_run_benchmark_is_isolated_and_preserves_existing_scratch_data ______
+
+tmp_path = WindowsPath('C:/Users/Adam/AppData/Local/Temp/pytest-of-Adam/pytest-11084/test_run_benchmark_is_isolated0')
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x000001AC38676650>
+request = <FixtureRequest for <Function test_run_benchmark_is_isolated_and_preserves_existing_scratch_data>>
+
+    def test_run_benchmark_is_isolated_and_preserves_existing_scratch_data(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest,
+    ) -> None:
+        state_dir = tmp_path / "state"
+        scratch_dir = tmp_path / "synthetic"
+        sqlite_operational_errors: list[dict[str, object]] = []
+        diagnostic: dict[str, object] = {"nodeid": request.node.nodeid}
+    
+        for method_name in ("submit", "cancel"):
+            original_method = getattr(AsyncJobManager, method_name)
+    
+            def observe_sqlite_errors(self, *args, _method=method_name, _original=original_method, **kwargs):
+                try:
+                    return _original(self, *args, **kwargs)
+                except sqlite3.OperationalError as exc:
+                    sqlite_operational_errors.append({
+                        "operation": _method,
+                        "database_path": str(self.path),
+                        "thread": threading.current_thread().name,
+                        "exception_type": type(exc).__name__,
+                        "message": str(exc),
+                    })
+                    raise
+    
+            monkeypatch.setattr(AsyncJobManager, method_name, observe_sqlite_errors)
+    
+        previous_thread_excepthook = threading.excepthook
+    
+        def observe_thread_sqlite_errors(args) -> None:
+            if isinstance(args.exc_value, sqlite3.OperationalError):
+                sqlite_operational_errors.append({
+                    "operation": "uncaught_thread_exception",
+                    "thread": args.thread.name,
+                    "exception_type": type(args.exc_value).__name__,
+                    "message": str(args.exc_value),
+                })
+            previous_thread_excepthook(args)
+    
+        monkeypatch.setattr(threading, "excepthook", observe_thread_sqlite_errors)
+    
+        diagnostic["async_jobs_before"] = _async_jobs_lifecycle_snapshot(scratch_dir)
+    
+        def emit_diagnostic() -> None:
+            diagnostic["async_jobs_at_teardown"] = _async_jobs_lifecycle_snapshot(scratch_dir)
+            diagnostic["sqlite_operational_errors"] = sqlite_operational_errors
+            print("T02_DIAGNOSTIC=" + json.dumps(diagnostic, sort_keys=True, separators=(",", ":"), default=str))
+    
+        request.addfinalizer(emit_diagnostic)
+    
+        collision_path = scratch_dir / "repo" / "src" / "module_000000.py"
+        collision_path.parent.mkdir(parents=True)
+        collision_path.write_text("user-owned sentinel", encoding="utf-8")
+    
+        try:
+>           result = run_benchmark(
+                state_dir=state_dir,
+                scratch_dir=scratch_dir,
+                file_count=12,
+                rag_chunks=20,
+                repetitions=2,
+                light_repetitions=3,
+                comparison_repetitions=2,
+                concurrency=(1, 2),
+            )
+
+tests\test_surface_benchmarks.py:1236: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+args = ()
+kwargs = {'comparison_repetitions': 2, 'concurrency': (1, 2), 'file_count': 12, 'light_repetitions': 3, ...}
+
+    @wraps(function)
+    def guarded(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        if not _BENCHMARK_RUN_LOCK.acquire(blocking=False):
+            raise RuntimeError("another benchmark run is already in progress")
+        try:
+            _reap_retained_benchmark_scratch()
+>           return function(*args, **kwargs)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tools\benchmark_surfaces.py:299: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    @_serialize_benchmark_runs
+    def run_benchmark(
+        *,
+        state_dir: Path | str,
+        scratch_dir: Path | str | None = None,
+        file_count: int = 100,
+        rag_chunks: int = 1_000,
+        repetitions: int = 3,
+        light_repetitions: int | None = None,
+        comparison_repetitions: int | None = None,
+        concurrency: tuple[int, ...] = (1, 4),
+        full: bool = False,
+        inference_runner: Any = None,
+        include_inference: bool = False,
+        include_quality_goldens: bool | None = None,
+        speech_fixture: Path | str | None = None,
+        speech_expected_text: str | None = None,
+        baseline_record: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Run synthetic stages and persist samples, aggregates, and optional comparison."""
+        if file_count < 1 or rag_chunks < 1 or repetitions < 1:
+            raise ValueError("file_count, rag_chunks, and repetitions must be positive")
+        light_repetitions = repetitions if light_repetitions is None else light_repetitions
+        comparison_repetitions = repetitions if comparison_repetitions is None else comparison_repetitions
+        if light_repetitions < 1 or comparison_repetitions < 1:
+            raise ValueError("light_repetitions and comparison_repetitions must be positive")
+        if not concurrency or any(level < 1 for level in concurrency):
+            raise ValueError("concurrency levels must be positive")
+        if len(set(concurrency)) != len(concurrency):
+            raise ValueError("concurrency levels must be unique")
+        if any(level > _MAX_CONCURRENCY for level in concurrency):
+            raise ValueError(f"concurrency levels maximum is {_MAX_CONCURRENCY}")
+        if max(repetitions, light_repetitions, comparison_repetitions) > _MAX_REPETITIONS:
+            raise ValueError(f"benchmark repetitions maximum is {_MAX_REPETITIONS}")
+        if not full and (file_count > 100 or rag_chunks > 1_000):
+            raise ValueError("large sizes require full benchmark opt-in")
+        if full and (file_count not in _FULL_FILE_SIZES or rag_chunks not in _FULL_RAG_SIZES):
+            raise ValueError("full benchmark sizes must use the documented file and RAG matrices")
+        if include_inference and inference_runner is None:
+            raise ValueError("inference opt-in requires an explicit benchmark runner")
+        if include_quality_goldens is None:
+            include_quality_goldens = include_inference
+        if include_quality_goldens and not include_inference:
+            raise ValueError("model quality goldens require explicit inference opt-in")
+        if speech_fixture is not None and not include_inference:
+            raise ValueError("speech golden fixture requires explicit inference opt-in")
+        speech_identity = _speech_golden_identity(speech_fixture, speech_expected_text)
+        speech_fixture = Path(speech_fixture).expanduser().resolve() if speech_fixture is not None else None
+    
+        output_dir = _resolve_outside_repo(Path(state_dir), "state_dir")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        if scratch_dir is None:
+            owned_scratch = tempfile.TemporaryDirectory(prefix="local-ai-hub-benchmark-")
+        else:
+            scratch_parent = _resolve_outside_repo(Path(scratch_dir), "scratch_dir")
+            scratch_parent.mkdir(parents=True, exist_ok=True)
+            owned_scratch = tempfile.TemporaryDirectory(prefix="local-ai-hub-benchmark-", dir=scratch_parent)
+        scratch = Path(owned_scratch.name)
+        started = time.perf_counter()
+        stages: dict[str, Any] = {}
+        inference_vram_samples: list[int] = []
+        app: Any = None
+        server: Any = None
+        server_thread: threading.Thread | None = None
+        http_server_module: Any = None
+        previous_http_app: Any = None
+        try:
+            synthetic: dict[str, Any] = {}
+    
+            def setup_synthetic_inputs() -> dict[str, int]:
+                files, test_path, corpus_path = _build_synthetic_repo(scratch, file_count, rag_chunks)
+                synthetic.update(files=files, test_path=test_path, corpus_path=corpus_path)
+                return {"file_count": len(files), "rag_chunk_count": rag_chunks}
+    
+            stages["synthetic_setup"] = _measure_stage("synthetic_fixture_generation", setup_synthetic_inputs, 1)
+            files = synthetic["files"]
+            test_path = synthetic["test_path"]
+            corpus_path = synthetic["corpus_path"]
+    
+>           from local_ai_hub import http_server as http_server_module
+
+tools\benchmark_surfaces.py:2872: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    from __future__ import annotations
+    
+    import hmac
+    import inspect
+    import ipaddress
+    import hashlib
+    import json
+    import os
+    import queue
+    import re
+    import socket
+    import sqlite3
+    import uuid
+    import time
+    import threading
+    from contextlib import nullcontext
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from pathlib import Path
+    from typing import Any, Mapping
+    import urllib.request
+    from urllib.parse import parse_qs, urlparse
+    
+    from . import __version__
+>   from .app import LocalAIApp
+
+src\local_ai_hub\http_server.py:24: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    from __future__ import annotations
+    
+    from .json_utils import dumps as json_dumps
+    
+    import stat
+    import io
+    import json
+    import sqlite3
+    import threading
+    import time
+    import zipfile
+    from concurrent.futures import ThreadPoolExecutor
+    from copy import deepcopy
+    from pathlib import Path
+    from typing import Any
+    
+    from . import __version__
+    from .artifacts import ArtifactStore
+    from .config import load_config
+>   from .embeddings import EmbeddingModel
+
+src\local_ai_hub\app.py:20: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    from __future__ import annotations
+    
+    from collections.abc import Mapping
+    
+    import json
+    import math
+    import threading
+    import urllib.error
+    import urllib.request
+    from typing import Any
+    
+    from .cache import SQLiteCache, SingleFlightGroup, TieredCache, stable_hash
+    from .priority_gate import CooperativePriorityGate
+    from .accelerators import openvino_cache_dir, openvino_device_candidates
+    from .state_paths import configured_state_dir
+    from .json_utils import dumps as json_dumps
+>   from .model_lifecycle import acquire_locks, load_model, release_model, uses_torch_cuda
+E   ModuleNotFoundError: No module named 'local_ai_hub.model_lifecycle'
+
+src\local_ai_hub\embeddings.py:17: ModuleNotFoundError
+-------------------------- Captured stdout teardown ---------------------------
+T02_DIAGNOSTIC={"async_jobs_after_baseline_close":{"managers":[],"sqlite_worker_alive":false},"async_jobs_at_teardown":{"managers":[],"sqlite_worker_alive":false},"async_jobs_before":{"managers":[],"sqlite_worker_alive":false},"nodeid":"tests/test_surface_benchmarks.py::test_run_benchmark_is_isolated_and_preserves_existing_scratch_data","sqlite_operational_errors":[]}
+___ test_component_baselines_measure_graph_rag_batch_parent_seed_and_serena ___
+
+tmp_path = WindowsPath('C:/Users/Adam/AppData/Local/Temp/pytest-of-Adam/pytest-11084/test_component_baselines_measu0')
+
+    def test_component_baselines_measure_graph_rag_batch_parent_seed_and_serena(tmp_path: Path) -> None:
+>       result = run_benchmark(
+            state_dir=tmp_path / "state",
+            file_count=4,
+            rag_chunks=8,
+            repetitions=1,
+            light_repetitions=2,
+            comparison_repetitions=2,
+            concurrency=(1,),
+        )
+
+tests\test_surface_benchmarks.py:1499: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+args = ()
+kwargs = {'comparison_repetitions': 2, 'concurrency': (1,), 'file_count': 4, 'light_repetitions': 2, ...}
+
+    @wraps(function)
+    def guarded(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        if not _BENCHMARK_RUN_LOCK.acquire(blocking=False):
+            raise RuntimeError("another benchmark run is already in progress")
+        try:
+            _reap_retained_benchmark_scratch()
+>           return function(*args, **kwargs)
+                   ^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tools\benchmark_surfaces.py:299: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    @_serialize_benchmark_runs
+    def run_benchmark(
+        *,
+        state_dir: Path | str,
+        scratch_dir: Path | str | None = None,
+        file_count: int = 100,
+        rag_chunks: int = 1_000,
+        repetitions: int = 3,
+        light_repetitions: int | None = None,
+        comparison_repetitions: int | None = None,
+        concurrency: tuple[int, ...] = (1, 4),
+        full: bool = False,
+        inference_runner: Any = None,
+        include_inference: bool = False,
+        include_quality_goldens: bool | None = None,
+        speech_fixture: Path | str | None = None,
+        speech_expected_text: str | None = None,
+        baseline_record: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Run synthetic stages and persist samples, aggregates, and optional comparison."""
+        if file_count < 1 or rag_chunks < 1 or repetitions < 1:
+            raise ValueError("file_count, rag_chunks, and repetitions must be positive")
+        light_repetitions = repetitions if light_repetitions is None else light_repetitions
+        comparison_repetitions = repetitions if comparison_repetitions is None else comparison_repetitions
+        if light_repetitions < 1 or comparison_repetitions < 1:
+            raise ValueError("light_repetitions and comparison_repetitions must be positive")
+        if not concurrency or any(level < 1 for level in concurrency):
+            raise ValueError("concurrency levels must be positive")
+        if len(set(concurrency)) != len(concurrency):
+            raise ValueError("concurrency levels must be unique")
+        if any(level > _MAX_CONCURRENCY for level in concurrency):
+            raise ValueError(f"concurrency levels maximum is {_MAX_CONCURRENCY}")
+        if max(repetitions, light_repetitions, comparison_repetitions) > _MAX_REPETITIONS:
+            raise ValueError(f"benchmark repetitions maximum is {_MAX_REPETITIONS}")
+        if not full and (file_count > 100 or rag_chunks > 1_000):
+            raise ValueError("large sizes require full benchmark opt-in")
+        if full and (file_count not in _FULL_FILE_SIZES or rag_chunks not in _FULL_RAG_SIZES):
+            raise ValueError("full benchmark sizes must use the documented file and RAG matrices")
+        if include_inference and inference_runner is None:
+            raise ValueError("inference opt-in requires an explicit benchmark runner")
+        if include_quality_goldens is None:
+            include_quality_goldens = include_inference
+        if include_quality_goldens and not include_inference:
+            raise ValueError("model quality goldens require explicit inference opt-in")
+        if speech_fixture is not None and not include_inference:
+            raise ValueError("speech golden fixture requires explicit inference opt-in")
+        speech_identity = _speech_golden_identity(speech_fixture, speech_expected_text)
+        speech_fixture = Path(speech_fixture).expanduser().resolve() if speech_fixture is not None else None
+    
+        output_dir = _resolve_outside_repo(Path(state_dir), "state_dir")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        if scratch_dir is None:
+            owned_scratch = tempfile.TemporaryDirectory(prefix="local-ai-hub-benchmark-")
+        else:
+            scratch_parent = _resolve_outside_repo(Path(scratch_dir), "scratch_dir")
+            scratch_parent.mkdir(parents=True, exist_ok=True)
+            owned_scratch = tempfile.TemporaryDirectory(prefix="local-ai-hub-benchmark-", dir=scratch_parent)
+        scratch = Path(owned_scratch.name)
+        started = time.perf_counter()
+        stages: dict[str, Any] = {}
+        inference_vram_samples: list[int] = []
+        app: Any = None
+        server: Any = None
+        server_thread: threading.Thread | None = None
+        http_server_module: Any = None
+        previous_http_app: Any = None
+        try:
+            synthetic: dict[str, Any] = {}
+    
+            def setup_synthetic_inputs() -> dict[str, int]:
+                files, test_path, corpus_path = _build_synthetic_repo(scratch, file_count, rag_chunks)
+                synthetic.update(files=files, test_path=test_path, corpus_path=corpus_path)
+                return {"file_count": len(files), "rag_chunk_count": rag_chunks}
+    
+            stages["synthetic_setup"] = _measure_stage("synthetic_fixture_generation", setup_synthetic_inputs, 1)
+            files = synthetic["files"]
+            test_path = synthetic["test_path"]
+            corpus_path = synthetic["corpus_path"]
+    
+>           from local_ai_hub import http_server as http_server_module
+
+tools\benchmark_surfaces.py:2872: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    from __future__ import annotations
+    
+    import hmac
+    import inspect
+    import ipaddress
+    import hashlib
+    import json
+    import os
+    import queue
+    import re
+    import socket
+    import sqlite3
+    import uuid
+    import time
+    import threading
+    from contextlib import nullcontext
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from pathlib import Path
+    from typing import Any, Mapping
+    import urllib.request
+    from urllib.parse import parse_qs, urlparse
+    
+    from . import __version__
+>   from .app import LocalAIApp
+
+src\local_ai_hub\http_server.py:24: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    from __future__ import annotations
+    
+    from .json_utils import dumps as json_dumps
+    
+    import stat
+    import io
+    import json
+    import sqlite3
+    import threading
+    import time
+    import zipfile
+    from concurrent.futures import ThreadPoolExecutor
+    from copy import deepcopy
+    from pathlib import Path
+    from typing import Any
+    
+    from . import __version__
+    from .artifacts import ArtifactStore
+    from .config import load_config
+>   from .embeddings import EmbeddingModel
+
+src\local_ai_hub\app.py:20: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    from __future__ import annotations
+    
+    from collections.abc import Mapping
+    
+    import json
+    import math
+    import threading
+    import urllib.error
+    import urllib.request
+    from typing import Any
+    
+    from .cache import SQLiteCache, SingleFlightGroup, TieredCache, stable_hash
+    from .priority_gate import CooperativePriorityGate
+    from .accelerators import openvino_cache_dir, openvino_device_candidates
+    from .state_paths import configured_state_dir
+    from .json_utils import dumps as json_dumps
+>   from .model_lifecycle import acquire_locks, load_model, release_model, uses_torch_cuda
+E   ModuleNotFoundError: No module named 'local_ai_hub.model_lifecycle'
+
+src\local_ai_hub\embeddings.py:17: ModuleNotFoundError
+=========================== short test summary info ===========================
+FAILED tests/test_surface_benchmarks.py::test_run_benchmark_is_isolated_and_preserves_existing_scratch_data
+FAILED tests/test_surface_benchmarks.py::test_component_baselines_measure_graph_rag_batch_parent_seed_and_serena
+2 failed in 7.90s

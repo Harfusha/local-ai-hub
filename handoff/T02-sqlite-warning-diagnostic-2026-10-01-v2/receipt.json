@@ -1,0 +1,59 @@
+{
+  "diagnostic": "two historical SQLite ResourceWarning selectors; one bounded run",
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head_before": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+  "root_head_after": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+  "root_hashes_before": {
+    "src/local_ai_hub/async_jobs.py": "77f33ca01ff72b22c2d4e3e080a28767259a02713ad6f7cfe84da1be5e2ad5b8",
+    "src/local_ai_hub/model_lifecycle.py": "782337ca8110965cbc213f7425280a5ba403327bde85f0a8db89556700b482fd",
+    "tests/test_surface_benchmarks.py": "f4e0d299384b3b3c9443390ec1001ed6b6f38d5606c0b45d8d774ded816dcf00",
+    "tools/benchmark_surfaces.py": "dcaed06cf711090e692d4b44555c6e76ff37f06093275b63c121d7cce0ad3de0"
+  },
+  "root_hashes_after": {
+    "src/local_ai_hub/async_jobs.py": "77f33ca01ff72b22c2d4e3e080a28767259a02713ad6f7cfe84da1be5e2ad5b8",
+    "src/local_ai_hub/model_lifecycle.py": "782337ca8110965cbc213f7425280a5ba403327bde85f0a8db89556700b482fd",
+    "tests/test_surface_benchmarks.py": "f4e0d299384b3b3c9443390ec1001ed6b6f38d5606c0b45d8d774ded816dcf00",
+    "tools/benchmark_surfaces.py": "dcaed06cf711090e692d4b44555c6e76ff37f06093275b63c121d7cce0ad3de0"
+  },
+  "overlay": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t02-current-root-overlay-retry-5ca8adi4\\repo",
+  "overlay_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+  "overlay_source_hashes": {
+    "src/local_ai_hub/async_jobs.py": "77f33ca01ff72b22c2d4e3e080a28767259a02713ad6f7cfe84da1be5e2ad5b8",
+    "src/local_ai_hub/model_lifecycle.py": "782337ca8110965cbc213f7425280a5ba403327bde85f0a8db89556700b482fd",
+    "tests/test_surface_benchmarks.py": "f4e0d299384b3b3c9443390ec1001ed6b6f38d5606c0b45d8d774ded816dcf00",
+    "tools/benchmark_surfaces.py": "dcaed06cf711090e692d4b44555c6e76ff37f06093275b63c121d7cce0ad3de0",
+    "tools/t02_lifecycle_pytest_plugin.py": "1d8d70277576270722e57d833251b45f8a466254573b5a9c6eae86b31682bb11"
+  },
+  "patch_sha256": "5f252285a71211c7f2ea5850175d8fb48aa7b85f4a1a2174907100e84d428add",
+  "copied_untracked_root_file": "src/local_ai_hub/model_lifecycle.py",
+  "t13_plugin": "copied from candidate into overlay only",
+  "argv": [
+    "C:\\Python313\\python.exe",
+    "-X",
+    "tracemalloc=5",
+    "-W",
+    "error::ResourceWarning",
+    "-m",
+    "pytest",
+    "-q",
+    "--tb=long",
+    "-p",
+    "no:cacheprovider",
+    "-p",
+    "tools.t02_lifecycle_pytest_plugin",
+    "tests/test_surface_benchmarks.py::test_run_benchmark_is_isolated_and_preserves_existing_scratch_data",
+    "tests/test_surface_benchmarks.py::test_component_baselines_measure_graph_rag_batch_parent_seed_and_serena"
+  ],
+  "env": {
+    "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+    "PYTHONPATH": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t02-current-root-overlay-retry-5ca8adi4\\repo"
+  },
+  "exit_code": 1,
+  "elapsed_seconds": 14.076,
+  "stdout_sha256": "b4b49681f53d3a6c788269e343b305e760cbc23ede74ea41fcc178d685326351",
+  "stderr_sha256": "d4c9aa3b548bab1e2d8ba2e4e17e822f5ad2accca87e5ef5ae75c3e06df38599",
+  "selectors": [
+    "tests/test_surface_benchmarks.py::test_run_benchmark_is_isolated_and_preserves_existing_scratch_data",
+    "tests/test_surface_benchmarks.py::test_component_baselines_measure_graph_rag_batch_parent_seed_and_serena"
+  ]
+}
