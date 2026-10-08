@@ -238,6 +238,34 @@ def _service_manager_stop_result(backend: str, result: subprocess.CompletedProce
         "reason": reason,
     }
 
+def _windows_user_startup_without_task() -> bool:
+    """Verify the exact registry fallback; scheduler errors stay fail-closed."""
+    powershell = shutil.which("powershell") or shutil.which("pwsh")
+    if not powershell:
+        return False
+    expected = f'"{PYWIN}" "{ROOT / "tools" / "service_entry.py"}"'
+    script = "\n".join([
+        "$ErrorActionPreference = 'Stop'",
+        "try {",
+        "  $scheduler = New-Object -ComObject Schedule.Service",
+        "  $scheduler.Connect()",
+        "  try { $null = $scheduler.GetFolder('\\').GetTask('LocalAIHubSupervisor'); exit 1 }",
+        "  catch {",
+        "    $errorObject = $_.Exception; $missing = $false",
+        "    while ($null -ne $errorObject) {",
+        "      if ($errorObject.HResult -eq -2147024894) { $missing = $true }",
+        "      $errorObject = $errorObject.InnerException",
+        "    }",
+        "    if (-not $missing) { exit 1 }",
+        "  }",
+        "  $command = Get-ItemPropertyValue -LiteralPath 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run' -Name LocalAIHubSupervisor",
+        "  if ($command -ceq '" + expected.replace("'", "''") + "') { exit 0 }",
+        "  exit 1",
+        "} catch { exit 1 }",
+    ])
+    return run([powershell, "-NoProfile", "-NonInteractive", "-Command", script]).returncode == 0
+
+
 def native_stop() -> dict[str, object]:
     errors: list[str] = []
     manager: dict[str, object] = {"supported": True, "success": False, "timed_out": False}
@@ -249,6 +277,10 @@ def native_stop() -> dict[str, object]:
     if os.name == "nt":
         result = run(["schtasks", "/Change", "/TN", "LocalAIHubSupervisor", "/DISABLE"])
         manager.update(_service_manager_stop_result("schtasks", result))
+        if result.returncode not in (0, 124, 127) and _windows_user_startup_without_task():
+            # The durable disabled marker gates this registration at startup.
+            # Do not delete it: resume must preserve next-logon availability.
+            manager.update(backend="windows-user-startup", returncode=0, success=True, reason="")
     elif sys.platform == "darwin":
         dest = Path.home() / "Library/LaunchAgents/com.localai.hub.plist"
         if not dest.is_file():

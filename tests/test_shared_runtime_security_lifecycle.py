@@ -2095,6 +2095,33 @@ def test_native_stop_reports_managed_ollama_failure(tmp_path, monkeypatch):
     assert "managed_ollama_stop_unverified" in result["errors"]
 
 
+@pytest.mark.parametrize("fallback_probe_exit, expected_success", [(0, True), (1, False), (124, False)])
+def test_native_stop_windows_fallback_requires_verified_registration(tmp_path, monkeypatch, fallback_probe_exit, expected_success):
+    service = _load_service_for_test(monkeypatch, tmp_path)
+    monkeypatch.setattr(service, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(service.shutil, "which", lambda _name: "powershell.exe")
+    disabled = []
+    monkeypatch.setattr(service, "mark_disabled", lambda value: disabled.append(value))
+    monkeypatch.setattr(service, "request_graceful_hub_stop", lambda: False)
+    monkeypatch.setattr(service, "kill_supervisor", lambda: True)
+    monkeypatch.setattr(service, "kill_hub", lambda: True)
+    monkeypatch.setattr(service, "find_listening_pid", lambda _port: None)
+    monkeypatch.setattr(service, "stop_managed_ollama", lambda: True)
+
+    def manager_run(argv, **_kwargs):
+        return subprocess.CompletedProcess(argv, fallback_probe_exit if argv[0] == "powershell.exe" else 1)
+
+    monkeypatch.setattr(service, "run", manager_run)
+    result = service.native_stop()
+
+    assert disabled == [True]
+    assert result["stopped"] is True
+    assert result["success"] is expected_success
+    assert result["errors"] == ([] if expected_success else ["schtasks_stop_failed"])
+    if expected_success:
+        assert result["service_manager"]["backend"] == "windows-user-startup"
+
+
 def test_service_manager_timeout_is_bounded_and_structured(tmp_path, monkeypatch):
     service = _load_service_for_test(monkeypatch, tmp_path)
     seen = {}

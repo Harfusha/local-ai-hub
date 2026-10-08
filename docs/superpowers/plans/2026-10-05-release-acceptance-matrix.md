@@ -1,5 +1,33 @@
 # Local AI Hub Release Acceptance Matrix
 
+## T13 stop-result correction — 2026-10-08
+
+- Owner: primary agent, current master. Changed paths: `tools/service.py`,
+  `tests/test_shared_runtime_security_lifecycle.py`, this matrix.
+- Cause: Windows stop always attempted Scheduled Task control, although this
+  installation uses the registry startup fallback. A failed control command
+  now permits a bounded, read-only probe. Only exact expected registry command
+  plus COM-confirmed task absence qualifies; denied/unknown scheduler state,
+  probe timeout, missing registration and manager timeout remain fail-closed.
+  Startup registration stays intact; the existing durable disabled marker
+  prevents restart. Process ownership and listener verification are unchanged.
+- Regression: `python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_shared_runtime_security_lifecycle.py -k native_stop_windows_fallback`
+  failed before the fix: **1 failed, 2 passed**. After the fix, the complete
+  lifecycle file with the same flags passed: **119 passed, 1 skipped**
+  (directory symlink privilege unavailable), in 11.04 seconds.
+- Real local fallback after broker's terminal/nonretryable mutation rejection:
+  `.venv/Scripts/python.exe -B tools/service.py stop` returned **exit 0, stopped**;
+  `start` returned **exit 0, started**. Doctor subsequently returned **exit 0**,
+  Hub/Ollama online, eight MCP tools, no warnings. This verifies the previously
+  observed CLI defect, not every platform/service-manager branch.
+- `python -B -m compileall -q src tools tests` and
+  `python -B tools/release_check.py --allow-installed --expected-version 4.0.0`
+  passed. Full-suite diagnostic is running separately with `-x -vv --tb=short
+  -p no:cacheprovider -o faulthandler_timeout=30`; **6775 collected**. Its live
+  process/session is not a completed acceptance receipt. T13 correction is
+  integrated for review; T20 remains active / NO-GO pending complete release
+  evidence. No new worktree, branch, chat or stash was created.
+
 ## Integrated verification — 2026-10-08, source candidate `8b5ffe7d`
 
 - All **61 registered repository-family worktrees** were verified at the same
