@@ -3128,6 +3128,7 @@ class Handler(BaseHTTPRequestHandler):
             # are discarded by the per-stream sequence check below.
             last_seq_by_stream: dict[str, int] = {}
             last_seq = after_seq
+            last_delivered_seq = after_seq
             stream_success = True
 
             def note_seq(event_stream: str, seq: int) -> None:
@@ -3141,7 +3142,7 @@ class Handler(BaseHTTPRequestHandler):
                 return max([after_seq, *last_seq_by_stream.values()])
 
             def write_sse(event_name: str, payload: Mapping[str, Any], seq: int | None = None) -> bool:
-                nonlocal stream_success, stream_error
+                nonlocal stream_success, stream_error, last_delivered_seq
                 event_id = f"id: {seq}\n" if seq is not None else ""
                 msg = (
                     f"{event_id}event: {event_name}\n"
@@ -3150,6 +3151,8 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     self.wfile.write(msg)
                     self.wfile.flush()
+                    if seq is not None:
+                        last_delivered_seq = seq
                     return True
                 except OSError:
                     stream_success = False
@@ -3248,17 +3251,6 @@ class Handler(BaseHTTPRequestHandler):
                             replay_entries.append((gap_end, "stream.gap", {
                                 **gap, "from_seq": gap_start, "to_seq": gap_end,
                             }, True))
-                    page_payload = json_dumps(page, separators=(",", ":"))
-                    # Page metadata must not advance EventSource's reconnect cursor
-                    # before the individual replay events have been delivered.
-                    page_msg = f"event: replay_page\ndata: {page_payload}\n\n".encode("utf-8")
-                    try:
-                        self.wfile.write(page_msg)
-                        self.wfile.flush()
-                    except OSError:
-                        stream_success = False
-                        stream_error = "client disconnected"
-                        return
                     if page.get("cursor_reset") is True:
                         first_retained = int(page.get("first_retained_seq", 0) or 0)
                         last_seq = max(0, first_retained - 1)
@@ -3287,6 +3279,11 @@ class Handler(BaseHTTPRequestHandler):
                                 return
                         last_seq = event_seq
                         note_seq(stream_id, event_seq)
+                    # A filtered page still advances the reconnect cursor, but
+                    # only after all earlier matching events/gaps are delivered.
+                    page_id = page_cursor if page_cursor > last_delivered_seq else None
+                    if not write_sse("replay_page", page, seq=page_id):
+                        return
                     replayed_events += len(replay_events)
                     next_cursor = int(page.get("next_seq", replay_cursor) or 0)
                     has_more = page.get("has_more") is True

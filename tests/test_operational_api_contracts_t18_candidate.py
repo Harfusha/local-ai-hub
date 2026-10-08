@@ -317,7 +317,7 @@ def test_agent_event_sse_prefers_header_and_pages_replay_with_gap_metadata(monke
     pages = [
         {
             "success": True,
-            "events": [first],
+            "events": [first.to_dict()],
             "next_seq": 7,
             "gap_ranges": [{"from_seq": 4, "to_seq": 6}],
             "first_retained_seq": 7,
@@ -327,7 +327,7 @@ def test_agent_event_sse_prefers_header_and_pages_replay_with_gap_metadata(monke
         },
         {
             "success": True,
-            "events": [second],
+            "events": [second.to_dict()],
             "next_seq": 8,
             "gap_ranges": [],
             "first_retained_seq": 7,
@@ -390,10 +390,10 @@ def test_agent_event_sse_merges_events_and_internal_gaps_in_sequence_order(monke
         def subscribe(self, maxsize=200):
             return queue.Queue(maxsize=maxsize)
 
-        def event_page(self, stream_id, *, after_seq, limit):
+        def event_page(self, stream_id, *, after_seq, limit, through_seq=None):
             return {
                 "success": True,
-                "events": [first, middle, last],
+                "events": [first.to_dict(), middle.to_dict(), last.to_dict()],
                 "next_seq": 5,
                 "first_retained_seq": 1,
                 "last_seq": 5,
@@ -410,7 +410,7 @@ def test_agent_event_sse_merges_events_and_internal_gaps_in_sequence_order(monke
 
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(agent_state=State(), config={"server": {"max_stream_duration_seconds": 1}}))
     handler = http_server.Handler.__new__(http_server.Handler)
-    handler.headers = {"Last-Event-ID": "task%3Aone:0"}
+    handler.headers = {"Last-Event-ID": "0"}
     handler.wfile = io.BytesIO()
     handler.send_response = lambda status: None
     handler.send_header = lambda name, value: None
@@ -450,12 +450,12 @@ def test_agent_event_sse_paginates_filtered_replay_with_canonical_pages(monkeypa
         def subscribe(self, maxsize=200):
             return queue.Queue(maxsize=maxsize)
 
-        def event_page(self, stream_id, *, after_seq, limit):
+        def event_page(self, stream_id, *, after_seq, limit, through_seq=None):
             calls.append((after_seq, limit))
             page_events = [event for event in events if event.seq > after_seq][:limit]
             return {
                 "success": True,
-                "events": page_events,
+                "events": [event.to_dict() for event in page_events],
                 "next_seq": page_events[-1].seq if page_events else after_seq,
                 "first_retained_seq": 1,
                 "last_seq": events[-1].seq,
