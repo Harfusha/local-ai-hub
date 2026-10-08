@@ -820,8 +820,7 @@ def _status_output_variants(action: str) -> list[dict[str, Any]]:
     if action == "full":
         return [{
             "type": "object",
-            "required": ["success", "hub_online", "version", "uptime_seconds", "features",
-                         "runtime_stats", "capabilities"],
+            "required": ["success", "hub_online", "version"],
             "properties": {
                 "success": {"type": "boolean"},
                 "hub_online": {"type": "boolean"},
