@@ -37,6 +37,24 @@
 
 ## 2026-10-08 integration delta
 
+- Preservation reconciliation completed by the primary agent on master:
+  `02cc5cc8` merged with no source-tree changes because its mode behavior was
+  already present; `7bd58337` merged while retaining one copy of each receipt
+  parser regression (two duplicate copies were removed). Validation:
+  `python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_agent_tasks.py tests/test_agent_verification.py`
+  returned **133 passed in 16.38s**. This is scoped integration, not completion
+  of all T08 acceptance.
+- T18 `8db4f3bf` conflicts were reviewed against current SSE code. Master's
+  initial-page reuse, bounded pagination, high-water cursor and ordered gap
+  delivery were retained. The remaining original failure contract was restored:
+  later replay-page failures now emit `replay_error`, consistently with initial
+  page failures. A new second-page regression failed before this fix.
+  Owned paths: `src/local_ai_hub/http_server.py` (SSE replay only) and
+  `tests/test_t18_event_telemetry_failure_contracts.py`; `/api/context/pack` was
+  not changed. Validation:
+  `python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_t18_event_telemetry_failure_contracts.py tests/test_sse_events_stream.py tests/test_operational_mode.py`
+  returned **36 passed in 31.72s**. T18 remains review pending its broader
+  acceptance; T20 remains NO-GO pending a complete suite and package/live gates.
 - T11 transport slice only: integrated commit `420bebaf` from owner commit
   `5819437c94732c830bc41c021ff764c2e8279902` (base `22f75d5bb35832d7df2175614e6dbad0e3165ef8`, patch ID
   `1794088f6423247ada3c2afcff9bc5f246395d95`). Manual merge preserved the
