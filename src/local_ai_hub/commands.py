@@ -3566,7 +3566,7 @@ class CommandBroker:
             if evidence_type not in {"test", "benchmark", "source_review"}:
                 return
             project_bound = any((
-                project_alias, project_config_digest, project_environment_sha256,
+                project_alias,
                 configured_command_sha256, caller_arguments_sha256,
             ))
             if project_bound and (
@@ -3657,6 +3657,7 @@ class CommandBroker:
                 "cached": cached,
             }
             if project_bound:
+                proof["command"] = command
                 binding = {
                     "project_alias": project_alias,
                     "project_config_digest": project_config_digest,
@@ -3717,11 +3718,11 @@ class CommandBroker:
                 ).hexdigest(),
                 "exit_code": exit_code,
                 "cached": False,
-                "project_alias": project_alias,
-                "project_config_digest": project_config_digest,
-                "project_environment_sha256": project_environment_sha256,
-                "configured_command_sha256": configured_command_sha256,
-                "caller_arguments_sha256": caller_arguments_sha256,
+                "project_alias": project_alias if project_bound else "",
+                "project_config_digest": project_config_digest if project_bound else "",
+                "project_environment_sha256": project_environment_sha256 if project_bound else "",
+                "configured_command_sha256": configured_command_sha256 if project_bound else "",
+                "caller_arguments_sha256": caller_arguments_sha256 if project_bound else "",
                 "project_execution_binding_sha256": proof.get("project_execution_binding_sha256", ""),
                 "created_at_unix": time.time(),
             }
