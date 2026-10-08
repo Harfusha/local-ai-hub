@@ -7,6 +7,45 @@ from local_ai_hub.operational_mode import OperationalModeSnapshot
 from local_ai_hub.token_accounting import json_tokens
 
 
+@pytest.mark.parametrize("profile", ["minimal", "compact"])
+def test_live_status_contract_accepts_brief_without_internal_metrics(monkeypatch, profile):
+    import asyncio
+    import json
+
+    monkeypatch.setattr(mcp_server, "load_operational_mode", lambda _: OperationalModeSnapshot("active", 0, None))
+    monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **kw: None)
+    monkeypatch.setattr(mcp_server.CLIENT, "get", lambda path: {
+        "success": True, "hub_online": True, "version": "4.0.0", "ollama_online": True,
+        "scheduler": {"active_model": None, "queued": 0, "inflight": 0},
+        "observability": {"net_cloud_token_delta_est": 9, "cache_hits": 2, "coalesced_waiters": 1},
+    })
+    contents, _ = asyncio.run(mcp_server.mcp.call_tool("local_ai_status", {
+        "detail": "brief", "response_profile": profile, "max_response_tokens": 512,
+    }))
+    result = json.loads(contents[0].text)
+    assert result["success"] is True, result
+    assert result["version"] == "4.0.0"
+    assert not set(result) & {"net_cloud_token_delta_est", "cache_hits", "coalesced_waiters"}
+
+
+def test_accounting_send_resets_original_context_when_module_context_changes(monkeypatch):
+    from contextvars import ContextVar
+
+    original = ContextVar("original", default=("", True))
+    replacement = ContextVar("replacement", default=("", True))
+    monkeypatch.setattr(mcp_server, "_CURRENT_OPERATIONAL_CONTEXT", original)
+    monkeypatch.setattr(mcp_server, "load_operational_mode", lambda _: OperationalModeSnapshot("active", 0, None))
+
+    def post(*args, **kwargs):
+        monkeypatch.setattr(mcp_server, "_CURRENT_OPERATIONAL_CONTEXT", replacement)
+        return {"success": True}
+
+    monkeypatch.setattr(mcp_server.CLIENT, "post", post)
+    mcp_server._ProtocolAccountingReporter()._send([{"operation": "status"}])
+    assert original.get() == ("", True)
+    assert replacement.get() == ("", True)
+
+
 @pytest.mark.parametrize("profile", ["", "minimal", "compact", "delta"])
 def test_mcp_boundary_omits_infrastructure_noise_and_preserves_outcome(monkeypatch, profile):
     recorded = []

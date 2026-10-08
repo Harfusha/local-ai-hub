@@ -1374,7 +1374,8 @@ class _ProtocolAccountingReporter:
                 return
         except Exception:
             pass
-        operational_token = _CURRENT_OPERATIONAL_CONTEXT.set(("telemetry", False))
+        operational_context = _CURRENT_OPERATIONAL_CONTEXT
+        operational_token = operational_context.set(("telemetry", False))
         try:
             # batch_id prevents HubClient single-flight from coalescing two
             # numerically identical accounting batches from concurrent MCP clients.
@@ -1388,7 +1389,7 @@ class _ProtocolAccountingReporter:
             # path for the MCP foreground request.
             return
         finally:
-            _CURRENT_OPERATIONAL_CONTEXT.reset(operational_token)
+            operational_context.reset(operational_token)
 
     def _run(self) -> None:
         batch: list[dict[str, Any]] = []

@@ -759,8 +759,7 @@ def _status_output_variants(action: str) -> list[dict[str, Any]]:
     if action == "brief":
         return [{
             "type": "object",
-            "required": ["success", "version", "ollama_online", "active_model", "queued", "inflight",
-                         "net_cloud_token_delta_est", "cache_hits", "coalesced_waiters"],
+            "required": ["success", "version", "ollama_online", "active_model", "queued", "inflight"],
             "properties": {
                 "success": {"type": "boolean"},
                 "version": {"type": ["string", "null"]},
