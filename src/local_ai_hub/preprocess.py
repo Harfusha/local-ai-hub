@@ -1390,9 +1390,7 @@ class ProjectPreprocessor:
         special_filenames = getattr(self.repo_tools, "special_filenames", set())
         if extensions and Path(relative).suffix.lower() not in extensions and Path(relative).suffix.lower() not in project_extensions and Path(relative).name.lower() not in special_filenames:
             hard_denied = True
-        api, _context = self._project_config_context(root)
-        checker = getattr(api, "path_is_allowed", path_is_allowed)
-        return checker(
+        return path_is_allowed(
             root,
             Path(root) / relative,
             settings,
