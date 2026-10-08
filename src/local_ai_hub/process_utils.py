@@ -1457,7 +1457,7 @@ def get_git_worktree_ownership(repo_root: str | Path, worktree_path: str | Path)
     admin = _git_worktree_admin_dir(repo, target)
     if admin is None:
         return None
-    marker = admin / "local_ai_hub_worktree.json"
+    marker = admin / _WORKTREE_OWNERSHIP_FILE
     try:
         import json
 
@@ -1565,7 +1565,7 @@ def create_git_worktree(
         }
     except Exception as exc:
         if created_checkout:
-            subprocess.run(
+            run_hidden(
                 ["git", "-C", str(repo), "worktree", "remove", str(target_dir)],
                 capture_output=True,
                 text=True,
@@ -1578,7 +1578,7 @@ def create_git_worktree(
 
 def _git_value(root: Path, *arguments: str, timeout: float = 15.0) -> str:
     try:
-        result = subprocess.run(
+        result = run_hidden(
             ["git", "-C", str(root), *arguments],
             capture_output=True,
             text=True,
@@ -1702,7 +1702,7 @@ def remove_git_worktree(
             if expected is not None and (actual is None or abs(float(expected) - float(actual)) > max(1e-6, ttl_seconds * 1e-9)):
                 return {"success": False, "error": "worktree time metadata does not match task ownership"}
 
-        status = subprocess.run(
+        status = run_hidden(
             ["git", "-C", str(target), "status", "--porcelain", "--untracked-files=all", "--ignored"],
             capture_output=True,
             text=True,
@@ -1713,7 +1713,7 @@ def remove_git_worktree(
         if status.returncode != 0 or status.stdout.strip():
             return {"success": False, "error": "worktree contains uncommitted or ignored changes"}
 
-        removed = subprocess.run(
+        removed = run_hidden(
             ["git", "-C", str(repo), "worktree", "remove", str(target)],
             capture_output=True,
             text=True,
@@ -1726,7 +1726,7 @@ def remove_git_worktree(
         branch_deleted = False
         if delete_branch:
             cmd_branch = ["git", "-C", str(repo), "branch", "-d", recorded_branch]
-            proc_b = subprocess.run(cmd_branch, capture_output=True, text=True, check=False, timeout=10, **hidden_run_kwargs())
+            proc_b = run_hidden(cmd_branch, capture_output=True, text=True, check=False, timeout=10, **hidden_run_kwargs())
             branch_deleted = (proc_b.returncode == 0)
         return {
             "success": True,
