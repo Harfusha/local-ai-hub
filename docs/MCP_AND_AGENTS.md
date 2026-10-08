@@ -1,5 +1,7 @@
 # MCP and coding-agent integration
 
+Development and Git integration follow the [simplified worktree process](superpowers/specs/2026-10-07-simplified-worktree-integration.md): primary agent owns audits and integration, branches/worktrees are exceptional, small verified units return to `master` promptly, and leftover changes are classified before recoverable archival. No routine audit handoffs, ZIPs, owner packets, or custom fingerprint/hash cascades.
+
 Local AI Hub exposes eight compact MCP tools instead of mirroring every internal endpoint. Target runtime has one user-scoped Hub daemon and lightweight stdio proxies; a proxy must not instantiate `InProcessTransport`, `HubServices`, or another `LocalAIApp`. This T03/T04/T13 integration remains pending in the current candidate. The daemon and service pools are shared across Codex, Claude Code, Gemini CLI, Cursor, Windsurf, VS Code/Copilot and generic MCP clients. Project-local MCP manifests use `target_root` as `cwd`; global manifests use `install_dir`. Every global repository, task, or memory request must set `root` to the caller's project root and preserve task context. Both MCP API and `HubClient` must pass root explicitly; never infer it from install cwd. The server derives effective tenant from principal and canonical root. Tenant headers/body/query values are optional consistency checks, not tenant selectors. T13 auth/lifecycle implementation is candidate-only and untested. Do not start a separate Hub daemon for each agent.
 
 ## Codex MCP configuration
@@ -11,14 +13,14 @@ The global Codex entry has `cwd=install_dir` and no project-root environment. Ea
 The generated MCP, HTTP, client and CLI surface inventory with contract and evidence states is in [API surface coverage](API_COVERAGE.md).
 
 
-## Whole-task orchestration
+## Optional whole-task orchestration
 
-`local_ai_work` is the one high-level orchestration boundary. Use `submit` for a closed repository task that the Hub can plan, edit, validate and verify end-to-end. Use `status`/`wait` for bounded progress checks, `get` with `response_profile`/`return_fields` for projected handoff data, `cancel` to stop work, and `continue` only after a `needs_agent` decision. Detailed plans, step evidence and logs remain artifact-backed by default.
+Use `local_ai_work` only when the user explicitly requests a closed task delegated to the Hub. Do not use it to hand off audits or the primary agent's repository ownership. The primary agent keeps the plan, reviews diffs, and integrates directly. If explicitly requested, `submit` may run a closed bounded task; use `status`/`wait` once for bounded progress, `cancel` to stop it, and `continue` only after a `needs_agent` decision.
 
 
 ## Hub-first evidence and cloud-agent autonomy
 
-The cloud agent remains the orchestrator, planner, integrator and final owner. It may reason, plan and code directly. Local-model calls are on-demand and advisory; use `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")` for bounded semantic work when it adds value, after deterministic/indexed evidence. Generated text does not replace exact facts, symbols, diff or test evidence. Native Codex subagents are for explicit Codex-subagent requests or Codex-only capabilities. Codex controls their scope, write access, workspace/worktree, timeout, cancellation and integration. Never duplicate the same scope across agents.
+The primary agent plans, audits, implements, reviews, and integrates directly. Local-model calls are optional and advisory; use `local_ai_task` for bounded semantic reasoning or compression after deterministic/indexed evidence when it adds value. Generated text does not replace exact facts, symbols, diffs, or test evidence. Do not delegate audits. Native Codex subagents are only for genuinely independent bounded implementation or explicit user requests; keep scopes disjoint and integrate directly without a handoff bundle.
 
 For every non-trivial repository task, agents should start preprocessing the stable absolute project root once with `local_ai_repo(action="preprocess", root=...)` and continue immediately. Preprocessing is opportunistic: never poll or wait for it.
 
