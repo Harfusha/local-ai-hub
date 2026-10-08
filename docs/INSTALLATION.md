@@ -51,6 +51,24 @@ When `HubClient` has no explicit `config_path`, it uses `LOCAL_AI_CONFIG` when s
 
 Install one or more extras with `python -m pip install ".[extra-name]"`; combine names with commas, for example `python -m pip install ".[local-nlp,performance]"`. These are package dependencies from `pyproject.toml`; setup-managed tools, agent configuration, and service installation remain separate.
 
+To provision every declared non-Intel extra in the active Windows Hub environment, run this from the verified installation root after setup:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install --upgrade ".[ast-index,local-nlp,token-economy,performance,profiling,dev]"
+```
+
+This includes NLP/model dependencies and development/profiling tools, so it can consume substantial disk space and may take several minutes. `intel-accelerators` is deliberately excluded; install it only for an Intel OpenVINO/SYCL setup. CodeGraphContext is a separate standalone product, not a Hub extra. After dependency or source updates, fully cycle the existing per-user service (do not create a second one):
+
+```powershell
+python tools/service.py stop
+python tools/service.py status
+python tools/service.py start
+python tools/hubctl.py status
+python tools/doctor.py
+```
+
+Confirm the old daemon stopped before starting, then verify the active version, mode, selected backend, and service identity. Preserve `config.toml` and `server.state_dir`; do not reset durable state as part of a routine restart.
+
 | Extra | Declared packages |
 | --- | --- |
 | `local-nlp` | `sentence-transformers` |
