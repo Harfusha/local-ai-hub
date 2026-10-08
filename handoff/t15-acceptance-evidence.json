@@ -1,0 +1,966 @@
+{
+  "benchmark_current": {
+    "all_6_warm_calls_cache_hit": true,
+    "classification_git_status_ms": {
+      "n": 500,
+      "p50": 0.02,
+      "p95": 0.024
+    },
+    "dual_stream_2000_lines_each_ms": {
+      "n": 4,
+      "p50": 92.493,
+      "p95": 93.061
+    },
+    "dual_stream_result": {
+      "callback_chunks": 13,
+      "dispatch_incomplete": false,
+      "dropped": 0,
+      "stderr_chars": 8000,
+      "stdout_chars": 8000,
+      "success": true
+    },
+    "fingerprint_force_ms": {
+      "n": 5,
+      "p50": 136.599,
+      "p95": 157.864
+    },
+    "fingerprint_warm_ms": {
+      "n": 50,
+      "p50": 0.12,
+      "p95": 0.144
+    },
+    "git_status_cache_hit_ms": {
+      "n": 6,
+      "p50": 17.259,
+      "p95": 18.137
+    },
+    "git_status_cache_miss_ms": {
+      "n": 6,
+      "p50": 86.294,
+      "p95": 103.769
+    },
+    "powershell_start_ms": {
+      "n": 5,
+      "p50": 207.497,
+      "p95": 210.696
+    },
+    "python_start_ms": {
+      "n": 7,
+      "p50": 44.257,
+      "p95": 64.88
+    }
+  },
+  "benchmark_method": "Inline bounded wall-clock harness; no generated repo files. Percentiles nearest rank. 6 paired cache miss/hit; separate 500 classification calls; 5 forced and 50 warm fingerprints; 4 dual-stream captures.",
+  "benchmark_prior_receipt": {
+    "classification_ms": {
+      "n": 500,
+      "p50": 0.021,
+      "p95": 0.034
+    },
+    "dual_stream_1000_lines_each_ms": {
+      "n": 3,
+      "p50": 66.499,
+      "p95": 68.14
+    },
+    "fingerprint_force_ms": {
+      "n": 7,
+      "p50": 152.352,
+      "p95": 169.865
+    },
+    "fingerprint_warm_ms": {
+      "n": 50,
+      "p50": 0.143,
+      "p95": 0.211
+    },
+    "git_status_cache_hit_ms": {
+      "n": 6,
+      "p50": 18.675,
+      "p95": 19.503
+    },
+    "git_status_cache_miss_ms": {
+      "n": 6,
+      "p50": 97.921,
+      "p95": 112.7
+    }
+  },
+  "environment": {
+    "cpu": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
+    "git": "2.45.1.windows.1",
+    "logical_cpus": 16,
+    "platform": "Windows 11 10.0.26200-SP0",
+    "python": "3.13.2"
+  },
+  "final_test_receipts": [
+    {
+      "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_command_concurrency_contract.py tests/test_command_streaming.py tests/test_command_transport.py tests/test_command_timeout_cache_contract.py tests/test_command_suppression.py tests/test_command_rollback.py tests/test_project_command_broker.py tests/test_project_config_service_integration.py tests/test_project_config.py tests/test_project_path_hints.py tests/test_affected_tests.py tests/test_daemon_lifecycle_hardening.py::test_daemon_job_stops_descendants_after_leader_exits tests/test_daemon_lifecycle_hardening.py::test_live_daemon_is_reconciled_after_broker_restart tests/test_architectural_extensions.py::test_command_broker_flaky_detect tests/test_command_unblocked.py::test_non_cacheable_read_command_coalesces_existing_singleflight tests/test_sse_events_stream.py::test_sse_stream_replays_and_receives_live_events tests/test_sse_events_stream.py::test_sse_stream_does_not_lose_event_between_replay_and_subscribe tests/test_sse_events_stream.py::test_sse_stream_timeout_bounds_queue_wait tests/test_agent_event_drop_metrics.py tests/test_agent_events.py",
+      "cwd": "C:/Users/Adam/.codex/worktrees/t15-command-config/.local-ai-hub",
+      "result": "152 passed in 36.59s"
+    },
+    {
+      "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_command_unblocked.py tests/test_command_rollback.py tests/test_project_command_broker.py",
+      "cwd": "C:/Users/Adam/.local-ai-hub",
+      "result": "54 passed, 4 skipped in 12.06s; skips are POSIX-only race tests and Windows symlink privilege constraint"
+    },
+    {
+      "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_command_cache_singleflight_contract.py tests/test_command_concurrency_contract.py tests/test_project_command_broker.py tests/test_command_streaming.py tests/test_command_transport.py tests/test_command_timeout_cache_contract.py tests/test_command_suppression.py",
+      "cwd": "C:/Users/Adam/.codex/worktrees/t15-command-config/.local-ai-hub",
+      "result": "39 passed, 2 skipped in 23.31s; skips are POSIX process-group-only",
+      "date": "2026-09-30"
+    }
+  ],
+  "interpretation": "Candidate cache-hit p50 improved 29.1% (30.491 to 21.622 ms); cache-miss p50 changed -0.6% (2095.399 to 2082.861 ms). Single-flight had one execution and exact waiter counts at all concurrency levels. Capture p50 rose 66.4% (65.529 to 109.013 ms); run variance and dirty candidate tree limit causal claims.",
+  "ownership": {
+    "Agent2": "No /api/context/pack changes.",
+    "T03": "No MCP wire schema changes.",
+    "T04": "No client.py changes.",
+    "T06": "Historical T15 patch excluded T06 rollback/write-set/daemon-grant symbols. Current dirty candidate has process-group/recovery and adjacent cleanup hunks with ownership pending T06 confirmation; exclude them from a T15-only export.",
+    "T21": "Separate owner worktree reports LocalAIServices.repo_search/search_paths-only service hunks and 11 matching integration tests; it leaves affected_tests, command(run_affected), and T06 run_affected tests unchanged. T04/T09 inherited config/path-hint hunks remain mixed and unclassified; T21 changes were not merged."
+  },
+  "regression_evidence": {
+    "RED_preflight_bytecode": "Before in-memory compile, preflight created __pycache__; now no bytecode and SyntaxError diagnostics retained.",
+    "RED_prompt_no_newline": "Before byte-chunk read, flushed password prompt without newline was not detected; now read1 + incremental universal newline decoder detects it.",
+    "RED_slow_consumer": "Before async bounded callback dispatch, slow-consumer test timed out; now pass.",
+    "RED_uncertain_affected_tests": "Before fallback, confidence 0.5 returned empty test set; now complete test matrix selected; missing matrix fails closed."
+  },
+  "owner_hunk_map": {
+    "path": "handoff/t15-owner-hunk-map.md",
+    "sha256": "fd87320144f6f0161265aa666dde746e792e8a30282ba85cff95d45a22e84846",
+    "state": "T06 owns process-group/recovery hunks; user approved persisted process_group_id recovery contract; implementation and exact hunk receipt pending. T04/T09 inherited hunk attribution remains unresolved; candidate is not apply-ready."
+  },
+  "acceptance_gaps": {
+    "performance": "Required cache p95 improvement is not demonstrated; measured p95 deltas are small and pair-order effects dominate the raw samples. Capture p50 regressed 66.4%; a 50 ms callback-dispatcher poll is a plausible cause and has not been fixed or remeasured.",
+    "coverage": "Only one Windows/AMD host is represented. Receipts do not establish every cache identity dimension, full graph comparison, all SSE bounds/drain/cursor guarantees, mock-port collision, or disposable-environment execution.",
+    "posix": "POSIX process-group cases skipped on Windows; T06 PermissionError liveness boundary remains unverified."
+  },
+  "benchmark_order_effects": {
+    "cache_hit_first_pair_p50_ms_baseline_candidate": [
+      16.55,
+      17.289
+    ],
+    "cache_hit_after_forced_miss_p50_ms_baseline_candidate": [
+      161.155,
+      169.325
+    ],
+    "cache_miss_strata_p50_ms_baseline_candidate": [
+      [
+        2068.978,
+        2065.413
+      ],
+      [
+        2210.081,
+        2216.885
+      ]
+    ],
+    "capture_p95_ms_baseline_candidate": [
+      69.158,
+      110.824
+    ],
+    "capture_min_ms_baseline_candidate": [
+      64.619,
+      92.506
+    ],
+    "interpretation": "Pair-order effect prevents claiming small cache p95 deltas as causal. Capture uplift is systematic; callback dispatcher timeout polling is a plausible mechanism. Repeat randomized paired blocks on identical source/tree state after the shared benchmark slot is available."
+  },
+  "rebenchmark_gate": {
+    "authorized": false,
+    "slot_owner": "T20 explicit assignment required",
+    "when": "Only after T20 provides the integrated candidate revision and explicit slot assignment; use pinned baseline and integrated-candidate commits with clean worktrees",
+    "requirements": "Same harness/config and environment within paired blocks; at least two required CPU/hardware profiles; randomized paired order; >=1000 light samples per concurrency and 30 expensive paired runs; capture with/without callback, p50/p95/p99, peak memory, single-flight counts, and source hashes before/after.",
+    "acceptance": ">=25% p95 or peak-memory improvement on a demonstrated bottleneck; no unexcused >10% warm/cold p95/p99 regression.",
+    "do_not_run_before_assignment": true
+  },
+  "current_rebenchmark_gate_status": "No explicit T15 benchmark slot or clean integrated revision received as of 2026-10-01; T20 prior queue assigned T07 then T05. Do not run benchmark before explicit assignment.",
+  "benchmark_harness_v2": {
+    "path": "tools/benchmark_command_broker.py",
+    "sha256": "c4920ef4434124ed8dd67fbb5dfd4dd0783420fd8c314f827ec6c228505de127",
+    "changes": [
+      "same COMMAND for forced misses and warm hits",
+      "seeded balanced randomized pair order and separate order strata",
+      "callback and no-callback dual-stream capture",
+      "broker-matched shell resolution",
+      "source and execution-repository identity/hash stability checks",
+      "load CommandBroker from the selected --root and hash that checkout source",
+      "record and guard harness checkout identity separately",
+      "regression covers importing the broker API from selected checkout root",
+      "paired hit and forced-miss calls require explicit boolean cache outcome and exact expected classification",
+      "report carries paired fixture command/tenant/seed/order counts and expected/observed hit/miss totals; seed miss is separate"
+    ],
+    "test_path": "tests/test_benchmark_command_broker.py",
+    "test_sha256": "468485860b7a6a8adf5b4d8ed8c7bbed6693ebb7e20bd036778c65c1eab12046",
+    "static_validation": "AST parse of harness/test and JSON/hash-link checks passed after final edits; pytest and benchmark not run pending T20 slot. Historical v1 reports do not validate v2."
+  },
+  "receipt_opt_out_design": {
+    "path": "handoff/t15-command-receipt-opt-out-design.md",
+    "sha256": "bbed517a776ec35280f4ed8017857c683629a9b87168d615c5787681d2f6f007",
+    "status": "Design-only; review requested from T06/T16. Proposed explicit record_verification=False keeps task_id and budget attribution. No source change."
+  },
+  "remaining_scope": "Candidate config/mapping/streaming/replay parity passes 114 tests. One-shot profile isolated git rev-parse (127.9788 ms wall) as dominant on a non-Git fixture; bounded in-memory config resolution cache now keys hashed project root, overlay file signatures, and exact Git HEAD; invalidation tests pass. No post-cache paired benchmark. Root direct behavior and prior microbench stale for latest root/candidate source; root pytest and large T20 slot pending.",
+  "benchmark_full_pre_post": {
+    "harness_sha256_baseline": "acf506907113e17f8fd39de282c5e7e9394d8f6e3c553ebc3dc251145da93c2f",
+    "harness_sha256_candidate": "acf506907113e17f8fd39de282c5e7e9394d8f6e3c553ebc3dc251145da93c2f",
+    "baseline_report": "handoff/t15-command-broker-baseline.json",
+    "candidate_report": "handoff/t15-command-broker-candidate.json",
+    "baseline_head_source": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+    "baseline_snapshot_head": "a77562e3210a175765eba914baa753f1b6a07c67",
+    "candidate_head": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+    "light_samples_per_concurrency": 1000,
+    "paired_expensive_runs": 30,
+    "cache_hit_p50_ms": {
+      "candidate": 21.622,
+      "baseline": 30.491
+    },
+    "cache_miss_p50_ms": {
+      "candidate": 2082.861,
+      "baseline": 2095.399
+    },
+    "cache_hit_latency_reduction_pct": {
+      "candidate": 93.33,
+      "baseline": 93.13
+    },
+    "classification_p50_ms": {
+      "candidate": 0.023,
+      "baseline": 0.02
+    },
+    "fingerprint_warm_p50_ms": {
+      "candidate": 0.118,
+      "baseline": 0.124
+    },
+    "fingerprint_force_p50_ms": {
+      "candidate": 155.888,
+      "baseline": 138.634
+    },
+    "capture_p50_ms": {
+      "candidate": 109.013,
+      "baseline": 65.529
+    },
+    "capture_dropped_chunks": {
+      "candidate": 0.0,
+      "baseline": 0.0
+    },
+    "capture_dispatch_incomplete": {
+      "candidate": 0,
+      "baseline": 0
+    },
+    "singleflight": {
+      "1": {
+        "baseline_p50_ms": 2200.876,
+        "candidate_p50_ms": 2222.538,
+        "baseline_executions": 30,
+        "candidate_executions": 30,
+        "baseline_waiters": 0,
+        "candidate_waiters": 0
+      },
+      "4": {
+        "baseline_p50_ms": 2214.852,
+        "candidate_p50_ms": 2217.997,
+        "baseline_executions": 30,
+        "candidate_executions": 30,
+        "baseline_waiters": 90,
+        "candidate_waiters": 90
+      },
+      "16": {
+        "baseline_p50_ms": 2239.787,
+        "candidate_p50_ms": 2225.1,
+        "baseline_executions": 30,
+        "candidate_executions": 30,
+        "baseline_waiters": 450,
+        "candidate_waiters": 450
+      },
+      "32": {
+        "baseline_p50_ms": 2229.12,
+        "candidate_p50_ms": 2240.884,
+        "baseline_executions": 30,
+        "candidate_executions": 30,
+        "baseline_waiters": 930,
+        "candidate_waiters": 930
+      }
+    },
+    "interpretation": "Candidate cache-hit p50 improved 29.1% (30.491 to 21.622 ms); cache-miss p50 changed -0.6% (2095.399 to 2082.861 ms). Single-flight had one execution and exact waiter counts at all concurrency levels. Capture p50 rose 66.4% (65.529 to 109.013 ms); run variance and dirty candidate tree limit causal claims."
+  },
+  "test_diagnostics": [
+    "Initial batch exposed missing policy in result cache key; fixed _key to include policy.",
+    "Cancellation test exceeded 6s and 10s joins under batch load; isolated runs passed in 4.28s and 4.02s. Increased bounded test join to 15s; final batch passed."
+  ],
+  "process_group_recovery_approval": {
+    "path": "handoff/t15-process-group-recovery-approval.md",
+    "sha256": "17321eca9a6e5481959805888228bce572fba3c8cf93a74ef9831e405faccfa0",
+    "status": "User-approved design; T06-owned implementation pending; no T15 source edit. Persist process_group_id; accept dead leader only if the process group is independently verified alive; reject otherwise, including indeterminate liveness."
+  },
+  "t15_validation_slot_request": {
+    "requested_from": "T20",
+    "status": "pending explicit benchmark assignment",
+    "latest_queue": "No later T15 benchmark assignment received; earlier queue listed T07 then T05.",
+    "exact_command": "$env:PYTHONPATH=(Join-Path (Get-Location) 'src'); python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_benchmark_command_broker.py tests/test_command_cache_singleflight_contract.py tests/test_command_concurrency_contract.py tests/test_project_command_broker.py tests/test_command_streaming.py tests/test_command_transport.py tests/test_command_timeout_cache_contract.py tests/test_command_suppression.py",
+    "result": "not run: no benchmark slot; fresh scoped candidate suites recorded separately",
+    "benchmark_gate": "clean revision-matched baseline/integrated candidate; two hardware profiles; randomized paired order; at least 1000 light samples per concurrency and 30 expensive pairs"
+  },
+  "historical_p95_claim": {
+    "reported_delta_pct": 16.7,
+    "status": "historical and unconfirmed; excluded from current acceptance",
+    "source": "User continuation instruction; no matching +16.7% claim found in attached T15 receipts.",
+    "saved_v1_receipts": {
+      "baseline_path": "handoff/t15-command-broker-baseline.json",
+      "baseline_sha256": "fc2a815971cb2b8f71c9e735eeb3bfa83441a5624f1defe4e780e0df5e0c3ca3",
+      "baseline_worktree_dirty": true,
+      "baseline_head": "a77562e3210a175765eba914baa753f1b6a07c67",
+      "candidate_path": "handoff/t15-command-broker-candidate.json",
+      "candidate_sha256": "b03f83b769b90748bcab89879313b31befa1f837a175e4209f9f54f037d92655",
+      "candidate_worktree_dirty": true,
+      "candidate_head": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+      "harness_sha256": "acf506907113e17f8fd39de282c5e7e9394d8f6e3c553ebc3dc251145da93c2f",
+      "cache_hit_p95_delta_pct": 0.81,
+      "cache_miss_p95_delta_pct": 1.61,
+      "capture_p95_delta_pct": 60.25
+    },
+    "acceptance": "Not validated. Require clean revision-matched T20 benchmark and assigned slot."
+  },
+  "current_dirty_ownership_audit": {
+    "observed_date": "2026-09-30",
+    "head": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+    "commands_py_sha256": "12dde723016cc9d278b03cf0831898af449a766eaa2159f0471cc4fa7457f3b1",
+    "status_paths": [
+      " M docs/PROJECT_CONFIGURATION.md",
+      " M src/local_ai_hub/commands.py",
+      " M src/local_ai_hub/project_config.py",
+      " M src/local_ai_hub/services.py",
+      " M tests/test_project_config.py",
+      " M tests/test_project_config_service_integration.py",
+      " M tests/test_project_path_hints.py",
+      "?? handoff/",
+      "?? tests/test_benchmark_command_broker.py",
+      "?? tests/test_command_cache_singleflight_contract.py",
+      "?? tests/test_command_concurrency_contract.py",
+      "?? tests/test_project_command_broker.py",
+      "?? tools/benchmark_command_broker.py"
+    ],
+    "T15_unambiguous_paths": [
+      "tools/benchmark_command_broker.py",
+      "tests/test_benchmark_command_broker.py",
+      "tests/test_command_cache_singleflight_contract.py",
+      "tests/test_project_command_broker.py"
+    ],
+    "mixed_or_pending_paths": {
+      "src/local_ai_hub/commands.py": "T15 cache/single-flight/capture hunks overlap T06 daemon/process-group/rollback/write-set ownership; keep quarantined pending exact T06 hunk receipt.",
+      "src/local_ai_hub/services.py": "T15 affected_tests/command(run_affected) hunks plus separate T21 repo_search hunk.",
+      "tests/test_command_concurrency_contract.py": "T15 cache/single-flight tests; process-group cases pending T06 confirmation.",
+      "docs/PROJECT_CONFIGURATION.md; src/local_ai_hub/project_config.py; tests/test_project_config.py; tests/test_project_path_hints.py": "Inherited T21/T04/T09 hunk ownership unresolved.",
+      "tests/test_project_config_service_integration.py": "Three T15 run_affected regressions; keep separate from T21 owner-tree tests."
+    },
+    "candidate_state": "Detached dirty T15 candidate at 824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11; inherited changes preserved. No root writes by T15. Current T15-owned symbols/tests are already present in root; no safe missing T15 patch.",
+    "root_observed_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+    "root_test_target": "T20 reported bypass selectors 2 passed in 0.38s after integration; T15 did not run root tests."
+  },
+  "cache_pair_accounting_preparation": {
+    "state": "Prepared in harness v2; AST/static checks only, no pytest or benchmark run.",
+    "report_fields": "stages.cache_pair_order.fixture, stages.cache_pair_order.accounting, stages.cache_pair_order.raw_pairs, stages.concurrent_warm_cache_hits.<workers>.expected_cache_hits, observed_cache_hits, observed_cache_misses, classified_calls, seed_cache_hit, raw_samples[].sample_index, raw_samples[].elapsed_ms, raw_samples[].cache_hit",
+    "outcome_contract": "One forced seed miss is verified but excluded from paired counts. Each pair contributes exactly one reported hit and one reported miss; every concurrent warm sample records its index, elapsed milliseconds, and boolean hit, and its seed reports a miss. Missing/non-boolean classification fails closed.",
+    "acceptance_criteria": "For paired_runs=N, expect N hits and N misses with every per-pair outcome classified. For each workers level, expect light_samples hits, zero misses, classified_calls=light_samples, and seed_cache_hit=false; raw_samples has exactly light_samples index-ordered entries, each with cache_hit=true. The seed is excluded from sample totals. Reported totals must equal these observed outcomes; pair_order_seed and light_samples_per_concurrency enable exact fixture recreation.",
+    "regression_selectors": [
+      "tests/test_benchmark_command_broker.py::test_cache_pairs_use_same_command_and_account_for_each_outcome",
+      "tests/test_benchmark_command_broker.py::test_cache_pairs_reject_missing_cache_outcome",
+      "tests/test_benchmark_command_broker.py::test_cache_outcome_accepts_only_boolean_classification",
+      "tests/test_benchmark_command_broker.py::test_concurrent_cache_receipt_preserves_each_ordered_sample"
+    ],
+    "slot_status": "T20 assigns exclusive slot to T07, then T05. T15 has no assignment; no T15 test/benchmark active."
+  },
+  "current_scoped_receipts": [
+    {
+      "owner": "T15",
+      "candidate_head": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+      "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_project_config_service_integration.py tests/test_project_config.py tests/test_project_path_hints.py tests/test_affected_tests.py",
+      "result": "89 passed in 3.85s",
+      "exit_code": 0,
+      "log_path": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t15-refresh-config_path-20261001.log",
+      "log_sha256": "6b87f80bce4a7f4cfaaad69fc6ef1de2835176e3864405d987a908d506452bcb",
+      "files_sha256": {
+        "src/local_ai_hub/commands.py": "12dde723016cc9d278b03cf0831898af449a766eaa2159f0471cc4fa7457f3b1",
+        "src/local_ai_hub/project_config.py": "eec7e2920ed905e902d3699a5259d19e23ef9d4b7f17a285e160e97f63ec4686",
+        "src/local_ai_hub/services.py": "7394f38919b5f3b421110c6cb88e841d386cc8b6c848c410b501549ab4029add",
+        "tests/test_project_config.py": "7d66e01b9bd24fd66b31ba063deabb6356161952d67732fba60f0a3895eebf92",
+        "tests/test_project_config_service_integration.py": "6af5dc8ac6d575ad4600c7bc9ca6ca01e8a5e039cc52359336d6e19c7a5a1c42",
+        "tests/test_project_path_hints.py": "2dba6145040eb2c20ff74788c88a66bf5a4bd4f6f210e292a2032b925df20dab"
+      }
+    },
+    {
+      "owner": "T15",
+      "candidate_head": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+      "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_benchmark_command_broker.py tests/test_command_cache_singleflight_contract.py tests/test_project_command_broker.py::test_ordinary_command_cache_key_omits_empty_project_context tests/test_project_command_broker.py::test_resolve_project_command_uses_explicit_typed_alias_without_execution tests/test_project_command_broker.py::test_run_project_command_executes_exact_argv_with_safe_env_reference tests/test_project_command_broker.py::test_project_command_environment_values_change_cache_context tests/test_project_command_broker.py::test_unknown_project_command_alias_fails_before_execution tests/test_project_command_broker.py::test_project_command_rejects_unsafe_environment_override_before_execution tests/test_project_command_broker.py::test_string_project_command_is_resolved_exactly_without_runner_guessing tests/test_project_command_broker.py::test_project_command_still_obeys_broker_policy tests/test_command_concurrency_contract.py::test_slow_log_consumer_does_not_block_child_pipes tests/test_command_concurrency_contract.py::test_python_preflight_does_not_write_bytecode tests/test_command_concurrency_contract.py::test_python_preflight_still_reports_syntax_errors tests/test_command_concurrency_contract.py::test_mock_server_port_collision_does_not_claim_running tests/test_command_streaming.py tests/test_command_transport.py tests/test_command_timeout_cache_contract.py tests/test_command_suppression.py",
+      "result": "45 passed in 11.46s",
+      "exit_code": 0,
+      "log_path": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t15-refresh-broker_cache-20261001.log",
+      "log_sha256": "55b3021a09ddeb068b58ff59e02c907c7a2902059baf95a561ce42834b1cff3b",
+      "files_sha256": {
+        "src/local_ai_hub/commands.py": "12dde723016cc9d278b03cf0831898af449a766eaa2159f0471cc4fa7457f3b1",
+        "tests/test_benchmark_command_broker.py": "8a3f2d0358b784a398c0bbd8257af9b0dbfb290f65a840ad13b87f75c19ce35c",
+        "tests/test_command_cache_singleflight_contract.py": "9ed6fb58426b4665e6aa25b5ed8a348dddb24b080dd0d7823d8d52ba2a71209d",
+        "tests/test_command_concurrency_contract.py": "318630b81f53650877d96063ac0181985f668ce560edce660637f13cec67d294",
+        "tests/test_project_command_broker.py": "c59054823d3b6b6189463c870e707b827ce4c2872c4e1758505095f5832c818c"
+      }
+    },
+    {
+      "owner": "T20/root",
+      "root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+      "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_command_cache_singleflight_contract.py::test_bypass_cache_skips_reads_and_does_not_write_results tests/test_command_cache_singleflight_contract.py::test_bypass_cache_does_not_write_suppression_results",
+      "result": "2 passed in 0.38s (T20 reported)",
+      "exit_code": 0,
+      "patch_path": "handoff/t15-root-cache-bypass-guards.patch",
+      "patch_sha256": "93ddaa9b6175108e9e52e17146f31330a301fcdffb9c592faef4044a2f713c02",
+      "root_write_by_T15": false
+    }
+  ],
+  "current_benchmark_status": {
+    "status": "not_run",
+    "reason": "Runbook gate remains unmet: no T15 slot and no clean revision-matched baseline/integrated candidate; functional selectors passed."
+  },
+  "root_integration_inventory": {
+    "observed_root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+    "observed_root_branch": "master",
+    "candidate_head": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+    "candidate_unique_commits": 0,
+    "root_ahead_commits": 4,
+    "result": "T15-owned functions/tests already present; no safe missing patch. Root method differences and mixed files remain owner-specific. T20 reports bypass-guard patch integrated with two focused selectors passing.",
+    "stale_patch_path": "handoff/t15-root-compatible.patch",
+    "stale_patch_sha256": "fcce360431c14d5e608946d792847cb9b7700ccff11fd5edcb8b9169e8cb198c",
+    "stale_patch_current_apply_check": "fails on current root context; not applied; patch files partly already present",
+    "bypass_patch_path": "handoff/t15-root-cache-bypass-guards.patch",
+    "bypass_patch_sha256": "93ddaa9b6175108e9e52e17146f31330a301fcdffb9c592faef4044a2f713c02",
+    "root_tests_reported_by_T20": "2 passed in 0.38s"
+  },
+  "benchmark_workflow": {
+    "status": "prepared_not_run",
+    "runbook_path": "handoff/t15-benchmark-runbook.md",
+    "runbook_sha256": "174646938834bc4a22bebe7942c6b44af8e0beeb68c1d3d27521c17704ef2a7b",
+    "current_harness_sha256": "8aef9b315b44b1a15bad0a52b79213f2f4a319e6bcd84dda240778f2c32930ab",
+    "static_harness_contract": {
+      "clean_harness_required": true,
+      "clean_source_and_execution_required": true,
+      "source_head_must_equal_execution_head": true,
+      "source_harness_execution_identity_rechecked_after_run": true,
+      "fresh_temp_sqlite_state_per_invocation": true,
+      "forced_seed_miss_excluded_from_pair_counts": true,
+      "raw_measurements_and_environment_recorded": true,
+      "output_must_be_outside_harness_and_execution_roots": true
+    },
+    "historical_reports_invalid_for_acceptance": {
+      "baseline_sha256": "fc2a815971cb2b8f71c9e735eeb3bfa83441a5624f1defe4e780e0df5e0c3ca3",
+      "candidate_sha256": "b03f83b769b90748bcab89879313b31befa1f837a175e4209f9f54f037d92655",
+      "baseline_head": "a77562e3210a175765eba914baa753f1b6a07c67",
+      "candidate_head": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+      "both_worktrees_dirty": true,
+      "both_commands_sha256_differ": true,
+      "recorded_harness_sha256": "acf506907113e17f8fd39de282c5e7e9394d8f6e3c553ebc3dc251145da93c2f",
+      "current_harness_sha256": "8aef9b315b44b1a15bad0a52b79213f2f4a319e6bcd84dda240778f2c32930ab"
+    },
+    "run_design": {
+      "hardware_profiles_required": 2,
+      "blocks_per_profile": 15,
+      "light_samples_per_concurrency_per_invocation": 67,
+      "paired_runs_per_invocation": 2,
+      "pooled_light_samples_per_concurrency_per_arm": 1005,
+      "pooled_expensive_pairs_per_arm": 30,
+      "baseline_candidate_arm_order": "balanced seeded schedule per profile",
+      "fresh_cache": "one TemporaryDirectory state per CLI invocation"
+    },
+    "not_run_reason": "T20 confirmed baseline pin 824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11. Integrated candidate and clean harness pins, exclusive CPU/root test slots, and second hardware profile remain unassigned; do not run benchmark/tests.",
+    "receipt_checks": [
+      "clean pinned baseline/candidate/harness",
+      "same harness script SHA",
+      "source SHA stable per arm",
+      "same config fingerprint and environment profile",
+      "balanced scheduled arm order matches report timestamps",
+      "fresh cache hit/miss accounting",
+      "67 samples per invocation/concurrency",
+      "15 blocks -> 1005 samples and 30 expensive pairs per arm",
+      "JSON report and command log SHA receipts"
+    ],
+    "synthetic_receipt_preflight": [
+      {
+        "profile": "profile-a",
+        "fixture_kind": "synthetic-only; not benchmark evidence",
+        "report_log_pairs": 30,
+        "validator_exit_code": 0,
+        "receipt_sha256": "b6d5a65e98936b28ae942713281c2afec08c4e87055863cbf984224d51a5ae23",
+        "validator_log_sha256": "54e1ed88d6ebcc18cd0844535ca51574e7fbff7872a080f091243eb908f19d76",
+        "fixture_dir": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t15-receipt-preflight-1hu3tkqh"
+      },
+      {
+        "profile": "profile-b",
+        "fixture_kind": "synthetic-only; not benchmark evidence",
+        "schedule_seed": 20261002,
+        "report_log_pairs": 30,
+        "validator_exit_code": 0,
+        "receipt_sha256": "2229733146573323f4e383bd58af860a4f6c44abf70b415d94eb01074ef29fb2",
+        "validator_log_sha256": "ea0fde71b888583ed3063a6bf7055a18edcfe4a50d0952b8b38d70ce5fedf695",
+        "fixture_dir": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t15-receipt-preflight-b-clze7407"
+      }
+    ],
+    "prerequisite_audit": {
+      "root_head": "98a9a1a7611af574caf20e0f88620c4aa3eb2e918a",
+      "root_dirty_path_count": 245,
+      "candidate_head": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+      "candidate_dirty_path_count": 13,
+      "candidate_commit_object_exists": true,
+      "historical_baseline_report_head": "a77562e3210a175765eba914baa753f1b6a07c67",
+      "historical_baseline_commit_object_exists_in_current_root": false,
+      "current_harness_sha256": "8aef9b315b44b1a15bad0a52b79213f2f4a319e6bcd84dda240778f2c32930ab",
+      "current_harness_worktree_clean": false,
+      "integrated_clean_candidate_sha_assigned": false,
+      "clean_harness_sha_assigned": false,
+      "second_hardware_profile_assigned": false,
+      "exclusive_T20_root_test_slot_assigned": false,
+      "active_pytest_processes_observed": 1,
+      "active_process_command": "python -B -m pytest -x -q -p no:cacheprovider --tb=short",
+      "t15_benchmark_processes_observed": 0,
+      "t15_tests_or_benchmarks_launched_in_preflight": false,
+      "legitimate_baseline_candidate": {
+        "sha": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+        "source": "T15 manifest base_head",
+        "commit_object_exists": true,
+        "root_merge_base": true,
+        "root_merge_base_sha": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+        "clean_commit_tree": true,
+        "commands_blob_sha256": "fdcf5432b154ff1ea2690bfe01016785c6dea85bda2b2f9a002e1a5e88cbb9ad",
+        "benchmark_harness_in_tree": false,
+        "t20_confirmation_pending": false,
+        "t20_confirmation": "T20 confirmed 824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11 as baseline candidate.",
+        "clean_execution_worktree_created": false
+      }
+    },
+    "exact_candidate_command": "python -B tools/benchmark_command_broker.py --root $ExecutionRoot --light-samples 67 --paired-runs 2 --pair-order-seed $PairSeed --output $Output",
+    "t20_baseline_confirmation": {
+      "sha": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+      "confirmed": true,
+      "commands_blob_sha256": "fdcf5432b154ff1ea2690bfe01016785c6dea85bda2b2f9a002e1a5e88cbb9ad",
+      "clean_worktree_created": false
+    },
+    "exact_candidate_command_profile_a_block_01": "python -B tools/benchmark_command_broker.py --root $Candidate --light-samples 67 --paired-runs 2 --pair-order-seed 41001 --output (Join-Path $Evidence 'profile-a-block-01-candidate.json')",
+    "exact_baseline_command_profile_a_block_01": "python -B tools/benchmark_command_broker.py --root $Baseline --light-samples 67 --paired-runs 2 --pair-order-seed 41001 --output (Join-Path $Evidence 'profile-a-block-01-baseline.json')",
+    "pin_preflight_artifact": {
+      "path": "handoff/t15-benchmark-pin-preflight.json",
+      "sha256": "a6320aedbf920cb0850cceea6615893d4709ab9844a0953a27614b425279709e",
+      "type": "immutable commit pin evidence; no worktree/benchmark receipt"
+    },
+    "latest_preflight_snapshot": {
+      "date": "2026-10-01",
+      "root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+      "root_dirty_path_count": 251,
+      "candidate_head": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+      "candidate_dirty_path_count": 13,
+      "current_harness_sha256": "8aef9b315b44b1a15bad0a52b79213f2f4a319e6bcd84dda240778f2c32930ab",
+      "harness_tracked": false,
+      "active_benchmark_processes_observed": 0,
+      "benchmark_process_query": "Get-CimInstance Win32_Process -Filter \"Name=python.exe\" filtered to benchmark_command_broker.py; snapshot returned 0",
+      "benchmark_launched_by_t15": false,
+      "candidate_or_harness_clean_pin_received": false,
+      "exclusive_cpu_slot_received": false,
+      "second_hardware_profile_received": false,
+      "measurement_status": "pending"
+    },
+    "root_current_snapshot": {
+      "date": "2026-10-01",
+      "root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+      "root_dirty_path_count": 256,
+      "root_current_file_sha256": {
+        "src/local_ai_hub/commands.py": "a242c5571f8bf75037b9d621a6f81a84d8ae046634694a460527292868318a8a",
+        "src/local_ai_hub/project_config.py": "6050453fa90c83f0282c4dd2588cac4454b5187f9c85521cf7aabf089e41c832",
+        "src/local_ai_hub/services.py": "3396d00de2ae5e382c70244243ca979efc40d2a8f8b4683dd0a61099e245d346",
+        "tests/test_command_concurrency_contract.py": "92d841f2b22d8d9480df0cf3189164ed86a4981cf8d4492f5735c73236e219a7",
+        "tests/test_project_command_broker.py": "169f086607ccd725c6514b15bc6a54baf66e9f6c096395801b6f0beaa23b8728",
+        "tools/benchmark_command_broker.py": "ad99e187f625eeebac64ff7d71be34ca63e850959e7ea4879ab62eb65b55aff0"
+      },
+      "root_harness_tracked": false,
+      "candidate_head": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+      "candidate_dirty_path_count": 14,
+      "candidate_current_file_sha256": {
+        "src/local_ai_hub/commands.py": "1fe384b1f5498a8736c76c89974ace103cfe94f780aaa75b4022cc9893bbbcf0",
+        "src/local_ai_hub/project_config.py": "eec7e2920ed905e902d3699a5259d19e23ef9d4b7f17a285e160e97f63ec4686",
+        "src/local_ai_hub/services.py": "7394f38919b5f3b421110c6cb88e841d386cc8b6c848c410b501549ab4029add",
+        "tests/test_command_concurrency_contract.py": "fa895efb5f631dc2248233a41b006b7913111527911334cf198d3b082d09734d",
+        "tests/test_project_command_broker.py": "c59054823d3b6b6189463c870e707b827ce4c2872c4e1758505095f5832c818c",
+        "tools/benchmark_command_broker.py": "36c4f8eb8084f237683271c4fa12222717909fe5a0207c16e89384c7dddbca8f",
+        "tests/test_benchmark_command_broker.py": "25b33ea6e03851175207e87296314991d3eee22c132933d717dd43f166f6d810",
+        "tools/prepare_command_broker_fixtures.py": "4c83e5472c55c790e8f767bf4f54aeadc5024bf76f4299cf0fdb581b70255a74"
+      },
+      "candidate_harness_tracked": false,
+      "t02_exclusive_slot": "T02 waiting for slot; no T02 run active in observed owner update; T15 must not launch tests or benchmarks during that slot",
+      "t15_root_writes": false,
+      "t15_tests_or_benchmarks_run_this_continuation": false,
+      "clean_integrated_candidate_or_harness_pin_assigned": false,
+      "exclusive_t15_benchmark_slot_assigned": false,
+      "second_hardware_profile_assigned": false,
+      "root_harness_same_as_candidate_after_newline_normalization": true,
+      "candidate_harness_line_endings": "LF",
+      "root_harness_line_endings": "CRLF",
+      "candidate_harness_sha256": "e8fad3f7fa40c8472b14c71ae1b9999e9a68dc9a801294cf5db17305101f67eb",
+      "root_harness_sha256": "ad99e187f625eeebac64ff7d71be34ca63e850959e7ea4879ab62eb65b55aff0"
+    },
+    "continuation_status": {
+      "benchmark_launched": false,
+      "benchmark_gate": "wait for T20 source pins and dedicated T02 slot; no test, benchmark, or fixture generation until release",
+      "synthetic_receipts_are_measurements": false,
+      "historical_full_reports_accepted": false,
+      "tests_launched": false,
+      "fixtures_generated": false
+    },
+    "candidate_dispatch_optimization": {
+      "title": "Event-driven command log dispatcher shutdown",
+      "diagnosis": "The previous dispatcher polled Queue.get(timeout=0.05) after pipe readers completed. Existing candidate-only capture p50/p95 was 109.013/110.824 ms; historical reports are invalid for acceptance.",
+      "implementation": "Use blocking Queue.get plus a non-blocking None sentinel after both readers finish. If the bounded queue is full, drain queued callbacks then exit when readers_done is set and queue is empty.",
+      "owned_paths": [
+        "src/local_ai_hub/commands.py capture dispatcher hunk",
+        "tests/test_command_concurrency_contract.py T15 dispatcher test"
+      ],
+      "regression_test": "test_log_dispatcher_waits_for_queue_signal_without_polling",
+      "test_status": "written, not run; T02 shared-slot gate",
+      "TDD_status": "test written before implementation; RED/GREEN runs deferred by explicit no-test slot gate",
+      "bench_target": "stages.dual_stream_capture.wall_ms; compare paired baseline/candidate p50/p95, verify dropped_chunks=0, dispatch_incomplete=false, callback bytes equal captured output",
+      "benchmark_status": "not run; wait for T02 slot release and T20 clean pin/profile assignment",
+      "root_written": false,
+      "candidate_sha256": "1fe384b1f5498a8736c76c89974ace103cfe94f780aaa75b4022cc9893bbbcf0",
+      "test_sha256": "fa895efb5f631dc2248233a41b006b7913111527911334cf198d3b082d09734d"
+    },
+    "schema": "t15-command-broker-benchmark-v3",
+    "fixture_generator_sha256": "4c83e5472c55c790e8f767bf4f54aeadc5024bf76f4299cf0fdb581b70255a74",
+    "fixture_matrix": {
+      "files_per_repo": [
+        100,
+        10000,
+        100000
+      ],
+      "repos_per_profile": 6,
+      "generator_run": false,
+      "source_commit_parent_pinned": true
+    },
+    "candidate_hashes": {
+      "src/local_ai_hub/commands.py": "1fe384b1f5498a8736c76c89974ace103cfe94f780aaa75b4022cc9893bbbcf0",
+      "tests/test_command_concurrency_contract.py": "fa895efb5f631dc2248233a41b006b7913111527911334cf198d3b082d09734d",
+      "tests/test_benchmark_command_broker.py": "25b33ea6e03851175207e87296314991d3eee22c132933d717dd43f166f6d810",
+      "tools/benchmark_command_broker.py": "8aef9b315b44b1a15bad0a52b79213f2f4a319e6bcd84dda240778f2c32930ab",
+      "tools/prepare_command_broker_fixtures.py": "4c83e5472c55c790e8f767bf4f54aeadc5024bf76f4299cf0fdb581b70255a74"
+    },
+    "candidate_dirty_paths": 14
+  },
+  "t15_root_test_slot_request": {
+    "requested_from": "T20",
+    "status": "pending_explicit_slot",
+    "requested_selectors": [
+      "tests/test_project_command_broker.py",
+      "tests/test_command_cache_singleflight_contract.py",
+      "tests/test_benchmark_command_broker.py"
+    ],
+    "instruction": "Do not run root tests until T20 confirms exclusive slot and checks no competing root pytest/release validation.",
+    "latest_observed_status": "T20 reports root fail-fast suite running; no T15 slot assigned. No T15 root test started."
+  },
+  "security_review": {
+    "scope": "project-command ingress and cache-bypass guards in the T15 candidate; read-only source review",
+    "static_review": "no finding in reviewed paths",
+    "checks": [
+      "alias and argument bounds; project-root containment",
+      "structured argv validation with shell=False",
+      "blocked environment keys, NUL rejection, entry and byte limits",
+      "project commands routed through normal broker policy",
+      "project config and environment included in cache context",
+      "bypass_cache skips cache reads and result/suppression writes"
+    ],
+    "candidate_receipts": [
+      {
+        "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_project_config_service_integration.py tests/test_project_config.py tests/test_project_path_hints.py tests/test_affected_tests.py",
+        "result": "89 passed in 3.85s",
+        "exit_code": 0,
+        "log_sha256": "6b87f80bce4a7f4cfaaad69fc6ef1de2835176e3864405d987a908d506452bcb",
+        "source_hashes_match_current_candidate": true
+      },
+      {
+        "command": "python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_benchmark_command_broker.py tests/test_command_cache_singleflight_contract.py plus the scoped project-command, streaming, transport, timeout-cache, suppression selectors listed in handoff",
+        "result": "45 passed in 11.46s",
+        "exit_code": 0,
+        "log_sha256": "55b3021a09ddeb068b58ff59e02c907c7a2902059baf95a561ce42834b1cff3b",
+        "source_hashes_match_current_candidate": true
+      }
+    ],
+    "gaps": [
+      "POSIX process-group and PermissionError behavior not verified on this Windows host; T06 owns that acceptance.",
+      "Root working tree has newer dirty source hashes than prior T20 root-test receipt; no root tests repeated by T15.",
+      "This is source review plus existing test receipts, not complete release acceptance."
+    ],
+    "candidate_head": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+    "candidate_dirty_paths": 13,
+    "root_current_snapshot": {
+      "date": "2026-10-01",
+      "root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+      "root_dirty_path_count": 256,
+      "root_current_file_sha256": {
+        "src/local_ai_hub/commands.py": "a242c5571f8bf75037b9d621a6f81a84d8ae046634694a460527292868318a8a",
+        "src/local_ai_hub/project_config.py": "6050453fa90c83f0282c4dd2588cac4454b5187f9c85521cf7aabf089e41c832",
+        "src/local_ai_hub/services.py": "3396d00de2ae5e382c70244243ca979efc40d2a8f8b4683dd0a61099e245d346",
+        "tests/test_command_concurrency_contract.py": "92d841f2b22d8d9480df0cf3189164ed86a4981cf8d4492f5735c73236e219a7",
+        "tests/test_project_command_broker.py": "169f086607ccd725c6514b15bc6a54baf66e9f6c096395801b6f0beaa23b8728",
+        "tools/benchmark_command_broker.py": "ad99e187f625eeebac64ff7d71be34ca63e850959e7ea4879ab62eb65b55aff0"
+      },
+      "root_harness_tracked": false,
+      "candidate_head": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+      "candidate_dirty_path_count": 14,
+      "candidate_current_file_sha256": {
+        "src/local_ai_hub/commands.py": "1fe384b1f5498a8736c76c89974ace103cfe94f780aaa75b4022cc9893bbbcf0",
+        "src/local_ai_hub/project_config.py": "eec7e2920ed905e902d3699a5259d19e23ef9d4b7f17a285e160e97f63ec4686",
+        "src/local_ai_hub/services.py": "7394f38919b5f3b421110c6cb88e841d386cc8b6c848c410b501549ab4029add",
+        "tests/test_command_concurrency_contract.py": "fa895efb5f631dc2248233a41b006b7913111527911334cf198d3b082d09734d",
+        "tests/test_project_command_broker.py": "c59054823d3b6b6189463c870e707b827ce4c2872c4e1758505095f5832c818c",
+        "tools/benchmark_command_broker.py": "36c4f8eb8084f237683271c4fa12222717909fe5a0207c16e89384c7dddbca8f",
+        "tests/test_benchmark_command_broker.py": "25b33ea6e03851175207e87296314991d3eee22c132933d717dd43f166f6d810",
+        "tools/prepare_command_broker_fixtures.py": "4c83e5472c55c790e8f767bf4f54aeadc5024bf76f4299cf0fdb581b70255a74"
+      },
+      "candidate_harness_tracked": false,
+      "t02_exclusive_slot": "T02 waiting for slot; no T02 run active in observed owner update; T15 must not launch tests or benchmarks during that slot",
+      "t15_root_writes": false,
+      "t15_tests_or_benchmarks_run_this_continuation": false,
+      "clean_integrated_candidate_or_harness_pin_assigned": false,
+      "exclusive_t15_benchmark_slot_assigned": false,
+      "second_hardware_profile_assigned": false,
+      "root_harness_same_as_candidate_after_newline_normalization": true,
+      "candidate_harness_line_endings": "LF",
+      "root_harness_line_endings": "CRLF",
+      "candidate_harness_sha256": "e8fad3f7fa40c8472b14c71ae1b9999e9a68dc9a801294cf5db17305101f67eb",
+      "root_harness_sha256": "ad99e187f625eeebac64ff7d71be34ca63e850959e7ea4879ab62eb65b55aff0"
+    }
+  },
+  "performance_change": {
+    "title": "Event-driven command log dispatcher shutdown",
+    "diagnosis": "The previous dispatcher polled Queue.get(timeout=0.05) after pipe readers completed. Existing candidate-only capture p50/p95 was 109.013/110.824 ms; historical reports are invalid for acceptance.",
+    "implementation": "Use blocking Queue.get plus a non-blocking None sentinel after both readers finish. If the bounded queue is full, drain queued callbacks then exit when readers_done is set and queue is empty.",
+    "owned_paths": [
+      "src/local_ai_hub/commands.py capture dispatcher hunk",
+      "tests/test_command_concurrency_contract.py T15 dispatcher test"
+    ],
+    "regression_test": "test_log_dispatcher_waits_for_queue_signal_without_polling",
+    "test_status": "written, not run; T02 shared-slot gate",
+    "TDD_status": "test written before implementation; RED/GREEN runs deferred by explicit no-test slot gate",
+    "bench_target": "stages.dual_stream_capture.wall_ms; compare paired baseline/candidate p50/p95, verify dropped_chunks=0, dispatch_incomplete=false, callback bytes equal captured output",
+    "benchmark_status": "not run; wait for T02 slot release and T20 clean pin/profile assignment",
+    "root_written": false,
+    "candidate_sha256": "1fe384b1f5498a8736c76c89974ace103cfe94f780aaa75b4022cc9893bbbcf0",
+    "test_sha256": "fa895efb5f631dc2248233a41b006b7913111527911334cf198d3b082d09734d"
+  },
+  "master_plan_audit": {
+    "plan_path": "docs/superpowers/plans/2026-09-22-hub-quality-performance-master-plan.md",
+    "plan_sha256": "d7e038d312cea0f26da2a172378c982ec7047f08ceb57f353c27d5699743e36e",
+    "criteria": {
+      "correctness": "§2 requires positive, invalid, and feature-disabled contracts; no success=true without a real result.",
+      "performance": "§2 requires >=25% p95 or peak-memory gain for a proven bottleneck; unexplained warm/cold p95 or p99 regression >10% blocks.",
+      "cache": "§2 requires 100% invalidation coverage across content/revision/config/model/identity and no duplicate single-flight work.",
+      "fixtures": "§3.1 requires synthetic repos with 100/10,000/100,000 files and p50/p95/p99, throughput, memory, bytes, and error-rate measurements."
+    },
+    "validation": {
+      "candidate_receipts_pre_patch": [
+        "valid alias/argv",
+        "unknown alias",
+        "unsafe environment override",
+        "policy blocking",
+        "Python preflight valid syntax",
+        "Python preflight invalid syntax"
+      ],
+      "feature_disabled_command_broker_test_found": false,
+      "new_positive_invalid_preflight_latency_fixture": "prepared in schema v3 harness; not run",
+      "classification_candidate_only_ms": {
+        "n": 500,
+        "p50": 0.02,
+        "p95": 0.024,
+        "p99": "not present in old microprofile"
+      }
+    },
+    "streaming": {
+      "fixture": "2,000 lines each on stdout and stderr",
+      "acceptance_checks": [
+        "callback bytes equal captured stdout/stderr bytes",
+        "zero dropped chunks",
+        "dispatch_incomplete=false"
+      ],
+      "prior_candidate_only_ms_before_dispatcher_change": {
+        "n": 4,
+        "p50": 92.493,
+        "p95": 93.061,
+        "p99": "not present in old microprofile"
+      },
+      "new_dispatcher_regression_test": "written_not_run"
+    },
+    "comparison": {
+      "paired_baseline_candidate_receipt": "missing; historical full reports dirty and stale harness",
+      "p95_threshold": ">=25% gain",
+      "regression_threshold": "no unexplained p95/p99 regression >10%",
+      "peak_rss_measured": false
+    },
+    "fixture_matrix": {
+      "file_counts": [
+        100,
+        10000,
+        100000
+      ],
+      "generator": "tools/prepare_command_broker_fixtures.py",
+      "generator_sha256": "4c83e5472c55c790e8f767bf4f54aeadc5024bf76f4299cf0fdb581b70255a74",
+      "generated": false,
+      "requires": "T20 baseline/candidate pins and dedicated T02 slot"
+    },
+    "overall_status": "PARTIAL_NOT_VERIFIED",
+    "no_tests_or_benchmarks_run_this_continuation": false,
+    "root_current_parity": "Four direct current-root probes passed. Candidate parity tests passed 4; root pytest and paired benchmark remain pending.",
+    "current_continuation": {
+      "candidate_test_result": "114 passed in 19.61s after final cache change",
+      "microbenchmark": "7 paired CPU blocks; descriptive only, acceptance=false",
+      "root_pytest": "not run",
+      "root_current_project_config_probe": "stale; hash drift recorded"
+    }
+  },
+  "t15_selector_status": {
+    "selector": "tools/benchmark_command_broker.py",
+    "acceptance_stage": "stages.dual_stream_capture.wall_ms",
+    "control_stage": "stages.dual_stream_capture_without_callback.wall_ms",
+    "exact_arguments": "--light-samples 67 --paired-runs 2 --pair-order-seed <41000 + block> --output <unique external JSON path>",
+    "target": "paired clean baseline vs T20-integrated candidate; same harness, per-profile/per-cohort, 15 matched blocks",
+    "warmup": "No discarded warm-up loop. Fresh temporary SQLite state per invocation; one forced seed miss excluded from cache-pair totals; one normal seed miss before 67 classified warm hits at each concurrency 1,4,16,32.",
+    "per_arm_profile_cohort_counts": {
+      "stream_samples": 30,
+      "paired_cache_hits": 30,
+      "paired_cache_misses": 30,
+      "warm_hits_per_concurrency": 1005,
+      "preflight_valid_and_invalid_samples_each": 1005
+    },
+    "historical_reports": [
+      {
+        "path": "handoff/t15-command-broker-baseline.json",
+        "git_head": "a77562e3210a175765eba914baa753f1b6a07c67",
+        "working_tree_dirty": true,
+        "source_worktree_dirty": true,
+        "benchmark_script_sha256": "acf506907113e17f8fd39de282c5e7e9394d8f6e3c553ebc3dc251145da93c2f",
+        "has_cache_pair_accounting": false
+      },
+      {
+        "path": "handoff/t15-command-broker-candidate.json",
+        "git_head": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+        "working_tree_dirty": true,
+        "source_worktree_dirty": true,
+        "benchmark_script_sha256": "acf506907113e17f8fd39de282c5e7e9394d8f6e3c553ebc3dc251145da93c2f",
+        "has_cache_pair_accounting": false
+      }
+    ],
+    "valid_paired_receipts_exist": false,
+    "slot_status": "No T15 slot assigned; one process snapshot found no benchmark or fixture-generation process. No slot release API available in this task.",
+    "rollback_boundary": "Only isolated T15 queue-dispatcher commit; restore 50 ms polling. Never reset mixed commands.py or revert T06/cache/policy hunks.",
+    "security_boundary": "No command-policy/security behavior change intended. T06 POSIX process-group, PermissionError, and recovery acceptance excluded.",
+    "tests_or_benchmarks_run": false
+  },
+  "consumer_acceptance_receipt": {
+    "path": "handoff/t15-consumer-behavior-receipt.json",
+    "sha256": "dd4d615797f77ff14b2871095ce19525da1d693cb6e41a113addaafa5549387a",
+    "status": "bounded_candidate_behavior_pass",
+    "root_written": false,
+    "T06_owned_seams_touched": false,
+    "tests_or_benchmarks_run_this_continuation": false
+  },
+  "annotation_type_fix": {
+    "path": "tools/benchmark_command_broker.py",
+    "previous_sha256": "36c4f8eb8084f237683271c4fa12222717909fe5a0207c16e89384c7dddbca8f",
+    "current_sha256": "8aef9b315b44b1a15bad0a52b79213f2f4a319e6bcd84dda240778f2c32930ab",
+    "change": "TYPE_CHECKING-only import for CommandBroker annotations; no runtime import side effect",
+    "ast_parse": "PASS",
+    "tests_run": false,
+    "benchmark_run": false,
+    "root_write": false
+  },
+  "root_current_parity_receipt": {
+    "path": "handoff/t15-root-current-parity-receipt.json",
+    "sha256": "17f63338dd87a8db69c88955847f8959d5e737d7349bfa39ea05e806e7b3674f",
+    "root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+    "root_dirty_path_count": 279,
+    "direct_probe_count": 4,
+    "candidate_test_receipts": "4 passed across two scoped invocations; root pytest pending T20 slot",
+    "benchmark": "pending; not run",
+    "root_written": false,
+    "temporary_fixture": "residue and review disposition recorded in receipt",
+    "root_dirty_path_count_after_probes": 271,
+    "root_tracked_hashes_unchanged": true,
+    "root_direct_behavior_freshness": "STALE for root project_config.py and services.py drift."
+  },
+  "candidate_full_parity_validation": {
+    "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_project_config.py tests/test_project_config_worktrees.py tests/test_project_command_broker.py tests/test_project_config_service_integration.py tests/test_project_path_hints.py tests/test_command_streaming.py tests/test_t15_root_parity_acceptance.py tests/test_new_capabilities_and_hardening.py::test_13_mock_recorder_and_replayer tests/test_command_network_safety.py::test_replay_mock_rejects_cassette_path_traversal tests/test_command_network_safety.py::test_replay_mock_rejects_oversized_cassette",
+    "result": "114 passed in 19.61s",
+    "exit_code": 0,
+    "commands_py_sha256": "bfbcab237130e44a58c2aaf54105d9e6ea737b4953f954cb2b962674989309fc",
+    "test_project_command_broker_sha256": "076d523c49c12ea222fafdcefb41787836a1d45393e828f79c51f4928f96eb8c",
+    "parity_test_sha256": "5ff44f13e0ff706a64d607e293dd6900e14906dec89b850f7a963214f1260e76"
+  },
+  "candidate_config_microbenchmark": {
+    "path": "handoff/t15-config-parity-microbench.json",
+    "sha256": "46180794e458d14c7d383685b656c84176793f4cca859dd47154da47f94fee11",
+    "harness": "tools/t15_config_parity_microbench.py",
+    "harness_sha256": "d98a711534b6165196331605558a14a6d28cbf4d4c12b480d8c1dca469564720",
+    "command": "python -B tools/t15_config_parity_microbench.py",
+    "pairs": 7,
+    "root_median_ms": 130.5709,
+    "candidate_median_ms": 153.1228,
+    "acceptance": false,
+    "root_pytest": false,
+    "tracing": false,
+    "scope": "same temp config and static Python CPU command; no GPU, network, or shared ports",
+    "currentness": "Historical pre-cache candidate and pre-latest-root source; not current acceptance. No paired timing repeated after source changes."
+  },
+  "t15_large_performance_slot_request": {
+    "target_thread_id": "01a0d322-b3bd-7930-b552-14e9b7020fec",
+    "sent_via": "main handoff",
+    "status": "request sent; waiting for concrete slot"
+  },
+  "candidate_resolver_cpu_probe": {
+    "scope": "one actual candidate CommandBroker._resolve_project_command invocation on a non-Git temporary project; instrumentation counted stage calls; no repeated loop or saved raw paths",
+    "total_wall_ms": 129.572,
+    "total_process_cpu_ms": 15.625,
+    "stages": {
+      "git_common_dir": {
+        "calls": 1,
+        "wall_ms": 127.9788,
+        "cpu_ms": 15.625,
+        "operation": "git rev-parse --git-common-dir"
+      },
+      "resolve_config_layers": {
+        "calls": 1,
+        "wall_ms": 0.8929
+      },
+      "config_file_read": {
+        "calls": 1,
+        "wall_ms": 0.2277
+      },
+      "config_path_validation": {
+        "calls": 1,
+        "wall_ms": 0.2878
+      },
+      "path_resolve": {
+        "calls": 8,
+        "wall_ms": 1.1707
+      },
+      "path_exists": {
+        "calls": 2,
+        "wall_ms": 0.1471
+      },
+      "subprocess_run": {
+        "calls": 1
+      }
+    },
+    "pathnames_persisted": false,
+    "conclusion": "The single Git identity subprocess dominated this non-Git fixture; parsing and Path.resolve were sub-millisecond/low-ms."
+  },
+  "candidate_resolver_cache": {
+    "path": "src/local_ai_hub/commands.py",
+    "sha256": "bfbcab237130e44a58c2aaf54105d9e6ea737b4953f954cb2b962674989309fc",
+    "cache": "per-broker bounded LRU; 64 entries; in memory only",
+    "key": "hashed canonical project-root identity, actual overlay-file signatures, exact Git HEAD and Git metadata signatures; no state-directory or raw path key",
+    "invalidation_tests": [
+      "project config signature change forces a fresh resolution",
+      "Git HEAD revision change forces a fresh resolution"
+    ],
+    "environment": "host environment references are read every invocation; cached settings do not cache resolved host values",
+    "persistence": "no cache files/database writes; raw project paths are not cache keys; no PATH mutation",
+    "scope": "_resolve_project_command/config wrapper only; T06 daemon recovery, run/mint, rollback, and write-set seams untouched"
+  },
+  "candidate_cache_TDD_receipts": {
+    "red": "2 failed in 1.17s before implementation: both showed Git common-dir resolver called twice instead of once on unchanged input",
+    "green": "2 passed in 1.38s after bounded cache implementation"
+  }
+}
