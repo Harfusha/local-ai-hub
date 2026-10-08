@@ -79,3 +79,16 @@ def test_user_event_named_stream_gap_is_not_treated_as_retention_metadata(tmp_pa
     assert "id: 1\nevent: stream.gap" in output
     assert '"payload":{"step":1}' in output
     assert handler.stream_result is True
+
+
+def test_filtered_page_advances_cursor_only_after_processing_the_page(tmp_path, monkeypatch):
+    store = AgentStateStore(tmp_path / "events.sqlite3")
+    for seq in range(1, 6):
+        store.append(AgentEvent.create("task-1", "task.progress", {"step": seq}, f"k{seq}"))
+    handler = _handler(store, monkeypatch)
+    handler._stream_agent_events(stream_id="task-1", kind="task.done", after_seq=0, timeout=0.001)
+    output = handler.wfile.getvalue().decode()
+    assert [line for line in output.splitlines() if line.startswith("id: ")] == ["id: 5"]
+    assert "event: task.progress" not in output
+    assert "id: 5\nevent: replay_page" in output
+    assert handler.stream_result is True
