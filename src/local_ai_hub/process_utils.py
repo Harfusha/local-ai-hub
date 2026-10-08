@@ -16,7 +16,7 @@ import tempfile
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 
 _LOW_PRIORITY_VALUES = {"idle", "below_normal", "normal"}
@@ -699,7 +699,11 @@ def process_executable(pid: int) -> str | None:
 
 
 def terminate_tree(
-    pid: int, *, process_group: int | None = None, grace_seconds: float = 5.0
+    pid: int,
+    *,
+    process_group: int | None = None,
+    expected_identity: Mapping[str, Any] | None = None,
+    grace_seconds: float = 5.0,
 ) -> bool:
     if pid <= 0:
         return True
@@ -738,6 +742,26 @@ def terminate_tree(
     if group_id <= 0:
         return False
 
+    if (
+        not isinstance(expected_identity, Mapping)
+        or isinstance(expected_identity.get("pid"), bool)
+        or expected_identity.get("pid") != pid
+        or expected_identity.get("creation_identity") is None
+    ):
+        return False
+
+    def leader_still_owned() -> bool:
+        try:
+            return (
+                process_identity(pid) == expected_identity
+                and os.getpgid(pid) == group_id
+            )
+        except (AttributeError, OSError, TypeError, ValueError):
+            return False
+
+    if not leader_still_owned():
+        return False
+
     try:
         os.killpg(group_id, signal.SIGTERM)
     except ProcessLookupError:
@@ -752,8 +776,11 @@ def terminate_tree(
             break
         time.sleep(min(0.05, remaining))
 
-    # Escalate only while the same numeric group is still verifiably present.
-    # ESRCH means it disappeared; EPERM or any other error is unverifiable.
+    # Presence alone does not prove this is still the original group: a PGID
+    # can be reused while waiting. Escalate only while its original leader
+    # still has the identity captured immediately after spawn.
+    if not leader_still_owned():
+        return False
     try:
         os.killpg(group_id, 0)
     except ProcessLookupError:
@@ -898,6 +925,8 @@ def run_hidden(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProces
     process: subprocess.Popen[Any] | None = None
     try:
         process = subprocess.Popen(command, **opts)
+        if os.name != "nt":
+            process._local_ai_process_identity = process_identity(process.pid)
         if job_handle:
             process._local_ai_job_handle = job_handle
             if not assign_process_to_job(job_handle, process.pid):
@@ -1019,6 +1048,9 @@ def _terminate_and_drain(
         return result
 
     cleanup_kwargs = {"process_group": process_group} if process_group is not None else {}
+    expected_identity = getattr(process, "_local_ai_process_identity", None)
+    if process_group is not None and expected_identity is not None:
+        cleanup_kwargs["expected_identity"] = expected_identity
     if grace_seconds is not None:
         cleanup_kwargs["grace_seconds"] = grace_seconds
     job_handle = getattr(process, "_local_ai_job_handle", None)

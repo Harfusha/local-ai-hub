@@ -685,6 +685,8 @@ class HubClient:
                     )
                 except OSError:
                     return False
+                if sys.platform != "win32":
+                    process._local_ai_process_identity = process_identity(process.pid)
                 _retain_detached_child(process)
             while remaining() > 0:
                 if self._online(remaining()):
@@ -700,7 +702,14 @@ class HubClient:
                 # Reap only the child created by this attempt. A listener may
                 # belong to a Hub that is still warming, so never kill then.
                 try:
-                    terminate_tree(process.pid, process_group=process.pid, grace_seconds=1.0)
+                    terminate_tree(
+                        process.pid,
+                        process_group=process.pid,
+                        expected_identity=getattr(
+                            process, "_local_ai_process_identity", None
+                        ),
+                        grace_seconds=1.0,
+                    )
                 except OSError:
                     pass
                 try:
