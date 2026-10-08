@@ -1,0 +1,3 @@
+[server]
+port = 53036
+state_dir = "C:/Users/Adam/.codex/worktrees/t04-integration/.local-ai-hub/artifacts/t04-sync-pytest-followup-20261006/test_mcp_status_remains_usable0/state"

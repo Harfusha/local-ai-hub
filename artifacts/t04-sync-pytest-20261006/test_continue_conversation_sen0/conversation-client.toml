@@ -1,0 +1,5 @@
+[server]
+port=65490
+state_dir='C:/Users/Adam/.codex/worktrees/t04-integration/.local-ai-hub/artifacts/t04-sync-pytest-20261006/test_continue_conversation_sen0/state'
+[client]
+max_request_timeout_seconds=5

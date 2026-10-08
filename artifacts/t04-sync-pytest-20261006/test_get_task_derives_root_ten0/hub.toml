@@ -1,0 +1,13 @@
+[server]
+bind = "127.0.0.1"
+port = 39131
+state_dir = "C:/Users/Adam/.codex/worktrees/t04-integration/.local-ai-hub/artifacts/t04-sync-pytest-20261006/test_get_task_derives_root_ten0/state"
+[client]
+startup_wait_seconds = 1
+startup_poll_seconds = 0.01
+[security]
+api_token = "fallback-api-token"
+api_token_tenant = "fixed-principal"
+api_token_principal = "secondary-principal"
+tenant_derivation_key = "configured-tenant-derivation-key-0123456789"
+allowed_roots = ["C:/Users/Adam/.codex/worktrees/t04-integration/.local-ai-hub/artifacts/t04-sync-pytest-20261006/test_get_task_derives_root_ten0"]

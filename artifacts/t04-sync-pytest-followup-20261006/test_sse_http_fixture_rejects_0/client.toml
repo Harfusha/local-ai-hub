@@ -1,0 +1,5 @@
+[server]
+port=55527
+state_dir='C:/Users/Adam/.codex/worktrees/t04-integration/.local-ai-hub/artifacts/t04-sync-pytest-followup-20261006/test_sse_http_fixture_rejects_0/state'
+[client]
+max_request_timeout_seconds=5
