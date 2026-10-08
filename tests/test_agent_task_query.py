@@ -118,14 +118,21 @@ def live_api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 def test_http_task_query_searches_contract_checkpoint_and_owner_before_limit(live_api) -> None:
     from local_ai_hub.agent_identity import ScopeContext
+    from urllib.parse import urlencode
 
     app, client = live_api
-    assert client.create_task(
-        "goal-needle", acceptance_criteria=["criterion-needle"], task_id="query-match"
-    )["success"]
+    root = str(Path(__file__).resolve().parents[1])
+    rootless = client.create_task("Root is required", task_id="query-rootless")
+    assert rootless["success"] is False
+    assert rootless["error_code"] == "root_not_allowed"
+    created = client.create_task(
+        "goal-needle", acceptance_criteria=["criterion-needle"], task_id="query-match", root=root
+    )
+    assert created["success"], created
     assert client.post("/api/agent-state/tasks", {
         "action": "checkpoint",
         "task_id": "query-match",
+        "root": root,
         "checkpoint": {
             "phase": "phase-needle",
             "next_action": "action-needle",
@@ -133,20 +140,24 @@ def test_http_task_query_searches_contract_checkpoint_and_owner_before_limit(liv
             "blockers": ["blocker-needle"],
         },
     })["success"]
-    assert client.create_task("Newest unrelated task", task_id="query-other")["success"]
+    assert client.create_task("Newest unrelated task", task_id="query-other", root=root)["success"]
     app.agent_tasks.create(
-        GoalContract(goal="Owner-only task"), ScopeContext(), task_id="query-owner", actor="distinct-owner"
+        GoalContract(goal="Owner-only task"),
+        ScopeContext(repository_id=root, session_id="api-token-default"),
+        task_id="query-owner",
+        actor="distinct-owner",
     )
 
     for term in (
         "query-match", "goal-needle", "criterion-needle", "phase-needle", "action-needle",
         "path-needle", "blocker-needle",
     ):
-        result = client.list_tasks(query=term.upper(), limit=1)
+        result = client.list_tasks(query=term.upper(), limit=1, root=root)
         assert [task["task_id"] for task in result["tasks"]] == ["query-match"], term
-    assert [task["task_id"] for task in client.list_tasks(query="DISTINCT-OWNER", limit=1)["tasks"]] == ["query-owner"]
-    assert [task["task_id"] for task in client.get("/api/agent-state/tasks?query=BLOCKER-NEEDLE&limit=1")["tasks"]] == ["query-match"]
-    assert {task["task_id"] for task in client.list_tasks(query="  ", limit=10)["tasks"]} == {
+    assert [task["task_id"] for task in client.list_tasks(query="DISTINCT-OWNER", limit=1, root=root)["tasks"]] == ["query-owner"]
+    query = urlencode({"root": root, "query": "BLOCKER-NEEDLE", "limit": 1})
+    assert [task["task_id"] for task in client.get(f"/api/agent-state/tasks?{query}")["tasks"]] == ["query-match"]
+    assert {task["task_id"] for task in client.list_tasks(query="  ", limit=10, root=root)["tasks"]} == {
         "query-match", "query-other", "query-owner"
     }
 
@@ -177,7 +188,9 @@ def test_http_task_query_skips_stale_matches_before_page_limit(live_api) -> None
 def test_http_task_query_rejects_non_string_payload(live_api) -> None:
     _app, client = live_api
 
-    result = client.post("/api/agent-state/tasks", {"action": "list", "query": ["needle"]})
+    result = client.post("/api/agent-state/tasks", {
+        "action": "list", "query": ["needle"], "root": str(Path(__file__).resolve().parents[1]),
+    })
 
     assert result["success"] is False
     assert result["terminal"] is True
@@ -193,7 +206,7 @@ def test_http_task_query_surfaces_scan_truncation(live_api, monkeypatch: pytest.
         lambda **_kwargs: TaskList([], query_truncated=True),
     )
 
-    result = client.list_tasks(query="needle")
+    result = client.list_tasks(query="needle", root=str(Path(__file__).resolve().parents[1]))
 
     assert result["success"] is True
     assert result["tasks"] == []
