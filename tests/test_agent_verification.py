@@ -242,8 +242,6 @@ def test_verification_receipt_parser_requires_explicit_boolean_passed(passed_fie
     payload = {"receipt_id": "receipt-1", "task_id": "task-1", "criterion": "tests", **passed_fields}
     with pytest.raises(ValueError, match="passed"):
         VerificationReceipt.from_dict(payload)
-
-
 @pytest.mark.parametrize("mutation_generation", [True, 1.0, -1, "1"])
 def test_verification_receipt_parser_rejects_invalid_mutation_generation(mutation_generation):
     payload = {
