@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
 import pytest
 
@@ -48,6 +48,29 @@ def supervisor_probe(monkeypatch, tmp_path):
 def test_owned_windows_launcher_worker_is_healthy(supervisor_probe, probe):
     instance, _ = supervisor_probe
     assert getattr(instance, probe)() is True
+
+
+@pytest.mark.parametrize("failure,reason", [
+    (TimeoutError("secret request detail"), "probe_timeout"),
+    (URLError(TimeoutError("secret request detail")), "probe_timeout"),
+    (URLError(ConnectionRefusedError("secret request detail")), "probe_transport_error"),
+    (HTTPError("http://secret", 401, "secret request detail", None, None), "http_status_401"),
+])
+def test_health_failure_has_safe_actionable_reason(supervisor_probe, monkeypatch, failure, reason):
+    instance, _ = supervisor_probe
+    def failed_probe(*args, **kwargs):
+        raise failure
+    monkeypatch.setattr(module, "urlopen", failed_probe)
+    assert instance.hub_online() is False
+    assert instance.last_health_error == reason
+    assert "secret" not in instance.last_health_error
+
+
+def test_health_probe_recovery_clears_previous_reason(supervisor_probe):
+    instance, _ = supervisor_probe
+    instance.last_health_error = "probe_timeout"
+    assert instance.hub_online() is True
+    assert instance.last_health_error == ""
 
 
 @pytest.mark.parametrize("probe", ["hub_ready", "hub_online"])
