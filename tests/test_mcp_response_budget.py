@@ -6,6 +6,12 @@ from local_ai_hub import mcp_server
 from local_ai_hub.token_accounting import json_tokens
 
 
+@pytest.fixture(autouse=True)
+def isolate_budget_tests_from_background_transport(monkeypatch):
+    # CLIENT.post spies cover foreground dispatch, not asynchronous telemetry.
+    monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, "record", lambda event: None)
+
+
 def _options(**overrides: object) -> dict[str, object]:
     value: dict[str, object] = {
         "max_response_tokens": 260,
