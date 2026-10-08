@@ -1,0 +1,51 @@
+{
+  "artifact_id": "T15-ROOT-CACHE-ENV-RUNTIME-V3",
+  "status": "TEST_ONLY_PATCH_READY_FOR_T20; NOT_APPLIED",
+  "date": "2026-10-01",
+  "root_preimages": {
+    "head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+    "src/local_ai_hub/commands.py": "72fbb095558f35f274b65b52b0aaf460ab0310e2208ac98096cb49e48299ba35",
+    "tests/test_command_cache_singleflight_contract.py": "dee14425379d2fc8d9655f373110df1c33805804ee4433873ec3f8e778fbf85e"
+  },
+  "immutable_patch": {
+    "path": "handoff/t15-root-cache-env-runtime-v3.patch",
+    "sha256": "35159daa906ce334a48f4b08aa8eaec6ea180e0b3dfeec15a3ac5c10cf7f2793",
+    "scope": "Adds one command-result cache integration test only; source remains untouched."
+  },
+  "candidate_evidence": {
+    "test": "test_command_result_cache_does_not_reuse_across_environment_values",
+    "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_command_cache_singleflight_contract.py::test_command_result_cache_does_not_reuse_across_environment_values",
+    "result": "1 passed in 0.25s",
+    "assertions": [
+      "unchanged environment produces warm cache hit",
+      "changed configured environment variable causes a cache miss and a fresh command result"
+    ]
+  },
+  "candidate_cache_contract_suite": {
+    "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_command_cache_singleflight_contract.py",
+    "result": "10 passed in 0.96s"
+  },
+  "root_check": {
+    "command": "git -C C:\\Users\\Adam\\.local-ai-hub apply --check C:\\Users\\Adam\\.codex\\worktrees\\t15-command-config\\.local-ai-hub\\handoff\\t15-root-cache-env-runtime-v3.patch",
+    "result": "PASS",
+    "root_modified_by_t15": false,
+    "root_tests_run_by_t15": false,
+    "note": "T20-owned source now contains effective_l1_ttl; T20-owned test file contains prior TTL and direct key tests. Runtime env test remains pending T20 serialization."
+  },
+  "related_ttl_fix": {
+    "patch": "handoff/t15-root-cache-ttl-env-v2.patch",
+    "sha256": "4855f52bff6a974ae503ee47ca457bc440f6dc2a2040659bb257d630edbe5c3c",
+    "candidate_red": "3 failed in 0.52s",
+    "candidate_green": "3 passed in 0.52s",
+    "candidate_related_suite": "30 passed in 10.27s"
+  },
+  "benchmark": {
+    "run": false,
+    "status": "No benchmark. T20 exclusive CPU lease required."
+  },
+  "remaining": [
+    "T20 root run of runtime environment patch and confirmation of TTL patch receipt.",
+    "Full paired p95/p99 plus command-quality non-regression acceptance.",
+    "Remaining affected graph, streaming/lifecycle and T06/T07 no-orphan acceptance."
+  ]
+}

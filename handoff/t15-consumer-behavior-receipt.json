@@ -1,0 +1,82 @@
+{
+  "schema_version": "t15-consumer-behavior-receipt-v1",
+  "date": "2026-10-01",
+  "candidate_root": "C:\\Users\\Adam\\.codex\\worktrees\\t15-command-config\\.local-ai-hub",
+  "candidate_head": "824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11",
+  "ownership_boundary": {
+    "T06_owned_seams_untouched": [
+      "CommandBroker.run",
+      "_work_attempt_fence"
+    ],
+    "candidate_source_changed": false,
+    "root_written": false
+  },
+  "source_sha256": {
+    "src/local_ai_hub/commands.py": "1fe384b1f5498a8736c76c89974ace103cfe94f780aaa75b4022cc9893bbbcf0",
+    "src/local_ai_hub/project_config.py": "eec7e2920ed905e902d3699a5259d19e23ef9d4b7f17a285e160e97f63ec4686",
+    "src/local_ai_hub/services.py": "7394f38919b5f3b421110c6cb88e841d386cc8b6c848c410b501549ab4029add"
+  },
+  "runtime_bounded_candidate_probes": {
+    "explicit_command_worktree_override_and_environment": {
+      "status": "PASS",
+      "entrypoint": "CommandBroker.run_project_command",
+      "fixture": "temporary linked Git worktree; primary project config plus linked-worktree override of explicit alias",
+      "result": {
+        "success": true,
+        "exit_code": 0,
+        "stdout": "worktree-ok\n"
+      },
+      "verified": [
+        "worktree override alias selected over primary alias",
+        "literal environment override and host environment reference both reached explicit argv child",
+        "literal and referenced environment values absent from result JSON and temporary broker state file"
+      ],
+      "secrets_recorded": false,
+      "persistent_workspace_writes": false,
+      "candidate_source_hashes_unchanged": true
+    },
+    "uncertain_affected_test_fallback_with_path_hint": {
+      "status": "PASS",
+      "entrypoint": "LocalAIServices.affected_tests",
+      "result": {
+        "selection_uncertain": true,
+        "selection_fallback": "complete_test_matrix",
+        "all_three_matrix_paths_preserved": true,
+        "hinted_path_moved_first": true,
+        "path_hint_usage": {
+          "hint_used": true,
+          "fallback_used": false,
+          "hint_helped": null
+        }
+      },
+      "fixture": "temporary project; uncertain dependency result; complete three-file matrix; one current evidence-bound path hint",
+      "persistent_workspace_writes": false
+    }
+  },
+  "static_dataflow": {
+    "worktree_config_order": "primary project config, linked worktree project config, git-common config, linked worktree override; later alias value wins",
+    "explicit_command_flow": "effective typed alias resolves to validated argv with shell=False and project-contained cwd; run_project_command delegates once through existing run policy",
+    "environment_handling": "literal values and host references remain separate; references resolve from host environment; cache identity uses stable hash of resolved environment; raw values pass only as child environment overrides",
+    "environment_telemetry_limit": "probe checked result JSON and temporary broker state bytes for raw sentinels; source inspection found no raw project environment field in cache context or returned result. No external telemetry collector was instrumented.",
+    "affected_fallback": "when dependency graph is incomplete, full test matrix is appended before path-hint prioritization; prioritizer returns all original candidates and only changes order."
+  },
+  "existing_receipts": [
+    {
+      "scope": "project config, service integration, path hints, affected tests",
+      "result": "89 passed in 3.85s",
+      "log_sha256": "6b87f80bce4a7f4cfaaad69fc6ef1de2835176e3864405d987a908d506452bcb",
+      "receipt_source_hashes_match_current": true
+    },
+    {
+      "scope": "project command broker and cache/stream/transport selectors",
+      "result": "45 passed in 11.46s",
+      "log_sha256": "55b3021a09ddeb068b58ff59e02c907c7a2902059baf95a561ce42834b1cff3b",
+      "project_command_test_hash_matches_current": true,
+      "commands_py_hash_matches_current": false,
+      "note": "Existing historical receipt only; current commands.py differs due separate dispatcher hunk. Current explicit-command flow covered by bounded runtime probe above."
+    }
+  ],
+  "probe_correction": "Initial uncertain-fallback checker expected original ordering and reported failure when the valid hint correctly moved its candidate first. Corrected check asserted complete set and count; final probe passed with all matrix candidates preserved.",
+  "tests_run_this_continuation": false,
+  "benchmarks_run_this_continuation": false
+}

@@ -1,0 +1,185 @@
+{
+  "schema_version": 1,
+  "date": "2026-10-01",
+  "purpose": "Root-current parity evidence for T15 project command configuration and acceptance handoff.",
+  "ownership": {
+    "candidate_root": "C:\\Users\\Adam\\.codex\\worktrees\\t15-command-config\\.local-ai-hub",
+    "root": "C:\\Users\\Adam\\.local-ai-hub",
+    "root_writes": false,
+    "root_tests_run": false,
+    "benchmark_run": false,
+    "T06_process_group_or_recovery_edits": false
+  },
+  "root_snapshot": {
+    "head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+    "dirty_path_count": 274,
+    "tracked_source_and_test_sha256": {
+      "src/local_ai_hub/commands.py": "1b27f83872d439b9167c9b2323bf4be71279e688df6094c002ca20934f761b67",
+      "src/local_ai_hub/project_config.py": "4238b6a6de1de00f55f4679ce0df7d431522ec1bafabfa272258c1662f13f713",
+      "src/local_ai_hub/services.py": "a1ac60b4bf12cd656d8c5d277871b7ee6621e069c67af47f72793f72eecfb34f",
+      "tests/test_project_command_broker.py": "169f086607ccd725c6514b15bc6a54baf66e9f6c096395801b6f0beaa23b8728",
+      "tests/test_project_config_service_integration.py": "a06522f19772744730045dfed9f46564bdaf26936e518082103798ff6b3d52a2",
+      "tests/test_command_streaming.py": "47dcf4d48185db70e7c26e20d84b273de192b068a4466ad6db0c5d16828b3306",
+      "tests/test_command_unblocked.py": "12a2369ca5685f0a3358f857d04572309bdf4a815b1087590c9b85bd5b9f5893",
+      "tests/test_command_concurrency_contract.py": "92d841f2b22d8d9480df0cf3189164ed86a4981cf8d4492f5735c73236e219a7"
+    },
+    "snapshot_unchanged_after_probes": false,
+    "dirty_path_count_after_probes": 271,
+    "later_observation": "Two additional untracked paths appeared in the shared root after the probe snapshot; root HEAD and the recorded tracked source/test hashes remain identical. T15 made no root writes.",
+    "latest_observed_dirty_path_count": 279,
+    "latest_tracked_source_sha256": {
+      "src/local_ai_hub/commands.py": "1b27f83872d439b9167c9b2323bf4be71279e688df6094c002ca20934f761b67",
+      "src/local_ai_hub/project_config.py": "4238b6a6de1de00f55f4679ce0df7d431522ec1bafabfa272258c1662f13f713",
+      "src/local_ai_hub/services.py": "1556edbe4336e1d0fecdac86d79593ab6f62be12a1f13841537cac453721dcc1"
+    },
+    "latest_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a"
+  },
+  "user_approved_T06_contract": "Persist process_group_id; after restart accept a dead leader only when the process group is safely verified alive; otherwise refuse recovery.",
+  "direct_root_probes": [
+    {
+      "name": "project aliases, linked-worktree override, environment values",
+      "method": "Direct Python -B probe importing current root src; real temporary linked Git worktree and temporary state database.",
+      "result": "PASS: explicit alias resolved through linked-worktree override; literal and host-reference environment values reached child; secret sentinels absent from result JSON and state database.",
+      "residue": "Temporary linked fixture remains at C:\\Users\\Adam\\AppData\\Local\\Temp\\t15-root-parity-ufy7p124 after TemporaryDirectory cleanup partially failed."
+    },
+    {
+      "name": "affected mapping and uncertain complete fallback",
+      "method": "Direct current LocalAIServices.affected_tests invocation with deterministic impact stub, complete four-path matrix, mapping src/** => tests/custom/**, and valid path hint.",
+      "result": "PASS: selection_uncertain=true; fallback=complete_test_matrix; all four paths preserved; hint moved its test earlier without narrowing matrix; mapped target present."
+    },
+    {
+      "name": "streaming cancellation",
+      "method": "Public CommandBroker.run and exact broker.cancel(..., execution_id=...) against a child streaming output.",
+      "result": "PASS: callback observed output; cancel accepted; result cancelled; worker stopped; active count zero."
+    },
+    {
+      "name": "bounded stdout artifact",
+      "method": "Direct root broker probe emitted 50,000 Q characters with max_output_chars=4096 and inline_output_chars=1024.",
+      "result": "PASS: success; output_truncated=true; artifact id returned; inline stdout 512 chars; extracted STDOUT artifact section 4096 chars."
+    }
+  ],
+  "candidate_test_file": {
+    "path": "tests/test_t15_root_parity_acceptance.py",
+    "sha256": "5ff44f13e0ff706a64d607e293dd6900e14906dec89b850f7a963214f1260e76",
+    "git_blob_sha1": "19d3d3a561b69dae6d273ee76e7ad34fb8bb90b8",
+    "root_patch_path": "handoff/t15-root-current-parity-tests.patch",
+    "root_patch_sha256": "989949eaacd06e117c2d9b6024eaa8166f12d3a6b9456bdfc3eded476d11e435",
+    "root_git_apply_check": "PASS at recorded root HEAD; patch not applied."
+  },
+  "candidate_test_receipts": [
+    {
+      "command": "python -B -m pytest -q -p no:cacheprovider tests/test_t15_root_parity_acceptance.py::test_public_cancel_stops_streamed_command_and_clears_active_record",
+      "result": "1 passed in 4.65s",
+      "exit_code": 0
+    },
+    {
+      "command": "python -B -m pytest -q -p no:cacheprovider tests/test_t15_root_parity_acceptance.py::test_project_alias_worktree_override_and_env_values_use_real_broker tests/test_t15_root_parity_acceptance.py::test_path_hint_does_not_narrow_uncertain_mapped_complete_matrix tests/test_t15_root_parity_acceptance.py::test_large_stdout_returns_bounded_inline_text_and_bounded_artifact",
+      "result": "3 passed in 1.56s",
+      "exit_code": 0
+    }
+  ],
+  "pending": {
+    "root_pytest": "Not run; T20 exclusive root test slot unassigned. After T20 integration, exact command: python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_t15_root_parity_acceptance.py",
+    "paired_benchmark": "Not run; clean integrated revision, exclusive slot, and second hardware profile unassigned. See handoff/t15-benchmark-runbook.md (SHA-256 479b6e04e55b1608ab645de6240f6987fde5007d0cd1560a2fa611ca342f86c3).",
+    "T06_acceptance": "POSIX/write-set/recovery owner acceptance remains pending."
+  },
+  "cleanup_boundary": {
+    "path": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t15-root-parity-ufy7p124",
+    "state": "Linked worktree fixture remains; listing showed linked, primary, and state entries. No matching Python/Git process remained.",
+    "automatic_review": "Recursive cleanup of this exact temporary path was explicitly rejected by automatic approval review with reason blocked by policy. No retry or bypass occurred."
+  },
+  "freshness": {
+    "earlier_direct_root_probe_status": "STALE: root project_config.py and services.py hashes changed after direct probes; do not use for current-root behavior acceptance.",
+    "root_pytest": "not run",
+    "root_parity_claim": "not green; root behavior receipt needs refresh on current project_config source.",
+    "microbenchmark": "Historical report source hashes were stable during its seven pairs; root source later drifted and candidate commands.py gained resolver cache. It is not current source acceptance."
+  },
+  "candidate_validation": {
+    "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_project_config.py tests/test_project_config_worktrees.py tests/test_project_command_broker.py tests/test_project_config_service_integration.py tests/test_project_path_hints.py tests/test_command_streaming.py tests/test_t15_root_parity_acceptance.py tests/test_new_capabilities_and_hardening.py::test_13_mock_recorder_and_replayer tests/test_command_network_safety.py::test_replay_mock_rejects_cassette_path_traversal tests/test_command_network_safety.py::test_replay_mock_rejects_oversized_cassette",
+    "result": "112 passed in 12.52s",
+    "exit_code": 0,
+    "root_test_run": false,
+    "coverage": "actual configured command alias and env inheritance/worktree override, mapping placeholder/path security and uncertain complete fallback, streaming cancel/bounds, positive offline replay and replay traversal/size rejection"
+  },
+  "microbenchmark": {
+    "path": "handoff/t15-config-parity-microbench.json",
+    "sha256": "46180794e458d14c7d383685b656c84176793f4cca859dd47154da47f94fee11",
+    "harness": "tools/t15_config_parity_microbench.py",
+    "harness_sha256": "d98a711534b6165196331605558a14a6d28cbf4d4c12b480d8c1dca469564720",
+    "command": "python -B tools/t15_config_parity_microbench.py",
+    "pairs": 7,
+    "root_median_ms": 130.5709,
+    "candidate_median_ms": 153.1228,
+    "acceptance": false,
+    "root_pytest": false,
+    "tracing": false,
+    "scope": "same temp config and static Python CPU command; no GPU, network, or shared ports",
+    "currentness": "Historical pre-cache candidate and pre-latest-root source; not current acceptance. No paired timing repeated after source changes."
+  },
+  "t20_large_performance_slot": {
+    "thread_id": "01a0d322-b3bd-7930-b552-14e9b7020fec",
+    "request_sent": true,
+    "status": "awaiting concrete exclusive slot reply"
+  },
+  "overall_status": "PARTIAL_NOT_VERIFIED",
+  "candidate_full_suite": {
+    "command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_project_config.py tests/test_project_config_worktrees.py tests/test_project_command_broker.py tests/test_project_config_service_integration.py tests/test_project_path_hints.py tests/test_command_streaming.py tests/test_t15_root_parity_acceptance.py tests/test_new_capabilities_and_hardening.py::test_13_mock_recorder_and_replayer tests/test_command_network_safety.py::test_replay_mock_rejects_cassette_path_traversal tests/test_command_network_safety.py::test_replay_mock_rejects_oversized_cassette",
+    "result": "114 passed in 19.61s",
+    "exit_code": 0
+  },
+  "resolver_cpu_probe": {
+    "scope": "one actual candidate CommandBroker._resolve_project_command invocation on a non-Git temporary project; instrumentation counted stage calls; no repeated loop or saved raw paths",
+    "total_wall_ms": 129.572,
+    "total_process_cpu_ms": 15.625,
+    "stages": {
+      "git_common_dir": {
+        "calls": 1,
+        "wall_ms": 127.9788,
+        "cpu_ms": 15.625,
+        "operation": "git rev-parse --git-common-dir"
+      },
+      "resolve_config_layers": {
+        "calls": 1,
+        "wall_ms": 0.8929
+      },
+      "config_file_read": {
+        "calls": 1,
+        "wall_ms": 0.2277
+      },
+      "config_path_validation": {
+        "calls": 1,
+        "wall_ms": 0.2878
+      },
+      "path_resolve": {
+        "calls": 8,
+        "wall_ms": 1.1707
+      },
+      "path_exists": {
+        "calls": 2,
+        "wall_ms": 0.1471
+      },
+      "subprocess_run": {
+        "calls": 1
+      }
+    },
+    "pathnames_persisted": false,
+    "conclusion": "The single Git identity subprocess dominated this non-Git fixture; parsing and Path.resolve were sub-millisecond/low-ms."
+  },
+  "resolver_cache_optimization": {
+    "path": "src/local_ai_hub/commands.py",
+    "sha256": "bfbcab237130e44a58c2aaf54105d9e6ea737b4953f954cb2b962674989309fc",
+    "cache": "per-broker bounded LRU; 64 entries; in memory only",
+    "key": "hashed canonical project-root identity, actual overlay-file signatures, exact Git HEAD and Git metadata signatures; no state-directory or raw path key",
+    "invalidation_tests": [
+      "project config signature change forces a fresh resolution",
+      "Git HEAD revision change forces a fresh resolution"
+    ],
+    "environment": "host environment references are read every invocation; cached settings do not cache resolved host values",
+    "persistence": "no cache files/database writes; raw project paths are not cache keys; no PATH mutation",
+    "scope": "_resolve_project_command/config wrapper only; T06 daemon recovery, run/mint, rollback, and write-set seams untouched"
+  },
+  "cache_TDD_receipts": {
+    "red": "2 failed in 1.17s before implementation: both showed Git common-dir resolver called twice instead of once on unchanged input",
+    "green": "2 passed in 1.06s on final cache API"
+  }
+}
