@@ -1,0 +1,72 @@
+# T01 root selector reconciliation — 2026-10-03
+
+## Scope and result
+
+Static comparison only. No tests, collection, patches to root, or root writes.
+
+- Root HEAD: `7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf`
+- Candidate selector list: `handoff/T01-operation-selector-rerun-20261003.txt`, 95 selectors; SHA-256 `CD897A5B0872DF7DC8CCDEA70C3EF4A0F6381C13AEFC0D35BD2BCD287D7BBE8E`.
+- 30 selector targets exist by exact function name in current root test files; 65 targets are absent.
+- “Root-present” is static name resolution only. It is not an execution receipt or proof of passing behavior.
+- Root `tests/test_http_route_operation_acceptance.py` SHA-256: `B314578642480CDD0B896D863EABFE1730637BC61D5C1C2A0D05DA0BA7D9FCAF`.
+- Root `tests/test_mcp_coord_operation_acceptance.py` SHA-256: `303BB30536AD6BBF223C21738CBC482AF22539BEC09726CEF390D4CDF7F8FCFF`.
+- T01 fixture preimages were different: HTTP `FA5C866BD05A69364EEB7DC63C6B051A86F551ABCD5738613547CBFC273CEC7C`; MCP coord `0DB2EB213FF4F8B121F8B82EA12340C5F01558EED03D1B780DC60BD0467CABB5`.
+- T01 patch `handoff/T01-test-fixture-repair-20261003.patch` SHA-256 `F517BC43BA79C4282476B6C8F4F510D53057F4CC03A9C2C09102F17F5D8F447E` is candidate-specific. It is not applicable to root; do not force it.
+- The earlier 76-pass/19-fail batch ran in the T01 candidate. It is not a root failure receipt.
+- A later candidate rerun request `req_c63767e93fda` remains `outcome_unknown`, without execution ID or pytest output. Do not infer results or relaunch it.
+
+## Exact root-present selector targets (30)
+
+### HTTP route acceptance (11)
+
+- `tests/test_http_route_operation_acceptance.py::test_http_get_affected_tests_forwards_root_and_repeated_paths`
+- `tests/test_http_route_operation_acceptance.py::test_http_get_agent_state_blackboard_forwards_board_and_section`
+- `tests/test_http_route_operation_acceptance.py::test_http_get_agent_state_events_forwards_stream_cursor_and_limit`
+- `tests/test_http_route_operation_acceptance.py::test_http_get_agent_state_swarm_detail_forwards_swarm_id`
+- `tests/test_http_route_operation_acceptance.py::test_http_get_agent_state_swarm_forwards_state_and_limit`
+- `tests/test_http_route_operation_acceptance.py::test_http_get_agent_state_tasks_forwards_filters_and_serializes`
+- `tests/test_http_route_operation_acceptance.py::test_http_get_audit_dependencies_forwards_root`
+- `tests/test_http_route_operation_acceptance.py::test_http_get_audit_tail_forwards_limit`
+- `tests/test_http_route_operation_acceptance.py::test_http_get_capabilities_returns_surface_and_features`
+- `tests/test_http_route_operation_acceptance.py::test_http_get_config_redacts_configured_token`
+- `tests/test_http_route_operation_acceptance.py::test_http_post_affected_tests_forwards_json_paths`
+
+### MCP command acceptance (10)
+
+- `tests/test_mcp_command_operation_acceptance.py::test_mcp_command_auto_fix_forwards_bounded_repair_policy`
+- `tests/test_mcp_command_operation_acceptance.py::test_mcp_command_cancel_targets_execution_and_returns_cancel_state`
+- `tests/test_mcp_command_operation_acceptance.py::test_mcp_command_classify_preserves_classification_result`
+- `tests/test_mcp_command_operation_acceptance.py::test_mcp_command_discover_returns_command_candidates`
+- `tests/test_mcp_command_operation_acceptance.py::test_mcp_command_flaky_detect_forwards_test_selector_and_attempt_limit`
+- `tests/test_mcp_command_operation_acceptance.py::test_mcp_command_format_maps_source_path_and_accepts_budget_metadata`
+- `tests/test_mcp_command_operation_acceptance.py::test_mcp_command_http_probe_forwards_target_and_returns_probe_status`
+- `tests/test_mcp_command_operation_acceptance.py::test_mcp_command_mock_server_start_uses_dedicated_endpoint_and_port`
+- `tests/test_mcp_command_operation_acceptance.py::test_mcp_command_run_affected_forwards_task_acceptance_context`
+- `tests/test_mcp_command_operation_acceptance.py::test_mcp_command_speculative_lint_submits_bounded_paths_and_job_identity`
+
+### MCP coord acceptance (9)
+
+- `tests/test_mcp_coord_operation_acceptance.py::test_local_ai_coord_claim_forwards_owned_paths_and_lease_identity`
+- `tests/test_mcp_coord_operation_acceptance.py::test_local_ai_coord_memo_delete_posts_exact_root_and_key`
+- `tests/test_mcp_coord_operation_acceptance.py::test_local_ai_coord_memo_put_posts_root_key_value_and_ttl`
+- `tests/test_mcp_coord_operation_acceptance.py::test_local_ai_coord_memo_search_posts_query_with_root_scope`
+- `tests/test_mcp_coord_operation_acceptance.py::test_local_ai_coord_task_checkpoint_preserves_checkpoint_payload`
+- `tests/test_mcp_coord_operation_acceptance.py::test_local_ai_coord_task_complete_forwards_reason_and_identity`
+- `tests/test_mcp_coord_operation_acceptance.py::test_local_ai_coord_task_get_forwards_task_and_root_identity`
+- `tests/test_mcp_coord_operation_acceptance.py::test_local_ai_coord_task_list_forwards_status_and_stale_filter`
+- `tests/test_mcp_coord_operation_acceptance.py::test_local_ai_coord_task_transition_forwards_target_state_and_reason`
+
+## Missing operation-coverage owners
+
+The remaining 65 candidate selector targets do not resolve to exact test functions in current root. Owner and operation IDs below come from the T01 operation routing inventory; repeated selector links were deduplicated.
+
+| Owner | Missing selector targets | Operations with no root selector target |
+|---|---:|---|
+| T03 | 7 | `merge`, `get`, `delete`, `list`, `lease_renew`, `curate_training_dataset`, `claim_batch` |
+| T08 | 52 | `swarm_cancel`, `memory_find`, `relation_record`, `incident_decision`, `compile_ctx`, `leases`, `task_fail`, `task_zombie_reap`, `context_compile`, `memo_get`, `task_sync`, `task_done`, `curate_dataset`, `task_rollback`, `pubsub_poll`, `blackboard_delete`, `mem_find`, `task_create`, `ctx`, `blackboard_merge`, `pubsub_publish`, `memory_get`, `task_resume`, `blackboard_get`, `mem_search`, `mem_put`, `relation_find`, `renew`, `neg_find`, `mem_get`, `swarm_list`, `/api/agent-state/cleanup`, `mem_rec`, `memory_reap`, `memory_record`, `negative_knowledge_find`, `negative_knowledge_record`, `simulate_merge`, `task_heartbeat`, `relation_traverse`, `task_chk`, `swarm_status`, `swarm_step`, `memory_promote`, `/api/agent-state/swarm/dispatch`, `task_new`, `/api/agent-state/swarm`, `release`, `blackboard_list`, `/api/agent-state/blackboard`, `swarm_dispatch`, `blackboard_update` |
+| T09 | 5 | `task_cleanup_worktree`, `verify_completion`, `verify_receipt`, `worktree_lease`, `worktree_release` |
+| T15 | 1 | `stop_daemon` |
+
+## Acceptance state
+
+All affected rows remain **UNACCEPTED / pending owner receipts**. Root-green receipt count remains zero for this T01 operation batch. No source patch is staged or applied to root. Further validation waits for authoritative resolution of the unknown request and a fresh explicit serialized-slot release.

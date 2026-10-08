@@ -1,0 +1,35 @@
+# T03 contract diff vs master
+
+Candidate HEAD: `9a5a6e2cb977a58bb86c9eb2d44d719a7d8e9379`  
+Master: `b947d76fdfb7ed592b72e55587d5c83cfa352c35`  
+Scope: only `operation_contracts.py`, `mcp_server.py`, `generator.py`; no T04, T14, or T21 source used. No source edits or tests in this step.
+
+## Evidence
+
+- `operation_contracts.py` candidate SHA-256 `9efbb90229594a42f09e1d359bc50c3e629ad95b419f3843b578a83bb43ca767`; master `dab37514fab2c3aa61cb09bf71b7ff39fe7a7663e1ca77e32918ce7a9be33fec`.
+- `mcp_server.py` candidate SHA-256 `36e5df568d69964d04de83d8c18dd980ddcd0a67a41eb8ccb3c82ee59beb42ed`; master `d1142d74dc834064f2d1633e9a162aa2180c0af6a513fd63af6d9f892739b525`.
+- `generator.py` candidate SHA-256 `dc2e870678d107d81e342ca3f750bdc8b1a9155e12e814fbae65e8398e64f9bc`; master `5cb96c4a4c562f08b9d93a83b9d61dd32736ed8fa6a9539e5344999cf0cc9fef`.
+
+### Public input scope
+
+- Candidate `operation_contracts.py:216`: `path_hints` allowed for `search` only.
+- Master `operation_contracts.py:193`: `path_hints` allowed for `search` and `context`.
+- Keep candidate T03 approval search-only. Master’s extra `context` scope is outside this T03 change.
+
+### Output contract seam
+
+- Candidate `operation_contracts.py:567`: `operation_tool_output_schema(tool_name, actions)`; candidate builds per-action `x-action-output-contracts` from `_OUTPUT_ACTION_PROPERTIES`.
+- Master `operation_contracts.py:941`: `operation_tool_output_schema(tool, features=None)`; master emits the shared feature-aware envelope.
+- Candidate `generator.py:1180` calls the action-list API. Master `generator.py` has no `operation_tool_output_schema` call; master MCP registration alone calls the feature-aware API.
+- Candidate `mcp_server.py:3731` assigns `_tool.output_schema`. Master `mcp_server.py:3215-3219` assigns `_fn_metadata.output_schema` and removes duplicate tool metadata.
+
+This is a concrete API and registration mismatch, not a missing registration seam. User decision remains: defer output-schema implementation until complete action contracts exist. No partial schema patch applied.
+
+### Alias and query contract
+
+- Both candidate and master map `task_new` to `task_create` (`mcp_server.py:346` candidate; `:311` master).
+- Candidate scopes `task_list` query forwarding to that action (`mcp_server.py:3122`). Existing aggregate diagnostic had dispatch-fixture failures; fresh targeted receipt still required before claiming acceptance.
+
+## Blocker
+
+Prior aggregate candidate run: `274 passed, 17 failed, 1 skipped in 17.67s`—diagnostic, not green. Hub context currently returned `outcome_unknown` (`req_677a842944f2`); no retry. Focused tests not run in this report step. Complete output contracts remain explicitly deferred; heavy dispatch also depends on absent T13 `operational_mode`. Report v1 is superseded by this corrected diff.

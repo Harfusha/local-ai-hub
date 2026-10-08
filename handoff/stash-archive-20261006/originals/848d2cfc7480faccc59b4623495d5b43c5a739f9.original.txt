@@ -1,0 +1,8 @@
+{
+  "correction_for": "handoff/t15-root-cache-ttl-env-v4.json",
+  "patch_sha256": "5126c9a15bb3cb1a79f4045b91fa6442eeca3d33574da6c9a2f951e0e6f8168f",
+  "correct_root_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+  "reason": "The v4 manifest contained malformed root HEAD text. Root file preimage hashes and patch SHA remain unchanged; current apply-check evidence still applies to the recorded test preimage.",
+  "actual_root_test_preimage_sha256": "dee14425379d2fc8d9655f373110df1c33805804ee4433873ec3f8e778fbf85e",
+  "root_command_hash_at_generation": "3e10f0d793fd0ac4ff0d4a74e964800a4dbbf5f89a8b74ff6fd16cccd30a4acc"
+}

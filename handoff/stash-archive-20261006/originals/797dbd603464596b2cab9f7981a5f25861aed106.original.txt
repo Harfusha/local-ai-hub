@@ -1,0 +1,26 @@
+--- a/tools/surface_inventory.py
++++ b/tools/surface_inventory.py
+@@ -1693,8 +1693,6 @@
+                 detail = keyword_values.get("detail") or protocol_arguments.get("detail")
+                 if action:
+                     alias = aliases.get(tool, {}).get(action)
+-                    if tool == "local_ai_repo" and (action == "context" or alias == "context"):
+-                        continue
+                     if alias:
+                         add(f"MCP action alias {tool}::{action} (alias for {alias})", selector)
+                     else:
+--- a/tests/test_surface_inventory.py
++++ b/tests/test_surface_inventory.py
+@@ -1089,7 +1089,11 @@
+     assert links["MCP action local_ai_repo::search"] == [
+         "tests/test_operation_behavior.py::test_repo_search_dispatch"
+     ]
+-    assert "MCP action local_ai_repo::context" not in links
++    context_action_selector = (
++        "tests/test_mcp_compact_transport.py::"
++        "test_local_ai_repo_context_forwards_guarded_pack_fields"
++    )
++    assert context_action_selector in links["MCP action local_ai_repo::context"]
+     assert links["HTTP POST::/health"] == sorted([
+         "tests/test_operation_behavior.py::test_post_health_route",
+         "tests/test_operation_behavior.py::test_urllib_post_helper_route",

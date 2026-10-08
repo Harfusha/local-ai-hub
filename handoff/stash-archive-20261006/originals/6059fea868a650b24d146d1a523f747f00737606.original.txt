@@ -1,0 +1,24 @@
+{
+  "overlay": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t02-root-current-overlay-jr4w40lo\\repo",
+  "command": [
+    "C:\\Python313\\python.exe",
+    "-m",
+    "pytest",
+    "-q",
+    "--tb=short",
+    "tests/test_benchmark_suite.py",
+    "tests/test_surface_benchmarks.py"
+  ],
+  "timeout_seconds": 180,
+  "environment_policy": {
+    "T02_TRACE_removed": true,
+    "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "unset_default_autoload"
+  },
+  "status": "failed",
+  "exit_code": 1,
+  "duration_seconds": 117.18,
+  "stdout_sha256": "906c8be90b80ec21fce4f63a79c717fc81761f31fbe787f1e8594c42a600b71b",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "stdout_bytes": 5291,
+  "stderr_bytes": 0
+}

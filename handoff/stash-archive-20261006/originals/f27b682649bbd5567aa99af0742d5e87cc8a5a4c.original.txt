@@ -1,0 +1,54 @@
+{
+  "protected_root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head_before": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+  "root_head_after": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+  "root_source_hashes_before": {
+    "src/local_ai_hub/async_jobs.py": "ad6f8b6912e7cb836383811db2ad29c89da877afebc4b8b52c7fd57b8de0f904",
+    "tests/test_surface_benchmarks.py": "f4e0d299384b3b3c9443390ec1001ed6b6f38d5606c0b45d8d774ded816dcf00",
+    "tools/benchmark_surfaces.py": "dcaed06cf711090e692d4b44555c6e76ff37f06093275b63c121d7cce0ad3de0"
+  },
+  "root_source_hashes_after": {
+    "src/local_ai_hub/async_jobs.py": "ad6f8b6912e7cb836383811db2ad29c89da877afebc4b8b52c7fd57b8de0f904",
+    "tests/test_surface_benchmarks.py": "f4e0d299384b3b3c9443390ec1001ed6b6f38d5606c0b45d8d774ded816dcf00",
+    "tools/benchmark_surfaces.py": "dcaed06cf711090e692d4b44555c6e76ff37f06093275b63c121d7cce0ad3de0"
+  },
+  "candidate_overlay": "C:\\Users\\Adam\\AppData\\Local\\Temp\\t02-root-current-overlay-jr4w40lo\\repo",
+  "overlay_head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+  "tracked_worktree_diff_sha256": "60438769fd9728cdff310770245b927ed2c66acd110f5f2dccda4893f2268e33",
+  "untracked_src_tests_tools_count": 150,
+  "untracked_path_list_sha256": "4a3c7162564e6409fdf1d68a6d07aa6334b662b9e0ad9129f6f0be098077f2b4",
+  "overlay_source_hashes": {
+    "src/local_ai_hub/async_jobs.py": "ad6f8b6912e7cb836383811db2ad29c89da877afebc4b8b52c7fd57b8de0f904",
+    "tests/test_surface_benchmarks.py": "f4e0d299384b3b3c9443390ec1001ed6b6f38d5606c0b45d8d774ded816dcf00",
+    "tools/benchmark_surfaces.py": "dcaed06cf711090e692d4b44555c6e76ff37f06093275b63c121d7cce0ad3de0"
+  },
+  "deadline_markers": {
+    "schema": true,
+    "dispatch_guard": true,
+    "tick_guard": true
+  },
+  "selector": "tests/test_surface_benchmarks.py::test_queue_admission_probe_cancels_before_delayed_dispatch_registration_race",
+  "command": [
+    "C:\\Python313\\python.exe",
+    "-X",
+    "tracemalloc=5",
+    "-W",
+    "error::ResourceWarning",
+    "-m",
+    "pytest",
+    "-q",
+    "--tb=short",
+    "-p",
+    "no:cacheprovider",
+    "tests/test_surface_benchmarks.py::test_queue_admission_probe_cancels_before_delayed_dispatch_registration_race"
+  ],
+  "environment_policy": {
+    "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1",
+    "T02_TRACE_removed": true
+  },
+  "status": "passed",
+  "exit_code": 0,
+  "duration_seconds": 5.638,
+  "stdout_sha256": "433665da5547a840adf0f682093a7b4616ee656c4ab6355635a3cc3ad7736f00",
+  "stderr_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+}

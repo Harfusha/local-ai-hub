@@ -1,0 +1,46 @@
+# T09 continuation acceptance receipt — 2026-10-04
+
+## Checkout and ownership
+
+- Attached artifact identity: `C:\Users\Adam\.codex\worktrees\t09-t08-receipt-fixture\.local-ai-hub`
+- Source checkout reported by attachment: `C:\Users\Adam\.codex\worktrees\32fc\.local-ai-hub`
+- Candidate HEAD: `2b33602adef0d030fea66cdcc04ca742c60b2e32`
+- Full dirty baseline at audit: `agent_events.py`, `agent_tasks.py`, `agent_verification.py`, `app.py`, `http_server.py`, `process_utils.py`, `sqlite_support.py`, `work_orchestrator.py`, `test_agent_state_e2e.py`, `test_agent_tasks.py`, `test_agent_verification.py`, `test_work_orchestrator.py`; untracked `handoff/`, `verification_rules.py`, `t09_project_config_test_fixture.py`, T08 test files, `test_lease_path_normalization.py`, `test_project_completion_root.py`, `test_project_memory_audit_completion.py`, T09 HTTP tests, T06 broker test, and `test_verified_handoff.py`.
+- Preserved existing dirty files. No root or other worktree writes.
+- Registered artifact confirms this checkout only. Lease receipt unavailable; lease status **UNKNOWN**. `.git/index.lock` absent; that does not prove task lease ownership.
+
+## Fresh candidate validation
+
+- Command:
+
+  ```text
+  python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t09_t06_v6_real_broker.py::test_v6_real_broker_project_receipt_and_generic_replay_rejection tests/test_verified_handoff.py::test_successful_test_command_receipt_can_complete_test_criterion tests/test_verified_handoff.py::test_worktree_creation_returns_separate_checkout_identity_and_owner_metadata tests/test_verified_handoff.py::test_worktree_cleanup_preserves_dirty_checkout tests/test_verified_handoff.py::test_task_cleanup_checks_owner_and_preserves_dirty_worktree tests/test_verified_handoff.py::test_task_cleanup_removes_owned_clean_worktree_and_records_trace tests/test_verified_handoff.py::test_task_cleanup_rejects_foreign_worktree_path tests/test_verified_handoff.py::test_task_cleanup_rejects_same_repo_foreign_worktree_retarget tests/test_verified_handoff.py::test_cancelled_task_cannot_reach_completed_handoff
+  ```
+
+- Result: exit 1; **8 passed, 1 failed in 8.16s**.
+- Failure: `tests/test_t09_t06_v6_real_broker.py:50` calls `app.commands.run_project_command`; candidate `CommandBroker` has no such method. Candidate `commands.py` exposes `CommandBroker.run` only. This is an unavailable T06 dependency in this snapshot; no T06 source edited.
+- Hashes: broker test `5BBB93770C5E9369EBDEFCC35F95C1B35ECBC84CD3C350F4F43F3D11924001E8`; `test_verified_handoff.py` `700E34A8483398331B2447794A7888D8F4ADC2F9570BA03A698069E324E1F548`; `test_work_orchestrator.py` `8A6192FDB689B056B6BF76EAC852E777A50C08C035DC12D899B2D68921C2DAD3`; `commands.py` `AED5A5D74B46735D579542E7C9B3B255033C6BC9FB7A4EB280E1F03EBB48889E`.
+
+## Earlier current-checkout receipts
+
+- Completion matrix command: `15 passed, 2 failed`. Both failures were valid memory cases with `repository_revision` absent from fixture checkpoint. Added revision to fixture; exact two failing selectors then passed (`2 passed in 7.05s`). Matrix was not rerun as a whole.
+- Structured-description, cross-field gram-boundary, and latest-failed-receipt selectors: `4 passed in 1.16s`.
+- Isolated latest-failed-receipt test: `1 passed in 1.27s`.
+- Earlier six selectors are covered again by the later completion matrix selection; no need to repeat.
+- Root-current packet `t09-latest-receipt-order-root-current.patch`, SHA-256 `547110F67AB5828ACCF465E0221207A0A163BFE95A751CF60271A1F941EF722E`; `git apply --check` passed against root HEAD `7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf`. Root remains untested and unchanged.
+
+## Remaining acceptance blockers
+
+- Candidate lacks T06 `run_project_command`; broker→typed receipt→HTTP/MCP end-to-end remains unverified.
+- Current attachment exposes no lease receipt; ownership lease remains UNKNOWN.
+- Root integration, root tests, repeated HTTP/MCP completion, and authenticated agent-to-tenant identity remain unverified.
+- T09 acceptance stays open. Do not infer completion from candidate-only receipts.
+
+## Follow-up: MCP persisted-receipt API
+
+- Extended T09-owned `tests/test_t09_http_task_completion_persisted_receipts.py` to reject invalid API token with HTTP 401 and unchanged task state, complete through authenticated `HubClient` → `mcp_server.local_ai_coord(task_complete)` → real local HTTP handler, then repeat completion.
+- Latest candidate test SHA-256: `BA3E2796BC75A9F0425038ED1FB9733AAFFCC1699015F10CB428AF222EE4B06D`.
+- Latest command: `python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t09_http_task_completion_persisted_receipts.py`; exit 0, `1 passed in 5.30s`.
+- Immutable root-current v2 patch: `handoff/t09-mcp-persisted-receipt-root-current-v2.patch`, SHA-256 `FD3734B3852D6CCCF1F35007960D08522E1FCA42844CE5EC24E3F61CA99AB960`; manifest SHA-256 `B33F5FCFE3451742B217253415E5B6EB46871E98F0A353FC76DC11335785D626`.
+- Exact root test preimage SHA-256: `454C23D473D95102F130C09C5FCD4CBBCEE5F99F45D80DED21FF15C5360182AD`; simulated postimage `7637B4985248AFEA738E4A526D605528C997F851B3167EB289DBA2A96A5BB9C4`.
+- Root `git apply --check`: PASS; no root write or test. This does not prove foreign-agent rejection or broker production path.

@@ -1,0 +1,111 @@
+from __future__ import annotations
+
+from pathlib import Path
+import subprocess
+
+
+root = Path(r"C:\Users\Adam\.local-ai-hub")
+candidate = Path(__file__).resolve().parents[1]
+relative = "tests/test_agent_verification.py"
+source = root / relative
+target = candidate / "handoff" / "root_patch_work" / "test_agent_verification.py"
+patch_path = candidate / "handoff" / "t09-command-provenance-tests-root-current.patch"
+text = source.read_text(encoding="utf-8")
+if text.count("import json\n") != 1:
+    raise SystemExit("unexpected root test imports")
+text = text.replace("import json\n", "import hashlib\nimport json\n", 1)
+text += '''
+
+@pytest.mark.parametrize(
+    ("command_text", "command_classification", "expected_complete"),
+    [
+        ("python -m ruff check src", "source_review", True),
+        ("echo lint", "source_review", False),
+        ("python -m ruff check src", "test", False),
+    ],
+)
+def test_project_lint_command_receipt_binds_runner_to_configured_alias(
+    stores: tuple[TaskStore, VerificationStore],
+    command_text: str,
+    command_classification: str,
+    expected_complete: bool,
+):
+    task_store, verifier = stores
+    task = task_store.create(
+        GoalContract(goal="project lint rule", acceptance_criteria=("lint",)),
+        ScopeContext(task_id="project-lint-rule"),
+        task_id="project-lint-rule",
+    )
+    lint_command_id = "cmd-lint"
+    evidence_id = verifier.artifact_store.put_json(
+        {
+            "kind": "work_command_verification",
+            "passed": True,
+            "task_id": task.task_id,
+            "owner": "agent",
+            "repository_revision": "rev-1",
+            "mutation_generation": 0,
+            "criterion": "lint",
+            "command_id": lint_command_id,
+            "command_classification": command_classification,
+            "project_alias": "lint",
+            "project_config_digest": "cfg-current",
+            "command_sha256": hashlib.sha256(command_text.encode("utf-8")).hexdigest(),
+            "exit_code": 0,
+            "result": {"success": True, "exit_code": 0},
+        },
+        "agent",
+        "command_verification",
+    )
+    receipt = VerificationReceipt.create(
+        task.task_id,
+        "lint",
+        evidence_id=evidence_id,
+        command_id=lint_command_id,
+        owner="agent",
+        repository_revision="rev-1",
+    )
+    record_rejected = False
+    try:
+        verifier.record(receipt)
+    except ValueError:
+        record_rejected = True
+    assert record_rejected is (command_classification != "source_review")
+
+    result = verifier.completion(
+        task.task_id,
+        current_revision="rev-1",
+        verification_rules={"lint": ["lint"]},
+        configured_criteria=("lint",),
+        configured_commands={"lint": "python -m ruff check src"},
+        project_config_digest="cfg-current",
+    )
+
+    assert result.complete is expected_complete
+    assert result.satisfied_criteria == (("lint",) if expected_complete else ())
+'''
+target.parent.mkdir(parents=True, exist_ok=True)
+text += '''
+
+def test_verification_command_classifier_ignores_test_words_in_file_paths():
+    assert classify_verification_command(
+        "python -m pyflakes C:/tmp/pytest-of-user/pytest-0/lint_target.py"
+    ) == "source_review"
+'''
+target.write_text(text, encoding="utf-8", newline="")
+result = subprocess.run(
+    ["git", "diff", "--no-index", "--", str(source), str(target)],
+    capture_output=True,
+    check=False,
+    text=True,
+)
+if result.returncode not in {0, 1}:
+    raise SystemExit(result.stderr or "could not build command-test patch")
+lines = result.stdout.splitlines()
+if len(lines) < 4:
+    raise SystemExit("command-test patch is empty")
+lines[0] = f"diff --git a/{relative} b/{relative}"
+lines[2] = f"--- a/{relative}"
+lines[3] = f"+++ b/{relative}"
+patch_path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="")
+print(patch_path)

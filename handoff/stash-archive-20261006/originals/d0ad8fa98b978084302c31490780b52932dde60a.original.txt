@@ -1,0 +1,2244 @@
+diff --git a/src/local_ai_hub/process_utils.py b/src/local_ai_hub/process_utils.py
+--- a/src/local_ai_hub/process_utils.py
++++ b/src/local_ai_hub/process_utils.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import ctypes
++import json
+ import ntpath
+ import os
+ import posixpath
+@@ -10,6 +11,7 @@
+ import signal
+ import shutil
+ import subprocess
++import tempfile
+ import time
+ import uuid
+ from typing import Any, Sequence
+@@ -17,6 +19,7 @@
+ 
+ _LOW_PRIORITY_VALUES = {"idle", "below_normal", "normal"}
+ _POST_TERMINATION_DRAIN_SECONDS = 0.5
++_WORKTREE_OWNERSHIP_FILE = "local-ai-hub-worktree-ownership.json"
+ _CANCEL_POLL_SECONDS = 0.1
+ _CANCEL_GRACE_SECONDS = 1.0
+ 
+@@ -935,6 +938,12 @@
+     branch_name: str | None = None,
+     worktree_path: str | Path | None = None,
+     base_commit: str = "HEAD",
++    *,
++    task_id: str = "",
++    owner: str = "",
++    created_at: float | None = None,
++    ttl_seconds: float = 86400.0,
++    expires_at: float | None = None,
+ ) -> dict[str, Any]:
+     """Create an isolated temporary Git worktree for safe agent modifications."""
+     repo = Path(repo_root).expanduser().resolve(strict=False)
+@@ -943,16 +952,42 @@
+     if not shutil.which("git"):
+         return {"success": False, "error": "git executable not found in PATH"}
+ 
++    import math
++    import tempfile
+     import uuid
+-    lease_id = f"wt_{uuid.uuid4().hex[:8]}"
++    try:
++        created_at_value = float(created_at) if created_at is not None else time.time()
++        ttl_value = float(ttl_seconds)
++        expires_at_value = float(expires_at) if expires_at is not None else None
++        task_id_value = str(task_id)
++        owner_value = str(owner)
++    except Exception as exc:
++        return {"success": False, "error": f"invalid worktree metadata: {exc}"}
++    if (
++        not math.isfinite(created_at_value)
++        or not math.isfinite(ttl_value)
++        or (expires_at_value is not None and not math.isfinite(expires_at_value))
++    ):
++        return {"success": False, "error": "invalid worktree metadata: values must be finite"}
++    ttl_value = max(60.0, min(ttl_value, 30 * 24 * 60 * 60.0))
++    lease_id = f"lease_{uuid.uuid4().hex[:12]}"
++    worktree_id = f"worktree_{uuid.uuid4().hex[:12]}"
+     branch = branch_name or f"lease/{lease_id}"
++    temp_root = Path(tempfile.gettempdir()).resolve(strict=False)
+     if not worktree_path:
+-        import tempfile
+-        target_dir = Path(tempfile.gettempdir()) / f"lah_wt_{lease_id}"
++        target_dir = temp_root / f"lah_wt_{worktree_id}"
+     else:
+-        target_dir = Path(worktree_path).resolve(strict=False)
++        raw_target = Path(worktree_path).expanduser()
++        if ".." in raw_target.parts:
++            return {"success": False, "error": "worktree path traversal is not allowed"}
++        target_dir = raw_target.resolve(strict=False)
++    try:
++        target_dir.relative_to(temp_root)
++    except ValueError:
++        return {"success": False, "error": "worktree path escapes the temporary root"}
+ 
+     cmd = ["git", "-C", str(repo), "worktree", "add", "-b", branch, str(target_dir), base_commit]
++    created_checkout = False
+     try:
+         completed = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=30, **hidden_run_kwargs())
+         if completed.returncode != 0:
+@@ -961,16 +996,72 @@
+                 "error": completed.stderr.strip() or "failed to create git worktree",
+                 "exit_code": completed.returncode,
+             }
++        created_checkout = True
++        metadata_path = _worktree_ownership_path(target_dir)
++        if metadata_path is None:
++            raise RuntimeError("could not locate worktree administrative directory")
++        metadata = {
++            "schema_version": 1,
++            "worktree_id": worktree_id,
++            "task_id": task_id_value,
++            "owner": owner_value,
++            "repo_root": str(repo),
++            "worktree_path": str(target_dir),
++            "branch": branch,
++            "created_at": created_at_value,
++            "ttl_seconds": ttl_value,
++            "expires_at": expires_at_value,
++        }
++        metadata_tmp = metadata_path.with_name(f".{metadata_path.name}.{uuid.uuid4().hex}.tmp")
++        metadata_tmp.write_text(json.dumps(metadata, sort_keys=True), encoding="utf-8")
++        os.replace(metadata_tmp, metadata_path)
+         return {
+             "success": True,
+             "lease_id": lease_id,
++            "worktree_id": worktree_id,
+             "worktree_path": str(target_dir),
+             "branch": branch,
+             "base_commit": base_commit,
+             "repo_root": str(repo),
++            "task_id": task_id_value,
++            "owner": owner_value,
++            "created_at": created_at_value,
++            "ttl_seconds": ttl_value,
++            "expires_at": expires_at_value,
+         }
+     except Exception as exc:
++        if created_checkout:
++            subprocess.run(
++                ["git", "-C", str(repo), "worktree", "remove", str(target_dir)],
++                capture_output=True,
++                text=True,
++                check=False,
++                timeout=30,
++                **hidden_run_kwargs(),
++            )
+         return {"success": False, "error": str(exc)}
++
++
++def _git_value(root: Path, *arguments: str, timeout: float = 15.0) -> str:
++    try:
++        result = subprocess.run(
++            ["git", "-C", str(root), *arguments],
++            capture_output=True,
++            text=True,
++            check=False,
++            timeout=timeout,
++            **hidden_run_kwargs(),
++        )
++    except Exception:
++        return ""
++    return result.stdout.strip() if result.returncode == 0 else ""
++
++
++def _worktree_ownership_path(worktree_path: str | Path) -> Path | None:
++    git_dir = _git_value(Path(worktree_path), "rev-parse", "--absolute-git-dir")
++    if not git_dir:
++        return None
++    return Path(git_dir).expanduser().resolve(strict=False) / _WORKTREE_OWNERSHIP_FILE
+ 
+ 
+ def remove_git_worktree(
+@@ -978,42 +1069,138 @@
+     worktree_path: str | Path,
+     delete_branch: bool = True,
+     branch_name: str | None = None,
++    *,
++    worktree_id: str = "",
++    expected_task_id: str = "",
++    expected_owner: str = "",
++    expected_created_at: float | None = None,
++    expected_ttl_seconds: float | None = None,
++    expected_expires_at: float | None = None,
+ ) -> dict[str, Any]:
+-    """Remove a previously leased Git worktree and optionally prune its branch."""
++    """Remove only clean worktree whose persisted owner metadata matches caller."""
+     repo = Path(repo_root).expanduser().resolve(strict=False)
+     target = Path(worktree_path).resolve(strict=False)
+     if not shutil.which("git"):
+         return {"success": False, "error": "git executable not found"}
+-
+-    try:
+-        cmd_rm = ["git", "-C", str(repo), "worktree", "remove", "--force", str(target)]
+-        subprocess.run(cmd_rm, capture_output=True, text=True, check=False, timeout=30, **hidden_run_kwargs())
+-
+-        cmd_prune = ["git", "-C", str(repo), "worktree", "prune"]
+-        subprocess.run(cmd_prune, capture_output=True, text=True, check=False, timeout=10, **hidden_run_kwargs())
+-
+-        if target.exists():
+-            try:
+-                shutil.rmtree(target, ignore_errors=True)
+-            except Exception:
+-                pass
+-
++    if not worktree_id.strip():
++        return {"success": False, "error": "worktree ownership identifier is required"}
++    try:
++        temp_root = Path(tempfile.gettempdir()).resolve(strict=False)
++        try:
++            target.relative_to(temp_root)
++        except ValueError:
++            return {"success": False, "error": "worktree path escapes the temporary root"}
++        if not target.is_dir() or not (repo / ".git").exists():
++            return {"success": False, "error": "repository or worktree path is unavailable"}
++
++        repo_common_raw = _git_value(repo, "rev-parse", "--git-common-dir")
++        target_common_raw = _git_value(target, "rev-parse", "--git-common-dir")
++        if not repo_common_raw or not target_common_raw:
++            return {"success": False, "error": "repository worktree identity is unavailable"}
++        repo_common = Path(repo_common_raw)
++        target_common = Path(target_common_raw)
++        if not repo_common.is_absolute():
++            repo_common = repo / repo_common
++        if not target_common.is_absolute():
++            target_common = target / target_common
++        if repo_common.resolve(strict=False) != target_common.resolve(strict=False):
++            return {"success": False, "error": "worktree belongs to another repository"}
++
++        top_level = _git_value(target, "rev-parse", "--show-toplevel")
++        if not top_level or Path(top_level).resolve(strict=False) != target:
++            return {"success": False, "error": "worktree path does not match checkout root"}
++        listed = _git_value(repo, "worktree", "list", "--porcelain", timeout=20)
++        listed_paths = {
++            Path(line.removeprefix("worktree ")).resolve(strict=False)
++            for line in listed.splitlines()
++            if line.startswith("worktree ")
++        }
++        if target not in listed_paths:
++            return {"success": False, "error": "checkout is not registered to this repository"}
++
++        metadata_path = _worktree_ownership_path(target)
++        if metadata_path is None or not metadata_path.is_file():
++            return {"success": False, "error": "worktree ownership metadata is unavailable"}
++        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
++        if not isinstance(metadata, dict):
++            return {"success": False, "error": "worktree ownership metadata is invalid"}
++        recorded_branch = str(metadata.get("branch", ""))
++        current_branch = _git_value(target, "symbolic-ref", "--short", "HEAD")
++        if (
++            metadata.get("schema_version") != 1
++            or str(metadata.get("worktree_id", "")) != worktree_id
++            or Path(str(metadata.get("repo_root", ""))).resolve(strict=False) != repo
++            or Path(str(metadata.get("worktree_path", ""))).resolve(strict=False) != target
++            or not recorded_branch
++            or recorded_branch != (branch_name or recorded_branch)
++            or current_branch != recorded_branch
++        ):
++            return {"success": False, "error": "worktree ownership or branch metadata does not match"}
++        if expected_task_id and str(metadata.get("task_id", "")) != expected_task_id:
++            return {"success": False, "error": "worktree task ownership does not match"}
++        if expected_owner and str(metadata.get("owner", "")) != expected_owner:
++            return {"success": False, "error": "worktree owner metadata does not match"}
++
++        try:
++            created_at = float(metadata.get("created_at"))
++            ttl_seconds = float(metadata.get("ttl_seconds"))
++            expires_at_raw = metadata.get("expires_at")
++            expires_at = float(expires_at_raw) if expires_at_raw is not None else None
++        except (TypeError, ValueError):
++            return {"success": False, "error": "worktree time metadata is invalid"}
++        import math
++        if (
++            not math.isfinite(created_at)
++            or not math.isfinite(ttl_seconds)
++            or ttl_seconds < 60
++            or ttl_seconds > 30 * 24 * 60 * 60
++            or (expires_at is not None and (not math.isfinite(expires_at) or abs(expires_at - (created_at + ttl_seconds)) > max(1e-6, ttl_seconds * 1e-9)))
++        ):
++            return {"success": False, "error": "worktree time metadata is inconsistent"}
++        for expected, actual in (
++            (expected_created_at, created_at),
++            (expected_ttl_seconds, ttl_seconds),
++            (expected_expires_at, expires_at),
++        ):
++            if expected is not None and (actual is None or abs(float(expected) - float(actual)) > max(1e-6, ttl_seconds * 1e-9)):
++                return {"success": False, "error": "worktree time metadata does not match task ownership"}
++
++        status = subprocess.run(
++            ["git", "-C", str(target), "status", "--porcelain", "--untracked-files=all", "--ignored"],
++            capture_output=True,
++            text=True,
++            check=False,
++            timeout=30,
++            **hidden_run_kwargs(),
++        )
++        if status.returncode != 0 or status.stdout.strip():
++            return {"success": False, "error": "worktree contains uncommitted or ignored changes"}
++
++        removed = subprocess.run(
++            ["git", "-C", str(repo), "worktree", "remove", str(target)],
++            capture_output=True,
++            text=True,
++            check=False,
++            timeout=30,
++            **hidden_run_kwargs(),
++        )
++        if removed.returncode != 0:
++            return {"success": False, "error": removed.stderr.strip() or "Git refused to remove worktree"}
+         branch_deleted = False
+-        if delete_branch and branch_name:
+-            cmd_branch = ["git", "-C", str(repo), "branch", "-D", branch_name]
++        if delete_branch:
++            cmd_branch = ["git", "-C", str(repo), "branch", "-d", recorded_branch]
+             proc_b = subprocess.run(cmd_branch, capture_output=True, text=True, check=False, timeout=10, **hidden_run_kwargs())
+             branch_deleted = (proc_b.returncode == 0)
+-
+         return {
+             "success": True,
+             "worktree_removed": True,
+             "branch_deleted": branch_deleted,
+             "repo_root": str(repo),
+             "worktree_path": str(target),
++            "worktree_id": worktree_id,
+         }
+     except Exception as exc:
+         return {"success": False, "error": str(exc)}
+-
+ 
+ def list_git_worktrees(repo_root: str | Path) -> dict[str, Any]:
+     """Enumerate active Git worktrees and metadata."""
+diff --git a/tests/test_verified_handoff.py b/tests/test_verified_handoff.py
+new file mode 100644
+index 0000000..2a438b5
+--- /dev/null
++++ b/tests/test_verified_handoff.py
+@@ -0,0 +1,498 @@
++from __future__ import annotations
++
++import json
++import shutil
++import subprocess
++import tempfile
++import time
++from pathlib import Path
++
++import pytest
++
++from local_ai_hub.work_orchestrator import WorkOrchestrator
++from local_ai_hub.process_utils import create_git_worktree, remove_git_worktree
++from local_ai_hub.agent_events import AgentStateStore
++from local_ai_hub.agent_identity import ScopeContext
++from local_ai_hub.agent_tasks import GoalContract, InvalidTransitionError, TaskCheckpoint, TaskStatus, TaskStore
++
++
++class _Artifacts:
++    def __init__(self):
++        self.items = {}
++
++    def put(self, text, tenant, kind, *args):
++        key = f"artifact-{len(self.items) + 1}"
++        self.items[key] = {"text": text, "tenant": tenant, "kind": kind}
++        return key
++
++    def get(self, artifact_id, max_chars=6000, section="", tenant=None):
++        artifact = self.items.get(artifact_id)
++        if artifact is None or (tenant is not None and artifact["tenant"] != tenant):
++            return {"success": False, "error": "artifact not found or expired", "artifact_id": artifact_id}
++        text = artifact["text"][:max_chars]
++        return {
++            "success": True,
++            "artifact_id": artifact_id,
++            "kind": artifact["kind"],
++            "text": text,
++            "next_offset": len(text) if len(text) < len(artifact["text"]) else None,
++        }
++
++
++class _Leases:
++    def claim_batch(self, tenant, root, paths, ttl_seconds=900, purpose=""):
++        return {"success": True, "lease_id": "lease-test", "paths": paths}
++
++    def release(self, tenant, lease_id=""):
++        return {"success": True}
++
++
++class _Services:
++    def __init__(self, validation_command="git diff --check", command_id="", repository_revision=""):
++        self.delegate_calls = 0
++        self.commands_run = []
++        self.validation_command = validation_command
++        self.command_id = command_id
++        self.repository_revision = repository_revision
++
++    def repo_profile(self, root):
++        return {"success": True, "validation_commands": [self.validation_command]}
++
++    def repo_map(self, root, max_symbols=80):
++        return {"success": True, "files": ["a.txt"]}
++
++    def test_matrix(self, root):
++        return {"success": True, "commands": [self.validation_command]}
++
++    def deterministic_query(self, root, query, limit=24):
++        return {"success": True, "facts": []}
++
++    def code_query(self, root, query, limit=20):
++        return {"success": True, "symbols": []}
++
++    def fast_context(self, root, query, max_tokens):
++        return {"success": True, "evidence": []}
++
++    def repo_diff(self, root, base="HEAD", staged=False, max_tokens=5000):
++        diff = subprocess.run(["git", "-C", root, "diff"], capture_output=True, text=True, check=True).stdout
++        return {"success": True, "diff": diff, "changed_files": ["a.txt"] if diff else []}
++
++    def delegate_repo(self, args, tenant):
++        self.delegate_calls += 1
++        if self.delegate_calls == 1:
++            plan = {
++                "summary": "edit then validate",
++                "needs_agent": False,
++                "steps": [
++                    {"id": "edit", "kind": "edit", "task": "replace old with new", "depends_on": [], "acceptance": ["tests pass"]},
++                    {"id": "validate", "kind": "validate", "task": "run validation", "depends_on": ["edit"], "acceptance": ["tests pass"]},
++                ],
++                "validation_commands": [self.validation_command],
++            }
++            return {"success": True, "text": json.dumps(plan)}
++        return {"success": True, "text": "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n"}
++
++    def second_opinion(self, args, tenant):
++        return {"success": True, "text": json.dumps({
++            "passed": True,
++            "summary": "model says tests pass",
++            "criteria": [{"criterion": "tests pass", "passed": True}],
++            "risks": [],
++        })}
++
++    def command(self, args, tenant):
++        if args.get("action") == "discover":
++            return {"success": True, "validation_commands": [self.validation_command]}
++        self.commands_run.append(args.get("command"))
++        return {
++            "success": True, "exit_code": 0, "error": "",
++            "execution_id": self.command_id,
++            "repository_revision": self.repository_revision if self.command_id else "",
++        }
++
++
++def _repo(root: Path) -> Path:
++    root.mkdir()
++    subprocess.run(["git", "init", "-q", str(root)], check=True)
++    (root / "a.txt").write_text("old\n", encoding="utf-8")
++    subprocess.run(["git", "-C", str(root), "add", "a.txt"], check=True)
++    subprocess.run(["git", "-C", str(root), "-c", "user.name=T", "-c", "user.email=t@e", "commit", "-qm", "init"], check=True)
++    return root
++
++
++def _wait(orch: WorkOrchestrator, work_id: str):
++    deadline = time.time() + 8
++    while time.time() < deadline:
++        result = orch.get("tenant", work_id, profile="debug")
++        if result.get("status") in {"complete", "failed", "cancelled", "needs_agent", "partial"}:
++            return result
++        time.sleep(0.05)
++    raise AssertionError(orch.get("tenant", work_id, profile="debug"))
++
++
++def _run_handoff(tmp_path, validation_command="git diff --check", command_id=""):
++    root = _repo(tmp_path / "repo")
++    state = tmp_path / "state"
++    artifacts = _Artifacts()
++    repository_revision = subprocess.run(
++        ["git", "-C", str(root), "rev-parse", "--verify", "HEAD"],
++        capture_output=True,
++        check=True,
++        text=True,
++    ).stdout.strip()
++    services = _Services(validation_command, command_id, repository_revision)
++    orch = WorkOrchestrator(
++        {"work_orchestrator": {"enabled": True, "max_steps": 16, "max_llm_steps": 10, "max_seconds": 60, "step_retry_limit": 0}},
++        state,
++        services,
++        None,
++        _Leases(),
++        artifacts,
++    )
++    try:
++        submitted = orch.submit("tenant", {
++            "root": str(root.resolve()),
++            "task": "change a.txt and verify tests",
++            "acceptance_criteria": ["tests pass"],
++        })
++        result = _wait(orch, submitted["work_id"])
++        return result, services, artifacts
++    finally:
++        orch.close()
++
++
++def test_model_pass_and_diff_check_cannot_complete_test_criterion(tmp_path):
++    result, services, _ = _run_handoff(tmp_path)
++    assert "git diff --check" in services.commands_run
++    assert result["status"] != "complete", result
++    assert "receipt" in result.get("error", "").lower()
++
++
++def test_successful_test_command_receipt_can_complete_test_criterion(tmp_path):
++    result, services, _ = _run_handoff(tmp_path, "python -m pytest -q", "cmd-test-1")
++    assert services.commands_run == ["python -m pytest -q"]
++    assert result["status"] == "complete", result
++    assert result["verification"]["receipt_gate"]["satisfied_criteria"] == ["tests pass"]
++
++
++def test_worktree_creation_returns_separate_checkout_identity_and_owner_metadata(tmp_path):
++    repo = _repo(tmp_path / "repo")
++    created = create_git_worktree(
++        repo,
++        branch_name="owned-task",
++        task_id="task-owned",
++        owner="worker-1",
++        created_at=100.0,
++        ttl_seconds=120.0,
++        expires_at=220.0,
++    )
++
++    assert created["success"] is True
++    assert created["worktree_id"]
++    assert created["worktree_id"] != created["lease_id"]
++    assert created["task_id"] == "task-owned"
++    assert created["owner"] == "worker-1"
++    assert created["repo_root"] == str(repo.resolve())
++    assert created["branch"] == "owned-task"
++    assert created["created_at"] == 100.0
++    assert created["ttl_seconds"] == 120.0
++    assert created["expires_at"] == 220.0
++
++
++@pytest.mark.parametrize(
++    "metadata",
++    [
++        {"created_at": "invalid"},
++        {"ttl_seconds": "invalid"},
++        {"expires_at": "invalid"},
++        {"created_at": float("nan")},
++        {"ttl_seconds": float("inf")},
++        {"expires_at": float("-inf")},
++    ],
++)
++def test_worktree_creation_rejects_invalid_metadata_before_creating_checkout(tmp_path, metadata):
++    repo = _repo(tmp_path / "repo")
++    checkout = tmp_path / "checkout"
++
++    result = create_git_worktree(
++        repo, branch_name="bad-metadata", worktree_path=checkout, **metadata
++    )
++
++    assert result["success"] is False
++    assert not checkout.exists()
++    assert "metadata" in result["error"]
++
++
++def test_worktree_cleanup_preserves_dirty_checkout(tmp_path):
++    repo = _repo(tmp_path / "repo")
++    created = create_git_worktree(repo, branch_name="owned-task", worktree_path=tmp_path / "owned")
++    worktree = Path(created["worktree_path"])
++    (worktree / "a.txt").write_text("user changes\n", encoding="utf-8")
++
++    removed = remove_git_worktree(repo, worktree, branch_name="owned-task", worktree_id=created["worktree_id"])
++
++    assert removed["success"] is False
++    assert (worktree / "a.txt").read_text(encoding="utf-8") == "user changes\n"
++
++
++def test_worktree_creation_rejects_parent_traversal(tmp_path):
++    repo = _repo(tmp_path / "repo")
++    temp_root = Path(tempfile.gettempdir()).resolve(strict=False)
++    escaped = temp_root / ".." / f"lah_escape_{time.time_ns()}"
++
++    result = create_git_worktree(repo, branch_name="escaped", worktree_path=escaped)
++
++    assert result["success"] is False
++    assert "traversal" in result["error"]
++    assert not escaped.resolve(strict=False).exists()
++
++
++def test_worktree_creation_rejects_absolute_path_outside_temporary_root(tmp_path):
++    repo = _repo(tmp_path / "repo")
++    temp_root = Path(tempfile.gettempdir()).resolve(strict=False)
++    escaped = temp_root.parent / f"lah_escape_{time.time_ns()}"
++
++    result = create_git_worktree(repo, branch_name="escaped", worktree_path=escaped)
++
++    assert result["success"] is False
++    assert "escapes" in result["error"]
++    assert not escaped.exists()
++
++
++def test_worktree_cleanup_rejects_checkout_owned_by_another_repo(tmp_path):
++    repo_a = _repo(tmp_path / "repo-a")
++    repo_b = _repo(tmp_path / "repo-b")
++    created = create_git_worktree(repo_b, branch_name="repo-b-task", worktree_path=tmp_path / "repo-b-checkout")
++    worktree = Path(created["worktree_path"])
++
++    removed = remove_git_worktree(repo_a, worktree, branch_name="repo-b-task", worktree_id=created["worktree_id"])
++
++    assert removed["success"] is False
++    assert worktree.is_dir()
++    assert (worktree / "a.txt").read_text(encoding="utf-8") == "old\n"
++
++
++def test_worktree_cleanup_rejects_branch_changed_since_creation(tmp_path):
++    repo = _repo(tmp_path / "repo")
++    created = create_git_worktree(repo, branch_name="owned-task", worktree_path=tmp_path / "owned")
++    worktree = Path(created["worktree_path"])
++    switched = subprocess.run(
++        ["git", "-C", str(worktree), "switch", "-c", "replacement-task"],
++        capture_output=True,
++        text=True,
++        check=False,
++    )
++    assert switched.returncode == 0, switched.stderr
++
++    removed = remove_git_worktree(
++        repo,
++        worktree,
++        branch_name="owned-task",
++        worktree_id=created["worktree_id"],
++    )
++
++    assert removed["success"] is False
++    assert worktree.is_dir()
++
++
++def test_task_cleanup_checks_owner_and_preserves_dirty_worktree(tmp_path):
++    repo = _repo(tmp_path / "repo")
++    tasks = TaskStore(AgentStateStore(tmp_path / "agent-state.db"))
++    task = tasks.create(
++        GoalContract(goal="safe worktree", acceptance_criteria=["feature"]),
++        ScopeContext(repository_id=str(repo)),
++        actor="owner-a", auto_worktree=True,
++    )
++    worktree_info = task.checkpoint.state_data["worktree"]
++    worktree = Path(worktree_info["worktree_path"])
++    try:
++        assert task.lease_id == ""
++        assert worktree_info["worktree_id"]
++        assert worktree_info["task_id"] == task.task_id
++        assert worktree_info["owner"] == "owner-a"
++        assert Path(worktree_info["repo_root"]) == repo.resolve()
++        assert worktree_info["branch"]
++        assert worktree_info["expires_at"] == worktree_info["created_at"] + worktree_info["ttl_seconds"]
++        foreign = tasks.cleanup_worktree(task.task_id, actor="owner-b")
++        assert foreign["success"] is False
++        assert worktree.is_dir()
++
++        (worktree / "a.txt").write_text("keep these edits\n", encoding="utf-8")
++        dirty = tasks.cleanup_worktree(task.task_id, actor="owner-a")
++        assert dirty["success"] is False
++        assert (worktree / "a.txt").read_text(encoding="utf-8") == "keep these edits\n"
++    finally:
++        shutil.rmtree(worktree, ignore_errors=True)
++
++
++def test_task_cleanup_removes_owned_clean_worktree_and_records_trace(tmp_path):
++    repo = _repo(tmp_path / "repo")
++    tasks = TaskStore(AgentStateStore(tmp_path / "agent-state.db"))
++    task = tasks.create(
++        GoalContract(goal="clean owned worktree", acceptance_criteria=["feature"]),
++        ScopeContext(repository_id=str(repo)),
++        actor="owner-a",
++        auto_worktree=True,
++    )
++    worktree = Path(task.checkpoint.state_data["worktree"]["worktree_path"])
++
++    result = tasks.cleanup_worktree(task.task_id, actor="owner-a")
++
++    assert result["success"] is True, result
++    assert result["had_worktree"] is True
++    assert not worktree.exists()
++    cleaned = tasks.get(task.task_id)
++    assert cleaned is not None
++    assert cleaned.checkpoint.state_data["worktree"]["cleanup_success"] is True
++    assert cleaned.checkpoint.state_data["worktree"]["cleaned_at"] > 0
++
++
++@pytest.mark.parametrize(
++    "field",
++    ["task_id", "owner", "repo_root", "branch", "worktree_id", "created_at", "expires_at", "ttl_seconds"],
++)
++def test_task_cleanup_rejects_tampered_ownership_metadata(tmp_path, field):
++    repo = _repo(tmp_path / "repo")
++    tasks = TaskStore(AgentStateStore(tmp_path / "agent-state.db"))
++    task = tasks.create(
++        GoalContract(goal="validate worktree identity", acceptance_criteria=["feature"]),
++        ScopeContext(repository_id=str(repo)),
++        actor="owner-a",
++        auto_worktree=True,
++    )
++    original = dict(task.checkpoint.state_data["worktree"])
++    worktree = Path(original["worktree_path"])
++    tampered = dict(original)
++    tampered[field] = {
++        "task_id": "foreign-task",
++        "owner": "owner-b",
++        "repo_root": str(tmp_path / "foreign-repo"),
++        "branch": "foreign-branch",
++        "worktree_id": "wt_foreign000000",
++        "created_at": original["created_at"] + 60,
++        "expires_at": original["expires_at"] + 60,
++        "ttl_seconds": original["ttl_seconds"] + 60,
++    }[field]
++    tasks.checkpoint(
++        task.task_id,
++        TaskCheckpoint(state_data={**task.checkpoint.state_data, "worktree": tampered}),
++        actor="owner-a",
++        idempotency_key=f"tamper-{field}",
++    )
++
++    try:
++        result = tasks.cleanup_worktree(task.task_id, actor="owner-a")
++
++        assert result["success"] is False
++        assert worktree.is_dir()
++    finally:
++        latest = tasks.get(task.task_id)
++        if worktree.is_dir() and latest is not None:
++            tasks.checkpoint(
++                task.task_id,
++                TaskCheckpoint(state_data={**latest.checkpoint.state_data, "worktree": original}),
++                actor="owner-a",
++                idempotency_key=f"restore-{field}",
++            )
++            tasks.cleanup_worktree(task.task_id, actor="owner-a")
++
++
++@pytest.mark.parametrize("actor", ["http-default", "system", "admin", "*", ""])
++def test_task_cleanup_rejects_reserved_or_missing_actor(tmp_path, actor):
++    repo = _repo(tmp_path / "repo")
++    tasks = TaskStore(AgentStateStore(tmp_path / "agent-state.db"))
++    task = tasks.create(
++        GoalContract(goal="owner-gated cleanup", acceptance_criteria=["feature"]),
++        ScopeContext(repository_id=str(repo)),
++        actor="owner-a", auto_worktree=True,
++    )
++    worktree_info = task.checkpoint.state_data["worktree"]
++    worktree = Path(worktree_info["worktree_path"])
++    try:
++        result = tasks.cleanup_worktree(task.task_id, actor=actor)
++        assert result["success"] is False
++        assert worktree.is_dir()
++    finally:
++        shutil.rmtree(worktree, ignore_errors=True)
++
++
++def test_task_cleanup_rejects_foreign_worktree_path(tmp_path):
++    repo_a = _repo(tmp_path / "repo-a")
++    repo_b = _repo(tmp_path / "repo-b")
++    foreign = create_git_worktree(repo_b, branch_name="foreign-owner", worktree_path=tmp_path / "foreign-checkout")
++    tasks = TaskStore(AgentStateStore(tmp_path / "agent-state.db"))
++    task = tasks.create(
++        GoalContract(goal="safe worktree", acceptance_criteria=["feature"]),
++        ScopeContext(repository_id=str(repo_a)),
++        actor="owner-a", auto_worktree=True,
++    )
++    own_path = Path(task.checkpoint.state_data["worktree"]["worktree_path"])
++    tampered = dict(task.checkpoint.state_data["worktree"])
++    tampered["worktree_path"] = foreign["worktree_path"]
++    tasks.checkpoint(
++        task.task_id,
++        TaskCheckpoint(state_data={**task.checkpoint.state_data, "worktree": tampered}),
++        actor="owner-a",
++    )
++
++    result = tasks.cleanup_worktree(task.task_id, actor="owner-a")
++
++    assert result["success"] is False
++    assert own_path.is_dir()
++    assert Path(foreign["worktree_path"]).is_dir()
++    shutil.rmtree(own_path, ignore_errors=True)
++    shutil.rmtree(foreign["worktree_path"], ignore_errors=True)
++
++
++def test_task_cleanup_rejects_same_repo_foreign_worktree_retarget(tmp_path):
++    repo = _repo(tmp_path / "repo")
++    foreign = create_git_worktree(
++        repo,
++        branch_name="foreign-task",
++        worktree_path=tmp_path / "foreign-checkout",
++    )
++    tasks = TaskStore(AgentStateStore(tmp_path / "agent-state.db"))
++    task = tasks.create(
++        GoalContract(goal="safe worktree", acceptance_criteria=["feature"]),
++        ScopeContext(repository_id=str(repo)),
++        actor="owner-a",
++        auto_worktree=True,
++    )
++    own_worktree = dict(task.checkpoint.state_data["worktree"])
++    own_path = Path(own_worktree["worktree_path"])
++    retargeted = dict(own_worktree)
++    retargeted["worktree_path"] = foreign["worktree_path"]
++    retargeted["branch"] = foreign["branch"]
++    retargeted["worktree_id"] = foreign["worktree_id"]
++    tasks.checkpoint(
++        task.task_id,
++        TaskCheckpoint(
++            state_data={**task.checkpoint.state_data, "worktree": retargeted}
++        ),
++        actor="owner-a",
++    )
++
++    result = tasks.cleanup_worktree(task.task_id, actor="owner-a")
++
++    assert result["success"] is False
++    assert own_path.is_dir()
++    assert Path(foreign["worktree_path"]).is_dir()
++    shutil.rmtree(own_path, ignore_errors=True)
++    shutil.rmtree(foreign["worktree_path"], ignore_errors=True)
++
++
++def test_cancelled_task_cannot_reach_completed_handoff(tmp_path):
++    tasks = TaskStore(AgentStateStore(tmp_path / "agent-state.db"))
++    task = tasks.create(
++        GoalContract(goal="cancel before handoff", acceptance_criteria=["tests pass"]),
++        ScopeContext(repository_id=str(tmp_path)),
++        task_id="cancelled-task",
++    )
++    tasks.transition(task.task_id, TaskStatus.CANCELLED, reason="cancelled before verification", actor="agent", idempotency_key="cancel")
++
++    try:
++        tasks.transition(task.task_id, TaskStatus.COMPLETED, reason="attempt handoff", actor="agent", idempotency_key="complete")
++    except InvalidTransitionError:
++        pass
++    else:
++        raise AssertionError("cancelled task reached completed state")
+--- a/src/local_ai_hub/agent_verification.py
++++ b/src/local_ai_hub/agent_verification.py
+@@ -2,6 +2,10 @@
+ 
+ from .json_utils import dumps as json_dumps
+ 
++import hashlib
++import os
++import shlex
++from pathlib import Path
+ import json
+ import re
+ import threading
+@@ -32,16 +36,33 @@
+ 
+ 
+ def classify_verification_command(command: str) -> str:
+-    """Return evidence kind command can support, defaulting conservatively."""
++    """Return the evidence kind a command can support, defaulting conservatively."""
+     text = str(command or "").lower()
+-    if re.search(r"\b(benchmark|bench|hyperfine|pytest-benchmark)\b", text):
++    try:
++        tokens = shlex.split(text, posix=False)
++    except ValueError:
++        tokens = text.split()
++    command_tokens = [Path(token.strip("\"'")).stem.lower() for token in tokens]
++    if any(token in {"benchmark", "bench", "hyperfine", "pytest-benchmark"} for token in command_tokens):
+         return "benchmark"
+-    if re.search(
+-        r"\b(pytest|py\.test|unittest|dotnet\s+test|npm\s+(?:run\s+)?test|"
+-        r"pnpm\s+(?:run\s+)?test|yarn\s+(?:run\s+)?test|cargo\s+test|go\s+test|"
+-        r"ctest|tox|nox|jest|vitest|mocha|phpunit|pester)\b",
+-        text,
+-    ) or re.search(r"\bpython(?:\d+(?:\.\d+)?)?\s+-m\s+(?:pytest|unittest)\b", text):
++    test_tools = {
++        "pytest", "py.test", "unittest", "ctest", "tox", "nox", "jest",
++        "vitest", "mocha", "phpunit", "pester",
++    }
++    if any(token in test_tools for token in command_tokens):
++        return "test"
++    for index, token in enumerate(command_tokens[:-1]):
++        if token in {"dotnet", "cargo", "go"} and command_tokens[index + 1] == "test":
++            return "test"
++        if token in {"npm", "pnpm", "yarn"}:
++            following = command_tokens[index + 1 : index + 3]
++            if following[:1] == ["test"] or following == ["run", "test"]:
++                return "test"
++    if any(
++        command_tokens[index : index + 2] == ["-m", module]
++        for index in range(len(command_tokens) - 1)
++        for module in ("pytest", "unittest")
++    ):
+         return "test"
+     return "source_review"
+ 
+@@ -397,6 +418,10 @@
+         bool | tuple[str, ...] | list[str] | Mapping[str, bool | tuple[str, ...]] | None
+     ) = None,
+     configured_criteria: tuple[str, ...] | list[str] | None = None,
++    configured_commands: Mapping[str, Any] | None = None,
++    configured_environment_sha256: Mapping[str, str] | None = None,
++    project_config_digest: str = "",
++    project_root: str | Path = "",
+     now: float | None = None,
+ ) -> CompletionResult:
+     """Apply shared receipt gates to durable tasks and work-order handoffs.
+@@ -496,6 +521,10 @@
+             artifact_store,
+             expected_owner=expected_owner,
+             require_repository_revision=require_repository_revision,
++            expected_project_command=(configured_commands or {}).get(criterion),
++            expected_project_config_digest=project_config_digest,
++            expected_project_environment_sha256=(configured_environment_sha256 or {}).get(criterion, ""),
++            expected_project_root=project_root,
+         ):
+             unsatisfied.append(criterion)
+         elif criterion_evidence_type(criterion) == "test" and (
+@@ -541,6 +570,10 @@
+     *,
+     expected_owner: str,
+     require_repository_revision: bool,
++    expected_project_command: Any | None = None,
++    expected_project_config_digest: str = "",
++    expected_project_environment_sha256: str = "",
++    expected_project_root: str | Path = "",
+ ) -> bool:
+     """Re-read and bind positive receipts to complete, tenant-scoped proof artifacts."""
+     if artifact_store is None or not expected_owner or receipt.owner != expected_owner:
+@@ -586,6 +619,114 @@
+     ):
+         return False
+     if expected_kind == "command_verification":
++        command_classification = proof.get("command_classification")
++        if command_classification is not None and command_classification != receipt.evidence_type:
++            return False
++        if expected_project_config_digest:
++            command_digest = proof.get("command_sha256")
++            actual_command = proof.get("command")
++            environment_digest = proof.get("project_environment_sha256")
++            configured_digest = proof.get("configured_command_sha256")
++            arguments_digest = proof.get("caller_arguments_sha256")
++            if (
++                command_classification != receipt.evidence_type
++                or
++                proof.get("project_alias") != receipt.criterion
++                or proof.get("project_config_digest") != expected_project_config_digest
++                or not isinstance(command_digest, str)
++                or re.fullmatch(r"[0-9a-f]{64}", command_digest) is None
++                or not isinstance(actual_command, str)
++                or hashlib.sha256(actual_command.encode("utf-8")).hexdigest() != command_digest
++                or not isinstance(expected_project_environment_sha256, str)
++                or re.fullmatch(r"[0-9a-f]{64}", expected_project_environment_sha256) is None
++                or environment_digest != expected_project_environment_sha256
++                or not isinstance(configured_digest, str)
++                or re.fullmatch(r"[0-9a-f]{64}", configured_digest) is None
++                or not isinstance(arguments_digest, str)
++                or re.fullmatch(r"[0-9a-f]{64}", arguments_digest) is None
++            ):
++                return False
++            if isinstance(expected_project_command, str):
++                expected_command_digest = hashlib.sha256(
++                    expected_project_command.encode("utf-8")
++                ).hexdigest()
++                if (
++                    command_digest != expected_command_digest
++                    or actual_command != expected_project_command
++                    or configured_digest != expected_command_digest
++                    or arguments_digest
++                    != hashlib.sha256(b"[]").hexdigest()
++                ):
++                    return False
++                try:
++                    actual_tokens = shlex.split(actual_command, posix=(os.name != "nt"))
++                except ValueError:
++                    return False
++            elif expected_project_command is not None:
++                argv = getattr(expected_project_command, "argv", None)
++                if not isinstance(argv, (tuple, list)) or not expected_project_root:
++                    return False
++                configured_text = json.dumps(
++                    {
++                        "argv": list(argv),
++                        "cwd": str(Path(expected_project_root).expanduser().resolve(strict=False)),
++                        "shell": False,
++                    },
++                    sort_keys=True,
++                    separators=(",", ":"),
++                )
++                if configured_digest != hashlib.sha256(configured_text.encode("utf-8")).hexdigest():
++                    return False
++                try:
++                    actual_tokens = [
++                        token.strip("\"'")
++                        for token in shlex.split(actual_command, posix=(os.name != "nt"))
++                    ]
++                except ValueError:
++                    return False
++                configured_tokens = [str(token) for token in argv]
++                if actual_tokens[: len(configured_tokens)] != configured_tokens:
++                    return False
++                caller_arguments = actual_tokens[len(configured_tokens) :]
++                if (
++                    len(caller_arguments) > 32
++                    or any(not isinstance(token, str) or len(token) > 4096 or "\x00" in token for token in caller_arguments)
++                    or any(token in {";", "&&", "||", "|", ">", "<"} for token in caller_arguments)
++                    or arguments_digest
++                    != hashlib.sha256(
++                        json.dumps(caller_arguments, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
++                    ).hexdigest()
++                ):
++                    return False
++            else:
++                return False
++            lowered_tokens = [token.lower() for token in actual_tokens]
++            no_execution_options = {
++                "-h", "--help", "--version", "-version",
++                "--collect-only", "--co", "--fixtures", "--fixtures-per-test",
++                "--list-tests", "--dry-run",
++            }
++            if any(
++                token in no_execution_options
++                or token.startswith(("--help=", "--version="))
++                for token in lowered_tokens
++            ):
++                return False
++            if classify_verification_command(actual_command) != receipt.evidence_type:
++                return False
++            binding_fields = {
++                "project_alias": receipt.criterion,
++                "project_config_digest": expected_project_config_digest,
++                "configured_command_sha256": configured_digest,
++                "caller_arguments_sha256": arguments_digest,
++                "command_sha256": command_digest,
++                "project_environment_sha256": environment_digest,
++            }
++            expected_binding = hashlib.sha256(
++                json.dumps(binding_fields, sort_keys=True, separators=(",", ":")).encode("utf-8")
++            ).hexdigest()
++            if proof.get("project_execution_binding_sha256") != expected_binding:
++                return False
+         result = proof.get("result")
+         return bool(
+             proof.get("kind") == "work_command_verification"
+@@ -1138,6 +1279,10 @@
+             bool | tuple[str, ...] | list[str] | Mapping[str, bool | tuple[str, ...]] | None
+         ) = None,
+         configured_criteria: tuple[str, ...] | list[str] | None = None,
++        configured_commands: Mapping[str, Any] | None = None,
++        project_config_digest: str = "",
++        configured_environment_sha256: Mapping[str, str] | None = None,
++        project_root: str | Path = "",
+         warnings: Any = (),
+         mappings: Any = (),
+         records: Any = (),
+@@ -1235,6 +1380,10 @@
+             require_repository_revision=repo_bound and has_trusted_current_revision,
+             verification_rules=verification_rules,
+             configured_criteria=configured_criteria,
++            configured_commands=configured_commands,
++            configured_environment_sha256=configured_environment_sha256,
++            project_config_digest=project_config_digest,
++            project_root=project_root,
+             now=current_time,
+         )
+         if repo_bound and not has_trusted_current_revision:
+--- a/tests/test_agent_verification.py
++++ b/tests/test_agent_verification.py
+@@ -477,6 +477,10 @@
+ def test_verification_evidence_classification_is_conservative():
+     assert criterion_evidence_type("benchmark tests") == "benchmark"
+     assert classify_verification_command("python -m pytest -q") == "test"
++    assert classify_verification_command(
++        "python -m pyflakes C:/tmp/pytest-of-user/pytest-0/lint_target.py"
++    ) == "source_review"
++    assert classify_verification_command("python -m ruff check src") == "source_review"
+     assert classify_verification_command("python -m compileall -q src tests") == "source_review"
+     assert criterion_evidence_type("tests") == "test"
+     assert criterion_evidence_type("tests_pass") == "test"
+@@ -1179,20 +1183,63 @@
+     assert forwarded["configured_criteria"] == ("lint", "test")
+ 
+ 
+-def test_project_lint_command_receipt_accepts_command_verification_artifact(
+-    stores: tuple[TaskStore, VerificationStore]
++@pytest.mark.parametrize(
++    ("command_text", "command_classification", "proof_tamper", "expected_complete"),
++    [
++        ("python -m ruff check src", "source_review", "", True),
++        ("echo lint", "source_review", "", False),
++        ("python -m ruff check src", "test", "", False),
++        ("python -m ruff check src", "source_review", "environment", False),
++        ("python -m ruff check src", "source_review", "arguments", False),
++        ("python -m ruff check src", "source_review", "execution_binding", False),
++    ],
++)
++def test_project_lint_command_receipt_binds_runner_to_configured_alias(
++    stores: tuple[TaskStore, VerificationStore],
++    command_text: str,
++    command_classification: str,
++    proof_tamper: str,
++    expected_complete: bool,
+ ):
+     task_store, verifier = stores
+     task = task_store.create(
+-        GoalContract(goal="project lint rule", acceptance_criteria=("test",)),
++        GoalContract(goal="project lint rule", acceptance_criteria=("lint",)),
+         ScopeContext(task_id="project-lint-rule"),
+         task_id="project-lint-rule",
+     )
+-    test_receipt = receipt_for(
+-        task.task_id, "test", artifact_store=verifier.artifact_store
+-    )
+-    verifier.record(test_receipt)
+     lint_command_id = "cmd-lint"
++    configured_command = "python -m ruff check src"
++    environment_sha256 = hashlib.sha256(b"{}").hexdigest()
++    configured_command_sha256 = hashlib.sha256(
++        configured_command.encode("utf-8")
++    ).hexdigest()
++    command_sha256 = hashlib.sha256(command_text.encode("utf-8")).hexdigest()
++    caller_arguments_sha256 = hashlib.sha256(b"[]").hexdigest()
++    binding_fields = {
++        "project_alias": "lint",
++        "project_config_digest": "cfg-current",
++        "configured_command_sha256": configured_command_sha256,
++        "caller_arguments_sha256": caller_arguments_sha256,
++        "command_sha256": command_sha256,
++        "project_environment_sha256": environment_sha256,
++    }
++    execution_binding_sha256 = hashlib.sha256(
++        json.dumps(binding_fields, sort_keys=True, separators=(",", ":")).encode("utf-8")
++    ).hexdigest()
++    if proof_tamper == "environment":
++        environment_sha256 = hashlib.sha256(b'{"ENV":"changed"}').hexdigest()
++        binding_fields["project_environment_sha256"] = environment_sha256
++        execution_binding_sha256 = hashlib.sha256(
++            json.dumps(binding_fields, sort_keys=True, separators=(",", ":")).encode("utf-8")
++        ).hexdigest()
++    elif proof_tamper == "arguments":
++        caller_arguments_sha256 = hashlib.sha256(b'["--help"]').hexdigest()
++        binding_fields["caller_arguments_sha256"] = caller_arguments_sha256
++        execution_binding_sha256 = hashlib.sha256(
++            json.dumps(binding_fields, sort_keys=True, separators=(",", ":")).encode("utf-8")
++        ).hexdigest()
++    elif proof_tamper == "execution_binding":
++        execution_binding_sha256 = "0" * 64
+     lint_evidence_id = verifier.artifact_store.put_json(
+         {
+             "kind": "work_command_verification",
+@@ -1203,32 +1250,48 @@
+             "mutation_generation": 0,
+             "criterion": "lint",
+             "command_id": lint_command_id,
++            "command_classification": command_classification,
++            "command": command_text,
++            "project_alias": "lint",
++            "project_config_digest": "cfg-current",
++            "project_environment_sha256": environment_sha256,
++            "configured_command_sha256": configured_command_sha256,
++            "caller_arguments_sha256": caller_arguments_sha256,
++            "project_execution_binding_sha256": execution_binding_sha256,
++            "command_sha256": command_sha256,
+             "exit_code": 0,
+             "result": {"success": True, "exit_code": 0},
+         },
+         "agent",
+         "command_verification",
+     )
+-    verifier.record(
+-        VerificationReceipt.create(
+-            task.task_id,
+-            "lint",
+-            evidence_id=lint_evidence_id,
+-            command_id=lint_command_id,
+-            owner="agent",
+-            repository_revision="rev-1",
+-        )
+-    )
++    receipt = VerificationReceipt.create(
++        task.task_id,
++        "lint",
++        evidence_id=lint_evidence_id,
++        command_id=lint_command_id,
++        owner="agent",
++        repository_revision="rev-1",
++    )
++    record_rejected = False
++    try:
++        verifier.record(receipt)
++    except ValueError:
++        record_rejected = True
++    assert record_rejected is (command_classification != "source_review")
+ 
+     result = verifier.completion(
+         task.task_id,
+         current_revision="rev-1",
+-        verification_rules={"test": ["test", "lint"]},
+-        configured_criteria=("test", "lint"),
+-    )
+-
+-    assert result.complete
+-    assert result.satisfied_criteria == ("test", "lint")
++        verification_rules={"lint": ["lint"]},
++        configured_criteria=("lint",),
++        configured_commands={"lint": configured_command},
++        configured_environment_sha256={"lint": hashlib.sha256(b"{}").hexdigest()},
++        project_config_digest="cfg-current",
++    )
++
++    assert result.complete is expected_complete
++    assert result.satisfied_criteria == (("lint",) if expected_complete else ())
+ 
+ 
+ def test_receipt_and_task_projection_publish_after_atomic_commit(
+@@ -1645,3 +1708,114 @@
+ 
+     with pytest.raises(InvalidTransitionError):
+         task_store.complete("task-cancelled")
++
++
++@pytest.mark.parametrize(
++    ("actual_command", "caller_arguments", "expected_complete"),
++    [
++        ("python -m pytest -q tests/test_smoke.py", ["tests/test_smoke.py"], True),
++        ("python -m pytest -q --collect-only", ["--collect-only"], False),
++    ],
++)
++def test_structured_project_receipt_recomputes_argv_env_and_arguments(
++    tmp_path: Path,
++    stores: tuple[TaskStore, VerificationStore],
++    actual_command: str,
++    caller_arguments: list[str],
++    expected_complete: bool,
++):
++    from types import SimpleNamespace
++
++    task_store, verifier = stores
++    task = task_store.create(
++        GoalContract(goal="structured project command", acceptance_criteria=("test",)),
++        ScopeContext(task_id="structured-project-command"),
++        task_id="structured-project-command",
++    )
++    configured = SimpleNamespace(
++        argv=("python", "-m", "pytest", "-q"),
++        env_references={"T06_PRIVATE": "T06_PRIVATE"},
++    )
++    project_environment = {"T06_PRIVATE": "private-current-value"}
++    project_environment_sha256 = hashlib.sha256(
++        json.dumps(
++            project_environment, sort_keys=True, separators=(",", ":")
++        ).encode("utf-8")
++    ).hexdigest()
++    configured_command = json.dumps(
++        {
++            "argv": list(configured.argv),
++            "cwd": str(tmp_path.resolve()),
++            "shell": False,
++        },
++        sort_keys=True,
++        separators=(",", ":"),
++    )
++    configured_command_sha256 = hashlib.sha256(
++        configured_command.encode("utf-8")
++    ).hexdigest()
++    command_sha256 = hashlib.sha256(actual_command.encode("utf-8")).hexdigest()
++    caller_arguments_sha256 = hashlib.sha256(
++        json.dumps(caller_arguments, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
++    ).hexdigest()
++    binding_fields = {
++        "project_alias": "test",
++        "project_config_digest": "cfg-structured",
++        "configured_command_sha256": configured_command_sha256,
++        "caller_arguments_sha256": caller_arguments_sha256,
++        "command_sha256": command_sha256,
++        "project_environment_sha256": project_environment_sha256,
++    }
++    binding_sha256 = hashlib.sha256(
++        json.dumps(binding_fields, sort_keys=True, separators=(",", ":")).encode("utf-8")
++    ).hexdigest()
++    evidence_id = verifier.artifact_store.put_json(
++        {
++            "kind": "work_command_verification",
++            "passed": True,
++            "task_id": task.task_id,
++            "owner": "agent",
++            "repository_revision": "rev-structured",
++            "mutation_generation": 0,
++            "criterion": "test",
++            "command_id": "cmd-structured",
++            "command_classification": "test",
++            "command": actual_command,
++            "project_alias": "test",
++            "project_config_digest": "cfg-structured",
++            "project_environment_sha256": project_environment_sha256,
++            "configured_command_sha256": configured_command_sha256,
++            "caller_arguments_sha256": caller_arguments_sha256,
++            "project_execution_binding_sha256": binding_sha256,
++            "command_sha256": command_sha256,
++            "exit_code": 0,
++            "result": {"success": True, "exit_code": 0},
++        },
++        "agent",
++        "command_verification",
++    )
++    verifier.record(
++        VerificationReceipt.create(
++            task.task_id,
++            "test",
++            evidence_id=evidence_id,
++            command_id="cmd-structured",
++            owner="agent",
++            repository_revision="rev-structured",
++            evidence_type="test",
++        )
++    )
++
++    result = verifier.completion(
++        task.task_id,
++        current_revision="rev-structured",
++        verification_rules={"test": ["test"]},
++        configured_criteria=("test",),
++        configured_commands={"test": configured},
++        configured_environment_sha256={"test": project_environment_sha256},
++        project_config_digest="cfg-structured",
++        project_root=tmp_path,
++    )
++
++    assert result.complete is expected_complete
++
+@@ -106,6 +106,28 @@ def test_stale_receipt_cannot_satisfy_completion(stores: tuple[TaskStore, Verifi
+     assert res_fresh.complete is True
+     assert "tests" in res_fresh.satisfied_criteria
+ 
++def test_generic_benchmark_receipt_without_project_binding_satisfies_completion(
++    stores: tuple[TaskStore, VerificationStore],
++):
++    task_store, verif_store = stores
++    task = task_store.create(
++        GoalContract(goal="generic benchmark", acceptance_criteria=("benchmark tests",)),
++        ScopeContext(task_id="generic-benchmark"),
++        task_id="generic-benchmark",
++    )
++    verif_store.record(
++        receipt_for(
++            task.task_id,
++            "benchmark tests",
++            evidence_type="benchmark",
++            artifact_store=verif_store.artifact_store,
++        )
++    )
++
++    result = verif_store.completion(task.task_id)
++
++    assert result.complete is True
++    assert "benchmark tests" in result.satisfied_criteria
+ 
+ def test_revert_is_explicit_negative_outcome(stores: tuple[TaskStore, VerificationStore]):
+     _, verif_store = stores
+
+--- a/src/local_ai_hub/verification_rules.py
++++ b/src/local_ai_hub/verification_rules.py
+@@ -1,12 +1,14 @@
+ from __future__ import annotations
+ 
+ from collections.abc import Mapping
++import hashlib
++import json
++import os
+ from pathlib import Path
+ from typing import Protocol
+ 
+ from .agent_tasks import CompletionGateError, TaskCheckpoint, TaskState, TaskStore
+ from .agent_verification import CompletionResult
+-from .project_config import ProjectConfigError, ProjectSettings, resolve_project_context
+ 
+ 
+ class CompletionReceiptStore(Protocol):
+@@ -21,7 +23,34 @@
+         current_mutation_generation: int | None = None,
+         verification_rules: Mapping[str, bool | tuple[str, ...]] | None = None,
+         configured_criteria: tuple[str, ...] | None = None,
++        configured_commands: Mapping[str, object] | None = None,
++        project_config_digest: str = "",
++        configured_environment_sha256: Mapping[str, str] | None = None,
++        project_root: str | Path = "",
+     ) -> CompletionResult: ...
++
++
++def project_command_environment_sha256(settings: object, criterion: str) -> str:
++    """Hash the effective project command environment without persisting values."""
++    commands = getattr(settings, "commands", {})
++    command = commands.get(criterion) if isinstance(commands, Mapping) else None
++    environment = dict(getattr(settings, "env", {}) or {})
++    references = dict(getattr(settings, "env_references", {}) or {})
++    command_references = getattr(command, "env_references", {})
++    if isinstance(command_references, Mapping):
++        references.update(command_references)
++    for target_name, source_name in references.items():
++        if not isinstance(target_name, str) or not isinstance(source_name, str):
++            raise CompletionGateError("project command environment is invalid")
++        if source_name not in os.environ:
++            raise CompletionGateError("project command environment is unavailable")
++        value = os.environ[source_name]
++        if not isinstance(value, str) or "\x00" in value:
++            raise CompletionGateError("project command environment is invalid")
++        environment[target_name] = value
++    return hashlib.sha256(
++        json.dumps(environment, sort_keys=True, separators=(",", ":")).encode("utf-8")
++    ).hexdigest()
+ 
+ 
+ def evaluate_project_completion(
+@@ -30,6 +59,9 @@
+     *,
+     task_id: str,
+     repository_revision: str,
++    project_config_digest: str = "",
++    configured_environment_sha256: Mapping[str, str] | None = None,
++    project_root: str | Path = "",
+     now: float | None = None,
+ ) -> CompletionResult:
+     """Delegate project-aware completion to T09's persisted receipt gate."""
+@@ -59,7 +91,138 @@
+         current_mutation_generation=generation,
+         verification_rules=settings.verification_rules,
+         configured_criteria=tuple(settings.commands),
++        configured_commands=settings.commands,
++        project_config_digest=project_config_digest,
++        configured_environment_sha256=configured_environment_sha256,
++        project_root=project_root,
+     )
++
++
++def _task_created_state_data(task_store: TaskStore, task_id: str) -> Mapping[str, object] | None:
++    state_store = getattr(task_store, "state_store", None)
++    events = getattr(state_store, "events", None)
++    if not callable(events):
++        return None
++    try:
++        created_events = events(stream_id=f"task:{task_id}", after_seq=0, limit=1)
++    except (OSError, RuntimeError, TimeoutError, TypeError, ValueError):
++        return None
++    if not created_events or getattr(created_events[0], "kind", "") != "task.created":
++        return None
++    payload = getattr(created_events[0], "payload", None)
++    if not isinstance(payload, Mapping) or payload.get("task_id") != task_id:
++        return None
++    checkpoint = payload.get("checkpoint")
++    if not isinstance(checkpoint, Mapping):
++        return None
++    state_data = checkpoint.get("state_data")
++    return state_data if isinstance(state_data, Mapping) else None
++
++
++def _task_owned_worktree_root(
++    task: TaskState,
++    worktree: Mapping[str, object],
++    trusted_repo_root: Path | None,
++) -> Path | None:
++    raw_path = worktree.get("worktree_path")
++    raw_repo = worktree.get("repo_root")
++    worktree_id = str(worktree.get("worktree_id", "") or "").strip()
++    branch = str(worktree.get("branch", "") or "").strip()
++    owner = str(task.owner or "").strip()
++    if (
++        not isinstance(raw_path, (str, Path))
++        or not str(raw_path).strip()
++        or not isinstance(raw_repo, (str, Path))
++        or not str(raw_repo).strip()
++        or not worktree_id
++        or not branch
++        or not owner
++        or str(worktree.get("task_id", "")) != task.task_id
++        or str(worktree.get("owner", "")).strip() != owner
++    ):
++        return None
++
++    worktree_path = Path(raw_path).expanduser().resolve(strict=False)
++    repo_root = Path(raw_repo).expanduser().resolve(strict=False)
++    if trusted_repo_root is not None and _canonical_project_root(repo_root) != _canonical_project_root(
++        trusted_repo_root
++    ):
++        return None
++    try:
++        from .process_utils import _worktree_ownership_path
++
++        metadata_path = _worktree_ownership_path(worktree_path)
++        if metadata_path is None or not metadata_path.is_file():
++            return None
++        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
++    except (OSError, RuntimeError, TypeError, ValueError, ImportError):
++        return None
++    if not isinstance(metadata, Mapping):
++        return None
++    try:
++        metadata_root = Path(str(metadata.get("repo_root", ""))).expanduser().resolve(
++            strict=False
++        )
++        metadata_path_value = Path(
++            str(metadata.get("worktree_path", ""))
++        ).expanduser().resolve(strict=False)
++    except (OSError, TypeError, ValueError):
++        return None
++    if (
++        metadata.get("schema_version") != 1
++        or str(metadata.get("task_id", "")) != task.task_id
++        or str(metadata.get("owner", "")).strip() != owner
++        or str(metadata.get("worktree_id", "")).strip() != worktree_id
++        or str(metadata.get("branch", "")).strip() != branch
++        or _canonical_project_root(metadata_root) != _canonical_project_root(repo_root)
++        or _canonical_project_root(metadata_path_value)
++        != _canonical_project_root(worktree_path)
++        or not worktree_path.is_dir()
++        or not repo_root.is_dir()
++    ):
++        return None
++    return worktree_path
++
++
++def _task_project_root(
++    task: TaskState,
++    trusted_initial_state_data: Mapping[str, object] | None = None,
++) -> Path | None:
++    context_root: Path | None = None
++    context_value = task.context.repository_id
++    if isinstance(context_value, (str, Path)) and str(context_value).strip():
++        candidate = Path(context_value).expanduser().resolve(strict=False)
++        if candidate.is_dir():
++            context_root = candidate
++
++    initial_data = trusted_initial_state_data
++    if initial_data is not None:
++        initial_worktree = initial_data.get("worktree")
++        initial_root = initial_data.get("repo_root")
++        trusted_worktree = initial_worktree if isinstance(initial_worktree, Mapping) else None
++    else:
++        current_data = task.checkpoint.state_data
++        current_worktree = current_data.get("worktree")
++        trusted_worktree = current_worktree if isinstance(current_worktree, Mapping) else None
++        initial_root = None
++
++    trusted_repo_root: Path | None = None
++    if isinstance(initial_root, (str, Path)) and str(initial_root).strip():
++        candidate = Path(initial_root).expanduser().resolve(strict=False)
++        if candidate.is_dir():
++            trusted_repo_root = candidate
++    if trusted_repo_root is None:
++        trusted_repo_root = context_root
++
++    if trusted_worktree is not None:
++        owned_root = _task_owned_worktree_root(task, trusted_worktree, trusted_repo_root)
++        if owned_root is not None:
++            return owned_root
++    return trusted_repo_root
++
++
++def _canonical_project_root(root: str | Path) -> str:
++    return os.path.normcase(str(Path(root).expanduser().resolve(strict=False)))
+ 
+ 
+ def complete_task_with_project_rules(
+@@ -82,24 +245,47 @@
+     revision = str(current_revision or "").strip()
+     if not revision:
+         raise CompletionGateError("trusted repository_revision is unavailable")
+-    try:
+-        project = resolve_project_context(root, state_dir)
+-    except (ProjectConfigError, OSError, RuntimeError, ValueError) as exc:
+-        raise CompletionGateError("project configuration could not be resolved") from exc
+-    if project.resolution.error_codes:
+-        raise CompletionGateError("project configuration is invalid")
+     receipt_task_store = getattr(verification_store, "task_store", None)
+     if receipt_task_store is None or receipt_task_store is not task_store:
+         raise CompletionGateError("verification task store is unavailable or mismatched")
+     before = task_store.get(task_key)
+     if before is None or not str(before.owner or "").strip():
+         raise CompletionGateError("task owner is unavailable")
++    initial_state_data = _task_created_state_data(task_store, task_key)
++    task_root = _task_project_root(before, initial_state_data)
++    if task_root is None:
++        raise CompletionGateError("task project root is unavailable")
++    try:
++        from .project_config import ProjectConfigError, resolve_project_context
++    except ImportError as exc:
++        raise CompletionGateError("project configuration is unavailable") from exc
++    try:
++        project = resolve_project_context(task_root, state_dir)
++        requested_root = str(root or "").strip()
++        if requested_root:
++            requested_project = resolve_project_context(requested_root, state_dir)
++            if _canonical_project_root(requested_project.root) != _canonical_project_root(
++                project.root
++            ):
++                raise CompletionGateError("requested project root does not match task project root")
++    except CompletionGateError:
++        raise
++    except (ProjectConfigError, OSError, RuntimeError, ValueError) as exc:
++        raise CompletionGateError("project configuration could not be resolved") from exc
++    if project.resolution.error_codes:
++        raise CompletionGateError("project configuration is invalid")
+     before_generation = before.checkpoint.state_data.get("mutation_generation", 0)
+     result = evaluate_project_completion(
+         verification_store,
+         project.settings,
+         task_id=task_key,
+         repository_revision=revision,
++        project_config_digest=project.config_digest,
++        configured_environment_sha256={
++            name: project_command_environment_sha256(project.settings, name)
++            for name in project.settings.commands
++        },
++        project_root=project.root,
+         now=now,
+     )
+     if not result.complete:
+--- /dev/null
++++ b/tests/test_project_completion_root.py
+@@ -0,0 +1,305 @@
++from __future__ import annotations
++
++import json
++from pathlib import Path
++from types import SimpleNamespace
++
++import pytest
++
++from local_ai_hub.agent_identity import ScopeContext
++from local_ai_hub.agent_tasks import (
++    CompletionGateError,
++    GoalContract,
++    TaskCheckpoint,
++    TaskState,
++    TaskStatus,
++)
++from local_ai_hub.agent_verification import VerificationReceipt
++from local_ai_hub.app import LocalAIApp
++from local_ai_hub import process_utils
++from local_ai_hub.verification_rules import (
++    _task_project_root,
++    complete_task_with_project_rules,
++)
++
++
++def test_auto_worktree_path_is_task_project_root_over_source_and_context(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++):
++    source_root = tmp_path / "source"
++    worktree_root = tmp_path / "task-worktree"
++    source_root.mkdir()
++    worktree_root.mkdir()
++    ownership = {
++        "schema_version": 1,
++        "task_id": "task-worktree-root",
++        "owner": "agent",
++        "worktree_id": "worktree-owned",
++        "repo_root": str(source_root),
++        "worktree_path": str(worktree_root),
++        "branch": "hub/task-worktree-root",
++    }
++    ownership_path = tmp_path / "worktree-ownership.json"
++    ownership_path.write_text(json.dumps(ownership), encoding="utf-8")
++    monkeypatch.setattr(
++        process_utils,
++        "_worktree_ownership_path",
++        lambda _path: ownership_path,
++        raising=False,
++    )
++    task = TaskState(
++        task_id="task-worktree-root",
++        status=TaskStatus.PLANNED,
++        contract=GoalContract(goal="bind task project root"),
++        context=ScopeContext(repository_id=str(source_root), task_id="task-worktree-root"),
++        owner="agent",
++        checkpoint=TaskCheckpoint(
++            state_data={
++                "repo_root": str(source_root),
++                "worktree": {
++                    "repo_root": str(source_root),
++                    "worktree_path": str(worktree_root),
++                    "task_id": "task-worktree-root",
++                    "owner": "agent",
++                    "worktree_id": "worktree-owned",
++                    "branch": "hub/task-worktree-root",
++                },
++            }
++        ),
++    )
++
++    assert _task_project_root(task) == worktree_root.resolve()
++
++
++def test_unowned_checkpoint_worktree_path_falls_back_to_physical_context(tmp_path: Path):
++    source_root = tmp_path / "source"
++    attacker_root = tmp_path / "unowned-worktree"
++    source_root.mkdir()
++    attacker_root.mkdir()
++    task = TaskState(
++        task_id="task-unowned-worktree-root",
++        status=TaskStatus.PLANNED,
++        contract=GoalContract(goal="reject unowned checkpoint worktree"),
++        context=ScopeContext(
++            repository_id=str(source_root), task_id="task-unowned-worktree-root"
++        ),
++        owner="agent",
++        checkpoint=TaskCheckpoint(
++            state_data={
++                "worktree": {
++                    "repo_root": str(source_root),
++                    "worktree_path": str(attacker_root),
++                    "task_id": "task-unowned-worktree-root",
++                    "owner": "agent",
++                    "worktree_id": "forged-id",
++                    "branch": "hub/task-unowned-worktree-root",
++                },
++            }
++        ),
++    )
++
++    assert _task_project_root(task) == source_root.resolve()
++
++
++def test_checkpoint_root_tampering_cannot_replace_trusted_task_root(
++    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
++):
++    trusted_root = tmp_path / "trusted-project"
++    attacker_root = tmp_path / "attacker-project"
++    trusted_root.mkdir()
++    attacker_root.mkdir()
++    (trusted_root / ".local-ai.toml").write_text(
++        '[commands]\nlint = "python -m ruff check src"\n'
++        '[verification_rules]\nrequired_commands = ["lint"]\n',
++        encoding="utf-8",
++    )
++    state_dir = tmp_path / "state"
++    state_dir.mkdir()
++    config_path = tmp_path / "hub.toml"
++    config_path.write_text(
++        f'[server]\nbind = "127.0.0.1"\nport = 11498\nstate_dir = "{state_dir.as_posix()}"\n'
++        "\n[agent_state]\nenabled = true\n",
++        encoding="utf-8",
++    )
++
++    app = LocalAIApp(str(config_path))
++    task_id = "checkpoint-root-tampering"
++    try:
++        app.agent_tasks.create(
++            GoalContract(
++                goal="keep completion bound to trusted task root",
++                acceptance_criteria=("required_commands",),
++            ),
++            ScopeContext(task_id=task_id, repository_id=str(trusted_root)),
++            task_id=task_id,
++            actor="agent",
++            repo_root=str(trusted_root),
++        )
++        app.agent_tasks.checkpoint(
++            task_id,
++            TaskCheckpoint(
++                phase="verification",
++                state_data={
++                    "mutation_generation": 0,
++                    "repo_root": str(attacker_root),
++                },
++            ),
++            actor="agent",
++        )
++        before = app.agent_tasks.get(task_id)
++        assert before is not None
++        events_before = app.agent_state.events(stream_id=f"task:{task_id}")
++        completion_calls = []
++
++        def accept_if_reached(*args, **kwargs):
++            completion_calls.append((args, kwargs))
++            return SimpleNamespace(
++                complete=True,
++                unsatisfied_criteria=(),
++                stale_criteria=(),
++            )
++
++        monkeypatch.setattr(app.agent_verification, "completion", accept_if_reached)
++        with pytest.raises(CompletionGateError, match="does not match task project root"):
++            complete_task_with_project_rules(
++                app.agent_tasks,
++                app.agent_verification,
++                task_id,
++                root=attacker_root,
++                state_dir=state_dir,
++                current_revision="rev-trusted",
++                actor="agent",
++            )
++
++        after = app.agent_tasks.get(task_id)
++        assert completion_calls == []
++        assert after is not None and after.checkpoint == before.checkpoint
++        assert after.status == TaskStatus.PLANNED
++        assert app.agent_state.events(stream_id=f"task:{task_id}") == events_before
++    finally:
++        app.close()
++
++
++def test_direct_task_complete_cannot_use_checkpoint_root_to_drop_lint_rule(
++    tmp_path: Path,
++):
++    trusted_root = tmp_path / "trusted-project"
++    attacker_root = tmp_path / "attacker-project"
++    trusted_root.mkdir()
++    attacker_root.mkdir()
++    (trusted_root / ".local-ai.toml").write_text(
++        '[commands]\ntest = "python -m pytest -q"\n'
++        'lint = "python -m ruff check src"\n'
++        '[verification_rules]\ntest = ["test", "lint"]\n',
++        encoding="utf-8",
++    )
++    (attacker_root / ".local-ai.toml").write_text(
++        '[commands]\ntest = "python -m pytest -q"\n'
++        '[verification_rules]\ntest = ["test"]\n',
++        encoding="utf-8",
++    )
++    state_dir = tmp_path / "state"
++    state_dir.mkdir()
++    config_path = tmp_path / "hub.toml"
++    config_path.write_text(
++        f'[server]\nbind = "127.0.0.1"\nport = 11498\nstate_dir = "{state_dir.as_posix()}"\n'
++        "\n[agent_state]\nenabled = true\n",
++        encoding="utf-8",
++    )
++
++    app = LocalAIApp(str(config_path))
++    task_id = "direct-complete-checkpoint-root-tampering"
++    try:
++        app.agent_tasks.create(
++            GoalContract(
++                goal="retain trusted lint requirement",
++                acceptance_criteria=("test",),
++            ),
++            ScopeContext(task_id=task_id, repository_id=str(trusted_root)),
++            task_id=task_id,
++            actor="agent",
++            repo_root=str(trusted_root),
++        )
++        attacker_proof = app.artifacts.put_json(
++            {
++                "kind": "work_command_verification",
++                "passed": True,
++                "task_id": task_id,
++                "owner": "agent",
++                "repository_revision": "rev-root-binding",
++                "mutation_generation": 0,
++                "criterion": "test",
++                "command_id": "cmd-root-binding-test",
++                "command_classification": "test",
++                "exit_code": 0,
++                "result": {"success": True, "exit_code": 0},
++            },
++            "agent",
++            "command_verification",
++        )
++        app.agent_verification.record(
++            VerificationReceipt.create(
++                task_id,
++                "test",
++                evidence_id=attacker_proof,
++                command_id="cmd-root-binding-test",
++                owner="agent",
++                repository_revision="rev-root-binding",
++                evidence_type="test",
++            )
++        )
++        task = app.agent_tasks.get(task_id)
++        assert task is not None
++        state_data = dict(task.checkpoint.state_data)
++        state_data["repo_root"] = str(attacker_root)
++        state_data["repository_revision"] = "rev-root-binding"
++        app.agent_tasks.checkpoint(
++            task_id,
++            TaskCheckpoint(phase="verification", state_data=state_data),
++            actor="agent",
++        )
++        before = app.agent_tasks.get(task_id)
++        assert before is not None
++        events_before = app.agent_state.events(stream_id=f"task:{task_id}")
++
++        with pytest.raises(
++        CompletionGateError, match="criterion 'lint'"
++        ) as rejected:
++            app.agent_tasks.complete(task_id, actor="agent")
++        assert "lint" in str(rejected.value)
++
++        after = app.agent_tasks.get(task_id)
++        assert after is not None and after.status == TaskStatus.PLANNED
++        assert after.checkpoint == before.checkpoint
++        assert app.agent_state.events(stream_id=f"task:{task_id}") == events_before
++
++        active = app.agent_tasks.transition(
++            task_id,
++            TaskStatus.ACTIVE,
++            reason="prepare direct transition regression",
++            actor="agent",
++            idempotency_key="activate-before-direct-transition",
++        )
++        verifying = app.agent_tasks.transition(
++            task_id,
++            TaskStatus.VERIFYING,
++            reason="prepare final transition regression",
++            actor="agent",
++            idempotency_key="verify-before-direct-transition",
++        )
++        transition_events = app.agent_state.events(stream_id=f"task:{task_id}")
++        with pytest.raises(CompletionGateError, match="criterion 'lint'") as direct_rejected:
++            app.agent_tasks.transition(
++                task_id,
++                TaskStatus.COMPLETED,
++                reason="must keep lint rule",
++                actor="agent",
++                idempotency_key="direct-transition-root-binding",
++            )
++        assert "lint" in str(direct_rejected.value)
++        unchanged = app.agent_tasks.get(task_id)
++        assert unchanged is not None and unchanged.status == TaskStatus.VERIFYING
++        assert unchanged.checkpoint == verifying.checkpoint
++        assert app.agent_state.events(stream_id=f"task:{task_id}") == transition_events
++    finally:
++        app.close()
+--- a/tests/test_t09_http_task_completion_matrix.py
++++ b/tests/test_t09_http_task_completion_matrix.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import json
++import hashlib
+ from pathlib import Path
+ import threading
+ import urllib.error
+@@ -13,6 +14,7 @@
+ from local_ai_hub.agent_tasks import GoalContract, TaskCheckpoint
+ from local_ai_hub.agent_verification import VerificationReceipt, criterion_evidence_type
+ from local_ai_hub.app import LocalAIApp
++from local_ai_hub.project_config import resolve_project_context
+ 
+ 
+ def _record_command(
+@@ -25,7 +27,30 @@
+     artifact_tenant: str,
+     revision: str,
+     command_id: str,
++    project_config_digest: str,
+ ) -> tuple[str, bool]:
++    command_text = {
++        "test": "python -m pytest -q tests/test_contract.py",
++        "lint": "python -m ruff check src",
++    }.get(criterion, "unknown configured command")
++    command_sha256 = hashlib.sha256(command_text.encode("utf-8")).hexdigest()
++    project_environment_sha256 = hashlib.sha256(b"{}").hexdigest()
++    configured_command_sha256 = hashlib.sha256(command_text.encode("utf-8")).hexdigest()
++    caller_arguments_sha256 = hashlib.sha256(b"[]").hexdigest()
++    execution_binding = hashlib.sha256(
++        json.dumps(
++            {
++                "project_alias": criterion,
++                "project_config_digest": project_config_digest,
++                "configured_command_sha256": configured_command_sha256,
++                "caller_arguments_sha256": caller_arguments_sha256,
++                "command_sha256": command_sha256,
++                "project_environment_sha256": project_environment_sha256,
++            },
++            sort_keys=True,
++            separators=(",", ":"),
++        ).encode("utf-8")
++    ).hexdigest()
+     evidence_id = app.artifacts.put_json(
+         {
+             "kind": "work_command_verification",
+@@ -36,6 +61,15 @@
+             "mutation_generation": 0,
+             "criterion": criterion,
+             "command_id": command_id,
++            "command_classification": criterion_evidence_type(criterion),
++            "command": command_text,
++            "project_alias": criterion,
++            "project_config_digest": project_config_digest,
++            "project_environment_sha256": project_environment_sha256,
++            "configured_command_sha256": configured_command_sha256,
++            "caller_arguments_sha256": caller_arguments_sha256,
++            "project_execution_binding_sha256": execution_binding,
++            "command_sha256": command_sha256,
+             "exit_code": 0,
+             "result": {"success": True, "exit_code": 0},
+         },
+@@ -136,8 +170,18 @@
+         "\n[agent_state]\nenabled = true\n",
+         encoding="utf-8",
+     )
++    project_config_digest = resolve_project_context(project_root, state_dir).config_digest
+ 
+     app = LocalAIApp(str(config_path))
++    memory_context = changes.get("memory_context")
++    if memory_context is not None:
++        # Model the memory bundle injected by the server at task creation.
++        # T08 makes that field immutable through the checkpoint API.
++        monkeypatch.setattr(
++            app.agent_tasks,
++            "_task_memory_context",
++            lambda _task_id, _contract, _context, **_kwargs: memory_context,
++        )
+     app.agent_tasks.create(
+         GoalContract(
+             goal="exercise project completion receipt gates over HTTP",
+@@ -156,13 +200,12 @@
+             actor=tenant,
+             repo_root=str(project_root),
+         )
+-    memory_context = changes.get("memory_context")
+-    if memory_context is not None:
++    memory_audit = changes.get("memory_audit")
++    if memory_audit is not None:
+         task = app.agent_tasks.get(task_id)
+         assert task is not None
+         state_data = dict(task.checkpoint.state_data)
+-        state_data["memory_context"] = memory_context
+-        state_data["memory_audit"] = changes.get("memory_audit", {})
++        state_data["memory_audit"] = memory_audit
+         app.agent_tasks.checkpoint(
+             task_id,
+             TaskCheckpoint(
+@@ -187,6 +230,7 @@
+         artifact_tenant=test_artifact_tenant,
+         revision=test_revision,
+         command_id=f"cmd-{case}-test",
++        project_config_digest=project_config_digest,
+     )
+     expected_receipt_recorded = not bool(changes.get("expect_record_rejected"))
+     assert test_receipt_recorded is expected_receipt_recorded, case
+@@ -203,6 +247,7 @@
+             artifact_tenant=tenant,
+             revision=revision,
+             command_id=f"cmd-{case}-lint",
++            project_config_digest=project_config_digest,
+         )
+ 
+     monkeypatch.setattr(
+--- a/tests/test_t09_http_task_completion_persisted_receipts.py
++++ b/tests/test_t09_http_task_completion_persisted_receipts.py
+@@ -1,6 +1,7 @@
+ from __future__ import annotations
+ 
+ import json
++import hashlib
+ from pathlib import Path
+ import threading
+ import urllib.error
+@@ -11,6 +12,7 @@
+ from local_ai_hub.agent_tasks import GoalContract
+ from local_ai_hub.agent_verification import VerificationReceipt
+ from local_ai_hub.app import LocalAIApp
++from local_ai_hub.project_config import resolve_project_context
+ 
+ 
+ def test_http_task_complete_uses_persisted_tenant_scoped_receipts(
+@@ -46,6 +48,26 @@
+         actor=tenant_id,
+         repo_root=str(project_root),
+     )
++    project_config_digest = resolve_project_context(project_root, state_dir).config_digest
++    command_text = "python -m pytest -q tests/test_project_rules.py"
++    command_sha256 = hashlib.sha256(command_text.encode("utf-8")).hexdigest()
++    project_environment_sha256 = hashlib.sha256(b"{}").hexdigest()
++    configured_command_sha256 = command_sha256
++    caller_arguments_sha256 = hashlib.sha256(b"[]").hexdigest()
++    execution_binding = hashlib.sha256(
++        json.dumps(
++            {
++                "project_alias": "test",
++                "project_config_digest": project_config_digest,
++                "configured_command_sha256": configured_command_sha256,
++                "caller_arguments_sha256": caller_arguments_sha256,
++                "command_sha256": command_sha256,
++                "project_environment_sha256": project_environment_sha256,
++            },
++            sort_keys=True,
++            separators=(",", ":"),
++        ).encode("utf-8")
++    ).hexdigest()
+ 
+     command_evidence = app.artifacts.put_json(
+         {
+@@ -57,6 +79,15 @@
+             "mutation_generation": 0,
+             "criterion": "test",
+             "command_id": "cmd-t09-http-test",
++            "command_classification": "test",
++            "command": command_text,
++            "project_alias": "test",
++            "project_config_digest": project_config_digest,
++            "project_environment_sha256": project_environment_sha256,
++            "configured_command_sha256": configured_command_sha256,
++            "caller_arguments_sha256": caller_arguments_sha256,
++            "project_execution_binding_sha256": execution_binding,
++            "command_sha256": command_sha256,
+             "exit_code": 0,
+             "result": {"success": True, "exit_code": 0},
+         },
+diff --git a/src/local_ai_hub/agent_tasks.py b/src/local_ai_hub/agent_tasks.py
+index bd0692b..801ae01 100644
+--- a/src/local_ai_hub/agent_tasks.py
++++ b/src/local_ai_hub/agent_tasks.py
+@@ -1130,35 +1130,41 @@ class TaskStore:
+         )
+         return updated, appended.event if not appended.duplicate else None
+ 
+-    def _verify_completion(self, task: TaskState) -> None:
+-        self._validate_memory_audit(task)
++    def _verify_completion(self, task: TaskState, *, current_revision: str = "") -> None:
++        memory_audit_validator = getattr(self, "_validate_memory_audit", None)
++        if callable(memory_audit_validator):
++            memory_audit_validator(task)
+         if not task.contract.acceptance_criteria:
+             return
+ 
+         state_data = task.checkpoint.state_data
+-        worktree = state_data.get("worktree")
+-        repo_root = worktree.get("repo_root") if isinstance(worktree, Mapping) else None
+-        if not isinstance(repo_root, (str, Path)) or not str(repo_root).strip():
+-            repo_root = state_data.get("repo_root")
+-        if not isinstance(repo_root, (str, Path)) or not str(repo_root).strip():
+-            context_repo_root = task.context.repository_id
+-            if isinstance(context_repo_root, (str, Path)) and str(context_repo_root).strip():
+-                try:
+-                    if Path(context_repo_root).expanduser().is_dir():
+-                        repo_root = context_repo_root
+-                except (OSError, TypeError, ValueError):
+-                    pass
++        try:
++            from .verification_rules import (
++                _task_created_state_data,
++                _task_project_root,
++                project_command_environment_sha256,
++            )
+ 
+-        repository_revision = str(state_data.get("repository_revision", "") or "").strip()
++            initial_state_data = _task_created_state_data(self, task.task_id)
++            repo_root = _task_project_root(task, initial_state_data)
++        except Exception as exc:
++            raise CompletionGateError(
++                "Cannot transition to COMPLETED: trusted task project root is unavailable"
++            ) from exc
++        has_repo_root = isinstance(repo_root, (str, Path)) and bool(str(repo_root).strip())
++        repository_revision = str(
++            current_revision or state_data.get("repository_revision", "") or ""
++        ).strip()
+         mutation_generation = state_data.get("mutation_generation", 0)
+         if isinstance(mutation_generation, bool) or not isinstance(mutation_generation, int) or mutation_generation < 0:
+             raise CompletionGateError(
+                 "Cannot transition to COMPLETED: task mutation_generation is invalid"
+             )
+ 
+-        verification_rules: Mapping[str, Any] = {}
+-        configured_criteria: tuple[str, ...] = ()
+-        if isinstance(repo_root, (str, Path)) and str(repo_root).strip():
++        configured_commands: Mapping[str, Any] = {}
++        configured_environment_sha256: Mapping[str, str] = {}
++        project_config_digest = ""
++        if has_repo_root:
+             try:
+                 from .project_config import resolve_project_context
+ 
+@@ -1166,15 +1172,24 @@ class TaskStore:
+                 settings = project.settings
+                 verification_rules = settings.verification_rules
+                 configured_criteria = tuple(settings.commands)
++                configured_commands = settings.commands
++                configured_environment_sha256 = {
++                    name: project_command_environment_sha256(settings, name)
++                    for name in settings.commands
++                }
++                project_config_digest = project.config_digest
+                 if not isinstance(verification_rules, Mapping) or not isinstance(settings.commands, Mapping):
+                     raise ValueError("project verification settings are invalid")
+             except Exception as exc:
+                 raise CompletionGateError(
+                     "Cannot transition to COMPLETED: project verification config could not be resolved"
+                 ) from exc
+-
++        else:
++            verification_rules = {}
++            configured_criteria = ()
+         acceptance = set(task.contract.acceptance_criteria)
+         active_rules = any(str(key).strip() in acceptance for key in verification_rules)
++
+         verifier = getattr(self, "verification_store", None)
+         if verifier is None:
+             try:
+@@ -1204,17 +1219,38 @@ class TaskStore:
+                 "verification_rules",
+                 "configured_criteria",
+             }.issubset(parameters)
++            supports_project_binding = supports_kwargs or {
++                "configured_commands",
++                "project_config_digest",
++                "configured_environment_sha256",
++                "project_root",
++            }.issubset(parameters)
+             if supports_project_rules:
+                 if active_rules and not repository_revision:
+                     raise CompletionGateError(
+                         "Cannot transition to COMPLETED: trusted repository_revision is unavailable"
+                     )
++                if active_rules and not supports_project_binding:
++                    raise CompletionGateError(
++                        "Cannot transition to COMPLETED: verification evaluator does not bind project commands"
++                    )
++                project_binding_kwargs = (
++                    {
++                        "configured_commands": configured_commands,
++                        "project_config_digest": project_config_digest,
++                        "configured_environment_sha256": configured_environment_sha256,
++                        "project_root": repo_root,
++                    }
++                    if supports_project_binding
++                    else {}
++                )
+                 result = completion(
+                     task.task_id,
+                     current_revision=repository_revision,
+                     current_mutation_generation=mutation_generation,
+                     verification_rules=verification_rules,
+                     configured_criteria=configured_criteria,
++                    **project_binding_kwargs,
+                 )
+             else:
+                 if active_rules:
+@@ -1228,8 +1264,12 @@ class TaskStore:
+         except CompletionGateError:
+             raise
+         except Exception as exc:
++            receipt_ids = ", ".join(
++                f"'{receipt_id}' for '{criterion}'"
++                for criterion, receipt_id in task.verification_receipts.items()
++            ) or "required criteria"
+             raise CompletionGateError(
+-                f"Cannot transition to COMPLETED: verification evaluator failed ({type(exc).__name__})"
++                f"Cannot transition to COMPLETED: verification storage could not validate {receipt_ids}: {exc}"
+             ) from exc
+ 
+         complete = result.get("complete", False) if isinstance(result, Mapping) else getattr(result, "complete", False)
+@@ -1246,8 +1286,16 @@ class TaskStore:
+             if stale:
+                 details.append(f"stale={tuple(stale)}")
+             suffix = f" ({'; '.join(details)})" if details else ""
++            invalid = [
++                f"criterion '{criterion}' receipt '{task.verification_receipts.get(criterion, 'missing')}': missing, failed, spoofed, wrong owner, or wrong evidence type"
++                for criterion in unsatisfied
++            ]
++            invalid.extend(
++                f"criterion '{criterion}' receipt '{task.verification_receipts.get(criterion, 'missing')}': expired or stale revision/mutation generation"
++                for criterion in stale
++            )
+             raise CompletionGateError(
+-                f"Cannot transition to COMPLETED: verification evaluator rejected completion{suffix}"
++                "Cannot transition to COMPLETED: " + ("; ".join(invalid) or f"verification evaluator rejected completion{suffix}")
+             )
+ 
+     def transition(

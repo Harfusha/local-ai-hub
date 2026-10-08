@@ -1,0 +1,67 @@
+# T09 handoff checkpoint — 2026-10-06
+
+## Git identity and disposition
+
+- Registered owner worktree: `C:\Users\Adam\.codex\worktrees\t09-t08-receipt-fixture\.local-ai-hub` (artifact `01a0ef6a-bac9-7d61-84ce-3e6196bc6279`).
+- Full candidate base/HEAD: `2b33602adef0d030fea66cdcc04ca742c60b2e32` (`test(client): cover pubsub cursor response`). No T09 commit exists; work is uncommitted in a dirty shared candidate.
+- Requested current master: `b947d76fdfb7ed592b72e55587d5c83cfa352c35` (`fix(dashboard): identify worktrees from git metadata`).
+- `git merge-base 2b33602adef0d030fea66cdcc04ca742c60b2e32 b947d76fdfb7ed592b72e55587d5c83cfa352c35`: `2b33602adef0d030fea66cdcc04ca742c60b2e32` (candidate base is ancestor of current master).
+- No integration, cherry-pick, root edit, reset, stash, or cleanup performed. Prior owner packet says the narrow task-owner guard was integrated in an older root snapshot; that is not verified against master `b947d76f`.
+
+## T09-owned source/test paths and blob SHA-256
+
+Hashes below are SHA-256 over exact Git blob bytes for committed preimages and exact working-tree bytes for postimages. `ABSENT` means no blob exists at that revision.
+
+| T09 path | Candidate-base preimage (`2b33602`) | Current-master preimage (`b947d76f`) | Candidate postimage | Master delta classification / transfer limit |
+|---|---|---|---|---|
+| `src/local_ai_hub/http_server.py` | `4C10B31778BA89FA694C0029FC95B363AF7ACFFC4C2CACEB5E52CE4B9A9BFF80` | `426601EA78DD4B240376076FF7833CDE4491B5BD831D64A8622069072528D0BD` | `4D761DE8A916D6FA571C53C48C71DB63D4DFDCA8855B1ACF0788438CB1E41159` | **C: shared/current-master overlap.** Guard hunk was T09-assigned historically; reconcile against current owner/master behavior before transfer. |
+| `tests/test_t09_http_task_completion_persisted_receipts.py` | `ABSENT` | `A677AD346EB5FA9FD86B2AC55E31FB79C5B9439610912306CC06658FB94D3F9B` | `73BB4D91229ADC85F162892241C9F2EF6B9E0F6DC5627412C82B6FBA791108F2` | **B: master path exists with different blob.** T09 cross-tenant unchanged-state regression plus rightful-owner/replay assertions; reconcile before transfer. |
+| `tests/test_t09_http_task_completion_matrix.py` | `ABSENT` | `EF86F2A146393401F5D1E2B155B8E8B8C4BA23899E202C6A6D923DB368BDE84A` | `FEA99D9D399F38829B33B2C6DAEC7C606158900981985502AF0F1DD85B7B295F` | **B: master path exists with different blob.** T09-owned matrix; reconcile before transfer. |
+| `tests/test_agent_tasks.py` | `C012A6A44CE3F3B7A45BEE92BFC0F16028B642B1324E14503AAE2FD6B352B2C6` | `0B5B2EEA1ADBDDD149C3EF87A12354D8E912AD95608033C7118CF44CF4FB02A8` | `A0473FAE4DBE994E460E237B73B2F520F3610AEDEE153982F6F6F8E6073AFD4A` | **C: shared/T08 overlap.** T09 owns only `test_newer_failed_receipt_supersedes_older_pass`; owner/T08 reconcile hunk, never transfer whole file. |
+| `tests/test_agent_receipt_ordering_t09.py` | `ABSENT` | `ABSENT` | `25FBF2EF18633E9144A1236924B691C2446F987264509EFF985E589C0CE12BDF` | **A: clean add-only delta.** Patch pinned below; test passed on candidate base, not on a current-master-based candidate. |
+| `tests/test_agent_receipt_completion_t09.py` | `ABSENT` | `907C744B657376D7FB797A97F8ECCD5493740AF11449BAA9F220C674B9D9AA48` | `ABSENT` | **D: NO_WORKTREE_COPY.** Historical split packet marks T09 ownership; current candidate has no postimage to transfer. |
+| `tests/test_verified_handoff.py` | `ABSENT` | `700E34A8483398331B2447794A7888D8F4ADC2F9570BA03A698069E324E1F548` | `700E34A8483398331B2447794A7888D8F4ADC2F9570BA03A698069E324E1F548` | Supporting acceptance test is byte-identical to master; **no delta**. |
+
+The two-file owner-guard patch is `handoff/t09-task-completion-owner-guard-root-current-v2.patch`, SHA-256 `C17D37E1CFCCF6D10C223208D7376826FA1283F862A1ACFAFEA66AFD379C3E57`. Its old root preimage hashes and simulated postimages are in `handoff/t09-owner-packet-task-completion-20261005.md`; do not apply it directly to current master because histories/base differ.
+
+The ordering-test-only patch is `handoff/t09-latest-receipt-order-root-current.patch`, SHA-256 `547110F67AB5828ACCF465E0221207A0A163BFE95A751CF60271A1F941EF722E`; it adds only `tests/test_agent_receipt_ordering_t09.py`. The T09-owned failed-receipt test is a hunk in the mixed `tests/test_agent_tasks.py`; extract that hunk only if carrying it forward.
+
+## Delta classes against current master
+
+- **A — add-only:** `tests/test_agent_receipt_ordering_t09.py`; exact patch `handoff/t09-latest-receipt-order-root-current.patch`, SHA-256 `547110F67AB5828ACCF465E0221207A0A163BFE95A751CF60271A1F941EF722E`. Historical owner-candidate selector passed (`1 passed in 1.27s`); fresh split-path validation also passed against canonical root/master code at `744727887bb1027b1bc464534a1ab0280ddbc9fe` (`1 passed in 0.23s`), with import origin confirmed below.
+- **B — master path exists, candidate blob differs:** `tests/test_t09_http_task_completion_persisted_receipts.py` and `tests/test_t09_http_task_completion_matrix.py`. Hashes are pinned above; historical candidate tests passed (receipts below), but do not replace/reapply the master's versions without reconciliation.
+- **C — shared hunks need owner/T08 reconciliation:** `src/local_ai_hub/http_server.py` owner-guard hunk and `tests/test_agent_tasks.py::test_newer_failed_receipt_supersedes_older_pass`. Both full files are dirty/shared; carry only reviewed hunks. Current-master blob for the test file differs.
+- **D — NO_WORKTREE_COPY:** `tests/test_agent_receipt_completion_t09.py`; master has blob `907C…AA48`, but candidate has no postimage, so no candidate delta can be supplied.
+- **Already identical:** `tests/test_verified_handoff.py` candidate/master blob is `700E…F548`; no delta.
+
+Other dirty/untracked files in this worktree are shared, inherited, or supporting handoff artifacts; this packet does not assign them to T09. Exact prior overlap inventory and root/candidate pins: `handoff/t09-current-root-overlap-audit-20261005.md` (SHA-256 `ADC28159C59DF5A4C86B6F4FE9D82C3B41ECDB4B53CAF69AE8F4DF3A70258CB0`).
+
+## Test receipts (historical candidate receipts; not rerun for this handoff)
+
+- Cross-tenant guard selector, before fix: exit `1`; regression reproduced mutation (`PLANNED` → `VERIFYING`). After fix: exit `0`, `1 passed in 5.65s`. Exact command and root integration report are in `handoff/t09-owner-packet-task-completion-20261005.md`; root orchestrator reported `1 passed in 9.19s`, not rerun here.
+- Combined receipt-gate/HTTP matrix command: exit `0`, `29 passed in 43.23s`; exact command in the same owner packet.
+- Candidate receipt ordering, handoff, persisted HTTP and matrix command: exit `0`, `45 passed in 47.14s`; exact command in `handoff/t09-task-completion-owner-guard-root-current-v2.md`.
+- Receipt-gate explicit selectors: exit `0`, `18 passed in 2.54s`; exact command/selection in that manifest.
+- Failed-newer-receipt regression: `python -m pytest -q tests/test_agent_tasks.py::test_newer_failed_receipt_supersedes_older_pass` — exit `0`, `1 passed in 1.73s`; execution id `e152f2b3442a47aab93dc55d154f2578`; recorded repository revision `5c4dd284fcdf25fce10ba49a657756ac1eea201b26ceef8240a2f24b3e86041f`.
+- Ordering-only selector: `python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_agent_receipt_ordering_t09.py` — exit `0`, `1 passed in 1.27s`; recorded in `handoff/t09-latest-receipt-order-root-current.md`.
+- The add-only ordering delta has a fresh canonical-root/master-code receipt below. Other differing T09 test/source blobs have no fresh current-master receipts.
+
+## Safe continuation on current master
+
+1. Start a fresh task-owned worktree based on exact master `b947d76fdfb7ed592b72e55587d5c83cfa352c35`; shared ancestry is proven by merge-base `2b33602adef0d030fea66cdcc04ca742c60b2e32`.
+2. Do not cherry-pick the candidate commit (there is none), apply the old-root two-file patch wholesale, or copy mixed `tests/test_agent_tasks.py`.
+3. Re-review/transplant only the `http_server.py` owner-check hunk, persisted HTTP regression, ordering-only test, and failed-receipt test hunk. Recompute pre/post hashes against master; resolve any existing master behavior before edits.
+4. Run the focused selectors in that new worktree and save fresh command receipts. Keep T05 tenant/token binding and T06 command producer evidence outside T09 claims.
+
+## Canonical-root execution receipt — 2026-10-06
+
+- Hub preflight command `git status --short -- src/local_ai_hub/agent_tasks.py tests/test_agent_receipt_ordering_t09.py`, cwd `C:\Users\Adam\.local-ai-hub`: exit `0`, empty output (both target paths clean); request `req_93d5c9e93d80`, execution `e5ed2b897de54c18a978a39419fa7aad`.
+- Hub `git rev-parse HEAD` in canonical root: `744727887bb1027b1bc464534a1ab0280ddbc9fe`; Hub `git merge-base --is-ancestor b947d76fdfb7ed592b72e55587d5c83cfa352c35 HEAD`: exit `0`, so root is based on current master; request `req_dfa80a30b131` / `req_f1175573389b`.
+- Exact Hub test command, cwd canonical root, test path left in owner worktree: `python -B -m pytest -q -p no:cacheprovider --tb=short C:\Users\Adam\.codex\worktrees\t09-t08-receipt-fixture\.local-ai-hub\tests\test_agent_receipt_ordering_t09.py` — exit `0`, `. [100%]`, `1 passed in 0.23s`; request `req_a67adb800042`, execution `bf682a2f538c4336805e43ec3eb208b7`.
+- Read-only import-origin probe returned `C:\Users\Adam\.local-ai-hub\src\local_ai_hub\agent_tasks.py`, confirming canonical source path. Hub classified this `python -c` probe as `allowed=false`, `class=unknown` due inline import side-effect uncertainty, while reporting exit `0`; request `req_232fbff68688`. The external-path pytest command itself was allowed and passed.
+- Test file remains only in owner worktree; no copy, staging, commit, or root edit occurred.
+
+## Acceptance / Agent OS checkpoint
+
+- T09 overall remains `OPEN / NO-GO`: one add-only test passed against canonical master code; other differing T09 source/test blobs lack fresh current-master receipts; T06 producer proof unavailable; Agent OS task/lease record is `UNKNOWN`; owner header is not cryptographically bound to shared token.
+- Local AI Hub was explicitly excluded by the user for this continuation. This file is the native durable checkpoint; no Hub Agent OS checkpoint call was made and no Hub request was repeated.

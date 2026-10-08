@@ -1,0 +1,37 @@
+{
+  "artifact_id": "T15-ROOT-CACHE-TTL-ZERO-V5",
+  "status": "TEST_ONLY_PATCH_READY_FOR_T20; NOT_APPLIED_BY_T15",
+  "date": "2026-10-01",
+  "immutable_patch": {
+    "path": "handoff/t15-root-cache-ttl-zero-v5.patch",
+    "sha256": "add84a795ff3cd9dddccccbb3c84a7982172f7a99966c1ecdc189a68fa0c5855",
+    "scope": "tests/test_command_cache_singleflight_contract.py only",
+    "supersedes": "TTL-zero test gap only; runtime environment assertion already observed in root after T20 integration."
+  },
+  "root_preimages": {
+    "head": "98a9a1a7611af574caf20a88620c4aa3eb2e918a",
+    "tests/test_command_cache_singleflight_contract.py": "0b0280771eb70cfb31c67402f910c284f3607b0c9af08679459029d5373d56a1",
+    "src/local_ai_hub/commands.py_observed_sha256": "3e10f0d793fd0ac4ff0d4a74e964800a4dbbf5f89a8b74ff6fd16cccd30a4acc"
+  },
+  "candidate_receipts": {
+    "focused_ttl_command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_command_cache_singleflight_contract.py::test_configured_result_cache_l1_ttl_does_not_outlive_l2 tests/test_command_cache_singleflight_contract.py::test_configured_suppression_l1_ttl_does_not_outlive_l2",
+    "focused_ttl_result": "6 passed in 1.14s across result/suppression caches and L1 TTL 0/10.",
+    "cache_contract_command": "python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_command_cache_singleflight_contract.py",
+    "cache_contract_result": "13 passed in 1.38s.",
+    "red_before_fix": "3 failed in 0.52s: cached success/failure/suppression stayed live beyond persistent TTL.",
+    "fix": "L1 TTL capped to matching L2 TTL, including when configured L1 TTL is zero (otherwise no expiration)."
+  },
+  "root_check": {
+    "command": "git -C C:\\Users\\Adam\\.local-ai-hub apply --check C:\\Users\\Adam\\.codex\\worktrees\\t15-command-config\\.local-ai-hub\\handoff\\t15-root-cache-ttl-zero-v5.patch",
+    "result": "PASS",
+    "root_modified_by_t15": false,
+    "root_tests_run_by_t15": false,
+    "note": "Root source already contains T20-integrated effective_l1_ttl. Current root tests cover L1 TTL 10; v5 extends with L1 TTL 0."
+  },
+  "performance": "NOT_RUN; wait for exclusive T20 CPU lease.",
+  "remaining": [
+    "T20 root apply/run of TTL-zero variant.",
+    "T15 full p95/p99 performance and no-quality-regression evidence.",
+    "Affected graph, streaming/lifecycle and T06/T07 no-orphan acceptance."
+  ]
+}

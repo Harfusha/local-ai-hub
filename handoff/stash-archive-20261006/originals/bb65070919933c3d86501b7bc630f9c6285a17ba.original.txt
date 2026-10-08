@@ -1,0 +1,56 @@
+diff --git a/src/local_ai_hub/http_server.py b/src/local_ai_hub/http_server.py
+--- a/src/local_ai_hub/http_server.py
++++ b/src/local_ai_hub/http_server.py
+@@ -1,3 +1,20 @@
+ from __future__ import annotations
+ 
++
++
++def _parse_include_body(value, *, query=False):
++    """Parse the strict boolean forms accepted by code.find_symbol."""
++    if query:
++        if value is None:
++            return False
++        if value == "true":
++            return True
++        if value == "false":
++            return False
++        return None
++    if type(value) is bool:
++        return value
++    return None
++
++
+ import hmac
+@@ -2520,1 +2537,4 @@
+-                include_body = bool((query.get("include_body") or [False])[0])
++                include_body = _parse_include_body((query.get("include_body") or [None])[0], query=True)
++                if include_body is None:
++                    self._send(400, {"success": False, "error": "include_body must be a boolean"})
++                    return
+@@ -4468,1 +4488,4 @@
+-                include_body = bool(payload.get("include_body", False))
++                include_body = _parse_include_body(payload.get("include_body", False))
++                if include_body is None:
++                    self._send(400, {"success": False, "error": "include_body must be a boolean"})
++                    return
+diff --git a/tests/test_http_code_find_symbol_include_body.py b/tests/test_http_code_find_symbol_include_body.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_http_code_find_symbol_include_body.py
+@@ -0,0 +1,12 @@
++from local_ai_hub.http_server import _parse_include_body
++
++
++def test_parse_include_body_accepts_only_strict_values():
++    assert _parse_include_body(False) is False
++    assert _parse_include_body(True) is True
++    assert _parse_include_body("false") is None
++    assert _parse_include_body("true") is None
++    assert _parse_include_body(0) is None
++
++    assert _parse_include_body(None, query=True) is False
++    assert _parse_include_body("false", query=True) is False
++    assert _parse_include_body("true", query=True) is True
++    assert _parse_include_body("False", query=True) is None
++    assert _parse_include_body("1", query=True) is None

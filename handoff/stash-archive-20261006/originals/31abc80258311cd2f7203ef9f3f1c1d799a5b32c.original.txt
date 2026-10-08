@@ -1,0 +1,4082 @@
+diff --git a/src/local_ai_hub/agent_tasks.py b/src/local_ai_hub/agent_tasks.py
+index fbc602e..f653cb8 100644
+--- a/src/local_ai_hub/agent_tasks.py
++++ b/src/local_ai_hub/agent_tasks.py
+@@ -3,8 +3,10 @@ from __future__ import annotations
+ from .json_utils import dumps as json_dumps
+ 
+ import json
++import inspect
+ import threading
+ import time
++import unicodedata
+ import uuid
+ from contextlib import closing
+ from dataclasses import dataclass, field
+@@ -78,12 +80,14 @@ class GoalContract:
+     constraints: tuple[str, ...] = ()
+     risk_profile: str = "normal"
+     slo_profile: dict[str, Any] = field(default_factory=dict)
++    description: str = ""
+ 
+     def __post_init__(self) -> None:
+         goal = str(self.goal or "").strip()
+         if not goal:
+             raise ValueError("task contract requires goal")
+         object.__setattr__(self, "goal", goal)
++        object.__setattr__(self, "description", str(self.description or "").strip())
+         if not isinstance(self.scope, AgentScope):
+             object.__setattr__(self, "scope", AgentScope.parse(self.scope))
+         if not isinstance(self.acceptance_criteria, tuple):
+@@ -97,6 +101,7 @@ class GoalContract:
+         scope_val = self.scope.value if isinstance(self.scope, AgentScope) else (getattr(self.scope, "value", None) or str(self.scope))
+         return {
+             "goal": self.goal,
++            "description": self.description,
+             "acceptance_criteria": list(self.acceptance_criteria),
+             "scope": scope_val,
+             "non_goals": list(self.non_goals),
+@@ -107,22 +112,19 @@ class GoalContract:
+ 
+     @classmethod
+     def from_dict(cls, data: Mapping[str, Any]) -> GoalContract:
+-        goal_val = str(
+-            data.get("goal")
+-            or data.get("title")
+-            or data.get("description")
+-            or data.get("summary")
+-            or data.get("intent")
+-            or data.get("task")
+-            or data.get("name")
+-            or ""
+-        ).strip()
++        explicit_goal = next(
++            (data.get(key) for key in ("goal", "title", "summary", "intent", "task", "name") if data.get(key)),
++            None,
++        )
++        goal_val = str(explicit_goal or data.get("description") or "").strip()
++        description = str(data.get("description") or "").strip() if explicit_goal else ""
+         if not goal_val:
+             crit = data.get("acceptance_criteria")
+             if crit and isinstance(crit, (list, tuple)) and len(crit) > 0:
+                 goal_val = f"Complete task: {crit[0]}"
+         return cls(
+             goal=goal_val,
++            description=description,
+             acceptance_criteria=tuple(data.get("acceptance_criteria") or ()),
+             scope=AgentScope.parse(data.get("scope", AgentScope.TASK.value)),
+             non_goals=tuple(data.get("non_goals") or ()),
+@@ -222,6 +224,7 @@ class TaskStore:
+         self.state_store = state_store
+         self.default_heartbeat_ttl = float(default_heartbeat_ttl)
+         self.policy_engine = policy_engine
++        self.verification_store: Any | None = None
+         self._lock = threading.RLock()
+         self._initialized = False
+         self._init_projection_table()
+@@ -229,6 +232,177 @@ class TaskStore:
+     def set_policy_engine(self, policy_engine: Any) -> None:
+         self.policy_engine = policy_engine
+ 
++    def set_verification_store(self, verification_store: Any) -> None:
++        self.verification_store = verification_store
++
++    def _verify_completion(self, task: TaskState, *, current_revision: str = "") -> None:
++        memory_audit_validator = getattr(self, "_validate_memory_audit", None)
++        if callable(memory_audit_validator):
++            memory_audit_validator(task)
++        if not task.contract.acceptance_criteria:
++            return
++
++        state_data = task.checkpoint.state_data
++        try:
++            from .verification_rules import (
++                _task_created_state_data,
++                _task_project_root,
++                project_command_environment_sha256,
++            )
++
++            initial_state_data = _task_created_state_data(self, task.task_id)
++            repo_root = _task_project_root(task, initial_state_data)
++        except Exception as exc:
++            raise CompletionGateError(
++                "Cannot transition to COMPLETED: trusted task project root is unavailable"
++            ) from exc
++        has_repo_root = isinstance(repo_root, (str, Path)) and bool(str(repo_root).strip())
++        repository_revision = str(
++            current_revision or state_data.get("repository_revision", "") or ""
++        ).strip()
++        mutation_generation = state_data.get("mutation_generation", 0)
++        if isinstance(mutation_generation, bool) or not isinstance(mutation_generation, int) or mutation_generation < 0:
++            raise CompletionGateError(
++                "Cannot transition to COMPLETED: task mutation_generation is invalid"
++            )
++
++        configured_commands: Mapping[str, Any] = {}
++        configured_environment_sha256: Mapping[str, str] = {}
++        project_config_digest = ""
++        if has_repo_root:
++            try:
++                from .project_config import resolve_project_context
++
++                project = resolve_project_context(repo_root, Path(self.state_store.db_path).parent)
++                settings = project.settings
++                verification_rules = settings.verification_rules
++                configured_criteria = tuple(settings.commands)
++                configured_commands = settings.commands
++                configured_environment_sha256 = {
++                    name: project_command_environment_sha256(settings, name)
++                    for name in settings.commands
++                }
++                project_config_digest = project.config_digest
++                if not isinstance(verification_rules, Mapping) or not isinstance(settings.commands, Mapping):
++                    raise ValueError("project verification settings are invalid")
++            except Exception as exc:
++                raise CompletionGateError(
++                    "Cannot transition to COMPLETED: project verification config could not be resolved"
++                ) from exc
++        else:
++            verification_rules = {}
++            configured_criteria = ()
++        acceptance = set(task.contract.acceptance_criteria)
++        active_rules = any(str(key).strip() in acceptance for key in verification_rules)
++
++        verifier = getattr(self, "verification_store", None)
++        if verifier is None:
++            try:
++                from .agent_verification import VerificationStore
++
++                verifier = VerificationStore(self.state_store, task_store=self)
++                self.verification_store = verifier
++            except Exception as exc:
++                raise CompletionGateError(
++                    "Cannot transition to COMPLETED: verification evaluator is unavailable"
++                ) from exc
++
++        completion = getattr(verifier, "completion", None)
++        if not callable(completion):
++            raise CompletionGateError(
++                "Cannot transition to COMPLETED: verification evaluator has no completion method"
++            )
++        try:
++            parameters = inspect.signature(completion).parameters
++            supports_kwargs = any(
++                parameter.kind is inspect.Parameter.VAR_KEYWORD
++                for parameter in parameters.values()
++            )
++            supports_project_rules = {
++                "current_revision",
++                "current_mutation_generation",
++                "verification_rules",
++                "configured_criteria",
++            }.issubset(parameters)
++            supports_project_binding = supports_kwargs or {
++                "configured_commands",
++                "project_config_digest",
++                "configured_environment_sha256",
++                "project_root",
++            }.issubset(parameters)
++            if supports_project_rules:
++                if active_rules and not repository_revision:
++                    raise CompletionGateError(
++                        "Cannot transition to COMPLETED: trusted repository_revision is unavailable"
++                    )
++                if active_rules and not supports_project_binding:
++                    raise CompletionGateError(
++                        "Cannot transition to COMPLETED: verification evaluator does not bind project commands"
++                    )
++                project_binding_kwargs = (
++                    {
++                        "configured_commands": configured_commands,
++                        "project_config_digest": project_config_digest,
++                        "configured_environment_sha256": configured_environment_sha256,
++                        "project_root": repo_root,
++                    }
++                    if supports_project_binding
++                    else {}
++                )
++                result = completion(
++                    task.task_id,
++                    current_revision=repository_revision,
++                    current_mutation_generation=mutation_generation,
++                    verification_rules=verification_rules,
++                    configured_criteria=configured_criteria,
++                    **project_binding_kwargs,
++                )
++            else:
++                if active_rules:
++                    raise CompletionGateError(
++                        "Cannot transition to COMPLETED: verification evaluator does not support project rules"
++                    )
++                legacy_kwargs = {}
++                if repository_revision and ("current_revision" in parameters or supports_kwargs):
++                    legacy_kwargs["current_revision"] = repository_revision
++                result = completion(task.task_id, **legacy_kwargs)
++        except CompletionGateError:
++            raise
++        except Exception as exc:
++            receipt_ids = ", ".join(
++                f"'{receipt_id}' for '{criterion}'"
++                for criterion, receipt_id in task.verification_receipts.items()
++            ) or "required criteria"
++            raise CompletionGateError(
++                f"Cannot transition to COMPLETED: verification storage could not validate {receipt_ids}: {exc}"
++            ) from exc
++
++        complete = result.get("complete", False) if isinstance(result, Mapping) else getattr(result, "complete", False)
++        if complete is not True:
++            unsatisfied = (
++                result.get("unsatisfied_criteria", ())
++                if isinstance(result, Mapping)
++                else getattr(result, "unsatisfied_criteria", ())
++            )
++            stale = result.get("stale_criteria", ()) if isinstance(result, Mapping) else getattr(result, "stale_criteria", ())
++            details = []
++            if unsatisfied:
++                details.append(f"unsatisfied={tuple(unsatisfied)}")
++            if stale:
++                details.append(f"stale={tuple(stale)}")
++            suffix = f" ({'; '.join(details)})" if details else ""
++            invalid = [
++                f"criterion '{criterion}' receipt '{task.verification_receipts.get(criterion, 'missing')}': missing, failed, spoofed, wrong owner, or wrong evidence type"
++                for criterion in unsatisfied
++            ]
++            invalid.extend(
++                f"criterion '{criterion}' receipt '{task.verification_receipts.get(criterion, 'missing')}': expired or stale revision/mutation generation"
++                for criterion in stale
++            )
++            raise CompletionGateError(
++                "Cannot transition to COMPLETED: " + ("; ".join(invalid) or f"verification evaluator rejected completion{suffix}")
++            )
++
+     def _db_path_available(self) -> bool:
+         """Return whether the projection database path is usable.
+ 
+@@ -255,6 +429,23 @@ class TaskStore:
+             self.state_store._ensure_schema()
+             def _setup() -> None:
+                 with closing(connect_sqlite(self.state_store.db_path)) as con:
++                    from .sqlite_support import validate_durable_schema
++
++                    validate_durable_schema(
++                        con,
++                        self.state_store.db_path,
++                        {
++                            "agent_tasks_projection": [
++                                ("task_id", "TEXT", 0, 1), ("status", "TEXT", 1, 0),
++                                ("owner", "TEXT", 1, 0), ("lease_id", "TEXT", 1, 0),
++                                ("contract", "TEXT", 1, 0), ("context", "TEXT", 1, 0),
++                                ("checkpoint", "TEXT", 1, 0), ("receipts", "TEXT", 1, 0),
++                                ("heartbeat_expires_at", "REAL", 1, 0),
++                                ("created_at", "REAL", 1, 0), ("updated_at", "REAL", 1, 0),
++                            ],
++                        },
++                        required_if_event_kinds={"agent_tasks_projection": ("task.%",)},
++                    )
+                     con.execute(
+                         """
+                         CREATE TABLE IF NOT EXISTS agent_tasks_projection (
+@@ -290,6 +481,7 @@ class TaskStore:
+                         ON agent_tasks_projection (status, updated_at DESC);
+                         """
+                     )
++                    self._backfill_task_search_index(con)
+                     con.commit()
+             retry_busy(_setup, retries=5, base_delay_seconds=0.02)
+             self._initialized = True
+@@ -304,18 +496,44 @@ class TaskStore:
+         idempotency_key: str = "",
+         auto_worktree: bool = False,
+         repo_root: str = "",
++        repository_revision: str = "",
++        worktree_ttl_seconds: float = 86400.0,
+     ) -> TaskState:
+         t_id = task_id or f"task_{uuid.uuid4().hex[:12]}"
+         now = time.time()
+         initial_status = TaskStatus.PLANNED
+-        initial_sd: dict[str, Any] = {}
++        initial_sd: dict[str, Any] = {"mutation_generation": 0}
++        if str(repo_root or "").strip():
++            initial_sd["repo_root"] = str(
++                Path(repo_root).expanduser().resolve(strict=False)
++            )
++        if repository_revision:
++            initial_sd["repository_revision"] = str(repository_revision).strip()
+ 
+         if auto_worktree:
++            ttl = max(60.0, min(float(worktree_ttl_seconds), 30 * 24 * 60 * 60.0))
+             try:
+                 from .process_utils import create_git_worktree
+-                r_root = repo_root or context.repository_id or "."
+-                wt_res = create_git_worktree(r_root, branch_name=f"hub/task-{t_id}")
++                r_root = str(Path(repo_root or context.repository_id or ".").expanduser().resolve(strict=False))
++                wt_res = create_git_worktree(
++                    r_root,
++                    branch_name=f"hub/task-{t_id}",
++                    task_id=t_id,
++                    owner=str(actor),
++                    created_at=now,
++                    ttl_seconds=ttl,
++                    expires_at=now + ttl,
++                )
+                 if wt_res.get("success"):
++                    wt_res.update({
++                        "task_id": t_id,
++                        "owner": str(actor),
++                        "repo_root": r_root,
++                        "worktree_path": str(Path(str(wt_res["worktree_path"])).resolve(strict=False)),
++                        "created_at": now,
++                        "ttl_seconds": ttl,
++                        "expires_at": now + ttl,
++                    })
+                     initial_sd["worktree"] = wt_res
+             except Exception:
+                 pass
+@@ -364,11 +582,132 @@ class TaskStore:
+             return None
+         return self._row_to_state(row)
+ 
+-    def list_tasks(self, status: TaskStatus | None = None, limit: int = 100, include_stale: bool = False) -> list[TaskState]:
++    @staticmethod
++    def _normalize_search_text(value: Any) -> str:
++        return unicodedata.normalize("NFKC", str(value or "")).casefold()
++
++    @staticmethod
++    def _collect_search_values(value: Any, fields: list[str]) -> None:
++        if isinstance(value, Mapping):
++            for item in value.values():
++                TaskStore._collect_search_values(item, fields)
++        elif isinstance(value, (list, tuple, set)):
++            for item in value:
++                TaskStore._collect_search_values(item, fields)
++        elif value is not None:
++            text = str(value).strip()
++            if text:
++                fields.append(text)
++
++    @staticmethod
++    def _searchable_task_fields(
++        task_id: str,
++        contract: Mapping[str, Any],
++        checkpoint: Mapping[str, Any],
++        context: Mapping[str, Any] | None = None,
++    ) -> tuple[str, ...]:
++        fields = [str(task_id)]
++        for source in (contract, context or {}, checkpoint):
++            TaskStore._collect_search_values(source, fields)
++        return tuple(fields)
++
++    @classmethod
++    def _search_grams(cls, values: Any) -> set[str]:
++        if isinstance(values, str):
++            values = (values,)
++        grams: set[str] = set()
++        for value in values:
++            normalized = cls._normalize_search_text(value)
++            grams.update(normalized[index:index + 3] for index in range(max(0, len(normalized) - 2)))
++        return grams
++
++    @classmethod
++    def _write_task_search_index(
++        cls,
++        con: sqlite3.Connection,
++        task_id: str,
++        fields: tuple[str, ...],
++    ) -> None:
++        con.execute("DELETE FROM agent_task_search_grams WHERE task_id = ?", (task_id,))
++        con.execute(
++            "INSERT OR REPLACE INTO agent_task_search_documents(task_id, fields) VALUES (?, ?)",
++            (task_id, json_dumps(list(fields))),
++        )
++        con.executemany(
++            "INSERT INTO agent_task_search_grams(task_id, gram) VALUES (?, ?)",
++            ((task_id, gram) for gram in sorted(cls._search_grams(fields))),
++        )
++
++    @classmethod
++    def _backfill_task_search_index(cls, con: sqlite3.Connection) -> None:
++        con.execute(
++            "CREATE TABLE IF NOT EXISTS agent_task_search_documents "
++            "(task_id TEXT PRIMARY KEY, fields TEXT NOT NULL)"
++        )
++        con.execute(
++            "CREATE TABLE IF NOT EXISTS agent_task_search_grams "
++            "(task_id TEXT NOT NULL, gram TEXT NOT NULL, PRIMARY KEY(task_id, gram))"
++        )
++        con.execute(
++            "CREATE INDEX IF NOT EXISTS idx_agent_task_search_grams_gram "
++            "ON agent_task_search_grams(gram, task_id)"
++        )
++        rows = con.execute(
++            "SELECT task_id, contract, context, checkpoint FROM agent_tasks_projection"
++        ).fetchall()
++        for task_id, contract_raw, context_raw, checkpoint_raw in rows:
++            contract = json.loads(contract_raw or "{}")
++            context = json.loads(context_raw or "{}")
++            checkpoint = json.loads(checkpoint_raw or "{}")
++            fields = cls._searchable_task_fields(task_id, contract, checkpoint, context)
++            expected = cls._search_grams(fields)
++            document = con.execute(
++                "SELECT fields FROM agent_task_search_documents WHERE task_id = ?", (task_id,)
++            ).fetchone()
++            existing = {
++                str(row[0]) for row in con.execute(
++                    "SELECT gram FROM agent_task_search_grams WHERE task_id = ?", (task_id,)
++                ).fetchall()
++            }
++            if not document or document[0] != json_dumps(list(fields)) or existing != expected:
++                cls._write_task_search_index(con, task_id, fields)
++        con.execute(
++            "DELETE FROM agent_task_search_documents WHERE task_id NOT IN "
++            "(SELECT task_id FROM agent_tasks_projection)"
++        )
++        con.execute(
++            "DELETE FROM agent_task_search_grams WHERE task_id NOT IN "
++            "(SELECT task_id FROM agent_tasks_projection)"
++        )
++
++    @classmethod
++    def _refresh_task_search_index(cls, con: sqlite3.Connection, task_id: str) -> None:
++        row = con.execute(
++            "SELECT contract, context, checkpoint FROM agent_tasks_projection WHERE task_id = ?",
++            (task_id,),
++        ).fetchone()
++        if not row:
++            con.execute("DELETE FROM agent_task_search_documents WHERE task_id = ?", (task_id,))
++            con.execute("DELETE FROM agent_task_search_grams WHERE task_id = ?", (task_id,))
++            return
++        contract, context, checkpoint = (json.loads(value or "{}") for value in row)
++        fields = cls._searchable_task_fields(task_id, contract, checkpoint, context)
++        cls._write_task_search_index(con, task_id, fields)
++
++    def list_tasks(
++        self,
++        status: TaskStatus | None = None,
++        limit: int = 100,
++        include_stale: bool = False,
++        query: str | None = None,
++    ) -> list[TaskState]:
+         if not self._db_path_available():
+             return []
+         self._init_projection_table()
+         now = time.time()
++        normalized_query = self._normalize_search_text(query or "")
++        query_terms = [term for term in normalized_query.split() if term]
++        query_grams = sorted(self._search_grams(query_terms))
+         def _fetch_tasks() -> list[Any]:
+             with closing(connect_sqlite(self.state_store.db_path)) as con:
+                 where_clauses: list[str] = []
+@@ -377,8 +716,26 @@ class TaskStore:
+                     where_clauses.append("status = ?")
+                     params.append(status.value)
+                 if not include_stale:
+-                    where_clauses.append("NOT (heartbeat_expires_at > 0 AND heartbeat_expires_at < ?)")
+-                    params.append(now)
++                    terminal_statuses = (
++                        TaskStatus.COMPLETED.value,
++                        TaskStatus.CANCELLED.value,
++                        TaskStatus.FAILED.value,
++                        TaskStatus.ABANDONED.value,
++                    )
++                    where_clauses.append(
++                        "NOT (heartbeat_expires_at > 0 AND heartbeat_expires_at < ? "
++                        "AND status NOT IN (?, ?, ?, ?))"
++                    )
++                    params.extend((now, *terminal_statuses))
++                if query_grams:
++                    placeholders = ", ".join("?" for _ in query_grams)
++                    where_clauses.append(
++                        "task_id IN (SELECT task_id FROM agent_task_search_grams "
++                        f"WHERE gram IN ({placeholders}) GROUP BY task_id "
++                        "HAVING COUNT(DISTINCT gram) = ?)"
++                    )
++                    params.extend(query_grams)
++                    params.append(len(query_grams))
+                 where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+                 sql = f"""
+                     SELECT task_id, status, owner, lease_id, contract, context, checkpoint, receipts,
+@@ -386,9 +743,10 @@ class TaskStore:
+                     FROM agent_tasks_projection
+                     {where_sql}
+                     ORDER BY updated_at DESC
+-                    LIMIT ?
++                    {"LIMIT ?" if not query_terms else ""}
+                 """
+-                params.append(max(1, int(limit)))
++                if not query_terms:
++                    params.append(max(1, int(limit)))
+                 cur = con.execute(sql, tuple(params))
+                 return cur.fetchall()
+ 
+@@ -396,6 +754,33 @@ class TaskStore:
+         tasks = [self._row_to_state(row) for row in rows]
+         if not include_stale:
+             tasks = [t for t in tasks if not t.is_stale]
++        if query_terms:
++            tasks = [
++                task for task in tasks
++                if all(
++                    any(term in self._normalize_search_text(field) for field in self._searchable_task_fields(
++                        task.task_id,
++                        task.contract.to_dict(),
++                        {
++                            "phase": task.checkpoint.phase,
++                            "next_action": task.checkpoint.next_action,
++                            "affected_paths": task.checkpoint.affected_paths,
++                            "evidence_ids": task.checkpoint.evidence_ids,
++                            "blockers": task.checkpoint.blockers,
++                            "state_data": task.checkpoint.state_data,
++                        },
++                        {
++                            "repository_id": task.context.repository_id,
++                            "clone_id": task.context.clone_id,
++                            "worktree_id": task.context.worktree_id,
++                            "branch": task.context.branch,
++                            "task_id": task.context.task_id,
++                            "session_id": task.context.session_id,
++                        },
++                    ))
++                    for term in query_terms
++                )
++            ]
+         return tasks[:max(1, int(limit))]
+ 
+     def count(self, status: TaskStatus | None = None) -> int:
+@@ -413,14 +798,101 @@ class TaskStore:
+         return retry_busy(_fetch_count, retries=5, base_delay_seconds=0.02)
+ 
+     def add_verification_receipt(self, task_id: str, criterion: str, receipt_id: str) -> TaskState:
+-        current = self.get(task_id)
+-        if not current:
++        if not self._db_path_available():
++            raise RuntimeError("agent task storage is unavailable")
++        self._init_projection_table()
++        published: list[AgentEvent] = []
++        result: list[TaskState | None] = []
++
++        def _write() -> None:
++            con = connect_sqlite(self.state_store.db_path, isolation_level=None)
++            try:
++                con.execute("BEGIN IMMEDIATE")
++                state, event = self.add_verification_receipt_in_transaction(
++                    con, task_id, criterion, receipt_id
++                )
++                con.execute("COMMIT")
++                result.append(state)
++                if event is not None:
++                    published.append(event)
++            except Exception:
++                try:
++                    con.execute("ROLLBACK")
++                except Exception:
++                    pass
++                raise
++            finally:
++                con.close()
++
++        retry_busy(_write, retries=5, base_delay_seconds=0.02)
++        for event in published:
++            self.state_store._publish(event)
++        if not result or result[0] is None:
+             raise KeyError(f"Task {task_id} not found")
+-        if current.verification_receipts.get(criterion) == receipt_id:
+-            return current
+-        new_receipts = dict(current.verification_receipts)
+-        new_receipts[criterion] = receipt_id
+-        now = time.time()
++        return result[0]
++
++    def add_verification_receipt_in_transaction(
++        self,
++        con: sqlite3.Connection,
++        task_id: str,
++        criterion: str,
++        receipt_id: str,
++    ) -> tuple[TaskState | None, AgentEvent | None]:
++        """Update task receipt projection and event using caller's SQLite transaction."""
++        row = con.execute(
++            "SELECT * FROM agent_tasks_projection WHERE task_id = ?",
++            (task_id,),
++        ).fetchone()
++        if not row:
++            return None, None
++        current = self._row_to_state(row)
++        event = AgentEvent.create(
++            stream_id=f"task:{task_id}",
++            kind="task.verified",
++            payload={"criterion": criterion, "receipt_id": receipt_id},
++            idempotency_key=f"ver_{task_id}_{criterion}_{receipt_id}",
++            actor="verifier",
++        )
++        existing = con.execute(
++            "SELECT seq FROM agent_events WHERE stream_id = ? AND idempotency_key = ?",
++            (event.stream_id, event.idempotency_key),
++        ).fetchone()
++        current_receipt = current.verification_receipts.get(criterion)
++        if existing and current_receipt not in (None, receipt_id):
++            appended = self.state_store.append_in_transaction(con, event, strict_idempotency=True)
++            if appended.error or appended.event is None:
++                raise RuntimeError(appended.error or "task receipt replay returned no persisted event")
++            return current, None
++        if current_receipt == receipt_id:
++            appended = self.state_store.append_in_transaction(con, event, strict_idempotency=True)
++            if appended.error or appended.event is None:
++                raise RuntimeError(appended.error or "task receipt append returned no persisted event")
++            return current, appended.event if not appended.duplicate else None
++
++        updated_receipts = dict(current.verification_receipts)
++        updated_receipts[criterion] = receipt_id
++        updated_at = time.time()
++        cur = con.execute(
++            """
++            UPDATE agent_tasks_projection
++            SET receipts = ?, updated_at = ?
++            WHERE task_id = ? AND receipts = ? AND updated_at = ?
++            """,
++            (
++                json_dumps(updated_receipts),
++                updated_at,
++                current.task_id,
++                json_dumps(current.verification_receipts),
++                current.updated_at,
++            ),
++        )
++        if cur.rowcount != 1:
++            raise ConcurrentTaskUpdateError(
++                f"Task {task_id} changed while recording verification receipt"
++            )
++        appended = self.state_store.append_in_transaction(con, event, strict_idempotency=True)
++        if appended.error or appended.event is None:
++            raise RuntimeError(appended.error or "task receipt append returned no persisted event")
+         updated = TaskState(
+             task_id=current.task_id,
+             status=current.status,
+@@ -429,19 +901,12 @@ class TaskStore:
+             owner=current.owner,
+             lease_id=current.lease_id,
+             created_at=current.created_at,
+-            updated_at=now,
++            updated_at=updated_at,
+             heartbeat_expires_at=current.heartbeat_expires_at,
+             checkpoint=current.checkpoint,
+-            verification_receipts=new_receipts,
++            verification_receipts=updated_receipts,
+         )
+-        event = AgentEvent.create(
+-            stream_id=f"task:{task_id}",
+-            kind="task.verified",
+-            payload={"criterion": criterion, "receipt_id": receipt_id},
+-            idempotency_key=f"ver_{task_id}_{criterion}_{receipt_id}",
+-            actor="verifier",
+-        )
+-        return self._commit_update(current, updated, event)
++        return updated, appended.event if not appended.duplicate else None
+ 
+     def transition(
+         self,
+@@ -451,72 +916,69 @@ class TaskStore:
+         reason: str,
+         actor: str,
+         idempotency_key: str,
++        current_revision: str = "",
++        verification_rules: (
++            bool
++            | tuple[str, ...]
++            | list[str]
++            | Mapping[str, bool | tuple[str, ...] | list[str]]
++            | None
++        ) = None,
++        configured_criteria: tuple[str, ...] | list[str] | None = None,
+     ) -> TaskState:
+         current = self.get(task_id)
+         if not current:
+             raise KeyError(f"Task {task_id} not found")
+ 
+-        if target == current.status:
++        if target == current.status and target != TaskStatus.COMPLETED:
+             return current
+ 
+         allowed = VALID_TRANSITIONS.get(current.status, set())
+-        if target not in allowed:
++        if target != current.status and target not in allowed:
+             raise InvalidTransitionError(
+                 f"Cannot transition task {task_id} from {current.status.value} to {target.value}"
+             )
+ 
+         if target == TaskStatus.COMPLETED:
+-            now_check = time.time()
+-            for criterion in current.contract.acceptance_criteria:
+-                if criterion not in current.verification_receipts:
+-                    raise CompletionGateError(
+-                        f"Cannot transition to COMPLETED: criterion '{criterion}' has no verified receipt"
+-                    )
+-                rcpt_id = current.verification_receipts[criterion]
+-                if not self.state_store.enabled or not self.state_store.db_path.exists():
+-                    raise CompletionGateError(
+-                        f"Cannot transition to COMPLETED: receipt '{rcpt_id}' for criterion '{criterion}' cannot be validated because verification storage is unavailable"
+-                    )
+-                try:
+-                    with closing(connect_sqlite(self.state_store.db_path)) as con:
+-                        row = con.execute(
+-                            """
+-                            SELECT task_id, criterion, evidence_id, passed, expires_at
+-                            FROM agent_verification_receipts WHERE receipt_id = ?
+-                            """,
+-                            (rcpt_id,),
+-                        ).fetchone()
+-                    if row is None:
+-                        raise CompletionGateError(
+-                            f"Cannot transition to COMPLETED: receipt '{rcpt_id}' for criterion '{criterion}' is missing from verification storage"
+-                        )
+-                    receipt_task_id, receipt_criterion, evidence_id, passed, expires_at = row
+-                    if receipt_task_id != task_id:
+-                        raise CompletionGateError(
+-                            f"Cannot transition to COMPLETED: receipt '{rcpt_id}' belongs to task '{receipt_task_id}', expected '{task_id}'"
+-                        )
+-                    if receipt_criterion != criterion:
+-                        raise CompletionGateError(
+-                            f"Cannot transition to COMPLETED: receipt '{rcpt_id}' belongs to criterion '{receipt_criterion}', expected '{criterion}'"
+-                        )
+-                    if not str(evidence_id or "").strip():
+-                        raise CompletionGateError(
+-                            f"Cannot transition to COMPLETED: receipt '{rcpt_id}' for criterion '{criterion}' has no evidence_id"
+-                        )
+-                    if not bool(passed):
+-                        raise CompletionGateError(
+-                            f"Cannot transition to COMPLETED: receipt '{rcpt_id}' for criterion '{criterion}' is marked failed"
+-                        )
+-                    if expires_at is not None and float(expires_at) < now_check:
+-                        raise CompletionGateError(
+-                            f"Cannot transition to COMPLETED: receipt '{rcpt_id}' for criterion '{criterion}' is expired (stale)"
+-                        )
+-                except CompletionGateError:
+-                    raise
+-                except Exception as exc:
+-                    raise CompletionGateError(
+-                        f"Cannot transition to COMPLETED: could not validate receipt '{rcpt_id}' for criterion '{criterion}': {exc}"
+-                    ) from exc
++            self._verify_completion(current, current_revision=current_revision)
++            try:
++                from .agent_verification import VerificationStore
++
++                verifier = self.verification_store or VerificationStore(
++                    self.state_store, task_store=self
++                )
++                completion = verifier.completion(
++                    task_id,
++                    current_revision=current_revision,
++                    current_mutation_generation=current.checkpoint.state_data.get(
++                        "mutation_generation", 0
++                    ),
++                    verification_rules=verification_rules,
++                    configured_criteria=configured_criteria,
++                )
++            except Exception as exc:
++                receipt_ids = ", ".join(
++                    f"'{receipt_id}' for '{criterion}'"
++                    for criterion, receipt_id in current.verification_receipts.items()
++                ) or "required criteria"
++                raise CompletionGateError(
++                    f"Cannot transition to COMPLETED: verification storage could not validate {receipt_ids}: {exc}"
++                ) from exc
++            if not completion.complete:
++                invalid = [
++                    f"criterion '{criterion}' receipt '{current.verification_receipts.get(criterion, 'missing')}': missing, failed, spoofed, wrong owner, or wrong evidence type"
++                    for criterion in completion.unsatisfied_criteria
++                ]
++                invalid.extend(
++                    f"criterion '{criterion}' receipt '{current.verification_receipts.get(criterion, 'missing')}': expired or stale revision/mutation generation"
++                    for criterion in completion.stale_criteria
++                )
++                raise CompletionGateError(
++                    "Cannot transition to COMPLETED: " + ("; ".join(invalid) or "no acceptance criteria receipt proof")
++                )
++
++        if target == current.status:
++            return current
+ 
+         now = time.time()
+         heartbeat = (
+@@ -548,6 +1010,66 @@ class TaskStore:
+         )
+         return self._commit_update(current, updated, event)
+ 
++    def _replay_same_status_transition(
++        self,
++        task_id: str,
++        target: TaskStatus,
++        *,
++        reason: str,
++        actor: str,
++        idempotency_key: str,
++    ) -> TaskState:
++        """Serialize a no-op retry with writers and validate its original operation."""
++        def _read_retry() -> TaskState:
++            con = connect_sqlite(
++                self.state_store.db_path, isolation_level=None, timeout_seconds=0.25
++            )
++            try:
++                con.execute("BEGIN IMMEDIATE")
++                row = con.execute(
++                    "SELECT * FROM agent_tasks_projection WHERE task_id = ?", (task_id,)
++                ).fetchone()
++                if not row:
++                    raise KeyError(f"Task {task_id} not found")
++                persisted = self._row_to_state(row)
++                if persisted.status != target:
++                    raise ConcurrentTaskUpdateError(
++                        f"Task {task_id} changed during transition; reload and retry"
++                    )
++                existing = con.execute(
++                    """SELECT stream_id, seq, event_id, kind, payload, idempotency_key,
++                              correlation_id, actor, created_at
++                       FROM agent_events WHERE stream_id = ? AND idempotency_key = ?""",
++                    (f"task:{task_id}", idempotency_key),
++                ).fetchone()
++                if existing:
++                    event = AgentEvent.from_row(existing)
++                    payload = dict(event.payload)
++                    try:
++                        source_status = TaskStatus(payload.get("from_status"))
++                        valid_transition = target in VALID_TRANSITIONS.get(source_status, set())
++                    except (TypeError, ValueError):
++                        valid_transition = False
++                    if (
++                        event.actor != actor
++                        or event.kind != "task.transitioned"
++                        or set(payload) != {"from_status", "to_status", "reason"}
++                        or payload.get("to_status") != target.value
++                        or payload.get("reason") != reason
++                        or not valid_transition
++                    ):
++                        raise ValueError("idempotency key was already used")
++                con.execute("COMMIT")
++                return persisted
++            except Exception:
++                if con.in_transaction:
++                    con.execute("ROLLBACK")
++                raise
++            finally:
++                con.close()
++
++        return retry_busy(_read_retry, retries=5, base_delay_seconds=0.02)
++
+     def complete(
+         self,
+         task_id: str,
+@@ -555,12 +1077,32 @@ class TaskStore:
+         reason: str = "completed by agent",
+         actor: str = "agent",
+         idempotency_key: str = "",
++        current_revision: str = "",
++        verification_rules: (
++            bool
++            | tuple[str, ...]
++            | list[str]
++            | Mapping[str, bool | tuple[str, ...] | list[str]]
++            | None
++        ) = None,
++        configured_criteria: tuple[str, ...] | list[str] | None = None,
+     ) -> TaskState:
+         current = self.get(task_id)
+         if not current:
+             raise KeyError(f"Task {task_id} not found")
+         if current.status == TaskStatus.COMPLETED:
+-            return current
++            return self.transition(
++                task_id,
++                TaskStatus.COMPLETED,
++                reason=reason,
++                actor=actor,
++                idempotency_key=idempotency_key,
++                current_revision=current_revision,
++                verification_rules=verification_rules,
++                configured_criteria=configured_criteria,
++            )
++        if current.contract.acceptance_criteria:
++            self._verify_completion(current, current_revision=current_revision)
+         if current.status == TaskStatus.PLANNED:
+             current = self.transition(
+                 task_id,
+@@ -595,6 +1137,9 @@ class TaskStore:
+             reason=reason,
+             actor=actor,
+             idempotency_key=idempotency_key,
++            current_revision=current_revision,
++            verification_rules=verification_rules,
++            configured_criteria=configured_criteria,
+         )
+ 
+     def fail(
+@@ -715,6 +1260,35 @@ class TaskStore:
+         )
+         return self._commit_update(current, updated, event)
+ 
++    def advance_mutation_generation(
++        self,
++        task_id: str,
++        *,
++        repository_revision: str = "",
++        actor: str = "agent",
++    ) -> TaskState:
++        current = self.get(task_id)
++        if not current:
++            raise KeyError(f"Task {task_id} not found")
++        state_data = dict(current.checkpoint.state_data)
++        generation = max(0, int(state_data.get("mutation_generation", 0) or 0)) + 1
++        state_data["mutation_generation"] = generation
++        if repository_revision:
++            state_data["repository_revision"] = str(repository_revision).strip()
++        checkpoint = TaskCheckpoint(
++            phase=current.checkpoint.phase,
++            next_action=current.checkpoint.next_action,
++            affected_paths=current.checkpoint.affected_paths,
++            evidence_ids=current.checkpoint.evidence_ids,
++            blockers=current.checkpoint.blockers,
++            state_data=state_data,
++        )
++        return self.checkpoint(
++            task_id,
++            checkpoint,
++            actor=actor,
++            idempotency_key=f"mutation_{task_id}_{generation}",
++        )
+     def rollback(
+         self,
+         task_id: str,
+@@ -825,7 +1399,7 @@ class TaskStore:
+         )
+         return self._commit_update(current, updated, event)
+ 
+-    def cleanup_worktree(self, task_id: str, delete_branch: bool = True) -> dict[str, Any]:
++    def cleanup_worktree(self, task_id: str, delete_branch: bool = True, *, actor: str = "") -> dict[str, Any]:
+         task = self.get(task_id)
+         if not task:
+             return {"success": False, "error": f"Task {task_id} not found"}
+@@ -833,10 +1407,53 @@ class TaskStore:
+         if not isinstance(wt, dict) or not wt.get("worktree_path"):
+             return {"success": True, "had_worktree": False}
+         try:
++            owner = str(wt.get("owner", "")).strip()
++            repo_root = str(wt.get("repo_root", ""))
++            worktree_path = str(wt.get("worktree_path", ""))
++            branch = str(wt.get("branch", ""))
++            worktree_id = str(wt.get("worktree_id", ""))
++            created_at = float(wt.get("created_at", 0) or 0)
++            expires_at = float(wt.get("expires_at", 0) or 0)
++            ttl_seconds = float(wt.get("ttl_seconds", 0) or 0)
++            expected_expiry = created_at + ttl_seconds
++            if (str(wt.get("task_id", "")) != task.task_id or not owner
++                    or owner != str(task.owner or "").strip() or not repo_root or not branch or not worktree_id
++                    or created_at <= 0 or ttl_seconds < 60 or ttl_seconds > 30 * 24 * 60 * 60
++                    or expires_at <= 0 or abs(expires_at - expected_expiry) > max(1e-6, ttl_seconds * 1e-9)):
++                return {"success": False, "error": "worktree ownership metadata is incomplete or inconsistent"}
++            if str(actor or "").strip() != owner:
++                return {"success": False, "error": "worktree belongs to another task owner"}
++            recorded_repo = Path(repo_root).expanduser().resolve(strict=False)
++            context_repo = Path(task.context.repository_id).expanduser().resolve(strict=False) if task.context.repository_id else recorded_repo
++            recorded_path = Path(worktree_path).expanduser().resolve(strict=False)
++            if recorded_repo != context_repo or not recorded_path.is_dir():
++                return {"success": False, "error": "worktree path or repository does not match task ownership"}
+             from .process_utils import remove_git_worktree
+-            r_root = wt.get("repo_root", ".")
+-            w_path = wt.get("worktree_path")
+-            rm_res = remove_git_worktree(r_root, w_path, delete_branch=delete_branch)
++            rm_res = remove_git_worktree(
++                recorded_repo, recorded_path, delete_branch=delete_branch,
++            branch_name=branch, worktree_id=worktree_id,
++            expected_task_id=task.task_id,
++            expected_owner=owner,
++            expected_created_at=created_at,
++            expected_ttl_seconds=ttl_seconds,
++            expected_expires_at=expires_at,
++            )
++            if not rm_res.get("success"):
++                return {"success": False, "had_worktree": True, "error": rm_res.get("error", "worktree cleanup failed"), "cleanup": rm_res}
++            cleaned_wt = dict(wt)
++            cleaned_wt["cleaned_at"] = time.time()
++            cleaned_wt["cleanup_success"] = True
++            state_data = dict(task.checkpoint.state_data)
++            state_data["worktree"] = cleaned_wt
++            checkpoint = TaskCheckpoint(
++                phase=task.checkpoint.phase, next_action=task.checkpoint.next_action,
++                affected_paths=task.checkpoint.affected_paths, evidence_ids=task.checkpoint.evidence_ids,
++                blockers=task.checkpoint.blockers, state_data=state_data,
++            )
++            self.checkpoint(
++                task_id, checkpoint, actor=actor or owner,
++                idempotency_key=f"worktree_cleanup_{worktree_id}",
++            )
+             return {"success": True, "had_worktree": True, "cleanup": rm_res}
+         except Exception as exc:
+             return {"success": False, "error": str(exc)}
+@@ -929,6 +1546,7 @@ class TaskStore:
+                         state.updated_at,
+                     ),
+                 )
++                self._refresh_task_search_index(con, state.task_id)
+                 con.execute("COMMIT")
+             except Exception:
+                 try:
+@@ -942,16 +1560,10 @@ class TaskStore:
+         retry_busy(_do_save, retries=5, base_delay_seconds=0.02)
+ 
+     def _commit_create(self, state: TaskState, event: AgentEvent) -> TaskState:
+-        """Atomically create initial projection and task.created event."""
++        """Atomically create initial projection, sequence cursor, and task event."""
+         if not self.state_store.enabled:
+             return state
+         self._init_projection_table()
+-        payload = json_dumps(event.payload, separators=(",", ":"))
+-        payload_bytes = payload.encode("utf-8")
+-        if len(payload_bytes) > self.state_store.max_payload_bytes:
+-            raise ValueError(
+-                f"payload exceeds maximum allowed {self.state_store.max_payload_bytes} bytes (got {len(payload_bytes)})"
+-            )
+         context = json_dumps({
+             "repository_id": state.context.repository_id,
+             "clone_id": state.context.clone_id,
+@@ -960,16 +1572,34 @@ class TaskStore:
+             "task_id": state.context.task_id,
+             "session_id": state.context.session_id,
+         })
++        published: list[AgentEvent] = []
+ 
+-        def _do_commit() -> None:
++        def _do_commit() -> TaskState:
+             con = connect_sqlite(self.state_store.db_path, isolation_level=None, timeout_seconds=0.25)
+             try:
+                 con.execute("BEGIN IMMEDIATE")
+-                seq_row = con.execute(
+-                    "SELECT COALESCE(MAX(seq), 0) + 1 FROM agent_events WHERE stream_id = ?",
+-                    (event.stream_id,),
++                existing = con.execute(
++                    """
++                    SELECT stream_id, seq, event_id, kind, payload, idempotency_key,
++                           correlation_id, actor, created_at
++                    FROM agent_events WHERE stream_id = ? AND idempotency_key = ?
++                    """,
++                    (event.stream_id, event.idempotency_key),
+                 ).fetchone()
+-                seq = int(seq_row[0]) if seq_row else 1
++                if existing:
++                    existing_event = AgentEvent.from_row(existing)
++                    if existing_event.kind != event.kind or dict(existing_event.payload) != dict(event.payload):
++                        raise RuntimeError("task create idempotency key conflicts with a different event")
++                    current = con.execute(
++                        "SELECT * FROM agent_tasks_projection WHERE task_id = ?",
++                        (state.task_id,),
++                    ).fetchone()
++                    if current:
++                        con.execute("COMMIT")
++                        return self._row_to_state(current)
++                    if str(existing_event.payload.get("task_id", "")) != state.task_id:
++                        raise RuntimeError("task create event conflicts with requested task identity")
++
+                 con.execute(
+                     """
+                     INSERT INTO agent_tasks_projection (
+@@ -991,26 +1621,19 @@ class TaskStore:
+                         state.updated_at,
+                     ),
+                 )
+-                con.execute(
+-                    """
+-                    INSERT INTO agent_events (
+-                        stream_id, seq, event_id, kind, payload, idempotency_key,
+-                        correlation_id, actor, created_at
+-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+-                    """,
+-                    (
+-                        event.stream_id,
+-                        seq,
+-                        event.event_id,
+-                        event.kind,
+-                        payload,
+-                        event.idempotency_key,
+-                        event.correlation_id,
+-                        event.actor,
+-                        event.created_at,
+-                    ),
+-                )
++                self._refresh_task_search_index(con, state.task_id)
++                if not existing:
++                    appended = self.state_store.append_in_transaction(
++                        con, event, strict_idempotency=True
++                    )
++                    if appended.error or appended.event is None:
++                        raise RuntimeError(appended.error or "task creation append returned no persisted event")
++                    if appended.duplicate:
++                        raise RuntimeError("task projection/event idempotency mismatch")
++                    if appended.event:
++                        published.append(appended.event)
+                 con.execute("COMMIT")
++                return state
+             except Exception:
+                 try:
+                     con.execute("ROLLBACK")
+@@ -1019,10 +1642,12 @@ class TaskStore:
+                 raise
+             finally:
+                 con.close()
+-            self.state_store._publish(event.with_seq(seq))
+ 
+-        retry_busy(_do_commit, retries=5, base_delay_seconds=0.02)
+-        return state
++        with self.state_store._append_publish_lock:
++            saved = retry_busy(_do_commit, retries=5, base_delay_seconds=0.02)
++            for persisted in published:
++                self.state_store._publish(persisted)
++        return saved
+ 
+     def _commit_update(
+         self,
+@@ -1030,24 +1655,9 @@ class TaskStore:
+         updated: TaskState,
+         event: AgentEvent,
+     ) -> TaskState:
+-        """Atomically compare task version, append event, and update projection."""
++        """CAS-update projection and append its event/cursor in one transaction."""
+         if not self._db_path_available():
+             raise RuntimeError("agent task storage is unavailable")
+-        payload = json_dumps(event.payload, separators=(",", ":"))
+-        payload_bytes = payload.encode("utf-8")
+-        if len(payload_bytes) > self.state_store.max_payload_bytes:
+-            raise ValueError(
+-                f"payload exceeds maximum allowed {self.state_store.max_payload_bytes} bytes (got {len(payload_bytes)})"
+-            )
+-
+-        context = json_dumps({
+-            "repository_id": updated.context.repository_id,
+-            "clone_id": updated.context.clone_id,
+-            "worktree_id": updated.context.worktree_id,
+-            "branch": updated.context.branch,
+-            "task_id": updated.context.task_id,
+-            "session_id": updated.context.session_id,
+-        })
+         expected_context = json_dumps({
+             "repository_id": current.context.repository_id,
+             "clone_id": current.context.clone_id,
+@@ -1056,6 +1666,14 @@ class TaskStore:
+             "task_id": current.context.task_id,
+             "session_id": current.context.session_id,
+         })
++        context = json_dumps({
++            "repository_id": updated.context.repository_id,
++            "clone_id": updated.context.clone_id,
++            "worktree_id": updated.context.worktree_id,
++            "branch": updated.context.branch,
++            "task_id": updated.context.task_id,
++            "session_id": updated.context.session_id,
++        })
+         values = (
+             updated.status.value,
+             updated.owner,
+@@ -1079,11 +1697,42 @@ class TaskStore:
+             current.heartbeat_expires_at,
+             current.updated_at,
+         )
++        published: list[AgentEvent] = []
++        committed: list[TaskState] = []
+ 
+         def _do_commit() -> None:
+             con = connect_sqlite(self.state_store.db_path, isolation_level=None, timeout_seconds=0.25)
+             try:
+                 con.execute("BEGIN IMMEDIATE")
++                if event.idempotency_key:
++                    existing = con.execute(
++                        "SELECT stream_id, seq, event_id, kind, payload, idempotency_key, "
++                        "correlation_id, actor, created_at FROM agent_events "
++                        "WHERE stream_id = ? AND idempotency_key = ?",
++                        (event.stream_id, event.idempotency_key),
++                    ).fetchone()
++                    if existing:
++                        existing_event = AgentEvent.from_row(existing)
++                        if existing_event.actor != event.actor:
++                            raise ValueError("idempotency key was already used")
++                        if (
++                            existing_event.kind != event.kind
++                            or dict(existing_event.payload) != dict(event.payload)
++                            or existing_event.correlation_id != event.correlation_id
++                        ):
++                            raise ValueError(
++                                "idempotency key was already used for a different event payload"
++                            )
++                        current_row = con.execute(
++                            "SELECT * FROM agent_tasks_projection WHERE task_id = ?",
++                            (current.task_id,),
++                        ).fetchone()
++                        if not current_row:
++                            raise RuntimeError("task event exists without its durable projection")
++                        committed.append(self._row_to_state(current_row))
++                        con.execute("COMMIT")
++                        return
++
+                 con.execute(
+                     """
+                     UPDATE agent_tasks_projection SET
+@@ -1099,39 +1748,18 @@ class TaskStore:
+                     raise ConcurrentTaskUpdateError(
+                         f"Task {current.task_id} changed during transition; reload and retry"
+                     )
+-                if event.idempotency_key:
+-                    existing_ev = con.execute(
+-                        "SELECT seq FROM agent_events WHERE stream_id = ? AND idempotency_key = ?",
+-                        (event.stream_id, event.idempotency_key),
+-                    ).fetchone()
+-                    if existing_ev:
+-                        con.execute("COMMIT")
+-                        return
+-                seq_row = con.execute(
+-                    "SELECT COALESCE(MAX(seq), 0) + 1 FROM agent_events WHERE stream_id = ?",
+-                    (event.stream_id,),
+-                ).fetchone()
+-                seq = int(seq_row[0]) if seq_row else 1
+-                con.execute(
+-                    """
+-                    INSERT INTO agent_events (
+-                        stream_id, seq, event_id, kind, payload, idempotency_key,
+-                        correlation_id, actor, created_at
+-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+-                    """,
+-                    (
+-                        event.stream_id,
+-                        seq,
+-                        event.event_id,
+-                        event.kind,
+-                        payload,
+-                        event.idempotency_key,
+-                        event.correlation_id,
+-                        event.actor,
+-                        event.created_at,
+-                    ),
++                self._refresh_task_search_index(con, current.task_id)
++                appended = self.state_store.append_in_transaction(
++                    con, event, strict_idempotency=True
+                 )
++                if appended.error or appended.event is None:
++                    raise RuntimeError(appended.error or "task transition append returned no persisted event")
++                if appended.duplicate:
++                    raise RuntimeError("task projection/event idempotency mismatch")
++                if appended.event:
++                    published.append(appended.event)
+                 con.execute("COMMIT")
++                committed.append(updated)
+             except Exception:
+                 try:
+                     con.execute("ROLLBACK")
+@@ -1140,10 +1768,12 @@ class TaskStore:
+                 raise
+             finally:
+                 con.close()
+-            self.state_store._publish(event.with_seq(seq))
+ 
+-        retry_busy(_do_commit, retries=5, base_delay_seconds=0.02)
+-        return updated
++        with self.state_store._append_publish_lock:
++            retry_busy(_do_commit, retries=5, base_delay_seconds=0.02)
++            for persisted in published:
++                self.state_store._publish(persisted)
++        return committed[0] if committed else updated
+ 
+     def _row_to_state(self, row: tuple[Any, ...]) -> TaskState:
+         (
+@@ -1161,12 +1791,16 @@ class TaskStore:
+         ) = row
+         contract_data = json.loads(contract_raw)
+         if not str(contract_data.get("goal", "")).strip():
+-            # V4 rejects empty goals for new contracts, but older persisted
+-            # projections may still contain one. Keep those tasks loadable and
+-            # make the missing intent explicit instead of returning blank
+-            # task context or failing the entire Agent OS startup.
+             contract_data = dict(contract_data)
+-            contract_data["goal"] = f"Legacy task contract: {task_id}"
++            legacy_title = str(contract_data.get("title", "")).strip()
++            if legacy_title:
++                contract_data["goal"] = legacy_title
++            else:
++                # V4 rejects empty goals for new contracts, but older persisted
++                # projections may still contain one. Keep those tasks loadable and
++                # make the missing intent explicit instead of returning blank
++                # task context or failing the entire Agent OS startup.
++                contract_data["goal"] = f"Legacy task contract: {task_id}"
+         contract = GoalContract.from_dict(contract_data)
+         ctx_data = json.loads(context_raw)
+         context = ScopeContext(
+diff --git a/src/local_ai_hub/agent_verification.py b/src/local_ai_hub/agent_verification.py
+index dfa3f46..d67c135 100644
+--- a/src/local_ai_hub/agent_verification.py
++++ b/src/local_ai_hub/agent_verification.py
+@@ -1,28 +1,86 @@
+ from __future__ import annotations
+ 
++import hashlib
++import os
++import re
++import shlex
++from pathlib import Path
++
+ from .json_utils import dumps as json_dumps
+ 
+ import json
++import re
+ import threading
+ import time
+ import uuid
+ from contextlib import closing
+-from dataclasses import dataclass, field
++from dataclasses import dataclass, field, replace
+ from typing import Any, Mapping
+ 
+ from .agent_events import AgentEvent, AgentStateStore
+ from .sqlite_support import connect_sqlite, retry_busy
+ 
+ 
++class VerificationStoreIntegrationError(RuntimeError):
++    """Raised when the verification store cannot use an event/task transaction seam."""
++
++
++def criterion_evidence_type(criterion: str) -> str:
++    text = str(criterion or "").lower()
++    if "benchmark" in text:
++        return "benchmark"
++    if any(
++        re.search(rf"(?<![a-z0-9]){re.escape(marker)}(?![a-z0-9])", text)
++        for marker in ("test", "tests", "pytest", "suite", "unit", "unittest", "integration", "regression")
++    ):
++        return "test"
++    return "source_review"
++
++
++def classify_verification_command(command: str) -> str:
++    """Return the evidence kind a command can support, defaulting conservatively."""
++    text = str(command or "").lower()
++    try:
++        tokens = shlex.split(text, posix=False)
++    except ValueError:
++        tokens = text.split()
++    command_tokens = [Path(token.strip("\"'")).stem.lower() for token in tokens]
++    if any(token in {"benchmark", "bench", "hyperfine", "pytest-benchmark"} for token in command_tokens):
++        return "benchmark"
++    test_tools = {
++        "pytest", "py.test", "unittest", "ctest", "tox", "nox", "jest",
++        "vitest", "mocha", "phpunit", "pester",
++    }
++    if any(token in test_tools for token in command_tokens):
++        return "test"
++    for index, token in enumerate(command_tokens[:-1]):
++        if token in {"dotnet", "cargo", "go"} and command_tokens[index + 1] == "test":
++            return "test"
++        if token in {"npm", "pnpm", "yarn"}:
++            following = command_tokens[index + 1 : index + 3]
++            if following[:1] == ["test"] or following == ["run", "test"]:
++                return "test"
++    if any(
++        command_tokens[index : index + 2] == ["-m", module]
++        for index in range(len(command_tokens) - 1)
++        for module in ("pytest", "unittest")
++    ):
++        return "test"
++    return "source_review"
++
++
+ @dataclass(frozen=True)
+ class VerificationReceipt:
+     receipt_id: str
+     task_id: str
+     criterion: str
++    owner: str = ""
+     change_intent_id: str = ""
+     evidence_id: str = ""
+     command_id: str = ""
+     repository_revision: str = ""
++    mutation_generation: int = 0
++    evidence_type: str = "source_review"
+     observed_at: float = 0.0
+     expires_at: float | None = None
+     passed: bool = True
+@@ -30,6 +88,13 @@ class VerificationReceipt:
+ 
+     def __post_init__(self) -> None:
+         object.__setattr__(self, "passed", self.passed is True)
++        object.__setattr__(self, "owner", str(self.owner or "").strip())
++        object.__setattr__(self, "repository_revision", str(self.repository_revision or "").strip())
++        object.__setattr__(self, "mutation_generation", int(self.mutation_generation))
++        evidence_type = str(self.evidence_type or "").strip().lower()
++        if evidence_type not in {"test", "benchmark", "source_review"}:
++            raise ValueError("verification receipt has unsupported evidence_type")
++        object.__setattr__(self, "evidence_type", evidence_type)
+ 
+     @classmethod
+     def create(
+@@ -41,6 +106,9 @@ class VerificationReceipt:
+         evidence_id: str = "",
+         command_id: str = "",
+         repository_revision: str = "",
++        owner: str = "",
++        mutation_generation: int = 0,
++        evidence_type: str | None = None,
+         expires_at: float | None = None,
+         details: dict[str, Any] | None = None,
+     ) -> VerificationReceipt:
+@@ -50,21 +118,39 @@ class VerificationReceipt:
+             raise ValueError("verification receipt requires task_id")
+         if not criterion_text:
+             raise ValueError("verification receipt requires criterion")
++        owner_text = str(owner or "").strip()
++        passed_value = passed is True
+         evidence_key = str(evidence_id or "").strip()
+-        if passed and not evidence_key:
++        command_key = str(command_id or "").strip()
++        inferred_kind = criterion_evidence_type(criterion_text)
++        evidence_kind = str(evidence_type or inferred_kind).strip().lower()
++        if evidence_kind not in {"test", "benchmark", "source_review"}:
++            raise ValueError("verification receipt has unsupported evidence_type")
++        try:
++            generation = int(mutation_generation)
++        except (TypeError, ValueError, OverflowError) as exc:
++            raise ValueError("verification receipt requires valid mutation_generation") from exc
++        if generation < 0:
++            raise ValueError("verification receipt mutation_generation must be non-negative")
++        if passed_value and not evidence_key:
+             raise ValueError("passed verification receipt requires evidence_id")
++        if passed_value and evidence_kind in {"test", "benchmark"} and not command_key:
++            raise ValueError(f"passed {evidence_kind} verification receipt requires command_id")
+         now = time.time()
+         return cls(
+             receipt_id=f"rcpt_{uuid.uuid4().hex[:12]}",
+             task_id=task_key,
+             criterion=criterion_text,
++            owner=owner_text,
+             change_intent_id=change_intent_id,
+             evidence_id=evidence_key,
+-            command_id=command_id,
++            command_id=command_key,
+             repository_revision=repository_revision,
++            mutation_generation=generation,
++            evidence_type=evidence_kind,
+             observed_at=now,
+             expires_at=expires_at,
+-            passed=passed,
++            passed=passed_value,
+             details=dict(details or {}),
+         )
+ 
+@@ -80,10 +166,13 @@ class VerificationReceipt:
+             "receipt_id": self.receipt_id,
+             "task_id": self.task_id,
+             "criterion": self.criterion,
++            "owner": self.owner,
+             "change_intent_id": self.change_intent_id,
+             "evidence_id": self.evidence_id,
+             "command_id": self.command_id,
+             "repository_revision": self.repository_revision,
++            "mutation_generation": self.mutation_generation,
++            "evidence_type": self.evidence_type,
+             "observed_at": self.observed_at,
+             "expires_at": self.expires_at,
+             "passed": self.passed,
+@@ -92,18 +181,34 @@ class VerificationReceipt:
+ 
+     @classmethod
+     def from_dict(cls, data: Mapping[str, Any]) -> VerificationReceipt:
++        if not isinstance(data, Mapping):
++            raise TypeError("verification receipt must be a mapping")
++        passed = data.get("passed", False)
++        if not isinstance(passed, bool):
++            raise TypeError("verification receipt passed must be a boolean")
++        mutation_generation = data.get("mutation_generation", 0)
++        if isinstance(mutation_generation, bool) or not isinstance(mutation_generation, int):
++            raise TypeError("verification receipt mutation_generation must be an integer")
++        if mutation_generation < 0:
++            raise ValueError("verification receipt mutation_generation must be non-negative")
++        details = data.get("details", {})
++        if not isinstance(details, Mapping):
++            raise TypeError("verification receipt details must be a mapping")
+         return cls(
+             receipt_id=str(data["receipt_id"]),
+             task_id=str(data["task_id"]),
+             criterion=str(data["criterion"]),
++            owner=str(data.get("owner", "")),
+             change_intent_id=str(data.get("change_intent_id", "")),
+             evidence_id=str(data.get("evidence_id", "")),
+             command_id=str(data.get("command_id", "")),
+             repository_revision=str(data.get("repository_revision", "")),
++            mutation_generation=mutation_generation,
++            evidence_type=str(data.get("evidence_type", "source_review")),
+             observed_at=float(data.get("observed_at", 0.0)),
+             expires_at=float(data["expires_at"]) if data.get("expires_at") is not None else None,
+-            passed=data.get("passed", True),
+-            details=dict(data.get("details") or {}),
++            passed=passed,
++            details=dict(details),
+         )
+ 
+ 
+@@ -313,18 +418,373 @@ class CompletionResult:
+         return payload
+ 
+ 
++def evaluate_completion_receipts(
++    task_id: str,
++    required_criteria: tuple[str, ...] | list[str],
++    receipts: tuple[VerificationReceipt, ...] | list[VerificationReceipt],
++    *,
++    owner: str,
++    repository_revision: str = "",
++    mutation_generation: int = 0,
++    mapped_receipt_ids: Mapping[str, str] | None = None,
++    artifact_store: Any | None = None,
++    require_repository_revision: bool = False,
++    verification_rules: (
++        bool | tuple[str, ...] | list[str] | Mapping[str, bool | tuple[str, ...]] | None
++    ) = None,
++    configured_criteria: tuple[str, ...] | list[str] | None = None,
++    configured_commands: Mapping[str, Any] | None = None,
++    configured_environment_sha256: Mapping[str, str] | None = None,
++    project_config_digest: str = "",
++    project_root: str | Path = "",
++    now: float | None = None,
++) -> CompletionResult:
++    """Apply shared receipt gates to durable tasks and work-order handoffs.
++
++    Project-rule keys apply to matching task acceptance criteria. A ``True``
++    value requires configured lint and test receipts; tuple values name exact
++    configured receipt criteria.
++    """
++    criteria = tuple(str(item) for item in required_criteria if str(item).strip())
++    active_verification_rules = False
++    invalid_verification_rules = False
++    unavailable_rule_criteria: set[str] = set()
++    rule_criteria_list: list[str] = []
++    if isinstance(verification_rules, Mapping):
++        required_names = set(criteria)
++        matching_rules = (
++            value
++            for key, value in verification_rules.items()
++            if str(key).strip() in required_names
++        )
++        for rule in matching_rules:
++            active_verification_rules = True
++            if rule is True:
++                rule_criteria_list.extend(("lint", "test"))
++            elif isinstance(rule, (tuple, list)):
++                normalized = tuple(str(item).strip() for item in rule if str(item).strip())
++                if not normalized:
++                    invalid_verification_rules = True
++                rule_criteria_list.extend(normalized)
++            else:
++                invalid_verification_rules = True
++    elif verification_rules is True:
++        active_verification_rules = True
++        rule_criteria_list.extend(("lint", "test"))
++    elif verification_rules is False or verification_rules is None:
++        pass
++    elif isinstance(verification_rules, (tuple, list)):
++        active_verification_rules = True
++        normalized = tuple(str(item).strip() for item in verification_rules if str(item).strip())
++        invalid_verification_rules = not normalized
++        rule_criteria_list.extend(normalized)
++    else:
++        active_verification_rules = True
++        invalid_verification_rules = True
++
++    rule_criteria = tuple(dict.fromkeys(rule_criteria_list))
++    if active_verification_rules:
++        configured = {
++            str(item).strip()
++            for item in (configured_criteria or ())
++            if str(item).strip()
++        }
++        unavailable_rule_criteria = set(rule_criteria).difference(configured)
++        criteria = tuple(dict.fromkeys((*criteria, *rule_criteria)))
++
++    current_time = float(time.time() if now is None else now)
++    latest_by_criterion: dict[str, VerificationReceipt] = {}
++    for receipt in receipts:
++        previous = latest_by_criterion.get(receipt.criterion)
++        if previous is None or receipt.observed_at > previous.observed_at:
++            latest_by_criterion[receipt.criterion] = receipt
++
++    satisfied: list[str] = []
++    unsatisfied: list[str] = []
++    stale: list[str] = []
++    if invalid_verification_rules:
++        unsatisfied.append("verification_rules")
++    expected_owner = str(owner or "").strip()
++    expected_revision = str(repository_revision or "").strip()
++    expected_generation = int(mutation_generation)
++    mappings = mapped_receipt_ids or {}
++
++    for criterion in criteria:
++        if criterion in unavailable_rule_criteria:
++            unsatisfied.append(criterion)
++            continue
++        receipt = latest_by_criterion.get(criterion)
++        if (
++            receipt is None
++            or receipt.task_id != task_id
++            or receipt.criterion != criterion
++            or not receipt.passed
++            or not str(receipt.evidence_id or "").strip()
++        ):
++            unsatisfied.append(criterion)
++        elif not expected_owner or receipt.owner != expected_owner:
++            unsatisfied.append(criterion)
++        elif active_verification_rules and (
++            not expected_revision
++            or str(getattr(receipt, "repository_revision", "") or "").strip() != expected_revision
++        ):
++            unsatisfied.append(criterion)
++        elif mapped_receipt_ids is not None and mappings.get(criterion) != receipt.receipt_id:
++            unsatisfied.append(criterion)
++        elif not _receipt_evidence_matches(
++            receipt,
++            artifact_store,
++            expected_owner=expected_owner,
++            require_repository_revision=require_repository_revision,
++            expected_project_command=(configured_commands or {}).get(criterion),
++            expected_project_config_digest=project_config_digest,
++            expected_project_environment_sha256=(configured_environment_sha256 or {}).get(criterion, ""),
++            expected_project_root=project_root,
++        ):
++            unsatisfied.append(criterion)
++        elif criterion_evidence_type(criterion) == "test" and (
++            receipt.evidence_type != "test" or not str(receipt.command_id or "").strip()
++        ):
++            unsatisfied.append(criterion)
++        elif active_verification_rules and criterion == "lint" and not str(receipt.command_id or "").strip():
++            unsatisfied.append(criterion)
++        elif criterion_evidence_type(criterion) == "benchmark" and (
++            receipt.evidence_type != "benchmark" or not str(receipt.command_id or "").strip()
++        ):
++            unsatisfied.append(criterion)
++        elif criterion_evidence_type(criterion) == "source_review" and (
++            receipt.evidence_type != "source_review"
++        ):
++            unsatisfied.append(criterion)
++        elif not receipt.is_fresh(current_time):
++            stale.append(criterion)
++        elif expected_revision and receipt.repository_revision != expected_revision:
++            stale.append(criterion)
++        elif receipt.mutation_generation != expected_generation:
++            stale.append(criterion)
++        else:
++            satisfied.append(criterion)
++
++    return CompletionResult(
++        task_id=task_id,
++        complete=(
++            bool(criteria)
++            and not invalid_verification_rules
++            and len(satisfied) == len(criteria)
++        ),
++        satisfied_criteria=tuple(satisfied),
++        unsatisfied_criteria=tuple(unsatisfied),
++        stale_criteria=tuple(stale),
++        receipts=tuple(latest_by_criterion.values()),
++    )
++
++
++def _receipt_evidence_matches(
++    receipt: VerificationReceipt,
++    artifact_store: Any | None,
++    *,
++    expected_owner: str,
++    require_repository_revision: bool,
++    expected_project_command: Any | None = None,
++    expected_project_config_digest: str = "",
++    expected_project_environment_sha256: str = "",
++    expected_project_root: str | Path = "",
++) -> bool:
++    """Re-read and bind positive receipts to complete, tenant-scoped proof artifacts."""
++    if artifact_store is None or not expected_owner or receipt.owner != expected_owner:
++        return False
++    if require_repository_revision and not receipt.repository_revision.strip():
++        return False
++    if receipt.evidence_type in {"test", "benchmark"} or (
++        receipt.evidence_type == "source_review" and receipt.command_id.strip()
++    ):
++        if not receipt.repository_revision.strip():
++            return False
++        expected_kind = "command_verification"
++    else:
++        expected_kind = "source_review"
++    try:
++        artifact = artifact_store.get(
++            receipt.evidence_id,
++            max_chars=50_000,
++            tenant=expected_owner,
++        )
++    except Exception:
++        return False
++    if (
++        not isinstance(artifact, Mapping)
++        or artifact.get("success") is not True
++        or artifact.get("artifact_id") != receipt.evidence_id
++        or artifact.get("kind") != expected_kind
++        or artifact.get("next_offset") is not None
++        or not isinstance(artifact.get("text"), str)
++    ):
++        return False
++    try:
++        proof = json.loads(artifact["text"])
++    except (TypeError, ValueError):
++        return False
++    if not isinstance(proof, Mapping) or proof.get("passed") is not True:
++        return False
++    if (
++        proof.get("task_id") != receipt.task_id
++            or proof.get("owner") != expected_owner
++            or proof.get("repository_revision") != receipt.repository_revision
++            or proof.get("mutation_generation") != receipt.mutation_generation
++    ):
++        return False
++    if expected_kind == "command_verification":
++        command_classification = proof.get("command_classification")
++        if command_classification is not None and command_classification != receipt.evidence_type:
++            return False
++        if expected_project_config_digest:
++            command_digest = proof.get("command_sha256")
++            actual_command = proof.get("command")
++            environment_digest = proof.get("project_environment_sha256")
++            configured_digest = proof.get("configured_command_sha256")
++            arguments_digest = proof.get("caller_arguments_sha256")
++            if (
++                command_classification != receipt.evidence_type
++                or
++                proof.get("project_alias") != receipt.criterion
++                or proof.get("project_config_digest") != expected_project_config_digest
++                or not isinstance(command_digest, str)
++                or re.fullmatch(r"[0-9a-f]{64}", command_digest) is None
++                or not isinstance(actual_command, str)
++                or hashlib.sha256(actual_command.encode("utf-8")).hexdigest() != command_digest
++                or not isinstance(expected_project_environment_sha256, str)
++                or re.fullmatch(r"[0-9a-f]{64}", expected_project_environment_sha256) is None
++                or environment_digest != expected_project_environment_sha256
++                or not isinstance(configured_digest, str)
++                or re.fullmatch(r"[0-9a-f]{64}", configured_digest) is None
++                or not isinstance(arguments_digest, str)
++                or re.fullmatch(r"[0-9a-f]{64}", arguments_digest) is None
++            ):
++                return False
++            if isinstance(expected_project_command, str):
++                expected_command_digest = hashlib.sha256(
++                    expected_project_command.encode("utf-8")
++                ).hexdigest()
++                if (
++                    command_digest != expected_command_digest
++                    or actual_command != expected_project_command
++                    or configured_digest != expected_command_digest
++                    or arguments_digest
++                    != hashlib.sha256(b"[]").hexdigest()
++                ):
++                    return False
++                try:
++                    actual_tokens = shlex.split(actual_command, posix=(os.name != "nt"))
++                except ValueError:
++                    return False
++            elif expected_project_command is not None:
++                argv = getattr(expected_project_command, "argv", None)
++                if not isinstance(argv, (tuple, list)) or not expected_project_root:
++                    return False
++                configured_text = json.dumps(
++                    {
++                        "argv": list(argv),
++                        "cwd": str(Path(expected_project_root).expanduser().resolve(strict=False)),
++                        "shell": False,
++                    },
++                    sort_keys=True,
++                    separators=(",", ":"),
++                )
++                if configured_digest != hashlib.sha256(configured_text.encode("utf-8")).hexdigest():
++                    return False
++                try:
++                    actual_tokens = [
++                        token.strip("\"'")
++                        for token in shlex.split(actual_command, posix=(os.name != "nt"))
++                    ]
++                except ValueError:
++                    return False
++                configured_tokens = [str(token) for token in argv]
++                if actual_tokens[: len(configured_tokens)] != configured_tokens:
++                    return False
++                caller_arguments = actual_tokens[len(configured_tokens) :]
++                if (
++                    len(caller_arguments) > 32
++                    or any(not isinstance(token, str) or len(token) > 4096 or "\x00" in token for token in caller_arguments)
++                    or any(token in {";", "&&", "||", "|", ">", "<"} for token in caller_arguments)
++                    or arguments_digest
++                    != hashlib.sha256(
++                        json.dumps(caller_arguments, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
++                    ).hexdigest()
++                ):
++                    return False
++            else:
++                return False
++            lowered_tokens = [token.lower() for token in actual_tokens]
++            no_execution_options = {
++                "-h", "--help", "--version", "-version",
++                "--collect-only", "--co", "--fixtures", "--fixtures-per-test",
++                "--list-tests", "--dry-run",
++            }
++            if any(
++                token in no_execution_options
++                or token.startswith(("--help=", "--version="))
++                for token in lowered_tokens
++            ):
++                return False
++            if classify_verification_command(actual_command) != receipt.evidence_type:
++                return False
++            binding_fields = {
++                "project_alias": receipt.criterion,
++                "project_config_digest": expected_project_config_digest,
++                "configured_command_sha256": configured_digest,
++                "caller_arguments_sha256": arguments_digest,
++                "command_sha256": command_digest,
++                "project_environment_sha256": environment_digest,
++            }
++            expected_binding = hashlib.sha256(
++                json.dumps(binding_fields, sort_keys=True, separators=(",", ":")).encode("utf-8")
++            ).hexdigest()
++            if proof.get("project_execution_binding_sha256") != expected_binding:
++                return False
++        result = proof.get("result")
++        return bool(
++            proof.get("kind") == "work_command_verification"
++            and proof.get("criterion") == receipt.criterion
++            and proof.get("command_id") == receipt.command_id
++            and bool(receipt.command_id)
++            and type(proof.get("exit_code")) is int
++            and proof.get("exit_code") == 0
++            and isinstance(result, Mapping)
++            and result.get("success") is True
++            and type(result.get("exit_code")) is int
++            and result.get("exit_code") == 0
++        )
++    criteria = proof.get("criteria")
++    return bool(
++        proof.get("kind") == "work_source_review"
++        and isinstance(criteria, list)
++        and all(isinstance(item, str) for item in criteria)
++        and receipt.criterion in criteria
++    )
++
++
+ class VerificationStore:
+     def __init__(
+         self,
+         state_store: AgentStateStore,
+         *,
+         task_store: Any | None = None,
++        artifact_store: Any | None = None,
+     ) -> None:
+         self.state_store = state_store
+         self.task_store = task_store
++        self.artifact_store = artifact_store
++        if task_store is not None:
++            set_verification_store = getattr(task_store, "set_verification_store", None)
++            if callable(set_verification_store):
++                set_verification_store(self)
++            else:
++                task_store.verification_store = self
+         self._lock = threading.RLock()
+         self._initialized = False
+         self._init_tables()
++        self._reconcile_task_outbox(raise_on_error=False)
+ 
+     def _init_tables(self) -> None:
+         if self._initialized or not self.state_store.enabled:
+@@ -366,6 +826,22 @@ class VerificationStore:
+                             ON agent_verification_receipts (task_id, observed_at DESC);
+                             """
+                         )
++                        con.execute(
++                            """
++                            CREATE TABLE IF NOT EXISTS agent_verification_task_outbox (
++                                receipt_id TEXT PRIMARY KEY,
++                                task_id TEXT NOT NULL,
++                                criterion TEXT NOT NULL,
++                                status TEXT NOT NULL DEFAULT 'pending',
++                                created_at REAL NOT NULL,
++                                completed_at REAL
++                            );
++                            """
++                        )
++                        con.execute(
++                            "CREATE INDEX IF NOT EXISTS idx_agent_verif_task_outbox_pending "
++                            "ON agent_verification_task_outbox(status, created_at)"
++                        )
+                         con.execute(
+                             """
+                             CREATE TABLE IF NOT EXISTS agent_change_intents (
+@@ -430,82 +906,297 @@ class VerificationStore:
+             retry_busy(_prune_invalid, retries=5, base_delay_seconds=0.02)
+             self._initialized = True
+ 
+-    def record(self, receipt: VerificationReceipt) -> VerificationReceipt:
++    def _same_task_database(self) -> bool:
++        return bool(
++            self.task_store is not None
++            and self.task_store.state_store.db_path.resolve()
++            == self.state_store.db_path.resolve()
++        )
++
++    def _reconcile_task_outbox(
++        self, *, receipt_id: str = "", raise_on_error: bool = False
++    ) -> int:
++        if not self.state_store.enabled or self.task_store is None:
++            return 0
++        with self._lock:
++            def _pending() -> list[tuple[str, str, str]]:
++                with closing(connect_sqlite(self.state_store.db_path)) as con:
++                    if receipt_id:
++                        rows = con.execute(
++                            "SELECT receipt_id, task_id, criterion "
++                            "FROM agent_verification_task_outbox "
++                            "WHERE status = 'pending' AND receipt_id = ? ORDER BY created_at",
++                            (receipt_id,),
++                        ).fetchall()
++                    else:
++                        rows = con.execute(
++                            "SELECT receipt_id, task_id, criterion "
++                            "FROM agent_verification_task_outbox "
++                            "WHERE status = 'pending' ORDER BY created_at"
++                        ).fetchall()
++                    return [(str(row[0]), str(row[1]), str(row[2])) for row in rows]
++
++            rows = retry_busy(_pending, retries=5, base_delay_seconds=0.02)
++            completed = 0
++            for pending_receipt_id, task_id, criterion in rows:
++                try:
++                    self.task_store.add_verification_receipt(
++                        task_id, criterion, pending_receipt_id
++                    )
++
++                    def _mark_complete() -> int:
++                        con = connect_sqlite(
++                            self.state_store.db_path,
++                            isolation_level=None,
++                            timeout_seconds=0.25,
++                        )
++                        try:
++                            con.execute("BEGIN IMMEDIATE")
++                            cur = con.execute(
++                                "UPDATE agent_verification_task_outbox "
++                                "SET status = 'completed', completed_at = ? "
++                                "WHERE receipt_id = ? AND status = 'pending'",
++                                (time.time(), pending_receipt_id),
++                            )
++                            con.execute("COMMIT")
++                            return int(cur.rowcount)
++                        except Exception:
++                            try:
++                                con.execute("ROLLBACK")
++                            except Exception:
++                                pass
++                            raise
++                        finally:
++                            con.close()
++
++                    completed += retry_busy(
++                        _mark_complete, retries=5, base_delay_seconds=0.02
++                    )
++                except Exception:
++                    if raise_on_error:
++                        raise
++            return completed
++
++    def record_in_transaction(
++        self,
++        con: Any,
++        receipt: VerificationReceipt,
++        *,
++        event: AgentEvent | None = None,
++        update_task: bool = True,
++    ) -> list[AgentEvent]:
++        """Write receipt event/projection and optional same-store task projection atomically."""
++        if not self.state_store.enabled:
++            raise RuntimeError("verification storage is disabled")
++        if not str(receipt.task_id or "").strip():
++            raise ValueError("verification receipt requires task_id")
++        if not str(receipt.criterion or "").strip():
++            raise ValueError("verification receipt requires criterion")
++        if receipt.passed and not str(receipt.evidence_id or "").strip():
++            raise ValueError("passed verification receipt requires evidence_id")
++        if receipt.passed and self.artifact_store is not None and not _receipt_evidence_matches(
++            receipt,
++            self.artifact_store,
++            expected_owner=receipt.owner,
++            require_repository_revision=bool(receipt.repository_revision),
++        ):
++            raise ValueError("passed verification receipt requires matching trusted evidence")
++        if update_task and self.task_store is not None and not self._same_task_database():
++            raise ValueError("transactional task receipt projection requires a shared database")
++        stored_details = dict(receipt.details)
++        stored_details["_verification_receipt"] = {
++            "owner": receipt.owner,
++            "mutation_generation": receipt.mutation_generation,
++            "evidence_type": receipt.evidence_type,
++        }
++        stored_details_json = json_dumps(stored_details)
++        normalized_details = json.loads(stored_details_json)
++        existing = con.execute(
++            """
++            SELECT task_id, criterion, change_intent_id, evidence_id,
++                   command_id, repository_revision, observed_at, expires_at,
++                   passed, details
++            FROM agent_verification_receipts
++            WHERE receipt_id = ?
++            """,
++            (receipt.receipt_id,),
++        ).fetchone()
++        if existing is not None:
++            try:
++                existing_details = json.loads(existing[9] or "{}")
++            except (TypeError, ValueError):
++                existing_details = None
++            existing_values = tuple(existing)
++            existing_content = existing_values[:8] + (bool(existing_values[8]), existing_details)
++            incoming_content = (
++                receipt.task_id,
++                receipt.criterion,
++                receipt.change_intent_id,
++                receipt.evidence_id,
++                receipt.command_id,
++                receipt.repository_revision,
++                receipt.observed_at,
++                receipt.expires_at,
++                bool(receipt.passed),
++                normalized_details,
++            )
++            if existing_content != incoming_content:
++                raise ValueError("verification receipt ID reused with conflicting content")
++        event = event or AgentEvent.create(
++            stream_id=f"verification:{receipt.task_id}",
++            kind="verification.receipt_recorded",
++            payload=receipt.to_dict(),
++            idempotency_key=f"rcpt_{receipt.receipt_id}",
++            actor=receipt.owner or "verifier",
++        )
++        # Store rows round-trip through JSON; normalize tuples and other JSON
++        # containers before the ordered publisher verifies the committed event.
++        event = replace(event, payload=json.loads(json_dumps(event.payload)))
++        append_in_transaction = getattr(self.state_store, "append_in_transaction", None)
++        if not callable(append_in_transaction):
++            raise VerificationStoreIntegrationError(
++                "state store has no public event append transaction API"
++            )
++        persisted = append_in_transaction(con, event, strict_idempotency=True)
++        if persisted.error or persisted.event is None:
++            raise RuntimeError(persisted.error or "verification event could not be stored")
++        con.execute(
++            """
++            INSERT INTO agent_verification_receipts (
++                receipt_id, task_id, criterion, change_intent_id, evidence_id,
++                command_id, repository_revision, observed_at, expires_at,
++                passed, details
++            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
++            ON CONFLICT(receipt_id) DO UPDATE SET
++                expires_at = excluded.expires_at,
++                passed = excluded.passed,
++                details = excluded.details
++            """,
++            (
++                receipt.receipt_id, receipt.task_id, receipt.criterion,
++                receipt.change_intent_id, receipt.evidence_id, receipt.command_id,
++                receipt.repository_revision, receipt.observed_at, receipt.expires_at,
++                1 if receipt.passed else 0, stored_details_json,
++            ),
++        )
++        published: list[AgentEvent] = []
++        if not persisted.duplicate:
++            published.append(persisted.event)
++        if update_task and self.task_store is not None and receipt.passed:
++            add_receipt_in_transaction = getattr(
++                self.task_store, "add_verification_receipt_in_transaction", None
++            )
++            if callable(add_receipt_in_transaction):
++                task_state, task_event = add_receipt_in_transaction(
++                    con, receipt.task_id, receipt.criterion, receipt.receipt_id
++                )
++            else:
++                raise VerificationStoreIntegrationError(
++                    "task store has no public verification receipt transaction API"
++                )
++            if task_state is not None and task_event is not None:
++                published.append(
++                    replace(task_event, payload=json.loads(json_dumps(task_event.payload)))
++                )
++        return published
++
++    def record(
++        self, receipt: VerificationReceipt, *, update_task: bool = True
++    ) -> VerificationReceipt:
+         if not self.state_store.enabled:
+             return receipt
++        if update_task and not receipt.owner and self.task_store is not None:
++            task = self.task_store.get(receipt.task_id)
++            if task is not None and task.owner:
++                receipt = replace(receipt, owner=task.owner)
+         if not str(receipt.task_id or "").strip():
+             raise ValueError("verification receipt requires task_id")
+         if not str(receipt.criterion or "").strip():
+             raise ValueError("verification receipt requires criterion")
+         if receipt.passed and not str(receipt.evidence_id or "").strip():
+             raise ValueError("passed verification receipt requires evidence_id")
++        if receipt.passed and self.artifact_store is not None and not _receipt_evidence_matches(
++            receipt,
++            self.artifact_store,
++            expected_owner=receipt.owner,
++            require_repository_revision=bool(receipt.repository_revision),
++        ):
++            raise ValueError("passed verification receipt requires matching trusted evidence")
+         self._init_tables()
++        self._reconcile_task_outbox(raise_on_error=False)
+         event = AgentEvent.create(
+             stream_id=f"verification:{receipt.task_id}",
+             kind="verification.receipt_recorded",
+             payload=receipt.to_dict(),
+             idempotency_key=f"rcpt_{receipt.receipt_id}",
+-            actor="verifier",
++            actor=receipt.owner or "verifier",
+         )
+-        self.state_store.append(event)
++        same_task_database = bool(update_task and self._same_task_database())
+ 
+-        def _do_save() -> None:
+-            con = connect_sqlite(self.state_store.db_path, isolation_level=None)
++        def _save_transaction(con: Any) -> list[AgentEvent]:
+             try:
+                 con.execute("BEGIN IMMEDIATE")
+-                con.execute(
+-                    """
+-                    INSERT INTO agent_verification_receipts (
+-                        receipt_id, task_id, criterion, change_intent_id, evidence_id,
+-                        command_id, repository_revision, observed_at, expires_at,
+-                        passed, details
+-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+-                    ON CONFLICT(receipt_id) DO UPDATE SET
+-                        expires_at = excluded.expires_at,
+-                        passed = excluded.passed,
+-                        details = excluded.details
+-                    """,
+-                    (
+-                        receipt.receipt_id,
+-                        receipt.task_id,
+-                        receipt.criterion,
+-                        receipt.change_intent_id,
+-                        receipt.evidence_id,
+-                        receipt.command_id,
+-                        receipt.repository_revision,
+-                        receipt.observed_at,
+-                        receipt.expires_at,
+-                        1 if receipt.passed else 0,
+-                        json_dumps(receipt.details),
+-                    ),
++                published = self.record_in_transaction(
++                    con, receipt, event=event, update_task=same_task_database
+                 )
++                if update_task and self.task_store is not None and receipt.passed and not same_task_database:
++                    con.execute(
++                        "INSERT INTO agent_verification_task_outbox "
++                        "(receipt_id, task_id, criterion, status, created_at) "
++                        "VALUES (?, ?, ?, 'pending', ?) "
++                        "ON CONFLICT(receipt_id) DO NOTHING",
++                        (receipt.receipt_id, receipt.task_id, receipt.criterion, time.time()),
++                    )
+                 con.execute("COMMIT")
++                return published
+             except Exception:
+                 try:
+                     con.execute("ROLLBACK")
+                 except Exception:
+                     pass
+                 raise
++
++        def _do_save() -> list[AgentEvent]:
++            con = connect_sqlite(self.state_store.db_path, isolation_level=None)
++            try:
++                ordered_publication = getattr(
++                    self.state_store, "ordered_event_publication", None
++                )
++                if not callable(ordered_publication):
++                    raise VerificationStoreIntegrationError(
++                        "state store has no ordered event publication API"
++                    )
++                with ordered_publication(con) as publish_committed:
++                    published_events = retry_busy(
++                        lambda: _save_transaction(con),
++                        retries=5,
++                        base_delay_seconds=0.02,
++                    )
++                    publish_committed(published_events)
++                    return published_events
+             finally:
+                 con.close()
+ 
+-        retry_busy(_do_save, retries=5, base_delay_seconds=0.02)
++        published_events = _do_save()
+ 
+-        if self.task_store is not None and receipt.passed:
++        if update_task and self.task_store is not None and receipt.passed and not same_task_database:
+             try:
+-                self.task_store.add_verification_receipt(
+-                    receipt.task_id,
+-                    receipt.criterion,
+-                    receipt.receipt_id,
+-                )
+-            except KeyError:
+-                pass
++                self._reconcile_task_outbox(receipt_id=receipt.receipt_id, raise_on_error=True)
++            except Exception as exc:
++                raise RuntimeError(
++                    f"verification receipt persisted; task receipt projection reconciliation required: {exc}"
++                ) from exc
+ 
+         return receipt
+ 
+     def record_change(self, change: ChangeIntent) -> ChangeIntent:
+         if not self.state_store.enabled:
+             return change
++        if self.task_store is not None:
++            try:
++                self.task_store.advance_mutation_generation(change.task_id, actor="agent")
++            except KeyError:
++                pass
+         self._init_tables()
+         event = AgentEvent.create(
+             stream_id=f"change:{change.task_id}",
+@@ -514,18 +1205,23 @@ class VerificationStore:
+             idempotency_key=f"chg_{change.change_id}",
+             actor="agent",
+         )
+-        self.state_store.append(event)
+ 
+-        def _do_save() -> None:
++        def _do_save() -> tuple[AgentEvent, bool]:
+             con = connect_sqlite(self.state_store.db_path, isolation_level=None)
+             try:
+                 con.execute("BEGIN IMMEDIATE")
++                persisted = self.state_store.append_in_transaction(
++                    con, event, strict_idempotency=True
++                )
++                if persisted.error or persisted.event is None:
++                    raise RuntimeError(persisted.error or "change event could not be stored")
+                 con.execute(
+                     """
+                     INSERT INTO agent_change_intents (
+                         change_id, task_id, affected_paths, affected_symbols,
+                         expected_impact, rollback_description, created_at
+                     ) VALUES (?, ?, ?, ?, ?, ?, ?)
++                    ON CONFLICT(change_id) DO NOTHING
+                     """,
+                     (
+                         change.change_id,
+@@ -538,6 +1234,7 @@ class VerificationStore:
+                     ),
+                 )
+                 con.execute("COMMIT")
++                return persisted.event, persisted.duplicate
+             except Exception:
+                 try:
+                     con.execute("ROLLBACK")
+@@ -547,7 +1244,11 @@ class VerificationStore:
+             finally:
+                 con.close()
+ 
+-        retry_busy(_do_save, retries=5, base_delay_seconds=0.02)
++        persisted_event, duplicate = retry_busy(
++            _do_save, retries=5, base_delay_seconds=0.02
++        )
++        if not duplicate:
++            self.state_store._publish(persisted_event)
+         return change
+ 
+     def record_outcome(self, outcome: OutcomeRecord) -> OutcomeRecord:
+@@ -561,17 +1262,22 @@ class VerificationStore:
+             idempotency_key=f"outc_{outcome.outcome_id}",
+             actor=outcome.actor,
+         )
+-        self.state_store.append(event)
+ 
+-        def _do_save() -> None:
++        def _do_save() -> tuple[AgentEvent, bool]:
+             con = connect_sqlite(self.state_store.db_path, isolation_level=None)
+             try:
+                 con.execute("BEGIN IMMEDIATE")
++                persisted = self.state_store.append_in_transaction(
++                    con, event, strict_idempotency=True
++                )
++                if persisted.error or persisted.event is None:
++                    raise RuntimeError(persisted.error or "outcome event could not be stored")
+                 con.execute(
+                     """
+                     INSERT INTO agent_outcomes (
+                         outcome_id, change_id, task_id, kind, actor, details, created_at
+                     ) VALUES (?, ?, ?, ?, ?, ?, ?)
++                    ON CONFLICT(outcome_id) DO NOTHING
+                     """,
+                     (
+                         outcome.outcome_id,
+@@ -584,6 +1290,7 @@ class VerificationStore:
+                     ),
+                 )
+                 con.execute("COMMIT")
++                return persisted.event, persisted.duplicate
+             except Exception:
+                 try:
+                     con.execute("ROLLBACK")
+@@ -593,7 +1300,11 @@ class VerificationStore:
+             finally:
+                 con.close()
+ 
+-        retry_busy(_do_save, retries=5, base_delay_seconds=0.02)
++        persisted_event, duplicate = retry_busy(
++            _do_save, retries=5, base_delay_seconds=0.02
++        )
++        if not duplicate:
++            self.state_store._publish(persisted_event)
+         return outcome
+ 
+     def completion(
+@@ -605,6 +1316,15 @@ class VerificationStore:
+         consistency_guard: Any | None = None,
+         repository_revision: str = "",
+         current_revision: str = "",
++        current_mutation_generation: int | None = None,
++        verification_rules: (
++            bool | tuple[str, ...] | list[str] | Mapping[str, bool | tuple[str, ...]] | None
++        ) = None,
++        configured_criteria: tuple[str, ...] | list[str] | None = None,
++        configured_commands: Mapping[str, Any] | None = None,
++        project_config_digest: str = "",
++        configured_environment_sha256: Mapping[str, str] | None = None,
++        project_root: str | Path = "",
+         warnings: Any = (),
+         mappings: Any = (),
+         records: Any = (),
+@@ -623,13 +1343,29 @@ class VerificationStore:
+             )
+         self._init_tables()
+         current_time = float(time.time() if now is None else now)
+-        expected_revision = str(current_revision or repository_revision or "").strip()
+-
++        task_state = None
+         required_criteria: list[str] = []
+         if self.task_store is not None:
+-            t = self.task_store.get(task_id)
+-            if t:
+-                required_criteria = list(t.contract.acceptance_criteria)
++            task_state = self.task_store.get(task_id)
++            if task_state:
++                required_criteria = list(task_state.contract.acceptance_criteria)
++        state_data = task_state.checkpoint.state_data if task_state else {}
++        trusted_current_revision = str(current_revision or repository_revision or "").strip()
++        expected_revision = trusted_current_revision or str(
++            state_data.get("repository_revision", "")
++        ).strip()
++        expected_generation = int(
++            state_data.get("mutation_generation", 0)
++            if current_mutation_generation is None
++            else current_mutation_generation
++        )
++        expected_owner = str(task_state.owner or "").strip() if task_state else ""
++        repo_bound = bool(
++            state_data.get("repo_root")
++            or (task_state and task_state.context.repository_id)
++            or (task_state and task_state.checkpoint.affected_paths)
++        )
++        has_trusted_current_revision = bool(trusted_current_revision)
+ 
+         def _fetch_receipts() -> list[Any]:
+             with closing(connect_sqlite(self.state_store.db_path)) as con:
+@@ -650,44 +1386,61 @@ class VerificationStore:
+ 
+         latest_by_criterion: dict[str, VerificationReceipt] = {}
+         for row in rows:
++            stored_details = json.loads(row[10]) if row[10] else {}
++            stored_details = dict(stored_details) if isinstance(stored_details, Mapping) else {}
++            receipt_metadata = stored_details.pop("_verification_receipt", {})
++            receipt_metadata = dict(receipt_metadata) if isinstance(receipt_metadata, Mapping) else {}
+             r = VerificationReceipt(
+                 receipt_id=row[0],
+                 task_id=row[1],
+                 criterion=row[2],
++                owner=str(receipt_metadata.get("owner", "")),
+                 change_intent_id=row[3],
+                 evidence_id=row[4],
+                 command_id=row[5],
+                 repository_revision=row[6],
++                mutation_generation=int(receipt_metadata.get("mutation_generation", 0) or 0),
++                evidence_type=str(receipt_metadata.get("evidence_type", "source_review")),
+                 observed_at=row[7],
+                 expires_at=row[8],
+                 passed=bool(row[9]),
+-                details=json.loads(row[10]) if row[10] else {},
++                details=stored_details,
+             )
+             if r.criterion not in latest_by_criterion:
+                 latest_by_criterion[r.criterion] = r
+ 
+-        target_criteria = required_criteria if required_criteria else list(latest_by_criterion.keys())
+-        satisfied: list[str] = []
+-        unsatisfied: list[str] = []
+-        stale: list[str] = []
+-
+-        for crit in target_criteria:
+-            rcpt = latest_by_criterion.get(crit)
+-            if not rcpt or not rcpt.passed or not str(rcpt.evidence_id or "").strip():
+-                unsatisfied.append(crit)
+-            elif not rcpt.is_fresh(current_time):
+-                stale.append(crit)
+-            elif expected_revision and rcpt.repository_revision != expected_revision:
+-                stale.append(crit)
+-            else:
+-                satisfied.append(crit)
+-
+-        is_complete = (
+-            len(target_criteria) > 0
+-            and len(unsatisfied) == 0
+-            and len(stale) == 0
+-            and len(satisfied) == len(target_criteria)
++        target_criteria = required_criteria
++        gated = evaluate_completion_receipts(
++            task_id,
++            target_criteria,
++            tuple(latest_by_criterion.values()),
++            owner=expected_owner,
++            repository_revision=expected_revision,
++            mutation_generation=expected_generation,
++            mapped_receipt_ids=(task_state.verification_receipts if task_state else None),
++            artifact_store=self.artifact_store,
++            require_repository_revision=repo_bound and has_trusted_current_revision,
++            verification_rules=verification_rules,
++            configured_criteria=configured_criteria,
++            configured_commands=configured_commands,
++            configured_environment_sha256=configured_environment_sha256,
++            project_config_digest=project_config_digest,
++            project_root=project_root,
++            now=current_time,
+         )
++        if repo_bound and not has_trusted_current_revision:
++            gated = CompletionResult(
++                task_id=task_id,
++                complete=False,
++                satisfied_criteria=(),
++                unsatisfied_criteria=tuple(required_criteria),
++                stale_criteria=tuple(),
++                receipts=tuple(latest_by_criterion.values()),
++            )
++        satisfied = list(gated.satisfied_criteria)
++        unsatisfied = list(gated.unsatisfied_criteria)
++        stale = list(gated.stale_criteria)
++        is_complete = gated.complete
+ 
+         audit: dict[str, Any] = dict(consistency) if isinstance(consistency, Mapping) else {}
+         if wants_consistency and not audit and consistency_guard is not None:
+diff --git a/src/local_ai_hub/app.py b/src/local_ai_hub/app.py
+index 148b4af..1b5e456 100644
+--- a/src/local_ai_hub/app.py
++++ b/src/local_ai_hub/app.py
+@@ -236,7 +236,12 @@ class LocalAIApp:
+         self.agent_tasks = TaskStore(self.agent_state)
+         self.agent_memory = MemoryStore(self.agent_state)
+         self.agent_incidents = IncidentStore(self.agent_state)
+-        self.agent_verification = VerificationStore(self.agent_state, task_store=self.agent_tasks)
++        self.agent_verification = VerificationStore(
++            self.agent_state,
++            task_store=self.agent_tasks,
++            artifact_store=self.artifacts,
++        )
++        self.agent_tasks.set_verification_store(self.agent_verification)
+         self.agent_policy = PolicyEngine(self.agent_state)
+         self.agent_tasks.set_policy_engine(self.agent_policy)
+         self.agent_blackboard = BlackboardStore(state_dir / "agent_state.sqlite3")
+diff --git a/src/local_ai_hub/http_server.py b/src/local_ai_hub/http_server.py
+index 2e3b23b..dcf4952 100644
+--- a/src/local_ai_hub/http_server.py
++++ b/src/local_ai_hub/http_server.py
+@@ -2299,8 +2299,42 @@ class Handler(BaseHTTPRequestHandler):
+                         self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+                 if action == "complete":
+                     try:
+-                        task = APP.agent_tasks.complete(
+-                            str(payload.get("task_id", "")),
++                        task_id = str(payload.get("task_id", ""))
++                        task_state = APP.agent_tasks.get(task_id)
++                        if task_state is None:
++                            raise KeyError(f"Task {task_id} not found")
++                        task_context = getattr(task_state, "context", None)
++                        root = str(
++                            payload.get("root")
++                            or getattr(task_context, "repository_id", "")
++                            or ""
++                        ).strip()
++                        verification_store = getattr(APP, "agent_verification", None)
++                        if verification_store is None:
++                            raise CompletionGateError("completion verification store unavailable")
++                        if not root:
++                            self._send(400, {
++                                "success": False,
++                                "error": "project root is required for task completion verification",
++                                "terminal": True,
++                                "retryable": False,
++                            }); return
++                        current_revision, revision_stop = _completion_revision_or_stop(
++                            root,
++                            getattr(APP, "repo_tools", None),
++                            getattr(APP, "repo_state", None),
++                        )
++                        if revision_stop:
++                            self._send(409, revision_stop); return
++                        from .verification_rules import complete_task_with_project_rules
++
++                        task = complete_task_with_project_rules(
++                            APP.agent_tasks,
++                            verification_store,
++                            task_id,
++                            root=root,
++                            state_dir=verification_store.state_store.db_path.parent,
++                            current_revision=current_revision,
+                             reason=str(payload.get("reason", payload.get("value", "completed by agent"))),
+                             actor=actor,
+                             idempotency_key=idempotency_key,
+diff --git a/tests/test_agent_state_e2e.py b/tests/test_agent_state_e2e.py
+index 8e266a1..63a1776 100644
+--- a/tests/test_agent_state_e2e.py
++++ b/tests/test_agent_state_e2e.py
+@@ -1,5 +1,6 @@
+ from __future__ import annotations
+ 
++import json
+ import sqlite3
+ import time
+ from pathlib import Path
+@@ -9,7 +10,7 @@ from local_ai_hub.app import LocalAIApp
+ from local_ai_hub.agent_events import AgentEvent
+ from local_ai_hub.agent_tasks import GoalContract, TaskStatus, TaskCheckpoint, CompletionGateError
+ from local_ai_hub.agent_identity import ScopeContext
+-from local_ai_hub.agent_verification import VerificationReceipt
++from local_ai_hub.agent_verification import VerificationReceipt, criterion_evidence_type
+ from local_ai_hub.agent_incidents import IncidentFingerprint, ToolOutcome
+ 
+ 
+@@ -34,6 +35,45 @@ retention_days = 14
+     return LocalAIApp(str(cfg_path))
+ 
+ 
++def proof_receipt(app: LocalAIApp, task_id: str, criterion: str) -> VerificationReceipt:
++    evidence_type = criterion_evidence_type(criterion)
++    command_id = f"cmd-{criterion}"
++    repository_revision = "rev-agent-state-e2e"
++    proof = {
++        "kind": "work_command_verification"
++        if evidence_type in {"test", "benchmark"}
++        else "work_source_review",
++        "passed": True,
++        "task_id": task_id,
++        "owner": "agent",
++        "repository_revision": repository_revision,
++        "mutation_generation": 0,
++    }
++    if evidence_type in {"test", "benchmark"}:
++        proof.update(
++            criterion=criterion,
++            command_id=command_id,
++            command_classification=evidence_type,
++            exit_code=0,
++            result={"success": True, "exit_code": 0},
++        )
++        artifact_kind = "command_verification"
++    else:
++        proof["criteria"] = [criterion]
++        artifact_kind = "source_review"
++    evidence_id = app.artifacts.put(json.dumps(proof), "agent", artifact_kind)
++    return VerificationReceipt.create(
++        task_id=task_id,
++        criterion=criterion,
++        passed=True,
++        evidence_id=evidence_id,
++        command_id=command_id if evidence_type in {"test", "benchmark"} else "",
++        owner="agent",
++        repository_revision=repository_revision,
++        evidence_type=evidence_type,
++    )
++
++
+ def test_interrupted_task_resumes_with_fresh_evidence_and_no_duplicate_command(tmp_path: Path):
+     app = app_with_agent_state(tmp_path)
+     contract = GoalContract(goal="Interrupted Goal", acceptance_criteria=("suite_passed",))
+@@ -45,12 +85,7 @@ def test_interrupted_task_resumes_with_fresh_evidence_and_no_duplicate_command(t
+     app.agent_tasks.checkpoint(t.task_id, chk, actor="agent", idempotency_key="chk-1")
+ 
+     # Record verification receipt
+-    rcpt = VerificationReceipt.create(
+-        task_id=t.task_id,
+-        criterion="suite_passed",
+-        passed=True,
+-        evidence_id="E-test-passed",
+-    )
++    rcpt = proof_receipt(app, t.task_id, "suite_passed")
+     app.agent_verification.record(rcpt)
+ 
+     # Simulate restart by instantiating new app on same state_dir
+@@ -115,7 +150,7 @@ def test_e2e_completion_gate_enforcement(tmp_path: Path):
+         app.agent_tasks.transition(t.task_id, TaskStatus.COMPLETED, reason="premature", actor="agent", idempotency_key="g-fail")
+ 
+     # Record first receipt
+-    r1 = VerificationReceipt.create(task_id=t.task_id, criterion="tests_pass", passed=True, evidence_id="ev_test")
++    r1 = proof_receipt(app, t.task_id, "tests_pass")
+     app.agent_verification.record(r1)
+ 
+     # Still missing lint_pass
+@@ -123,7 +158,7 @@ def test_e2e_completion_gate_enforcement(tmp_path: Path):
+         app.agent_tasks.transition(t.task_id, TaskStatus.COMPLETED, reason="still missing", actor="agent", idempotency_key="g-fail2")
+ 
+     # Record second receipt
+-    r2 = VerificationReceipt.create(task_id=t.task_id, criterion="lint_pass", passed=True, evidence_id="ev_lint")
++    r2 = proof_receipt(app, t.task_id, "lint_pass")
+     app.agent_verification.record(r2)
+ 
+     # Now completion succeeds
+diff --git a/tests/test_agent_tasks.py b/tests/test_agent_tasks.py
+index 7b65159..ce004ed 100644
+--- a/tests/test_agent_tasks.py
++++ b/tests/test_agent_tasks.py
+@@ -6,6 +6,7 @@ import pytest
+ 
+ from local_ai_hub.agent_events import AgentStateStore
+ from local_ai_hub.agent_identity import AgentScope, ScopeContext
++from local_ai_hub.artifacts import ArtifactStore
+ from local_ai_hub.agent_tasks import (
+     CompletionGateError,
+     GoalContract,
+@@ -22,7 +23,13 @@ from local_ai_hub.sqlite_support import connect_sqlite
+ @pytest.fixture
+ def store(tmp_path: Path) -> TaskStore:
+     state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+-    return TaskStore(state_store)
++    task_store = TaskStore(state_store)
++    VerificationStore(
++        state_store,
++        task_store=task_store,
++        artifact_store=ArtifactStore(tmp_path / "artifacts"),
++    )
++    return task_store
+ 
+ 
+ def task_context() -> ScopeContext:
+@@ -37,6 +44,41 @@ def contract_with_criteria(*criteria: str) -> GoalContract:
+     )
+ 
+ 
++@pytest.mark.parametrize(
++    ("field", "value"),
++    (
++        ("passed", "true"),
++        ("passed", 1),
++        ("mutation_generation", True),
++        ("mutation_generation", -1),
++        ("details", [("untrusted", "pairs")]),
++    ),
++)
++def test_verification_receipt_deserialization_rejects_malformed_typed_fields(
++    field: str, value: object
++) -> None:
++    receipt_data = {
++        "receipt_id": "rcpt-malformed-schema",
++        "task_id": "task-malformed-schema",
++        "criterion": "source review",
++        "owner": "receipt-owner",
++        "change_intent_id": "",
++        "evidence_id": "",
++        "command_id": "",
++        "repository_revision": "",
++        "mutation_generation": 0,
++        "evidence_type": "source_review",
++        "observed_at": 1.0,
++        "expires_at": None,
++        "passed": False,
++        "details": {},
++    }
++    receipt_data[field] = value
++
++    with pytest.raises((TypeError, ValueError)):
++        VerificationReceipt.from_dict(receipt_data)
++
++
+ def test_goal_contract_requires_nonempty_goal():
+     with pytest.raises(ValueError, match="requires goal"):
+         GoalContract(goal=" ")
+@@ -75,6 +117,320 @@ def test_task_creation_and_retrieval(store: TaskStore):
+     assert fetched.contract.goal == "Implement feature"
+ 
+ 
++def test_structured_description_survives_contract_and_task_round_trip(store: TaskStore):
++    contract = GoalContract.from_dict(
++        {
++            "goal": "Harden receipt freshness",
++            "title": "Receipt freshness",
++            "description": "Reject a pass when a newer receipt failed.",
++            "acceptance_criteria": ["tests"],
++        }
++    )
++
++    assert contract.goal == "Harden receipt freshness"
++    assert contract.description == "Reject a pass when a newer receipt failed."
++    assert contract.to_dict()["description"] == "Reject a pass when a newer receipt failed."
++
++    stored = store.create(contract, task_context(), task_id="t-description")
++    fetched = store.get(stored.task_id)
++
++    assert fetched is not None
++    assert fetched.contract.goal == "Harden receipt freshness"
++    assert fetched.contract.description == "Reject a pass when a newer receipt failed."
++
++
++def test_legacy_goal_contract_without_description_loads_empty_description():
++    contract = GoalContract.from_dict(
++        {"goal": "Legacy task", "acceptance_criteria": ["tests"]}
++    )
++
++    assert contract.goal == "Legacy task"
++    assert contract.description == ""
++
++
++def test_description_only_terms_are_searchable_without_replacing_goal(store: TaskStore):
++    task = store.create(
++        GoalContract(
++            goal="Receipt review",
++            description="quasar evidence provenance",
++            acceptance_criteria=("tests",),
++        ),
++        task_context(),
++        task_id="description-search",
++    )
++
++    matches = store.list_tasks(query="quasar provenance")
++
++    assert [match.task_id for match in matches] == [task.task_id]
++    assert matches[0].contract.goal == "Receipt review"
++    assert matches[0].contract.description == "quasar evidence provenance"
++
++
++def passed_test_receipt(task_store: TaskStore, task_id: str, criterion: str) -> VerificationReceipt:
++    verifier = task_store.verification_store
++    artifact_id = verifier.artifact_store.put(
++        json.dumps({
++            "kind": "work_command_verification",
++            "passed": True,
++            "task_id": task_id,
++            "owner": "agent",
++            "criterion": criterion,
++            "command_id": "cmd-tests",
++            "command_classification": "test",
++            "repository_revision": "rev-1",
++            "mutation_generation": 0,
++            "exit_code": 0,
++            "result": {"success": True, "exit_code": 0},
++        }),
++        "agent",
++        "command_verification",
++    )
++    return VerificationReceipt.create(
++        task_id,
++        criterion,
++        evidence_id=artifact_id,
++        command_id="cmd-tests",
++        repository_revision="rev-1",
++        owner="agent",
++        evidence_type="test",
++    )
++
++
++def task_ready_for_completion(task_store: TaskStore, task_id: str):
++    task_store.create(
++        contract_with_criteria("tests"),
++        task_context(),
++        task_id=task_id,
++        actor="agent",
++    )
++    task_store.transition(
++        task_id,
++        TaskStatus.ACTIVE,
++        reason="start verification task",
++        actor="agent",
++        idempotency_key=f"{task_id}-active",
++    )
++    task_store.transition(
++        task_id,
++        TaskStatus.VERIFYING,
++        reason="verification ready",
++        actor="agent",
++        idempotency_key=f"{task_id}-verifying",
++    )
++    return task_store.get(task_id)
++
++
++def test_task_keyword_query_matches_each_term_across_indexed_fields(store: TaskStore):
++    target = store.create(
++        GoalContract(
++            goal="Receipt freshness gate",
++            description="Evidence from closed runs",
++            acceptance_criteria=("reject stale generation",),
++        ),
++        task_context(),
++        task_id="task-search-target",
++    )
++    other = store.create(
++        GoalContract(goal="Unrelated task", description="No matching evidence"),
++        task_context(),
++        task_id="task-search-other",
++    )
++    for task in (target, other):
++        store.transition(
++            task.task_id,
++            TaskStatus.ACTIVE,
++            reason="start search fixture",
++            actor="agent",
++            idempotency_key=f"search-active-{task.task_id}",
++        )
++    store.checkpoint(
++        target.task_id,
++        TaskCheckpoint(next_action="Review oldmarker"),
++        actor="agent",
++        idempotency_key="search-checkpoint-old",
++    )
++    store.checkpoint(
++        target.task_id,
++        TaskCheckpoint(next_action="Review signed handoff"),
++        actor="agent",
++        idempotency_key="search-checkpoint",
++    )
++
++    assert [task.task_id for task in store.list_tasks(TaskStatus.ACTIVE, limit=1, query="CEIPT generation signed")] == [target.task_id]
++    assert [task.task_id for task in store.list_tasks(query="closed runs")] == [target.task_id]
++    assert [task.task_id for task in store.list_tasks(query="search-target")] == [target.task_id]
++    assert store.list_tasks(query="oldmarker") == []
++    assert store.list_tasks(query="fresh missing") == []
++    assert len(store.list_tasks(query="   ")) == 2
++
++    con = connect_sqlite(store.state_store.db_path, isolation_level=None)
++    try:
++        con.execute("UPDATE agent_tasks_projection SET heartbeat_expires_at=1 WHERE task_id=?", (target.task_id,))
++    finally:
++        con.close()
++    assert store.list_tasks(query="CEIPT") == []
++    assert [task.task_id for task in store.list_tasks(query="CEIPT", include_stale=True)] == [target.task_id]
++
++
++def test_task_keyword_query_does_not_join_grams_across_fields(store: TaskStore):
++    task = store.create(
++        GoalContract(goal="abcd prefix", description="cde suffix"),
++        task_context(),
++        task_id="task-search-cross-field-grams",
++    )
++
++    assert "abcde" not in {
++        field
++        for field in TaskStore._searchable_task_fields(
++            task.task_id,
++            {
++                "goal": task.contract.goal,
++                "description": task.contract.description,
++                "acceptance_criteria": task.contract.acceptance_criteria,
++            },
++            {"next_action": task.checkpoint.next_action},
++        )
++    }
++    con = connect_sqlite(store.state_store.db_path)
++    try:
++        indexed_grams = {
++            str(row[0])
++            for row in con.execute(
++                "SELECT gram FROM agent_task_search_grams WHERE task_id=?",
++                (task.task_id,),
++            ).fetchall()
++        }
++    finally:
++        con.close()
++    assert {"abc", "bcd", "cde"} <= indexed_grams
++    assert store.list_tasks(query="abcde") == []
++
++
++def test_task_keyword_index_backfills_existing_projection_on_startup(store: TaskStore):
++    task = store.create(
++        GoalContract(goal="Legacy task", description="Backfill searchable marker"),
++        task_context(),
++        task_id="task-search-backfill",
++    )
++    con = connect_sqlite(store.state_store.db_path, isolation_level=None)
++    try:
++        con.execute("DELETE FROM agent_task_search_grams WHERE task_id=?", (task.task_id,))
++        con.execute("DELETE FROM agent_task_search_documents WHERE task_id=?", (task.task_id,))
++    finally:
++        con.close()
++
++    reloaded_store = TaskStore(store.state_store)
++
++    assert [item.task_id for item in reloaded_store.list_tasks(query="searchable marker")] == [task.task_id]
++
++
++def test_task_keyword_index_backfills_legacy_title_field(store: TaskStore):
++    task = store.create(
++        GoalContract(goal="Legacy task"),
++        task_context(),
++        task_id="task-search-legacy-title",
++    )
++    con = connect_sqlite(store.state_store.db_path, isolation_level=None)
++    try:
++        con.execute(
++            "UPDATE agent_tasks_projection SET contract=? WHERE task_id=?",
++            (json.dumps({"title": "Legacy title quasar marker"}), task.task_id),
++        )
++        con.execute("DELETE FROM agent_task_search_grams WHERE task_id=?", (task.task_id,))
++        con.execute("DELETE FROM agent_task_search_documents WHERE task_id=?", (task.task_id,))
++        TaskStore._backfill_task_search_index(con)
++    finally:
++        con.close()
++
++    matches = store.list_tasks(query="quasar")
++    assert [item.task_id for item in matches] == [task.task_id]
++    assert matches[0].contract.goal == "Legacy title quasar marker"
++
++
++def test_task_keyword_index_repairs_partial_grams_on_startup(store: TaskStore):
++    task = store.create(
++        GoalContract(goal="Index integrity", description="Rare zxq marker"),
++        task_context(),
++        task_id="task-search-partial-index",
++    )
++    con = connect_sqlite(store.state_store.db_path, isolation_level=None)
++    try:
++        con.execute(
++            "DELETE FROM agent_task_search_grams WHERE task_id=? AND gram=?",
++            (task.task_id, "zxq"),
++        )
++        assert con.execute(
++            "SELECT 1 FROM agent_task_search_documents WHERE task_id=?",
++            (task.task_id,),
++        ).fetchone() is not None
++        assert con.execute(
++            "SELECT COUNT(*) FROM agent_task_search_grams WHERE task_id=?",
++            (task.task_id,),
++        ).fetchone()[0] > 0
++    finally:
++        con.close()
++
++    reloaded_store = TaskStore(store.state_store)
++
++    assert [item.task_id for item in reloaded_store.list_tasks(query="zxq")] == [task.task_id]
++
++
++def test_task_keyword_query_uses_nfkc_normalization(store: TaskStore):
++    task = store.create(
++        GoalContract(goal="Unicode search", description="Ｒｅｌｅａｓｅ　Ｃａｎｄｉｄａｔｅ"),
++        task_context(),
++        task_id="task-search-unicode",
++    )
++
++    assert [item.task_id for item in store.list_tasks(query="RELEASE CANDIDATE")] == [task.task_id]
++
++
++@pytest.mark.parametrize(
++    "terminal_status",
++    [TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.FAILED, TaskStatus.ABANDONED],
++)
++def test_terminal_tasks_with_expired_heartbeats_are_not_filtered_as_stale(
++    store: TaskStore, terminal_status: TaskStatus
++):
++    task = store.create(
++        GoalContract(goal="Terminal task"),
++        task_context(),
++        task_id=f"task-terminal-{terminal_status.value}",
++    )
++    con = connect_sqlite(store.state_store.db_path, isolation_level=None)
++    try:
++        con.execute(
++            "UPDATE agent_tasks_projection SET status=?, heartbeat_expires_at=1 WHERE task_id=?",
++            (terminal_status.value, task.task_id),
++        )
++    finally:
++        con.close()
++
++    listed = store.list_tasks(status=terminal_status)
++
++    assert [item.task_id for item in listed] == [task.task_id]
++    assert listed[0].is_stale is False
++
++
++def test_task_keyword_query_filters_before_recency_limit(store: TaskStore):
++    older = store.create(GoalContract(goal="Shared marker older"), task_context(), task_id="task-search-older")
++    newer = store.create(GoalContract(goal="Shared marker newer"), task_context(), task_id="task-search-newer")
++    store.create(GoalContract(goal="Unrelated newest task"), task_context(), task_id="task-search-unrelated")
++    con = connect_sqlite(store.state_store.db_path, isolation_level=None)
++    try:
++        con.execute("UPDATE agent_tasks_projection SET updated_at=10 WHERE task_id=?", (older.task_id,))
++        con.execute("UPDATE agent_tasks_projection SET updated_at=20 WHERE task_id=?", (newer.task_id,))
++        con.execute(
++            "UPDATE agent_tasks_projection SET updated_at=30 WHERE task_id=?",
++            ("task-search-unrelated",),
++        )
++    finally:
++        con.close()
++
++    assert [item.task_id for item in store.list_tasks(query="shared", limit=2)] == [newer.task_id, older.task_id]
++    assert [item.task_id for item in store.list_tasks(query="shared", limit=1)] == [newer.task_id]
++
++
+ def test_completed_requires_all_criteria_to_have_fresh_receipts(store: TaskStore):
+     task = store.create(contract_with_criteria("tests", "review"), task_context())
+     store.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="agent", idempotency_key="a")
+@@ -88,11 +444,112 @@ def test_completed_succeeds_when_verified(store: TaskStore):
+     store.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="agent", idempotency_key="a")
+     store.transition(task.task_id, TaskStatus.VERIFYING, reason="ready", actor="agent", idempotency_key="v")
+     # Completion requires durable verification evidence, not projection-only receipt IDs.
+-    VerificationStore(store.state_store, task_store=store).record(
+-        VerificationReceipt.create(task.task_id, "tests", evidence_id="ev-tests")
++    receipt = passed_test_receipt(store, task.task_id, "tests")
++    store.verification_store.record(receipt)
++    completed = store.transition(
++        task.task_id, TaskStatus.COMPLETED, reason="all passed", actor="agent",
++        idempotency_key="c", current_revision="rev-1",
+     )
+-    completed = store.transition(task.task_id, TaskStatus.COMPLETED, reason="all passed", actor="agent", idempotency_key="c")
+     assert completed.status == TaskStatus.COMPLETED
++    con = store.verification_store.artifact_store._connect()
++    try:
++        con.execute(
++            f"DELETE FROM {store.verification_store.artifact_store._table} WHERE artifact_id = ?",
++            (receipt.evidence_id,),
++        )
++        con.commit()
++    finally:
++        con.close()
++    with pytest.raises(CompletionGateError, match="tests"):
++        store.complete(
++            task.task_id, reason="repeat", actor="agent",
++            idempotency_key="repeat", current_revision="rev-1",
++        )
++
++
++def test_newer_failed_receipt_supersedes_older_pass(store: TaskStore):
++    from dataclasses import replace
++
++    task = store.create(contract_with_criteria("tests"), task_context(), task_id="t-receipt-order")
++    verifier = store.verification_store
++    passed = passed_test_receipt(store, task.task_id, "tests")
++    failed = VerificationReceipt.create(
++        task.task_id,
++        "tests",
++        passed=False,
++        evidence_id="ev-fail",
++        command_id="cmd-fail",
++        owner="agent",
++    )
++    verifier.record(replace(passed, observed_at=10.0))
++    verifier.record(replace(failed, observed_at=20.0))
++
++    completion = verifier.completion(task.task_id, now=30.0)
++
++    assert completion.complete is False
++    assert completion.unsatisfied_criteria == ("tests",)
++
++
++def test_passing_test_receipt_requires_command_id():
++    with pytest.raises(ValueError, match="requires command_id"):
++        VerificationReceipt.create(
++            "task-missing-command",
++            "tests",
++            passed=True,
++            evidence_id="ev-without-command",
++            evidence_type="test",
++        )
++
++
++def test_task_transition_runs_verify_completion_with_valid_receipt(store: TaskStore):
++    task = task_ready_for_completion(store, "task-valid-receipt")
++    receipt = passed_test_receipt(store, task.task_id, "tests")
++    store.verification_store.record(receipt)
++
++    store._verify_completion(task, current_revision="rev-1")
++    completed = store.transition(
++        task.task_id,
++        TaskStatus.COMPLETED,
++        reason="verified receipt accepted",
++        actor="agent",
++        idempotency_key="task-valid-receipt-complete",
++        current_revision="rev-1",
++    )
++
++    assert completed.status is TaskStatus.COMPLETED
++
++
++def test_task_transition_rejects_foreign_task_receipt(store: TaskStore):
++    task = task_ready_for_completion(store, "task-foreign-target")
++    foreign_task = task_ready_for_completion(store, "task-foreign-source")
++    receipt = passed_test_receipt(store, foreign_task.task_id, "tests")
++    store.verification_store.record(receipt)
++
++    with pytest.raises(CompletionGateError, match="tests"):
++        store.transition(
++            task.task_id,
++            TaskStatus.COMPLETED,
++            reason="foreign receipt must not satisfy task",
++            actor="agent",
++            idempotency_key="task-foreign-target-complete",
++            current_revision="rev-1",
++        )
++
++
++def test_task_transition_rejects_receipt_from_stale_revision(store: TaskStore):
++    task = task_ready_for_completion(store, "task-stale-revision")
++    receipt = passed_test_receipt(store, task.task_id, "tests")
++    store.verification_store.record(receipt)
++
++    with pytest.raises(CompletionGateError, match="stale revision"):
++        store.transition(
++            task.task_id,
++            TaskStatus.COMPLETED,
++            reason="stale receipt must not satisfy task",
++            actor="agent",
++            idempotency_key="task-stale-revision-complete",
++            current_revision="rev-2",
++        )
+ 
+ 
+ def test_expired_active_task_becomes_abandoned_with_checkpoint(store: TaskStore):
+diff --git a/src/local_ai_hub/verification_rules.py b/src/local_ai_hub/verification_rules.py
+new file mode 100644
+index 0000000..e510187
+--- /dev/null
++++ b/src/local_ai_hub/verification_rules.py
+@@ -0,0 +1,329 @@
++from __future__ import annotations
++
++from collections.abc import Mapping
++import hashlib
++import json
++import os
++from pathlib import Path
++from typing import Protocol
++
++from .agent_tasks import CompletionGateError, TaskCheckpoint, TaskState, TaskStore
++from .agent_verification import CompletionResult
++
++
++class CompletionReceiptStore(Protocol):
++    task_store: TaskStore | None
++
++    def completion(
++        self,
++        task_id: str,
++        now: float | None = None,
++        *,
++        current_revision: str = "",
++        current_mutation_generation: int | None = None,
++        verification_rules: Mapping[str, bool | tuple[str, ...]] | None = None,
++        configured_criteria: tuple[str, ...] | None = None,
++        configured_commands: Mapping[str, object] | None = None,
++        project_config_digest: str = "",
++        configured_environment_sha256: Mapping[str, str] | None = None,
++        project_root: str | Path = "",
++    ) -> CompletionResult: ...
++
++
++def project_command_environment_sha256(settings: object, criterion: str) -> str:
++    """Hash the effective project command environment without persisting values."""
++    commands = getattr(settings, "commands", {})
++    command = commands.get(criterion) if isinstance(commands, Mapping) else None
++    environment = dict(getattr(settings, "env", {}) or {})
++    references = dict(getattr(settings, "env_references", {}) or {})
++    command_references = getattr(command, "env_references", {})
++    if isinstance(command_references, Mapping):
++        references.update(command_references)
++    for target_name, source_name in references.items():
++        if not isinstance(target_name, str) or not isinstance(source_name, str):
++            raise CompletionGateError("project command environment is invalid")
++        if source_name not in os.environ:
++            raise CompletionGateError("project command environment is unavailable")
++        value = os.environ[source_name]
++        if not isinstance(value, str) or "\x00" in value:
++            raise CompletionGateError("project command environment is invalid")
++        environment[target_name] = value
++    return hashlib.sha256(
++        json.dumps(environment, sort_keys=True, separators=(",", ":")).encode("utf-8")
++    ).hexdigest()
++
++
++def evaluate_project_completion(
++    verification_store: CompletionReceiptStore,
++    settings: ProjectSettings,
++    *,
++    task_id: str,
++    repository_revision: str,
++    project_config_digest: str = "",
++    configured_environment_sha256: Mapping[str, str] | None = None,
++    project_root: str | Path = "",
++    now: float | None = None,
++) -> CompletionResult:
++    """Delegate project-aware completion to T09's persisted receipt gate."""
++    task_key = str(task_id or "").strip()
++    revision = str(repository_revision or "").strip()
++    if not task_key:
++        raise ValueError("task_id is required")
++    if not revision:
++        raise ValueError("repository_revision is required")
++
++    task_store = verification_store.task_store
++    if task_store is None:
++        raise ValueError("task store is required for project completion")
++    task = task_store.get(task_key)
++    if task is None or task.task_id != task_key:
++        raise ValueError("task not found")
++    if not str(task.owner or "").strip():
++        raise ValueError("task owner is required")
++    generation = task.checkpoint.state_data.get("mutation_generation", 0)
++    if isinstance(generation, bool) or not isinstance(generation, int) or generation < 0:
++        raise ValueError("task mutation_generation is invalid")
++
++    return verification_store.completion(
++        task_key,
++        now=now,
++        current_revision=revision,
++        current_mutation_generation=generation,
++        verification_rules=settings.verification_rules,
++        configured_criteria=tuple(settings.commands),
++        configured_commands=settings.commands,
++        project_config_digest=project_config_digest,
++        configured_environment_sha256=configured_environment_sha256,
++        project_root=project_root,
++    )
++
++
++def _task_created_state_data(task_store: TaskStore, task_id: str) -> Mapping[str, object] | None:
++    state_store = getattr(task_store, "state_store", None)
++    events = getattr(state_store, "events", None)
++    if not callable(events):
++        return None
++    try:
++        created_events = events(stream_id=f"task:{task_id}", after_seq=0, limit=1)
++    except (OSError, RuntimeError, TimeoutError, TypeError, ValueError):
++        return None
++    if not created_events or getattr(created_events[0], "kind", "") != "task.created":
++        return None
++    payload = getattr(created_events[0], "payload", None)
++    if not isinstance(payload, Mapping) or payload.get("task_id") != task_id:
++        return None
++    checkpoint = payload.get("checkpoint")
++    if not isinstance(checkpoint, Mapping):
++        return None
++    state_data = checkpoint.get("state_data")
++    return state_data if isinstance(state_data, Mapping) else None
++
++
++def _task_owned_worktree_root(
++    task: TaskState,
++    worktree: Mapping[str, object],
++    trusted_repo_root: Path | None,
++) -> Path | None:
++    raw_path = worktree.get("worktree_path")
++    raw_repo = worktree.get("repo_root")
++    worktree_id = str(worktree.get("worktree_id", "") or "").strip()
++    branch = str(worktree.get("branch", "") or "").strip()
++    owner = str(task.owner or "").strip()
++    if (
++        not isinstance(raw_path, (str, Path))
++        or not str(raw_path).strip()
++        or not isinstance(raw_repo, (str, Path))
++        or not str(raw_repo).strip()
++        or not worktree_id
++        or not branch
++        or not owner
++        or str(worktree.get("task_id", "")) != task.task_id
++        or str(worktree.get("owner", "")).strip() != owner
++    ):
++        return None
++
++    worktree_path = Path(raw_path).expanduser().resolve(strict=False)
++    repo_root = Path(raw_repo).expanduser().resolve(strict=False)
++    if trusted_repo_root is not None and _canonical_project_root(repo_root) != _canonical_project_root(
++        trusted_repo_root
++    ):
++        return None
++    try:
++        from .process_utils import _worktree_ownership_path
++
++        metadata_path = _worktree_ownership_path(worktree_path)
++        if metadata_path is None or not metadata_path.is_file():
++            return None
++        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
++    except (OSError, RuntimeError, TypeError, ValueError, ImportError):
++        return None
++    if not isinstance(metadata, Mapping):
++        return None
++    try:
++        metadata_root = Path(str(metadata.get("repo_root", ""))).expanduser().resolve(
++            strict=False
++        )
++        metadata_path_value = Path(
++            str(metadata.get("worktree_path", ""))
++        ).expanduser().resolve(strict=False)
++    except (OSError, TypeError, ValueError):
++        return None
++    if (
++        metadata.get("schema_version") != 1
++        or str(metadata.get("task_id", "")) != task.task_id
++        or str(metadata.get("owner", "")).strip() != owner
++        or str(metadata.get("worktree_id", "")).strip() != worktree_id
++        or str(metadata.get("branch", "")).strip() != branch
++        or _canonical_project_root(metadata_root) != _canonical_project_root(repo_root)
++        or _canonical_project_root(metadata_path_value)
++        != _canonical_project_root(worktree_path)
++        or not worktree_path.is_dir()
++        or not repo_root.is_dir()
++    ):
++        return None
++    return worktree_path
++
++
++def _task_project_root(
++    task: TaskState,
++    trusted_initial_state_data: Mapping[str, object] | None = None,
++) -> Path | None:
++    context_root: Path | None = None
++    context_value = task.context.repository_id
++    if isinstance(context_value, (str, Path)) and str(context_value).strip():
++        candidate = Path(context_value).expanduser().resolve(strict=False)
++        if candidate.is_dir():
++            context_root = candidate
++
++    initial_data = trusted_initial_state_data
++    if initial_data is not None:
++        initial_worktree = initial_data.get("worktree")
++        initial_root = initial_data.get("repo_root")
++        trusted_worktree = initial_worktree if isinstance(initial_worktree, Mapping) else None
++    else:
++        current_data = task.checkpoint.state_data
++        current_worktree = current_data.get("worktree")
++        trusted_worktree = current_worktree if isinstance(current_worktree, Mapping) else None
++        initial_root = None
++
++    trusted_repo_root: Path | None = None
++    if isinstance(initial_root, (str, Path)) and str(initial_root).strip():
++        candidate = Path(initial_root).expanduser().resolve(strict=False)
++        if candidate.is_dir():
++            trusted_repo_root = candidate
++    if trusted_repo_root is None:
++        trusted_repo_root = context_root
++
++    if trusted_worktree is not None:
++        owned_root = _task_owned_worktree_root(task, trusted_worktree, trusted_repo_root)
++        if owned_root is not None:
++            return owned_root
++    return trusted_repo_root
++
++
++def _canonical_project_root(root: str | Path) -> str:
++    return os.path.normcase(str(Path(root).expanduser().resolve(strict=False)))
++
++
++def complete_task_with_project_rules(
++    task_store: TaskStore,
++    verification_store: CompletionReceiptStore,
++    task_id: str,
++    *,
++    root: str | Path,
++    state_dir: str | Path,
++    current_revision: str,
++    reason: str = "completed by agent",
++    actor: str = "agent",
++    idempotency_key: str = "",
++    now: float | None = None,
++) -> TaskState:
++    """Resolve payload-root project rules and gate mutation on persisted receipts."""
++    task_key = str(task_id or "").strip()
++    if not task_key:
++        raise CompletionGateError("task_id is required")
++    revision = str(current_revision or "").strip()
++    if not revision:
++        raise CompletionGateError("trusted repository_revision is unavailable")
++    receipt_task_store = getattr(verification_store, "task_store", None)
++    if receipt_task_store is None or receipt_task_store is not task_store:
++        raise CompletionGateError("verification task store is unavailable or mismatched")
++    before = task_store.get(task_key)
++    if before is None or not str(before.owner or "").strip():
++        raise CompletionGateError("task owner is unavailable")
++    initial_state_data = _task_created_state_data(task_store, task_key)
++    task_root = _task_project_root(before, initial_state_data)
++    if task_root is None:
++        raise CompletionGateError("task project root is unavailable")
++    try:
++        from .project_config import ProjectConfigError, resolve_project_context
++    except ImportError as exc:
++        raise CompletionGateError("project configuration is unavailable") from exc
++    try:
++        project = resolve_project_context(task_root, state_dir)
++        requested_root = str(root or "").strip()
++        if requested_root:
++            requested_project = resolve_project_context(requested_root, state_dir)
++            if _canonical_project_root(requested_project.root) != _canonical_project_root(
++                project.root
++            ):
++                raise CompletionGateError("requested project root does not match task project root")
++    except CompletionGateError:
++        raise
++    except (ProjectConfigError, OSError, RuntimeError, ValueError) as exc:
++        raise CompletionGateError("project configuration could not be resolved") from exc
++    if project.resolution.error_codes:
++        raise CompletionGateError("project configuration is invalid")
++    before_generation = before.checkpoint.state_data.get("mutation_generation", 0)
++    result = evaluate_project_completion(
++        verification_store,
++        project.settings,
++        task_id=task_key,
++        repository_revision=revision,
++        project_config_digest=project.config_digest,
++        configured_environment_sha256={
++            name: project_command_environment_sha256(project.settings, name)
++            for name in project.settings.commands
++        },
++        project_root=project.root,
++        now=now,
++    )
++    if not result.complete:
++        missing = ", ".join(result.unsatisfied_criteria + result.stale_criteria)
++        raise CompletionGateError(
++            f"Cannot complete task {task_key}: verification incomplete"
++            + (f" ({missing})" if missing else "")
++        )
++    current = task_store.get(task_key)
++    if (
++        current is None
++        or current.owner != before.owner
++        or current.checkpoint.state_data.get("mutation_generation", 0) != before_generation
++    ):
++        raise CompletionGateError("task owner or mutation generation changed during completion verification")
++    state_data = dict(current.checkpoint.state_data)
++    state_data["repo_root"] = str(project.root)
++    state_data["repository_revision"] = revision
++    if state_data != dict(current.checkpoint.state_data):
++        checkpoint = TaskCheckpoint(
++            phase=current.checkpoint.phase,
++            next_action=current.checkpoint.next_action,
++            affected_paths=current.checkpoint.affected_paths,
++            evidence_ids=current.checkpoint.evidence_ids,
++            blockers=current.checkpoint.blockers,
++            state_data=state_data,
++        )
++        suffix = "_project_completion_context"
++        task_store.checkpoint(
++            task_key,
++            checkpoint,
++            actor=actor,
++            idempotency_key=f"{idempotency_key}{suffix}" if idempotency_key else "",
++        )
++    return task_store.complete(
++        task_key,
++        reason=reason,
++        actor=actor,
++        idempotency_key=idempotency_key,
++        current_revision=revision,
++    )
+diff --git a/tests/test_t09_http_task_completion_matrix.py b/tests/test_t09_http_task_completion_matrix.py
+new file mode 100644
+index 0000000..72c6e94
+--- /dev/null
++++ b/tests/test_t09_http_task_completion_matrix.py
+@@ -0,0 +1,335 @@
++from __future__ import annotations
++
++import json
++import hashlib
++from pathlib import Path
++import threading
++import urllib.error
++import urllib.request
++
++import pytest
++
++from local_ai_hub import http_server
++from local_ai_hub.agent_identity import ScopeContext
++from local_ai_hub.agent_tasks import GoalContract, TaskCheckpoint
++from local_ai_hub.agent_verification import VerificationReceipt, criterion_evidence_type
++from local_ai_hub.app import LocalAIApp
++from local_ai_hub.verification_rules import project_command_environment_sha256
++from t09_project_config_test_fixture import install_t09_project_config_test_fixture
++
++
++def _record_command(
++    app: LocalAIApp,
++    *,
++    criterion: str,
++    receipt_task_id: str,
++    proof_task_id: str,
++    owner: str,
++    artifact_tenant: str,
++    revision: str,
++    command_id: str,
++    project_config_digest: str,
++) -> tuple[str, bool]:
++    command_text = {
++        "test": "python -m pytest -q tests/test_contract.py",
++        "lint": "python -m ruff check src",
++    }.get(criterion, "unknown configured command")
++    command_sha256 = hashlib.sha256(command_text.encode("utf-8")).hexdigest()
++    project_environment_sha256 = hashlib.sha256(b"{}").hexdigest()
++    configured_command_sha256 = hashlib.sha256(command_text.encode("utf-8")).hexdigest()
++    caller_arguments_sha256 = hashlib.sha256(b"[]").hexdigest()
++    execution_binding = hashlib.sha256(
++        json.dumps(
++            {
++                "project_alias": criterion,
++                "project_config_digest": project_config_digest,
++                "configured_command_sha256": configured_command_sha256,
++                "caller_arguments_sha256": caller_arguments_sha256,
++                "command_sha256": command_sha256,
++                "project_environment_sha256": project_environment_sha256,
++            },
++            sort_keys=True,
++            separators=(",", ":"),
++        ).encode("utf-8")
++    ).hexdigest()
++    evidence_id = app.artifacts.put_json(
++        {
++            "kind": "work_command_verification",
++            "passed": True,
++            "task_id": proof_task_id,
++            "owner": owner,
++            "repository_revision": revision,
++            "mutation_generation": 0,
++            "criterion": criterion,
++            "command_id": command_id,
++            "command_classification": criterion_evidence_type(criterion),
++            "command": command_text,
++            "project_alias": criterion,
++            "project_config_digest": project_config_digest,
++            "project_environment_sha256": project_environment_sha256,
++            "configured_command_sha256": configured_command_sha256,
++            "caller_arguments_sha256": caller_arguments_sha256,
++            "project_execution_binding_sha256": execution_binding,
++            "command_sha256": command_sha256,
++            "exit_code": 0,
++            "result": {"success": True, "exit_code": 0},
++        },
++        artifact_tenant,
++        "command_verification",
++    )
++    try:
++        app.agent_verification.record(
++            VerificationReceipt.create(
++                receipt_task_id,
++                criterion,
++                evidence_id=evidence_id,
++                command_id=command_id,
++                owner=owner,
++                repository_revision=revision,
++                mutation_generation=0,
++                evidence_type=criterion_evidence_type(criterion),
++            )
++        )
++    except ValueError:
++        return evidence_id, False
++    return evidence_id, True
++
++
++_CASES = (
++    pytest.param(
++        "valid",
++        {
++            "memory_context": {"items": [{"id": "mem-unused"}]},
++            "memory_audit": {"used_ids": [], "not_used_reason": "not relevant to this task"},
++        },
++        True,
++        id="project-rules-add-receipt-criteria-and-valid-memory-audit",
++    ),
++    pytest.param(
++        "valid-used-memory",
++        {
++            "memory_context": {"items": [{"id": "mem-volatile", "volatile": True}]},
++            "memory_audit": {
++                "used_ids": ["mem-volatile"],
++                "source_checks": {"mem-volatile": {"source": "current source"}},
++            },
++        },
++        True,
++        id="used-volatile-memory-has-current-source-check",
++    ),
++    pytest.param("owner-mismatch", {"test_owner": "other-agent"}, False, id="owner-mismatch"),
++    pytest.param("tenant-mismatch", {"test_artifact_tenant": "other-agent", "expect_record_rejected": True}, False, id="artifact-tenant-mismatch"),
++    pytest.param("task-mismatch", {"test_receipt_task_id": "other-task", "test_proof_task_id": "other-task"}, False, id="task-mismatch"),
++    pytest.param("revision-mismatch", {"test_revision": "stale-revision"}, False, id="revision-mismatch"),
++    pytest.param("criterion-mismatch", {"test_criterion": "test-other"}, False, id="criterion-mismatch"),
++    pytest.param("missing-project-lint", {"include_lint": False}, False, id="additive-project-command-required"),
++    pytest.param(
++        "used-volatile-without-source",
++        {"memory_context": {"items": [{"id": "mem-volatile", "volatile": True}]}, "memory_audit": {"used_ids": ["mem-volatile"]}},
++        False,
++        id="used-memory-requires-source-check",
++    ),
++    pytest.param(
++        "unused-memory-without-reason",
++        {"memory_context": {"items": [{"id": "mem-unused"}]}, "memory_audit": {"used_ids": []}},
++        False,
++        id="unused-memory-requires-reason",
++    ),
++    pytest.param(
++        "skipped-memory-without-reason",
++        {"memory_context": {"items": [], "warnings": [{"code": "memory_stale_skipped"}]}, "memory_audit": {"used_ids": []}},
++        False,
++        id="skipped-memory-requires-reason",
++    ),
++)
++
++
++@pytest.mark.parametrize(("case", "changes", "expected_success"), _CASES)
++def test_task_completion_http_receipt_and_memory_matrix(
++    tmp_path: Path,
++    monkeypatch: pytest.MonkeyPatch,
++    case: str,
++    changes: dict[str, object],
++    expected_success: bool,
++) -> None:
++    project_config = install_t09_project_config_test_fixture(monkeypatch)
++    tenant = "agent-t09"
++    task_id = f"task-t09-{case}"
++    revision = "rev-t09-matrix-current"
++    project_root = tmp_path / "repo"
++    project_root.mkdir()
++    (project_root / ".local-ai.toml").write_text(
++        '[commands]\ntest = "python -m pytest -q tests/test_contract.py"\n'
++        'lint = "python -m ruff check src"\n'
++        '[verification_rules]\ntest = ["test", "lint"]\n',
++        encoding="utf-8",
++    )
++    state_dir = tmp_path / "state"
++    state_dir.mkdir()
++    config_path = tmp_path / "config.toml"
++    config_path.write_text(
++        f'[server]\nbind = "127.0.0.1"\nport = 11498\nstate_dir = "{state_dir.as_posix()}"\n'
++        "\n[agent_state]\nenabled = true\n",
++        encoding="utf-8",
++    )
++    project_context = project_config.resolve_project_context(project_root, state_dir)
++    project_config_digest = project_context.config_digest
++
++    app = LocalAIApp(str(config_path))
++    memory_context = changes.get("memory_context")
++    if memory_context is not None:
++        # Model the memory bundle injected by the server at task creation.
++        # T08 makes that field immutable through the checkpoint API.
++        monkeypatch.setattr(
++            app.agent_tasks,
++            "_task_memory_context",
++            lambda _task_id, _contract, _context, **_kwargs: memory_context,
++            raising=False,
++        )
++    app.agent_tasks.create(
++        GoalContract(
++            goal="exercise project completion receipt gates over HTTP",
++            acceptance_criteria=("test",),
++        ),
++        ScopeContext(repository_id=str(project_root), task_id=task_id),
++        task_id=task_id,
++        actor=tenant,
++        repo_root=str(project_root),
++    )
++    if changes.get("test_receipt_task_id") == "other-task":
++        app.agent_tasks.create(
++            GoalContract(goal="unrelated task", acceptance_criteria=("test",)),
++            ScopeContext(repository_id=str(project_root), task_id="other-task"),
++            task_id="other-task",
++            actor=tenant,
++            repo_root=str(project_root),
++        )
++    memory_audit = changes.get("memory_audit")
++    if memory_audit is not None:
++        task = app.agent_tasks.get(task_id)
++        assert task is not None
++        state_data = dict(task.checkpoint.state_data)
++        state_data["memory_audit"] = memory_audit
++        app.agent_tasks.checkpoint(
++            task_id,
++            TaskCheckpoint(
++                phase="verification",
++                state_data=state_data,
++            ),
++            actor=tenant,
++        )
++
++    test_criterion = str(changes.get("test_criterion", "test"))
++    test_owner = str(changes.get("test_owner", tenant))
++    test_artifact_tenant = str(changes.get("test_artifact_tenant", test_owner))
++    test_revision = str(changes.get("test_revision", revision))
++    test_task_id = str(changes.get("test_receipt_task_id", task_id))
++    test_proof_task_id = str(changes.get("test_proof_task_id", test_task_id))
++    test_evidence_id, test_receipt_recorded = _record_command(
++        app,
++        criterion=test_criterion,
++        receipt_task_id=test_task_id,
++        proof_task_id=test_proof_task_id,
++        owner=test_owner,
++        artifact_tenant=test_artifact_tenant,
++        revision=test_revision,
++        command_id=f"cmd-{case}-test",
++        project_config_digest=project_config_digest,
++    )
++    expected_receipt_recorded = not bool(changes.get("expect_record_rejected"))
++    assert test_receipt_recorded is expected_receipt_recorded, case
++    if not test_receipt_recorded:
++        task_tenant_view = app.artifacts.get(test_evidence_id, max_chars=50_000, tenant=tenant)
++        assert task_tenant_view.get("success") is False, (case, task_tenant_view)
++    if changes.get("include_lint", True):
++        _record_command(
++            app,
++            criterion="lint",
++            receipt_task_id=task_id,
++            proof_task_id=task_id,
++            owner=tenant,
++            artifact_tenant=tenant,
++            revision=revision,
++            command_id=f"cmd-{case}-lint",
++            project_config_digest=project_config_digest,
++        )
++
++    preflight = app.agent_verification.completion(
++        task_id,
++        current_revision=revision,
++        current_mutation_generation=0,
++        verification_rules=project_context.settings.verification_rules,
++        configured_criteria=tuple(project_context.settings.commands),
++        configured_commands=project_context.settings.commands,
++        project_config_digest=project_config_digest,
++        configured_environment_sha256={
++            name: project_command_environment_sha256(project_context.settings, name)
++            for name in project_context.settings.commands
++        },
++        project_root=project_root,
++    )
++    assert preflight.complete is expected_success, (
++        case,
++        preflight.unsatisfied_criteria,
++        preflight.stale_criteria,
++    )
++
++    monkeypatch.setattr(
++        http_server,
++        "_completion_revision_or_stop",
++        lambda *_args: (revision, None),
++    )
++    previous_app = http_server.APP
++    http_server.APP = app
++    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
++    thread = threading.Thread(target=server.serve_forever, daemon=True)
++    thread.start()
++    try:
++        request = urllib.request.Request(
++            f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/tasks",
++            data=json.dumps(
++                {
++                    "action": "complete",
++                    "task_id": task_id,
++                    "root": str(project_root),
++                    "reason": "receipt matrix case verified",
++                }
++            ).encode("utf-8"),
++            headers={
++                "Content-Type": "application/json",
++                "X-LocalAI-Agent": tenant,
++                "X-LocalAI-Tenant": tenant,
++            },
++            method="POST",
++        )
++        try:
++            with urllib.request.urlopen(request, timeout=5) as response:
++                status = response.status
++                payload = json.loads(response.read().decode("utf-8"))
++        except urllib.error.HTTPError as error:
++            status = error.code
++            payload = json.loads(error.read().decode("utf-8"))
++    finally:
++        server.shutdown()
++        server.server_close()
++        thread.join(timeout=2)
++        http_server.APP = previous_app
++
++    assert payload["success"] is expected_success, (case, status, payload)
++    if expected_success:
++        assert status == 200
++        assert payload["task"]["task_id"] == task_id
++        assert payload["task"]["status"] == "completed"
++        stored = app.agent_tasks.get(task_id)
++        assert stored is not None
++        assert stored.owner == tenant
++        assert stored.context.repository_id == str(project_root)
++        assert stored.checkpoint.state_data["repo_root"] == str(project_root.resolve())
++        assert stored.checkpoint.state_data["repository_revision"] == revision
++    else:
++        assert status == 400
++        stored = app.agent_tasks.get(task_id)
++        assert stored is not None
++        assert stored.status.value != "completed"
++
++
+diff --git a/tests/test_t09_http_task_completion_persisted_receipts.py b/tests/test_t09_http_task_completion_persisted_receipts.py
+new file mode 100644
+index 0000000..0b66bb2
+--- /dev/null
++++ b/tests/test_t09_http_task_completion_persisted_receipts.py
+@@ -0,0 +1,178 @@
++from __future__ import annotations
++
++import json
++import hashlib
++from pathlib import Path
++import threading
++import urllib.error
++import urllib.request
++
++from local_ai_hub import http_server
++from local_ai_hub.agent_identity import ScopeContext
++from local_ai_hub.agent_tasks import GoalContract
++from local_ai_hub.agent_verification import VerificationReceipt
++from local_ai_hub.app import LocalAIApp
++from t09_project_config_test_fixture import install_t09_project_config_test_fixture
++
++
++def test_http_task_complete_uses_persisted_tenant_scoped_receipts(
++    tmp_path: Path, monkeypatch
++) -> None:
++    project_config = install_t09_project_config_test_fixture(monkeypatch)
++    tenant_id = "agent-t09"
++    task_id = "task-t09-http-receipts"
++    repository_revision = "rev-t09-http-acceptance"
++    project_root = tmp_path / "repo"
++    project_root.mkdir()
++    (project_root / ".local-ai.toml").write_text(
++        '[commands]\ntest = "python -m pytest -q tests/test_project_rules.py"\n'
++        '[verification_rules]\nrequired_commands = ["test"]\n',
++        encoding="utf-8",
++    )
++    state_dir = tmp_path / "state"
++    state_dir.mkdir()
++    config_path = tmp_path / "config.toml"
++    config_path.write_text(
++        f'[server]\nbind = "127.0.0.1"\nport = 11498\nstate_dir = "{state_dir.as_posix()}"\n'
++        "\n[agent_state]\nenabled = true\n",
++        encoding="utf-8",
++    )
++
++    app = LocalAIApp(str(config_path))
++    app.agent_tasks.create(
++        GoalContract(
++            goal="complete task through production HTTP route",
++            acceptance_criteria=("test",),
++        ),
++        ScopeContext(repository_id=str(project_root), task_id=task_id),
++        task_id=task_id,
++        actor=tenant_id,
++        repo_root=str(project_root),
++    )
++    project_config_digest = project_config.resolve_project_context(project_root, state_dir).config_digest
++    command_text = "python -m pytest -q tests/test_project_rules.py"
++    command_sha256 = hashlib.sha256(command_text.encode("utf-8")).hexdigest()
++    project_environment_sha256 = hashlib.sha256(b"{}").hexdigest()
++    configured_command_sha256 = command_sha256
++    caller_arguments_sha256 = hashlib.sha256(b"[]").hexdigest()
++    execution_binding = hashlib.sha256(
++        json.dumps(
++            {
++                "project_alias": "test",
++                "project_config_digest": project_config_digest,
++                "configured_command_sha256": configured_command_sha256,
++                "caller_arguments_sha256": caller_arguments_sha256,
++                "command_sha256": command_sha256,
++                "project_environment_sha256": project_environment_sha256,
++            },
++            sort_keys=True,
++            separators=(",", ":"),
++        ).encode("utf-8")
++    ).hexdigest()
++
++    command_evidence = app.artifacts.put_json(
++        {
++            "kind": "work_command_verification",
++            "passed": True,
++            "task_id": task_id,
++            "owner": tenant_id,
++            "repository_revision": repository_revision,
++            "mutation_generation": 0,
++            "criterion": "test",
++            "command_id": "cmd-t09-http-test",
++            "command_classification": "test",
++            "command": command_text,
++            "project_alias": "test",
++            "project_config_digest": project_config_digest,
++            "project_environment_sha256": project_environment_sha256,
++            "configured_command_sha256": configured_command_sha256,
++            "caller_arguments_sha256": caller_arguments_sha256,
++            "project_execution_binding_sha256": execution_binding,
++            "command_sha256": command_sha256,
++            "exit_code": 0,
++            "result": {"success": True, "exit_code": 0},
++        },
++        tenant_id,
++        "command_verification",
++    )
++    app.agent_verification.record(
++        VerificationReceipt.create(
++            task_id,
++            "test",
++            evidence_id=command_evidence,
++            command_id="cmd-t09-http-test",
++            owner=tenant_id,
++            repository_revision=repository_revision,
++            mutation_generation=0,
++            evidence_type="test",
++        )
++    )
++    preflight = app.agent_verification.completion(
++        task_id, current_revision=repository_revision, current_mutation_generation=0
++    )
++    assert preflight.complete, (
++        preflight.unsatisfied_criteria,
++        preflight.stale_criteria,
++        preflight.consistency,
++        app.artifacts.get(command_evidence, max_chars=50_000, tenant=tenant_id),
++        app.agent_tasks.get(task_id).owner,
++    )
++
++    monkeypatch.setattr(
++        http_server,
++        "_completion_revision_or_stop",
++        lambda *_args: (repository_revision, None),
++    )
++    previous_app = http_server.APP
++    http_server.APP = app
++    server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
++    thread = threading.Thread(target=server.serve_forever, daemon=True)
++    thread.start()
++    try:
++        request = urllib.request.Request(
++            f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/tasks",
++            data=json.dumps(
++                {
++                    "action": "complete",
++                    "task_id": task_id,
++                    "root": str(project_root),
++                    "reason": "persisted project receipts verified",
++                }
++            ).encode("utf-8"),
++            headers={
++                "Content-Type": "application/json",
++                "X-LocalAI-Agent": tenant_id,
++                "X-LocalAI-Tenant": tenant_id,
++            },
++            method="POST",
++        )
++        try:
++            with urllib.request.urlopen(request, timeout=5) as response:
++                payload = json.loads(response.read().decode("utf-8"))
++        except urllib.error.HTTPError as error:
++            payload = json.loads(error.read().decode("utf-8"))
++    finally:
++        server.shutdown()
++        server.server_close()
++        thread.join(timeout=2)
++        http_server.APP = previous_app
++
++    assert payload["success"] is True, payload
++    assert payload["task"]["task_id"] == task_id
++    assert payload["task"]["status"] == "completed"
++    stored = app.agent_tasks.get(task_id)
++    assert stored is not None
++    assert stored.owner == tenant_id
++    assert stored.context.repository_id == str(project_root)
++    assert stored.checkpoint.state_data["repo_root"] == str(project_root.resolve())
++    assert stored.checkpoint.state_data["repository_revision"] == repository_revision
++
++    completion = app.agent_verification.completion(
++        task_id, current_revision=repository_revision, current_mutation_generation=0
++    )
++    assert completion.complete is True
++    assert {
++        (receipt.task_id, receipt.owner, receipt.criterion, receipt.repository_revision)
++        for receipt in completion.receipts
++    } == {(task_id, tenant_id, "test", repository_revision)}
++    assert {receipt.evidence_id for receipt in completion.receipts} == {command_evidence}
+diff --git a/tests/t09_project_config_test_fixture.py b/tests/t09_project_config_test_fixture.py
+new file mode 100644
+index 0000000..2ab857e
+--- /dev/null
++++ b/tests/t09_project_config_test_fixture.py
+@@ -0,0 +1,68 @@
++from __future__ import annotations
++
++import hashlib
++import importlib
++import json
++import sys
++import tomllib
++import types
++from pathlib import Path
++from types import SimpleNamespace
++
++
++class ProjectConfigError(ValueError):
++    pass
++
++
++def resolve_project_context(project_root: str | Path, _state_dir: str | Path):
++    root = Path(project_root).resolve()
++    config_path = root / ".local-ai.toml"
++    try:
++        raw = config_path.read_bytes()
++        parsed = tomllib.loads(raw.decode("utf-8"))
++    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
++        raise ProjectConfigError("invalid test project config") from exc
++    commands = parsed.get("commands", {})
++    rules = parsed.get("verification_rules", {})
++    if not isinstance(commands, dict) or not isinstance(rules, dict):
++        raise ProjectConfigError("test project config sections must be tables")
++    required = rules.pop("required_commands", ())
++    if not isinstance(required, (list, tuple)):
++        raise ProjectConfigError("required_commands must be an array")
++    for name in required:
++        if not isinstance(name, str):
++            raise ProjectConfigError("required command names must be strings")
++        rules.setdefault(name, (name,))
++    settings = SimpleNamespace(
++        commands=commands,
++        verification_rules={
++            name: tuple(value) if isinstance(value, list) else value
++            for name, value in rules.items()
++        },
++        env=parsed.get("env", {}),
++        env_references={},
++    )
++    digest = hashlib.sha256(
++        json.dumps(
++            {"root": str(root), "config": parsed},
++            sort_keys=True,
++            separators=(",", ":"),
++        ).encode("utf-8")
++    ).hexdigest()
++    return SimpleNamespace(
++        root=root,
++        settings=settings,
++        config_digest=digest,
++        resolution=SimpleNamespace(error_codes=()),
++    )
++
++
++def install_t09_project_config_test_fixture(monkeypatch):
++    """Provide the T21-owned project-config interface for T09 contract tests only."""
++    module = types.ModuleType("local_ai_hub.project_config")
++    module.ProjectConfigError = ProjectConfigError
++    module.resolve_project_context = resolve_project_context
++    monkeypatch.setitem(sys.modules, module.__name__, module)
++    package = importlib.import_module("local_ai_hub")
++    monkeypatch.setattr(package, "project_config", module, raising=False)
++    return module

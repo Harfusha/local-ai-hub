@@ -1,0 +1,96 @@
+{
+  "schema": 1,
+  "pinned_master_sha": "7c932b6f31d81a5c6e331e7537d687fb0c8d9c12",
+  "acceptance": "NOT_COMPLETE_MAIN_INTEGRATION_PENDING",
+  "method": "Static authored-hunk and current-source comparison only; no test/import/model/runtime execution. Missing names or blob mismatches alone are never obsolete or missing behavior.",
+  "prioritized_integration": [
+    {
+      "priority": "P1",
+      "owner": "T09 / main integrator",
+      "status": "confirmed_static_missing_functional_hunk",
+      "target": "src/local_ai_hub/agent_tasks.py",
+      "symbol": "TaskStore.list_tasks",
+      "current_lines": [
+        1140,
+        1142
+      ],
+      "original_blob_sha": "fb0af3a160164dd355c73678fe64c6511c24c37b",
+      "original_patch_line": 5,
+      "origin": "handoff/t09-task-terminal-stale-filter.patch",
+      "trigger": "query absent or empty, include_stale=False, terminal projection row with heartbeat_expires_at>0 and heartbeat_expires_at<now",
+      "current_behavior": "SQL excludes the terminal row because no-query branch tests only expired heartbeat.",
+      "original_behavior": "Exclude expired rows only when status is not COMPLETED/CANCELLED/FAILED/ABANDONED. Current query branch already has this terminal exemption at 1177-1191.",
+      "integration": "Apply only terminal-status exemption in no-query predicate and parameters, preserving newer bounded search/index, owner fields, transaction ordering and existing terminal safety. Coordinate with T09's concurrent direct queue. No source edit made here.",
+      "validation_pending": "Next owner must verify completed/cancelled/failed/abandoned expired rows remain visible in no-query listing; active stale rows stay hidden; query and include_stale behavior remains intact."
+    },
+    {
+      "priority": "P2",
+      "owner": "T09 / main integrator",
+      "status": "missing_original_symbol_contract_review_required_not_confirmed_behavior_regression",
+      "target": "src/local_ai_hub/agent_tasks.py",
+      "symbol": "TaskStore.advance_mutation_generation",
+      "original_blob_sha": "31abc80258311cd2f7203ef9f3f1c1d799a5b32c",
+      "original_patch_line": 911,
+      "origin": "handoff/t09-candidate-e2e.patch",
+      "finding": "Old candidate bundle adds this method and calls it from change/outcome persistence; pinned target has no such method. Mutation-generation values still participate in receipt validation. Source-only absence does not prove current receipt invalidation is broken.",
+      "integration": "Main/T09 must decide current mutation ownership/generation contract before any restoration. Do not insert the old checkpoint-based increment blindly: it may bypass newer trusted-state safeguards."
+    }
+  ],
+  "reviewed_equivalents": [
+    {
+      "original_blob_sha": "d9934dc7904d6658c3f0d58df5d548c577333b99",
+      "original_symbol": "test_verification_command_classifier_ignores_test_words_in_file_paths",
+      "original_line": 1720,
+      "current_target": "tests/test_agent_verification.py",
+      "current_symbol": "test_verification_evidence_classification_is_conservative",
+      "current_line": 568,
+      "status": "exact_same_assertion_under_different_test_name",
+      "evidence": "python -m pyflakes C:/tmp/pytest-of-user/pytest-0/lint_target.py is asserted source_review at current 571-573. No missing behavior inferred."
+    },
+    {
+      "original_blob_sha": "d9934dc7904d6658c3f0d58df5d548c577333b99",
+      "original_symbol": "test_project_lint_command_receipt_accepts_command_verification_artifact",
+      "original_line": 1183,
+      "current_target": "src/local_ai_hub/agent_verification.py",
+      "current_symbol": "_receipt_evidence_matches",
+      "current_line": 635,
+      "status": "functional_intent_present_with_stricter_binding",
+      "evidence": "source_review with command_id expects command_verification. Current tests/test_agent_verification.py:1294 tests configured alias/classification/environment/argument/execution binding. Old thin proof fixture should not weaken this."
+    },
+    {
+      "original_blob_sha": "76f372285f250256a3004c3dd3daf1aac6965a15",
+      "original_symbol": "test_telemetry_report_route_forwards_error_cursor",
+      "original_line": 99,
+      "current_target": "tests/test_telemetry_report_bounds_t18.py",
+      "current_symbol": "test_telemetry_report_http_route_forwards_error_cursor",
+      "current_line": 90,
+      "status": "equivalent_behavior_test_under_other_path",
+      "evidence": "Current HTTP handler forwards error_cursor at http_server.py:3500-3512; alternate test checks next cursor and distinct fingerprints. Original overlay stays archived."
+    },
+    {
+      "original_blob_sha": "bb65070919933c3d86501b7bc630f9c6285a17ba",
+      "original_patch_line": 4,
+      "current_target": "src/local_ai_hub/http_server.py",
+      "current_symbol": "_parse_include_body",
+      "current_line": 154,
+      "status": "behavior_present_different_annotations_and_branch_layout",
+      "evidence": "Strict bool/query true/false forms already implemented; added-line mismatch reflects syntax/annotation placement, not missing behavior."
+    },
+    {
+      "original_blob_sha": "bfddbe539bfcce382f7cc8448d76c2c37e5d2627",
+      "current_target": "src/local_ai_hub/verification_rules.py",
+      "current_symbol": "complete_task_with_project_rules",
+      "current_line": 231,
+      "status": "intent_present_newer_trusted_root_contract",
+      "evidence": "Pinned code derives task root from task-created state/worktree trust and compares requested roots. Older patch accepts mutable checkpoint roots; do not revert newer authority."
+    },
+    {
+      "original_blob_sha": "31abc80258311cd2f7203ef9f3f1c1d799a5b32c",
+      "original_patch_line": 4014,
+      "target": "tests/t09_project_config_test_fixture.py",
+      "status": "historical_mock_helper_absent_not_product_gap",
+      "evidence": "Original helper replaces project configuration modules with test stand-ins. Missing target is not missing provider behavior and should not bypass current real-config contracts."
+    }
+  ],
+  "unresolved_mapping": "192 patch candidate records and 299 source-symbol differences remain machine triage evidence, not 491 missing behaviors. Full original bodies, base-to-overlay deltas, current anchors and hashes are artifact-backed. Main owner must resolve remaining semantic variants; no cohort is declared obsolete."
+}

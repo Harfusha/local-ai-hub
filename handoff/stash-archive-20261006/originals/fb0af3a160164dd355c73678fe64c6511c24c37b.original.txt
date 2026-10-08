@@ -1,0 +1,18 @@
+diff --git a/src/local_ai_hub/agent_tasks.py b/src/local_ai_hub/agent_tasks.py
+index fbc602e..60b314c 100644
+--- a/src/local_ai_hub/agent_tasks.py
++++ b/src/local_ai_hub/agent_tasks.py
+@@ -380,2 +667,11 @@ class TaskStore:
+-                    where_clauses.append("NOT (heartbeat_expires_at > 0 AND heartbeat_expires_at < ?)")
+-                    params.append(now)
++                    terminal_statuses = (
++                        TaskStatus.COMPLETED.value,
++                        TaskStatus.CANCELLED.value,
++                        TaskStatus.FAILED.value,
++                        TaskStatus.ABANDONED.value,
++                    )
++                    where_clauses.append(
++                        "NOT (heartbeat_expires_at > 0 AND heartbeat_expires_at < ? "
++                        "AND status NOT IN (?, ?, ?, ?))"
++                    )
++                    params.extend((now, *terminal_statuses))

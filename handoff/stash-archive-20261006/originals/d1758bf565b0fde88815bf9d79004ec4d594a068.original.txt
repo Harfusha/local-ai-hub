@@ -1,0 +1,8 @@
+# T09 root-current patch pins
+
+- Target checkout: `C:\Users\Adam\.local-ai-hub`, HEAD `7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf`. Target worktree already contains shared edits.
+- Patch paths only: `tests/test_agent_tasks.py`, `tests/test_t09_http_task_completion_matrix.py`, `tests/test_t09_http_task_completion_persisted_receipts.py`. No production source included.
+- Root `agent_events.py` SHA-256: `1B8E63A5FF329090801CD7F19E7DF7A95E42AC0034465AC5FA06D566B279CCF4`; schema includes `idx_agent_task_search_grams_gram` pin `47289e8fa6b5eb7e6837a56d77ad684e26fbc466f43f0f7af252e77fb8af5e0a`.
+- Isolated T08 worktree `t08-agent-os`, HEAD `2b33602adef0d030fea66cdcc04ca742c60b2e32`, has a different `agent_events.py` SHA-256 `2102BCB71BB5521034355B3BAD6D88D08003CC7509E7E39CE6C1580CA1055056` and lacks that index pin. Patch leaves event schema untouched.
+- Root T21 config: `project_config.py` SHA-256 `4238B6A6DE1DE00F55F4679CE0DF7D431522EC1BAFABFA272258C1662F13F713`; `resolve_project_context(root, state_dir)` supplies `config_digest`, `settings.commands`, and `settings.verification_rules`. Root matrix uses this parser directly; candidate shim excluded.
+- Root targeted selectors: 6 passed in 23.77 s. Patch was temporarily applied and reversed; target file hashes matched their pre-run values. No broad suite ran.

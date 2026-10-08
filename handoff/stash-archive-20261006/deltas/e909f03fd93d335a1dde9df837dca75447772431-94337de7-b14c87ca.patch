@@ -1,0 +1,119 @@
+--- a/src/local_ai_hub/dashboard.py
++++ b/src/local_ai_hub/dashboard.py
+@@ -264,6 +264,7 @@
+       <span class="brand">Local AI Hub</span>
+     </div>
+     <span id="conn" class="pill warn-t"><span class="pulse-dot"></span>connecting</span>
++    <span id="activityModeBadge" class="pill warn-t" data-mode="unknown">Mode: Unknown</span>
+     <span id="updated" class="tiny"></span>
+     <label class="tiny">SLO <select id="sloScope"><option value="process" selected>Since restart</option><option value="window">Last 30 days</option></select></label>
+     <span class="tiny spacer">Agent debug traces · bounded prompt/output retention</span>
+@@ -278,6 +279,11 @@
+         <button class="btn" id="doctorBtn">Run diagnostics</button>
+         <button class="btn" id="pauseEvents">Pause live events</button>
+         <div class="tiny muted">Runtime control</div>
++        <div class="tiny muted">Set activity mode</div>
++        <button class="btn" id="activityModeActive" data-activity-mode="active" aria-pressed="false">Active</button>
++        <button class="btn" id="activityModeGaming" data-activity-mode="gaming" aria-pressed="false">Gaming</button>
++        <button class="btn" id="activityModeMaintenance" data-activity-mode="maintenance" aria-pressed="false">Maintenance</button>
++        <span id="activityModeStatus" class="tiny muted" role="status" aria-live="polite">Checking mode…</span>
+         <button class="btn warn" id="prepToggle">Pause preprocessing</button>
+         <button class="btn" id="restartHub" data-control-action="restart_hub">Restart hub service</button>
+         <div class="tiny muted">Destructive maintenance</div>
+@@ -517,7 +523,7 @@
+ <div id="reliability" class="page">
+   <section class="section" id="reliabilitySummary"><h2>Operational severity <span class="tiny">Aggregates current failures, restart history, and request health.</span></h2><div id="reliabilityHeadline" class="kv"></div><div class="reliability-footer" style="padding:10px 14px;border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap"><div class="tiny muted" id="reliabilityTrend">Failure trend unavailable until telemetry arrives.</div><div style="display:flex;gap:8px;align-items:center"><button class="btn ok" id="resolveErrorsBtn" style="display:none;padding:4px 10px">Resolve all errors</button><button class="btn" id="reliabilityAction">Open affected requests</button></div></div></section>
+   <div class="split">
+-    <section class="section"><h2>Recent error fingerprints</h2><div class="table-wrap"><table><thead><tr><th>Component</th><th>Operation</th><th>Count</th><th>Recovered</th><th>Last seen</th></tr></thead><tbody id="errors"></tbody></table></div></section>
++    <section class="section"><h2>Recent error fingerprints</h2><div class="table-wrap"><table><thead><tr><th>Component</th><th>Operation</th><th>Diagnostic</th><th>Count</th><th>Recovered</th><th>Last seen</th></tr></thead><tbody id="errors"></tbody></table></div></section>
+     <section class="section"><h2>Runtime / scheduler counters</h2><div id="runtimeCounters" class="kv"></div></section>
+   </div>
+   <section class="section">
+@@ -821,7 +827,7 @@
+ }
+ 
+ async function apiFetch(path,opts={}){
+-  opts={...opts};const h=new Headers(opts.headers||{});if(apiToken)h.set('X-LocalAI-Token',apiToken);opts.headers=h;
++  opts={...opts};const h=new Headers(opts.headers||{});h.set('X-LocalAI-Client','dashboard');if(apiToken)h.set('X-LocalAI-Token',apiToken);opts.headers=h;
+   const request=async requestOpts=>{
+     const next={...requestOpts};let controller=null,timer=null;
+     if(!next.signal&&typeof AbortController==='function'){
+@@ -3939,6 +3945,7 @@
+           <div class="kv" style="padding:0">
+             <div>Component</div><div><b>${esc(err.component||'—')}</b></div>
+             <div>Operation</div><div><b>${esc(err.operation||'—')}</b></div>
++            <div>Diagnostic</div><div>${esc(String(err.safe_message||'Diagnostic unavailable').slice(0,96))}</div>
+             <div>Total Occurrences</div><div class="bad-t"><b>${n(err.count||0)}</b></div>
+             <div>Recovered Count</div><div class="ok"><b>${n(err.recovered_count||0)}</b></div>
+             <div>Last Seen</div><div>${err.last_seen?new Date(err.last_seen*1000).toLocaleString():'—'}</div>
+@@ -4511,6 +4518,50 @@
+ window.addEventListener('hashchange',()=>switchTab(location.hash.replace('#','')));
+ $('pauseEvents').onclick=e=>{paused=!paused;e.target.textContent=paused?'Resume live events':'Pause live events'};
+ async function post(path,payload){const r=await apiFetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});return await r.json()}
++
++const ACTIVITY_MODES=['active','gaming','maintenance'];
++const activityModeLabels={active:'Active',gaming:'GAMING / PAUSED',maintenance:'Maintenance'};
++function renderActivityMode(mode){
++  const badge=$('activityModeBadge');if(!badge)return;
++  const valid=ACTIVITY_MODES.includes(String(mode||''));
++  const value=valid?String(mode):'unknown';
++  badge.dataset.mode=value;badge.className=`pill ${value==='active'?'ok':value==='unknown'?'warn-t':''}`;
++  badge.textContent=`Mode: ${valid?activityModeLabels[value]:'Unknown'}`;
++  document.querySelectorAll('[data-activity-mode]').forEach(button=>button.setAttribute('aria-pressed',String(valid&&button.dataset.activityMode===value)));
++}
++function activityModeFailure(response,data){
++  if(response?.status===401)return 'Unauthorized (HTTP 401); check the API token.';
++  if(response?.status===400)return `Invalid mode: ${data?.error||'server rejected request'}`;
++  if(response&&!response.ok)return `Mode request failed (HTTP ${response.status}).`;
++  return data?.error||'Mode request failed.';
++}
++async function refreshActivityMode(){
++  const status=$('activityModeStatus');
++  try{
++    const response=await apiFetch('/api/mode',{cache:'no-store',timeoutMs:5000});
++    const data=await response.json().catch(()=>null);
++    if(!response.ok||!data||data.success!==true){renderActivityMode('unknown');if(status)status.textContent=`Mode unavailable: ${activityModeFailure(response,data)}`;return false;}
++    if(!ACTIVITY_MODES.includes(data.mode)){renderActivityMode('unknown');if(status)status.textContent='Mode unavailable: invalid mode returned by server.';return false;}
++    renderActivityMode(data.mode);if(status)status.textContent='Mode loaded.';return true;
++  }catch(_){renderActivityMode('unknown');if(status)status.textContent='Mode unavailable: Hub offline or unreachable.';return false;}
++}
++async function applyActivityMode(mode){
++  const buttons=Array.from(document.querySelectorAll('[data-activity-mode]')),status=$('activityModeStatus');
++  mode=String(mode||'');
++  if(!ACTIVITY_MODES.includes(mode)){if(status)status.textContent='Invalid mode selected.';return false;}
++  buttons.forEach(button=>button.disabled=true);if(status)status.textContent='Updating mode…';
++  try{
++    const response=await apiFetch('/api/admin/mode',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode}),timeoutMs:5000});
++    const data=await response.json().catch(()=>null);
++    if(!response.ok||!data||data.success!==true){if(status)status.textContent=activityModeFailure(response,data);return false;}
++    const confirmed=data.mode;
++    if(!ACTIVITY_MODES.includes(confirmed)||confirmed!==mode){if(status)status.textContent='Mode update rejected: invalid mode returned by server.';return false;}
++    renderActivityMode(confirmed);
++    if(status)status.textContent=confirmed==='gaming'&&(!data.runtime_unload||data.runtime_unload.success!==true)?'Gaming mode active, but VRAM unload was incomplete.':`Mode set to ${activityModeLabels[confirmed]}.`;
++    return true;
++  }catch(_){if(status)status.textContent='Mode update failed: Hub offline or unreachable.';return false;}
++  finally{buttons.forEach(button=>button.disabled=false);}
++}
+ 
+ async function loadConfigView(){
+   try{
+@@ -4610,6 +4661,10 @@
+ function togglePreprocessing(){return setPreprocessing(last?.preprocessing?.paused?'resume':'pause')}
+ $('prepToggle').onclick=togglePreprocessing;
+ $('prepAllToggle').onclick=togglePreprocessing;
++document.querySelectorAll('[data-activity-mode]').forEach(button=>button.onclick=()=>applyActivityMode(button.dataset.activityMode));
++refreshActivityMode();
++setInterval(()=>{if(document.visibilityState!=='hidden')refreshActivityMode()},30000);
++document.addEventListener('visibilitychange',()=>{if(document.visibilityState!=='hidden')refreshActivityMode()});
+ 
+ function refreshProjectList(){renderProjects(last?.preprocessing?.projects||[])}
+ $('projectSearch').oninput=e=>{projectQuery=e.target.value;refreshProjectList()};
+@@ -5033,7 +5088,7 @@
+   rows('blockedReasons',Object.entries(cmd.blocked_by_reason||{}),x=>clickableRow({reason:x[0],count:x[1]},`<td>${esc(x[0])}</td><td>${n(x[1])}</td>`,'blocked_reason'),2);
+ 
+   renderReliabilitySummary(s);
+-  rows('errors',o.recent_errors||[],x=>clickableRow(x,`<td>${esc(x.component)}</td><td>${esc(x.operation)}</td><td>${n(x.count)}</td><td>${n(x.recovered_count)}</td><td>${x.last_seen?new Date(x.last_seen*1000).toLocaleTimeString():'—'}</td>`,'error'),5);
++  rows('errors',o.recent_errors||[],x=>clickableRow(x,`<td>${esc(x.component)}</td><td>${esc(x.operation)}</td><td>${esc(String(x.safe_message||'Diagnostic unavailable').slice(0,96))}</td><td>${n(x.count)}</td><td>${n(x.recovered_count)}</td><td>${x.last_seen?new Date(x.last_seen*1000).toLocaleTimeString():'—'}</td>`,'error'),6);
+   $('runtimeCounters').innerHTML=`<div>Scheduler submitted</div><div>${n(ss.submitted)}</div><div>Completed / failed</div><div>${n(ss.completed)} / ${n(ss.failed)}</div><div>Model switches</div><div>${n(ss.model_switches)}</div><div>Queue rejections</div><div>${n(ss.queue_rejections)}</div><div>Caller timeouts</div><div>${n(ss.caller_timeouts)}</div><div>Background yields</div><div>${n(ss.background_yields)}</div><div>Supervisor restarts</div><div>${n(h.restarts)}</div>`;
+ 
+   if($('hubHealthCard'))$('hubHealthCard').onclick=()=>switchTab('reliability');

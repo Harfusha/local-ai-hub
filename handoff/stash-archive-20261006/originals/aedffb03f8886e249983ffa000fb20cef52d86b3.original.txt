@@ -1,0 +1,13 @@
+{
+  "root": "C:\\Users\\Adam\\.local-ai-hub",
+  "root_head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "scope": "Two MCP/RAG acceptance tests only; no root edits and no test execution.",
+  "rationale": "Deep-copy mutable telemetry payloads in fakes, and scope assertions to the target operation endpoint so asynchronous telemetry cannot invalidate endpoint forwarding checks.",
+  "preimages": {
+    "tests/test_mcp_command_operation_acceptance.py": "717cf3d1f1b4b7da389036d5c47fc76a71c74b30aec113ba16b410247c8f494b",
+    "tests/test_rag_work_operation_acceptance.py": "5a32ca2bd3545af2636ce2bfa653122657d6869d54a46f5b1be087951325a7d2"
+  },
+  "source_preimage": {
+    "src/local_ai_hub/mcp_server.py": "16E64C3EBDF0C23B5AF133E44DE76AD2898AC290E78C4A23521B19C9217297E0"
+  }
+}

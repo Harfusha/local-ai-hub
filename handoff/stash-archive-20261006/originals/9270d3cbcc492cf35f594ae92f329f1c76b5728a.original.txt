@@ -1,0 +1,45 @@
+# T03 contract evidence vs master
+
+Candidate HEAD: `9a5a6e2cb977a58bb86c9eb2d44d719a7d8e9379`  
+Master: `b947d76fdfb7ed592b72e55587d5c83cfa352c35`  
+Scope: only three T03 contract files; no T04, T14, or T21 source inspected for this report.
+
+## `src/local_ai_hub/operation_contracts.py`
+- candidate SHA-256: `9efbb90229594a42f09e1d359bc50c3e629ad95b419f3843b578a83bb43ca767`
+- master SHA-256: `dab37514fab2c3aa61cb09bf71b7ff39fe7a7663e1ca77e32918ce7a9be33fec`
+candidate L158: `"task_resume", "task_list", "task_complete", "task_fail", "task_heartbeat",`
+candidate L162: `"task_resume", "task_list", "task_complete", "task_fail", "task_heartbeat",`
+candidate L166: `"task_resume", "task_list", "task_complete", "task_fail", "task_heartbeat",`
+candidate L216: `"path_hints": frozenset({"search"}),`
+candidate L295: `_OUTPUT_ENVELOPE_PROPERTIES: dict[str, dict[str, Any]] = {`
+candidate L341: `_OUTPUT_ACTION_PROPERTIES: dict[str, dict[str, dict[str, Any]]] = {`
+candidate L428: `"task_list": {"tasks": {"type": "array", "items": _OPEN_OBJECT}},`
+candidate L551: `properties = deepcopy(_OUTPUT_ENVELOPE_PROPERTIES)`
+master L78: `"task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list",`
+master L193: `"path_hints": frozenset({"search", "context"}),`
+master L422: `"leases", "memo_get", "memo_search", "task_get", "task_list", "memory_get", "memory_find",`
+master L427: `"leases", "memo_get", "memo_search", "task_get", "task_list", "memory_get", "memory_find",`
+master L884: `_OUTPUT_ENVELOPE_PROPERTIES: dict[str, dict[str, Any]] = {`
+master L934: `if name not in _OUTPUT_ENVELOPE_PROPERTIES`
+master L941: `def operation_tool_output_schema(tool: str, features: Any = None) -> dict[str, Any]:`
+master L951: `"properties": json.loads(json.dumps(_OUTPUT_ENVELOPE_PROPERTIES)),`
+## `src/local_ai_hub/mcp_server.py`
+- candidate SHA-256: `36e5df568d69964d04de83d8c18dd980ddcd0a67a41eb8ccb3c82ee59beb42ed`
+- master SHA-256: `d1142d74dc834064f2d1633e9a162aa2180c0af6a513fd63af6d9f892739b525`
+candidate L346: `"task_new": "task_create",`
+candidate L595: `return "Agent OS coordination for task contracts, ownership, checkpoints, and verification receipts with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Actions: claim, release, memory_record, memory_find, context_compile, task_create, task_checkpoint. task_list accepts an optional query; task_create uses query as a goal fallback when task is omitted." + scope_note`
+candidate L3122: `if action == "task_list" and query:`
+candidate L3731: `_tool.output_schema = operation_tool_output_schema(_tool_name, _action_enum)`
+master L311: `"task_new": "task_create",`
+master L3215: `_output_schema = operation_tool_output_schema(_tool_name, FEATURES)`
+## `src/local_ai_hub/generator.py`
+- candidate SHA-256: `dc2e870678d107d81e342ca3f750bdc8b1a9155e12e814fbae65e8398e64f9bc`
+- master SHA-256: `5cb96c4a4c562f08b9d93a83b9d61dd32736ed8fa6a9539e5344999cf0cc9fef`
+candidate L1180: `schema["output_schema"] = operation_tool_output_schema(tool_name, actions)`
+
+## Findings
+
+- Candidate `path_hints` public input is scoped to `search`; master includes `context`. Keep T03 search-only contract. Context support is not in this patch scope.
+- Both revisions contain `operation_tool_output_schema` and generator/runtime registration. This is not a missing registration seam; complete per-action output coverage remains deferred by prior user decision. The old aggregate gate is diagnostic only.
+- `task_new` resolves to `task_create`; `task_list` query forwarding is action-specific in candidate. Any failing dispatch selector still needs a fresh focused receipt.
+- No source edit proposed. No test run.

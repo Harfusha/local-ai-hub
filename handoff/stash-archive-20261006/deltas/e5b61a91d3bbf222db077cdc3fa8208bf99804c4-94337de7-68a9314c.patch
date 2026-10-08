@@ -1,0 +1,73 @@
+--- a/src/local_ai_hub/code_index.py
++++ b/src/local_ai_hub/code_index.py
+@@ -1169,7 +1169,7 @@
+         resolved_root = canonical_root(root)
+         changed = list(dict.fromkeys(self._norm_rel(p) for p in changed_paths if self._norm_rel(p)))
+         max_symbols = max(1, min(int(max_symbols), 200))
+-        max_dependents = max(1, min(int(max_dependents), 100))
++        max_dependents = max(1, min(int(max_dependents), 10_000))
+         if not changed:
+             return {"success": True, "root": resolved_root, "changed_symbols": [], "likely_dependents": [], "suggested_tests": [], "confidence": 1.0}
+ 
+@@ -1226,6 +1226,53 @@
+                             item["symbols"].append(dst)
+                         item["mentions"] += 2 if str(r["kind"]) in {"imports", "inherits"} else 1
+ 
++                # Follow file-level import edges so changed shared modules include tests of transitive importers.
++                import_limit = max(200, max_dependents * 20)
++                import_rows = con.execute(
++                    "SELECT path,dst FROM edges WHERE root=? AND kind='imports' LIMIT ?",
++                    (resolved_root, import_limit + 1),
++                ).fetchall()
++                graph_truncated = len(import_rows) > import_limit
++
++                def module_aliases(value: str) -> set[str]:
++                    normalized = str(value or "").replace("\\", "/").strip()
++                    while normalized.startswith("./"):
++                        normalized = normalized[2:]
++                    normalized = normalized.lstrip(".")
++                    for suffix in (".pyi", ".py", ".tsx", ".ts", ".jsx", ".js", ".mjs", ".cjs"):
++                        if normalized.lower().endswith(suffix):
++                            normalized = normalized[:-len(suffix)]
++                            break
++                    normalized = normalized.strip("/")
++                    if normalized.endswith("/__init__"):
++                        normalized = normalized[:-len("/__init__")]
++                    parts = [part for part in normalized.split("/") if part]
++                    return {".".join(parts[index:]) for index in range(len(parts))}
++
++                importers_by_module: dict[str, set[str]] = {}
++                for import_row in import_rows[:import_limit]:
++                    importer_path = self._norm_rel(str(import_row["path"]))
++                    for alias in module_aliases(str(import_row["dst"])):
++                        importers_by_module.setdefault(alias, set()).add(importer_path)
++
++                visited_paths = set(changed)
++                frontier = list(changed)
++                while frontier and len(visited_paths) <= import_limit:
++                    next_frontier: list[str] = []
++                    for source_path in frontier:
++                        for alias in module_aliases(source_path):
++                            for importer_path in importers_by_module.get(alias, ()):
++                                if importer_path in visited_paths:
++                                    continue
++                                visited_paths.add(importer_path)
++                                next_frontier.append(importer_path)
++                                item = dependent_scores.setdefault(
++                                    importer_path, {"path": importer_path, "symbols": [], "mentions": 0}
++                                )
++                                item["mentions"] += 2
++                    frontier = next_frontier
++                if frontier:
++                    graph_truncated = True
+                 likely_dependents = sorted(dependent_scores.values(), key=lambda x: (-int(x["mentions"]), str(x["path"])))[:max_dependents]
+                 indexed_tests = [self._norm_rel(str(r[0])) for r in con.execute(
+                     "SELECT path FROM files WHERE root=? AND (lower(path) LIKE '%test%' OR lower(path) LIKE '%spec%') LIMIT 500",
+@@ -1260,6 +1307,7 @@
+             "confidence": confidence,
+             "indexed_changed_files": indexed_count,
+             "changed_files_count": len(changed),
++            "dependency_graph_complete": not graph_truncated and len(dependent_scores) <= max_dependents,
+         }
+ 
+     def inspect_symbol(self, root: str, symbol_name: str) -> dict[str, Any]:

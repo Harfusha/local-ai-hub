@@ -1,0 +1,33 @@
+diff --git a/tests/test_agent_verification.py b/tests/test_agent_verification.py
+index 8c8edd8..15b28cb 100644
+--- a/tests/test_agent_verification.py
++++ b/tests/test_agent_verification.py
+@@ -106,6 +106,28 @@ def test_stale_receipt_cannot_satisfy_completion(stores: tuple[TaskStore, Verifi
+     assert res_fresh.complete is True
+     assert "tests" in res_fresh.satisfied_criteria
+ 
++def test_generic_benchmark_receipt_without_project_binding_satisfies_completion(
++    stores: tuple[TaskStore, VerificationStore],
++):
++    task_store, verif_store = stores
++    task = task_store.create(
++        GoalContract(goal="generic benchmark", acceptance_criteria=("benchmark tests",)),
++        ScopeContext(task_id="generic-benchmark"),
++        task_id="generic-benchmark",
++    )
++    verif_store.record(
++        receipt_for(
++            task.task_id,
++            "benchmark tests",
++            evidence_type="benchmark",
++            artifact_store=verif_store.artifact_store,
++        )
++    )
++
++    result = verif_store.completion(task.task_id)
++
++    assert result.complete is True
++    assert "benchmark tests" in result.satisfied_criteria
+ 
+ def test_revert_is_explicit_negative_outcome(stores: tuple[TaskStore, VerificationStore]):
+     _, verif_store = stores

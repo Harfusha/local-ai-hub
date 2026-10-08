@@ -1,0 +1,213 @@
+{
+  "schema_version": 1,
+  "task": "T01",
+  "date": "2026-10-02",
+  "worktree": "C:\\Users\\Adam\\.codex\\worktrees\\t01-coverage-main-verify\\.local-ai-hub",
+  "root": "C:/Users/Adam/.local-ai-hub",
+  "root_head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "scope": {
+    "root_edits_made": false,
+    "pytest_run": false,
+    "t02_cpu_slot_used": false,
+    "patch_owner": "T20 integrates root patch; T01 prepared selector batch/manifest"
+  },
+  "selector_batch": {
+    "path": "handoff/T01-root-current-acceptance-selectors-20261002.txt",
+    "sha256": "57610EC4E0B5BFA5BF1B5A36F44A28EB713144A0881C5CBBECB4F64B590BAE70",
+    "count": 123,
+    "sources": {
+      "previous_root_target_selectors": 63,
+      "new_pending_coord_selectors": 60,
+      "unique_union": 123
+    },
+    "command": "$selectors = Get-Content C:/Users/Adam/.codex/worktrees/t01-coverage-main-verify/.local-ai-hub/handoff/T01-root-current-acceptance-selectors-20261002.txt; python -B -m pytest -q -p no:cacheprovider --tb=short $selectors",
+    "run_state": "not run; await explicit T20 release of serial T02/T15 CPU slot"
+  },
+  "patch": {
+    "path": "handoff/T01-root-mcp-coord-current.patch",
+    "sha256": "D7EA302829B2D71542131E4C205AE5DE1C0D3690559D8EA7C948B50A69A66B8D",
+    "target": "tests/test_mcp_coord_operation_acceptance.py",
+    "root_preimage_sha256": "303BB30536AD6BBF223C21738CBC482AF22539BEC09726CEF390D4CDF7F8FCFF",
+    "planned_postimage_sha256": "372657BDF2F82334EA5630DCB7481FEDBB49708887431534B08D220E45102E8B",
+    "scratch_patch_application": "success; isolated temp repo only",
+    "scratch_selector_presence": "all 123 selectors resolve against current root files plus planned test patch",
+    "root_patch_applied": false
+  },
+  "root_selector_inventory": {
+    "pre_patch_root_present": 61,
+    "selectors_missing_before_patch": 2,
+    "expected_missing_added_by_patch": 2,
+    "root_test_file_hashes": [
+      {
+        "path": "tests/test_client_operation_acceptance.py",
+        "pre_patch_sha256": "530590EF5F3032CDC1321EB226F85A9CF3012FE631CBC902124A9DD1362132EC",
+        "state": "present"
+      },
+      {
+        "path": "tests/test_http_route_operation_acceptance.py",
+        "pre_patch_sha256": "B314578642480CDD0B896D863EABFE1730637BC61D5C1C2A0D05DA0BA7D9FCAF",
+        "state": "present"
+      },
+      {
+        "path": "tests/test_hubctl_unlinked_operations.py",
+        "pre_patch_sha256": "F2772E2C24289AB6F90A1ECFD7F81D6A557BB54458E94187F24C993AAE9C0C5A",
+        "state": "present"
+      },
+      {
+        "path": "tests/test_mcp_command_operation_acceptance.py",
+        "pre_patch_sha256": "717CF3D1F1B4B7DA389036D5C47FC76A71C74B30AEC113BA16B410247C8F494B",
+        "state": "present"
+      },
+      {
+        "path": "tests/test_mcp_coord_operation_acceptance.py",
+        "pre_patch_sha256": "303BB30536AD6BBF223C21738CBC482AF22539BEC09726CEF390D4CDF7F8FCFF",
+        "state": "present"
+      },
+      {
+        "path": "tests/test_rag_work_operation_acceptance.py",
+        "pre_patch_sha256": "5A32CA2BD3545AF2636CE2BFA653122657D6869D54A46F5B1BE087951325A7D2",
+        "state": "present"
+      }
+    ],
+    "implementation_file_hashes": [
+      {
+        "path": "tools/surface_inventory.py",
+        "sha256": "BAA1B21D1810FEB1F573427D62C12B2E22E1792DBAB326A1604FF808B091EFB7"
+      },
+      {
+        "path": "tests/test_surface_inventory.py",
+        "sha256": "F354EF2603CC999C956EAF169FEA7AFE037359997D226F9011C06ABA5B16DCC9"
+      },
+      {
+        "path": "docs/API_COVERAGE.md",
+        "sha256": "E3B5A6559C5F0E6ADEC165B6A416E6DE600C7F00B121DA4615B176ABDA397A49"
+      },
+      {
+        "path": "src/local_ai_hub/mcp_server.py",
+        "sha256": "2A78162B9B5157076ECF3281968369501EF38E451BB8AA01CE9E6FFE9A49C577"
+      },
+      {
+        "path": "src/local_ai_hub/http_server.py",
+        "sha256": "8443F8E178C717C92C063394C585C8C38721BD18F644DB053DB6EF81A5F0E047"
+      },
+      {
+        "path": "src/local_ai_hub/client.py",
+        "sha256": "5518706E0E81623E3FF0184274BD17F18C9BF7F43D9BC4DD37FD754586B0D056"
+      },
+      {
+        "path": "src/local_ai_hub/rag.py",
+        "sha256": "88836FE1782A3D01ED3606BC8DD2FCCC40168AC4411C7CFB73B67DA802933C27"
+      },
+      {
+        "path": "src/local_ai_hub/commands.py",
+        "sha256": "845348F2E362852561AE2EBB1B3F5458C8915E0134B1EC884F47356132B9FECB"
+      },
+      {
+        "path": "tools/hubctl.py",
+        "sha256": "D587D80847152AA863A06D2850A60CBC2788409EB13EF94477DCE1791B9758F6"
+      }
+    ]
+  },
+  "master_plan": {
+    "path": "docs/superpowers/plans/2026-09-22-hub-quality-performance-master-plan.md",
+    "sha256": "567F3FF40AE8E7ADD5131EB80B8C55AEB2C55183657D19E185C1035711C337BD",
+    "t01_status": "open",
+    "t01_acceptance_scope": "complete inventory, per-operation owner/acceptance, no unclassified public operations, targeted behavior tests, and evidence-backed swarm/blackboard/pubsub/memory graph/audio/vision entrypoint/use-case/cost keep/simplify/remove decisions"
+  },
+  "slot_status": "T20 latest: root tests still wait on serialized T02/T15 slot; T02 targeted 12-test rerun finished, benchmark did not start, no explicit release observed. Batch remains unrun.",
+  "limitations": [
+    "Candidate API_COVERAGE remains stale versus newest selectors/current plan; see T01-current-root-handoff-manifest-20261002.json.",
+    "T01 candidate pass receipts do not count root-green."
+  ],
+  "operation_selector_mapping": {
+    "json_path": "handoff/T01-root-acceptance-selector-operation-links-20261002.json",
+    "sha256": "5FF085617F2F53CA4B97B2707387CB18D68F231C0FC4B7C74426D34D4577A1D5",
+    "csv_path": "handoff/T01-root-acceptance-selector-operation-links-20261002.csv",
+    "csv_sha256": "4CA8361154006C740E5BC22FC5730DDA163EFC24269598BEFD5229E7ED37506A",
+    "mapped_selectors": 123,
+    "unmapped_selectors": 0,
+    "unique_operation_ids": 128,
+    "surface_counts": {
+      "CLI operation": 9,
+      "HTTP GET": 9,
+      "HTTP POST": 1,
+      "HubClient method": 9,
+      "HubClient target": 9,
+      "MCP action alias local_ai_coord": 12,
+      "MCP action local_ai_command": 9,
+      "MCP action local_ai_coord": 51,
+      "MCP action local_ai_rag": 7,
+      "MCP action schema gap local_ai_command": 1,
+      "MCP action schema gap local_ai_coord": 7,
+      "MCP tool": 4
+    },
+    "owner_counts": {
+      "T03": 12,
+      "T04": 11,
+      "T05": 1,
+      "T06": 6,
+      "T07": 1,
+      "T08": 65,
+      "T09": 6,
+      "T10": 4,
+      "T11": 8,
+      "T15": 7,
+      "T18": 5,
+      "T19": 2
+    }
+  },
+  "uncovered_operations": {
+    "path": "handoff/T01-uncovered-historical-operation-gaps-20261002.csv",
+    "sha256": "E9A32BE7548A4E758CF5A26D4FEB05D7C2D64E69E6CE4EA1B89577A69CFE9C21",
+    "uncovered_without_behavior_or_owner_receipt": 387,
+    "historical_gap_rows": 446,
+    "owner_receipt_only_rows": [
+      {
+        "operation_id": "op-65970ac00a0a",
+        "surface": "HTTP POST",
+        "name": "/api/task/transcribe",
+        "owner_task": "T13",
+        "owner_receipt_selector": "tests/test_transcription_contract.py::test_http_transcribe_route_preserves_requested_model",
+        "owner_receipt_task": "T17",
+        "owner_receipt_status": "T17 candidate selector and temporary root-source overlay passed; integrated root run pending"
+      }
+    ],
+    "examples": [
+      {
+        "operation_id": "op-a991c9e8b941",
+        "surface": "HTTP GET",
+        "name": "/api/context/pack",
+        "owner_task": "T01",
+        "note": "/api/context/pack; explicitly excluded by T01 scope"
+      },
+      {
+        "operation_id": "op-f954480234c9",
+        "surface": "HTTP GET",
+        "name": "/api/agent-state/events/stream",
+        "owner_task": "T08",
+        "note": "GET /api/agent-state/events/stream"
+      },
+      {
+        "operation_id": "op-d50cc5e721fb",
+        "surface": "HTTP GET",
+        "name": "/api/agent-state/memory",
+        "owner_task": "T05",
+        "note": "GET /api/agent-state/memory"
+      },
+      {
+        "operation_id": "op-b86b72558569",
+        "surface": "HTTP GET",
+        "name": "/api/code/ast_outline",
+        "owner_task": "T10",
+        "note": "GET /api/code/ast_outline"
+      },
+      {
+        "operation_id": "op-411b0d6c8d7d",
+        "surface": "HTTP GET",
+        "name": "/api/db/query",
+        "owner_task": "T18",
+        "note": "GET /api/db/query"
+      }
+    ]
+  }
+}

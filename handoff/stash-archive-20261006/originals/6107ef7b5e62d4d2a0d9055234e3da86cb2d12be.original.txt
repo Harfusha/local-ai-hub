@@ -1,0 +1,42 @@
+--- a/src/local_ai_hub/agent_tasks.py
++++ b/src/local_ai_hub/agent_tasks.py
+@@ -773,7 +773,9 @@
+         return self._row_to_state(row)
+ 
++    @staticmethod
+     def _normalize_search_text(value: Any) -> str:
+         return unicodedata.normalize("NFKC", str(value or "")).casefold()
+ 
++    @staticmethod
+     def _collect_search_values(value: Any, fields: list[str]) -> None:
+         if isinstance(value, Mapping):
+@@ -788,4 +790,5 @@
+                 fields.append(text)
+ 
++    @staticmethod
+     def _searchable_task_fields(
+         task_id: str,
+@@ -799,4 +802,5 @@
+         return tuple(fields)
+ 
++    @classmethod
+     def _search_grams(cls, values: Any) -> set[str]:
+         if isinstance(values, str):
+@@ -808,4 +812,5 @@
+         return grams
+ 
++    @classmethod
+     def _write_task_search_index(
+         cls,
+@@ -824,4 +829,5 @@
+         )
+ 
++    @classmethod
+     def _backfill_task_search_index(cls, con: sqlite3.Connection) -> None:
+         con.execute(
+@@ -865,4 +871,5 @@
+         )
+ 
++    @classmethod
+     def _refresh_task_search_index(cls, con: sqlite3.Connection, task_id: str) -> None:
+         row = con.execute(

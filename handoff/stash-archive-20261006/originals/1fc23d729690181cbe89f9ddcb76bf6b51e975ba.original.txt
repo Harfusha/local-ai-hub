@@ -1,0 +1,39 @@
+# T01 current operation selector run — 2026-10-02
+
+## Scope and result
+
+- Worktree: `C:\Users\Adam\.codex\worktrees\t01-coverage-main-verify\.local-ai-hub`
+- HEAD: `689165fbe18101feacf5f489847a4890fc27ed1f`
+- Command result: **63 passed in 25.96s**, exit code 0.
+- Ran only the 63 unique selectors listed in `T01-current-operation-selector-evidence-20261002.json` under `summary`'s target-file scope. No full test modules, root tests, Hub calls, or merge.
+- Exact command shape:
+
+  ```powershell
+  $doc = Get-Content handoff/T01-current-operation-selector-evidence-20261002.json -Raw | ConvertFrom-Json
+  $selectors = @($doc.operations | ForEach-Object { ConvertFrom-Json $_.candidate_test_selectors } | ForEach-Object { $_ }) | Sort-Object -Unique
+  python -B -m pytest -q -p no:cacheprovider --tb=short $selectors
+  ```
+
+## Selector map evidence
+
+- Current inventory: 642 operations; 138 have exact asserted-test selectors; 68 have selectors in the six targeted T01 files; 63 unique candidate selectors.
+- Map JSON SHA256: `CA949D33E809C56CA7E9A393F88642EA44886DBB4F2EE2649352971426522C8D`
+- Map CSV SHA256: `01526A8DD4C29CC19D5B908BD1FA037C36185C69B930E7C0AA117D4DFEC20EAB`
+- Builder SHA256: `E7491E6F8CE10F3FD3DFDDF0984429F0958B466F319835034DE402E367240305`
+
+## Focused test source pins
+
+| Test file | SHA256 |
+| --- | --- |
+| `tests/test_client_operation_acceptance.py` | `5AA526D4AE0E1FA0CB390C4F1419AD76ED3C6791EF8262B8D57F8E958C2522D6` |
+| `tests/test_http_route_operation_acceptance.py` | `330C91CDA532142C74C47E93CDAC624E5F2B0858F831586CE0509CF114973EC5` |
+| `tests/test_hubctl_unlinked_operations.py` | `1D7D71FAD57A1FA41727C7673913CE30F66D798D31380C59C6EB52D650B91D1C` |
+| `tests/test_mcp_command_operation_acceptance.py` | `08DF71D30970349E5DA3C2AC12CF0C034E22FA9856EDABFB4120C938F1CB9D20` |
+| `tests/test_mcp_coord_operation_acceptance.py` | `2EA4B59D11DB9519C3FC1D2A98C22AAC78E68D67B8C31C802602F16D4FFC11B6` |
+| `tests/test_rag_work_operation_acceptance.py` | `883BD3CC5FF366F7ECB0007DF5B5BBCA8835E5E17A400355EDDBF588B16EC51D` |
+
+## Acceptance boundary
+
+- The historical 446-row gap map remains separate: 444 rows still lack exact operation-to-selector links; no neighboring route/action or aggregate suite was used to close them.
+- Root-green remains **0**. These are T01-worktree candidate receipts; root integration is still T20-owned.
+- Live Hub, deployment, external service, and other runtime-only behavior remains unverified by this local selector run.

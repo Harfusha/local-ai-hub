@@ -1,0 +1,37 @@
+# T09 root-current task completion owner guard v2
+
+- Root: `C:\Users\Adam\.local-ai-hub`; HEAD `7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf`.
+- Candidate source base: `2b33602adef0d030fea66cdcc04ca742c60b2e32`.
+- Read-only preflight used `local_ai_command`; root files both exist.
+- Root preimages: `src/local_ai_hub/http_server.py` SHA-256 `E1B38F1FABE499E922E1BD5B7C83FC80745DA75FA73D047C232E7E09D4AC8A82`; `tests/test_t09_http_task_completion_persisted_receipts.py` SHA-256 `0F51E2D87CBBA5221178AD8A4D79E61F78D65B076558EFB7BE5AC098352156D3`.
+- Patch changes only the existing completion branch and adds a regression to the existing persisted-receipt test. No root file was edited.
+- Patch SHA-256: `C17D37E1CFCCF6D10C223208D7376826FA1283F862A1ACFAFEA66AFD379C3E57`.
+- Root `src/local_ai_hub/http_server.py` postimage SHA-256: `22F3771584CEFD8C40E7B6E66967C7BC807778B12BA1A338C89B6CD3646478CF`.
+- Root `tests/test_t09_http_task_completion_persisted_receipts.py` postimage SHA-256: `BE8A60161B40802F8C0AFAED439B42CC69C5F63D461BE782ED79563E483C4C8A`.
+- `git apply --check` against root HEAD: **PASS**, exit 0. Root orchestrator reports v2 integrated, exact target hunks only; no other root files touched.
+- Candidate verification: cross-tenant state-stability regression RED before owner guard; GREEN after guard (**1 passed, 5.65s**), rightful owner success and replay retained. Neighbor matrix/identity/lease selectors **16 passed, 42.87s**.
+- Fresh candidate T09 boundary/handoff command: `python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_agent_receipt_ordering_t09.py tests/test_verified_handoff.py tests/test_t09_http_task_completion_persisted_receipts.py::test_http_task_complete_uses_persisted_tenant_scoped_receipts tests/test_t09_http_task_completion_matrix.py::test_task_completion_http_receipt_and_memory_matrix` — **45 passed in 47.14s**.
+- Fresh candidate receipt-gate command (18 explicit selectors across `test_agent_verification.py`, `test_agent_tasks.py`, and `test_work_orchestrator.py`) — **18 passed in 2.54s**. Covers typed evidence, stale/latest receipt, missing/mismatched proof, DB/artifact fail-closed, atomic projection, all-criteria completion, foreign task, and verified work handoff.
+- Latest combined acceptance command in the registered T09 worktree:
+
+  ```text
+  python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_agent_verification.py::test_verification_evidence_classification_is_conservative tests/test_agent_verification.py::test_stale_receipt_cannot_satisfy_completion tests/test_agent_verification.py::test_generic_benchmark_receipt_without_project_binding_satisfies_completion tests/test_agent_verification.py::test_completion_selects_latest_receipt_when_input_is_oldest_first tests/test_agent_verification.py::test_completion_fails_closed_when_artifact_resolver_is_missing tests/test_agent_verification.py::test_completion_fails_closed_and_preserves_receipt_lookup_error tests/test_agent_verification.py::test_completion_rejects_receipt_missing_from_store tests/test_agent_verification.py::test_completion_rejects_receipt_with_mismatched_identity tests/test_agent_verification.py::test_completion_fails_closed_when_sqlite_receipt_store_cannot_open tests/test_agent_verification.py::test_valid_receipt_allows_task_completion tests/test_agent_verification.py::test_receipt_and_task_projection_publish_after_atomic_commit tests/test_agent_tasks.py::test_completed_requires_all_criteria_to_have_fresh_receipts tests/test_agent_tasks.py::test_newer_failed_receipt_supersedes_older_pass tests/test_agent_tasks.py::test_passing_test_receipt_requires_command_id tests/test_agent_tasks.py::test_task_transition_rejects_foreign_task_receipt tests/test_agent_tasks.py::test_task_transition_rejects_receipt_from_stale_revision tests/test_t09_http_task_completion_matrix.py::test_task_completion_http_receipt_and_memory_matrix tests/test_t09_http_task_completion_persisted_receipts.py::test_http_task_complete_uses_persisted_tenant_scoped_receipts
+  ```
+
+  Result: exit 0, **29 passed in 43.23s**.
+
+## Requested acceptance mapping
+
+| Criterion | Evidence |
+|---|---|
+| Receipt-gated completion | Candidate 18-selector receipt-gate command: **18 passed, 2.54s**; latest combined command includes this gate’s critical stale/latest/missing/identity/DB/atomic cases and passed **29**. |
+| Persisted receipts | Root-integrated persisted-receipt selector reported by orchestrator: **1 passed, 9.19s**; candidate persisted HTTP/MCP selector is included in latest **29 passed** command. |
+| Tenant/project/root isolation | Root-source matrix overlay selector: **11 passed, 35.59s**; latest candidate matrix selector included in **29 passed** command. Completion asserts stored owner, project root, and repository revision. |
+| HTTP/MCP actor propagation | Root-integrated persisted-receipt selector: **1 passed, 9.19s**; it exercises MCP client → authenticated HTTP, rejects cross-tenant actor without task/event mutation, then accepts rightful actor and replay. |
+- Safe overlay contains only copies of the two root targets under T09 `handoff/t09-root-current-owner-guard-overlay/`; focused bootstrap test with root package modules and overlay `http_server.py`/test: **1 passed in 10.06s**.
+- Root integration receipt from orchestrator: `python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t09_http_task_completion_persisted_receipts.py::test_http_task_complete_uses_persisted_tenant_scoped_receipts` — **1 passed in 9.19s**. Root-reported postimages match exact overlay SHA-256 values above: HTTP `22F3771584CEFD8C40E7B6E66967C7BC807778B12BA1A338C89B6CD3646478CF`; test `BE8A60161B40802F8C0AFAED439B42CC69C5F63D461BE782ED79563E483C4C8A`.
+- `local_ai_artifact(action="slice")` attempts returned `terminal=true`, `retryable=false` (`end_line` and `line_count` rejected); one bounded native fallback read only the two named root slices. No broad source read.
+- Root-integrated v2. Integration/test receipt reported by root orchestrator; not independently rerun by T09.
+- Remaining acceptance blockers: wider tenant-header/token binding, T09 lease evidence, T06 producer evidence.
+- Existing Agent OS evidence: prior candidate command receipt `handoff/t09-receipt-idempotence-hub-receipt-20261005.md`, request `req_d5dea79b907a`, execution `091798e0b5e3486a8573ec40c78fce0d`, records one persisted-receipt selector (**1 passed, 4.87s**). This is a test command receipt, not an Agent OS task-completion or ownership-lease receipt. Task ID/lease remains **UNKNOWN**; no synthetic lease receipt created.
+- The ownership audit points to `tests/test_agent_receipt_ordering_t09.py` and `tests/test_verified_handoff.py` as T09 test paths; shared inherited files `agent_verification.py`, `agent_tasks.py`, and `work_orchestrator.py` were only exercised, not changed during this final validation slice.
