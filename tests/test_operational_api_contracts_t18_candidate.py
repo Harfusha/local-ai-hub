@@ -65,16 +65,17 @@ def _prepare_event_route(handler, path):
 def test_telemetry_timeline_is_recent_and_cursor_pages_older_rows(tmp_path):
     store = TelemetryStore(tmp_path / "telemetry", enabled=True, flush_interval_seconds=0.01)
     try:
-        for index in range(5):
-            store.record_http(action=f"/api/operation/{index}", success=True)
+        actions = ["/slow", "/median", "/median", "/slow", "/median"]
+        for action in actions:
+            store.record_http(action=action, success=True)
         assert store.flush(1)
 
         recent = store.get_timeline_page(limit=2)
         older = store.get_timeline_page(limit=2, before_id=recent["next_cursor"])
 
-        assert [row["action"] for row in recent["timeline"]] == ["/api/operation/3", "/api/operation/4"]
+        assert [row["action"] for row in recent["timeline"]] == ["/slow", "/median"]
         assert recent["has_more"] is True
-        assert [row["action"] for row in older["timeline"]] == ["/api/operation/1", "/api/operation/2"]
+        assert [row["action"] for row in older["timeline"]] == ["/median", "/median"]
     finally:
         store.close()
 
@@ -929,8 +930,8 @@ def test_agent_state_detail_reports_degraded_status_on_dependency_timeout(monkey
     assert responses[0][1]["status"] == "degraded"
 
 
-def test_db_query_enforces_row_and_byte_budgets(monkeypatch, tmp_path):
-    db = tmp_path / "agent_state.sqlite3"
+def test_db_query_rejects_results_over_byte_budget(monkeypatch, tmp_path):
+    db = tmp_path / "agent_state.sqlite"
     with closing(sqlite3.connect(db)) as con:
         con.execute("CREATE TABLE payloads (payload TEXT)")
         con.executemany("INSERT INTO payloads VALUES (?)", [("x" * 3000,) for _ in range(4)])
@@ -940,32 +941,27 @@ def test_db_query_enforces_row_and_byte_budgets(monkeypatch, tmp_path):
 
     result = http_server.Handler._handle_db_query(None, "agent_state", "SELECT payload FROM payloads")
 
-    assert result["success"] is True
-    assert result["truncated"] is True
-    assert result["response_bytes"] <= 8192
-    assert len(result["rows"]) < 4
+    assert result == {"success": False, "error": "query result exceeded byte limit"}
 
 
-def test_db_query_enforces_row_cap_independently_of_byte_cap(monkeypatch, tmp_path):
-    db = tmp_path / "agent_state.sqlite3"
+def test_db_query_enforces_hard_row_cap(monkeypatch, tmp_path):
+    db = tmp_path / "agent_state.sqlite"
     with closing(sqlite3.connect(db)) as con:
         con.execute("CREATE TABLE markers (value INTEGER)")
-        con.executemany("INSERT INTO markers VALUES (?)", [(1,), (2,), (3,), (4,)])
+        con.executemany("INSERT INTO markers VALUES (?)", ((value,) for value in range(1, 111)))
         con.commit()
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"server": {"state_dir": str(tmp_path)}}))
-    monkeypatch.setattr(http_server, "_DB_QUERY_MAX_ROWS", 2)
     monkeypatch.setattr(http_server, "_DB_QUERY_MAX_RESPONSE_BYTES", 64 * 1024)
 
     result = http_server.Handler._handle_db_query(None, "agent_state", "SELECT value FROM markers ORDER BY value")
 
     assert result["success"] is True
-    assert result["truncated"] is True
-    assert result["rows"] == [[1], [2]]
-    assert result["response_bytes"] < 64 * 1024
+    assert result["count"] == 100
+    assert result["rows"] == [[value] for value in range(1, 101)]
 
 
 def test_db_query_rejects_write_and_leaves_database_unchanged(monkeypatch, tmp_path):
-    db = tmp_path / "agent_state.sqlite3"
+    db = tmp_path / "agent_state.sqlite"
     with closing(sqlite3.connect(db)) as con:
         con.execute("CREATE TABLE marker (value INTEGER)")
         con.execute("INSERT INTO marker VALUES (1)")
@@ -981,7 +977,7 @@ def test_db_query_rejects_write_and_leaves_database_unchanged(monkeypatch, tmp_p
 
 
 def test_db_query_authorizer_denies_unapproved_sqlite_functions(monkeypatch, tmp_path):
-    db = tmp_path / "agent_state.sqlite3"
+    db = tmp_path / "agent_state.sqlite"
     with closing(sqlite3.connect(db)) as con:
         con.execute("CREATE TABLE marker (value INTEGER)")
         con.commit()
@@ -990,28 +986,25 @@ def test_db_query_authorizer_denies_unapproved_sqlite_functions(monkeypatch, tmp
     result = http_server.Handler._handle_db_query(None, "agent_state", "SELECT load_extension('not-loaded')")
 
     assert result["success"] is False
-    assert result["error"] == "query execution failed"
+    assert result["error"] == "not authorized"
 
 
-def test_db_query_deadline_reports_degraded_timeout(monkeypatch, tmp_path):
-    db = tmp_path / "agent_state.sqlite3"
+def test_db_query_work_budget_returns_fail_closed_error(monkeypatch, tmp_path):
+    db = tmp_path / "agent_state.sqlite"
     with closing(sqlite3.connect(db)) as con:
-        con.execute("CREATE TABLE marker (value INTEGER)")
-        con.execute("INSERT INTO marker VALUES (1)")
+        con.execute("CREATE TABLE numbers (value INTEGER NOT NULL)")
+        con.executemany("INSERT INTO numbers VALUES (?)", ((value,) for value in range(300)))
         con.commit()
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(config={"server": {"state_dir": str(tmp_path)}}))
-    monkeypatch.setattr(http_server, "_DB_QUERY_TIMEOUT_SECONDS", 0.001)
 
     result = http_server.Handler._handle_db_query(
         None,
         "agent_state",
-        "WITH RECURSIVE counter(value) AS (VALUES(0) UNION ALL SELECT value + 1 FROM counter WHERE value < 100000000) SELECT sum(value) FROM counter",
+        "SELECT count(*) FROM numbers a CROSS JOIN numbers b CROSS JOIN numbers c",
     )
 
     assert result["success"] is False
-    assert result["degraded"] is True
-    assert result["retryable"] is True
-    assert result["error"] == "query time budget exceeded"
+    assert result == {"success": False, "error": "query execution exceeded work limit"}
 
 
 def test_model_pull_has_total_deadline_and_closes_slow_response(monkeypatch):

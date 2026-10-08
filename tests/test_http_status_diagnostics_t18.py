@@ -42,6 +42,31 @@ def test_status_route_preserves_dependency_diagnostics(monkeypatch):
     assert payload["dependency_status"] == dependency_status
 
 
+def test_scoped_agent_state_status_needs_no_global_database_scan(monkeypatch):
+    class State:
+        enabled = True
+        _initialized = True
+
+    app = SimpleNamespace(config={}, agent_state=State())
+    monkeypatch.setattr(http_server, "APP", app)
+    monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args, **_kwargs: None)
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path = "/api/status?detail=agent_state"
+    handler.client_address = ("127.0.0.1", 12345)
+    handler.headers = {}
+    handler.server = None
+    handler._authorization_root = "C:/project"
+    handler._authorization_tenant = "owner"
+    handler._begin_trace = lambda _path: None
+    handler._require_authorized = lambda: True
+    responses = []
+    handler._send = lambda status, payload: responses.append((status, payload))
+
+    handler.do_GET()
+
+    assert responses == [(200, {"success": True, "enabled": True, "initialized": True})]
+
+
 def test_summary_status_route_preserves_cached_dependency_diagnostics(monkeypatch):
     calls = []
     dependency_status = {
