@@ -207,6 +207,12 @@ class Supervisor:
                     if legacy_pid and pid_alive(legacy_pid):
                         return False
                     existing = None
+                if isinstance(existing, int) and not isinstance(existing, bool):
+                    # Legacy lock files contain a bare PID, which is valid JSON
+                    # numeric syntax and therefore does not enter the exception path.
+                    legacy_format = True
+                    legacy_pid = existing
+                    existing = None
                 state = process_owner_state(existing, self.state_dir, "supervisor")
                 legacy_stale = legacy_format and (legacy_pid == 0 or not pid_alive(legacy_pid))
                 if state == "owned" or (state == "unknown" and not legacy_stale):
