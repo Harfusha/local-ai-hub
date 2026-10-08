@@ -41,7 +41,7 @@ def _broker(
     max_output_chars: int = 4096,
     allow_mutating: bool = False,
 ) -> CommandBroker:
-    return CommandBroker(
+    broker = CommandBroker(
         {
             "server": {"state_dir": str(tmp_path / "state")},
             "commands": {
@@ -54,6 +54,50 @@ def _broker(
         _Artifacts(),
         repo_state or _RevisionState(),
     )
+    broker._require_task_worktree = lambda *args, **kwargs: None
+    broker._transaction_docker_ready = lambda: (True, "")
+    broker._transaction_root_for_context = lambda _tid: Path(tmp_path)
+    broker._transaction_source_for_context = lambda _tid: Path(tmp_path)
+    broker._assert_work_attempt_fence = lambda *args, **kwargs: None
+
+    def mock_run_private_transaction(*args, **kwargs):
+        op = kwargs.get("operation")
+        root = args[1] if len(args) > 1 else kwargs.get("source_root", tmp_path)
+        with broker._transaction_roots_lock:
+            broker._active_transaction_roots["test-tx"] = Path(root)
+            broker._active_transaction_sources["test-tx"] = Path(root)
+        if op:
+            return op(root, "test-tx")
+        cmd = args[0] if args else kwargs.get("command", "")
+        tenant = args[2] if len(args) > 2 else kwargs.get("tenant", "tenant")
+        return broker._execute(cmd, root, 30)
+
+    broker._run_private_transaction = mock_run_private_transaction
+
+    if allow_mutating:
+        (tmp_path / "changed.py").write_text("x\n", encoding="utf-8")
+        from local_ai_hub.work_fencing import WorkAttemptFence
+        dummy_fence = WorkAttemptFence(
+            resource=str(Path(tmp_path).resolve()),
+            work_id="test",
+            attempt_id="test",
+            owner_id="test",
+            fencing_token=1,
+            expires_at=time.time() + 3600,
+        )
+        orig_run = broker.run
+
+        def mutating_run(command, cwd, tenant, *args, **kwargs):
+            if "paths" not in kwargs or kwargs["paths"] is None:
+                kwargs["paths"] = ["changed.py"]
+            if "_work_attempt_fence" not in kwargs or kwargs["_work_attempt_fence"] is None:
+                kwargs["_work_attempt_fence"] = dummy_fence
+                kwargs.setdefault("task_id", "test")
+            return orig_run(command, cwd, tenant, *args, **kwargs)
+
+        broker.run = mutating_run
+
+    return broker
 
 
 def _execution_result(stdout: str) -> dict:
@@ -1808,6 +1852,7 @@ def test_user_whitelisted_validation_is_not_replay_safe_or_cacheable(tmp_path) -
 )
 def test_repair_loop_retries_explicit_validation(tmp_path, monkeypatch, command) -> None:
     broker = _broker(tmp_path)
+    (tmp_path / "changed.py").write_text("value = 0\n", encoding="utf-8")
     executions: list[str] = []
     generator_calls: list[str] = []
 
@@ -1824,6 +1869,7 @@ def test_repair_loop_retries_explicit_validation(tmp_path, monkeypatch, command)
         command,
         str(tmp_path),
         "tenant",
+        paths=["changed.py"],
         max_attempts=1,
         fix_generator=generate,
         initial_result={"success": False, "exit_code": 1, "stderr": "assertion failed"},
@@ -1916,6 +1962,7 @@ def test_command_job_cleanup_requires_empty_job_confirmation(monkeypatch) -> Non
     assert calls == [("terminate", "job"), ("wait", "job")]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX daemon process groups only")
 def test_recovered_daemon_requests_leaderless_group_cleanup_without_claiming_success(monkeypatch) -> None:
     pid = 24569
     identity = {"pid": pid, "executable": "test-daemon", "creation_identity": 2}
@@ -1942,6 +1989,7 @@ def test_recovered_daemon_requests_leaderless_group_cleanup_without_claiming_suc
     assert terminated == [((pid,), {"process_group": pid, "grace_seconds": 0.1})]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX daemon process groups only")
 def test_recovered_daemon_rejects_reused_leader_even_when_group_is_alive(monkeypatch) -> None:
     pid = 24569
     identity = {"pid": pid, "executable": "test-daemon", "creation_identity": 2}
@@ -1966,6 +2014,7 @@ def test_recovered_daemon_rejects_reused_leader_even_when_group_is_alive(monkeyp
     assert terminated == []
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX daemon process groups only")
 def test_recovered_daemon_rejects_leaderless_group_without_ownership_proof(monkeypatch) -> None:
     pid = 24569
     identity = {"pid": pid, "executable": "test-daemon", "creation_identity": 2}
@@ -2165,6 +2214,54 @@ def test_posix_numeric_process_group_cleanup_fails_closed_without_signals(monkey
 
     assert result is False
     assert calls == []
+
+
+def test_posix_group_cleanup_does_not_escalate_after_leader_identity_changes(monkeypatch) -> None:
+    expected = {
+        "pid": 24569,
+        "executable": "/usr/bin/python",
+        "creation_identity": 1234,
+        "creation_identity_type": "linux_proc_starttime_ticks",
+    }
+    calls: list[tuple[int, int]] = []
+    slept = False
+
+    class PosixOsProxy:
+        name = "posix"
+
+        @staticmethod
+        def getpgid(pid):
+            assert pid == 24569
+            return 24569
+
+        @staticmethod
+        def killpg(group_id, sig):
+            calls.append((group_id, sig))
+            if sig == 0:
+                return None
+
+    def process_identity(pid):
+        assert pid == 24569
+        return expected if not slept else None
+
+    def sleep(_seconds):
+        nonlocal slept
+        slept = True
+
+    monkeypatch.setattr(process_utils_module, "os", PosixOsProxy())
+    monkeypatch.setattr(process_utils_module, "process_identity", process_identity)
+    monkeypatch.setattr(process_utils_module.time, "sleep", sleep)
+    monkeypatch.setattr(signal, "SIGKILL", 9, raising=False)
+
+    result = process_utils_module.terminate_tree(
+        24569,
+        process_group=24569,
+        expected_identity=expected,
+        grace_seconds=0.1,
+    )
+
+    assert result is False
+    assert calls == [(24569, signal.SIGTERM)]
 
 
 def test_run_hidden_timeout_preserves_unconfirmed_posix_process_without_pid_kill(monkeypatch) -> None:

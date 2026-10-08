@@ -1855,6 +1855,9 @@ class ProjectPreprocessor:
 
     def _cpu_loop(self) -> None:
         set_current_thread_priority(self.cpu_priority)
+        startup_delay = max(0.0, float(self.cfg.get("startup_delay_seconds", 2.0)))
+        if startup_delay > 0:
+            self._stop.wait(startup_delay)
         poll = max(0.2, float(self.cfg.get("poll_seconds", 1.0)))
         while not self._stop.is_set():
             with self._stats_lock:
@@ -1915,6 +1918,9 @@ class ProjectPreprocessor:
                     pass
 
     def _gpu_loop(self) -> None:
+        startup_delay = max(0.0, float(self.cfg.get("startup_delay_seconds", 2.5)))
+        if startup_delay > 0:
+            self._stop.wait(startup_delay)
         poll = max(0.2, float(self.cfg.get("poll_seconds", 1.0)))
         while not self._stop.is_set():
             if self._paused.is_set():

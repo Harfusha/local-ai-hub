@@ -28,7 +28,10 @@ def _record_command(
     revision: str,
     command_id: str,
     project_config_digest: str,
+    repository_root: str | Path = "",
 ) -> tuple[str, bool]:
+    if len(command_id) != 32 or any(character not in "0123456789abcdef" for character in command_id):
+        command_id = hashlib.sha256(command_id.encode("utf-8")).hexdigest()[:32]
     command_text = {
         "test": "python -m pytest -q tests/test_contract.py",
         "lint": "python -m ruff check src",
@@ -72,25 +75,65 @@ def _record_command(
             "command_sha256": command_sha256,
             "exit_code": 0,
             "result": {"success": True, "exit_code": 0},
+            "cached": False,
         },
         artifact_tenant,
         "command_verification",
     )
+    receipt = VerificationReceipt.create(
+        receipt_task_id,
+        criterion,
+        evidence_id=evidence_id,
+        command_id=command_id,
+        owner=owner,
+        repository_revision=revision,
+        mutation_generation=0,
+        evidence_type=criterion_evidence_type(criterion),
+        details={
+            "exit_code": 0,
+            "duration_ms": 0.0,
+            "cached": False,
+        },
+    )
     try:
-        app.agent_verification.record(
-            VerificationReceipt.create(
-                receipt_task_id,
-                criterion,
-                evidence_id=evidence_id,
-                command_id=command_id,
-                owner=owner,
-                repository_revision=revision,
-                mutation_generation=0,
-                evidence_type=criterion_evidence_type(criterion),
-            )
-        )
+        app.agent_verification.record(receipt)
     except ValueError:
         return evidence_id, False
+
+    if repository_root and hasattr(app, "commands") and hasattr(app.commands, "_persist_command_execution_record"):
+        canonical_root = str(Path(repository_root).expanduser().resolve(strict=False))
+        receipt_dict = receipt.to_dict()
+        record = {
+            "schema": "command_execution_record.v1",
+            "command_id": command_id,
+            "tenant_identity": app.commands._tenant_identity(artifact_tenant),
+            "task_id": receipt_task_id,
+            "owner": owner,
+            "criterion": criterion,
+            "command_sha256": command_sha256,
+            "evidence_type": criterion_evidence_type(criterion),
+            "repository_root": canonical_root,
+            "repository_root_sha256": hashlib.sha256(canonical_root.encode("utf-8")).hexdigest(),
+            "repository_revision": revision,
+            "mutation_generation": 0,
+            "evidence_id": str(evidence_id),
+            "receipt_sha256": hashlib.sha256(
+                json.dumps(receipt_dict, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest(),
+            "exit_code": 0,
+            "cached": False,
+            "project_alias": criterion,
+            "project_config_digest": project_config_digest,
+            "project_environment_sha256": project_environment_sha256,
+            "configured_command_sha256": configured_command_sha256,
+            "caller_arguments_sha256": caller_arguments_sha256,
+            "project_execution_binding_sha256": execution_binding,
+            "created_at_unix": 1000.0,
+        }
+        encoded_record = json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        record["record_sha256"] = hashlib.sha256(encoded_record).hexdigest()
+        app.commands._persist_command_execution_record(command_id, record)
+
     return evidence_id, True
 
 
@@ -187,7 +230,7 @@ def test_task_completion_http_receipt_and_memory_matrix(
             goal="exercise project completion receipt gates over HTTP",
             acceptance_criteria=("test",),
         ),
-        ScopeContext(repository_id=str(project_root), task_id=task_id),
+        ScopeContext(repository_id=str(project_root), task_id=task_id, session_id=tenant),
         task_id=task_id,
         actor=tenant,
         repo_root=str(project_root),
@@ -195,7 +238,7 @@ def test_task_completion_http_receipt_and_memory_matrix(
     if changes.get("test_receipt_task_id") == "other-task":
         app.agent_tasks.create(
             GoalContract(goal="unrelated task", acceptance_criteria=("test",)),
-            ScopeContext(repository_id=str(project_root), task_id="other-task"),
+            ScopeContext(repository_id=str(project_root), task_id="other-task", session_id=tenant),
             task_id="other-task",
             actor=tenant,
             repo_root=str(project_root),
@@ -231,6 +274,7 @@ def test_task_completion_http_receipt_and_memory_matrix(
         revision=test_revision,
         command_id=f"cmd-{case}-test",
         project_config_digest=project_config_digest,
+        repository_root=project_root,
     )
     expected_receipt_recorded = not bool(changes.get("expect_record_rejected"))
     assert test_receipt_recorded is expected_receipt_recorded, case
@@ -248,6 +292,7 @@ def test_task_completion_http_receipt_and_memory_matrix(
             revision=revision,
             command_id=f"cmd-{case}-lint",
             project_config_digest=project_config_digest,
+            repository_root=project_root,
         )
 
     monkeypatch.setattr(

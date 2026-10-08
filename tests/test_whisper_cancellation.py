@@ -42,22 +42,31 @@ def test_run_hidden_cancellation_terminates_tree_and_drains_output(monkeypatch):
     cancel_event = threading.Event()
     process = _FakeProcess(cancel_event)
     calls = []
+    identity = {
+        "pid": 4321,
+        "executable": "/usr/bin/python",
+        "creation_identity": 1234,
+        "creation_identity_type": "linux_proc_starttime_ticks",
+    }
     monkeypatch.setattr(process_utils.os, "name", "posix")
     monkeypatch.setattr(process_utils.subprocess, "Popen", lambda *a, **k: process)
-    monkeypatch.setattr(
-        process_utils,
-        "terminate_tree",
-        lambda pid, *, process_group=None, grace_seconds=5.0: calls.append(
-            (pid, process_group, grace_seconds)
-        ) or True,
-    )
+    monkeypatch.setattr(process_utils, "process_identity", lambda _pid: identity)
+
+    def terminate_tree(
+        pid, *, process_group=None, expected_identity=None, grace_seconds=5.0
+    ):
+        calls.append((pid, process_group, expected_identity, grace_seconds))
+        process.returncode = -9
+        return True
+
+    monkeypatch.setattr(process_utils, "terminate_tree", terminate_tree)
 
     with pytest.raises(process_utils.ProcessCancelledError) as raised:
         process_utils.run_hidden(
             ["whisper"], capture_output=True, timeout=60, cancel_event=cancel_event
         )
 
-    assert calls == [(4321, 4321, 1.0)]
+    assert calls == [(4321, 4321, identity, 1.0)]
     assert process.returncode == -9
     assert raised.value.output == b"partial"
     assert raised.value.stderr == b"err"

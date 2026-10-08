@@ -365,10 +365,16 @@ class EmbeddingModel:
                 if cache_dir is not None:
                     ov_model_kwargs["ov_config"] = {"CACHE_DIR": str(cache_dir)}
                 kwargs["model_kwargs"] = ov_model_kwargs
+            def _load_st(name: str, kw: dict[str, Any]) -> SentenceTransformer:
+                try:
+                    return SentenceTransformer(name, local_files_only=True, **kw)
+                except Exception:
+                    return SentenceTransformer(name, **kw)
+
             def create_model():
                 nonlocal loaded_model_name
                 try:
-                    model = SentenceTransformer(self.model_name, **kwargs)
+                    model = _load_st(self.model_name, kwargs)
                 except Exception:
                     if self.model_name == "BAAI/bge-small-en-v1.5":
                         raise
@@ -376,7 +382,7 @@ class EmbeddingModel:
                     fallback_kwargs["trust_remote_code"] = False
                     fallback_kwargs.pop("revision", None)
                     loaded_model_name = "BAAI/bge-small-en-v1.5"
-                    model = SentenceTransformer(loaded_model_name, **fallback_kwargs)
+                    model = _load_st(loaded_model_name, fallback_kwargs)
                 if hasattr(model, "max_seq_length"):
                     max_pos = getattr(model, "max_seq_length", 512) or 512
                     try:

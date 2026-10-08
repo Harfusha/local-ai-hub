@@ -1822,8 +1822,12 @@ class MemoryStore:
             params.extend([AgentScope.TASK.value, AgentScope.SESSION.value])
         if root:
             canonical_root = _normalise_scope_root(root)
-            sql += f" AND ({_CONTEXT_ROOT_VALUE_SQL} = ? OR {_CONTEXT_ROOT_SQL} = ?)"
-            params.extend([canonical_root, canonical_root])
+            provenance_repo_id = (
+                "json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, "
+                "'$.repository_id')"
+            )
+            sql += f" AND ({_CONTEXT_ROOT_VALUE_SQL} = ? OR {_CONTEXT_ROOT_SQL} = ? OR {provenance_repo_id} = ?)"
+            params.extend([canonical_root, canonical_root, root])
         elif not repository_id and not (scope_val in identity_fields and scope_id_val):
             sql += f" AND (scope = ? OR {_CONTEXT_ROOT_SQL} = '')"
             params.append(AgentScope.GLOBAL.value)
@@ -2375,14 +2379,24 @@ class MemoryStore:
             try:
                 with self.state_store.ordered_event_publication(con) as publish:
                     con.execute("BEGIN IMMEDIATE")
-                    row = con.execute(
-                        """
-                        SELECT scope_id, key, provenance
-                        FROM agent_memory_records
-                        WHERE record_id = ? AND scope = ? AND scope_id = ?
-                        """,
-                        (record_id, scope_value, scope_id_value),
-                    ).fetchone()
+                    if parsed_scope is AgentScope.REPOSITORY and not scope_id_value:
+                        row = con.execute(
+                            """
+                            SELECT scope_id, key, provenance
+                            FROM agent_memory_records
+                            WHERE record_id = ? AND scope = ?
+                            """,
+                            (record_id, scope_value),
+                        ).fetchone()
+                    else:
+                        row = con.execute(
+                            """
+                            SELECT scope_id, key, provenance
+                            FROM agent_memory_records
+                            WHERE record_id = ? AND scope = ? AND scope_id = ?
+                            """,
+                            (record_id, scope_value, scope_id_value),
+                        ).fetchone()
                     if row is None:
                         con.execute("COMMIT")
                         return False, None
@@ -2403,7 +2417,8 @@ class MemoryStore:
                             continue
                         actual = str(provenance.get(identity_key, "") or "").strip()
                         if identity_key == "root":
-                            if not actual or _normalise_scope_root(actual) != _normalise_scope_root(expected):
+                            repo_id = str(provenance.get("repository_id", "") or "").strip()
+                            if (not actual or _normalise_scope_root(actual) != _normalise_scope_root(expected)) and repo_id != expected:
                                 con.execute("COMMIT")
                                 return False, None
                         elif actual != expected:

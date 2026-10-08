@@ -5,6 +5,7 @@ from .json_utils import dumps as json_dumps
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -315,11 +316,15 @@ class Supervisor:
         if token:
             headers["X-LocalAI-Token"] = token
         try:
-            timeout = max(0.1, min(5.0, float(self.cfg.get("health_probe_timeout_seconds", 2.0))))
+            timeout = max(0.1, min(10.0, float(self.cfg.get("health_probe_timeout_seconds", 5.0))))
             with urlopen(Request(f"http://{host}:{int(server.get('port', 11435))}/health", headers=headers), timeout=timeout) as response:
                 if response.status != 200:
                     self.last_health_error = f"http_status_{response.status}"
                     return False
+                try:
+                    response.read()
+                except Exception:
+                    pass
             listener_pid = find_listening_pid(int(server.get("port", 11435)))
             healthy = self._listener_is_owned(listener_pid)
             if not healthy:
@@ -334,11 +339,12 @@ class Supervisor:
             if not healthy:
                 self.last_health_error = "listener_identity_unverified" if exc.code == 503 else f"http_status_{exc.code}"
             return healthy
-        except TimeoutError:
+        except (TimeoutError, socket.timeout):
             self.last_health_error = "probe_timeout"
             return False
         except URLError as exc:
-            self.last_health_error = "probe_timeout" if isinstance(exc.reason, TimeoutError) else "probe_transport_error"
+            is_timeout = isinstance(exc.reason, (TimeoutError, socket.timeout)) or "timed out" in str(exc.reason).lower()
+            self.last_health_error = "probe_timeout" if is_timeout else "probe_transport_error"
             return False
         except Exception:
             self.last_health_error = "probe_internal_error"
@@ -510,7 +516,7 @@ class Supervisor:
                 pass
 
         interval = min(30.0, max(0.5, float(self.cfg.get("health_check_interval_seconds", 2.0))))
-        unhealthy_grace = min(300.0, max(interval, float(self.cfg.get("unhealthy_grace_seconds", 20.0))))
+        unhealthy_grace = min(300.0, max(interval, float(self.cfg.get("unhealthy_grace_seconds", 45.0))))
         startup_grace = min(300.0, max(unhealthy_grace, float(self.cfg.get("startup_grace_seconds", 120.0))))
         initial_backoff = max(0.25, float(self.cfg.get("restart_backoff_initial_seconds", 1.0)))
         max_backoff = max(initial_backoff, float(self.cfg.get("restart_backoff_max_seconds", 30.0)))

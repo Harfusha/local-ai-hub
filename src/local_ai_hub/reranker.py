@@ -124,10 +124,16 @@ class Reranker:
                 if cache_dir is not None:
                     ov_model_kwargs["ov_config"] = {"CACHE_DIR": str(cache_dir)}
                 kwargs["model_kwargs"] = ov_model_kwargs
+            def _create_cross_encoder():
+                try:
+                    return CrossEncoder(self.model_name, local_files_only=True, **kwargs)
+                except Exception:
+                    return CrossEncoder(self.model_name, **kwargs)
+
             self._model = load_model(
                 self,
                 uses_cuda=uses_torch_cuda(backend, device),
-                factory=lambda: CrossEncoder(self.model_name, **kwargs),
+                factory=_create_cross_encoder,
             )
             self.active_backend = backend
             self.active_device = str(device)

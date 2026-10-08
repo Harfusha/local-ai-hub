@@ -110,7 +110,7 @@ def test_command_validator_classifies_doctor_and_selftest(tmp_path: Path):
     assert telem_res["class"] == "validation"
 
 
-def test_generic_command_does_not_auto_register_verification_receipt(tmp_path: Path):
+def test_passing_task_test_command_records_verification_receipt(tmp_path: Path):
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
     state_store = AgentStateStore(state_dir / "agent_state.sqlite3", enabled=True)
@@ -170,10 +170,16 @@ def test_generic_command_does_not_auto_register_verification_receipt(tmp_path: P
     )
 
     assert res["exit_code"] == 0
-    assert "verification_receipt" not in res
+    receipt = res.get("verification_receipt")
+    assert isinstance(receipt, dict)
+    assert receipt["task_id"] == "task-test-1"
+    assert receipt["criterion"] == "Tests must pass"
+    assert receipt["passed"] is True
     comp = v_store.completion("task-test-1")
-    assert len(comp.receipts) == 0
-    assert comp.complete is False
+    assert len(comp.receipts) == 1
+    assert task_store.get("task-test-1").verification_receipts == {
+        "Tests must pass": receipt["receipt_id"]
+    }
 
 
 def test_memory_store_query_search(tmp_path: Path):
@@ -210,6 +216,13 @@ state_dir = "{state_dir.as_posix()}"
 
 [agent_state]
 enabled = true
+
+[security]
+api_token = "test-api-token-long-enough"
+api_token_permissions = ["read", "write"]
+api_token_tenant = "flat-test-tenant"
+tenant_derivation_key = "flat-test-tenant-derivation-key-0123456789"
+allowed_roots = ["{tmp_path.as_posix()}"]
 """, encoding="utf-8")
 
     app = LocalAIApp(str(cfg_path))
@@ -222,14 +235,21 @@ enabled = true
     thread.start()
 
     def post_json(endpoint: str, data: dict) -> dict:
+        data = {"root": str(tmp_path), **data}
         req = urllib.request.Request(
             f"http://127.0.0.1:{port}{endpoint}",
             data=json.dumps(data).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type": "application/json",
+                "X-LocalAI-Token": "test-api-token-long-enough",
+            },
             method="POST",
         )
-        with urllib.request.urlopen(req) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(req) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            raise AssertionError(exc.read().decode("utf-8", errors="replace")) from exc
 
     try:
         # 1. Flat task_create
