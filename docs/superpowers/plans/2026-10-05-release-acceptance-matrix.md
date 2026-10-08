@@ -1,5 +1,42 @@
 # Local AI Hub Release Acceptance Matrix
 
+## Integrated verification — 2026-10-08, source candidate `8b5ffe7d`
+
+- All **61 registered repository-family worktrees** were verified at the same
+  master source candidate, with **0 dirty checkouts and 0 active stashes**.
+  This does not rename or discard historical archive/checkpoint refs. No new
+  task, chat, branch, worktree, or stash was created for this continuation.
+- Synchronization preserved embedded scratch/test repositories. Four T13
+  collision files and 28 T16 collision files were byte-identical to master's
+  flattened copies. T13's two standalone scratch repositories were moved intact
+  beneath `state/release-workspace-20261008/embedded-repositories/t13`.
+  T16's retained gitlinks and their Git metadata were restored in place after
+  fast-forward; duplicate fixture bytes remain recoverable under the sibling
+  `t16` archive. The final T13/T16 status was clean; no source or history was
+  deleted.
+- Installed the integrated package with
+  `.venv/Scripts/python.exe -m pip install --disable-pip-version-check --no-build-isolation --no-deps --upgrade .`:
+  v4.0.0 built and installed successfully. Managed Hub, supervisor and Ollama
+  were stopped, then the managed service was started successfully. Doctor
+  subsequently reported Hub/Ollama online, 8 MCP tools, and no warnings.
+- Current source validation: `python -B -m compileall -q src tools tests` passed;
+  `python -B tools/selftest.py` passed **6/6 checks**. Regenerated
+  `docs/API_COVERAGE.md` using `tools/surface_inventory.py --write-doc`;
+  `--check` then passed with **721 coverage rows and no drift**.
+  `python -B tools/release_check.py --allow-installed --expected-version 4.0.0`
+  passed again after installation and preservation of its generated build tree.
+- Remaining release gates are explicit: the full test suite has no complete
+  receipt. A diagnostic `python -B -m pytest -x -q --tb=short -p no:cacheprovider -o faulthandler_timeout=45`
+  reached 4% before its 120-second command deadline; exit -9 confirmed timeout,
+  not a complete test verdict. Earlier 900-second transport timeout also remains
+  unaccepted. Do not label either run test-green or infer a failing test from it.
+- Existing T13 follow-up, primary-agent owner: `tools/service.py stop` still
+  returns `schtasks_stop_failed` when this machine uses the Windows user-startup
+  fallback and has no scheduled task, even though verified Hub/supervisor/Ollama
+  shutdown succeeds. Keep this CLI status inconsistency open. T20 remains
+  active / NO-GO pending complete tests, clean package validation and the
+  outstanding end-to-end acceptance requirements.
+
 ## Current primary-agent verification — 2026-10-08, after `58ab6305`
 
 - T20 remains active / NO-GO. Full `python -B -m pytest -q --tb=short -p no:cacheprovider`
