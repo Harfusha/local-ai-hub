@@ -25,6 +25,18 @@ def test_admin_authorization_rejects_explicit_audit_queue_rejection(monkeypatch)
     assert handler.responses == [(503, {"success": False, "error": "admin audit unavailable", "retryable": True})]
 
 
+def test_authorized_status_read_survives_disabled_audit_transport(monkeypatch):
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(
+        config={"security": {"api_token": "admin-token-long-enough"}},
+        telemetry=SimpleNamespace(record_system=lambda *_args, **_kwargs: False),
+    ))
+    handler = _handler("/api/capabilities", "admin-token-long-enough")
+    handler.command = "GET"
+
+    assert handler._require_authorized() is True
+    assert handler.responses == []
+
+
 def test_admin_result_retains_failed_audit_outcome_without_duplicate_enqueue(monkeypatch):
     calls = []
     def rejected(*args, **kwargs):
