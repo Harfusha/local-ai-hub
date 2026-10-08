@@ -142,7 +142,7 @@ def test_python_extractor_handles_deep_expression_without_recursive_walk_failure
     assert any(symbol["name"] == "run" for symbol in result[0])
 
 
-def test_windows_python_313_skips_legacy_import_when_language_pack_unavailable(monkeypatch) -> None:
+def test_windows_python_313_skips_all_native_imports_when_language_pack_unavailable(monkeypatch) -> None:
     monkeypatch.setattr(treesitter_parser, "_INIT_ATTEMPTED", False)
     monkeypatch.setattr(treesitter_parser, "_PARSERS", {})
     monkeypatch.setattr(treesitter_parser, "_LANGUAGES", {})
@@ -160,4 +160,4 @@ def test_windows_python_313_skips_legacy_import_when_language_pack_unavailable(m
     monkeypatch.setattr(builtins, "__import__", record_native_import)
 
     assert treesitter_parser._init_treesitter() is False
-    assert imported_native_packages == ["tree_sitter_language_pack"]
+    assert imported_native_packages == []

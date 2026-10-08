@@ -1,0 +1,55 @@
+# Windows native parser crash: bounded stabilization
+
+Owner: primary agent. Existing T10 parser/runtime safety scope; no new task,
+branch, worktree, memory system, or context-pack implementation.
+
+## Observed failure
+
+Windows Application events 1000 repeatedly recorded Python 3.13.2 native access
+violations (`0xc0000005`, `python313.dll`, offset `0x89711`). The failing worker
+was the supervisor-owned `local_ai_hub.http_server`, not unrelated Python jobs.
+Supervisor recovery repeatedly restarted the failing worker and produced dialogs.
+
+An explicitly bounded supervised diagnostic with faulthandler identified the
+current crashing thread in `treesitter_parser.py::_extract_python`, reading
+`node.children`, called by background preprocessing's code-index batch.
+The language-pack backend was loaded despite the existing Windows/Python 3.13
+legacy-binding guard. Native parsing and traversal already shared a lock.
+Changing the hidden interpreter to python.exe also crashed; that diagnostic
+change and the temporary faulthandler launch argument were reverted precisely.
+Other concurrent supervisor edits were retained.
+
+## Change and limitation
+
+Move the existing Windows/Python 3.13+ guard before either native backend import.
+CodeIndex continues through existing deterministic fallbacks. A regression test
+proves Python symbols, references, and call edges survive the guard.
+Other platforms retain language-pack support; a mocked Windows/Python 3.12
+contract preserves the supported-platform initialization path, not runtime proof.
+
+This is crash containment, not a repaired native binding or full cross-language
+quality acceptance. Native non-Python traversal is unavailable on this runtime.
+Follow-up: isolate/verify a supported native-parser runtime before re-enabling it;
+do not restore the language-pack bypass based only on mocked import tests.
+
+## Verification
+
+- RED: `python -B -m pytest -q -p no:cacheprovider --tb=short
+  tests/test_treesitter_windows_crash_guard.py`: 1 failed, 0.21 s;
+  dangerous language-pack import occurred before the guard.
+- Parser cohort: same pytest flags with `tests/test_treesitter_windows_crash_guard.py`,
+  `tests/test_t10_treesitter_parser_thread_safety.py`, and
+  `tests/test_t10_treesitter_runtime_contract.py`: 7 passed, 2 skipped, 0.76 s.
+- Fallback cohort: same flags with `tests/test_t10_python_fallback_budget.py`,
+  `tests/test_t10_fallback_callgraph_parity.py`,
+  `tests/test_t10_incremental_callgraph_edges.py`,
+  `tests/test_t10_retrieval_fixture_matrix.py`, `tests/test_t10_acceptance.py`:
+  119 passed, 20 skipped, 13.99 s. Skips are unavailable native parsers.
+- `python -m compileall -q src tools tests`: exit 0.
+- Standard service start at 13:57:52; 20 authenticated `/health` requests at
+  three-second intervals, timeout 2 s: all HTTP 200, 0.9–24.4 ms.
+  `/dashboard`: HTTP 200. No fresh Application event 1000 in that observation.
+  Health JSON omitted PID, so samples alone do not prove a constant process ID.
+
+Full-suite, long-duration, model quality, and final release acceptance remain open.
+No durable databases or user worktrees were deleted or reset.
