@@ -295,7 +295,7 @@ def test_read_only_db_query_safety(monkeypatch: pytest.MonkeyPatch, tmp_path: Pa
     assert "Multi-statement" in res3["error"]
 
     # Valid SELECT on existing sqlite database
-    db_file = tmp_path / "agent_state.sqlite3"
+    db_file = tmp_path / "agent_state.sqlite"
     con = sqlite3.connect(db_file)
     con.execute("CREATE TABLE tasks (id TEXT PRIMARY KEY, role TEXT);")
     con.execute("INSERT INTO tasks VALUES ('t1', 'researcher');")
