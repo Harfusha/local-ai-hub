@@ -368,10 +368,10 @@ def test_agent_event_sse_prefers_header_and_pages_replay_with_gap_metadata(monke
     handler.do_GET()
     output = handler.wfile.getvalue().decode("utf-8")
 
-    assert calls == [("task:one", 3, 1000), ("task:one", 7, 1000)]
-    assert "id: task%3Aone:7" in output
-    assert "id: task%3Aone:8" in output
-    assert "event: retention_gap" in output
+    assert calls == [("task:one", 3, 100), ("task:one", 7, 100)]
+    assert "id: 7\nevent: task.progress" in output
+    assert "id: 8\nevent: task.progress" in output
+    assert "event: stream.gap" in output
     assert '"from_seq":4,"to_seq":6' in output
 
 
@@ -422,16 +422,16 @@ def test_agent_event_sse_merges_events_and_internal_gaps_in_sequence_order(monke
     output = handler.wfile.getvalue().decode("utf-8")
 
     positions = [
-        output.index("id: task%3Aone:1"),
-        output.index("id: task%3Aone:2"),
-        output.index("id: task%3Aone:3"),
-        output.index("id: task%3Aone:4"),
-        output.index("id: task%3Aone:5"),
+        output.index("id: 1\n"),
+        output.index("id: 2\n"),
+        output.index("id: 3\n"),
+        output.index("id: 4\n"),
+        output.index("id: 5\n"),
     ]
     assert positions == sorted(positions)
     ids = [line.removeprefix("id: ") for line in output.splitlines() if line.startswith("id: ")]
-    assert ids == [f"task%3Aone:{seq}" for seq in range(1, 6)]
-    assert output.count("event: retention_gap") == 2
+    assert ids == [str(seq) for seq in range(1, 6)]
+    assert output.count("event: stream.gap") == 2
     assert '"from_seq":2,"to_seq":2' in output
     assert '"from_seq":4,"to_seq":4' in output
 
@@ -480,9 +480,9 @@ def test_agent_event_sse_paginates_filtered_replay_with_canonical_pages(monkeypa
     handler._stream_agent_events(stream_id="task:one", kind="task.done", after_seq=0, timeout=1.0)
     output = handler.wfile.getvalue().decode("utf-8")
 
-    assert calls == [(0, 1000), (1000, 1000)]
+    assert calls == [(cursor, 100) for cursor in range(0, 1001, 100)]
     assert "event: task.progress" not in output
-    assert "id: task%3Aone:1001" in output
+    assert "id: 1001\nevent: replay_page" in output
     assert "event: stream_timeout" in output
     assert '"last_seq":1001' in output
 
