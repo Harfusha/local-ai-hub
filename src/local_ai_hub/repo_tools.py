@@ -2318,9 +2318,11 @@ class RepositoryTools:
         for value in paths[:_MAX_PATH_CONTROLS]:
             try:
                 normalized_inputs.append(self._validated_context_path(base, value, "paths"))
-            except ValueError:
-                # A caller-supplied candidate is only a hint. Ignore unsafe or
-                # stale hints rather than failing the whole bounded search.
+            except ValueError as exc:
+                if "repository-relative" in str(exc) or "symlinks" in str(exc):
+                    return {"success": False, "error": str(exc)}
+                # Stale in-repository candidates are hints; traversal and symlink
+                # attempts are rejected above.
                 continue
         normalized_inputs.extend(
             self._validated_context_path(base, value, "force_include_paths") for value in forced_values

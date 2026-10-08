@@ -1011,16 +1011,17 @@ def test_explicit_path_hint_cannot_read_extension_outside_allowlist(tmp_path: Pa
     assert result["results"] == []
 
 
-def test_explicit_path_hint_cannot_escape_repository_root(tmp_path: Path) -> None:
+def test_explicit_path_hint_cannot_escape_repository_root(tmp_path: Path, monkeypatch) -> None:
     root = tmp_path / "repo"
     root.mkdir()
     private = tmp_path / "private.py"
     private.write_text("unique_secret_marker = True\n", encoding="utf-8")
     tools = RepositoryTools({"rag": {"extensions": [".py"]}})
+    monkeypatch.setattr(tools, "_read_snapshot", lambda path: pytest.fail("unsafe hint reached source reading"))
 
     result = tools.search_paths(str(root), "unique_secret_marker", ["../private.py"])
 
-    assert result["success"] is True
-    assert result["scanned_files"] == 0
-    assert result["results"] == []
+    assert result["success"] is False
+    assert "repository-relative" in result["error"]
+    assert "unique_secret_marker" not in str(result)
 
