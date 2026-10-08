@@ -11,7 +11,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .config import load_config
@@ -300,7 +300,12 @@ class Supervisor:
                 and self._owned_hub_child())
 
     def hub_online(self) -> bool:
-        if not self.child_ready or not self._owned_hub_child():
+        self.last_health_error = ""
+        if not self.child_ready:
+            self.last_health_error = "child_not_ready"
+            return False
+        if not self._owned_hub_child():
+            self.last_health_error = "child_identity_unverified"
             return False
         server = self.config["server"]
         bind = str(server.get("bind", "127.0.0.1"))
@@ -313,16 +318,30 @@ class Supervisor:
             timeout = max(0.1, min(5.0, float(self.cfg.get("health_probe_timeout_seconds", 2.0))))
             with urlopen(Request(f"http://{host}:{int(server.get('port', 11435))}/health", headers=headers), timeout=timeout) as response:
                 if response.status != 200:
+                    self.last_health_error = f"http_status_{response.status}"
                     return False
             listener_pid = find_listening_pid(int(server.get("port", 11435)))
-            return self._listener_is_owned(listener_pid)
+            healthy = self._listener_is_owned(listener_pid)
+            if not healthy:
+                self.last_health_error = "listener_identity_unverified"
+            return healthy
         except HTTPError as exc:
             # Admission-control 503 means the process is alive and intentionally
             # shedding load. Recycling it here would amplify overload into restart churn.
-            return exc.code == 503 and self._listener_is_owned(
+            healthy = exc.code == 503 and self._listener_is_owned(
                 find_listening_pid(int(server.get("port", 11435)))
             )
+            if not healthy:
+                self.last_health_error = "listener_identity_unverified" if exc.code == 503 else f"http_status_{exc.code}"
+            return healthy
+        except TimeoutError:
+            self.last_health_error = "probe_timeout"
+            return False
+        except URLError as exc:
+            self.last_health_error = "probe_timeout" if isinstance(exc.reason, TimeoutError) else "probe_transport_error"
+            return False
         except Exception:
+            self.last_health_error = "probe_internal_error"
             return False
 
     def hub_ready(self) -> bool:
@@ -531,12 +550,13 @@ class Supervisor:
 
                 if unhealthy_since == 0.0:
                     unhealthy_since = now
+                    self.log(f"hub health probe failed: {getattr(self, 'last_health_error', 'probe_failed')}")
                 if self.child is not None and self.child.poll() is None and now - unhealthy_since < unhealthy_grace:
-                    self.write_status("starting", ollama_online=ollama_online)
+                    self.write_status("starting", getattr(self, "last_health_error", "probe_failed"), ollama_online=ollama_online)
                     time.sleep(interval)
                     continue
                 if self.child is not None and self.child.poll() is None:
-                    self.log("hub unhealthy beyond grace; recycling")
+                    self.log(f"hub unhealthy beyond grace; recycling reason={getattr(self, 'last_health_error', 'probe_failed')}")
                     if not self.terminate_child():
                         self.write_status("degraded", "safe hub termination unavailable", ollama_online=ollama_online)
                         time.sleep(backoff)
