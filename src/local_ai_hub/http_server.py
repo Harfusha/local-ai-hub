@@ -2448,7 +2448,7 @@ class Handler(BaseHTTPRequestHandler):
         if not callable(recorder):
             return False
         try:
-            recorder(
+            accepted = recorder(
                 "admin.authorization",
                 success=allowed,
                 component="http_admin",
@@ -2456,21 +2456,24 @@ class Handler(BaseHTTPRequestHandler):
                 path=urlparse(str(getattr(self, "path", ""))).path,
                 actor=str(getattr(self, "_authorization_actor", "unknown")),
             )
-            return True
+            return accepted is not False
         except Exception:
             return False
 
-    def _audit_admin_result(self, status: int) -> None:
+    def _audit_admin_result(self, status: int) -> bool:
         action = str(getattr(self, "_admin_action", "") or "")
-        if not action or getattr(self, "_admin_result_audited", False):
-            return
+        if not action:
+            return True
+        if getattr(self, "_admin_result_audited", False):
+            return bool(getattr(self, "_admin_result_audit_accepted", False))
         self._admin_result_audited = True
+        self._admin_result_audit_accepted = False
         telemetry = getattr(APP, "telemetry", None) if APP is not None else None
         recorder = getattr(telemetry, "record_system", None)
         if not callable(recorder):
-            return
+            return False
         try:
-            recorder(
+            accepted = recorder(
                 "admin.action.result",
                 success=200 <= int(status) < 400,
                 component="http_admin",
@@ -2479,8 +2482,11 @@ class Handler(BaseHTTPRequestHandler):
                 status_code=int(status),
                 actor=str(getattr(self, "_authorization_actor", "unknown")),
             )
+            self._admin_result_audit_accepted = accepted is not False
         except Exception:
-            pass
+            # Audit transport failure is reported, never silently accepted.
+            self._admin_result_audit_accepted = False
+        return self._admin_result_audit_accepted
 
     def _validate_host_and_origin(self) -> bool:
         """Validate Host and Origin headers to protect against DNS rebinding and cross-origin attacks."""
@@ -2951,7 +2957,11 @@ class Handler(BaseHTTPRequestHandler):
         return 200, result
 
     def _send(self, status: int, data: Any, *, headers: Mapping[str, str] | None = None) -> None:
-        self._audit_admin_result(status)
+        audit_accepted = self._audit_admin_result(status)
+        if not audit_accepted and 200 <= status < 400 and isinstance(data, dict):
+            status = 503
+            data = {**data, "success": False, "error": "admin result audit unavailable; operation may have completed",
+                    "outcome_unknown": True, "terminal": True, "retryable": False}
         if status >= 400:
             data = normalize_transport_error(status, data)
         response_request_id = self.headers.get("X-LocalAI-Request-ID", "")

@@ -13,6 +13,63 @@ class AuditTelemetry:
         self.events.append({"action": action, **event})
 
 
+def test_admin_authorization_rejects_explicit_audit_queue_rejection(monkeypatch):
+    app = SimpleNamespace(
+        config={"security": {"api_token": "admin-token-long-enough"}},
+        telemetry=SimpleNamespace(record_system=lambda *_args, **_kwargs: False),
+    )
+    monkeypatch.setattr(http_server, "APP", app)
+    handler = _handler("/api/config/update", "admin-token-long-enough")
+
+    assert handler._require_authorized() is False
+    assert handler.responses == [(503, {"success": False, "error": "admin audit unavailable", "retryable": True})]
+
+
+def test_admin_result_retains_failed_audit_outcome_without_duplicate_enqueue(monkeypatch):
+    calls = []
+    def rejected(*args, **kwargs):
+        calls.append(args)
+        return False
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(telemetry=SimpleNamespace(record_system=rejected)))
+    handler = _handler("/api/config/update", "unused")
+    handler._admin_action = "config.write"
+
+    assert handler._audit_admin_result(200) is False
+    assert handler._audit_admin_result(200) is False
+    assert len(calls) == 1
+
+
+def test_admin_response_reports_unknown_outcome_after_result_audit_rejection(monkeypatch):
+    import io
+    import json
+
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(
+        config={}, telemetry=SimpleNamespace(record_system=lambda *_args, **_kwargs: False),
+    ))
+    handler = _handler("/api/config/update", "unused")
+    handler._admin_action = "config.write"
+    handler._telemetry_finished = True
+    handler._debug_trace_finished = True
+    handler._finish_debug_trace = lambda *_args: None
+    handler._close_trace_context = lambda: None
+    handler._common_headers = lambda: None
+    statuses = []
+    handler.send_response = statuses.append
+    handler.send_header = lambda *_args: None
+    handler.end_headers = lambda: None
+    handler.wfile = io.BytesIO()
+
+    http_server.Handler._send(handler, 200, {"success": True, "updated": True})
+
+    payload = json.loads(handler.wfile.getvalue())
+    assert statuses == [503]
+    assert payload["updated"] is True
+    assert payload["success"] is False
+    assert payload["outcome_unknown"] is True
+    assert payload["retryable"] is False
+    assert payload["terminal"] is True
+
+
 def _handler(path, token):
     handler = http_server.Handler.__new__(http_server.Handler)
     handler.path = path
