@@ -2748,7 +2748,21 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_post_telemetry_timeline(self, payload: Any) -> None:
         limit = payload.get("limit", 100) if isinstance(payload, dict) else 100
         before_id = payload.get("before_id") if isinstance(payload, dict) else None
-        self._send(200, {"success": True, **APP.telemetry.get_timeline_page(limit, before_id=before_id)})
+        try:
+            page = APP.telemetry.get_timeline_page(limit, before_id=before_id)
+        except (TypeError, ValueError):
+            raise
+        except Exception as exc:
+            APP.logger.warning("telemetry timeline page failed error_type=%s", type(exc).__name__)
+            self._send(503, {
+                "success": False,
+                "error": {"code": "telemetry_page_unavailable", "message": "telemetry timeline is temporarily unavailable"},
+                "status_code": 503,
+                "retryable": True,
+                "terminal": False,
+            })
+            return
+        self._send(200, {"success": True, **page})
 
     def _async_delivery(self, path: str, payload: dict[str, Any], tenant: str) -> tuple[int, dict[str, Any]] | None:
         """Convert eligible long foreground work into an existing durable job when requested."""
@@ -3060,14 +3074,31 @@ class Handler(BaseHTTPRequestHandler):
                 replay_cursor = after_seq
                 replay_through_seq = None
                 replayed_events = 0
+                reported_gap_ranges: set[tuple[int, int]] = set()
                 while replayed_events < SSE_REPLAY_MAX_EVENTS:
                     page_limit = min(AGENT_EVENT_PAGE_MAX_LIMIT, SSE_REPLAY_MAX_EVENTS - replayed_events)
-                    page = APP.agent_state.event_page(
-                        stream_id=stream_id,
-                        after_seq=replay_cursor,
-                        limit=page_limit,
-                        through_seq=replay_through_seq,
-                    )
+                    try:
+                        page = APP.agent_state.event_page(
+                            stream_id=stream_id,
+                            after_seq=replay_cursor,
+                            limit=page_limit,
+                            through_seq=replay_through_seq,
+                        )
+                    except Exception as exc:
+                        stream_success = False
+                        stream_error = "event replay unavailable"
+                        APP.logger.warning("event replay page failed error_type=%s", type(exc).__name__)
+                        write_sse("replay_error", {
+                            "success": False,
+                            "next_seq": max(0, int(replay_cursor)),
+                            "error": {
+                                "code": "event_replay_unavailable",
+                                "message": "event replay is temporarily unavailable",
+                            },
+                            "retryable": True,
+                            "terminal": False,
+                        })
+                        return
                     if page.get("success") is not True:
                         stream_success = False
                         stream_error = "event replay unavailable"
@@ -3112,6 +3143,21 @@ class Handler(BaseHTTPRequestHandler):
                             last_seq = checkpoint
                             last_seq_by_stream[stream_id] = checkpoint
                             continue
+                    gap_ranges = page.get("gap_ranges", [])
+                    if isinstance(gap_ranges, (list, tuple)):
+                        for gap in gap_ranges:
+                            if not isinstance(gap, dict):
+                                continue
+                            try:
+                                gap_start = int(gap.get("from_seq"))
+                                gap_end = int(gap.get("to_seq"))
+                            except (TypeError, ValueError, OverflowError):
+                                continue
+                            if gap_start < 0 or gap_end < gap_start or (gap_start, gap_end) in reported_gap_ranges:
+                                continue
+                            reported_gap_ranges.add((gap_start, gap_end))
+                            if not write_sse("stream.gap", gap, seq=gap_end):
+                                return
                     page_payload = json_dumps(page, separators=(",", ":"))
                     page_msg = f"id: {page.get('next_seq', replay_cursor)}\nevent: replay_page\ndata: {page_payload}\n\n".encode("utf-8")
                     try:
@@ -3600,7 +3646,27 @@ class Handler(BaseHTTPRequestHandler):
                 }
                 if snapshot_bound is not None and _event_page_supports_snapshot_bound(agent_state.event_page):
                     page_kwargs["through_seq"] = through_seq
-                page = agent_state.event_page(**page_kwargs)
+                try:
+                    page = agent_state.event_page(**page_kwargs)
+                except Exception as exc:
+                    APP.logger.warning("agent event page failed error_type=%s", type(exc).__name__)
+                    try:
+                        error_cursor = max(0, int(after_seq))
+                    except (TypeError, ValueError, OverflowError):
+                        error_cursor = 0
+                    self._send(503, {
+                        "success": False,
+                        "events": [],
+                        "next_seq": error_cursor,
+                        "first_retained_seq": 0,
+                        "last_seq": 0,
+                        "has_more": False,
+                        "gap_ranges": [],
+                        "cursor_reset": False,
+                        "error": {"code": "event_page_unavailable", "message": "agent event page is temporarily unavailable"},
+                        "retryable": True,
+                        "terminal": False,
+                    }); return
                 if snapshot_bound is not None:
                     page = _apply_event_page_snapshot_bound(
                         page, through_seq=snapshot_bound, after_seq=after_seq,
@@ -3696,7 +3762,20 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/telemetry/timeline":
                 limit = (query.get("limit") or [100])[0]
                 before_id = (query.get("before_id") or [None])[0]
-                self._send(200, {"success": True, **APP.telemetry.get_timeline_page(limit, before_id=before_id)}); return
+                try:
+                    page = APP.telemetry.get_timeline_page(limit, before_id=before_id)
+                except (TypeError, ValueError):
+                    raise
+                except Exception as exc:
+                    APP.logger.warning("telemetry timeline page failed error_type=%s", type(exc).__name__)
+                    self._send(503, {
+                        "success": False,
+                        "error": {"code": "telemetry_page_unavailable", "message": "telemetry timeline is temporarily unavailable"},
+                        "status_code": 503,
+                        "retryable": True,
+                        "terminal": False,
+                    }); return
+                self._send(200, {"success": True, **page}); return
             if path == "/api/audit/tail":
                 limit = int((query.get("limit") or [20])[0])
                 self._send(200, {"success": True, "events": APP.telemetry.tail(limit)}); return

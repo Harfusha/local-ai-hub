@@ -7,6 +7,8 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
+from urllib.parse import urlencode
 
 import pytest
 
@@ -116,14 +118,27 @@ def test_sse_stream_disabled_is_terminal_403_without_stream_headers(monkeypatch)
     assert handler.wfile.getvalue() == b""
 
 
-def test_sse_http_route_rejects_disabled_agent_state_before_stream(monkeypatch):
+def test_sse_http_route_rejects_disabled_agent_state_before_stream(monkeypatch, tmp_path: Path):
     app = type("App", (), {})()
     app.agent_state = type("DisabledState", (), {"enabled": False})()
-    app.config = {}
+    root = tmp_path / "repo"
+    root.mkdir()
+    principal = "t18-test-principal"
+    derivation_key = "t18-test-derivation-key-material"
+    tenant = http_server._derive_root_tenant(principal, str(root.resolve()), derivation_key)
+    task = SimpleNamespace(context=SimpleNamespace(repository_id=str(root.resolve()), session_id=tenant))
+    app.config = {
+        "security": {
+            "api_token": "t18-test-api-token",
+            "api_token_tenant": principal,
+            "tenant_derivation_key": derivation_key,
+            "allowed_roots": [str(root.resolve())],
+        }
+    }
+    app.agent_tasks = SimpleNamespace(get=lambda task_id: task if task_id == "task-1" else None)
     responses = []
     monkeypatch.setattr(http_server, "APP", app)
     monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda self, _path: None)
-    monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
     monkeypatch.setattr(
         http_server.Handler,
         "_send",
@@ -135,7 +150,14 @@ def test_sse_http_route_rejects_disabled_agent_state_before_stream(monkeypatch):
         lambda self, **_kwargs: pytest.fail("disabled agent_state must not start SSE streaming"),
     )
     handler = object.__new__(http_server.Handler)
-    handler.path = "/api/agent-state/events/stream?stream_id=task-1"
+    handler.path = "/api/agent-state/events/stream?" + urlencode({
+        "stream_id": "task:task-1",
+        "root": str(root.resolve()),
+    })
+    handler.command = "GET"
+    handler.headers = {"Authorization": "Bearer t18-test-api-token"}
+    handler.client_address = ("127.0.0.1", 12345)
+    handler.server = SimpleNamespace()
 
     http_server.Handler.do_GET(handler)
 
@@ -322,7 +344,7 @@ def test_sse_stream_replays_all_pages_and_advances_cursor(tmp_path: Path, monkey
     output = handler.wfile.getvalue().decode("utf-8")
     assert output.count("event: task.updated") == 1001
     assert "id: 1001\nevent: task.updated" in output
-    assert requested_cursors == [0, 1000]
+    assert requested_cursors == list(range(0, 1001, http_server.AGENT_EVENT_PAGE_MAX_LIMIT))
 
 
 def test_sse_stream_surfaces_retention_gap_before_kind_filtered_replay(
