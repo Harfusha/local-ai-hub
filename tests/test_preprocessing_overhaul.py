@@ -312,8 +312,18 @@ def test_idle_diagnostics_runs_quoted_unicode_command_without_shell(tmp_path: Pa
 
     assert pre._step_diagnostics({"root": str(repo_root)}) is True
 
-    assert len(calls) == 1
-    assert calls[0][1] is False
+    diagnostic_calls = [
+        (args, shell)
+        for args, shell in calls
+        if isinstance(args, list) and args and args[0] == sys.executable
+    ]
+    assert len(diagnostic_calls) == 1
+    assert all(shell is False for _, shell in calls)
+    assert diagnostic_calls[0][0] == [
+        sys.executable,
+        "-c",
+        "print('validace žluťoučká')",
+    ]
     with pre._db_lock, closing(pre._connect()) as con:
         row = con.execute(
             "SELECT exit_code, stdout_preview FROM diagnostic_baselines WHERE root=?",
