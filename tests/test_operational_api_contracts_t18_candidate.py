@@ -368,7 +368,7 @@ def test_agent_event_sse_prefers_header_and_pages_replay_with_gap_metadata(monke
     handler.do_GET()
     output = handler.wfile.getvalue().decode("utf-8")
 
-    assert calls == [("task:one", 3, 1000), ("task:one", 7, 1000)]
+    assert calls == [("task:one", 3, 100), ("task:one", 7, 100)]
     assert "id: task%3Aone:7" in output
     assert "id: task%3Aone:8" in output
     assert "event: retention_gap" in output
