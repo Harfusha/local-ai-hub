@@ -2306,10 +2306,11 @@ class OllamaRuntime:
             or "default"
         ).rstrip("/")
 
-        def request_ollama(endpoint: str, payload: dict[str, Any] | None) -> dict[str, Any]:
+        def request_ollama(endpoint: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
             remaining = max(0.0, unload_deadline - time.monotonic())
-            return self.request_interruptible(
-                endpoint, payload, should_stop, timeout=remaining,
+            return self.request(
+                endpoint, payload, timeout=remaining,
+                should_stop=should_stop, deadline=unload_deadline,
             )
 
         if _stop_requested(should_stop):
@@ -2404,7 +2405,7 @@ class OllamaRuntime:
                 continue
             try:
                 if backend == "ollama":
-                    response = request_ollama("/api/ps", {})
+                    response = request_ollama("/api/ps")
                     if not isinstance(response, dict) or "error" in response or not isinstance(response.get("models"), list):
                         raise RuntimeError("backend unavailable")
                     rows = response["models"]
@@ -2513,7 +2514,7 @@ class OllamaRuntime:
             for backend in backend_names:
                 try:
                     if backend == "ollama":
-                        response = request_ollama("/api/ps", {})
+                        response = request_ollama("/api/ps")
                         if not isinstance(response, dict) or "error" in response or not isinstance(response.get("models"), list):
                             raise RuntimeError("post-unload /api/ps unavailable")
                         rows = response["models"]
