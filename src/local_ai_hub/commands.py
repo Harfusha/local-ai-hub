@@ -7402,6 +7402,7 @@ class CommandBroker:
             if not force and not bypass_cache and not is_mutating:
                 self.suppression_cache.set(attempt_key, result)
             return self._compact(result, tenant, command)
+        cache_lookup_started = time.perf_counter()
         cacheable = bool(classification["cacheable"]) and not is_mutating and not _transaction_context
         if cacheable and not force and not bypass_cache:
             cached = self._read_cached_command_result(self.success_cache, self.failure_cache, key)
@@ -7423,8 +7424,11 @@ class CommandBroker:
                     if key != stale_key:
                         cached = self._read_cached_command_result(self.success_cache, self.failure_cache, key)
             if isinstance(cached, dict):
+                phase_timings_ms["result_cache_lookup_ms"] = round((time.perf_counter() - cache_lookup_started) * 1000, 3)
                 self.hits += 1
                 result = dict(cached)
+                cached_timings = result.get("phase_timings_ms", {})
+                result["phase_timings_ms"] = {**cached_timings, **phase_timings_ms}
                 result.update({"cache_hit": True, "coalesced": False, "classification": classification, "repo_state": state, "repository_revision": str(state.get("fingerprint", ""))})
                 self._record_command_verification(
                     result,
@@ -7446,6 +7450,7 @@ class CommandBroker:
                     repository_root=str(state.get("root") or cwd),
                 )
                 return self._compact(result, tenant, command)
+        phase_timings_ms["result_cache_lookup_ms"] = round((time.perf_counter() - cache_lookup_started) * 1000, 3)
 
         singleflight = not is_mutating and not bypass_cache and not _transaction_context
         event: threading.Event | None = None
@@ -7886,7 +7891,17 @@ class CommandBroker:
                     "terminal": True, "retryable": False}
         try:
             write_paths = _patch_write_paths(cwd_path, patch_bytes, self.git_snapshot_timeout)
-        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        except subprocess.TimeoutExpired as exc:
+            return {
+                "success": False,
+                "applied": False,
+                "rolled_back": False,
+                "timed_out": True,
+                "error": f"Patch write set metadata timed out: {str(exc)[:512]}",
+                "terminal": True,
+                "retryable": False,
+            }
+        except (OSError, ValueError) as exc:
             return {
                 "success": False,
                 "applied": False,
@@ -7978,12 +7993,23 @@ class CommandBroker:
                     "terminal": True, "retryable": False}
 
         # 2. Check if patch applies cleanly
-        check_proc = subprocess.run(
-            ["git", "apply", "--check", "--whitespace=nowarn"],
-            input=patch_bytes,
-            cwd=str(cwd_path), capture_output=True, check=False,
-            timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
-        )
+        try:
+            check_proc = subprocess.run(
+                ["git", "apply", "--check", "--whitespace=nowarn"],
+                input=patch_bytes,
+                cwd=str(cwd_path), capture_output=True, check=False,
+                timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
+            )
+        except subprocess.TimeoutExpired as exc:
+            return {
+                "success": False,
+                "applied": False,
+                "rolled_back": False,
+                "timed_out": True,
+                "error": f"Patch check timed out: {str(exc)[:512]}",
+                "terminal": True,
+                "retryable": False,
+            }
         if check_proc.returncode != 0:
             err_msg = check_proc.stderr.decode("utf-8", errors="replace")
             return {
@@ -8006,7 +8032,9 @@ class CommandBroker:
         except subprocess.TimeoutExpired as exc:
             failure = {
                 "success": False,
-                "applied": False,
+                "applied": None,
+                "timed_out": True,
+                "apply_state_unknown": True,
                 "rolled_back": False,
                 "error": "Patch application timed out; filesystem outcome is unknown",
             }
