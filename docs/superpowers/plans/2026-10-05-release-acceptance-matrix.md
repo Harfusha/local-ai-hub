@@ -64,6 +64,16 @@
   => **8 passed in 14.52s**. Restart complete suite on final integrated source
   and test tree; prior runs are not whole-suite receipts.
 
+## Legacy database test fixture — 2026-10-08
+
+- Owner: primary agent, current master. Changed path: `tests/test_all_advanced_improvements.py`.
+- The 10% full-suite stop was a stale fixture path: the test created
+  `agent_state.sqlite3`, while current Agent OS state uses `agent_state.sqlite`.
+  Updated the fixture filename only; database selection and read-only policy
+  remain unchanged.
+- `python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_all_advanced_improvements.py::test_read_only_db_query_safety`
+  => **1 passed in 0.35s**. Restart complete suite against final test tree.
+
 ## Integrated verification — 2026-10-08, source candidate `8b5ffe7d`
 
 - All **61 registered repository-family worktrees** were verified at the same
