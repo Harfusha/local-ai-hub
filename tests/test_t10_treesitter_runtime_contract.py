@@ -14,8 +14,9 @@ def _simulate_windows_python_313(monkeypatch) -> None:
     monkeypatch.setattr(treesitter_parser, "sys", SimpleNamespace(version_info=(3, 13)))
 
 
-def test_windows_python_313_uses_available_language_pack_for_java_and_cpp(monkeypatch) -> None:
+def test_windows_python_312_uses_available_language_pack_for_java_and_cpp(monkeypatch) -> None:
     _simulate_windows_python_313(monkeypatch)
+    monkeypatch.setattr(treesitter_parser, "sys", SimpleNamespace(version_info=(3, 12)))
     requested: list[str] = []
     pack = ModuleType("tree_sitter_language_pack")
     pack.has_language = lambda name: name in {"java", "cpp"}

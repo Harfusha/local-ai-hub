@@ -33,6 +33,15 @@ def _init_treesitter_once() -> bool:
         return bool(_PARSERS)
     _INIT_ATTEMPTED = True
 
+    # A supervised Windows/Python 3.13 process crashed in native Node.children
+    # traversal even with language-pack parsing serialized by _PARSER_LOCK.
+    # The language pack is not a safe escape from the native binding guard.
+    # Fall back before importing either backend; Python exceptions cannot catch
+    # an access violation in the extension.
+    if os.name == "nt" and sys.version_info >= (3, 13):
+        logger.warning("Tree-sitter disabled on Windows Python 3.13+; using safe fallbacks")
+        return False
+
     try:
         import tree_sitter_language_pack as tslp
         mapping = {
@@ -57,13 +66,6 @@ def _init_treesitter_once() -> bool:
             return True
     except Exception as exc:
         logger.debug("tree_sitter_language_pack unavailable: %s", exc)
-
-    # Native language-pack parsing and traversal share _PARSER_LOCK. If that
-    # backend is unavailable, keep unverified legacy bindings disabled on
-    # Windows/Python 3.13 and degrade to deterministic language fallbacks.
-    if os.name == "nt" and sys.version_info >= (3, 13):
-        logger.warning("Tree-sitter disabled on Windows Python 3.13+; using safe fallbacks")
-        return False
 
     try:
         from tree_sitter import Language, Parser
