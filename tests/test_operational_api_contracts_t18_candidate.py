@@ -65,16 +65,17 @@ def _prepare_event_route(handler, path):
 def test_telemetry_timeline_is_recent_and_cursor_pages_older_rows(tmp_path):
     store = TelemetryStore(tmp_path / "telemetry", enabled=True, flush_interval_seconds=0.01)
     try:
-        for index in range(5):
-            store.record_http(action=f"/api/operation/{index}", success=True)
+        actions = ["/slow", "/median", "/median", "/slow", "/median"]
+        for action in actions:
+            store.record_http(action=action, success=True)
         assert store.flush(1)
 
         recent = store.get_timeline_page(limit=2)
         older = store.get_timeline_page(limit=2, before_id=recent["next_cursor"])
 
-        assert [row["action"] for row in recent["timeline"]] == ["/api/operation/3", "/api/operation/4"]
+        assert [row["action"] for row in recent["timeline"]] == ["/slow", "/median"]
         assert recent["has_more"] is True
-        assert [row["action"] for row in older["timeline"]] == ["/api/operation/1", "/api/operation/2"]
+        assert [row["action"] for row in older["timeline"]] == ["/median", "/median"]
     finally:
         store.close()
 
@@ -369,9 +370,9 @@ def test_agent_event_sse_prefers_header_and_pages_replay_with_gap_metadata(monke
     output = handler.wfile.getvalue().decode("utf-8")
 
     assert calls == [("task:one", 3, 100), ("task:one", 7, 100)]
-    assert "id: task%3Aone:7" in output
-    assert "id: task%3Aone:8" in output
-    assert "event: retention_gap" in output
+    assert "id: 7" in output
+    assert "id: 8" in output
+    assert "event: stream.gap" in output
     assert '"from_seq":4,"to_seq":6' in output
 
 
@@ -390,7 +391,7 @@ def test_agent_event_sse_merges_events_and_internal_gaps_in_sequence_order(monke
         def subscribe(self, maxsize=200):
             return queue.Queue(maxsize=maxsize)
 
-        def event_page(self, stream_id, *, after_seq, limit):
+        def event_page(self, stream_id, *, after_seq, limit, through_seq=None):
             return {
                 "success": True,
                 "events": [first, middle, last],
@@ -408,9 +409,9 @@ def test_agent_event_sse_merges_events_and_internal_gaps_in_sequence_order(monke
         def unsubscribe(self, subscriber):
             return None
 
-    monkeypatch.setattr(http_server, "APP", SimpleNamespace(agent_state=State(), config={"server": {"max_stream_duration_seconds": 1}}))
+    _install_event_route_app(monkeypatch, State(), {"server": {"max_stream_duration_seconds": 1}})
     handler = http_server.Handler.__new__(http_server.Handler)
-    handler.headers = {"Last-Event-ID": "task%3Aone:0"}
+    handler.headers = {"Last-Event-ID": "0"}
     handler.wfile = io.BytesIO()
     handler.send_response = lambda status: None
     handler.send_header = lambda name, value: None
@@ -422,15 +423,15 @@ def test_agent_event_sse_merges_events_and_internal_gaps_in_sequence_order(monke
     output = handler.wfile.getvalue().decode("utf-8")
 
     positions = [
-        output.index("id: task%3Aone:1"),
-        output.index("id: task%3Aone:2"),
-        output.index("id: task%3Aone:3"),
-        output.index("id: task%3Aone:4"),
-        output.index("id: task%3Aone:5"),
+        output.index("id: 1"),
+        output.index("id: 2"),
+        output.index("id: 3"),
+        output.index("id: 4"),
+        output.index("id: 5"),
     ]
     assert positions == sorted(positions)
     ids = [line.removeprefix("id: ") for line in output.splitlines() if line.startswith("id: ")]
-    assert ids == [f"task%3Aone:{seq}" for seq in range(1, 6)]
+    assert ids == [f"{seq}" for seq in range(1, 6)]
     assert output.count("event: retention_gap") == 2
     assert '"from_seq":2,"to_seq":2' in output
     assert '"from_seq":4,"to_seq":4' in output
@@ -450,7 +451,7 @@ def test_agent_event_sse_paginates_filtered_replay_with_canonical_pages(monkeypa
         def subscribe(self, maxsize=200):
             return queue.Queue(maxsize=maxsize)
 
-        def event_page(self, stream_id, *, after_seq, limit):
+        def event_page(self, stream_id, *, after_seq, limit, through_seq=None):
             calls.append((after_seq, limit))
             page_events = [event for event in events if event.seq > after_seq][:limit]
             return {
@@ -467,9 +468,9 @@ def test_agent_event_sse_paginates_filtered_replay_with_canonical_pages(monkeypa
         def unsubscribe(self, subscriber):
             return None
 
-    monkeypatch.setattr(http_server, "APP", SimpleNamespace(agent_state=State(), config={"server": {"max_stream_duration_seconds": 1}}))
+    _install_event_route_app(monkeypatch, State(), {"server": {"max_stream_duration_seconds": 1}})
     handler = http_server.Handler.__new__(http_server.Handler)
-    handler.headers = {"Last-Event-ID": "task%3Aone:0"}
+    handler.headers = {"Last-Event-ID": "0"}
     handler.wfile = io.BytesIO()
     handler.send_response = lambda status: None
     handler.send_header = lambda name, value: None
@@ -480,9 +481,9 @@ def test_agent_event_sse_paginates_filtered_replay_with_canonical_pages(monkeypa
     handler._stream_agent_events(stream_id="task:one", kind="task.done", after_seq=0, timeout=1.0)
     output = handler.wfile.getvalue().decode("utf-8")
 
-    assert calls == [(0, 1000), (1000, 1000)]
+    assert calls == [(seq, 100) for seq in range(0, 1001, 100)]
     assert "event: task.progress" not in output
-    assert "id: task%3Aone:1001" in output
+    assert "id: 1001" in output
     assert "event: stream_timeout" in output
     assert '"last_seq":1001' in output
 
@@ -513,9 +514,9 @@ def test_agent_event_sse_fails_closed_without_usable_event_page(monkeypatch, pag
 
         State.event_page = event_page
 
-    monkeypatch.setattr(http_server, "APP", SimpleNamespace(agent_state=State(), config={"server": {"max_stream_duration_seconds": 1}}))
+    _install_event_route_app(monkeypatch, State(), {"server": {"max_stream_duration_seconds": 1}})
     handler = http_server.Handler.__new__(http_server.Handler)
-    handler.headers = {"Last-Event-ID": "task%3Aone:2"}
+    handler.headers = {"Last-Event-ID": "2"}
     handler.wfile = io.BytesIO()
     statuses = []
     handler.send_response = statuses.append
@@ -555,15 +556,15 @@ def test_agent_event_sse_preserves_initial_provider_failure_before_headers(monke
         def subscribe(self, maxsize=200):
             return queue.Queue(maxsize=maxsize)
 
-        def event_page(self, stream_id, *, after_seq, limit):
+        def event_page(self, stream_id, *, after_seq, limit, through_seq=None):
             return error_page
 
         def unsubscribe(self, subscriber):
             return None
 
-    monkeypatch.setattr(http_server, "APP", SimpleNamespace(agent_state=State(), config={"server": {"max_stream_duration_seconds": 1}}))
+    _install_event_route_app(monkeypatch, State(), {"server": {"max_stream_duration_seconds": 1}})
     handler = http_server.Handler.__new__(http_server.Handler)
-    handler.headers = {"Last-Event-ID": "task%3Aone:2"}
+    handler.headers = {"Last-Event-ID": "2"}
     handler.wfile = io.BytesIO()
     statuses = []
     headers = []
@@ -599,7 +600,7 @@ def test_agent_event_sse_emits_later_provider_failure_after_headers(monkeypatch)
         def subscribe(self, maxsize=200):
             return queue.Queue(maxsize=maxsize)
 
-        def event_page(self, stream_id, *, after_seq, limit):
+        def event_page(self, stream_id, *, after_seq, limit, through_seq=None):
             calls.append(after_seq)
             if len(calls) == 1:
                 return {
@@ -617,9 +618,9 @@ def test_agent_event_sse_emits_later_provider_failure_after_headers(monkeypatch)
         def unsubscribe(self, subscriber):
             return None
 
-    monkeypatch.setattr(http_server, "APP", SimpleNamespace(agent_state=State(), config={"server": {"max_stream_duration_seconds": 1}}))
+    _install_event_route_app(monkeypatch, State(), {"server": {"max_stream_duration_seconds": 1}})
     handler = http_server.Handler.__new__(http_server.Handler)
-    handler.headers = {"Last-Event-ID": "task%3Aone:0"}
+    handler.headers = {"Last-Event-ID": "0"}
     handler.wfile = io.BytesIO()
     statuses = []
     handler.send_response = statuses.append
@@ -648,7 +649,7 @@ def test_agent_event_sse_empty_retention_gap_advances_reconnect_cursor(monkeypat
         def subscribe(self, maxsize=200):
             return queue.Queue(maxsize=maxsize)
 
-        def event_page(self, stream_id, *, after_seq, limit):
+        def event_page(self, stream_id, *, after_seq, limit, through_seq=None):
             calls.append(after_seq)
             return {
                 "success": True,
@@ -664,9 +665,9 @@ def test_agent_event_sse_empty_retention_gap_advances_reconnect_cursor(monkeypat
         def unsubscribe(self, subscriber):
             return None
 
-    monkeypatch.setattr(http_server, "APP", SimpleNamespace(agent_state=State(), config={"server": {"max_stream_duration_seconds": 1}}))
+    _install_event_route_app(monkeypatch, State(), {"server": {"max_stream_duration_seconds": 1}})
     handler = http_server.Handler.__new__(http_server.Handler)
-    handler.headers = {"Last-Event-ID": "task%3Aone:2"}
+    handler.headers = {"Last-Event-ID": "2"}
     handler.wfile = io.BytesIO()
     handler.send_response = lambda status: None
     handler.send_header = lambda name, value: None
@@ -679,7 +680,7 @@ def test_agent_event_sse_empty_retention_gap_advances_reconnect_cursor(monkeypat
 
     assert calls == [2]
     assert "event: retention_gap" in output
-    assert "id: task%3Aone:5\nevent: retention_gap\n" in output
+    assert "id: 5\nevent: retention_gap\n" in output
     assert '"next_seq":5' in output
 
 
@@ -695,7 +696,7 @@ def test_agent_event_sse_reports_cursor_reset_and_rewinds_future_cursor(monkeypa
         def subscribe(self, maxsize=200):
             return queue.Queue(maxsize=maxsize)
 
-        def event_page(self, stream_id, *, after_seq, limit):
+        def event_page(self, stream_id, *, after_seq, limit, through_seq=None):
             calls.append(after_seq)
             return {
                 "success": True,
@@ -711,9 +712,9 @@ def test_agent_event_sse_reports_cursor_reset_and_rewinds_future_cursor(monkeypa
         def unsubscribe(self, subscriber):
             return None
 
-    monkeypatch.setattr(http_server, "APP", SimpleNamespace(agent_state=State(), config={"server": {"max_stream_duration_seconds": 1}}))
+    _install_event_route_app(monkeypatch, State(), {"server": {"max_stream_duration_seconds": 1}})
     handler = http_server.Handler.__new__(http_server.Handler)
-    handler.headers = {"Last-Event-ID": "task%3Aone:99"}
+    handler.headers = {"Last-Event-ID": "99"}
     handler.wfile = io.BytesIO()
     handler.send_response = lambda status: None
     handler.send_header = lambda name, value: None
@@ -726,7 +727,7 @@ def test_agent_event_sse_reports_cursor_reset_and_rewinds_future_cursor(monkeypa
 
     assert calls == [99]
     assert "event: cursor_reset" in output
-    assert "id: task%3Aone:5\nevent: cursor_reset\n" in output
+    assert "id: 5\nevent: cursor_reset\n" in output
 
 
 def test_agent_event_list_route_preserves_provider_page_failure(monkeypatch):
@@ -769,7 +770,7 @@ def test_agent_event_sse_filtered_cursor_reconnect_delivers_next_matching_event(
         def subscribe(self, maxsize=200):
             return queue.Queue(maxsize=maxsize)
 
-        def event_page(self, stream_id, *, after_seq, limit):
+        def event_page(self, stream_id, *, after_seq, limit, through_seq=None):
             calls.append(after_seq)
             page_events = [event for event in events if event.seq > after_seq][:limit]
             return {
@@ -786,7 +787,7 @@ def test_agent_event_sse_filtered_cursor_reconnect_delivers_next_matching_event(
         def unsubscribe(self, subscriber):
             return None
 
-    monkeypatch.setattr(http_server, "APP", SimpleNamespace(agent_state=State(), config={"server": {"max_stream_duration_seconds": 1}}))
+    _install_event_route_app(monkeypatch, State(), {"server": {"max_stream_duration_seconds": 1}})
 
     def stream(last_event_id):
         handler = http_server.Handler.__new__(http_server.Handler)
@@ -801,9 +802,9 @@ def test_agent_event_sse_filtered_cursor_reconnect_delivers_next_matching_event(
         handler._stream_agent_events(stream_id="task:one", kind="task.done", after_seq=after_seq, timeout=0.001)
         return handler.wfile.getvalue().decode("utf-8")
 
-    first = stream("task%3Aone:0")
+    first = stream("0")
     events.append(AgentEvent.create("task:one", "task.done", {"step": 3}).with_seq(3))
-    second = stream("task%3Aone:2")
+    second = stream("2")
 
     assert calls == [0, 2]
     assert "event: task.progress" not in first
@@ -827,7 +828,7 @@ def test_agent_event_sse_live_filter_advances_cursor_without_emitting_other_kind
         def subscribe(self, maxsize=200):
             return subscriber
 
-        def event_page(self, stream_id, *, after_seq, limit):
+        def event_page(self, stream_id, *, after_seq, limit, through_seq=None):
             return {
                 "success": True,
                 "events": [],
@@ -842,9 +843,9 @@ def test_agent_event_sse_live_filter_advances_cursor_without_emitting_other_kind
         def unsubscribe(self, subscriber):
             return None
 
-    monkeypatch.setattr(http_server, "APP", SimpleNamespace(agent_state=State(), config={"server": {"max_stream_duration_seconds": 1}}))
+    _install_event_route_app(monkeypatch, State(), {"server": {"max_stream_duration_seconds": 1}})
     handler = http_server.Handler.__new__(http_server.Handler)
-    handler.headers = {"Last-Event-ID": "task%3Aone:1"}
+    handler.headers = {"Last-Event-ID": "1"}
     handler.wfile = io.BytesIO()
     handler.send_response = lambda status: None
     handler.send_header = lambda name, value: None
@@ -855,7 +856,7 @@ def test_agent_event_sse_live_filter_advances_cursor_without_emitting_other_kind
     handler._stream_agent_events(stream_id="task:one", kind="task.done", after_seq=1, timeout=0.01)
     output = handler.wfile.getvalue().decode("utf-8")
 
-    assert "id: task%3Aone:2" in output
+    assert "id: 2" in output
     assert "event: task.progress" not in output
     assert '"last_seq":2' in output
 
@@ -930,7 +931,7 @@ def test_agent_state_detail_reports_degraded_status_on_dependency_timeout(monkey
 
 
 def test_db_query_enforces_row_and_byte_budgets(monkeypatch, tmp_path):
-    db = tmp_path / "agent_state.sqlite3"
+    db = tmp_path / "agent_state.sqlite"
     with closing(sqlite3.connect(db)) as con:
         con.execute("CREATE TABLE payloads (payload TEXT)")
         con.executemany("INSERT INTO payloads VALUES (?)", [("x" * 3000,) for _ in range(4)])
@@ -947,7 +948,7 @@ def test_db_query_enforces_row_and_byte_budgets(monkeypatch, tmp_path):
 
 
 def test_db_query_enforces_row_cap_independently_of_byte_cap(monkeypatch, tmp_path):
-    db = tmp_path / "agent_state.sqlite3"
+    db = tmp_path / "agent_state.sqlite"
     with closing(sqlite3.connect(db)) as con:
         con.execute("CREATE TABLE markers (value INTEGER)")
         con.executemany("INSERT INTO markers VALUES (?)", [(1,), (2,), (3,), (4,)])
@@ -965,7 +966,7 @@ def test_db_query_enforces_row_cap_independently_of_byte_cap(monkeypatch, tmp_pa
 
 
 def test_db_query_rejects_write_and_leaves_database_unchanged(monkeypatch, tmp_path):
-    db = tmp_path / "agent_state.sqlite3"
+    db = tmp_path / "agent_state.sqlite"
     with closing(sqlite3.connect(db)) as con:
         con.execute("CREATE TABLE marker (value INTEGER)")
         con.execute("INSERT INTO marker VALUES (1)")
@@ -981,7 +982,7 @@ def test_db_query_rejects_write_and_leaves_database_unchanged(monkeypatch, tmp_p
 
 
 def test_db_query_authorizer_denies_unapproved_sqlite_functions(monkeypatch, tmp_path):
-    db = tmp_path / "agent_state.sqlite3"
+    db = tmp_path / "agent_state.sqlite"
     with closing(sqlite3.connect(db)) as con:
         con.execute("CREATE TABLE marker (value INTEGER)")
         con.commit()
@@ -994,7 +995,7 @@ def test_db_query_authorizer_denies_unapproved_sqlite_functions(monkeypatch, tmp
 
 
 def test_db_query_deadline_reports_degraded_timeout(monkeypatch, tmp_path):
-    db = tmp_path / "agent_state.sqlite3"
+    db = tmp_path / "agent_state.sqlite"
     with closing(sqlite3.connect(db)) as con:
         con.execute("CREATE TABLE marker (value INTEGER)")
         con.execute("INSERT INTO marker VALUES (1)")
