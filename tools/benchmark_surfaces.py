@@ -3022,9 +3022,19 @@ def run_benchmark(
             result = app.code_index.update_files_batch(str(repo_root), relative_files)
             if result.get("success") is not True:
                 raise RuntimeError("Hub CodeIndex did not accept synthetic files")
+            with closing(app.code_index._connect()) as con:
+                indexed_paths = {
+                    str(row["path"])
+                    for row in con.execute(
+                        "SELECT path FROM files WHERE root=?",
+                        (str(repo_root.resolve()),),
+                    ).fetchall()
+                }
+            seeded_paths = set(relative_files) & indexed_paths
             return {
                 "files_processed": int(result.get("files_processed", 0)),
-                "files_seeded": int(result.get("files_processed", 0)) + int(result.get("cached") or 0),
+                "files_seeded": len(seeded_paths),
+                "files_missing": sorted(set(relative_files) - seeded_paths),
                 "symbols_indexed": int(result.get("symbols", 0)),
             }
 
@@ -3128,6 +3138,7 @@ def run_benchmark(
         # Seed every synthetic file outside the measured stage for downstream queries.
         sqlite_index_seed = populate_code_index()
         stages["hub_sqlite_index"]["main_repo_seeded_files"] = sqlite_index_seed["files_seeded"]
+        stages["hub_sqlite_index"]["main_repo_seeded_files_missing"] = sqlite_index_seed["files_missing"]
         stages["hub_sqlite_index"]["main_repo_seeded_symbols"] = sqlite_index_seed["symbols_indexed"]
 
         sqlite_read_cases = [
@@ -3824,13 +3835,25 @@ def run_benchmark(
                 workspace = rag_search_workspaces[regime]
                 clean_query = normalize_query(case["query"])
                 revision = app.rag.revision("t02-benchmark", workspace)
+                scope_key = app.rag._scope_key("t02-benchmark")
+                with closing(app.rag._connect()) as con:
+                    generation = app.rag._workspace_index_generation(con, scope_key, workspace)
+                cache_identity_known = app.rag._embedding_space_cache_identity_known()
+                embedding_space = app.rag._embedding_space_id()
+                embedding_dimension = app.rag._embedding_dimension_cache_identity()
                 cache_key = cache_stable_hash({
+                    "tenant": "t02-benchmark",
+                    "scope": app.rag.scope,
+                    "effective_scope": scope_key,
                     "workspace": workspace,
                     "revision": revision,
+                    "generation": generation,
                     "query": clean_query,
                     "top_k": 10,
                     "reranker": False,
                     "scope_path": None,
+                    "embedding_space": embedding_space if cache_identity_known else None,
+                    "embedding_dimension": embedding_dimension,
                 })
                 l1_value = app.rag.search_cache.l1.get(cache_key)
                 l2_value = app.rag.search_cache.l2.get(cache_key)
