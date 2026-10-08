@@ -6367,7 +6367,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, APP.services.purge_stale_cache(days))
                 return
             if 'post_maintenance_resolve_errors_1' in post_route_ids:
-                self._send(200, APP.services.resolve_all_errors())
+                result = APP.services.resolve_all_errors()
+                status = 200 if result.get("success") is True else 503 if result.get("retryable") else 500
+                self._send(status, result)
                 return
             if 'post_doctor_1' in post_route_ids:
                 self._send(200, APP.services.run_doctor())
