@@ -1,0 +1,11 @@
+[server]
+bind = "127.0.0.1"
+port = 11497
+state_dir = "C:\\Users\\Adam\\.codex\\worktrees\\hub-audit-repairs\\.local-ai-hub\\handoff\\T02-paired-matrix-20261002-v1\\results\\T02-CPU-20261002-04\\baseline\\scratch\\local-ai-hub-benchmark-0skqsmw1\\hub-state"
+
+[prewarm]
+enabled = false
+
+[observability]
+enabled = false
+

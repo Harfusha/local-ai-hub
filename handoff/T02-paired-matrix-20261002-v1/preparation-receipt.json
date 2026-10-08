@@ -1,0 +1,656 @@
+{
+  "schema_version": 1,
+  "task": "T02 paired six-case acceptance preparation",
+  "status": "terminal_contaminated_slot_released_no_valid_paired_receipt",
+  "manifest_path": "handoff/T02-paired-matrix-20261002-v1/manifest-T02-CPU-20261002-03-slot04.json",
+  "manifest_sha256": "39C7105E4635806DE9B6AA822EDE2540CD4BB590B0903A1B4C76C4849CE8E9E0",
+  "artifacts": {
+    "runner": {
+      "path": "tools/run_t02_paired_matrix.py",
+      "sha256": "69E3756058BB99DC02B7E172DC86D97AE9536922206FA16B331AC078BD9EA282"
+    },
+    "tests": {
+      "path": "tests/test_t02_paired_matrix.py",
+      "sha256": "BC95AACA1792B887E46FD3216051F4B017B1578EAC8B2998752EF94AB65D3C4A",
+      "verification": "focused seed/parser/provenance selectors: 4 passed in 0.21s; full suite: 16 passed, 1 failed in 0.27s due only to old immutable source pin harness mismatch"
+    },
+    "benchmark_harness": {
+      "path": "tools/benchmark_surfaces.py",
+      "sha256": "977FEC1F9936A0608452CFBAB720DF6D24023B79BDE2405DEDF7BEF293149C31",
+      "scope_note": "57 added and 46 replaced lines versus T20 pinned root file; preserves inherited T20 file content"
+    },
+    "plan": {
+      "path": "docs/superpowers/plans/2026-10-02-t02-paired-baseline-runner.md",
+      "sha256": "C81237CB54F7D61CD691D49D68917CB44E8CAF8DAA9AC679A4252985AE1F9405"
+    }
+  },
+  "last_test_attempt": {
+    "command": "C:\\Python313\\python.exe -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t02_paired_matrix.py",
+    "focused_attempt": {
+      "result": "4 passed in 0.21s",
+      "scope": "seed parser and provenance selectors"
+    },
+    "full_suite_result": "16 passed, 1 failed in 0.27s",
+    "failed_test": "test_baseline_candidate_harness_pins_match_seed_aware_harness_bytes",
+    "failure": "old immutable baseline/candidate pin harness SHA256 8f8b7da86aa9230362814291e334fdc59c6af3700beb0f1dc9314a61e976cf80 differs from current seed-aware harness SHA256 977FEC1F9936A0608452CFBAB720DF6D24023B79BDE2405DEDF7BEF293149C31",
+    "measurements_started": false,
+    "runner_sha256_after_test": "69E3756058BB99DC02B7E172DC86D97AE9536922206FA16B331AC078BD9EA282",
+    "harness_sha256_after_test": "977FEC1F9936A0608452CFBAB720DF6D24023B79BDE2405DEDF7BEF293149C31",
+    "test_sha256_after_test": "BC95AACA1792B887E46FD3216051F4B017B1578EAC8B2998752EF94AB65D3C4A",
+    "current_tree_verified": true
+  },
+  "test_gate": {
+    "local_ai_command": "request_not_sent=true; terminal/retryable fields absent",
+    "native_fallback": "authorized directly by user; one T02 suite rerun completed",
+    "direct_user_override_found": true,
+    "t15_process_scan": "0 pytest/benchmark processes",
+    "ensure_tools_script": "missing at both documented skill roots"
+  },
+  "t15_handoff": {
+    "baseline_commit_sha": "28f471f67a4b37da92499d720084ff300170c013",
+    "baseline_commands_sha256": "5E3FD81C4AB55633A165237AE5C828CA2B73ACE353DA403DB67C98C65128E1D3",
+    "candidate_commit_sha": "a10baed2a86f721cbd724af19b4adb2a71cb88af",
+    "candidate_parent_sha": "b38981611868221755ff899e9f5e40aa68a6c88e",
+    "candidate_commands_sha256": "845348F2E362852561AE2EBB1B3F5458C8915E0134B1EC884F47356132B9FECB",
+    "candidate_import_modules": {
+      "src/local_ai_hub/command_transactions.py": "247E49200044B4ACF2A1B261412F187C4688DE3CF0C9672AE582FD14EA1F029D",
+      "src/local_ai_hub/work_fencing.py": "C93C22210A479DA74A8ACD19134BAE2BC80979BDDD55E9E5FA08A50042ECBDD0"
+    },
+    "harness_patch_sha256": "7475c37d7abb018eb7578e6de28d271d2d917af4f1be5994103225cc859eb02d",
+    "runner_command": null,
+    "pin_guard_test_path": "tests/test_benchmark_command_broker.py",
+    "test_request": "request_not_sent=true; outcome_unknown=false; terminal/retryable absent",
+    "runner_change": "not made",
+    "green_test_receipt": true,
+    "immutable_harness_commit": "a10baed2a86f721cbd724af19b4adb2a71cb88af",
+    "benchmark_started": false,
+    "root_head_index_worktree_modified": false,
+    "status": "seed_aware_immutable_pins_verified_by_t02_waiting_for_t20_slot",
+    "baseline_parent_sha": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+    "seed_aware_pin_pair": {
+      "baseline_root": "C:\\Users\\Adam\\.codex\\worktrees\\t15-seeded-baseline-20261002",
+      "candidate_root": "C:\\Users\\Adam\\.codex\\worktrees\\t15-seeded-candidate-20261002",
+      "baseline_snapshot_sha256": "04A65035C98FAF1A99DF40400B93EDF8723D55F0F7F63D1B32BEBB513382318F",
+      "candidate_snapshot_sha256": "3A53140713360CC1F10B477789849F7F242C7119257BEC8B98014BC47544B719",
+      "shared_generator_sha256": "5752BCC09A2D84FB8A7B20FF0DF624638074F8CFFA24B686CD4BFF72257E03A3",
+      "shared_harness_sha256": "977FEC1F9936A0608452CFBAB720DF6D24023B79BDE2405DEDF7BEF293149C31",
+      "both_clean": true,
+      "both_immutable_commits_verified": true
+    }
+  },
+  "source_pin_verification": {
+    "algorithm": "tools/run_t02_paired_matrix.py::compute_source_pin and verify_source_pin",
+    "baseline_root": "C:\\Users\\Adam\\.codex\\worktrees\\t15-seeded-baseline-20261002",
+    "baseline_commit_sha": "28f471f67a4b37da92499d720084ff300170c013",
+    "baseline_parent_sha": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+    "baseline_worktree_clean": true,
+    "baseline_pin_matches_manifest": true,
+    "candidate_root": "C:\\Users\\Adam\\.codex\\worktrees\\t15-seeded-candidate-20261002",
+    "candidate_commit_sha": "a10baed2a86f721cbd724af19b4adb2a71cb88af",
+    "candidate_parent_sha": "b38981611868221755ff899e9f5e40aa68a6c88e",
+    "candidate_worktree_clean": true,
+    "candidate_pin_matches_manifest": true,
+    "shared_generator_sha256": "5752bcc09a2d84fb8a7b20ff0df624638074f8cffa24b686cd4bff72257e03a3",
+    "shared_benchmark_harness_sha256": "977FEC1F9936A0608452CFBAB720DF6D24023B79BDE2405DEDF7BEF293149C31",
+    "new_checkouts_immutable_and_clean": true
+  },
+  "pinned_harness_compatibility": {
+    "current_t02_cli_seed_flag_supported": true,
+    "current_t02_synthetic_input_seed_metadata_emitted": true,
+    "current_t02_synthetic_input_fingerprint_metadata_emitted": true,
+    "old_pins_seed_flag_supported": false,
+    "old_pins_synthetic_input_seed_metadata_emitted": false,
+    "old_pins_synthetic_input_fingerprint_metadata_emitted": false,
+    "new_compatible_pins_requested_from_t15": true,
+    "new_baseline_and_candidate_harness_bytes_match": true,
+    "new_baseline_and_candidate_harness_sha256": "977FEC1F9936A0608452CFBAB720DF6D24023B79BDE2405DEDF7BEF293149C31",
+    "acceptance_impact": "Compatible new pins verified; wait for T20 explicit serial CPU slot before any benchmark measurement"
+  },
+  "t02_measurement_handoff": {
+    "working_directory": "C:\\Users\\Adam\\.codex\\worktrees\\hub-audit-repairs\\.local-ai-hub",
+    "runner_command": "C:\\Python313\\python.exe -B C:\\Users\\Adam\\.codex\\worktrees\\hub-audit-repairs\\.local-ai-hub\\tools\\run_t02_paired_matrix.py run --manifest C:\\Users\\Adam\\.codex\\worktrees\\hub-audit-repairs\\.local-ai-hub\\handoff\\T02-paired-matrix-20261002-v1\\manifest-T02-CPU-20261002-03-slot04.json --baseline-root C:\\Users\\Adam\\.codex\\worktrees\\t15-seeded-baseline-20261002 --candidate-root C:\\Users\\Adam\\.codex\\worktrees\\t15-seeded-candidate-20261002 --output-dir C:\\Users\\Adam\\.codex\\worktrees\\hub-audit-repairs\\.local-ai-hub\\handoff\\T02-paired-matrix-20261002-v1\\results\\T02-CPU-20261002-03",
+    "failed_attempt_output_dir": "handoff/T02-paired-matrix-20261002-v1/results/T02-CPU-20261002-01",
+    "next_output_dir": null,
+    "next_output_dir_verified_absent": null,
+    "command_ready": false,
+    "run_status": "terminal_interrupted_contaminated_slot_released",
+    "runner_argv_template": [
+      "C:\\Python313\\python.exe",
+      "-B",
+      "C:\\Users\\Adam\\.codex\\worktrees\\hub-audit-repairs\\.local-ai-hub\\tools\\run_t02_paired_matrix.py",
+      "run",
+      "--manifest",
+      "C:\\Users\\Adam\\.codex\\worktrees\\hub-audit-repairs\\.local-ai-hub\\handoff\\T02-paired-matrix-20261002-v1\\manifest-T02-CPU-20261002-03-slot04.json",
+      "--baseline-root",
+      "C:\\Users\\Adam\\.codex\\worktrees\\t15-seeded-baseline-20261002",
+      "--candidate-root",
+      "C:\\Users\\Adam\\.codex\\worktrees\\t15-seeded-candidate-20261002",
+      "--output-dir",
+      "C:\\Users\\Adam\\.codex\\worktrees\\hub-audit-repairs\\.local-ai-hub\\handoff\\T02-paired-matrix-20261002-v1\\results\\T02-CPU-20261002-03"
+    ],
+    "resolved_surface_arguments_from_manifest": {
+      "full_matrix": true,
+      "light_repetitions": 1000,
+      "comparison_repetitions": 30,
+      "concurrency": [
+        1,
+        4,
+        16,
+        32
+      ],
+      "input_seed": 42,
+      "timeout_seconds": 3600
+    },
+    "unresolved_before_execution": [
+      "No clean rerun assigned; wait for a later exclusive slot and plan"
+    ],
+    "argv_is_template": true,
+    "current_run_id": "T02-CPU-20261002-03",
+    "last_run_output_dir": "C:\\Users\\Adam\\.codex\\worktrees\\hub-audit-repairs\\.local-ai-hub\\handoff\\T02-paired-matrix-20261002-v1\\results\\T02-CPU-20261002-03"
+  },
+  "measurement_attempt": {
+    "count": 1,
+    "command_exit_code": 1,
+    "manifest_sha256_used": "26CEE6608B4A82B30AB44CE6E0013B9F38872554700D95AB7C001A41F9E8E6F6",
+    "outer_command": "C:\\Python313\\python.exe -B C:\\Users\\Adam\\.codex\\worktrees\\hub-audit-repairs\\.local-ai-hub\\tools\\run_t02_paired_matrix.py run --manifest C:\\Users\\Adam\\.codex\\worktrees\\hub-audit-repairs\\.local-ai-hub\\handoff\\T02-paired-matrix-20261002-v1\\manifest.json --baseline-root C:\\Users\\Adam\\.codex\\worktrees\\t15-pin-baseline-20261002 --candidate-root C:\\Users\\Adam\\.codex\\worktrees\\t15-pin-candidate-20261002 --output-dir C:\\Users\\Adam\\.codex\\worktrees\\hub-audit-repairs\\.local-ai-hub\\handoff\\T02-paired-matrix-20261002-v1\\results\\T02-CPU-20261002-01",
+    "status": "aborted_baseline_runner_failure_before_measurement",
+    "error": "baseline benchmark CLI rejected runner flags: --full-matrix, --comparison-repetitions, --input-seed, --timeout-seconds",
+    "raw_receipt_path": "handoff/T02-paired-matrix-20261002-v1/results/T02-CPU-20261002-01/paired-receipt.json",
+    "raw_receipt_sha256": "C902DBCF207EA818777AF6F3C1AE225E74F63E0FB62213705F71F1ACFDB67B6B",
+    "baseline_stdout_path": "handoff/T02-paired-matrix-20261002-v1/results/T02-CPU-20261002-01/baseline/state/runner.stdout.json",
+    "baseline_stdout_sha256_empty": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855",
+    "baseline_stderr_path": "handoff/T02-paired-matrix-20261002-v1/results/T02-CPU-20261002-01/baseline/state/runner.stderr.txt",
+    "baseline_stderr_sha256": "4BEA4B915BE8799CDEEAA79A2E597893FABB9D2697BBC90CF0221A4EC198FA61",
+    "baseline_stderr_excerpt": "benchmark_surfaces.py: error: unrecognized arguments: --full-matrix --comparison-repetitions 30 --input-seed 42 --timeout-seconds 3600",
+    "measurements_started": false,
+    "baseline_record_created": false,
+    "candidate_measurement_started": false,
+    "paired_cases_passed": 0,
+    "retry": "not attempted per user instruction",
+    "environment": {
+      "python_executable": "C:\\Python313\\python.exe",
+      "python_version": "3.13.2",
+      "platform": "Windows-11-10.0.26200-SP0",
+      "machine": "AMD64",
+      "processor": "AMD64 Family 25 Model 97 Stepping 2, AuthenticAMD",
+      "logical_cpus": 16,
+      "benchmark_processes_after_abort": 0
+    }
+  },
+  "orchestration_update": {
+    "source": "T01",
+    "test": "one serial T15 candidate-only pin-guard pytest",
+    "precondition": "verify zero process",
+    "after_test": "T20 released CPU slot; do not reacquire without new assignment",
+    "parallel_t02_process": false,
+    "test_started": false,
+    "later_instruction": "run T02 suite natively first; release one T15 guard test only if green",
+    "native_t02_suite_started": true,
+    "blocked_by_direct_fallback_authorization": false,
+    "latest_slot_update": "T20 confirms T20-CPU-SLOT-20261002-04 released. Runs -02 and -03 remain interrupted; no valid paired receipt exists. Partial outputs preserved and no rerun assigned."
+  },
+  "cpu_slot": {
+    "assignment_id": "T20-CPU-SLOT-20261002-04",
+    "run_id": "T02-CPU-20261002-03",
+    "coordinator": "T20",
+    "status": "released_by_T20",
+    "process_running": false,
+    "temporary_transfer": false
+  },
+  "benchmark_status": {
+    "measurements_started": true,
+    "attempted_command_count": 4,
+    "paired_cases_passed": 0,
+    "paired_cases_required": 6,
+    "plan_grade": false,
+    "historical_cases_unpaired": 2,
+    "deferred_cases": 4,
+    "performance_timing_status": "contaminated"
+  },
+  "artifact_hash_verification": {
+    "status": "passed",
+    "hashes": {
+      "manifest": "39C7105E4635806DE9B6AA822EDE2540CD4BB590B0903A1B4C76C4849CE8E9E0",
+      "runner": "69E3756058BB99DC02B7E172DC86D97AE9536922206FA16B331AC078BD9EA282",
+      "tests": "BC95AACA1792B887E46FD3216051F4B017B1578EAC8B2998752EF94AB65D3C4A",
+      "benchmark_harness": "977FEC1F9936A0608452CFBAB720DF6D24023B79BDE2405DEDF7BEF293149C31",
+      "plan": "C81237CB54F7D61CD691D49D68917CB44E8CAF8DAA9AC679A4252985AE1F9405"
+    },
+    "source_pins": {
+      "baseline": {
+        "commit_sha": "28f471f67a4b37da92499d720084ff300170c013",
+        "snapshot_sha256": "04A65035C98FAF1A99DF40400B93EDF8723D55F0F7F63D1B32BEBB513382318F",
+        "generator_sha256": "5752BCC09A2D84FB8A7B20FF0DF624638074F8CFFA24B686CD4BFF72257E03A3",
+        "file_sha256": {
+          "src/local_ai_hub/commands.py": "5E3FD81C4AB55633A165237AE5C828CA2B73ACE353DA403DB67C98C65128E1D3",
+          "tests/test_surface_benchmarks.py": "2484E61E19571F5F44B8E86CB970A6C3126236BCE3EF44F97C8B25F606E03C90",
+          "tools/benchmark_surfaces.py": "977FEC1F9936A0608452CFBAB720DF6D24023B79BDE2405DEDF7BEF293149C31"
+        },
+        "worktree_clean": true,
+        "parent_sha": "01df56605ccf484ebfe2808ac60d696c4e81dffc"
+      },
+      "candidate": {
+        "commit_sha": "a10baed2a86f721cbd724af19b4adb2a71cb88af",
+        "snapshot_sha256": "3A53140713360CC1F10B477789849F7F242C7119257BEC8B98014BC47544B719",
+        "generator_sha256": "5752BCC09A2D84FB8A7B20FF0DF624638074F8CFFA24B686CD4BFF72257E03A3",
+        "file_sha256": {
+          "src/local_ai_hub/commands.py": "845348F2E362852561AE2EBB1B3F5458C8915E0134B1EC884F47356132B9FECB",
+          "tests/test_surface_benchmarks.py": "2484E61E19571F5F44B8E86CB970A6C3126236BCE3EF44F97C8B25F606E03C90",
+          "tools/benchmark_surfaces.py": "977FEC1F9936A0608452CFBAB720DF6D24023B79BDE2405DEDF7BEF293149C31"
+        },
+        "worktree_clean": true,
+        "parent_sha": "b38981611868221755ff899e9f5e40aa68a6c88e"
+      }
+    },
+    "current_seed_aware_harness_sha256": "977FEC1F9936A0608452CFBAB720DF6D24023B79BDE2405DEDF7BEF293149C31",
+    "old_pinned_harness_sha256": "8f8b7da86aa9230362814291e334fdc59c6af3700beb0f1dc9314a61e976cf80",
+    "old_pins_compatible_with_current_harness": false,
+    "next_output_dir_absent": true,
+    "new_pins_compatible_with_current_harness": true,
+    "t20_slot_assignment_received": true,
+    "slot_assignment_id": "T20-CPU-SLOT-20261002-04",
+    "new_manifest_sha256": "39C7105E4635806DE9B6AA822EDE2540CD4BB590B0903A1B4C76C4849CE8E9E0"
+  },
+  "prepare_attempt": {
+    "command": "C:\\Python313\\python.exe -B tools/run_t02_paired_matrix.py prepare --manifest handoff/T02-paired-matrix-20261002-v1/manifest-T02-CPU-20261002-03-slot04.json",
+    "exit_code": 0,
+    "result": {
+      "status": "ready_for_pin_verification",
+      "measurement_allowed": true,
+      "pending": [],
+      "required_case_count": 6
+    },
+    "slot_assignment_id": "T20-CPU-SLOT-20261002-04"
+  },
+  "pre_run_verification": {
+    "manifest_sha256": "39C7105E4635806DE9B6AA822EDE2540CD4BB590B0903A1B4C76C4849CE8E9E0",
+    "manifest_sha256_matches_receipt": true,
+    "baseline_pin_verification_reasons": [],
+    "candidate_pin_verification_reasons": [],
+    "both_checkouts_clean": true,
+    "shared_seed_aware_harness_sha256": "977FEC1F9936A0608452CFBAB720DF6D24023B79BDE2405DEDF7BEF293149C31",
+    "t20_slot_assignment_id": "T20-CPU-SLOT-20261002-04",
+    "prepare_measurement_allowed": true,
+    "output_dir_absent": true,
+    "measurement_started": false
+  },
+  "interrupted_measurement_attempt": {
+    "slot_assignment_id": "T20-CPU-SLOT-20261002-02",
+    "run_id": "T02-CPU-20261002-02",
+    "command": "C:\\Python313\\python.exe -B C:\\Users\\Adam\\.codex\\worktrees\\hub-audit-repairs\\.local-ai-hub\\tools\\run_t02_paired_matrix.py run --manifest C:\\Users\\Adam\\.codex\\worktrees\\hub-audit-repairs\\.local-ai-hub\\handoff\\T02-paired-matrix-20261002-v1\\manifest.json --baseline-root C:\\Users\\Adam\\.codex\\worktrees\\t15-seeded-baseline-20261002 --candidate-root C:\\Users\\Adam\\.codex\\worktrees\\t15-seeded-candidate-20261002 --output-dir C:\\Users\\Adam\\.codex\\worktrees\\hub-audit-repairs\\.local-ai-hub\\handoff\\T02-paired-matrix-20261002-v1\\results\\T02-CPU-20261002-02",
+    "exec_session_id": 26253,
+    "interrupt_sent": "Ctrl+C after conflicting urgent coordination message",
+    "interrupt_tool_exit_code": 1,
+    "subsequent_session_check": "Unknown process id 26253",
+    "matching_runner_processes_after_stop": 0,
+    "status": "interrupted_during_benchmark; process stopped",
+    "measurement_started": true,
+    "paired_receipt_present": false,
+    "partial_output_path": "C:\\Users\\Adam\\.codex\\worktrees\\hub-audit-repairs\\.local-ai-hub\\handoff\\T02-paired-matrix-20261002-v1\\results\\T02-CPU-20261002-02",
+    "partial_output_file_count": 128,
+    "partial_output_sha256_inventory": "preserved; not rewritten or deleted",
+    "paired_cases_completed": 0,
+    "retry_same_output": false,
+    "raw_outer_stdout": "",
+    "raw_outer_stderr": ""
+  },
+  "previous_run_manifests": [
+    {
+      "run_id": "T02-CPU-20261002-02",
+      "path": "handoff/T02-paired-matrix-20261002-v1/manifest.json",
+      "sha256": "47C53D97D322EB936647A23BFB3CF421F50426936A962122DE4D933541023B7C",
+      "status": "input manifest for interrupted run; preserved unchanged"
+    }
+  ],
+  "slot03_manifest_disposition": {
+    "path": "handoff/T02-paired-matrix-20261002-v1/manifest-T02-CPU-20261002-03.json",
+    "sha256": "2C7417102EB0C7878F40502CCCDE66D39E8E3D44B5F0A64BCDBFBD882E558812",
+    "status": "superseded_before_prepare_or_measurement; T20 assigned slot 03 to T16",
+    "benchmark_started_under_slot03": false,
+    "output_T02_CPU_20261002_03_absent": true
+  },
+  "prepare_attempts": [
+    {
+      "command": "C:\\Python313\\python.exe -B tools/run_t02_paired_matrix.py prepare --manifest handoff/T02-paired-matrix-20261002-v1/manifest.json",
+      "exit_code": 0,
+      "result": {
+        "status": "ready_for_pin_verification",
+        "measurement_allowed": true,
+        "pending": [],
+        "required_case_count": 6
+      },
+      "slot_assignment_id": "T20-CPU-SLOT-20261002-02"
+    }
+  ],
+  "interrupted_measurement_attempts": [
+    {
+      "slot_assignment_id": "T20-CPU-SLOT-20261002-04",
+      "run_id": "T02-CPU-20261002-03",
+      "manifest_path": "handoff/T02-paired-matrix-20261002-v1/manifest-T02-CPU-20261002-03-slot04.json",
+      "manifest_sha256": "39C7105E4635806DE9B6AA822EDE2540CD4BB590B0903A1B4C76C4849CE8E9E0",
+      "command": "C:\\Python313\\python.exe -B C:\\Users\\Adam\\.codex\\worktrees\\hub-audit-repairs\\.local-ai-hub\\tools\\run_t02_paired_matrix.py run --manifest C:\\Users\\Adam\\.codex\\worktrees\\hub-audit-repairs\\.local-ai-hub\\handoff\\T02-paired-matrix-20261002-v1\\manifest-T02-CPU-20261002-03-slot04.json --baseline-root C:\\Users\\Adam\\.codex\\worktrees\\t15-seeded-baseline-20261002 --candidate-root C:\\Users\\Adam\\.codex\\worktrees\\t15-seeded-candidate-20261002 --output-dir C:\\Users\\Adam\\.codex\\worktrees\\hub-audit-repairs\\.local-ai-hub\\handoff\\T02-paired-matrix-20261002-v1\\results\\T02-CPU-20261002-03",
+      "exec_session_id": 25898,
+      "interrupt_signal": "Ctrl+C via managed exec session, following authorized stop on stale output/no CPU progress",
+      "runner_exit_code": 1,
+      "final_session_check": "Unknown process id 25898",
+      "runner_pid_at_last_external_observation": 231600,
+      "baseline_child_pid_at_last_external_observation": 229860,
+      "matching_runner_pids_after_stop": 0,
+      "output_path": "C:\\Users\\Adam\\.codex\\worktrees\\hub-audit-repairs\\.local-ai-hub\\handoff\\T02-paired-matrix-20261002-v1\\results\\T02-CPU-20261002-03",
+      "output_preserved": true,
+      "output_file_count": 128,
+      "output_total_bytes": 561842749,
+      "latest_output_write_utc": "2026-10-02T04:54:29.8481408Z",
+      "paired_receipt_present": false,
+      "paired_metrics_available": false,
+      "performance_timing_status": "contaminated_by_overlapping_T07_and_root_pytest; no clean performance claim",
+      "status": "interrupted_during_benchmark",
+      "retry_same_output": false
+    }
+  ],
+  "t20_slot_release_confirmation": {
+    "slot_assignment_id": "T20-CPU-SLOT-20261002-04",
+    "status": "released",
+    "released_by": "T20",
+    "clean_rerun_assigned": false,
+    "partial_outputs_preserved": true
+  },
+  "preserved_output_diagnostics": {
+    "inspection_scope": "metadata and designated runner logs only; files unchanged",
+    "runs": [
+      {
+        "run_id": "T02-CPU-20261002-02",
+        "output_path": "C:\\Users\\Adam\\.codex\\worktrees\\hub-audit-repairs\\.local-ai-hub\\handoff\\T02-paired-matrix-20261002-v1\\results\\T02-CPU-20261002-02",
+        "file_count": 128,
+        "total_bytes": 561285477,
+        "latest_file": "baseline/scratch/local-ai-hub-benchmark-7kib8q7i/hub-state/async_jobs.sqlite3-wal",
+        "latest_write_prague": "2026-10-02T06:27:53.536181+02:00",
+        "paired_receipt_present": false,
+        "runner_logs": [
+          {
+            "path": "baseline/state/runner.stderr.txt",
+            "size_bytes": 0,
+            "sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+          },
+          {
+            "path": "baseline/state/runner.stdout.json",
+            "size_bytes": 0,
+            "sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+          }
+        ],
+        "diagnostic_interpretation": "No paired case receipt; empty baseline runner stdout/stderr only. Scratch artifacts do not establish completed paired measurements."
+      },
+      {
+        "run_id": "T02-CPU-20261002-03",
+        "output_path": "C:\\Users\\Adam\\.codex\\worktrees\\hub-audit-repairs\\.local-ai-hub\\handoff\\T02-paired-matrix-20261002-v1\\results\\T02-CPU-20261002-03",
+        "file_count": 128,
+        "total_bytes": 561842749,
+        "latest_file": "baseline/scratch/local-ai-hub-benchmark-e9wjj8f5/hub-state/debug_traces.sqlite3-wal",
+        "latest_write_prague": "2026-10-02T06:54:29.848141+02:00",
+        "paired_receipt_present": false,
+        "runner_logs": [
+          {
+            "path": "baseline/state/runner.stderr.txt",
+            "size_bytes": 0,
+            "sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+          },
+          {
+            "path": "baseline/state/runner.stdout.json",
+            "size_bytes": 0,
+            "sha256": "E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855"
+          }
+        ],
+        "diagnostic_interpretation": "No paired case receipt; empty baseline runner stdout/stderr only. Scratch artifacts do not establish completed paired measurements."
+      }
+    ],
+    "paired_receipt_count": 0,
+    "valid_paired_case_receipt_count": 0,
+    "quality_acceptance": "not established; no paired receipt",
+    "performance_acceptance": "not established; run 03 timing contaminated by overlapping T07/root pytest",
+    "pinned_sources_or_partial_outputs_modified": false
+  },
+  "t20_clean_paired_run_handoff": {
+    "status": "bounded_plan_ready_waiting_for_fresh_exclusive_t20_slot",
+    "current_t20_slot": "none; T20 released T20-CPU-SLOT-20261002-04",
+    "new_slot_required": true,
+    "new_output_rule": "Use a fresh unique T02 output directory; never reuse -02 or -03",
+    "new_manifest_rule": "Create a new manifest bound to the fresh T20 slot; preserve the historical manifests used by runs -02 and -03",
+    "source_pins_to_reverify_immediately_before_run": {
+      "baseline": {
+        "root": "C:\\Users\\Adam\\.codex\\worktrees\\t15-seeded-baseline-20261002",
+        "commit_sha": "28f471f67a4b37da92499d720084ff300170c013",
+        "snapshot_sha256": "04a65035c98faf1a99df40400b93edf8723d55f0f7f63d1b32bebb513382318f"
+      },
+      "candidate": {
+        "root": "C:\\Users\\Adam\\.codex\\worktrees\\t15-seeded-candidate-20261002",
+        "commit_sha": "a10baed2a86f721cbd724af19b4adb2a71cb88af",
+        "snapshot_sha256": "3a53140713360cc1f10b477789849f7f242c7119257bec8b98014bc47544b719"
+      },
+      "shared_harness_sha256": "977FEC1F9936A0608452CFBAB720DF6D24023B79BDE2405DEDF7BEF293149C31"
+    },
+    "exclusive_slot_preconditions": [
+      "T20 explicitly assigns a new serial CPU slot to T02 and confirms no overlap with T07, T16, root pytest, or other benchmarks",
+      "both pinned checkouts still match source pins and are clean",
+      "prepare on the new slot-bound manifest exits 0 with measurement_allowed=true and pending=[]",
+      "the new output directory is absent"
+    ],
+    "bounded_run_parameters": {
+      "cases": [
+        {
+          "file_count": 100,
+          "rag_chunk_count": 10000,
+          "status": "historical_unpaired"
+        },
+        {
+          "file_count": 100,
+          "rag_chunk_count": 100000,
+          "status": "deferred"
+        },
+        {
+          "file_count": 10000,
+          "rag_chunk_count": 10000,
+          "status": "historical_unpaired"
+        },
+        {
+          "file_count": 10000,
+          "rag_chunk_count": 100000,
+          "status": "deferred"
+        },
+        {
+          "file_count": 100000,
+          "rag_chunk_count": 10000,
+          "status": "deferred"
+        },
+        {
+          "file_count": 100000,
+          "rag_chunk_count": 100000,
+          "status": "deferred"
+        }
+      ],
+      "full_matrix": true,
+      "light_repetitions": 1000,
+      "comparison_repetitions": 30,
+      "concurrency": [
+        1,
+        4,
+        16,
+        32
+      ],
+      "input_seed": 42,
+      "generator_version": 1,
+      "timeout_seconds": 3600
+    },
+    "runner_argv_template": [
+      "C:\\Python313\\python.exe",
+      "-B",
+      "C:\\Users\\Adam\\.codex\\worktrees\\hub-audit-repairs\\.local-ai-hub\\tools\\run_t02_paired_matrix.py",
+      "run",
+      "--manifest",
+      "<NEW_T20_SLOT_BOUND_MANIFEST>",
+      "--baseline-root",
+      "C:\\Users\\Adam\\.codex\\worktrees\\t15-seeded-baseline-20261002",
+      "--candidate-root",
+      "C:\\Users\\Adam\\.codex\\worktrees\\t15-seeded-candidate-20261002",
+      "--output-dir",
+      "<NEW_UNIQUE_T02_OUTPUT_DIRECTORY>"
+    ],
+    "acceptance_and_handoff": [
+      "Run exactly one paired invocation after T20 assignment and successful preflight",
+      "Require six paired case receipts and matching baseline/candidate source pins",
+      "Require generator version, seed, and input fingerprint in each case receipt",
+      "Apply the existing quality_gates and acceptance_limits from the slot-bound manifest without changing test expectations",
+      "Capture exact command, exit status, paired receipt hash, per-case counts, and output inventory",
+      "Report performance as clean only if the exclusive-slot condition held for the entire run",
+      "After completion or interruption, report slot state to T20; do not reuse a run output directory"
+    ],
+    "existing_quality_gates": {
+      "golden_operations": [
+        "symbols",
+        "graph",
+        "affected_tests",
+        "retrieval_relevance",
+        "code_generation",
+        "vision",
+        "speech",
+        "context_pack"
+      ],
+      "retrieval_minimums": {
+        "recall_at_10": 0.9,
+        "ndcg_at_10": 0.8,
+        "file_line_evidence_accuracy": 1.0
+      },
+      "model_requirements": [
+        "output_schema_pass",
+        "test_pass",
+        "evidence_grounded"
+      ],
+      "critical_false_success_count_max": 0,
+      "candidate_must_not_regress_from_baseline": true,
+      "missing_evidence_status": "not_established"
+    },
+    "existing_acceptance_limits": {
+      "max_p95_regression_pct": 10.0,
+      "max_p99_regression_pct": 10.0,
+      "plan_grade_requires_all_six_paired_receipts": true
+    },
+    "no_test_expectation_changes": true,
+    "fixture_specification": {
+      "kind": "deterministic synthetic input fixture specification; not generated in this diagnostic task",
+      "generator": "synthetic_repo_generator",
+      "generator_version": 1,
+      "seed": 42,
+      "same_generator_version_seed_required": true,
+      "per_case_input_fingerprint_required": true,
+      "baseline_candidate_generator_sha256": "5752BCC09A2D84FB8A7B20FF0DF624638074F8CFFA24B686CD4BFF72257E03A3",
+      "shared_harness_sha256": "977FEC1F9936A0608452CFBAB720DF6D24023B79BDE2405DEDF7BEF293149C31",
+      "baseline_commit_sha": "28f471f67a4b37da92499d720084ff300170c013",
+      "candidate_commit_sha": "a10baed2a86f721cbd724af19b4adb2a71cb88af",
+      "case_fingerprint_rule": "Each baseline/candidate case pair must have identical generator version, seed, and input fingerprint before latency comparison."
+    },
+    "plan_status": "ready_for_review_but_blocked_without_new_exclusive_slot",
+    "do_not_reuse_output_ids": [
+      "T02-CPU-20261002-01",
+      "T02-CPU-20261002-02",
+      "T02-CPU-20261002-03"
+    ],
+    "preflight_sequence": [
+      "T20 assigns a fresh exclusive serial slot; no T07/T16/root pytest or other benchmark overlaps the entire run.",
+      "Create a new manifest bound to that slot and a new unique output path; retain all historical manifests and outputs.",
+      "Immediately verify both T15 checkout HEADs, clean status, compute_source_pin values, shared harness hash, and generator digest.",
+      "Run read-only prepare; proceed only with exit 0, measurement_allowed=true, pending=[].",
+      "Confirm the new output directory is absent and no other test/benchmark owns the slot.",
+      "Run exactly one paired invocation using the resolved manifest, both pinned roots, and unique output path.",
+      "Accept no speed claim unless a final paired receipt contains all six required cases and no slot overlap occurred."
+    ],
+    "interruption_handling": "If the runner is interrupted, preserve its output, record external interruption metadata in this receipt, do not fabricate a paired receipt, and require a fresh T20 slot and unique output before any retake."
+  },
+  "t02_test_slot_release": {
+    "slot_assignment_id": "T20-CPU-SLOT-20261002-04",
+    "status": "released",
+    "attempts": [
+      {
+        "run_id": "T02-CPU-20261002-02",
+        "status": "interrupted",
+        "paired_receipt_present": false,
+        "output_preserved": true
+      },
+      {
+        "run_id": "T02-CPU-20261002-03",
+        "status": "interrupted_contaminated",
+        "paired_receipt_present": false,
+        "performance_valid": false,
+        "output_preserved": true
+      }
+    ],
+    "valid_paired_receipt": false,
+    "active_process": false,
+    "clean_rerun_assigned": false,
+    "rerun_requires_new_exclusive_slot": true
+  },
+  "independent_instability_diagnosis": {
+    "status": "diagnostic_only_no_measurement",
+    "source_hashes": {
+      "runner_sha256": "69E3756058BB99DC02B7E172DC86D97AE9536922206FA16B331AC078BD9EA282",
+      "harness_sha256": "977FEC1F9936A0608452CFBAB720DF6D24023B79BDE2405DEDF7BEF293149C31",
+      "tests_sha256": "BC95AACA1792B887E46FD3216051F4B017B1578EAC8B2998752EF94AB65D3C4A",
+      "slot04_manifest_sha256": "39C7105E4635806DE9B6AA822EDE2540CD4BB590B0903A1B4C76C4849CE8E9E0"
+    },
+    "preserved_run_evidence": {
+      "run01": {
+        "paired_receipt_sha256": "C902DBCF207EA818777AF6F3C1AE225E74F63E0FB62213705F71F1ACFDB67B6B",
+        "status": "aborted_baseline_runner_failure",
+        "candidate_measurement_started": false,
+        "diagnosis": "old source-pin harness rejected flags emitted by the updated T02 runner; no benchmark timing"
+      },
+      "run02": {
+        "output_files": 128,
+        "output_bytes": 561285477,
+        "paired_receipt_present": false,
+        "baseline_runner_stdout_bytes": 0,
+        "baseline_runner_stderr_bytes": 0,
+        "latest_write_prague": "2026-10-02T06:27:53.536181+02:00",
+        "diagnosis": "interrupted; no completed paired result"
+      },
+      "run03": {
+        "output_files": 128,
+        "output_bytes": 561842749,
+        "paired_receipt_present": false,
+        "baseline_runner_stdout_bytes": 0,
+        "baseline_runner_stderr_bytes": 0,
+        "latest_write_prague": "2026-10-02T06:54:29.848141+02:00",
+        "diagnosis": "interrupted after low-CPU/stale-output report; overlapping T07/root pytest contaminates timing"
+      }
+    },
+    "confirmed_mechanisms": [
+      {
+        "finding": "The slot04 run was not exclusive: external root pytest activity overlapped its measurement window.",
+        "effect": "Performance timing cannot be accepted as a clean paired comparison.",
+        "evidence": "T20 reported a pytest batch overlapping the first ~39 seconds; T10/T20 later reported another root pytest overlap."
+      },
+      {
+        "finding": "The runner emits its final record only after its child subprocess returns.",
+        "effect": "Empty runner stdout/stderr during and after interruption do not identify the active benchmark phase.",
+        "evidence": "tools/run_t02_paired_matrix.py lines 471-480; harness worker captures subprocess output and forwards it after completion at tools/benchmark_surfaces.py lines 4909-4924."
+      },
+      {
+        "finding": "Ctrl+C can leave scratch files without a paired receipt.",
+        "effect": "No paired receipt is expected when KeyboardInterrupt bypasses the runner's handled error tuple.",
+        "evidence": "tools/run_t02_paired_matrix.py lines 627-643 and 790-795 catch listed OS/runtime/subprocess exceptions, not KeyboardInterrupt; observed runs -02/-03 have no paired receipt."
+      }
+    ],
+    "ranked_hypotheses": [
+      {
+        "hypothesis": "Run03 stalled in a blocked/waiting or very low-progress baseline child phase.",
+        "evidence": "T20 observed runner/child CPU totals below 0.4 seconds after about 24 minutes and no output changes for about 6 minutes.",
+        "confidence": "plausible_not_proven"
+      },
+      {
+        "hypothesis": "The exact low-progress trigger was lock contention, an external service wait, or a long-running operation.",
+        "evidence": "No process trace, stack sample, live service log, or completed runner record was preserved.",
+        "confidence": "unresolved_do_not_claim"
+      }
+    ],
+    "acceptance_conclusion": "No valid paired receipt exists for runs -02 or -03; no T02 quality or performance acceptance is established.",
+    "artifacts_changed": false
+  }
+}

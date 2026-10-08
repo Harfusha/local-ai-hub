@@ -1,0 +1,2 @@
+def caller():
+    target()

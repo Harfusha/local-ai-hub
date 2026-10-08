@@ -1,0 +1,66 @@
+{
+  "schema_version": "t02-interrupted-run-receipt/v1",
+  "run_id": "T02-CPU-20261002-04",
+  "cpu_slot": {
+    "assignment_id": "T20-CPU-SLOT-20261002-05",
+    "owner": "T02",
+    "status": "released_to_T11"
+  },
+  "status": "interrupted_incomplete",
+  "started_at_local": "2026-10-02T08:00:23+02:00",
+  "finished_at_local": null,
+  "runner_exit_code": null,
+  "paired_receipt_created": false,
+  "candidate_started": false,
+  "manifest": {
+    "path": "handoff/T02-paired-matrix-20261002-v1/manifest-T02-CPU-20261002-04-slot05.json",
+    "sha256": "f5b3a0f77a6377da53c32cfe0ed7ef16f9a179191d8b82dcff9464d79d7a9c97",
+    "prepare": {
+      "measurement_allowed": true,
+      "pending": []
+    }
+  },
+  "source_pins": {
+    "baseline": {
+      "path": "C:/Users/Adam/.codex/worktrees/t15-seeded-baseline-20261002",
+      "commit_sha": "28f471f67a4b37da92499d720084ff300170c013",
+      "clean": true,
+      "harness_sha256": "977fec1f9936a0608452cfbab720df6d24023b79bde2405dedf7bef293149c31"
+    },
+    "candidate": {
+      "path": "C:/Users/Adam/.codex/worktrees/t15-seeded-candidate-20261002",
+      "commit_sha": "a10baed2a86f721cbd724af19b4adb2a71cb88af",
+      "clean": true,
+      "harness_sha256": "977fec1f9936a0608452cfbab720df6d24023b79bde2405dedf7bef293149c31"
+    }
+  },
+  "partial_output": {
+    "path": "handoff/T02-paired-matrix-20261002-v1/results/T02-CPU-20261002-04",
+    "preserve_unchanged": true,
+    "sides_present": ["baseline"],
+    "file_count": 128,
+    "byte_count": 574827109,
+    "latest_file_write_local": "2026-10-02T08:39:18+02:00",
+    "paired_receipt_path": null,
+    "stdout_bytes": 0,
+    "stderr_bytes": 0,
+    "reusable_for_restart": false
+  },
+  "modified_harness": {
+    "path": "tools/benchmark_surfaces.py",
+    "sha256": "01a2346726c666a0aa6776cb470e625f5b4280cc311a9a91956d7081d02d4b4a"
+  },
+  "restart_gate": {
+    "requires_new_t20_cpu_slot": true,
+    "requires_new_manifest": true,
+    "requires_new_clean_source_pins_containing_modified_harness": true,
+    "requires_new_output_id": true,
+    "never_reuse_output_id": "T02-CPU-20261002-04"
+  },
+  "original_command": "python tools/run_t02_paired_matrix.py run --manifest handoff/T02-paired-matrix-20261002-v1/manifest-T02-CPU-20261002-04-slot05.json --baseline-root C:/Users/Adam/.codex/worktrees/t15-seeded-baseline-20261002 --candidate-root C:/Users/Adam/.codex/worktrees/t15-seeded-candidate-20261002 --output-dir handoff/T02-paired-matrix-20261002-v1/results/T02-CPU-20261002-04",
+  "cleanup": {
+    "partial_output_deleted_or_modified": false,
+    "older_outputs_modified": false,
+    "benchmark_process_present_at_followup_inspection": false
+  }
+}

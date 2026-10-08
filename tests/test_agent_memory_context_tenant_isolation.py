@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import pytest
 
 from local_ai_hub import trace_context
 from local_ai_hub.agent_context import ContextCompiler, ContextRequest
@@ -46,7 +47,8 @@ def _seed_memory_projections(memory: MemoryStore, records) -> None:
         memory._save_record(record)
 
 
-def test_find_for_context_filters_explicit_foreign_tenant_for_repository_and_global(tmp_path: Path):
+@pytest.mark.parametrize("seed_projections", [False, True])
+def test_find_for_context_filters_explicit_foreign_tenant_for_repository_and_global(tmp_path: Path, seed_projections):
     state = AgentStateStore(tmp_path / "agent_state.sqlite3")
     memory = MemoryStore(state)
     root = tmp_path / "repo"
@@ -61,8 +63,11 @@ def test_find_for_context_filters_explicit_foreign_tenant_for_repository_and_glo
         "global_foreign": _record(scope=AgentScope.GLOBAL, tenant="tenant-b", key="global-foreign"),
         "global_tenantless": _record(scope=AgentScope.GLOBAL, key="global-tenantless"),
     }
-    for record in records.values():
-        memory.record(record, actor="user")
+    if seed_projections:
+        _seed_memory_projections(memory, records.values())
+    else:
+        for record in records.values():
+            memory.record(record, actor="user")
 
     found = memory.find_for_context(root=str(root), task_id="shared-task", tenant="tenant-a")
 
@@ -93,7 +98,8 @@ def test_find_for_context_without_tenant_returns_only_tenantless_global(tmp_path
     }
 
 
-def test_context_compiler_filters_foreign_tenant_before_returning_memory(tmp_path: Path):
+@pytest.mark.parametrize("seed_projections", [False, True])
+def test_context_compiler_filters_foreign_tenant_before_returning_memory(tmp_path: Path, seed_projections):
     state = AgentStateStore(tmp_path / "agent_state.sqlite3")
     memory = MemoryStore(state)
     root = tmp_path / "repo"
@@ -107,8 +113,11 @@ def test_context_compiler_filters_foreign_tenant_before_returning_memory(tmp_pat
         "global_foreign": _record(scope=AgentScope.GLOBAL, tenant="tenant-b", key="global-foreign"),
         "global_tenantless": _record(scope=AgentScope.GLOBAL, key="global-tenantless"),
     }
-    for record in records.values():
-        memory.record(record, actor="user")
+    if seed_projections:
+        _seed_memory_projections(memory, records.values())
+    else:
+        for record in records.values():
+            memory.record(record, actor="user")
     compiler = ContextCompiler(state, memory_store=memory)
 
     compiled = compiler.compile(
@@ -138,7 +147,8 @@ def test_context_compiler_filters_foreign_tenant_before_returning_memory(tmp_pat
     assert unscoped_memory_ids == {records["global_tenantless"].record_id}
 
 
-def test_task_create_and_resume_exclude_same_root_foreign_tenant_memory(tmp_path: Path):
+@pytest.mark.parametrize("seed_projections", [False, True])
+def test_task_create_and_resume_exclude_same_root_foreign_tenant_memory(tmp_path: Path, seed_projections):
     state = AgentStateStore(tmp_path / "agent_state.sqlite3")
     tasks = TaskStore(state)
     memory = MemoryStore(state)
@@ -157,8 +167,11 @@ def test_task_create_and_resume_exclude_same_root_foreign_tenant_memory(tmp_path
         "global_foreign": _record(scope=AgentScope.GLOBAL, tenant="tenant-b", key="global-foreign"),
         "global_tenantless": _record(scope=AgentScope.GLOBAL, key="global-tenantless"),
     }
-    for record in records.values():
-        memory.record(record, actor="user")
+    if seed_projections:
+        _seed_memory_projections(memory, records.values())
+    else:
+        for record in records.values():
+            memory.record(record, actor="user")
     expected = {
         records["repo_current"].record_id,
         records["global_current"].record_id,

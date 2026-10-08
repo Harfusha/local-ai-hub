@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "task": "T02 root-current queue race verification",
+  "candidate_head": "a7b0868ac964fd14e160001024e6e0ecaaf4e9db",
+  "root_head": "01df56605ccf484ebfe2808ac60d696c4e81dffc",
+  "candidate_source_sha256": "6C245F4A52C4D1FD2A0D5AC50DFA6CE3E018B9CD2A400F27241690CC8BC97F0A",
+  "root_source_sha256": "AD6F8B6912E7CB836383811DB2AD29C89DA877AFEBC4B8B52C7FD57B8DE0F904",
+  "candidate_test_sha256": "35E8A123C11C8949C1F0534E2C4FDB22B026C44578DB0DF810B0EFC3ECD9A3EB",
+  "root_test_sha256": "F4E0D299384B3B3C9443390EC1001ED6B6F38D5606C0B45D8D774DED816DCF00",
+  "candidate_dirty_status": "M src/local_ai_hub/async_jobs.py\n M tests/test_surface_benchmarks.py",
+  "root_dirty_status": "M src/local_ai_hub/async_jobs.py\n M tests/test_surface_benchmarks.py",
+  "root_source_fix_evidence": {
+    "dispatch_not_before_persisted_on_submit": true,
+    "tick_filters_not_before": true,
+    "_dispatch_checks_and_conditionally_claims_not_before": true,
+    "assessment": "Root current source already contains the T02 queue-race guard; no production-source patch is needed."
+  },
+  "focused_test": {
+    "command": "C:\\Python313\\python.exe -B -m pytest -q -p no:cacheprovider --tb=short tests/test_surface_benchmarks.py::test_queue_admission_probe_cancels_before_delayed_dispatch_registration_race",
+    "exit_code": 0,
+    "result": "1 passed in 0.40s"
+  },
+  "patch_scope": [
+    "tests/test_surface_benchmarks.py"
+  ],
+  "patch_purpose": "Add bounded read-only benchmark queue row fields to existing lifecycle diagnostic and a unique helper test; payload omitted.",
+  "patch_sha256": "70A9502E279C325505B27589FC9C38B5F435AC8A6EBA5A5D7546B8648AE4B2D4",
+  "root_modified_by_this_task": false
+}
