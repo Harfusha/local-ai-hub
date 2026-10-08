@@ -28,6 +28,29 @@
   integrated for review; T20 remains active / NO-GO pending complete release
   evidence. No new worktree, branch, chat or stash was created.
 
+## Integrated memory transport regression — 2026-10-08
+
+- Owner: primary agent, current master. Changed paths: `src/local_ai_hub/http_server.py`,
+  `src/local_ai_hub/agent_memory.py`, `tests/test_agent_memory_root_snapshot.py`,
+  this matrix.
+- Full-suite attempt on the prior source stopped at **422 passed, 1 failed**:
+  `tests/test_agent_state_transport.py::test_http_memory_get_is_scope_and_root_isolated`
+  received HTTP 404 when deleting a repository memory by its trusted root.
+  Root cause: HTTP delete converted the repository's physical root into
+  `scope_id`; repository records use an empty `scope_id`, while root is a
+  separate provenance selector. Removed that conversion. Storage now permits
+  a trusted matching root to select records whose older provenance lacks the
+  optional `repository_id`; a present conflicting repository ID still denies.
+- RED: new store regression failed before the fix. GREEN:
+  `python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_agent_memory_root_snapshot.py::test_repository_memory_delete_accepts_trusted_root_when_legacy_repository_id_is_absent tests/test_agent_state_transport.py::test_http_memory_get_is_scope_and_root_isolated`
+  => **2 passed in 10.07s**. The storage test also proves a non-empty conflicting
+  repository ID remains denied.
+- Wider related receipt:
+  `python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_agent_memory.py tests/test_agent_memory_root_snapshot.py tests/test_agent_memory_http_identity.py tests/test_agent_memory_context_tenant_isolation.py tests/test_agent_state_transport.py`
+  => **116 passed in 85.94s**.
+- Full suite must restart on this source revision; earlier 422-pass run is not
+  accepted for current HEAD. Release stays NO-GO until full gates finish.
+
 ## Integrated verification — 2026-10-08, source candidate `8b5ffe7d`
 
 - All **61 registered repository-family worktrees** were verified at the same
