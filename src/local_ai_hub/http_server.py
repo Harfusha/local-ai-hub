@@ -503,6 +503,7 @@ def _redact_config_secrets(config: dict[str, Any]) -> dict[str, Any]:
 HTTP_MODE_GAMING_READ_POST_PATHS = frozenset({
     "/api/artifact/get", "/api/artifact/list", "/api/db/query",
     "/api/evidence/get", "/api/memory/get", "/api/memory/search",
+    "/api/repo/profile",
 })
 HTTP_MODE_SAFE_METHOD_REJECTIONS = frozenset({
     "/api/maintenance/optimize_db", "/api/maintenance/purge_cache",
@@ -535,6 +536,8 @@ def _http_mode_policy(method: str, path: str, payload: Mapping[str, Any] | None 
         return "operator"
     action_key = "job_action" if path == "/api/async-jobs" else "action"
     action = str((payload or {}).get(action_key, "")).strip().lower().replace("-", "_")
+    if path == "/api/evaluation" and action == "report":
+        return "gaming_read"
     if path == "/api/async-jobs" and action in {"status", "wait", "result", "cancel", "evaluation_report"}:
         return "existing_job"
     if path == "/api/work-orders" and action in {"status", "get", "cancel"}:
@@ -4112,6 +4115,13 @@ class Handler(BaseHTTPRequestHandler):
             return
         path = urlparse(self.path).path
         if not self._require_authorized():
+            return
+        early_mode_rejection = None
+        if path != "/api/context/pack":
+            early_mode_rejection = _http_mode_gate_error("POST", path)
+        if early_mode_rejection is not None and early_mode_rejection.get("mode") == "maintenance":
+            status = 423 if early_mode_rejection.get("error_code") == "operational_mode_blocked" else 503
+            self._send(status, early_mode_rejection)
             return
         self._begin_trace(path)
         if getattr(APP, "recovery", None) is not None:
