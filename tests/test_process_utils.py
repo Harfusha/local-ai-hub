@@ -282,9 +282,10 @@ def test_run_hidden_timeout_keeps_explicit_no_session_descendants_owned(monkeypa
     assert terminated == [(process.pid, process.pid)]
 
 
-def test_terminate_tree_escalates_explicit_group_when_leader_exits(monkeypatch):
+def test_terminate_tree_escalates_explicit_group_when_leader_owned(monkeypatch):
     calls = []
     ticks = iter([0.0, 0.0, 1.0])
+    expected = {"pid": 4321, "creation_identity": 1234}
 
     def killpg(group_id, sig):
         calls.append((group_id, sig))
@@ -293,12 +294,14 @@ def test_terminate_tree_escalates_explicit_group_when_leader_exits(monkeypatch):
 
     monkeypatch.setattr(process_utils.os, "name", "posix")
     monkeypatch.setattr(process_utils.os, "killpg", killpg, raising=False)
+    monkeypatch.setattr(process_utils.os, "getpgid", lambda pid: 7777, raising=False)
+    monkeypatch.setattr(process_utils, "process_identity", lambda pid: expected if pid == 4321 else None)
     monkeypatch.setattr(process_utils.signal, "SIGKILL", 9, raising=False)
-    monkeypatch.setattr(process_utils, "pid_alive", lambda pid: False)
-    monkeypatch.setattr(process_utils.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(process_utils, "pid_alive", lambda pid: True)
+    monkeypatch.setattr(process_utils.time, "monotonic", lambda: next(ticks, 10.0))
     monkeypatch.setattr(process_utils.time, "sleep", lambda seconds: None)
 
-    assert process_utils.terminate_tree(4321, process_group=7777, grace_seconds=0.1)
+    assert process_utils.terminate_tree(4321, process_group=7777, expected_identity=expected, grace_seconds=0.1)
     assert calls == [
         (7777, process_utils.signal.SIGTERM),
         (7777, 0),
@@ -309,22 +312,26 @@ def test_terminate_tree_escalates_explicit_group_when_leader_exits(monkeypatch):
 
 def test_terminate_tree_does_not_signal_reused_pid_after_group_disappears(monkeypatch):
     pid_signals = []
+    expected = {"pid": 4321, "creation_identity": 1234}
 
     def killpg(group_id, sig):
         raise ProcessLookupError
 
     monkeypatch.setattr(process_utils.os, "name", "posix")
     monkeypatch.setattr(process_utils.os, "killpg", killpg, raising=False)
+    monkeypatch.setattr(process_utils.os, "getpgid", lambda pid: 4321, raising=False)
+    monkeypatch.setattr(process_utils, "process_identity", lambda pid: expected if pid == 4321 else None)
     monkeypatch.setattr(process_utils.os, "kill", lambda pid, sig: pid_signals.append((pid, sig)))
     monkeypatch.setattr(process_utils, "pid_alive", lambda pid: True)
 
-    assert process_utils.terminate_tree(4321, process_group=4321, grace_seconds=0.1)
+    assert process_utils.terminate_tree(4321, process_group=4321, expected_identity=expected, grace_seconds=0.1)
     assert pid_signals == []
 
 
 def test_terminate_tree_does_not_escalate_after_group_disappears(monkeypatch):
     signals = []
     pid_signals = []
+    expected = {"pid": 4321, "creation_identity": 1234}
 
     def killpg(group_id, sig):
         signals.append((group_id, sig))
@@ -333,31 +340,37 @@ def test_terminate_tree_does_not_escalate_after_group_disappears(monkeypatch):
 
     monkeypatch.setattr(process_utils.os, "name", "posix")
     monkeypatch.setattr(process_utils.os, "killpg", killpg, raising=False)
+    monkeypatch.setattr(process_utils.os, "getpgid", lambda pid: 7777, raising=False)
+    monkeypatch.setattr(process_utils, "process_identity", lambda pid: expected if pid == 4321 else None)
     monkeypatch.setattr(process_utils.os, "kill", lambda pid, sig: pid_signals.append((pid, sig)))
 
-    assert process_utils.terminate_tree(4321, process_group=7777, grace_seconds=0.1)
+    assert process_utils.terminate_tree(4321, process_group=7777, expected_identity=expected, grace_seconds=0.1)
     assert signals == [(7777, process_utils.signal.SIGTERM), (7777, 0)]
     assert pid_signals == []
 
 
 def test_terminate_tree_does_not_fallback_to_pid_after_group_signal_error(monkeypatch):
     pid_signals = []
+    expected = {"pid": 4321, "creation_identity": 1234}
 
     def killpg(group_id, sig):
         raise PermissionError
 
     monkeypatch.setattr(process_utils.os, "name", "posix")
     monkeypatch.setattr(process_utils.os, "killpg", killpg, raising=False)
+    monkeypatch.setattr(process_utils.os, "getpgid", lambda pid: 7777, raising=False)
+    monkeypatch.setattr(process_utils, "process_identity", lambda pid: expected if pid == 4321 else None)
     monkeypatch.setattr(process_utils.os, "kill", lambda pid, sig: pid_signals.append((pid, sig)))
     monkeypatch.setattr(process_utils.signal, "SIGKILL", 9, raising=False)
 
-    assert process_utils.terminate_tree(4321, process_group=7777, grace_seconds=0.1) is False
+    assert process_utils.terminate_tree(4321, process_group=7777, expected_identity=expected, grace_seconds=0.1) is False
     assert pid_signals == []
 
 
 def test_terminate_tree_stops_when_group_liveness_is_unverifiable(monkeypatch):
     calls = []
     pid_checks = []
+    expected = {"pid": 4321, "creation_identity": 1234}
 
     def killpg(group_id, sig):
         calls.append((group_id, sig))
@@ -366,14 +379,16 @@ def test_terminate_tree_stops_when_group_liveness_is_unverifiable(monkeypatch):
 
     monkeypatch.setattr(process_utils.os, "name", "posix")
     monkeypatch.setattr(process_utils.os, "killpg", killpg, raising=False)
+    monkeypatch.setattr(process_utils.os, "getpgid", lambda pid: 7777, raising=False)
+    monkeypatch.setattr(process_utils, "process_identity", lambda pid: expected if pid == 4321 else None)
     monkeypatch.setattr(process_utils.os, "kill", lambda pid, sig: calls.append((pid, sig)))
     monkeypatch.setattr(process_utils, "pid_alive", lambda pid: pid_checks.append(pid) or True)
     monkeypatch.setattr(process_utils.signal, "SIGKILL", 9, raising=False)
     ticks = iter([0.0, 0.0, 1.0])
-    monkeypatch.setattr(process_utils.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(process_utils.time, "monotonic", lambda: next(ticks, 10.0))
     monkeypatch.setattr(process_utils.time, "sleep", lambda seconds: None)
 
-    assert process_utils.terminate_tree(4321, process_group=7777, grace_seconds=0.1) is False
+    assert process_utils.terminate_tree(4321, process_group=7777, expected_identity=expected, grace_seconds=0.1) is False
     assert calls == [(7777, process_utils.signal.SIGTERM), (7777, 0)]
     assert pid_checks == []
 
@@ -381,6 +396,7 @@ def test_terminate_tree_stops_when_group_liveness_is_unverifiable(monkeypatch):
 def test_terminate_tree_does_not_escalate_when_group_liveness_returns_eperm(monkeypatch):
     calls = []
     pid_checks = []
+    expected = {"pid": 4321, "creation_identity": 1234}
 
     def killpg(group_id, sig):
         calls.append((group_id, sig))
@@ -389,14 +405,16 @@ def test_terminate_tree_does_not_escalate_when_group_liveness_returns_eperm(monk
 
     monkeypatch.setattr(process_utils.os, "name", "posix")
     monkeypatch.setattr(process_utils.os, "killpg", killpg, raising=False)
+    monkeypatch.setattr(process_utils.os, "getpgid", lambda pid: 7777, raising=False)
+    monkeypatch.setattr(process_utils, "process_identity", lambda pid: expected if pid == 4321 else None)
     monkeypatch.setattr(process_utils.os, "kill", lambda pid, sig: calls.append((pid, sig)))
     monkeypatch.setattr(process_utils, "pid_alive", lambda pid: pid_checks.append(pid) or True)
     monkeypatch.setattr(process_utils.signal, "SIGKILL", 9, raising=False)
     ticks = iter([0.0, 0.0, 1.0])
-    monkeypatch.setattr(process_utils.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr(process_utils.time, "monotonic", lambda: next(ticks, 10.0))
     monkeypatch.setattr(process_utils.time, "sleep", lambda seconds: None)
 
-    assert process_utils.terminate_tree(4321, process_group=7777, grace_seconds=0.1) is False
+    assert process_utils.terminate_tree(4321, process_group=7777, expected_identity=expected, grace_seconds=0.1) is False
     assert calls == [(7777, process_utils.signal.SIGTERM), (7777, 0)]
     assert pid_checks == []
 
