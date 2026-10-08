@@ -3515,7 +3515,12 @@ class Handler(BaseHTTPRequestHandler):
                 if detail == "agent_state":
                     if not getattr(self, "_authorization_root", None):
                         self._send(403, {"success": False, "error": "agent_state status is unavailable without root scope", "terminal": True, "retryable": False}); return
-                    self._send(200, APP.agent_state.status() if getattr(APP, "agent_state", None) else {"enabled": False}); return
+                    # Capability readiness only: global projection counts would
+                    # disclose other roots/tenants and require an unbounded scan.
+                    state = getattr(APP, "agent_state", None)
+                    enabled = bool(state is not None and state.enabled)
+                    initialized = bool(enabled and getattr(state, "_initialized", False))
+                    self._send(200, {"success": True, "enabled": enabled, "initialized": initialized}); return
                 scope = str((query.get("scope") or ["process"])[0])
                 if detail in {"summary", "light"}:
                     status = APP.realtime_status(light=True, scope=scope)

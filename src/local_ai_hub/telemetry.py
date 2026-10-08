@@ -31,6 +31,7 @@ _POSIX_PATH_RE = re.compile(r"(?<![\w:])/(?:[^/\s]+/)+[^/\s]*")
 _POSIX_FILE_PATH_RE = re.compile(r"(?<![\w:])/[^\s/,;\"']+\.[A-Za-z0-9]{1,12}(?![\w-])")
 _POSIX_ROOT_PATH_RE = re.compile(r"(?<![\w:/])/(?!/)[^\s/\\,;\"']+(?![\w/])")
 _SAFE_HTTP_ROUTE_LABELS = frozenset({"/slow", "/median"})
+_MAX_QUERY_WINDOW_DAYS = 3650
 _SENSITIVE_METADATA_VALUE_RE = re.compile(
     r"(?i)[\"']?(prompt|source(?:_text)?|input(?:_text)?|completion|output(?:_text)?|"
     r"response(?:_body)?|request(?:_body)?|body|payload|content|api[_-]?key|token|"
@@ -1420,7 +1421,8 @@ class TelemetryStore:
             return int(self._stats["processed"]) >= target
 
     def _cutoff(self, days: int) -> float:
-        return time.time() - max(1, int(days)) * 86400
+        bounded_days = max(1, min(int(days), _MAX_QUERY_WINDOW_DAYS))
+        return time.time() - bounded_days * 86400
 
     def _scope_cutoff(self, days: int, scope: str) -> tuple[float, str]:
         normalized = str(scope or "window").strip().lower()
