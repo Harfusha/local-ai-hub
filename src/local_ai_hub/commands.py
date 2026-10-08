@@ -4682,6 +4682,7 @@ class CommandBroker:
                     "class": "mutating",
                     "cacheable": False,
                     "allowed": bool(cfg.get("allow_mutating", False)),
+                    "replay_safe": False,
                     "reason": "unclassified Python script may have side effects",
                 }
 

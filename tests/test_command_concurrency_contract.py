@@ -475,10 +475,10 @@ def test_interactive_prompt_hang_aborts_and_reaps_command(tmp_path) -> None:
     )
     started = time.monotonic()
 
-    result = broker.run(
+    # Exercise process cleanup, not authorization of an arbitrary fixture script.
+    result = broker._execute(
         f'"{sys.executable}" "{script_path}"',
         str(tmp_path),
-        "tenant",
         timeout=8,
     )
     elapsed = time.monotonic() - started
@@ -523,7 +523,7 @@ def test_pipe_reader_start_failure_kills_and_reaps_command(tmp_path, monkeypatch
 
     monkeypatch.setattr(commands_module.threading.Thread, "start", fail_reader_start)
 
-    result = broker.run(f'"{sys.executable}" "{script_path}"', str(tmp_path), "tenant", timeout=8)
+    result = broker._execute(f'"{sys.executable}" "{script_path}"', str(tmp_path), timeout=8)
 
     deadline = time.monotonic() + 2
     while time.monotonic() < deadline and not pid_path.exists():
@@ -670,10 +670,9 @@ def test_slow_log_callback_does_not_block_command_pipe_drain(tmp_path) -> None:
 
     started = time.monotonic()
     try:
-        result = broker.run(
+        result = broker._execute(
             f'"{sys.executable}" "{script_path}"',
             str(tmp_path),
-            "tenant",
             timeout=8,
             log_callback=slow_callback,
         )
@@ -700,10 +699,9 @@ def test_log_callback_delivery_respects_line_rate_cap(tmp_path) -> None:
     )
     callback_times: list[float] = []
     started = time.monotonic()
-    result = broker.run(
+    result = broker._execute(
         f'"{sys.executable}" "{script_path}"',
         str(tmp_path),
-        "tenant",
         timeout=8,
         log_callback=lambda _stream, _text: callback_times.append(time.monotonic()),
     )
@@ -831,7 +829,7 @@ def test_windows_job_closes_descendants_after_command_leader_exits(tmp_path) -> 
     child_pid: int | None = None
 
     try:
-        result = broker.run(command, str(tmp_path), "tenant", timeout=8)
+        result = broker._execute(command, str(tmp_path), timeout=8)
         child_pid = int(result["stdout"].strip().splitlines()[-1])
 
         assert result["success"] is True
