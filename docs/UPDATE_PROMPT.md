@@ -266,5 +266,6 @@ SSE replay uses numeric Last-Event-ID with an explicit stream filter. Consume re
 events/gaps in cursor order; replay_page advances the cursor only after safe delivery,
 including filtered pages. Reset the cursor when changing the stream or kind filter.
 Supervisor health reason codes belong to operator diagnostics, not normal agent output.
+Full status requires success, hub_online and version; diagnostic fields are optional.
 
 `disable_llm_card_synthesis` applies to fallback synthesis for unparsed file cards only. Module and project cards use separate `prefer_deterministic_modules` and `prefer_deterministic_project` settings; background LLM synthesis may still run when deterministic card generation does not satisfy its acceptance conditions.
