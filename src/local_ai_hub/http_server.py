@@ -1251,6 +1251,9 @@ class LocalAIHTTPServer(ThreadingHTTPServer):
             except Exception:
                 pass
             try:
+                # Rejection runs on the acceptor, before Handler.setup can set
+                # socket deadlines. A stalled peer must not freeze all clients.
+                request.settimeout(1.0)
                 request.sendall(
                     b"HTTP/1.1 503 Service Unavailable\r\n"
                     b"Content-Type: application/json; charset=utf-8\r\n"

@@ -7,6 +7,10 @@ class _RejectSocket:
     def __init__(self):
         self.payload = bytearray()
         self.closed = False
+        self.timeout = None
+
+    def settimeout(self, value: float) -> None:
+        self.timeout = value
 
     def sendall(self, data: bytes) -> None:
         self.payload.extend(data)
@@ -37,6 +41,7 @@ def test_admission_rejection_has_consistent_retry_metadata_and_telemetry(monkeyp
             assert server._handler_slots.acquire(blocking=False)
         request = _RejectSocket()
         server.process_request(request, ("127.0.0.1", 1))
+        assert request.timeout is not None and 0 < request.timeout <= 1.0
         assert Handler.protocol_version == "HTTP/1.1"
         assert b"Retry-After: 1" in bytes(request.payload)
         assert b'"retry_after_seconds":1' in bytes(request.payload)
@@ -50,6 +55,30 @@ def test_admission_rejection_has_consistent_retry_metadata_and_telemetry(monkeyp
                 server._handler_slots.release()
             except ValueError:
                 break
+        server.server_close()
+
+
+def test_overload_send_timeout_closes_socket_without_leaking_capacity(monkeypatch):
+    import local_ai_hub.http_server as http_server
+
+    class SlowReceiver(_RejectSocket):
+        def sendall(self, data: bytes) -> None:
+            assert self.timeout is not None and self.timeout <= 1.0
+            raise TimeoutError("receiver does not drain overload response")
+
+    monkeypatch.setattr(http_server, "APP", None)
+    server = LocalAIHTTPServer(("127.0.0.1", 0), Handler, max_handlers=4, overload_wait_seconds=0)
+    try:
+        for _ in range(4):
+            assert server._handler_slots.acquire(blocking=False)
+        request = SlowReceiver()
+        server.process_request(request, ("127.0.0.1", 1))
+        assert request.closed
+        assert server.concurrency_stats()["rejected"] == 1
+        assert not server._handler_slots.acquire(blocking=False)
+    finally:
+        for _ in range(4):
+            server._handler_slots.release()
         server.server_close()
 
 
