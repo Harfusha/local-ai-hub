@@ -2572,7 +2572,9 @@ class Handler(BaseHTTPRequestHandler):
             status = int(getattr(self, "_authorization_status", 401))
             self._send(status, {"success": False, "error": "forbidden" if status == 403 else "unauthorized"})
             return False
-        if action and not self._audit_admin_authorization(action, allowed=True):
+        audit_accepted = self._audit_admin_authorization(action, allowed=True) if action else True
+        mutation = str(getattr(self, "command", "GET")).upper() not in {"GET", "HEAD", "OPTIONS"}
+        if mutation and not audit_accepted:
             self._send(503, {"success": False, "error": "admin audit unavailable", "retryable": True})
             return False
         if not self._tenant_binding_allowed():
@@ -2958,7 +2960,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _send(self, status: int, data: Any, *, headers: Mapping[str, str] | None = None) -> None:
         audit_accepted = self._audit_admin_result(status)
-        if not audit_accepted and 200 <= status < 400 and isinstance(data, dict):
+        mutation = str(getattr(self, "command", "GET")).upper() not in {"GET", "HEAD", "OPTIONS"}
+        if mutation and not audit_accepted and 200 <= status < 400 and isinstance(data, dict):
             status = 503
             data = {**data, "success": False, "error": "admin result audit unavailable; operation may have completed",
                     "outcome_unknown": True, "terminal": True, "retryable": False}
