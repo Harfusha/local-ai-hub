@@ -33,13 +33,6 @@ def _init_treesitter_once() -> bool:
         return bool(_PARSERS)
     _INIT_ATTEMPTED = True
 
-    # Do not import native Tree-sitter bindings on Windows Python 3.13+; the
-    # language-pack wheels can access-violate while walking otherwise valid trees.
-    # The deterministic Python AST and language-specific fallbacks remain available.
-    if os.name == "nt" and sys.version_info >= (3, 13):
-        logger.warning("Tree-sitter disabled on Windows Python 3.13+; using safe fallbacks")
-        return False
-
     try:
         import tree_sitter_language_pack as tslp
         mapping = {
@@ -50,6 +43,8 @@ def _init_treesitter_once() -> bool:
             "python": "python",
             "go": "go",
             "rust": "rust",
+            "java": "java",
+            "cpp": "cpp",
         }
         for internal_key, tslp_key in mapping.items():
             try:
@@ -62,6 +57,13 @@ def _init_treesitter_once() -> bool:
             return True
     except Exception as exc:
         logger.debug("tree_sitter_language_pack unavailable: %s", exc)
+
+    # Native language-pack parsing and traversal share _PARSER_LOCK. If that
+    # backend is unavailable, keep unverified legacy bindings disabled on
+    # Windows/Python 3.13 and degrade to deterministic language fallbacks.
+    if os.name == "nt" and sys.version_info >= (3, 13):
+        logger.warning("Tree-sitter disabled on Windows Python 3.13+; using safe fallbacks")
+        return False
 
     try:
         from tree_sitter import Language, Parser
