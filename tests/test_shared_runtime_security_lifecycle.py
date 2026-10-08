@@ -656,42 +656,65 @@ def test_concurrent_stale_lock_reclaim_has_exactly_one_supervisor(tmp_path):
     stale = _owner_record(2**31 - 2, state_dir)
     (state_dir / "supervisor.lock").write_text(json.dumps(stale), encoding="utf-8")
     gate = tmp_path / "go"
+    release = tmp_path / "release"
     script = """
 import sys, time
 from pathlib import Path
 from local_ai_hub.supervisor import Supervisor
-config, ready, gate = map(Path, sys.argv[1:])
+config, ready, gate, attempted, release = map(Path, sys.argv[1:])
 supervisor = Supervisor(str(config))
 ready.write_text('ready')
 deadline = time.monotonic() + 10
 while not gate.exists() and time.monotonic() < deadline:
     time.sleep(0.01)
-if supervisor.acquire():
-    print('WON', flush=True)
-    time.sleep(0.3)
-    supervisor.release_lock()
-else:
-    print('LOST', flush=True)
+won = supervisor.acquire()
+attempted.write_text('WON' if won else 'LOST')
+print('WON' if won else 'LOST', flush=True)
+if won:
+    try:
+        deadline = time.monotonic() + 10
+        while not release.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+    finally:
+        supervisor.release_lock()
 """
     env = os.environ.copy()
     source = str(Path(__file__).parents[1] / "src")
     env["PYTHONPATH"] = source + os.pathsep + env.get("PYTHONPATH", "")
     workers = [
         subprocess.Popen(
-            [sys.executable, "-c", script, str(config), str(tmp_path / f"ready-{index}"), str(gate)],
+            [sys.executable, "-c", script, str(config), str(tmp_path / f"ready-{index}"),
+             str(gate), str(tmp_path / f"attempted-{index}"), str(release)],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
             env=env,
+            **process_utils.hidden_run_kwargs(text=True),
         )
         for index in range(2)
     ]
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline and not all((tmp_path / f"ready-{index}").exists() for index in range(2)):
-        time.sleep(0.01)
-    assert all((tmp_path / f"ready-{index}").exists() for index in range(2))
-    gate.write_text("go", encoding="utf-8")
-    results = [worker.communicate(timeout=15) for worker in workers]
+    try:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not all((tmp_path / f"ready-{index}").exists() for index in range(2)):
+            time.sleep(0.01)
+        assert all((tmp_path / f"ready-{index}").exists() for index in range(2))
+        gate.write_text("go", encoding="utf-8")
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not all((tmp_path / f"attempted-{index}").exists() for index in range(2)):
+            time.sleep(0.01)
+        # Keep the winner alive until both contenders actually attempted acquire.
+        # A fixed sleep allowed sequential wins under Windows scheduling delays.
+        assert all((tmp_path / f"attempted-{index}").exists() for index in range(2))
+        assert sum((tmp_path / f"attempted-{index}").read_text() == "WON" for index in range(2)) == 1
+    finally:
+        release.write_text("release", encoding="utf-8")
+        for worker in workers:
+            if worker.poll() is None:
+                try:
+                    worker.wait(timeout=12)
+                except subprocess.TimeoutExpired:
+                    worker.kill()
+                    worker.wait(timeout=3)
+    results = [worker.communicate(timeout=3) for worker in workers]
 
     assert all(worker.returncode == 0 for worker in workers), results
     assert sum(stdout.strip() == "WON" for stdout, _stderr in results) == 1
