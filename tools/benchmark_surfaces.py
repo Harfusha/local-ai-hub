@@ -3824,13 +3824,25 @@ def run_benchmark(
                 workspace = rag_search_workspaces[regime]
                 clean_query = normalize_query(case["query"])
                 revision = app.rag.revision("t02-benchmark", workspace)
+                scope_key = app.rag._scope_key("t02-benchmark")
+                with closing(app.rag._connect()) as con:
+                    generation = app.rag._workspace_index_generation(con, scope_key, workspace)
+                cache_identity_known = app.rag._embedding_space_cache_identity_known()
+                embedding_space = app.rag._embedding_space_id()
+                embedding_dimension = app.rag._embedding_dimension_cache_identity()
                 cache_key = cache_stable_hash({
+                    "tenant": "t02-benchmark",
+                    "scope": app.rag.scope,
+                    "effective_scope": scope_key,
                     "workspace": workspace,
                     "revision": revision,
+                    "generation": generation,
                     "query": clean_query,
                     "top_k": 10,
                     "reranker": False,
                     "scope_path": None,
+                    "embedding_space": embedding_space if cache_identity_known else None,
+                    "embedding_dimension": embedding_dimension,
                 })
                 l1_value = app.rag.search_cache.l1.get(cache_key)
                 l2_value = app.rag.search_cache.l2.get(cache_key)
