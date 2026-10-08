@@ -51,6 +51,19 @@
 - Full suite must restart on this source revision; earlier 422-pass run is not
   accepted for current HEAD. Release stays NO-GO until full gates finish.
 
+## Agent OS query test contract refresh — 2026-10-08
+
+- Owner: primary agent, current master. Changed path: `tests/test_agent_task_query.py`.
+- The next `pytest -x` run stopped at 7% because HTTP task create/list intentionally
+  require an existing explicit repository root. The test fixture omitted it and
+  got `root_not_allowed`. Updated create/checkpoint/list/GET fixtures to send the
+  actual repo root and bind direct owner fixtures to the same root and tenant.
+  Added an assertion that rootless task create remains rejected. No production
+  authorization behavior was relaxed.
+- `python -B -m pytest -q --tb=short -p no:cacheprovider tests/test_agent_task_query.py`
+  => **8 passed in 14.52s**. Restart complete suite on final integrated source
+  and test tree; prior runs are not whole-suite receipts.
+
 ## Integrated verification — 2026-10-08, source candidate `8b5ffe7d`
 
 - All **61 registered repository-family worktrees** were verified at the same
