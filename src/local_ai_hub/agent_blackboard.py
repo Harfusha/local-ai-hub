@@ -4,6 +4,7 @@ from .json_utils import dumps as json_dumps
 
 import hashlib
 import json
+import logging
 import sqlite3
 import threading
 import time
@@ -14,6 +15,8 @@ from typing import Any
 
 from .agent_events import AgentEvent, AgentStateStore
 from .sqlite_support import connect_sqlite, initialize_wal, retry_busy, validate_durable_schema
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -184,8 +187,8 @@ class BlackboardStore:
                 except Exception:
                     try:
                         con.execute("ROLLBACK")
-                    except Exception:
-                        pass
+                    except sqlite3.Error as rollback_error:
+                        LOGGER.warning("blackboard rollback failed (%s)", type(rollback_error).__name__)
                     raise
 
         publication_lock = (
@@ -594,8 +597,8 @@ class BlackboardStore:
                 except Exception:
                     try:
                         con.execute("ROLLBACK")
-                    except Exception:
-                        pass
+                    except sqlite3.Error as rollback_error:
+                        LOGGER.warning("blackboard rollback failed (%s)", type(rollback_error).__name__)
                     raise
                 result = {
                     "success": True,

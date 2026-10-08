@@ -1,8 +1,83 @@
 from __future__ import annotations
 
 from pathlib import Path
+import logging
+import sqlite3
 import pytest
+from local_ai_hub import agent_blackboard
 from local_ai_hub.agent_blackboard import BlackboardStore, merge_sections, BlackboardSection
+
+
+def test_blackboard_rollback_failure_is_narrowly_logged_without_masking_original_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    store = BlackboardStore(tmp_path / "state.sqlite3")
+
+    class RollbackFailureConnection:
+        isolation_level = None
+
+        def execute(self, statement: str):
+            if statement == "ROLLBACK":
+                raise sqlite3.OperationalError("sensitive database detail")
+            return None
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(agent_blackboard, "connect_sqlite", lambda *_args, **_kwargs: RollbackFailureConnection())
+
+    def fail_update(*_args, **_kwargs):
+        raise RuntimeError("original update failure")
+
+    monkeypatch.setattr(store, "_update_in_transaction", fail_update)
+    caplog.set_level(logging.WARNING)
+
+    with pytest.raises(RuntimeError, match="original update failure"):
+        store.update(
+            board_id="board-1",
+            section="architecture",
+            content={"pattern": "event-driven"},
+            author="codex",
+        )
+
+    assert "blackboard rollback failed" in caplog.text
+    assert "OperationalError" in caplog.text
+    assert "sensitive database detail" not in caplog.text
+
+
+def test_blackboard_delete_rollback_failure_is_narrowly_logged_without_masking_original_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    store = BlackboardStore(tmp_path / "state.sqlite3")
+    store.update(
+        board_id="board-1",
+        section="architecture",
+        content={"pattern": "event-driven"},
+        author="codex",
+    )
+
+    class DeleteFailureConnection(sqlite3.Connection):
+        def execute(self, statement: str, parameters=()):
+            if statement.startswith("DELETE FROM agent_blackboard"):
+                raise sqlite3.OperationalError("original delete failure")
+            if statement == "ROLLBACK":
+                raise sqlite3.OperationalError("sensitive database detail")
+            return super().execute(statement, parameters)
+
+    def connect_with_delete_failure(path, **kwargs):
+        con = sqlite3.connect(path, factory=DeleteFailureConnection)
+        con.row_factory = kwargs.get("row_factory")
+        return con
+
+    monkeypatch.setattr(agent_blackboard, "connect_sqlite", connect_with_delete_failure)
+    caplog.set_level(logging.WARNING)
+
+    with pytest.raises(sqlite3.OperationalError, match="original delete failure"):
+        store.delete("board-1")
+
+    assert "blackboard rollback failed" in caplog.text
+    assert "OperationalError" in caplog.text
+    assert "sensitive database detail" not in caplog.text
 
 
 def test_vector_clock_domination():
