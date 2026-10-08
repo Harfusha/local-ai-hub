@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from local_ai_hub.app import LocalAIApp, BundleValidationError
+from local_ai_hub.agent_context import ContextRequest
 from local_ai_hub.agent_tasks import GoalContract, TaskStatus
 from local_ai_hub.agent_identity import AgentScope, ScopeContext
 from local_ai_hub.agent_memory import MemoryRecord, MemoryKind, MemoryStatus
