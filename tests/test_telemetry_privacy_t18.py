@@ -46,3 +46,16 @@ def test_error_telemetry_redacts_prompt_source_and_absolute_path():
     assert prompt not in safe_message
     assert source not in safe_message
     assert path not in safe_message
+
+
+def test_http_telemetry_preserves_static_routes_but_redacts_dynamic_paths():
+    route = "/api/agent-state/tasks"
+    dynamic_route = f"{route}/sensitive-task-id"
+
+    started = TelemetryStore._clean_event({"event_type": "request_start", "action": route})
+    completed = TelemetryStore._clean_event({"event_type": "http", "action": route})
+    dynamic = TelemetryStore._clean_event({"event_type": "http", "action": dynamic_route})
+
+    assert started["action"] == route
+    assert completed["action"] == route
+    assert dynamic["action"] == "<path>"

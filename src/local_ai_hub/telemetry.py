@@ -21,6 +21,7 @@ from typing import Any
 
 from .trace_context import current as current_trace_context
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, quick_sanity_check
+from .http_route_registry import GET_ROUTE_HANDLER_BOUNDARIES, POST_ROUTE_REGISTRY
 
 
 _PATH_RE = re.compile(r"(?:(?:[A-Za-z]:\\\\|/)(?:[^\s:'\"<>|]+[/\\\\])+[^\s:'\"<>|]*)")
@@ -30,7 +31,11 @@ _UNC_PATH_RE = re.compile(r"\\\\[^\\/\s]+\\[^\\/\s]+(?:\\[^\s<>|\"']*)?")
 _POSIX_PATH_RE = re.compile(r"(?<![\w:])/(?:[^/\s]+/)+[^/\s]*")
 _POSIX_FILE_PATH_RE = re.compile(r"(?<![\w:])/[^\s/,;\"']+\.[A-Za-z0-9]{1,12}(?![\w-])")
 _POSIX_ROOT_PATH_RE = re.compile(r"(?<![\w:/])/(?!/)[^\s/\\,;\"']+(?![\w/])")
-_SAFE_HTTP_ROUTE_LABELS = frozenset({"/slow", "/median"})
+_SAFE_HTTP_ROUTE_LABELS = frozenset(
+    {"/slow", "/median"}
+    | set(GET_ROUTE_HANDLER_BOUNDARIES)
+    | {path for rule in POST_ROUTE_REGISTRY for path in rule.paths}
+)
 _MAX_QUERY_WINDOW_DAYS = 3650
 _SENSITIVE_METADATA_VALUE_RE = re.compile(
     r"(?i)[\"']?(prompt|source(?:_text)?|input(?:_text)?|completion|output(?:_text)?|"
@@ -637,7 +642,7 @@ class TelemetryStore:
         created = float(event.get("created_at", time.time()))
         queue_wait_ms = _bounded_number(event.get("queue_wait_ms", 0))
         event_type = _safe_metadata(event.get("event_type", "inference"), 40)
-        preserve_route = event_type.casefold() == "http"
+        preserve_route = event_type.casefold() in {"http", "request_start"}
         return {
             "created_at": created,
             "event_type": event_type,
