@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
+import sqlite3
 from pathlib import Path
 import pytest
 
+import local_ai_hub.agent_learning as agent_learning
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_learning import (
     CandidateStatus,
@@ -63,3 +66,41 @@ def test_declared_regression_rolls_back_to_last_known_good(store: LearningStore)
     assert trigger.action == "rollback"
     assert trigger.restored_version == "baseline"
     assert store.get(candidate.candidate_id).status is CandidateStatus.ROLLED_BACK
+
+
+def test_save_logs_rollback_failure_and_preserves_original_error(
+    store: LearningStore, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+):
+    real_connect = agent_learning.connect_sqlite
+
+    class RollbackFailingConnection:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def execute(self, statement, *args, **kwargs):
+            normalized = " ".join(statement.split()).upper()
+            if normalized.startswith("INSERT INTO AGENT_LEARNING_CANDIDATES"):
+                raise ValueError("candidate insert failed")
+            if normalized == "ROLLBACK":
+                raise sqlite3.OperationalError("rollback failed")
+            return self.connection.execute(statement, *args, **kwargs)
+
+        def close(self):
+            self.connection.close()
+
+    monkeypatch.setattr(
+        agent_learning,
+        "connect_sqlite",
+        lambda *args, **kwargs: RollbackFailingConnection(real_connect(*args, **kwargs)),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(ValueError, match="candidate insert failed"):
+            store._save(valid_candidate())
+
+    assert any(
+        record.name == agent_learning.__name__
+        and "learning rollback failed" in record.getMessage()
+        and "OperationalError" in record.getMessage()
+        for record in caplog.records
+    )

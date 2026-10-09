@@ -3,6 +3,8 @@ from __future__ import annotations
 from .json_utils import dumps as json_dumps
 
 import json
+import logging
+import sqlite3
 import threading
 import time
 import uuid
@@ -14,6 +16,8 @@ from typing import Any, Mapping
 from .agent_events import AgentEvent, AgentStateStore
 from .agent_memory import ApprovalRequiredError
 from .sqlite_support import connect_sqlite, retry_busy
+
+LOGGER = logging.getLogger(__name__)
 
 
 class CandidateStatus(str, Enum):
@@ -390,8 +394,11 @@ class LearningStore:
             except Exception:
                 try:
                     con.execute("ROLLBACK")
-                except Exception:
-                    pass
+                except sqlite3.Error as rollback_error:
+                    LOGGER.warning(
+                        "learning rollback failed error_type=%s",
+                        type(rollback_error).__name__,
+                    )
                 raise
             finally:
                 con.close()
