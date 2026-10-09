@@ -107,6 +107,11 @@ def test_interrupted_task_resumes_with_fresh_evidence_and_no_duplicate_command(
         for key in ("success", "error", "verification_receipt_warning", "task_id", "criterion", "project_command_error")
     }
     assert receipt["evidence_type"] == "test"
+    verification_artifact = app.artifacts.get(
+        receipt["evidence_id"], max_chars=50_000, tenant=t.owner
+    )
+    assert verification_artifact["success"] is True
+    assert "command" not in json.loads(verification_artifact["text"])
     state = app.agent_tasks.get(t.task_id)
     assert state is not None
     state_data = dict(state.checkpoint.state_data)
