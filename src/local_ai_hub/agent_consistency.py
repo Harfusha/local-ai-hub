@@ -643,17 +643,20 @@ class AgentConsistencyGuard:
             bounded_symbols = tuple(dict.fromkeys(_text(item, 200) for item in symbol_refs if item))[:24]
             task = _text(related_task or (request_obj.task_id if request_obj else ""), 160)
             repository_root = canonical_root(request_obj.root if request_obj else root) if (request_obj and request_obj.root) or root else ""
+            tenant = _text(request_obj.tenant if request_obj else "", 160).strip()
             root_token = hashlib.sha256(repository_root.encode("utf-8", "replace")).hexdigest()[:16] if repository_root else "noroot"
+            tenant_token = hashlib.sha256(tenant.encode("utf-8", "replace")).hexdigest()[:16] if tenant else "notenant"
             stable = _redact_memory_text(stable_key, 240) or hashlib.sha256(
                 json.dumps(_memory_value(value), sort_keys=True, separators=(",", ":")).encode("utf-8")
             ).hexdigest()[:16]
             revision_token = revision or "unrevisioned"
-            record_key = f"consistency:{memory_kind.value}:{root_token}:{stable}:{revision_token}"
+            record_key = f"consistency:{memory_kind.value}:{root_token}:{tenant_token}:{stable}:{revision_token}"
             now = time.time()
             retention = _MEMORY_RETENTION_SECONDS if retention_seconds is None else max(1.0, float(retention_seconds))
             expires_at = now + min(retention, float(_MEMORY_RETENTION_SECONDS))
             provenance = {
                 "root": repository_root[:400],
+                "tenant": tenant,
                 "guard": "agent_consistency",
                 "phase": _text(request_obj.phase if request_obj else phase, 80),
                 "stable_key": stable,
