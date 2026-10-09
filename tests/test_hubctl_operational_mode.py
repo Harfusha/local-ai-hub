@@ -28,25 +28,28 @@ def test_pause_and_resume_persist_offline_when_hub_is_unavailable(monkeypatch, t
         def __init__(self, **_kwargs):
             pass
 
-        def _online(self):
+        def _online(self, timeout=None):
             return False
 
     monkeypatch.setattr(hubctl, "HubClient", OfflineClient)
 
     monkeypatch.setattr(sys, "argv", ["hubctl", "pause", "--json"])
-    assert hubctl.main() == 0
+    assert hubctl.main() == 1
     paused = json.loads(capsys.readouterr().out)
     assert paused["success"] is True
-    assert paused["mode"] == "maintenance"
-    assert paused["offline"] is True
-    assert load_operational_mode(tmp_path).mode == "maintenance"
+    assert paused["complete"] is False
+    assert paused["mode"] == "gaming"
+    assert paused["server_status"] == "offline"
+    assert paused["transition_failures"] == ["VRAM unload", "accelerator release"]
+    assert load_operational_mode(tmp_path).mode == "gaming"
 
     monkeypatch.setattr(sys, "argv", ["hubctl", "resume", "--json"])
     assert hubctl.main() == 0
     resumed = json.loads(capsys.readouterr().out)
     assert resumed["success"] is True
+    assert resumed["complete"] is True
     assert resumed["mode"] == "active"
-    assert resumed["offline"] is True
+    assert resumed["server_status"] == "offline"
     assert load_operational_mode(tmp_path).mode == "active"
 
 
@@ -65,7 +68,7 @@ def test_mode_command_persists_any_mode_when_hub_is_offline(
         def __init__(self, **_kwargs):
             constructors.append(_kwargs)
 
-        def _online(self):
+        def _online(self, timeout=None):
             return False
 
         def post(self, *_args, **_kwargs):
@@ -74,11 +77,13 @@ def test_mode_command_persists_any_mode_when_hub_is_offline(
     monkeypatch.setattr(hubctl, "HubClient", OfflineClient)
     monkeypatch.setattr(sys, "argv", ["hubctl", "mode", mode, "--json"])
 
-    assert hubctl.main() == 0
+    exit_code = hubctl.main()
 
     result = json.loads(capsys.readouterr().out)
     assert result["success"] is True
-    assert result["offline"] is True
+    assert result["server_status"] == "offline"
+    assert result["complete"] is (mode != "gaming")
+    assert exit_code == (1 if mode == "gaming" else 0)
     assert result["mode"] == mode
     assert load_operational_mode(tmp_path).mode == mode
     assert constructors[0]["auto_start"] is False
@@ -95,16 +100,17 @@ def test_offline_hubctl_mode_survives_fresh_process_restart(monkeypatch, tmp_pat
         def __init__(self, **_kwargs):
             pass
 
-        def _online(self):
+        def _online(self, timeout=None):
             return False
 
     monkeypatch.setattr(hubctl, "HubClient", OfflineClient)
     monkeypatch.setattr(sys, "argv", ["hubctl", "mode", "gaming", "--json"])
 
-    assert hubctl.main() == 0
+    assert hubctl.main() == 1
     result = json.loads(capsys.readouterr().out)
     assert result["success"] is True
-    assert result["offline"] is True
+    assert result["complete"] is False
+    assert result["server_status"] == "offline"
     assert result["mode"] == "gaming"
 
     context = multiprocessing.get_context("spawn")
@@ -145,12 +151,18 @@ def test_mode_command_routes_live_transition_through_mode_api(
         def __init__(self, **_kwargs):
             constructors.append(_kwargs)
 
-        def _online(self):
+        def _online(self, timeout=None):
             return True
 
         def post(self, path, payload, **kwargs):
             calls.append((path, payload, kwargs))
-            return {"success": True, "mode": "gaming", "revision": 2}
+            return {
+                "success": True,
+                "mode": "gaming",
+                "revision": 2,
+                "runtime_unload": {"success": True},
+                "accelerator_release": {"success": True},
+            }
 
     monkeypatch.setattr(hubctl, "HubClient", OnlineClient)
     monkeypatch.setattr(sys, "argv", ["hubctl", "mode", "gaming", "--json"])
@@ -159,9 +171,10 @@ def test_mode_command_routes_live_transition_through_mode_api(
 
     result = json.loads(capsys.readouterr().out)
     assert result["success"] is True
-    assert result["offline"] is False
+    assert result["complete"] is True
+    assert result.get("server_status") is None
     assert result["revision"] == 2
-    assert calls[0][0:2] == ("/api/mode", {"mode": "gaming"})
+    assert calls[0][0:2] == ("/api/admin/mode", {"mode": "gaming"})
     assert constructors[0]["auto_start"] is False
     assert load_operational_mode(tmp_path).mode == "active"
 
@@ -179,7 +192,7 @@ def test_mode_command_does_not_fallback_after_uncertain_live_transition(
         def __init__(self, **_kwargs):
             pass
 
-        def _online(self):
+        def _online(self, timeout=None):
             return True
 
         def post(self, *_args, **_kwargs):
@@ -195,6 +208,6 @@ def test_mode_command_does_not_fallback_after_uncertain_live_transition(
     assert hubctl.main() == 1
 
     result = json.loads(capsys.readouterr().out)
-    assert result["offline"] is False
+    assert result.get("server_status") is None
     assert result["outcome_unknown"] is True
     assert load_operational_mode(tmp_path).mode == "active"
