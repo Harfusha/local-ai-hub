@@ -7,19 +7,6 @@ from local_ai_hub import mcp_server
 
 
 def _mode(monkeypatch, name: str) -> None:
-    def gate_error(snapshot, action: str, *, requires_heavy_work: bool):
-        if not requires_heavy_work or snapshot.mode == "active":
-            return None
-        if snapshot.mode == "gaming" and action == "speculative_lint":
-            return None
-        return {
-            "success": False,
-            "mode": snapshot.mode,
-            "error": f"hub paused: {snapshot.mode} mode active",
-            "terminal": True,
-            "retryable": False,
-        }
-
     def load_mode(state_dir=None):
         return SimpleNamespace(
             mode=name,
@@ -30,52 +17,50 @@ def _mode(monkeypatch, name: str) -> None:
         )
 
     monkeypatch.setattr(mcp_server, "load_operational_mode", load_mode, raising=False)
-    monkeypatch.setattr(
-        mcp_server,
-        "operational_mode_gate_error",
-        gate_error,
-        raising=False,
-    )
 
 
 def _dispatch(name: str, arguments: dict[str, object]):
     return asyncio.run(mcp_server._compact_mcp_call_tool(name, arguments))[1]
 
 
-def test_gaming_mcp_dispatch_allows_only_speculative_lint(monkeypatch) -> None:
+def test_gaming_policy_keeps_repo_search_lightweight_and_blocks_inference(monkeypatch) -> None:
     _mode(monkeypatch, "gaming")
-    monkeypatch.setattr(mcp_server.FEATURES, "speculative_lint", True)
     calls = []
+    monkeypatch.setattr(mcp_server.CLIENT, "post", lambda *args, **kwargs: calls.append(args))
 
-    def post(path, payload, *, timeout):
-        calls.append((path, payload, timeout))
-        return {"success": True, "state": "queued", "job_id": "lint-1"}
-
-    monkeypatch.setattr(mcp_server.CLIENT, "post", post)
-
-    lint = _dispatch(
-        "local_ai_command",
-        {"action": "speculative_lint", "cwd": ".", "command": "lint"},
+    action, requires_heavy_work = mcp_server._classify_mcp_operation(
+        "local_ai_repo", {"action": "search"}
+    )
+    read_rejection = mcp_server._operational_mode_rejection(
+        action, requires_heavy_work=requires_heavy_work
     )
     inference = _dispatch("local_ai_task", {"action": "delegate", "task": "review"})
 
-    assert lint["success"] is True
-    assert calls and calls[0][0] == "/api/speculative-lint"
+    assert action == "search"
+    assert requires_heavy_work is False
+    assert read_rejection is None
     assert inference["success"] is False
     assert inference["mode"] == "gaming"
     assert inference["error"] == "hub paused: gaming mode active"
-    assert len(calls) == 1
+    assert calls == []
 
 
-def test_maintenance_mcp_dispatch_still_blocks_speculative_lint(monkeypatch) -> None:
-    _mode(monkeypatch, "maintenance")
+def test_gaming_speculative_lint_policy_requires_opt_in(monkeypatch) -> None:
+    _mode(monkeypatch, "gaming")
     monkeypatch.setattr(mcp_server.FEATURES, "speculative_lint", True)
+
+    assert mcp_server._operational_mode_rejection("speculative_lint") is None
+    assert mcp_server._operational_mode_rejection("run") is not None
+
+
+def test_maintenance_mcp_dispatch_blocks_inference(monkeypatch) -> None:
+    _mode(monkeypatch, "maintenance")
     calls = []
     monkeypatch.setattr(mcp_server.CLIENT, "post", lambda *args, **kwargs: calls.append(args))
 
     result = _dispatch(
-        "local_ai_command",
-        {"action": "speculative_lint", "cwd": ".", "command": "lint"},
+        "local_ai_task",
+        {"action": "delegate", "task": "review"},
     )
 
     assert result["success"] is False
