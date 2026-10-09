@@ -182,7 +182,7 @@ def test_invalid_mode_is_rejected_without_replacing_persisted_state(tmp_path):
     assert load_operational_mode(tmp_path) == original
 
 
-def test_mcp_agent_tool_is_rejected_before_dispatch_but_status_remains_available(monkeypatch, tmp_path):
+def test_mcp_agent_inference_is_rejected_before_dispatch_but_status_remains_available(monkeypatch, tmp_path):
     from local_ai_hub import mcp_server
 
     set_operational_mode(tmp_path, "gaming")
@@ -190,7 +190,7 @@ def test_mcp_agent_tool_is_rejected_before_dispatch_but_status_remains_available
     adoption_calls = []
     monkeypatch.setattr(mcp_server, "_record_adoption", lambda *args, **kwargs: adoption_calls.append(args))
 
-    rejected = mcp_server.local_ai_repo(action="search", query="needle")
+    rejected = mcp_server.local_ai_task(action="delegate", task="review the current change")
 
     assert rejected["mode"] == "gaming"
     assert rejected["error"] == "hub paused: gaming mode active"
