@@ -17,15 +17,23 @@ def test_timeline_is_the_only_registered_t18_route_and_pack_stays_inline() -> No
     assert select_http_routes("POST", "/api/context/pack") == ()
 
 
-def test_timeline_handler_preserves_status_body_arguments_and_exception(monkeypatch) -> None:
+def test_timeline_handler_preserves_status_body_arguments_and_degrades_backend_error(monkeypatch) -> None:
     page = {"events": [{"event_id": "evt-1"}], "next_before_id": "evt-1"}
     calls = []
+    warnings = []
 
     def get_page(limit, *, before_id):
         calls.append((limit, before_id))
         return page
 
-    monkeypatch.setattr(http_server, "APP", SimpleNamespace(telemetry=SimpleNamespace(get_timeline_page=get_page)))
+    monkeypatch.setattr(
+        http_server,
+        "APP",
+        SimpleNamespace(
+            telemetry=SimpleNamespace(get_timeline_page=get_page),
+            logger=SimpleNamespace(warning=lambda *args: warnings.append(args)),
+        ),
+    )
     handler = http_server.Handler.__new__(http_server.Handler)
     responses = []
     handler._send = lambda status, body: responses.append((status, body))
@@ -37,8 +45,21 @@ def test_timeline_handler_preserves_status_body_arguments_and_exception(monkeypa
         raise RuntimeError("timeline backend failed")
 
     monkeypatch.setattr(http_server.APP.telemetry, "get_timeline_page", fail_page)
-    with pytest.raises(RuntimeError, match="timeline backend failed"):
-        handler._handle_post_telemetry_timeline({})
+    handler._handle_post_telemetry_timeline({})
+    assert responses[1] == (
+        503,
+        {
+            "success": False,
+            "error": {
+                "code": "telemetry_page_unavailable",
+                "message": "telemetry timeline is temporarily unavailable",
+            },
+            "status_code": 503,
+            "retryable": True,
+            "terminal": False,
+        },
+    )
+    assert warnings == [("telemetry timeline page failed error_type=%s", "RuntimeError")]
 
 
 def test_named_dispatch_keeps_existing_gate_and_exception_order() -> None:
