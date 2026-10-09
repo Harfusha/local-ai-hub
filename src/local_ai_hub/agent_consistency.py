@@ -119,15 +119,12 @@ def _tuple(value: Any, limit: int = _MAX_ITEMS) -> tuple[str, ...]:
     else:
         try:
             values = itertools.islice(iter(value), limit)
-        except Exception:
+        except TypeError:
             values = ()
     output: list[str] = []
-    try:
-        for item in values:
-            if item is not None:
-                output.append(_text(item, 240))
-    except Exception:
-        pass
+    for item in values:
+        if item is not None:
+            output.append(_text(item, 240))
     return tuple(output[:limit])
 
 
