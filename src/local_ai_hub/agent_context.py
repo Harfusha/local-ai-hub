@@ -5,6 +5,7 @@ import json
 import logging
 import math
 import os
+import sqlite3
 import threading
 import time
 import uuid
@@ -908,8 +909,13 @@ class ContextCompiler:
                         worktree_id=request.worktree_id,
                         branch=request.branch,
                     )
-                except Exception:
+                except (OSError, TimeoutError, sqlite3.Error) as exc:
                     diagnostic_summary = None
+                    warnings.append(self._warning(
+                        "memory_diagnostics_unavailable",
+                        "memory diagnostics unavailable",
+                        error=type(exc).__name__,
+                    ))
             if diagnostic_summary is not None:
                 for status, data in diagnostic_summary.items():
                     if status in excluded_memory and isinstance(data, dict):
