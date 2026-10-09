@@ -5633,7 +5633,7 @@ class LocalAIServices:
             except Exception as exc:
                 retrieval_warnings.append(f"lexical completeness pass degraded: {type(exc).__name__}")
         try:
-            if path_controls_active and candidate_paths:
+            if candidate_paths:
                 candidate_paths = list(dict.fromkeys(candidate_paths))
                 pack_kwargs: dict[str, Any] = {
                     "max_tokens": lexical_tokens,
@@ -5653,7 +5653,13 @@ class LocalAIServices:
                     root, query, candidate_paths, **pack_kwargs,
                 )
                 # A targeted request must never silently expand into a repository-wide walk.
-                if isinstance(lexical, dict) and lexical.get("success") and not lexical.get("evidence") and not path_controls_active:
+                # Untargeted requests may fall back if path-scoped retrieval cannot answer.
+                if not path_controls_active and (
+                    not isinstance(lexical, dict)
+                    or not lexical.get("success")
+                    or not isinstance(lexical.get("evidence"), list)
+                    or not lexical["evidence"]
+                ):
                     lexical = self.repo_tools.context_pack(
                         root, query, max_tokens=lexical_tokens,
                         top_k=int(search_cfg.get("context_top_k", 14)),
