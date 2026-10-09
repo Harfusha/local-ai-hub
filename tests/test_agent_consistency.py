@@ -56,6 +56,16 @@ def _request(repo: Path, **changes) -> ConsistencyRequest:
     return ConsistencyRequest(**values)
 
 
+def test_consistency_request_does_not_silently_truncate_broken_changed_paths() -> None:
+    class BrokenPaths:
+        def __iter__(self):
+            yield "src/first.py"
+            raise RuntimeError("path iterator failed")
+
+    with pytest.raises(RuntimeError, match="path iterator failed"):
+        _request(Path.cwd(), changed_paths=BrokenPaths())
+
+
 def test_consistency_request_preserves_project_config_digest_identity() -> None:
     first_digest = "a" * 64
     second_digest = "b" * 64
