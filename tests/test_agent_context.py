@@ -20,6 +20,7 @@ from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStatus, Me
 from local_ai_hub.agent_memory import _memory_event_stream_id
 from local_ai_hub.agent_tasks import GoalContract, TaskStore
 from local_ai_hub.agent_verification import VerificationReceipt, VerificationStore
+from local_ai_hub.sqlite_support import DurableSchemaMismatchError
 
 
 @pytest.fixture
@@ -630,6 +631,52 @@ def test_memory_diagnostics_are_repository_scoped(tmp_path: Path):
     assert "stale_count=1" in diagnostics.content
 
 
+def test_memory_diagnostics_failure_is_explicitly_reported(tmp_path: Path):
+    state_store = AgentStateStore(tmp_path / "state.sqlite3")
+
+    class BrokenDiagnosticsMemoryStore(MemoryStore):
+        def diagnostic_summary(self, **_kwargs):
+            raise OSError("diagnostics backend unavailable")
+
+    compiler = ContextCompiler(
+        state_store=state_store,
+        memory_store=BrokenDiagnosticsMemoryStore(state_store),
+    )
+    context = compiler.compile(
+        ContextRequest(
+            task_id="task-1",
+            root=str(tmp_path),
+            tenant="tenant-1",
+            token_budget=120,
+            include_diagnostics=True,
+        )
+    )
+
+    assert any(warning["code"] == "memory_diagnostics_unavailable" for warning in context.warnings)
+
+
+def test_memory_diagnostics_schema_mismatch_is_not_hidden(tmp_path: Path):
+    state_store = AgentStateStore(tmp_path / "state.sqlite3")
+
+    class BrokenDiagnosticsMemoryStore(MemoryStore):
+        def diagnostic_summary(self, **_kwargs):
+            raise DurableSchemaMismatchError(self.state_store.db_path, ["schema mismatch"], None)
+
+    compiler = ContextCompiler(
+        state_store=state_store,
+        memory_store=BrokenDiagnosticsMemoryStore(state_store),
+    )
+
+    with pytest.raises(DurableSchemaMismatchError):
+        compiler.compile(ContextRequest(
+            task_id="task-1",
+            root=str(tmp_path),
+            tenant="tenant-1",
+            token_budget=120,
+            include_diagnostics=True,
+        ))
+
+
 def test_legacy_rootless_memory_is_not_included_without_root(tmp_path: Path):
     state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
     memory_store = MemoryStore(state_store)
@@ -642,6 +689,16 @@ def test_legacy_rootless_memory_is_not_included_without_root(tmp_path: Path):
             value="legacy evidence",
             status=MemoryStatus.CONFIRMED,
             provenance={"tenant": "tenant-1"},
+        )
+    )
+    other_tenant_legacy = memory_store.record(
+        MemoryRecord.create(
+            kind=MemoryKind.FACT,
+            scope="repository",
+            key="legacy-rootless-other-tenant",
+            value="other tenant evidence",
+            status=MemoryStatus.CONFIRMED,
+            provenance={"tenant": "tenant-2"},
         )
     )
 
@@ -660,6 +717,7 @@ def test_legacy_rootless_memory_is_not_included_without_root(tmp_path: Path):
     scoped_ids = {element.element_id for element in scoped_context.elements}
     diagnostics = next(element for element in scoped_context.elements if element.source_kind == "memory_diagnostics")
     assert legacy.record_id not in scoped_ids
+    assert other_tenant_legacy.record_id not in diagnostics.content
     assert legacy.record_id in diagnostics.content
     assert "legacy_unscoped_count=1" in diagnostics.content
 
