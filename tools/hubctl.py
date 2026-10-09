@@ -224,10 +224,26 @@ def main() -> int:
             requested_mode = "active"
         result = _activity_mode_request(requested_mode, config_path=_config_arg(args.config))
         if result.get("success") is not True:
-            print(_activity_mode_error(result), file=sys.stderr)
+            if args.raw_json:
+                print(json.dumps(result, indent=2, ensure_ascii=False))
+            else:
+                print(_activity_mode_error(result), file=sys.stderr)
             return 1
         mode = str(result["mode"])
         transition_failures = _activity_mode_transition_failures(result, requested_mode)
+        if args.raw_json:
+            print(
+                json.dumps(
+                    {
+                        **result,
+                        "complete": not transition_failures,
+                        "transition_failures": transition_failures,
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                )
+            )
+            return 1 if transition_failures else 0
         if transition_failures:
             print(f"Mode persisted as {mode}.")
             print(f"Mode transition incomplete: {', '.join(transition_failures)}.", file=sys.stderr)
