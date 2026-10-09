@@ -688,9 +688,15 @@ def _receipt_evidence_matches(
         if expected_project_config_digest:
             command_digest = proof.get("command_sha256")
             actual_command = proof.get("command")
+            actual_tokens: list[str] | None = None
             environment_digest = proof.get("project_environment_sha256")
             configured_digest = proof.get("configured_command_sha256")
             arguments_digest = proof.get("caller_arguments_sha256")
+            broker_attests_command = bool(
+                require_execution_provenance
+                and receipt.command_id
+                and callable(command_execution_record_lookup)
+            )
             if (
                 command_classification != receipt.evidence_type
                 or
@@ -698,8 +704,12 @@ def _receipt_evidence_matches(
                 or proof.get("project_config_digest") != expected_project_config_digest
                 or not isinstance(command_digest, str)
                 or re.fullmatch(r"[0-9a-f]{64}", command_digest) is None
-                or not isinstance(actual_command, str)
-                or hashlib.sha256(actual_command.encode("utf-8")).hexdigest() != command_digest
+                or (actual_command is None and not broker_attests_command)
+                or (actual_command is not None and not isinstance(actual_command, str))
+                or (
+                    isinstance(actual_command, str)
+                    and hashlib.sha256(actual_command.encode("utf-8")).hexdigest() != command_digest
+                )
                 or not isinstance(expected_project_environment_sha256, str)
                 or re.fullmatch(r"[0-9a-f]{64}", expected_project_environment_sha256) is None
                 or environment_digest != expected_project_environment_sha256
@@ -710,6 +720,8 @@ def _receipt_evidence_matches(
             ):
                 return False
             if isinstance(expected_project_command, str):
+                if not isinstance(actual_command, str):
+                    return False
                 expected_command_digest = hashlib.sha256(
                     expected_project_command.encode("utf-8")
                 ).hexdigest()
@@ -740,43 +752,47 @@ def _receipt_evidence_matches(
                 )
                 if configured_digest != hashlib.sha256(configured_text.encode("utf-8")).hexdigest():
                     return False
-                try:
-                    actual_tokens = [
-                        token.strip("\"'")
-                        for token in shlex.split(actual_command, posix=(os.name != "nt"))
-                    ]
-                except ValueError:
-                    return False
-                configured_tokens = [str(token) for token in argv]
-                if actual_tokens[: len(configured_tokens)] != configured_tokens:
-                    return False
-                caller_arguments = actual_tokens[len(configured_tokens) :]
-                if (
-                    len(caller_arguments) > 32
-                    or any(not isinstance(token, str) or len(token) > 4096 or "\x00" in token for token in caller_arguments)
-                    or any(token in {";", "&&", "||", "|", ">", "<"} for token in caller_arguments)
-                    or arguments_digest
-                    != hashlib.sha256(
-                        json.dumps(caller_arguments, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-                    ).hexdigest()
-                ):
+                if isinstance(actual_command, str):
+                    try:
+                        actual_tokens = [
+                            token.strip("\"'")
+                            for token in shlex.split(actual_command, posix=(os.name != "nt"))
+                        ]
+                    except ValueError:
+                        return False
+                    configured_tokens = [str(token) for token in argv]
+                    if actual_tokens[: len(configured_tokens)] != configured_tokens:
+                        return False
+                    caller_arguments = actual_tokens[len(configured_tokens) :]
+                    if (
+                        len(caller_arguments) > 32
+                        or any(not isinstance(token, str) or len(token) > 4096 or "\x00" in token for token in caller_arguments)
+                        or any(token in {";", "&&", "||", "|", ">", "<"} for token in caller_arguments)
+                        or arguments_digest
+                        != hashlib.sha256(
+                            json.dumps(caller_arguments, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                        ).hexdigest()
+                    ):
+                        return False
+                elif not broker_attests_command:
                     return False
             else:
                 return False
-            lowered_tokens = [token.lower() for token in actual_tokens]
-            no_execution_options = {
-                "-h", "--help", "--version", "-version",
-                "--collect-only", "--co", "--fixtures", "--fixtures-per-test",
-                "--list-tests", "--dry-run",
-            }
-            if any(
-                token in no_execution_options
-                or token.startswith(("--help=", "--version="))
-                for token in lowered_tokens
-            ):
-                return False
-            if classify_verification_command(actual_command) != receipt.evidence_type:
-                return False
+            if actual_tokens is not None:
+                lowered_tokens = [token.lower() for token in actual_tokens]
+                no_execution_options = {
+                    "-h", "--help", "--version", "-version",
+                    "--collect-only", "--co", "--fixtures", "--fixtures-per-test",
+                    "--list-tests", "--dry-run",
+                }
+                if any(
+                    token in no_execution_options
+                    or token.startswith(("--help=", "--version="))
+                    for token in lowered_tokens
+                ):
+                    return False
+                if classify_verification_command(actual_command) != receipt.evidence_type:
+                    return False
             binding_fields = {
                 "project_alias": receipt.criterion,
                 "project_config_digest": expected_project_config_digest,
@@ -837,6 +853,8 @@ def _receipt_evidence_matches(
                 or execution_record.get("repository_root_sha256") != root_sha256
                 or execution_record.get("repository_revision") != receipt.repository_revision
                 or execution_record.get("mutation_generation") != receipt.mutation_generation
+                or execution_record.get("configured_command_sha256") != proof.get("configured_command_sha256")
+                or execution_record.get("caller_arguments_sha256") != proof.get("caller_arguments_sha256")
                 or type(execution_record.get("exit_code")) is not int
                 or execution_record.get("exit_code") != 0
                 or execution_record.get("cached") is not False
