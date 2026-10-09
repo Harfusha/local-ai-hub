@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import logging
 import sys
 import tomllib
 from pathlib import Path
@@ -155,6 +156,25 @@ def test_doctor_falls_back_to_runtime_model_inventory_when_status_is_empty():
     models = installed_models_from_status({}, runtime_factory=lambda _cfg: Runtime(), cfg={})
 
     assert models == {"qwen3.5:9b", "qwen3-vl:4b"}
+
+
+def test_doctor_logs_runtime_inventory_failure_without_exception_details(caplog):
+    def broken_runtime(_cfg):
+        raise OSError("sensitive model-state path")
+
+    with caplog.at_level(logging.WARNING, logger=doctor_support.__name__):
+        models = installed_models_from_status({}, runtime_factory=broken_runtime, cfg={})
+
+    assert models == set()
+    matching = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == doctor_support.__name__
+        and "installed-model discovery failed" in record.getMessage()
+    ]
+    assert len(matching) == 1
+    assert "error_type=OSError" in matching[0]
+    assert "sensitive model-state path" not in caplog.text
 
 
 def test_doctor_report_keeps_only_supported_code_intelligence_backend():
