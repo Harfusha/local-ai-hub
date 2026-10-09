@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import sqlite3
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
@@ -19,6 +21,7 @@ class RiskClass(str, Enum):
 
 
 POLICY_OWNER = "agent_policy"
+LOGGER = logging.getLogger(__name__)
 
 # Auxiliary command names are normalized at the policy boundary so callers
 # cannot lower their risk by supplying a read-only ActionRequest.
@@ -217,8 +220,10 @@ class PolicyEngine:
             try:
                 retry_busy(_setup, retries=5, base_delay_seconds=0.02)
                 self._initialized = True
-            except Exception:
-                pass
+            except sqlite3.Error as exc:
+                LOGGER.warning(
+                    "budget state initialization failed (%s)", type(exc).__name__
+                )
 
     def authorize(
         self,
@@ -350,8 +355,8 @@ class PolicyEngine:
                 if b is not None:
                     self._budgets[task_id] = b
                     return b
-            except Exception:
-                pass
+            except sqlite3.Error as exc:
+                LOGGER.warning("budget state read failed (%s)", type(exc).__name__)
 
         with self._lock:
             if len(self._budgets) > 512:
@@ -428,5 +433,5 @@ class PolicyEngine:
                     )
         try:
             retry_busy(_save, retries=5, base_delay_seconds=0.01)
-        except Exception:
-            pass
+        except sqlite3.Error as exc:
+            LOGGER.warning("budget state persistence failed (%s)", type(exc).__name__)

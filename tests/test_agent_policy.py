@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
+import local_ai_hub.agent_policy as agent_policy
 from local_ai_hub.agent_identity import AgentScope, ScopeContext
 from local_ai_hub.agent_policy import (
     ActionRequest,
@@ -95,3 +98,64 @@ def test_budget_consumption(engine: PolicyEngine):
     assert updated.used_tokens == 500
     assert updated.used_compute_seconds == 1.5
     assert updated.used_external_calls == 2
+
+
+def test_budget_storage_initialization_sqlite_error_is_logged_without_path(
+    monkeypatch, tmp_path, caplog
+):
+    store = type(
+        "StateStore",
+        (),
+        {"enabled": True, "db_path": str(tmp_path / "state.sqlite3")},
+    )()
+
+    def fail_retry(*_args, **_kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(agent_policy, "retry_busy", fail_retry)
+    PolicyEngine(store)
+
+    assert "budget state initialization failed (OperationalError)" in caplog.text
+    assert "database is locked" not in caplog.text
+    assert str(tmp_path) not in caplog.text
+
+
+def test_budget_storage_read_sqlite_error_is_logged_and_uses_memory_fallback(
+    monkeypatch, tmp_path, caplog
+):
+    store = type(
+        "StateStore",
+        (),
+        {"enabled": True, "db_path": str(tmp_path / "state.sqlite3")},
+    )()
+    engine = PolicyEngine(store)
+
+    def fail_connect(_path):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(agent_policy, "connect_sqlite", fail_connect)
+    budget = engine.get_budget("task-read")
+
+    assert budget.used_tokens == 0
+    assert "budget state read failed (OperationalError)" in caplog.text
+    assert "database is locked" not in caplog.text
+    assert str(tmp_path) not in caplog.text
+
+
+def test_budget_storage_write_sqlite_error_is_logged(monkeypatch, tmp_path, caplog):
+    store = type(
+        "StateStore",
+        (),
+        {"enabled": True, "db_path": str(tmp_path / "state.sqlite3")},
+    )()
+    engine = PolicyEngine(store)
+
+    def fail_connect(_path):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(agent_policy, "connect_sqlite", fail_connect)
+    engine._persist_budget(Budget(task_id="task-write"))
+
+    assert "budget state persistence failed (OperationalError)" in caplog.text
+    assert "database is locked" not in caplog.text
+    assert str(tmp_path) not in caplog.text
