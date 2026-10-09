@@ -706,6 +706,23 @@ def test_guard_records_verified_finding_after_discovery(repository: Path):
     assert other_tenant is not None
     assert other_tenant.record_id != saved.record_id
     assert other_tenant.provenance["tenant"] == "other-tenant"
+    assert [
+        record.record_id
+        for record in memory.find(
+            scope="repository",
+            key=saved.key,
+            root=str(repository),
+            tenant=request.tenant,
+            semantic=False,
+        )
+    ] == [saved.record_id]
+    assert memory.find(
+        scope="repository",
+        key=other_tenant.key,
+        root=str(repository),
+        tenant=request.tenant,
+        semantic=False,
+    ) == []
 
 
 def test_guard_records_reuse_decision_and_rejected_approach(repository: Path):
