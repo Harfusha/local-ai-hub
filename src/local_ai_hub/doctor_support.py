@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+import logging
 from pathlib import Path
 from typing import Any
+
+LOGGER = logging.getLogger(__name__)
 
 
 def installed_models_from_status(
@@ -22,7 +25,11 @@ def installed_models_from_status(
             runtime_factory = OllamaRuntime
         runtime = runtime_factory(cfg or {})
         return {str(name) for name in runtime.installed_models() if str(name)}
-    except Exception:
+    except Exception as exc:
+        LOGGER.warning(
+            "doctor installed-model discovery failed error_type=%s",
+            type(exc).__name__,
+        )
         return set()
 
 

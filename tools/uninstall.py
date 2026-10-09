@@ -19,9 +19,7 @@ from local_ai_hub.process_utils import hidden_run_kwargs
 
 MARKER_BEGIN = "# BEGIN LOCAL AI HUB MANAGED"
 MARKER_END = "# END LOCAL AI HUB MANAGED"
-# Remove the retired Hub-managed CodeGraph entry too. This only targets the
-# legacy managed name; standalone CodeGraph installations use their own config.
-MCP_NAMES = {"local-ai", "serena-local", "codegraph-local"}
+MCP_NAMES = {"local-ai", "serena-local"}
 POLICY_BEGIN = "<!-- BEGIN LOCAL AI HUB TOOL POLICY -->"
 POLICY_END = "<!-- END LOCAL AI HUB TOOL POLICY -->"
 TOKEN_ECONOMY_POLICY_BEGIN = "<!-- BEGIN TOKEN ECONOMY POLICY -->"
