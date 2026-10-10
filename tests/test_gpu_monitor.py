@@ -56,6 +56,52 @@ class GpuMonitorTests(unittest.TestCase):
                 gpu_monitor._WINDOWS_REFRESHING,
             ) = prior
 
+    def test_unexpected_refresh_error_propagates_and_clears_refresh_state(self):
+        prior = (
+            gpu_monitor._WINDOWS_CACHE,
+            gpu_monitor._WINDOWS_CACHE_TIME,
+            gpu_monitor._WINDOWS_REFRESHING,
+        )
+        try:
+            gpu_monitor._WINDOWS_CACHE = {"stale": True}
+            gpu_monitor._WINDOWS_CACHE_TIME = 0.0
+            gpu_monitor._WINDOWS_REFRESHING = True
+            with patch.object(gpu_monitor.subprocess, "run", side_effect=RuntimeError("unexpected")):
+                with self.assertRaisesRegex(RuntimeError, "unexpected"):
+                    gpu_monitor._refresh_windows_sample()
+            self.assertEqual(gpu_monitor._WINDOWS_CACHE, {})
+            self.assertFalse(gpu_monitor._WINDOWS_REFRESHING)
+        finally:
+            (
+                gpu_monitor._WINDOWS_CACHE,
+                gpu_monitor._WINDOWS_CACHE_TIME,
+                gpu_monitor._WINDOWS_REFRESHING,
+            ) = prior
+
+    def test_unexpected_thread_start_error_propagates_and_clears_refresh_state(self):
+        prior = (
+            gpu_monitor._WINDOWS_CACHE,
+            gpu_monitor._WINDOWS_CACHE_TIME,
+            gpu_monitor._WINDOWS_REFRESHING,
+        )
+        try:
+            gpu_monitor._WINDOWS_CACHE = {}
+            gpu_monitor._WINDOWS_CACHE_TIME = 0.0
+            gpu_monitor._WINDOWS_REFRESHING = False
+            with patch.object(gpu_monitor.os, "name", "nt"), \
+                    patch.object(gpu_monitor.shutil, "which", return_value="powershell.exe"), \
+                    patch.object(gpu_monitor.threading, "Thread") as thread:
+                thread.return_value.start.side_effect = ValueError("unexpected")
+                with self.assertRaisesRegex(ValueError, "unexpected"):
+                    gpu_monitor._windows_sample()
+            self.assertFalse(gpu_monitor._WINDOWS_REFRESHING)
+        finally:
+            (
+                gpu_monitor._WINDOWS_CACHE,
+                gpu_monitor._WINDOWS_CACHE_TIME,
+                gpu_monitor._WINDOWS_REFRESHING,
+            ) = prior
+
 
 if __name__ == "__main__":
     unittest.main()

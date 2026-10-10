@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 import os
 import re
@@ -8,6 +9,8 @@ import shutil
 import subprocess
 import threading
 import time
+
+_LOGGER = logging.getLogger(__name__)
 from typing import Any
 
 from .hardware import detect_hardware
@@ -63,11 +66,12 @@ def _refresh_windows_sample() -> None:
             parsed = json.loads(completed.stdout)
             if isinstance(parsed, dict):
                 sample = parsed
-    except Exception:
-        pass
-    with _WINDOWS_LOCK:
-        _WINDOWS_CACHE, _WINDOWS_CACHE_TIME = sample, time.time()
-        _WINDOWS_REFRESHING = False
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
+        _LOGGER.debug("Windows hardware sample unavailable (%s)", type(exc).__name__)
+    finally:
+        with _WINDOWS_LOCK:
+            _WINDOWS_CACHE, _WINDOWS_CACHE_TIME = sample, time.time()
+            _WINDOWS_REFRESHING = False
 
 
 def _windows_sample() -> dict[str, Any]:
@@ -87,8 +91,12 @@ def _windows_sample() -> dict[str, Any]:
         try:
             _WINDOWS_REFRESHING = True
             threading.Thread(target=_refresh_windows_sample, daemon=True, name="windows-hardware-telemetry").start()
+        except RuntimeError as exc:
+            _WINDOWS_REFRESHING = False
+            _LOGGER.debug("Windows hardware sampler could not start (%s)", type(exc).__name__)
         except Exception:
             _WINDOWS_REFRESHING = False
+            raise
     return dict(_WINDOWS_CACHE)
 
 
