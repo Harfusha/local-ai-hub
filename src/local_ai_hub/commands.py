@@ -4392,7 +4392,10 @@ class CommandBroker:
             return {"class": "dangerous", "cacheable": False, "allowed": False, "reason": "dangerous executable"}
 
         extra_allowed = set(str(x).strip().lower() for x in cfg.get("extra_allowed_tools", []))
-        if exe_base in extra_allowed:
+        # Keep shell interpreters inside command classification; allowlisting a
+        # shell must not grant arbitrary script execution before safety checks.
+        shell_interpreters = {"sh", "bash", "dash", "zsh", "fish", "cmd", "powershell", "pwsh"}
+        if exe_base in extra_allowed and exe_base not in shell_interpreters:
             return {"class": "validation", "cacheable": True, "allowed": True, "replay_safe": False, "reason": f"user-whitelisted tool: {exe_base}"}
 
         # PowerShell commands or script blocks
