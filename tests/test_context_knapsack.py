@@ -14,6 +14,7 @@ from local_ai_hub.agent_identity import ScopeContext
 from local_ai_hub.agent_tasks import GoalContract, TaskStore
 from local_ai_hub.agent_verification import VerificationReceipt, VerificationStore
 from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStore
+from local_ai_hub.trace_context import reset_context, set_context
 
 
 def test_context_knapsack_pins_goal_and_packs_by_value_density(tmp_path: Path):
@@ -21,13 +22,22 @@ def test_context_knapsack_pins_goal_and_packs_by_value_density(tmp_path: Path):
     task_store = TaskStore(state_store)
     verif_store = VerificationStore(state_store, task_store=task_store)
     mem_store = MemoryStore(state_store)
+    repo_root = str(tmp_path.resolve())
+    tenant = "tenant-context-knapsack"
 
     # 1. Create task with goal
-    task_store.create(
-        GoalContract(goal="Build Mars Rover navigation module", acceptance_criteria=("lidar_ok", "imu_ok")),
-        ScopeContext(task_id="rover-1"),
-        task_id="rover-1",
-    )
+    trace_tokens = set_context(tenant=tenant)
+    try:
+        task_store.create(
+            GoalContract(goal="Build Mars Rover navigation module", acceptance_criteria=("lidar_ok", "imu_ok")),
+            ScopeContext(repository_id=repo_root, task_id="rover-1"),
+            task_id="rover-1",
+            repo_root=repo_root,
+        )
+    finally:
+        reset_context(trace_tokens)
+
+    memory_provenance = {"root": repo_root, "tenant": tenant, "task_id": "rover-1"}
 
     # 2. Add large low-density memory record
     # ~ 100 chars -> ~25 tokens. prio=70, conf=0.5 -> score = 35/25 = 1.4
@@ -39,6 +49,7 @@ def test_context_knapsack_pins_goal_and_packs_by_value_density(tmp_path: Path):
             scope="task",
             scope_id="rover-1",
             confidence=0.5,
+            provenance=memory_provenance.copy(),
         )
     )
 
@@ -52,6 +63,7 @@ def test_context_knapsack_pins_goal_and_packs_by_value_density(tmp_path: Path):
             scope="task",
             scope_id="rover-1",
             confidence=1.0,
+            provenance=memory_provenance.copy(),
         )
     )
 
@@ -77,7 +89,12 @@ def test_context_knapsack_pins_goal_and_packs_by_value_density(tmp_path: Path):
     # Goal takes ~18 tokens. Small memory takes ~7 tokens. Receipt takes ~16 tokens.
     # Total for those ~ 41 tokens. Large memory takes ~27 tokens.
     # Budget = 45.
-    ctx = comp.compile(ContextRequest(task_id="rover-1", token_budget=45))
+    ctx = comp.compile(ContextRequest(
+        task_id="rover-1",
+        token_budget=45,
+        root=repo_root,
+        tenant=tenant,
+    ))
 
     element_ids = [el.element_id for el in ctx.elements]
     assert "goal_rover-1" in element_ids, "Mandatory task goal must be pinned"
