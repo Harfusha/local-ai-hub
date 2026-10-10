@@ -2,6 +2,12 @@
 
 Use this prompt with any AI coding agent (Claude Code, Codex, Cursor, Windsurf, Gemini, Roo, GitHub Copilot) in any repository to upgrade an existing Local AI Hub installation from V3 to V4 from the canonical `master` branch, upgrade dependencies, restart services, and refresh the repository's instruction policies.
 
+## Current security and tool contract
+
+HTTP binds loopback only. Protected routes require credentials and route permissions. `security.api_token` uses coarse `api_token_permissions`; `security.supervisor_token` grants administrative read/write only; `security.action_tokens` map exact actions to credentials; `security.users` maps users to unique tokens, exact resource scopes, and optional tenants. Credential values must be unique and redacted from diagnostics. `client.startup_wait_seconds` defaults to `30.0`.
+
+`local_ai_repo` validates actions against its supported registry. `skeletonize` transforms supplied source text only; it does not inspect a repository. `generate_tests_for_diff` returns manual, skipped test scaffolds; it is not test-pass evidence. `local_ai_status` telemetry and agent-state details avoid the live-status request.
+
 ## Development workflow (binding)
 
 Follow [`docs/superpowers/specs/2026-10-07-simplified-worktree-integration.md`](superpowers/specs/2026-10-07-simplified-worktree-integration.md). The primary agent owns audits, implementation, and integration; do not create audit handoffs, ZIPs, custom owner packets, or routine fingerprints/hash cascades. Work in current `master` by default. Create branches/worktrees only for necessary isolation or genuinely independent parallel implementation. Integrate small verified units into `master` promptly. Preserve all unmerged work; inspect and record every remaining change before recoverable archival. This rule supersedes older delegation and handoff wording below.
@@ -28,6 +34,8 @@ You are an autonomous AI engineering agent. Your task is to upgrade **Local AI H
 
 Preserve privacy-safe adoption telemetry: it contains only normalized aggregate tool/action/intent/outcome, time, latency, and output-size buckets. Never migrate or expose prompts, source, secrets, absolute paths, or raw request records. Bypasses require an explicit client signal.
 
+Detailed execution traces are opt-in, dashboard-only, and stored locally. While enabled, preserve complete endpoint inputs and outputs, paths, and trace events without redaction or payload truncation; page large content for retrieval. Keep storage bounded through retention and whole-trace eviction, never by trimming trace content. Leave detailed traces disabled by default and keep the default aggregate telemetry lightweight.
+
 Follow these execution phases:
 
 ---
@@ -51,6 +59,7 @@ Use only the exact 40-character verified commit SHA issued by the T20 release ow
      git -C "$HOME/.local-ai-hub" merge-base --is-ancestor "<T20_VERIFIED_COMMIT_SHA>" origin/master
      git -C "$HOME/.local-ai-hub" checkout --detach "<T20_VERIFIED_COMMIT_SHA>"
      ```
+   - When synchronizing local `master` itself, use `git pull --ff-only origin master`; never create an implicit merge commit or rebase local work. Install only the separately verified commit after ancestry checks.
      *(On Windows PowerShell: fetch origin, verify the commit object and `git -C "$HOME\.local-ai-hub" merge-base --is-ancestor "<T20_VERIFIED_COMMIT_SHA>" origin/master`, then check out that SHA detached.)*
 
 ---
@@ -63,7 +72,7 @@ After setup, from the verified installation root install the complete declared n
 
 On Windows, prefer Task Scheduler identity `LocalAIHubSupervisor`; if registration is denied, verify the per-user Run-key fallback (`windows-user-startup`). A detached Hub alone does not prove reboot-persistent service registration.
 
-Run the platform installer with the active hardware profile to apply dependency updates, regenerate MCP schemas/manifests, and update skills. Target shared runtime uses one per-user Hub install, one configured `server.state_dir`, and one user-level supervisor/daemon for all Codex chats and worktrees under that OS account. Every enabled agent uses a lightweight stdio proxy. Acceptance: clean install registers exactly one user service; update reuses or reconciles that same registration. Never install or register a daemon per agent, chat, repository, or worktree. The generated global Codex `local-ai` entry starts `python -m local_ai_hub.mcp_server` as a stdio adapter; each active Codex MCP session may own one adapter process. The adapter forwards Hub calls through `HubClient` over HTTP. It creates bounded protocol/metadata helpers, but must not create `LocalAIApp`, `HubServices`, `ProjectPreprocessor`, `CodeIndex`, `RAGStore`, or model pools. Multiple adapter processes do not prove duplicate daemons; inspect parent/command line and the OS service identity. The single per-user supervisor starts the HTTP daemon at logon/session startup. Global Codex `cwd=install_dir` is not the caller's project root, and setup injects no project-root environment. Current candidate maps missing or `.` roots to the MCP working directory for most repository/RAG actions; preprocessing alone rejects a missing absolute root. Always pass the caller's explicit project root. Release acceptance stays blocked until T03 rejects rootless repository-scoped actions or a tested adapter supplies caller root explicitly. Pinned source includes operational modes and client transport safeguards. Rootless repository targeting and end-to-end HTTP identity isolation remain separate acceptance gaps; source integration is not deployed runtime proof. `HubClient` autostart is bounded and guarded by a cross-process lock; an existing managed supervisor or listener blocks another daemon launch. Treat generated agent command, arguments, working directory and environment as authoritative; inspect the installer-generated MCP entry instead of inventing proxy arguments or environment. Project-local MCP manifests use `target_root` as `cwd`; global manifests use `install_dir`. For each global repository, task, or memory request, set the request's `root` to the caller's project root and preserve task context; never infer root from `install_dir` or process cwd. `HubClient` preflights root-scoped task/memory identities with configured allowed roots, a principal, and an HMAC-derived tenant. HTTP `_tenant` still accepts caller labels outside token-bound browser routes; client validation does not establish server-enforced isolation. Required T04 transport contract: `request_not_sent` means delivery did not begin; `outcome_unknown` means delivery may have occurred and must never be replayed automatically. The source client distinguishes pre-send transport failures (`request_not_sent=true`) from uncertain delivery (`outcome_unknown=true`), supports cancellation, and preserves explicit request identity. Confirm behavior with same-revision targeted checks; installation and cross-process runtime acceptance remain separate. Keep `[server].bind = "127.0.0.1"` and `[security].allow_remote = false` for loopback-only operation. Non-loopback binds require `[security].allow_remote = true` and `[security].api_token` with at least 16 characters. On loopback, empty `api_token` leaves HTTP data/control routes unauthenticated; configure a token to protect them. When configured, send the token in `X-LocalAI-Token` or `Authorization: Bearer`; `/health` and the dashboard shell are public. The HTTP server does not expose `api_token_permissions` or a general principal-to-root authorization boundary. The client validates configured `allowed_roots` and root-derived task/memory tenant consistency; HTTP admin routes additionally support scoped `security.action_tokens`. HTTP tenant scope uses caller-provided `X-LocalAI-Tenant`, then `X-Tenant-ID`, then `http-default`; tenant label is not an authorization boundary. For correct repository targeting, pass the caller project root explicitly. Most repo/RAG MCP actions currently map omitted or `.` roots to MCP `cwd`; preprocessing alone rejects a missing absolute root. Root targeting does not provide authorization or root-isolated tenant behavior. Server-enforced root isolation remains unverified; do not infer it from client preflight. Inspect provider config first: Ollama is selected when `[ollama].enabled = true` and its install/model pulls still require the existing explicit opt-ins (`server.auto_start_ollama = true`, `llama_cpp.fallback_to_ollama = true`). If Ollama is disabled, `llama_cpp.mode = "on"` provisions the pinned llama.cpp runtime and default Qwen 1.5B model under `server.state_dir`; `"auto"` uses only a configured existing endpoint; `"off"` disables it. Never switch providers silently or start `ollama serve` as a fallback. Pull `models.vision` only for an explicitly enabled Ollama backend and `features.vision = true`:
+Run the platform installer with the active hardware profile to apply dependency updates, regenerate MCP schemas/manifests, and update skills. Target shared runtime uses one per-user Hub install, one configured `server.state_dir`, and one user-level supervisor/daemon for all Codex chats and worktrees under that OS account. Every enabled agent uses a lightweight stdio proxy. Acceptance: clean install registers exactly one user service; update reuses or reconciles that same registration. Never install or register a daemon per agent, chat, repository, or worktree. The generated global Codex `local-ai` entry starts `python -m local_ai_hub.mcp_server` as a stdio adapter; each active Codex MCP session may own one adapter process. The adapter forwards Hub calls through `HubClient` over HTTP. It creates bounded protocol/metadata helpers, but must not create `LocalAIApp`, `HubServices`, `ProjectPreprocessor`, `CodeIndex`, `RAGStore`, or model pools. Multiple adapter processes do not prove duplicate daemons; inspect parent/command line and the OS service identity. The single per-user supervisor starts the HTTP daemon at logon/session startup. Global Codex `cwd=install_dir` is not the caller's project root, and setup injects no project-root environment. Repository-scoped repo/RAG MCP actions now reject missing or `.` roots at the adapter boundary; preprocessing likewise requires an explicit absolute root. Always pass the caller's explicit project root. This source-level guard still needs fresh installed-runtime and deployment proof. Pinned source includes operational modes and client transport safeguards. Rootless repository targeting and end-to-end HTTP identity isolation remain separate acceptance gaps; source integration is not deployed runtime proof. `HubClient` autostart is bounded and guarded by a cross-process lock; an existing managed supervisor or listener blocks another daemon launch. Treat generated agent command, arguments, working directory and environment as authoritative; inspect the installer-generated MCP entry instead of inventing proxy arguments or environment. Project-local MCP manifests use `target_root` as `cwd`; global manifests use `install_dir`. For each global repository, task, or memory request, set the request's `root` to the caller's project root and preserve task context; never infer root from `install_dir` or process cwd. `HubClient` preflights root-scoped task/memory identities with configured allowed roots, a principal, and an HMAC-derived tenant. HTTP `_tenant` still accepts caller labels outside token-bound browser routes; client validation does not establish server-enforced isolation. Required T04 transport contract: `request_not_sent` means delivery did not begin; `outcome_unknown` means delivery may have occurred and must never be replayed automatically. The source client distinguishes pre-send transport failures (`request_not_sent=true`) from uncertain delivery (`outcome_unknown=true`), supports cancellation, and preserves explicit request identity. Confirm behavior with same-revision targeted checks; installation and cross-process runtime acceptance remain separate. The HTTP server is loopback-only: keep `[server].bind = "127.0.0.1"`. Remote binding and the `security.allow_remote` option are unsupported. On loopback, empty `api_token` leaves HTTP data/control routes unauthenticated; configure a token to protect them. When configured, send the token in `X-LocalAI-Token` or `Authorization: Bearer`; `/health` and the dashboard shell are public. The HTTP server does not expose `api_token_permissions` or a general principal-to-root authorization boundary. The client validates configured `allowed_roots` and root-derived task/memory tenant consistency; HTTP admin routes additionally support scoped `security.action_tokens`. HTTP tenant scope uses caller-provided `X-LocalAI-Tenant`, then `X-Tenant-ID`, then `http-default`; tenant label is not an authorization boundary. For correct repository targeting, pass the caller project root explicitly. Repo/RAG MCP actions reject omitted or `.` roots before transport; preprocessing likewise rejects a missing absolute root. Root targeting does not provide authorization or root-isolated tenant behavior. Server-enforced root isolation remains unverified; do not infer it from client preflight. Inspect provider config first: Ollama is selected when `[ollama].enabled = true` and its install/model pulls still require the existing explicit opt-ins (`server.auto_start_ollama = true`, `llama_cpp.fallback_to_ollama = true`). If Ollama is disabled, `llama_cpp.mode = "on"` provisions the pinned llama.cpp runtime and default Qwen 1.5B model under `server.state_dir`; `"auto"` uses only a configured existing endpoint; `"off"` disables it. Never switch providers silently or start `ollama serve` as a fallback. Pull `models.vision` only for an explicitly enabled Ollama backend and `features.vision = true`:
 
 Before updating or rolling back, stop the single per-user Hub service, record its platform service-manager identity and enabled state separately, then back up the installation, `config.toml`, complete configured `server.state_dir`, and every managed agent MCP config file together; include SQLite `-wal` and `-shm` files. Caches are disposable and do not contain durable tasks, receipts, jobs, memory, or leases. Restore only declared roots and preserve data outside the rollback write set. Use matching daemon code, Hub config, state and proxy registrations as one rollback set; do not point an older release at newer state. Service registration is external to the file snapshot; reconcile that same service once with the restored release before starting it. Never register per agent, chat, or worktree.
 
@@ -283,3 +292,139 @@ Supervisor health reason codes belong to operator diagnostics, not normal agent 
 Full status requires success, hub_online and version; diagnostic fields are optional.
 
 `disable_llm_card_synthesis` applies to fallback synthesis for unparsed file cards only. Module and project cards use separate `prefer_deterministic_modules` and `prefer_deterministic_project` settings; background LLM synthesis may still run when deterministic card generation does not satisfy its acceptance conditions.
+
+CodeGraphContext/KuzuDB was removed from Local AI Hub. Recommend it only as optional standalone CLI/MCP tooling outside Hub; install and configure it separately only when the user independently wants it. It is not a Hub dependency, runtime, backend, or MCP integration.
+
+`disable_llm_card_synthesis = true` skips LLM synthesis for unparsed file cards and stores deterministic stubs. It does not disable module/project cards: `prefer_deterministic_modules` and `prefer_deterministic_project` are separate preferences, and either path can use background LLM synthesis when deterministic output is unavailable or below its confidence threshold. Check active configuration and backend state before claiming synthesis is disabled.
+
+<!-- BEGIN LOCAL AI HUB TOOL POLICY -->
+Trigger map:
+- bounded health/cache/telemetry inspection (never poll): `local_ai_status`
+- repository facts/files/symbols: `local_ai_repo`
+- tests/lint/typecheck/build: `local_ai_command`
+- exact source/evidence text: `local_ai_artifact`
+- shared findings or overlapping edits: `local_ai_coord`
+- non-trivial multi-step, long-running, or acceptance-criteria work: `local_ai_coord` Agent OS task contracts, checkpoints, context, and verified completion
+- semantic retrieval after indexed paths are insufficient: `local_ai_rag`
+- semantic generation, exploration, reasoning, review, second opinion and compression: `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")`
+- `local_ai_work`: only when the user explicitly requests closed delegation; routine work stays with the primary agent
+- symbol or code-relationship questions: `local_ai_repo` semantic actions (Serena symbol navigation); indexed fallback remains available
+- Agent OS task and incident state: `local_ai_status(detail="agent_state")`
+- image understanding/frontend review via `qwen3-vl:4b`: `local_ai_task(action="vision")`
+- audio transcription: `local_ai_task(action="transcribe")`
+- local-model or device benchmarking: `local_ai_task` benchmark actions
+- model/prompt evaluation and drift checks: `local_ai_task` evaluation actions
+- model/prompt candidate and speculative-draft workflows: `local_ai_task` candidate actions
+- durable asynchronous local jobs: `local_ai_task` submit/status/wait/result/cancel; wait once, never poll
+- named read-only local advisory profiles: `local_ai_task(action="delegate", profile=...)`
+- curated knowledge sets and document/diagram ingestion: `local_ai_rag` docset and ingest actions
+- requested automated repair, affected-test selection, formatting, or lint fixes: `local_ai_command` specialized actions
+- local mock, replay, and flaky-test workflows: `local_ai_command` specialized actions
+- operator-facing live dashboard: `/dashboard` on the configured Hub server; use `local_ai_status` for bounded agent-side checks
+
+Recipes (guidance, not gates):
+- Recipe — Explore: preprocess once, use the cheapest repository action, fetch only required evidence slices.
+- Recipe — Change: gather indexed evidence, use `local_ai_repo(action="solve")` before edits, claim `local_ai_coord` leases for overlapping paths, then run indexed impact/review before validation.
+- Recipe — Validate: route repeatable commands through `local_ai_command`, reuse cached results, use `review_diff` or `security_audit` when relevant.
+- Recipe — Semantic work: use `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")` for bounded semantic tasks after needed evidence; deterministic/indexed tools remain for exact facts, symbols, diff and tests.
+- Recipe — Durable execution: create a task contract before substantial work, checkpoint phase changes, attach validation receipts, and complete only after `verify_completion` passes.
+- Recipe — Retrieve: use `local_ai_rag` only after deterministic/indexed paths are exhausted.
+- A recipe step may be skipped when irrelevant; one bounded fallback is allowed when Hub is unavailable.
+
+Direct ownership is the default. Do not delegate audits, inventory, status checks, or routine implementation. Use a subagent only for genuinely independent bounded implementation that materially shortens the critical path, or when the user explicitly asks; see the simplified workflow spec.
+
+- Semantic delegation is optional and on-demand: after deterministic/indexed evidence, use `local_ai_task` selectively for bounded generation, review, independent second opinions, test-log compression, commit message generation, and drafting where helpful. Cloud reasoning and planning are never blocked by mandatory local handoffs. Deterministic/indexed tools remain authoritative for exact facts, symbols, diff and tests. Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression. Model routing follows the active hardware profile and user overrides; consult `docs/MODEL_CAPABILITIES.md` for foreground role targets. Preprocessing follows its configured provider; do not switch it silently. Pinned master `2458f72c` has no Gemini preprocessing provider implementation; Gemini agent manifests do not establish runtime preprocessing support. Routing targets do not prove installed-model availability; model pulls remain opt-in.
+- Use native Codex subagents only for independent bounded implementation or an explicit user request. Never spawn them for audits or to relay results as a handoff.
+- Native `multi_agent_v1__spawn_agent` is used only for useful independent bounded work; explicit user requests may also authorize bounded delegation. Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, and sandbox.
+- Keep write scopes disjoint. The primary agent reviews and integrates directly; no ZIPs, custom owner packets, or fingerprint/hash cascades.
+- Do not duplicate tasks or chats. Check the existing plan first and update its existing item.
+
+Routing hierarchy: the main agent plans, audits, implements, reviews, and integrates directly. Use Local AI Hub for bounded retrieval and commands when available; Hub tools do not create a requirement to hand off work. On a bounded Hub failure, use the permitted direct local fallback and continue without retry loops.
+
+READ-ONLY AUDIT CONTRACT:
+- Read-only means no Git writes, `git worktree add` or removal, dependency installation, builds/imports, generated artifacts, or other workspace side effects. Never label such work read-only when any of these occur; split validation into a separately owned, explicitly side-effecting task.
+- Before native discovery or validation, retain preceding Hub result with action, absolute root, status, cache/in_progress state, and evidence IDs. Native discovery is fallback-only after one bounded terminal Hub failure.
+- Native validation fallback is allowed only after `local_ai_command` returns `terminal=true` and `retryable=false`; run one bounded fallback, state side effects/owner, and never repeat identical commands.
+- If an explicitly authorized independent subagent is used, Codex controls its permissions and write scope; the main agent remains integrator. Do not delegate audit-only work.
+- Do not run parallel duplicate commands or scopes. Tool labels are not evidence; preserve exact action, arguments, result, and ownership in the audit record.
+
+For every non-trivial repository task, use Local AI Hub before broad native discovery or repeatable validation. Keep one stable absolute project root. On the first task for that root call `local_ai_repo(action="preprocess", root=ABS_ROOT)` exactly once, then continue immediately; preprocessing is asynchronous, so never poll/wait/force-refresh it.
+ Then call `local_ai_repo(action="context", mode="adaptive")` as the first useful operation; it is the quality-first retrieval gate and accepts the task/context directly.
+
+Adoption gate: `local_ai_command` alone is never sufficient for a repository task. After one-time preprocess, the first useful Hub operation must be `local_ai_repo(action="context", mode="adaptive")`; use the command broker only for commands after grounded repository evidence exists. For implementation, diagnosis, refactoring or complex review, call `local_ai_repo(action="solve")` after evidence and before native edits. After edits, use the applicable indexed impact/review/security/evidence action before final validation.
+
+Adaptive retrieval path: call `local_ai_repo(action="context", mode="adaptive")` first; it runs bounded deterministic/indexed, structural, lexical and RAG retrieval, fuses agreement and diversity, and degrades optional backends independently. Stop escalating when evidence is sufficient; reuse cached results and bounded evidence. Do not fan out duplicate native retrieval layers or translate the task into a long grep-term list. Before native `find`/`rg`/`grep`/recursive glob/tree or opening more than two files for discovery, use that hub path first. Reuse fresh evidence IDs, artifact slices, memos and cache hits;
+ do not repeat the same hub action with the same root/query while repository state is unchanged.
+
+Treat result state as a protocol: `cache_hit`/`coalesced` means reuse the result; `in_progress=true` means another owner is doing identical work, so never duplicate it; `retryable`/429/503 means back off and do independent work; `degraded`/`stale` means verify only the affected path/slice; a non-retryable failure permits one cheaper/native fallback. Never turn a transient result into larger timeouts, force refreshes, or polling loops.
+
+Route test/lint/typecheck/build/read-only commands through `local_ai_command` before running them natively. If it returns `in_progress=true`, do not launch a duplicate command. Before an expensive `solve`/model call, search coordination memos for reusable findings. For overlapping multi-agent edits use `local_ai_coord` leases and store concise reusable discoveries as memos.
+ After edits, use indexed impact/review plus targeted cached validation; do not rerun broad discovery merely because files changed. `force` and `preprocess_refresh` are recovery/admin controls, never retry buttons. If an optional backend degrades, accept the hub's deterministic/index fallback. If the hub itself is unavailable, make one bounded health/retry attempt, then fall back to native tools. Never loop on health, status, preprocessing, model startup, a failing backend, or an identical command.
+
+Selection guide: `local_ai_repo` for bounded repository facts and checks (including `review_diff` and `security_audit`), `local_ai_command` for bounded repeatable commands, `local_ai_task` for bounded semantic generation, exploration, reasoning, review, independent second opinions and semantic compression, `local_ai_work` only for closed delegation explicitly requested by the user, `local_ai_rag` only after cheaper indexed evidence, `local_ai_artifact` for exact slices, `local_ai_coord` for leases/memos and Agent OS task, memory, context, and verification workflows.
+
+Local model policy: Model routing follows the active hardware profile and user overrides; consult `docs/MODEL_CAPABILITIES.md` for foreground role targets. Preprocessing follows its configured provider; do not switch it silently. Pinned master `2458f72c` has no Gemini preprocessing provider implementation; Gemini agent manifests do not establish runtime preprocessing support. Routing targets do not prove installed-model availability; model pulls remain opt-in. Check installed-model inventory before live inference; do not infer runtime availability, output quality, or performance from a configured mapping.
+## Context economy contract
+
+- Every Hub response is aggregate-bounded (default ≈3200 tokens).
+- `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.
+- Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
+- Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
+- Reject `max_response_tokens` below 128; never raise the request silently.
+- Native fallback requires an explicit `terminal=true` and `retryable=false` result.
+- On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
+- Prefer `response_profile="minimal"`/`"compact"`; request only decision-grade fields.
+- Pass a stable `reuse_key` for repeated logical queries. Use `response_profile="delta"` when only changes are needed; unchanged calls return a pointer, not missing data.
+- Use the existing `local_ai_task(action="batch")` for independent local tasks; keep each item bounded and consume compact per-item results.
+- The Hub keeps a bounded metadata-only context ledger; inspect it only with an explicit cache/status request, never by replaying the whole session.
+- Broad native shell reads are guarded by the optional host hook; use bounded limits or the Hub command/repository tools for discovery.
+- Fetch exact source, logs, or evidence only with `local_ai_artifact` slices. Never ask a broad tool for the same payload twice.
+- Commands return status, summary, changed paths, and failures; full stdout/stderr stays artifact-backed.
+- CALL `local_ai_repo(action="context")` FIRST for every non-trivial repository task, before native reads, grep, planning, edit, review or test. Its adaptive orchestrator fuses deterministic and indexed evidence with Serena, the built-in code index, bounded lexical search and RAG when available; it deduplicates, rewards cross-backend agreement, preserves file diversity and degrades per backend. Send the task/context, not a handmade list of grep terms. Reuse existing evidence and reuse candidates first; require evidence IDs for every factual claim. Deterministic/indexed evidence is authoritative; local models may rank, select, or compress structured evidence only and must not invent repository facts. Guarded scope or drift overrides require an explicit `override_reason` and approval when requested. Omit raw model/debug fields unless explicitly requested through `extra_fields`; responses remain compact; aggregate response budget defaults to approximately 3200 tokens. Omitting guarded fields preserves legacy `mode=fast|full` behavior. This is the default adaptive context pack.
+- Do not bypass the budget with native broad reads unless Hub has one bounded terminal failure.
+<!-- END LOCAL AI HUB TOOL POLICY -->
+
+<!-- BEGIN TOKEN ECONOMY POLICY -->
+- Before any repository task, load and follow the `token-economizer` skill when it is installed; this trigger applies even under deadline pressure.
+- Zero full-file dumping: Never read files >80 lines in their entirety. Use `repo-map` for high-level structure, `grep-ast <pattern> <file>`, targeted line slices, or `local_ai_artifact(action="slice")`.
+- Fast code search: Use `rg` (`ripgrep`) with `-m 5` / bounded matches and `fd` for file finding before opening files.
+- AST & structural code search: Use `ast-grep` (`sg`), Serena LSP (`find_symbol`, `find_referencing_symbols`), or `local_ai_repo(action="code_index")` before opening files.
+- Context compression & token measurement: Use `repomix --compress` or `files-to-prompt -c` for repo snapshots. Use `tokcount` to measure exact tokens.
+- Bounded command outputs: Route tests and builds through `local_ai_command`; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or stdin pipelines such as `git log | trim-run`. Use `jq` for JSON.
+- Surgical edits: Prefer targeted block replacements over rewriting entire files.
+- `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.
+- Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
+- Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
+- Reject `max_response_tokens` below 128; never raise the request silently.
+- Native fallback requires an explicit `terminal=true` and `retryable=false` result.
+- On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
+- Local model routing follows the active hardware profile and user overrides; use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions and compression. Consult `docs/MODEL_CAPABILITIES.md`; configured routes do not prove models are installed. Deterministic/indexed tools remain authoritative for exact facts, symbols, diff and tests.
+<!-- END TOKEN ECONOMY POLICY -->
+
+## Durable task checkpoints and bounded waits
+
+For non-trivial multi-step work, create a durable Agent OS task with `local_ai_coord(action="task_create")` before edits. Record phase changes with `local_ai_coord(action="task_checkpoint")`, then complete only after verification receipts satisfy the acceptance criteria. For asynchronous work, perform one bounded wait; never poll.
+
+## Current public contract notes
+
+- `local_ai_rag(action="ingest_document")`
+- non-empty `content` is required; `title` and `metadata` are optional.
+- Success returns `success`, `workspace`, `document_title`, `chunks_ingested`, and `embedded`.
+- Embedding errors do not stop lexical publication.
+- `image_path` must resolve to an existing `.png`, `.jpg`, `.jpeg`, `.webp`, `.svg`, or `.bmp` file; `caption` and `metadata` are optional.
+- Success also returns `diagram_indexed` and the resolved image path.
+- `local_ai_repo(action="pipeline")` accepts closed step objects.
+- `local_ai_artifact(action="list")` does not require `artifact_id`.
+- `local_ai_coord(action="pubsub_poll")` accepts `after_seq`.
+- `local_ai_coord` bounds `max_tokens` to 0 through 100000.
+- Repository pipelines serialize preprocessing mutation actions with other mutating steps.
+- Optional repository-analysis tools are installed and configured separately; they are not part of the Hub.
+- `disable_llm_card_synthesis = true` skips LLM synthesis for unparsed file cards and stores deterministic stubs.
+- It does not disable module/project cards:
+- `prefer_deterministic_modules` and `prefer_deterministic_project` are separate preferences.
+- either path can use background LLM synthesis when deterministic output is unavailable or below its confidence threshold.
+- Check active configuration and backend state before claiming synthesis is disabled.
+
+## Local telemetry
+
+Basic aggregate telemetry remains enabled locally. Detailed request traces are disabled by default and can be toggled live in the dashboard. When enabled, they retain complete endpoint input/output locally, including sensitive values, within configured size and retention limits. Local telemetry and trace details stay on this device; only normal agent responses requested by cloud agents leave it.

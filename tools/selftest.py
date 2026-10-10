@@ -20,7 +20,7 @@ if str(SRC) not in sys.path:
 
 from local_ai_hub.config import load_config
 from local_ai_hub.http_server import validate_network_security
-from local_ai_hub.process_utils import hidden_run_kwargs, terminate_tree
+from local_ai_hub.process_utils import popen_managed, process_identity, terminate_tree
 from local_ai_hub.repo_tools import RepositoryTools
 from local_ai_hub import __version__
 
@@ -37,6 +37,25 @@ def _remove_tree_with_retry(path: Path, attempts: int = 6) -> None:
             if attempt + 1 >= max(1, int(attempts)):
                 raise
             time.sleep(min(0.1 * (2 ** attempt), 0.5))
+
+
+def _terminate_selftest_process(proc, expected_identity) -> None:
+    terminate_tree(
+        proc.pid,
+        expected_identity=expected_identity,
+        grace_seconds=5.0,
+        process_handle=proc,
+    )
+    try:
+        proc.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate(timeout=2)
+    finally:
+        if proc.stdout is not None:
+            proc.stdout.close()
+        if proc.stderr is not None:
+            proc.stderr.close()
 
 
 def _free_port() -> int:
@@ -122,14 +141,15 @@ def main() -> int:
         env = os.environ.copy()
         env["PYTHONPATH"] = str(SRC) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
         env["LOCAL_AI_CONFIG"] = str(cfg_path)
-        proc = subprocess.Popen(
+        proc = popen_managed(
             [sys.executable, "-m", "local_ai_hub.supervisor"],
             cwd=str(ROOT),
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            **hidden_run_kwargs(text=True),
+            text=True,
         )
+        proc_identity = process_identity(proc.pid)
         try:
             deadline = time.monotonic() + 12.0
             health = None
@@ -158,19 +178,7 @@ def main() -> int:
         finally:
             # The Hub may create helper children that inherit hub.log. Kill the
             # complete process tree before TemporaryDirectory removes its state.
-            terminate_tree(proc.pid, grace_seconds=5.0)
-            try:
-                # Drain both pipes and wait for process teardown before the
-                # temporary state directory (including hub.log) is removed.
-                proc.communicate(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.communicate(timeout=2)
-            finally:
-                if proc.stdout is not None:
-                    proc.stdout.close()
-                if proc.stderr is not None:
-                    proc.stderr.close()
+            _terminate_selftest_process(proc, proc_identity)
             _remove_tree_with_retry(Path(td))
 
     ok = all(bool(item.get("ok")) for item in checks)

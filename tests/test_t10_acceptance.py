@@ -649,7 +649,7 @@ def test_preprocessor_queues_unchanged_files_after_analyzer_version_change(tmp_p
     assert index._parse_blob_get_with_report(content_hash, "python") is not None
 
 
-def test_uninstall_removes_retired_codegraph_mcp_entry(tmp_path: Path) -> None:
+def test_uninstall_preserves_standalone_codegraph_mcp_entry(tmp_path: Path) -> None:
     from tools.uninstall import clean_json
 
     config_path = tmp_path / "mcp.json"
@@ -663,7 +663,7 @@ def test_uninstall_removes_retired_codegraph_mcp_entry(tmp_path: Path) -> None:
     clean_json(config_path)
 
     servers = json.loads(config_path.read_text(encoding="utf-8"))["mcpServers"]
-    assert set(servers) == {"user-server"}
+    assert set(servers) == {"codegraph-local", "user-server"}
 
 
 def test_hash_cache_detects_same_size_rewrite_with_restored_mtime(tmp_path: Path) -> None:

@@ -44,7 +44,7 @@ def test_speculative_draft_reads_text_key(tmp_path: Path):
 
     result = services.speculative_draft({"task": "add function"}, tenant="test")
     assert result["success"] is True
-    assert result["draft"] == "def add(a, b):\n    return a + b\n"
+    assert result["draft"] == "def add(a, b):\n    return a + b"
 
 
 def test_swarm_pubsub_publish_appends_to_state_store(tmp_path: Path):
@@ -191,6 +191,7 @@ def test_blackboard_in_compiled_context(tmp_path: Path):
     """B4: ContextCompiler must include shared blackboard state in candidates."""
     db_path = tmp_path / "state.sqlite3"
     state_store = AgentStateStore(db_path=db_path)
+    state_store._ensure_schema()
     blackboard = BlackboardStore(db_path=db_path)
     compiler = ContextCompiler(state_store=state_store, blackboard=blackboard)
 

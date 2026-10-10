@@ -247,6 +247,16 @@ def test_safe_agent_api_reads_block_only_in_maintenance_before_database_call(
     monkeypatch, tmp_path, path, payload, expected_call, mode
 ):
     calls = []
+    if path == "/api/repo/profile":
+        tenant_key = "tenant-derivation-test-key-0123456789abcdef"
+        principal = "tenant-mode"
+        payload = {
+            **payload,
+            "root": str(tmp_path),
+            "tenant": http_server._derive_root_tenant(
+                principal, str(tmp_path), tenant_key
+            ),
+        }
 
     class JobControls:
         state_dir = tmp_path
@@ -259,6 +269,12 @@ def test_safe_agent_api_reads_block_only_in_maintenance_before_database_call(
     handler, app, responses = _handler(
         monkeypatch, tmp_path, method="POST", path=path, payload=payload, manager=JobControls()
     )
+    if path == "/api/repo/profile":
+        app.config["security"].update(
+            api_token_tenant=principal,
+            allowed_roots=[str(tmp_path)],
+            tenant_derivation_key=tenant_key,
+        )
     trace_calls = []
     monkeypatch.setattr(http_server.Handler, "_begin_trace", lambda _self, trace_path: trace_calls.append(trace_path))
     app.services = SimpleNamespace(
@@ -428,6 +444,15 @@ def test_post_gaming_persists_mode_reports_transition_and_unload(
     else:
         assert manager.resource_release_tokens == set()
     assert operational_mode.load_operational_mode(tmp_path).mode == "gaming"
+
+    status_handler, _status_app, status_responses = _handler(
+        monkeypatch, tmp_path, method="GET", path="/api/mode", manager=manager, runtime=runtime,
+    )
+    http_server.Handler.do_GET(status_handler)
+    status, current = status_responses[-1]
+    assert status == 200
+    assert current["runtime_unload"]["state"] == response["unload"]["state"]
+    assert current["runtime_unload"]["success"] is response["unload"]["success"]
 
 
 def test_post_gaming_reserves_release_before_exposing_mode_change(

@@ -11,7 +11,7 @@ Do not publish suspected vulnerabilities, secrets, or private repository content
 ## Deployment guidance
 
 - Keep the hub bound to loopback unless remote access is explicitly required.
-- Remote binding requires `security.allow_remote = true` and a strong API token.
+- Remote binding is unsupported. The HTTP server must bind to `127.0.0.1`.
 - Treat tenant IDs as scheduling/fairness labels, not authentication boundaries.
 - Review `[commands]` before enabling mutating or unknown commands.
 - Serena and Ollama are Hub-managed local subprocesses/services with access to repositories you point them at; apply normal local-machine trust controls. CodeGraphContext is standalone external CLI/MCP tooling and follows its own process controls.

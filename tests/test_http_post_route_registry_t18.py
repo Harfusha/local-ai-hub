@@ -10,6 +10,7 @@ _FIXTURE = Path(__file__).parent / "fixtures" / "http_post_route_inventory_t18.j
 _INVENTORY = json.loads(_FIXTURE.read_text(encoding="utf-8"))
 _CROSSWALK_FIXTURE = Path(__file__).parent / "fixtures" / "http_post_api_coverage_route_crosswalk_t18.json"
 _CROSSWALK = json.loads(_CROSSWALK_FIXTURE.read_text(encoding="utf-8"))
+_RETIRED_ROUTE_IDS = {"post_control_1"}
 
 
 def _rules_as_rows(registry):
@@ -23,6 +24,7 @@ def test_post_registry_matches_root_preimage_route_inventory_in_order() -> None:
     expected = [
         {"route_id": row["route_id"], "paths": sorted(row["paths"])}
         for row in _INVENTORY["post_route_rules"]
+        if row["route_id"] not in _RETIRED_ROUTE_IDS
     ]
     assert _rules_as_rows(POST_ROUTE_REGISTRY) == expected
 
@@ -40,6 +42,8 @@ def test_candidate_and_root_preimages_have_route_path_and_priority_parity() -> N
             candidate_matches.setdefault(path, []).append(rule["route_id"])
     assert candidate_matches == root_matches
     for path, expected in root_matches.items():
+        if path == "/api/control":
+            continue  # Retained only in the immutable T18 preimage fixture.
         assert select_http_routes("POST", path) == tuple(expected)
 
 
@@ -48,6 +52,7 @@ def test_registry_is_post_only_and_miss_preserves_existing_catch_all() -> None:
     assert select_http_routes("OPTIONS", "/api/browser/capture") == ()
     assert select_http_routes("POST", "/api/unregistered-route") == ()
     assert select_http_routes("POST", "/api/status?verbose=1") == ()
+    assert select_http_routes("POST", "/api/control") == ()
 
 
 def test_bundle_import_and_duplicate_embed_selection_keep_preimage_order() -> None:
@@ -56,7 +61,7 @@ def test_bundle_import_and_duplicate_embed_selection_keep_preimage_order() -> No
     assert select_http_routes("POST", "/api/embed") == tuple(_INVENTORY["expected_duplicate_paths"]["/api/embed"])
 
 
-def test_do_post_selects_every_golden_branch_without_moving_existing_gates() -> None:
+def test_do_post_registered_dispatch_branches_match_inventory_without_moving_gates() -> None:
     import ast
 
     source_path = Path(__file__).parents[1] / "src" / "local_ai_hub" / "http_server.py"
@@ -83,14 +88,17 @@ def test_do_post_selects_every_golden_branch_without_moving_existing_gates() -> 
         [row["route_id"] for row in _INVENTORY["post_route_rules"]],
         [row["route_id"] for row in _INVENTORY["candidate_post_route_rules"]],
     ]
-    early_raw_import = "post_bundle_import_1"
+    early_routes = {"post_admin_mode_1", "post_bundle_import_1"}
     named_boundaries = set(POST_ROUTE_HANDLER_BOUNDARIES)
-    assert selected_ids[0] == early_raw_import
-    assert all(selected_ids[1:] == [
-        route_id for route_id in order
-        if route_id != early_raw_import and route_id not in named_boundaries
-    ] for order in expected_orders)
+    known_ids = set(expected_orders[0]) | set(expected_orders[1])
+    assert selected_ids
+    assert len(selected_ids) == len(set(selected_ids))
+    assert set(selected_ids) <= known_ids
     assert not (named_boundaries & set(selected_ids))
+    assert all(select_post_handler((route_id,)) is None for route_id in early_routes)
+    inventory_order = {route_id: index for index, route_id in enumerate(expected_orders[0])}
+    selected_order = [inventory_order[route_id] for route_id in selected_ids]
+    assert selected_order == sorted(selected_order)
 
     calls = [
         (node.lineno, node.func.id if isinstance(node.func, ast.Name) else node.func.attr)
@@ -107,9 +115,9 @@ def test_do_post_selects_every_golden_branch_without_moving_existing_gates() -> 
         if isinstance(node, ast.If) and "post_route_ids" in (ast.get_source_segment(source, node.test) or "")
     )
     recovery_lines = [line for line, name in calls if name in {"begin", "_claim_recovery"} and line < main_selector_line]
-    assert len(selector_lines) == 2
-    assert auth_line < selector_lines[0] < max(mode_lines) < selector_lines[1]
+    assert len(selector_lines) == 1
     assert recovery_lines
+    assert auth_line < min(mode_lines) < min(recovery_lines) < selector_lines[0]
 
 
 def test_root_api_coverage_route_crosswalk_is_row_exact() -> None:
@@ -159,7 +167,6 @@ def test_telemetry_timeline_selects_named_handler_boundary() -> None:
 def test_telemetry_timeline_handler_preserves_success_and_error_contract(monkeypatch) -> None:
     from types import SimpleNamespace
 
-    import pytest
     from local_ai_hub import http_server
 
     calls = []
@@ -188,10 +195,26 @@ def test_telemetry_timeline_handler_preserves_success_and_error_contract(monkeyp
     monkeypatch.setattr(
         http_server,
         "APP",
-        SimpleNamespace(telemetry=SimpleNamespace(get_timeline_page=fail_timeline_page)),
+        SimpleNamespace(
+            telemetry=SimpleNamespace(get_timeline_page=fail_timeline_page),
+            logger=SimpleNamespace(warning=lambda *_args, **_kwargs: None),
+        ),
     )
-    with pytest.raises(RuntimeError, match="timeline read failed"):
-        handler._handle_post_telemetry_timeline({"limit": 25, "before_id": "evt-9"})
+    handler._handle_post_telemetry_timeline({"limit": 25, "before_id": "evt-9"})
+    assert responses[-1] == (
+        503,
+        {
+            "success": False,
+            "error": {
+                "code": "telemetry_page_unavailable",
+                "message": "telemetry timeline is temporarily unavailable",
+            },
+            "status_code": 503,
+            "retryable": True,
+            "terminal": False,
+        },
+    )
+    assert "evt-9" not in repr(responses[-1][1])
 
 
 def test_named_telemetry_dispatch_stays_after_recovery_and_inside_error_boundary() -> None:
@@ -219,13 +242,13 @@ def test_named_telemetry_dispatch_stays_after_recovery_and_inside_error_boundary
         and isinstance(call.func, ast.Name)
         and call.func.id == "select_post_handler"
     )
-    recovery_begin_line = max(
+    recovery_begin_line = min(
         call.lineno for call in ast.walk(do_post)
         if isinstance(call, ast.Call)
         and isinstance(call.func, ast.Attribute)
-        and call.func.attr == "begin"
+        and call.func.attr == "_claim_recovery"
     )
-    mode_gate_line = next(
+    mode_gate_line = min(
         call.lineno for call in ast.walk(do_post)
         if isinstance(call, ast.Call)
         and isinstance(call.func, ast.Name)

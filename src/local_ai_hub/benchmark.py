@@ -217,7 +217,7 @@ class HardwareBenchmarkRunner:
                             "format": "json",
                         },
                         append_visible,
-                        timeout=None,
+                        timeout=wait_timeout,
                     )
                     if not isinstance(response, Mapping):
                         return {"success": False, "error": "Runtime returned a non-object response"}

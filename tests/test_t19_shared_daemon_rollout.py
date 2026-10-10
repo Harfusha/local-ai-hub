@@ -192,7 +192,8 @@ def test_rollout_docs_state_adapter_multiplicity_root_and_transport_gates() -> N
         assert "each active" in normalized and "mcp session" in normalized and "adapter process" in normalized
         assert "do not prove duplicate daemons" in normalized or "is not daemon count" in normalized
         assert "global codex" in normalized and "cwd=install_dir" in normalized and "project root" in normalized
-        assert "release" in normalized and "blocked until t03 rejects rootless" in normalized
+        assert "repo/rag mcp actions" in normalized
+        assert "root" in normalized and "runtime" in normalized and "proof" in normalized
 
     for prompt in (install_prompt, update_prompt):
         assert "Pinned source includes operational modes and client transport safeguards." in prompt

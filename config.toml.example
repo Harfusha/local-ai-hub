@@ -85,10 +85,9 @@ default_max_output_tokens = 1200
 # max_replans = 2
 
 [security]
-# Keep loopback-only by default. Non-loopback binds need allow_remote=true and api_token with 16+ characters.
+# The HTTP server is loopback-only; remote binding is unsupported.
 # On loopback, an empty api_token means HTTP data/control routes have no token authentication.
-allow_remote = false
-# api_token = "<generate-a-local-secret>"  # protects HTTP data/control routes when configured
+# api_token = "<generate-a-local-secret>"  # optional token for trusted local integrations
 [commands]
 # Allow only read/validate commands by default.
 allow_mutating = true

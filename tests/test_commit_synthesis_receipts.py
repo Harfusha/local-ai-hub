@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_tasks import TaskStore, GoalContract
@@ -92,3 +94,37 @@ def test_services_synthesize_commit_queries_task_and_verification_stores(tmp_pat
     assert len(dummy_det.last_call["receipts"]) == 1
     assert dummy_det.last_call["receipts"][0]["criterion"] == "stream_events_live"
     assert dummy_det.last_call["receipts"][0]["evidence_id"] == "E-sse-stream"
+
+
+def test_services_synthesize_commit_does_not_silently_ignore_task_store_failure(tmp_path: Path):
+    from local_ai_hub.services import LocalAIServices
+
+    class BrokenTaskStore:
+        def get(self, task_id):
+            raise RuntimeError("task store unavailable")
+
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.task_store = BrokenTaskStore()
+    services.verification_store = None
+    services.deterministic = _DummyDeterministic()
+    services.deterministic_operation = lambda op, root, params, fn: fn()
+
+    with pytest.raises(RuntimeError, match="task store unavailable"):
+        services.synthesize_commit(str(tmp_path), task_id="task-1")
+
+
+def test_services_synthesize_commit_does_not_silently_ignore_receipt_store_failure(tmp_path: Path):
+    from local_ai_hub.services import LocalAIServices
+
+    class BrokenVerificationStore:
+        def completion(self, task_id):
+            raise RuntimeError("receipt store unavailable")
+
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.task_store = None
+    services.verification_store = BrokenVerificationStore()
+    services.deterministic = _DummyDeterministic()
+    services.deterministic_operation = lambda op, root, params, fn: fn()
+
+    with pytest.raises(RuntimeError, match="receipt store unavailable"):
+        services.synthesize_commit(str(tmp_path), task_id="task-1")

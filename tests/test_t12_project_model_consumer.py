@@ -287,6 +287,20 @@ def test_local_task_project_context_falls_back_for_missing_or_invalid_config(
         assert not result.get("warnings")
 
 
+def test_local_task_project_context_does_not_hide_unexpected_snapshot_errors(tmp_path: Path) -> None:
+    service = _task_services(tmp_path)
+    root = tmp_path / "snapshot-error"
+    root.mkdir()
+
+    def fail_snapshot(_root: str) -> None:
+        raise RuntimeError("unexpected snapshot programming failure")
+
+    service.repo_tools.git_snapshot = fail_snapshot
+
+    with pytest.raises(RuntimeError, match="unexpected snapshot programming failure"):
+        service._resolve_local_task_project(root)
+
+
 def test_reason_and_review_use_project_profile_through_delegate(tmp_path: Path) -> None:
     pytest.importorskip("local_ai_hub.project_config")
     service = _task_services(tmp_path)

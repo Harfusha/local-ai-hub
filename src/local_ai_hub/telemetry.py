@@ -17,11 +17,15 @@ from contextlib import closing
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 from .trace_context import current as current_trace_context
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, quick_sanity_check
-from .http_route_registry import GET_ROUTE_HANDLER_BOUNDARIES, POST_ROUTE_REGISTRY
+from .http_route_registry import (
+    GET_ROUTE_HANDLER_BOUNDARIES,
+    POST_ROUTE_REGISTRY,
+    TELEMETRY_SAFE_GET_ROUTE_LABELS,
+)
 
 
 _PATH_RE = re.compile(r"(?:(?:[A-Za-z]:\\\\|/)(?:[^\s:'\"<>|]+[/\\\\])+[^\s:'\"<>|]*)")
@@ -32,7 +36,8 @@ _POSIX_PATH_RE = re.compile(r"(?<![\w:])/(?:[^/\s]+/)+[^/\s]*")
 _POSIX_FILE_PATH_RE = re.compile(r"(?<![\w:])/[^\s/,;\"']+\.[A-Za-z0-9]{1,12}(?![\w-])")
 _POSIX_ROOT_PATH_RE = re.compile(r"(?<![\w:/])/(?!/)[^\s/\\,;\"']+(?![\w/])")
 _SAFE_HTTP_ROUTE_LABELS = frozenset(
-    {"/slow", "/median"}
+    {"/slow", "/median", "/api/context/pack", "/api/debug-traces/{trace_id}"}
+    | set(TELEMETRY_SAFE_GET_ROUTE_LABELS)
     | set(GET_ROUTE_HANDLER_BOUNDARIES)
     | {path for rule in POST_ROUTE_REGISTRY for path in rule.paths}
 )
@@ -48,6 +53,9 @@ _SAVINGS_SOURCE_ALLOWLIST = frozenset({
     "response_compaction", "workspace_cache",
 })
 _DECISION_DETAIL_LIMIT = 24
+_REPORT_GROUP_LIMIT = 100
+_DASHBOARD_CACHE_LIMIT = 16
+_SUMMARY_CACHE_LIMIT = 16
 _MAX_METADATA_LENGTH = 160
 _MAX_TELEMETRY_REPORT_BYTES = 256 * 1024 - 64  # reserve space for HTTP envelope
 _REPORT_TRIMMABLE_LISTS = (
@@ -258,6 +266,15 @@ def _safe_metadata(value: Any, limit: int = _MAX_METADATA_LENGTH, *, preserve_ro
         r"\1\2[redacted]",
         text,
     )
+    if preserve_route:
+        canonical_route = text.split("?", 1)[0].split("#", 1)[0]
+        if canonical_route in _SAFE_HTTP_ROUTE_LABELS:
+            text = canonical_route
+        else:
+            trace_prefix = "/api/debug-traces/"
+            trace_id = canonical_route[len(trace_prefix):] if canonical_route.startswith(trace_prefix) else ""
+            if trace_id and "/" not in trace_id:
+                text = "/api/debug-traces/{trace_id}"
     text = _WINDOWS_PATH_RE.sub("<path>", text)
     text = _UNC_PATH_RE.sub("<path>", text)
 
@@ -403,6 +420,8 @@ class TelemetryStore:
         self._dashboard_lock = threading.Lock()
         self._dashboard_cache: dict[tuple[int, str], dict[str, Any]] = {}
         self._dashboard_cache_at: dict[tuple[int, str], float] = {}
+        self._summary_cache_lock = threading.Lock()
+        self._summary_cache: dict[Any, dict[str, Any]] = {}
         self._thread: threading.Thread | None = None
         state_dir.mkdir(parents=True, exist_ok=True)
         if self.enabled:
@@ -642,7 +661,9 @@ class TelemetryStore:
         created = float(event.get("created_at", time.time()))
         queue_wait_ms = _bounded_number(event.get("queue_wait_ms", 0))
         event_type = _safe_metadata(event.get("event_type", "inference"), 40)
-        preserve_route = event_type.casefold() in {"http", "request_start"}
+        # Route labels are safe only when exact-listed, regardless of event kind.
+        # This keeps useful action labels in tool-result events without exposing IDs.
+        preserve_route = True
         return {
             "created_at": created,
             "event_type": event_type,
@@ -769,8 +790,9 @@ class TelemetryStore:
         Most dashboard polls are RAM-only; at most one thread refreshes the SQLite
         aggregate every few seconds. This keeps counters stable across hub restarts.
         """
-        _, scope = self._scope_cutoff(days, scope)
-        key = (max(1, int(days)), scope)
+        bounded_days = max(1, min(int(days), _MAX_QUERY_WINDOW_DAYS))
+        _, scope = self._scope_cutoff(bounded_days, scope)
+        key = (bounded_days, scope)
         now = time.monotonic()
         with self._dashboard_lock:
             cached = self._dashboard_cache.get(key)
@@ -778,12 +800,16 @@ class TelemetryStore:
             if cached and now - cached_at < max(1.0, float(ttl_seconds)):
                 return dict(cached)
             try:
-                report = self.report(days, recent_errors=12, scope=scope, _flush=False)
+                report = self.report(bounded_days, recent_errors=12, scope=scope, _flush=False)
                 report["recent_http"] = self.recent_http(200, _flush=False)
             except Exception:
                 report = dict(cached) if cached else {"summary": {"enabled": self.enabled}}
             self._dashboard_cache[key] = report
             self._dashboard_cache_at[key] = now
+            while len(self._dashboard_cache) > _DASHBOARD_CACHE_LIMIT:
+                oldest_key = min(self._dashboard_cache_at, key=self._dashboard_cache_at.get)
+                self._dashboard_cache.pop(oldest_key, None)
+                self._dashboard_cache_at.pop(oldest_key, None)
             return dict(report)
 
     def realtime_summary(self, *, scope: str = "process") -> dict[str, Any]:
@@ -1354,7 +1380,7 @@ class TelemetryStore:
                 return {"success": False, "degraded": True, "retryable": True,
                         "error": "telemetry resolution time budget exceeded"}
             raise
-        if hasattr(self, "_summary_cache"):
+        with self._summary_cache_lock:
             self._summary_cache.clear()
         with self._live_lock:
             for ev in self._live_events:
@@ -1453,27 +1479,40 @@ class TelemetryStore:
         return "internal"
 
     @classmethod
-    def _cohort_summary(cls, rows: list[tuple[Any, ...]]) -> dict[str, dict[str, Any]]:
-        cohorts: dict[str, list[tuple[Any, ...]]] = {
-            "agent_http": [], "inference": [], "policy_rejection": [], "compatibility": [], "internal": [],
+    def _cohort_summary(cls, rows: Iterable[tuple[Any, ...]]) -> dict[str, dict[str, Any]]:
+        cohorts: dict[str, dict[str, Any]] = {
+            name: {
+                "events": 0,
+                "failures": 0,
+                "retry_count": 0,
+                "fallback_count": 0,
+                "degraded_count": 0,
+                "durations": [],
+            }
+            for name in ("agent_http", "inference", "policy_rejection", "compatibility", "internal")
         }
         for row in rows:
-            cohorts[cls._event_cohort(str(row[0]), str(row[1]))].append(row)
+            cohort = cohorts[cls._event_cohort(str(row[0]), str(row[1]))]
+            cohort["events"] += 1
+            cohort["failures"] += int(not int(row[3]))
+            cohort["retry_count"] += int(row[4])
+            cohort["fallback_count"] += int(row[5])
+            cohort["degraded_count"] += int(row[6])
+            cohort["durations"].append(float(row[2]))
         result: dict[str, dict[str, Any]] = {}
-        for name, items in cohorts.items():
-            durations = [float(item[2]) for item in items]
-            failures = sum(1 for item in items if not int(item[3]))
-            events = len(items)
+        for name, values in cohorts.items():
+            events = int(values["events"])
+            durations = values["durations"]
             result[name] = {
                 "events": events,
-                "failures": failures,
-                "failure_rate": round(failures / events, 4) if events else 0.0,
+                "failures": int(values["failures"]),
+                "failure_rate": round(values["failures"] / events, 4) if events else 0.0,
                 "p50_duration_ms": _percentile(durations, 0.50),
                 "p95_duration_ms": _percentile(durations, 0.95),
                 "p99_duration_ms": _percentile(durations, 0.99),
-                "retry_count": sum(int(item[4]) for item in items),
-                "fallback_count": sum(int(item[5]) for item in items),
-                "degraded_count": sum(int(item[6]) for item in items),
+                "retry_count": int(values["retry_count"]),
+                "fallback_count": int(values["fallback_count"]),
+                "degraded_count": int(values["degraded_count"]),
             }
         return result
 
@@ -1592,13 +1631,13 @@ class TelemetryStore:
         if not self.enabled:
             return {"enabled": False}
         now = time.monotonic()
-        cutoff, scope = self._scope_cutoff(days, scope)
+        bounded_days = max(1, min(int(days), _MAX_QUERY_WINDOW_DAYS))
+        cutoff, scope = self._scope_cutoff(bounded_days, scope)
         # Keep the established rolling-window cache key stable for lightweight
         # callers; process cohorts need the start boundary in their own key.
-        key: Any = int(days) if scope == "window" else (int(days), scope, int(self.process_started_at))
-        if not hasattr(self, "_summary_cache"):
-            self._summary_cache = {}
-        cached = self._summary_cache.get(key)
+        key: Any = bounded_days if scope == "window" else (bounded_days, scope, int(self.process_started_at))
+        with self._summary_cache_lock:
+            cached = self._summary_cache.get(key)
         if cached and now - cached["time"] < 3.0:
             return dict(cached["data"])
         flush_complete = True
@@ -1631,8 +1670,8 @@ class TelemetryStore:
             ).fetchall()
             by_cache = con.execute(
                 """SELECT CASE WHEN cache_layer='' THEN 'uncategorized' ELSE cache_layer END,COUNT(*)
-                   FROM events WHERE created_at>=? AND event_type='inference' GROUP BY cache_layer ORDER BY COUNT(*) DESC""",
-                (cutoff,),
+                   FROM events WHERE created_at>=? AND event_type='inference' GROUP BY cache_layer ORDER BY COUNT(*) DESC, cache_layer LIMIT ?""",
+                (cutoff, _REPORT_GROUP_LIMIT),
             ).fetchall()
             cache_domains_rows = con.execute(
                 """SELECT CASE
@@ -1650,8 +1689,8 @@ class TelemetryStore:
                 """SELECT CASE WHEN error_type='' THEN 'success' ELSE error_type END,
                           COUNT(*),COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0)
                    FROM events WHERE created_at>=? AND event_type='http'
-                   GROUP BY error_type ORDER BY COUNT(*) DESC""",
-                (cutoff,),
+                   GROUP BY error_type ORDER BY COUNT(*) DESC, error_type LIMIT ?""",
+                (cutoff, _REPORT_GROUP_LIMIT),
             ).fetchall()
             durations = [float(r[0]) for r in con.execute(
                 "SELECT duration_ms FROM events WHERE created_at>=? AND event_type='inference' ORDER BY id DESC LIMIT 10000", (cutoff,)
@@ -1660,7 +1699,8 @@ class TelemetryStore:
                 """SELECT event_type,error_type,duration_ms,success,retry_count,fallback_used,degraded
                    FROM events WHERE created_at>=? AND event_type IN ('inference','http')""",
                 (cutoff,),
-            ).fetchall()
+            )
+            cohorts = self._cohort_summary(cohort_rows)
             http = con.execute(
                 "SELECT COUNT(*),COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0),COALESCE(AVG(duration_ms),0) FROM events WHERE created_at>=? AND event_type='http'",
                 (cutoff,),
@@ -1675,7 +1715,7 @@ class TelemetryStore:
                           COALESCE(SUM(CASE WHEN action LIKE '/api/repo/%' OR action='/api/solve/repo' THEN 1 ELSE 0 END),0)
                    FROM events WHERE created_at>=? AND event_type='http'
                      AND action LIKE '/api/%'
-                     AND action NOT IN ('/api/live','/api/live/status','/api/status','/api/control')""",
+                     AND action NOT IN ('/api/live','/api/live/status','/api/status')""",
                 (cutoff,),
             ).fetchone()
             prep_query = con.execute(
@@ -1706,8 +1746,8 @@ class TelemetryStore:
                        UNION ALL
                        SELECT output_savings_source AS source,gross_output_tokens_avoided AS tokens
                          FROM events WHERE created_at>=? AND event_type='tool_accounting' AND output_savings_source<>''
-                   ) GROUP BY source ORDER BY 2 DESC""",
-                (cutoff, cutoff),
+                   ) GROUP BY source ORDER BY 2 DESC, source LIMIT ?""",
+                (cutoff, cutoff, _REPORT_GROUP_LIMIT),
             ).fetchall()
             decision_grade = self._decision_grade(con, cutoff)
         total = int(row[0]); cached = int(row[1]); http_total = int(http[0])
@@ -1768,7 +1808,6 @@ class TelemetryStore:
         prep_events = int(prep_query[0] or 0)
         prep_hits = int(prep_query[1] or 0)
         prep_hit_rate = round(prep_hits / prep_events, 4) if prep_events else 0.0
-        cohorts = self._cohort_summary(cohort_rows)
         with self._stats_lock:
             writer = dict(self._stats)
         writer["queue_depth"] = self._queue.qsize()
@@ -1848,7 +1887,11 @@ class TelemetryStore:
             "detail": decision_grade["detail"],
             "decision_grade": decision_grade,
         }
-        self._summary_cache[key] = {"time": now, "data": res}
+        with self._summary_cache_lock:
+            self._summary_cache[key] = {"time": now, "data": res}
+            while len(self._summary_cache) > _SUMMARY_CACHE_LIMIT:
+                oldest_key = min(self._summary_cache, key=lambda item: self._summary_cache[item]["time"])
+                self._summary_cache.pop(oldest_key, None)
         return res
 
     def report(
@@ -1881,11 +1924,13 @@ class TelemetryStore:
                           COALESCE(SUM(CASE WHEN event_type='tool_accounting' THEN gross_avoided_cloud_tokens ELSE 0 END),0),
                           COALESCE(SUM(CASE WHEN event_type='tool_accounting' THEN agent_protocol_tokens ELSE 0 END),0),
                           COALESCE(SUM(CASE WHEN event_type='tool_accounting' THEN 1 ELSE 0 END),0)
-                   FROM events WHERE created_at>=? GROUP BY agent ORDER BY COUNT(*) DESC""", (cutoff,)
+                   FROM events WHERE created_at>=? GROUP BY agent ORDER BY COUNT(*) DESC, agent LIMIT ?""",
+                (cutoff, _REPORT_GROUP_LIMIT),
             ).fetchall()
             by_model = con.execute(
                 """SELECT model,COUNT(*),COALESCE(AVG(duration_ms),0),COALESCE(AVG(load_duration_ms),0),COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END),0)
-                   FROM events WHERE created_at>=? AND event_type='inference' AND model<>'' GROUP BY model ORDER BY COUNT(*) DESC""", (cutoff,)
+                   FROM events WHERE created_at>=? AND event_type='inference' AND model<>'' GROUP BY model ORDER BY COUNT(*) DESC, model LIMIT ?""",
+                (cutoff, _REPORT_GROUP_LIMIT),
             ).fetchall()
             provider_usage = con.execute(
                 """SELECT action,task_type,model,COALESCE(SUM(input_tokens),0),
@@ -1960,13 +2005,13 @@ class TelemetryStore:
             ).fetchall()
             cache = con.execute(
                 """SELECT CASE WHEN cache_layer='' THEN 'uncategorized' ELSE cache_layer END,COUNT(*),COALESCE(AVG(duration_ms),0),COALESCE(SUM(avoided_cloud_tokens),0)
-                   FROM events WHERE created_at>=? AND event_type='inference' GROUP BY cache_layer ORDER BY COUNT(*) DESC""", (cutoff,)
+                   FROM events WHERE created_at>=? AND event_type='inference' GROUP BY cache_layer ORDER BY COUNT(*) DESC, cache_layer LIMIT ?""", (cutoff, _REPORT_GROUP_LIMIT)
             ).fetchall()
             cache_decisions = con.execute(
                 """SELECT error_type,COUNT(*) FROM events
                    WHERE created_at>=? AND event_type='stage' AND stage='cache_decision'
-                   GROUP BY error_type ORDER BY COUNT(*) DESC""",
-                (cutoff,),
+                   GROUP BY error_type ORDER BY COUNT(*) DESC, error_type LIMIT ?""",
+                (cutoff, _REPORT_GROUP_LIMIT),
             ).fetchall()
             # Tail diagnostics are a recent distribution, not an accounting total.
             # Read one bounded sample once instead of scanning the same raw HTTP
@@ -2153,6 +2198,54 @@ class TelemetryStore:
             }
             for r in rows
         ]
+
+    def request_metrics(self, request_id: str) -> dict[str, Any]:
+        """Return bounded numeric telemetry for one request, without event payloads."""
+        empty = {
+            "available": False,
+            "inference_events": 0,
+            "cache_hits": 0,
+            "cache_hit_rate": None,
+            "input_tokens": 0,
+            "cache_read_tokens": 0,
+            "output_tokens": 0,
+            "avoided_cloud_tokens": 0,
+            "gross_avoided_cloud_tokens": 0,
+            "net_cloud_token_delta": 0,
+        }
+        request_id = str(request_id or "").strip()
+        if not self.enabled or not request_id or len(request_id) > 128:
+            return empty
+        self.flush(0.5)
+        with closing(self._connect()) as con:
+            row = con.execute(
+                """SELECT COUNT(*),
+                          SUM(CASE WHEN event_type='inference' THEN 1 ELSE 0 END),
+                          SUM(CASE WHEN event_type='inference' AND cache_hit=1 THEN 1 ELSE 0 END),
+                          SUM(CASE WHEN event_type='inference' THEN input_tokens ELSE 0 END),
+                          SUM(CASE WHEN event_type='inference' THEN cache_read_tokens ELSE 0 END),
+                          SUM(CASE WHEN event_type='inference' THEN output_tokens ELSE 0 END),
+                          SUM(avoided_cloud_tokens),
+                          SUM(gross_avoided_cloud_tokens),
+                          SUM(net_cloud_token_delta)
+                   FROM events WHERE request_id=?""",
+                (request_id,),
+            ).fetchone()
+        event_count = int(row[0] or 0)
+        inference_events = int(row[1] or 0)
+        cache_hits = int(row[2] or 0)
+        return {
+            "available": inference_events > 0,
+            "inference_events": inference_events,
+            "cache_hits": cache_hits,
+            "cache_hit_rate": round(cache_hits / inference_events, 4) if inference_events else None,
+            "input_tokens": int(row[3] or 0),
+            "cache_read_tokens": int(row[4] or 0),
+            "output_tokens": int(row[5] or 0),
+            "avoided_cloud_tokens": int(row[6] or 0),
+            "gross_avoided_cloud_tokens": int(row[7] or 0),
+            "net_cloud_token_delta": int(row[8] or 0),
+        }
 
     def recent_http(self, limit: int = 50, *, _flush: bool = True) -> list[dict[str, Any]]:
         """Return recent persisted API requests for the dashboard request history."""

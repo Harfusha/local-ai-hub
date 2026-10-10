@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+import ast
 import sqlite3
+from pathlib import Path
 
-from local_ai_hub.telemetry import TelemetryStore
+from local_ai_hub.http_route_registry import (
+    GET_ROUTE_HANDLER_BOUNDARIES,
+    POST_ROUTE_REGISTRY,
+    TELEMETRY_SAFE_GET_ROUTE_LABELS,
+)
+from local_ai_hub.telemetry import TelemetryStore, _safe_metadata
+from tools.surface_inventory import _extract_http
 
 
 def test_summary_exposes_decision_grade_aggregates(tmp_path):
@@ -89,6 +97,48 @@ def test_telemetry_metadata_redacts_absolute_paths_and_payload_like_fields(tmp_p
     assert "prompt" not in rendered
     assert "source_text" not in rendered
     assert "model_output" not in rendered
+
+
+def test_telemetry_metadata_preserves_registered_route_without_query_or_fragment():
+    assert _safe_metadata(
+        "/api/telemetry/report?days=7&token=query-secret#fragment",
+        preserve_route=True,
+    ) == "/api/telemetry/report"
+    assert {
+        _safe_metadata(route, preserve_route=True)
+        for route in TELEMETRY_SAFE_GET_ROUTE_LABELS
+    } == TELEMETRY_SAFE_GET_ROUTE_LABELS
+    assert _safe_metadata("/Users/fixture/private/source.py", preserve_route=True) == "<path>"
+
+
+def test_telemetry_debug_trace_route_hides_identifier_but_keeps_route_label():
+    assert _safe_metadata(
+        "/api/debug-traces/trace-secret?token=dynamic-secret",
+        preserve_route=True,
+    ) == "/api/debug-traces/{trace_id}"
+
+
+def test_telemetry_preserves_all_source_discovered_exact_http_routes():
+    root = Path(__file__).resolve().parents[1]
+    source_path = root / "src" / "local_ai_hub" / "http_server.py"
+    source = ast.parse(source_path.read_text(encoding="utf-8"), filename=str(source_path))
+    routes = _extract_http(source, "src/local_ai_hub/http_server.py")
+    exact_routes = {
+        route["path"]
+        for route in routes
+        if route["method"] in {"GET", "POST"} and route["match"] == "exact"
+    }
+    exact_routes.update(GET_ROUTE_HANDLER_BOUNDARIES)
+    exact_routes.update(path for rule in POST_ROUTE_REGISTRY for path in rule.paths)
+    # The coverage extractor intentionally excludes the context-pack handler body.
+    exact_routes.add("/api/context/pack")
+
+    unpreserved = sorted(
+        route
+        for route in exact_routes
+        if _safe_metadata(route, preserve_route=True) != route
+    )
+    assert not unpreserved, f"exact HTTP route labels are redacted: {unpreserved}"
 
 
 def test_schema_upgrade_adds_metadata_columns_without_discarding_history(tmp_path):

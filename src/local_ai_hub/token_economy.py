@@ -27,7 +27,7 @@ from pathlib import Path
 from functools import lru_cache
 from typing import Any, Iterable
 
-from local_ai_hub.process_utils import hidden_run_kwargs
+from local_ai_hub.process_utils import hidden_run_kwargs, popen_managed
 
 @lru_cache(maxsize=1)
 def _encodings():
@@ -242,7 +242,7 @@ def trim_run_main(argv: list[str] | None = None) -> int:
     # Always pass argv directly. shell=True would turn this token-saving helper
     # into an arbitrary command launcher on Windows and POSIX.
     try:
-        proc = subprocess.Popen(
+        proc = popen_managed(
             command_args,
             shell=False,
             stdout=subprocess.PIPE,

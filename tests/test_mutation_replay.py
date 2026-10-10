@@ -1582,61 +1582,6 @@ def test_tool_accounting_retry_does_not_duplicate_event_batch(tmp_path, monkeypa
     assert responses[1] == responses[0]
 
 
-def test_confirmed_restart_request_is_not_replayed(tmp_path, monkeypatch) -> None:
-    journal = RecoveryJournal(tmp_path)
-    app = SimpleNamespace(
-        config={
-            "server": {"state_dir": str(tmp_path)},
-            "resilience": {"singleflight_wait_timeout_seconds": 0.05},
-        },
-        recovery=journal,
-        close=lambda: None,
-    )
-    monkeypatch.setattr(http_server, "APP", app)
-    monkeypatch.setattr(
-        http_server.Handler,
-        "_begin_trace",
-        lambda self, _path: setattr(self, "_trace_request_id", "req-restart-once"),
-    )
-    monkeypatch.setattr(http_server.Handler, "_require_authorized", lambda self: True)
-    monkeypatch.setattr(http_server.Handler, "_agent", lambda self: "agent-a")
-    monkeypatch.setattr(http_server.Handler, "_tenant", lambda self: "tenant")
-    monkeypatch.setattr(http_server.Handler, "_read_json", lambda self: {"action": "restart_hub"})
-    monkeypatch.setattr(http_server.Handler, "_validate_payload", lambda self, _path, _payload: None)
-    responses: list[tuple[int, dict[str, Any]]] = []
-    scheduled: list[Any] = []
-
-    def respond(self, status: int, data: dict[str, Any]) -> None:
-        responses.append((status, data))
-
-    class DeferredThread:
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
-            scheduled.append((args, kwargs))
-
-        def start(self) -> None:
-            pass
-
-    monkeypatch.setattr(http_server.Handler, "_send", respond)
-    monkeypatch.setattr(http_server.threading, "Thread", DeferredThread)
-    for _ in range(2):
-        handler = object.__new__(http_server.Handler)
-        handler.path = "/api/control"
-        handler.headers = {"Content-Type": "application/json"}
-        http_server.Handler.do_POST(handler)
-
-    assert len(scheduled) == 1
-    assert responses[0][0] == 200
-    assert responses[1][0] == 409
-    assert responses[1][1]["in_progress"] is True
-    assert journal.lookup(
-        "req-restart-once",
-        "tenant",
-        "/api/control",
-        identity="agent-a",
-        payload_fingerprint=journal.fingerprint_payload({"action": "restart_hub"}),
-    )["state"] == "running"
-
-
 @pytest.mark.parametrize(
     ("path", "payload", "expected_call"),
     [

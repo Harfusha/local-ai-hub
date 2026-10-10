@@ -61,8 +61,11 @@ def test_autostart_launches_real_hub_child_and_returns_http_search_result(tmp_pa
         child = started_children[0]
         assert isinstance(child, client_module.subprocess.Popen)
         assert child.poll() is None
-        assert (state_dir / "hub.pid").read_text(encoding="utf-8").strip() == str(child.pid)
-        assert not (state_dir / "hub.start.lock").exists()
+        hub_pid = int((state_dir / "hub.pid").read_text(encoding="utf-8").strip())
+        supervisor_pid = int((state_dir / "supervisor.pid").read_text(encoding="utf-8").strip())
+        assert supervisor_pid == child.pid
+        assert hub_pid != supervisor_pid
+        assert (state_dir / "hub.start.lock").read_bytes() == b""
     finally:
         client._drop_connection()
         with client_module._DETACHED_CHILDREN_LOCK:

@@ -6,6 +6,29 @@ import pytest
 
 from local_ai_hub.agent_events import AgentEvent, AgentStateStore, AppendResult
 
+def test_generated_event_identifiers_use_full_uuid_entropy_and_keep_supplied_keys():
+    created = AgentEvent.create("stream-1", "test.event")
+    restored = AgentEvent.from_dict({"stream_id": "stream-1", "kind": "test.event"})
+
+    for value, prefix in (
+        (created.event_id, "evt_"),
+        (created.idempotency_key, "idemp_"),
+        (restored.event_id, "evt_"),
+        (restored.idempotency_key, "idemp_"),
+    ):
+        assert value.startswith(prefix)
+        suffix = value[len(prefix):]
+        assert len(suffix) == 32
+        assert int(suffix, 16) >= 0
+
+    caller_key = AgentEvent.create("stream-1", "test.event", idempotency_key="client-key")
+    assert caller_key.idempotency_key == "client-key"
+
+    restored_key = AgentEvent.from_dict(
+        {"stream_id": "stream-1", "kind": "test.event", "idempotency_key": "stored-key"}
+    )
+    assert restored_key.idempotency_key == "stored-key"
+
 
 def test_schema_drift_fails_closed_without_deleting_durable_database(tmp_path: Path):
     db_path = tmp_path / "agent_state.sqlite3"

@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 
-ROOT = Path(r"C:\Users\Adam\.local-ai-hub")
+ROOT = Path(__file__).resolve().parents[1]
 CANDIDATE = Path(__file__).resolve().parents[1]
 WORKER = r'''
 import json, sys, time

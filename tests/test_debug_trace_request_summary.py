@@ -12,7 +12,7 @@ from local_ai_hub.debug_traces import DebugTraceObserver, DebugTraceStore
 
 class DebugTraceRequestSummaryTests(unittest.TestCase):
     def _store(self, state_dir: str) -> DebugTraceStore:
-        return DebugTraceStore({"server": {"state_dir": state_dir}})
+        return DebugTraceStore({"server": {"state_dir": state_dir}, "debug_traces": {"enabled": True}})
 
     def test_command_list_row_has_redacted_summary_only(self):
         with tempfile.TemporaryDirectory() as state_dir:
@@ -49,7 +49,7 @@ class DebugTraceRequestSummaryTests(unittest.TestCase):
             self.assertEqual(item["project"], "hub")
             self.assertNotIn("C:/workspace", json.dumps(item))
 
-    def test_http_trace_capture_redacts_nested_sensitive_values_and_omits_large_or_binary_data(self):
+    def test_http_trace_capture_keeps_complete_local_payload(self):
         from local_ai_hub.http_server import Handler
 
         captured = Handler._safe_debug_trace_request(
@@ -66,34 +66,33 @@ class DebugTraceRequestSummaryTests(unittest.TestCase):
                     "safe": "kept",
                 },
                 "headers": {"x-api-key": "header-api-secret"},
+                "large": "x" * 10_000,
+                "binary": b"\x00\xff",
             }
         )
 
-        self.assertEqual(captured["api_key"], "[redacted]")
-        self.assertEqual(captured["client_secret"], "[redacted]")
-        self.assertEqual(captured["clientSecret"], "[redacted]")
-        self.assertEqual(captured["X-LocalAI-Token"], "[redacted]")
-        self.assertEqual(captured["nested"]["authorization"], "[redacted]")
-        self.assertEqual(captured["nested"]["auth.token"], "[redacted]")
-        self.assertEqual(captured["nested"]["credentials.apiKey"], "[redacted]")
-        self.assertEqual(captured["headers"]["x-api-key"], "[redacted]")
+        self.assertEqual(captured["task"], "inspect")
+        self.assertEqual(captured["large"], "x" * 10_000)
         self.assertEqual(captured["nested"]["safe"], "kept")
-        self.assertNotIn("api-secret", json.dumps(captured))
-        self.assertNotIn("client-secret", json.dumps(captured))
-        self.assertNotIn("camel-secret", json.dumps(captured))
-        self.assertNotIn("local-token", json.dumps(captured))
-        self.assertNotIn("dot-token-secret", json.dumps(captured))
-        self.assertNotIn("dotted-camel-secret", json.dumps(captured))
-        self.assertNotIn("header-api-secret", json.dumps(captured))
+        captured_json = json.dumps(captured)
+        for secret in (
+            "api-secret", "client-secret", "camel-secret", "local-token",
+            "dot-token-secret", "dotted-camel-secret", "header-api-secret",
+        ):
+            self.assertIn(secret, captured_json)
+        self.assertIn("safe", captured_json)
+        self.assertIn("camel-secret", json.dumps(captured))
+        self.assertIn("local-token", json.dumps(captured))
+        self.assertIn("dot-token-secret", json.dumps(captured))
+        self.assertIn("dotted-camel-secret", json.dumps(captured))
+        self.assertIn("header-api-secret", json.dumps(captured))
         self.assertEqual(Handler._safe_debug_trace_request(b"\x00\x01")["capture_status"], "omitted")
-        self.assertEqual(
-            Handler._safe_debug_trace_request({"body": "x" * (Handler.DEBUG_TRACE_REQUEST_CAPTURE_BYTES + 1)})[
-                "capture_status"
-            ],
-            "omitted",
+        large_request = Handler._safe_debug_trace_request(
+            {"body": "x" * (Handler.DEBUG_TRACE_REQUEST_CAPTURE_BYTES + 1)}
         )
+        self.assertEqual(large_request["capture_status"], "truncated")
 
-    def test_observer_persists_thinking_separately_from_final_output(self):
+    def test_enabled_observer_persists_complete_thinking_and_final_output(self):
         with tempfile.TemporaryDirectory() as state_dir:
             store = self._store(state_dir)
             trace_id = store.start(kind="api_request", tenant="test", action="/api/review", request_id="req-thinking")
@@ -105,6 +104,8 @@ class DebugTraceRequestSummaryTests(unittest.TestCase):
 
             assert detail["session"]["thinking"] == "private reasoning"
             assert detail["session"]["output"] == "final answer"
+            assert "private reasoning" in json.dumps(detail)
+            assert "final answer" in json.dumps(detail)
             assert [event["event_type"] for event in detail["events"]] == ["thinking", "output_delta"]
 
 

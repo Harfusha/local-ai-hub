@@ -16,7 +16,7 @@ def _run_hubctl(monkeypatch, argv, *, online=True, mode_response=None, post_resp
         def __init__(self, **kwargs):
             calls.append(("client", kwargs))
 
-        def _online(self):
+        def _online(self, timeout=None):
             return online
 
         def get(self, path, **kwargs):

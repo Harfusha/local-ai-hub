@@ -73,6 +73,30 @@ def test_health_probe_recovery_clears_previous_reason(supervisor_probe):
     assert instance.last_health_error == ""
 
 
+@pytest.mark.parametrize("failure,reason", [
+    (TimeoutError("secret response detail"), "probe_timeout"),
+    (OSError("secret response detail"), "probe_transport_error"),
+])
+def test_health_body_read_failure_is_fail_closed(supervisor_probe, monkeypatch, failure, reason):
+    instance, _ = supervisor_probe
+
+    class BrokenResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def read(self):
+            raise failure
+
+    monkeypatch.setattr(module, "urlopen", lambda *args, **kwargs: BrokenResponse())
+    assert instance.hub_online() is False
+    assert instance.last_health_error == reason
+
+
 @pytest.mark.parametrize("probe", ["hub_ready", "hub_online"])
 @pytest.mark.parametrize("unsafe", ["foreign_parent", "foreign_executable", "unknown_identity", "reused_pid", "non_windows", "stale_owner"])
 def test_launcher_probe_rejects_unproven_listener(supervisor_probe, monkeypatch, probe, unsafe):

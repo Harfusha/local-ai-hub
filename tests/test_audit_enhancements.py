@@ -104,7 +104,12 @@ def test_repo_tools_hash_cache(tmp_path):
     initial_hits = tools.snapshot_hits
     h2 = tools._hash_file_only(test_file)
     assert h2 == h1
-    assert tools.snapshot_hits == initial_hits + 1
+
+    # Windows verifies bytes once after a cold read before trusting the cached
+    # file identity; a subsequent read must then use the verified cache entry.
+    h3 = tools._hash_file_only(test_file)
+    assert h3 == h1
+    assert tools.snapshot_hits >= initial_hits + 1
 
 
 def test_polyglot_brace_folding_and_skeletonize(tmp_path):

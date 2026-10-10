@@ -2,6 +2,10 @@
 
 `defaults.toml` is the authoritative reference. `config.toml` should contain only overrides. User values are merged after the auto-selected hardware profile, so explicit settings always win. Malformed explicit TOML and invalid transport/resource limits fail fast.
 
+## HTTP authentication
+
+The HTTP server accepts loopback binds only. Protected routes require a configured credential and the permission assigned to that route. Set `security.api_token` for the service credential and optionally restrict its coarse roles with `security.api_token_permissions`. `security.supervisor_token` is limited to administrative scopes. `security.action_tokens` maps action names to individual credentials. `security.users` maps names to tables with a `token`, a non-empty list of exact `resource:read` or `resource:write` permissions, and an optional tenant label. Credential values must be unique across all four credential types. Diagnostic config views redact every token.
+
 ## Hardware
 
 `[hardware].profile = "auto"` detects OS, architecture, RAM and NVIDIA/AMD/Intel/Apple graphics. Profiles are `cpu`, `integrated`, `low`, `balanced`, `high`, and `max`. They tune model choices, context, concurrency and batching; they are presets rather than hardware locks.
@@ -65,7 +69,7 @@ Deterministic/indexed evidence is authoritative. Local-model passes may rank evi
 
 ## Client cold start
 
-`[client].health_timeout_seconds`, `startup_wait_seconds`, `startup_poll_seconds`, and `start_lock_stale_seconds` bound MCP/CLI auto-start. Startup locks whose owning PID is gone are discarded immediately instead of consuming the full wait budget.
+`[client].health_timeout_seconds`, `startup_wait_seconds` (default 30 s), `startup_poll_seconds`, and `start_lock_stale_seconds` bound MCP/CLI auto-start. Startup probes use `/ready`, not `/health`, so clients do not send requests while the app is still initializing. Startup locks whose owning PID is gone are discarded immediately instead of consuming the full wait budget.
 
 ## Optional tiered local runtime
 

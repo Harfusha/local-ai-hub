@@ -32,8 +32,13 @@ def valid_candidate() -> ImprovementCandidate:
     )
 
 
-def promoted_candidate(store: LearningStore) -> ImprovementCandidate:
-    cand = store.create_candidate(valid_candidate())
+def promoted_candidate(
+    store: LearningStore,
+    threshold_overrides: dict[str, float] | None = None,
+) -> ImprovementCandidate:
+    candidate = valid_candidate()
+    candidate.slo_thresholds.update(threshold_overrides or {})
+    cand = store.create_candidate(candidate)
     cand = store.advance(cand.candidate_id, CandidateStatus.CANARY_PASSED)
     store.promote(cand.candidate_id, approver="user")
     return store.get(cand.candidate_id)
@@ -44,6 +49,24 @@ def failing_slo_observation() -> SLOObservation:
         latency_ms=1200.0,  # Exceeds max_latency_ms of 500.0
         success=False,
     )
+
+
+def test_cost_slo_breach_rolls_back_promoted_candidate(store: LearningStore):
+    candidate = promoted_candidate(store, {"max_cost": 1.5})
+
+    trigger = store.observe(candidate.candidate_id, SLOObservation(cost=1.6))
+
+    assert trigger is not None
+    assert "cost" in trigger.reason
+
+
+def test_error_count_slo_breach_rolls_back_promoted_candidate(store: LearningStore):
+    candidate = promoted_candidate(store, {"max_error_count": 0})
+
+    trigger = store.observe(candidate.candidate_id, SLOObservation(error_count=1))
+
+    assert trigger is not None
+    assert "error count" in trigger.reason
 
 
 def test_candidate_cannot_promote_without_approval(store: LearningStore):

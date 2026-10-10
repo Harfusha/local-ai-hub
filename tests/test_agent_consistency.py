@@ -782,7 +782,7 @@ def test_guard_records_unknown_and_validation_receipt(repository: Path):
     assert receipt.command_id == "cmd-tests"
 
 
-def test_record_validation_verifier_exception_records_failure_without_passed_receipt(repository: Path):
+def test_record_validation_verifier_exception_records_failure_without_passed_receipt(repository: Path, caplog):
     state = AgentStateStore(repository.parent / "guard-verifier-exception.sqlite3")
     memory = MemoryStore(state)
     verification = VerificationStore(state)
@@ -790,7 +790,7 @@ def test_record_validation_verifier_exception_records_failure_without_passed_rec
     request = _request(repository)
 
     def verifier() -> bool:
-        raise RuntimeError("verifier crashed")
+        raise RuntimeError("private verifier details")
 
     validation = guard.record_validation(
         request, criterion="tests", verifier=verifier, evidence_ids=("ev-tests",)
@@ -798,6 +798,8 @@ def test_record_validation_verifier_exception_records_failure_without_passed_rec
 
     assert validation is not None and validation.value["passed"] is False
     assert not any(receipt.passed for receipt in verification.completion(request.task_id).receipts)
+    assert any("RuntimeError" in record.getMessage() for record in caplog.records)
+    assert "private verifier details" not in caplog.text
 
 
 def test_record_validation_verifier_false_records_failure_without_passed_receipt(repository: Path):

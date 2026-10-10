@@ -2,19 +2,26 @@ from local_ai_hub import http_server
 from local_ai_hub.dashboard import DASHBOARD_HTML
 
 
-def test_merged_dashboard_preserves_reviewed_html_golden():
-    import hashlib
-
-    html = DASHBOARD_HTML.encode("utf-8")
-    assert len(html) == 479461
-    assert hashlib.sha256(html).hexdigest() == "90854f090f6fe80024921886e91cbcb6bd71540523cec8fbe83f4411d8d0d411"
+def test_dashboard_template_contains_complete_payload_views():
+    assert DASHBOARD_HTML.startswith("<!doctype html>")
+    assert "Complete endpoint input" in DASHBOARD_HTML
+    assert "Complete endpoint output" in DASHBOARD_HTML
 
 
 def test_served_dashboard_discloses_trace_access_and_retention_policy():
     html = http_server._dashboard_html_with_trace_notice()
-    assert "sensitive full prompt/output" in html
+    assert "full input/output only when enabled" in html
     assert "protected access" in html
     assert "separate retention policy" in html
+
+
+def test_dashboard_has_live_detailed_telemetry_toggle():
+    assert 'id="detailedTelemetryToggle"' in DASHBOARD_HTML
+    assert "debug_traces.enabled" in DASHBOARD_HTML
+    assert "Detailed telemetry:" in DASHBOARD_HTML
+    assert "traceRevealRedactedDetails=Boolean(enabled)" in DASHBOARD_HTML
+    assert "Complete endpoint input" in DASHBOARD_HTML
+    assert "Complete endpoint output" in DASHBOARD_HTML
 
 
 def test_operations_views_name_distinct_records_and_trace_availability() -> None:
@@ -394,8 +401,11 @@ def test_dashboard_api_fetch_has_bounded_request_timeout() -> None:
     assert "clearTimeout" in api_fetch
 
 
-def test_destructive_controls_describe_scope_and_impact() -> None:
-    assert "Restart hub service" in DASHBOARD_HTML
+def test_destructive_controls_describe_scope_and_impact_without_remote_control() -> None:
+    assert "Restart hub service" not in DASHBOARD_HTML
+    assert "Stop hub service" not in DASHBOARD_HTML
+    assert "restartHub" not in DASHBOARD_HTML
+    assert "stopService" not in DASHBOARD_HTML
     assert "Purge expired cache" in DASHBOARD_HTML
     assert "Scope and impact" in DASHBOARD_HTML
     assert "function openControlConfirmation" in DASHBOARD_HTML

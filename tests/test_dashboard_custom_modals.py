@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import json
 import subprocess
+import pytest
 from html.parser import HTMLParser
 from html import escape
 from shutil import which
@@ -21,7 +22,9 @@ def _utf8_subprocess_run(*args, **kwargs):
     return _ORIGINAL_SUBPROCESS_RUN(*args, **kwargs)
 
 
-subprocess.run = _utf8_subprocess_run
+@pytest.fixture(autouse=True)
+def _use_utf8_for_subprocess_tests(monkeypatch):
+    monkeypatch.setattr(subprocess, "run", _utf8_subprocess_run)
 
 
 class _TraceMarkupParser(HTMLParser):
@@ -818,15 +821,10 @@ def test_trace_inspector_keeps_universal_summary_inside_optional_panels() -> Non
         )
     ]
     assert "traceDisplayModel(d)" in source
-    assert "universalSummary=traceSummary(model,unavailableCopy)" in source
-    assert "${header}${historyControls}${traceRetentionNotice}${contentNotice}${primaryMarkup}${optionalMarkup}" in source
-    assert "${universalSummary}<nav" in source
-    for marker in [
-        "Input unavailable for this request type",
-        "Output unavailable for this request type",
-        "Response unavailable for this request type",
-        "Trace data availability",
-    ]:
+    assert "traceSummary(model,{})" in source
+    assert "${header}${traceMetricRow(d?.metrics)}${primaryMarkup}${technical}" in source
+    assert "${traceSummary(model,{})}" in source
+    for marker in ["Input", "Output", "Trace data availability"]:
         assert marker in DASHBOARD_HTML
     assert "role=\"tabpanel\"" in source
     assert "function tracePanel(" in DASHBOARD_HTML
@@ -843,7 +841,8 @@ def test_trace_inspector_prioritizes_input_output_and_demotes_technical_detail()
             "function traceAvailability("
         )
     ]
-    assert "renderTracePresentation(model)" in detail_source
+    assert "traceMainContent('Input','input',tracePrimaryInput(model.input))" in detail_source
+    assert "traceMainContent('Output','output',model.output)" in detail_source
     assert "trace-optional-details" in detail_source
     assert "traceFirstRecorded(events,['prompt'" in model_source
     assert "traceFirstRecorded(events,['output'" in model_source
@@ -872,9 +871,9 @@ def test_trace_inspector_exposes_core_panels_when_human_presentation_is_empty() 
             "function setTraceView(view)"
         )
     ]
-    assert "function tracePrimaryFallback(" in DASHBOARD_HTML
-    assert "primaryMarkup=tracePrimaryFallback(presentationMarkup,panels,model)" in detail_source
-    assert "${header}${historyControls}${traceRetentionNotice}${contentNotice}${primaryMarkup}${optionalMarkup}" in detail_source
+    assert "function traceMainContent(" in DASHBOARD_HTML
+    assert "primaryMarkup=`<section class=\"trace-primary\"" in detail_source
+    assert "${header}${traceMetricRow(d?.metrics)}${primaryMarkup}${technical}" in detail_source
 
 
 def test_trace_inspector_stacks_primary_and_model_chat_panels_full_width() -> None:
@@ -908,19 +907,23 @@ def test_trace_inspector_dispatches_primary_body_before_optional_technical_detai
             "function setTraceView(view)"
         )
     ]
-    assert "const presentationMarkup=renderTracePresentation(model),primaryMarkup=tracePrimaryFallback(presentationMarkup,panels,model);" in source
-    assert "const optionalMarkup=`<details class=\"trace-optional-details\"" in source
-    assert source.index("renderTracePresentation(model)") < source.index(
-        "const optionalMarkup="
-    )
-    assert "${header}${historyControls}${traceRetentionNotice}${contentNotice}${primaryMarkup}${optionalMarkup}" in source
-    assert "tracePrimaryFallback(presentationMarkup,panels,model)" in source
+    assert "traceMainContent('Input','input',tracePrimaryInput(model.input))" in source
+    assert "traceMainContent('Output','output',model.output)" in source
+    assert "const technical=`<details class=\"trace-optional-details\"" in source
+    assert source.index("traceMainContent('Input'") < source.index("const technical=")
+    assert "${header}${traceMetricRow(d?.metrics)}${primaryMarkup}${technical}" in source
 
 
 def test_trace_detail_runtime_keeps_primary_first_and_technical_details_closed() -> None:
     assert which("node"), "Dashboard JavaScript tests require Node.js"
     detail_start = DASHBOARD_HTML.index("function traceDisplayModel(detail){")
-    source = _trace_presentation_runtime_source() + DASHBOARD_HTML[
+    redactor_start = DASHBOARD_HTML.index("function redactTraceContent(value){")
+    redactor_end = DASHBOARD_HTML.index("\n}", redactor_start) + 2
+    redactor_source = DASHBOARD_HTML[redactor_start:redactor_end]
+    content_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceMainContent(") : DASHBOARD_HTML.index("function renderTraceDetail(d)")
+    ]
+    source = redactor_source + _trace_presentation_runtime_source() + content_source + DASHBOARD_HTML[
         detail_start : DASHBOARD_HTML.index("function setTraceView(view)")
     ]
     fixture = {
@@ -969,11 +972,12 @@ def test_trace_detail_runtime_keeps_primary_first_and_technical_details_closed()
         "Universal request summary",
         'class="trace-tabs"',
         "Timeline",
-        "data-trace-reveal",
-        "Recognized sensitive values are masked in this dashboard by default.",
+        "Vstupní tokeny",
+        "nezaznamenané",
+        "Podrobný obsah je vypnutý",
     ]:
         assert marker in first
-    assert "Raw JSON" in raw_view
+    assert "Complete JSON payload" in raw_view
 
 
 def test_trace_inspector_keeps_tabs_and_raw_fallback_inside_optional_details() -> None:
@@ -982,10 +986,10 @@ def test_trace_inspector_keeps_tabs_and_raw_fallback_inside_optional_details() -
             "function setTraceView(view)"
         )
     ]
-    optional_start = source.index("const optionalMarkup=")
+    optional_start = source.index("const technical=`")
     optional_end = source.index("</details>", optional_start)
     optional_source = source[optional_start:optional_end]
-    assert '<nav class="trace-tabs" role="tablist" aria-label="Trace views">' in optional_source
+    assert '<nav class="trace-tabs" role="tablist" aria-label="Trace technical details">' in optional_source
     assert "panelMarkup" in optional_source
     assert "tracePanel('raw'" not in source[optional_start:]
 
@@ -999,7 +1003,7 @@ def test_trace_inspector_polling_guards_stale_responses_and_bounds_client_buffer
     for marker in [
         "tracePollGeneration",
         "pollGeneration=++tracePollGeneration",
-        "let pollInFlight=false,lastTracePollSignature='';",
+        "let pollInFlight=false,lastTracePollSignature='',terminalPayloadRequested=false;",
         "pollInFlight||!isCurrent()",
         "pollInFlight=true",
         "finally{pollInFlight=false",
@@ -1104,10 +1108,10 @@ def test_trace_inspector_keeps_optional_details_open_and_summary_visible() -> No
         )
     ]
     assert "traceOptionalDetailsOpen" in detail_source
-    assert "existingOptionalDetails.open" in detail_source
+    assert "if(existing)traceOptionalDetailsOpen=existing.open" in detail_source
     assert "traceOptionalDetailsOpen?' open':''" in detail_source
-    assert "${header}${historyControls}${traceRetentionNotice}${contentNotice}${primaryMarkup}${optionalMarkup}" in detail_source
-    assert "${universalSummary}<nav" in detail_source
+    assert "${header}${traceMetricRow(d?.metrics)}${primaryMarkup}${technical}" in detail_source
+    assert "${traceSummary(model,{})}${requestSettings}${historyControls}<nav" in detail_source
     assert "tracePanel('summary'" not in model_source
 
 
@@ -2156,8 +2160,9 @@ def test_trace_inspector_uses_accessible_conditional_tabs_and_safe_trace_values(
             "function setTraceView(view)"
         )
     ]
-    assert "model.panels.filter(panel=>panel.available)" in detail_source
-    assert "traceSanitizeValue" in detail_source
+    assert "panels=model.panels.filter(panel=>panel.available)" in detail_source
+    assert "technicalPanels=panels.filter(panel=>!['input','output','response'].includes(panel.id))" in detail_source
+    assert "traceDisplayModel(d)" in detail_source
     assert "panelMarkup" in detail_source
     assert "hidden" in detail_source
     assert "panel.id===traceView" in detail_source
@@ -2172,11 +2177,13 @@ def test_trace_inspector_uses_accessible_conditional_tabs_and_safe_trace_values(
 
 
 def _trace_presentation_runtime_source() -> str:
+    redactor_start = DASHBOARD_HTML.index("function redactTraceContent(value){")
+    redactor_end = DASHBOARD_HTML.index("\n}", redactor_start) + 2
     start = re.search(r"(?m)^[^\r\n]*\r?\n(?=\s*function\s+renderAny\s*\()", DASHBOARD_HTML)
     assert start, "Trace presentation runtime start missing"
     end = re.search(r"\bfunction\s+traceDisplayModel\s*\([^)]*\)\s*\{", DASHBOARD_HTML[start.end() :])
     assert end, "Trace presentation runtime end missing"
-    return DASHBOARD_HTML[start.start() : start.end() + end.start()]
+    return DASHBOARD_HTML[redactor_start:redactor_end] + DASHBOARD_HTML[start.start() : start.end() + end.start()]
 
 
 def _trace_redaction_runtime_source() -> str:
@@ -2529,7 +2536,8 @@ def test_trace_detail_controls_are_present_and_technical_details_start_closed() 
         )
     ]
     handler_source = DASHBOARD_HTML
-    assert "presentationMarkup" in detail_source
+    assert "traceMainContent('Input','input',tracePrimaryInput(model.input))" in detail_source
+    assert "traceMainContent('Output','output',model.output)" in detail_source
     assert "traceTechnicalDetails" in detail_source
     assert "setTraceDetailsOpen(true)" in handler_source
     assert "setTraceDetailsOpen(false)" in handler_source
@@ -2936,7 +2944,7 @@ def test_trace_technical_details_are_closed_by_default() -> None:
             "function setTraceView(view)"
         )
     ]
-    details_tag = re.search(r"<details\b[^>]*>", source)
+    details_tag = re.search(r"<details\b(?=[^>]*\bid=['\"]traceTechnicalDetails['\"])[^>]*>", source)
     assert details_tag, "Technical details disclosure markup missing"
     tag = details_tag.group(0)
     assert re.search(r"\bid\s*=\s*['\"]traceTechnicalDetails['\"]", tag)
@@ -3571,7 +3579,7 @@ def test_trace_display_model_derives_http_identity_and_keeps_effective_payload()
     assert "effectivePayload" in source
 
 
-def test_trace_inspector_has_keyboard_roving_tabs_and_explicit_reveal_control() -> None:
+def test_trace_inspector_has_keyboard_tabs_and_copyable_content_without_reveal_control() -> None:
     assert "function moveTraceTab(" in DASHBOARD_HTML
     keyboard_source = DASHBOARD_HTML[
         DASHBOARD_HTML.index("function moveTraceTab(") : DASHBOARD_HTML.index(
@@ -3582,9 +3590,9 @@ def test_trace_inspector_has_keyboard_roving_tabs_and_explicit_reveal_control() 
         assert key in keyboard_source
     assert "requestAnimationFrame" in keyboard_source
     assert "traceRevealRedactedDetails=false" in DASHBOARD_HTML
-    assert "data-trace-reveal" in DASHBOARD_HTML
-    assert 'aria-pressed="${traceRevealRedactedDetails}"' in DASHBOARD_HTML
-    assert "toggleTraceReveal" in DASHBOARD_HTML
+    assert 'data-trace-copy="${field}"' in DASHBOARD_HTML
+    assert "copyTraceContent" in DASHBOARD_HTML
+    assert "data-trace-reveal" not in DASHBOARD_HTML
 
 
 def test_trace_sanitizer_redacts_sensitive_object_values_by_key() -> None:

@@ -255,9 +255,9 @@ def test_async_job_trace_links_metadata_scheduler_and_terminal_state(tmp_path):
     submitted = manager.submit("tenant-a", "reason", {"task": "trace me", "context": "full context"})
     assert manager.wait("tenant-a", submitted["job_id"], 3)["state"] == "done"
     detail = store.detail(submitted["trace_id"])
-    assert detail["session"]["request"] == {"capture_status": "metadata_only", "field_count": 2}
-    assert "task" not in detail["session"]["request"]
-    assert "context" not in detail["session"]["request"]
+    assert detail["session"]["request"]["task"] == "trace me"
+    assert detail["session"]["request"]["context"] == "full context"
+    assert "task" in detail["session"]["output"]
     assert detail["session"]["async_job_id"] == submitted["job_id"]
     assert detail["session"]["scheduler_job_id"] == ""
     assert detail["session"]["state"] == "done"

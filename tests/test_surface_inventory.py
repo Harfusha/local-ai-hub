@@ -526,7 +526,7 @@ def test_current_client_inventory_includes_urllib_targets():
     assert {
         (target["method"], target["path"]) for target in targets
     } >= {
-        ("GET", "/health"),
+        ("GET", "/ready"),
         ("GET", "/api/agent-state/events/stream"),
     }
 

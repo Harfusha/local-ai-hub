@@ -143,7 +143,7 @@ def test_agent_state_response_never_returns_raw_prompt_or_absolute_path(running_
     assert response["success"] is True
 
 
-def test_mcp_actions_dispatch_and_compact(monkeypatch):
+def test_mcp_actions_dispatch_and_compact(monkeypatch, tmp_path):
     import local_ai_hub.mcp_server as mcp_mod
 
     calls = []
@@ -171,6 +171,11 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch):
     st_res = mcp_mod.local_ai_status(detail="agent_state")
     assert st_res["success"] is True
     assert ("STATUS", "agent_state") in calls
+
+    calls.clear()
+    st_alias = mcp_mod.local_ai_status(action="agent_state")
+    assert st_alias["success"] is True
+    assert [call for call in calls if call[0] == "STATUS"] == [("STATUS", "agent_state")]
 
     # local_ai_coord actions
     c_res1 = mcp_mod.local_ai_coord(action="task_create", task_id="t1", contract={"goal": "g"})
@@ -283,7 +288,7 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch):
     r_res1 = mcp_mod.local_ai_repo(
         action="context_compile",
         task_id="t2",
-        root="repo-root",
+        root=str(tmp_path),
         clone_id="clone-2",
         worktree_id="worktree-2",
         branch="branch-2",
@@ -293,7 +298,7 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch):
         changed_paths=["src/main.py"],
         include_diagnostics=True,
     )
-    assert r_res1["success"] is True
+    assert r_res1["success"] is True, r_res1
     assert any(c[0] == "POST" and c[1] == "/api/agent-state/context" for c in calls)
     repo_context_payload = next(
         call[2] for call in calls
@@ -312,11 +317,15 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch):
     }
     assert repo_context_payload["changed_paths"] == ["src/main.py"]
 
-    r_res2 = mcp_mod.local_ai_repo(action="verify_receipt", receipt={"task_id": "t1", "criterion": "c1"})
+    r_res2 = mcp_mod.local_ai_repo(
+        action="verify_receipt",
+        root=str(tmp_path),
+        receipt={"task_id": "t1", "criterion": "c1"},
+    )
     assert r_res2["success"] is True
     assert any(c[0] == "POST" and c[1] == "/api/agent-state/verification" for c in calls)
 
-    r_res3 = mcp_mod.local_ai_repo(action="verify_completion", task_id="t1")
+    r_res3 = mcp_mod.local_ai_repo(action="verify_completion", root=str(tmp_path), task_id="t1")
     assert r_res3["success"] is True
 
     # local_ai_task actions

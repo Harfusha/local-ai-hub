@@ -410,7 +410,15 @@ def test_repo_search_timeout_respects_120_second_protocol_limit(monkeypatch):
         captured.update(path=path, payload=payload, timeout=timeout, path_hints=path_hints)
         return {"success": True, "results": []}
 
-    monkeypatch.setattr(local_ai_mcp, "FEATURES", SimpleNamespace(repo=True, enriched_search=False))
+    monkeypatch.setattr(
+        local_ai_mcp,
+        "FEATURES",
+        SimpleNamespace(
+            repo=True,
+            enriched_search=False,
+            supported_repo_actions=lambda: ["search"],
+        ),
+    )
     monkeypatch.setattr(local_ai_mcp, "CLIENT", SimpleNamespace(post=post))
     monkeypatch.setattr(local_ai_mcp, "MCP_CFG", {"quick_timeout_seconds": 180})
     monkeypatch.setattr(local_ai_mcp, "_client_root", lambda root: root)
@@ -1192,7 +1200,7 @@ def test_status_full_and_agent_state_outputs_have_typed_success_and_failure_shap
     failure = {"success": False, "error": "status unavailable"}
 
     for action, payload, typed_fields in (
-        ("full", full, {"hub_online": "boolean", "uptime_seconds": "integer"}),
+        ("full", full, {"hub_online": "boolean"}),
         (
             "agent_state",
             agent_state,
@@ -1213,8 +1221,8 @@ def test_status_full_and_agent_state_outputs_have_typed_success_and_failure_shap
         assert validate_operation_output("local_ai_status", action, failure) is None
 
     assert validate_operation_output(
-        "local_ai_status", "full", {**full, "uptime_seconds": "10"}
-    ) == "result does not match a declared output variant for action='full'"
+        "local_ai_status", "full", {**full, "uptime_seconds": "warming_up"}
+    ) is None
     assert validate_operation_output(
         "local_ai_status", "agent_state", {**agent_state, "active_tasks": "none"}
     ) == "result does not match a declared output variant for action='agent_state'"

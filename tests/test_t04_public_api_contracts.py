@@ -38,9 +38,11 @@ def live_api(tmp_path, monkeypatch):
         app.close()
 
 
-def test_resolve_imports_get_and_post_share_auto_default(live_api):
+def test_resolve_imports_get_and_post_share_auto_default(live_api, tmp_path):
     app, client = live_api
     calls = []
+    root = tmp_path / "repo"
+    root.mkdir()
 
     def resolve_imports(root, symbols, language):
         calls.append((root, symbols, language))
@@ -48,12 +50,12 @@ def test_resolve_imports_get_and_post_share_auto_default(live_api):
 
     app.services.resolve_imports = resolve_imports
 
-    get_result = client.get("/api/resolve_imports?root=repo&symbol=Thing")
-    post_result = client.post("/api/resolve_imports", {"root": "repo", "symbol": "Thing"})
+    get_result = client.get(f"/api/resolve_imports?root={root}&symbol=Thing")
+    post_result = client.post("/api/resolve_imports", {"root": str(root), "symbol": "Thing"})
 
     assert get_result["language"] == "auto"
     assert post_result["language"] == "auto"
-    assert calls == [("repo", ["Thing"], "auto"), ("repo", ["Thing"], "auto")]
+    assert calls == [(str(root.resolve()), ["Thing"], "auto"), (str(root.resolve()), ["Thing"], "auto")]
 
 
 def test_unsupported_chat_completions_rejects_valid_payload(live_api):
@@ -270,7 +272,7 @@ def test_lean_work_description_lists_continuation_and_response_controls(monkeypa
         assert control in description
 
 
-def test_semantic_diff_action_uses_public_call_graph_diff_route(monkeypatch):
+def test_semantic_diff_action_uses_public_call_graph_diff_route(monkeypatch, tmp_path):
     from local_ai_hub import mcp_server
 
     captured = {}
@@ -280,9 +282,11 @@ def test_semantic_diff_action_uses_public_call_graph_diff_route(monkeypatch):
         return {"success": True, "changes": []}
 
     monkeypatch.setattr(mcp_server.CLIENT, "post", fake_post)
+    root = tmp_path / "repo"
+    root.mkdir()
     result = mcp_server.local_ai_repo(
         action="semantic_diff",
-        root="repo",
+        root=str(root),
         diff="diff --git a/a.cs b/a.cs",
     )
 

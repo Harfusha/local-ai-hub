@@ -34,6 +34,33 @@ def test_records_bucketed_daily_outcomes_and_reasons(tmp_path):
     assert report["output_size_buckets"] == [{"bucket": "0-255B", "count": 1}, {"bucket": "1-4KiB", "count": 1}]
 
 
+def test_initialization_retries_transient_sqlite_lock(tmp_path, monkeypatch):
+    import sqlite3
+    import time
+    from local_ai_hub import adoption_metrics
+
+    store = adoption_metrics.AdoptionMetricsStore.__new__(adoption_metrics.AdoptionMetricsStore)
+    store.path = tmp_path / "adoption_metrics.sqlite3"
+    real_connect = store._connect
+    attempts = 0
+    delays = []
+
+    def connect_once_locked(*, timeout_seconds=5.0):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return real_connect(timeout_seconds=timeout_seconds)
+
+    monkeypatch.setattr(store, "_connect", connect_once_locked)
+    monkeypatch.setattr(time, "sleep", delays.append)
+
+    store._initialize()
+
+    assert attempts == 2
+    assert delays and 0 < delays[0] <= 0.1
+
+
 def test_report_exposes_routing_adoption_aggregate_counts(tmp_path):
     store = AdoptionMetricsStore(tmp_path)
     now = datetime(2026, 9, 17, tzinfo=timezone.utc)

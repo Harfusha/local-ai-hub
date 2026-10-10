@@ -52,16 +52,16 @@ def test_dashboard_groups_only_using_git_identity_and_explicit_worktree_flag() -
     script = "function $(name){return name==='projectGroupWorktrees'?{checked:true}:null;}\n"
     script += DASHBOARD_HTML[start:end] + DASHBOARD_HTML[render_start:render_end]
     script += "\nconst groups=groupedProjects(["
-    script += "{root:'C:/Users/Adam/.codex/worktrees'},"
-    script += "{root:'C:/Users/Adam/.codex/worktrees/repo-a'},"
+    script += "{root:'C:/Users/Example/.codex/worktrees'},"
+    script += "{root:'C:/Users/Example/.codex/worktrees/repo-a'},"
     script += "{root:'C:/repo-a',git_common_dir:'C:/repo-a/.git',is_worktree:false},"
     script += "{root:'C:/repo-a/worktrees/linked',git_common_dir:'C:/repo-a/.git',is_worktree:true}"
     script += "]); console.log(JSON.stringify(groups.map(g=>({identity:projectIdentity(g),variants:g.variants.length,root:g.root}))))\n"
     result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=10, check=True)
     groups = json.loads(result.stdout)
     assert groups == [
-        {"identity": "C:/Users/Adam/.codex/worktrees", "variants": 1, "root": "C:/Users/Adam/.codex/worktrees"},
-        {"identity": "C:/Users/Adam/.codex/worktrees/repo-a", "variants": 1, "root": "C:/Users/Adam/.codex/worktrees/repo-a"},
+        {"identity": "C:/Users/Example/.codex/worktrees", "variants": 1, "root": "C:/Users/Example/.codex/worktrees"},
+        {"identity": "C:/Users/Example/.codex/worktrees/repo-a", "variants": 1, "root": "C:/Users/Example/.codex/worktrees/repo-a"},
         {"identity": "C:/repo-a/.git", "variants": 2, "root": "C:/repo-a"},
     ]
     assert "includes('worktree')" not in DASHBOARD_HTML[render_start:render_end]

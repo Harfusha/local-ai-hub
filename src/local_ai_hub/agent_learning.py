@@ -277,6 +277,20 @@ class LearningStore:
                 f"latency {observation.latency_ms:.1f}ms breached SLO max {max_latency:.1f}ms",
             )
 
+        max_cost = current.slo_thresholds.get("max_cost")
+        if max_cost is not None and observation.cost > max_cost:
+            return self._rollback(
+                current,
+                f"cost {observation.cost:.6f} breached SLO max {max_cost:.6f}",
+            )
+
+        max_error_count = current.slo_thresholds.get("max_error_count")
+        if max_error_count is not None and observation.error_count > max_error_count:
+            return self._rollback(
+                current,
+                f"error count {observation.error_count} breached SLO max {max_error_count:.0f}",
+            )
+
         min_success = current.slo_thresholds.get("min_success_rate")
         if min_success is not None and not observation.success:
             return self._rollback(

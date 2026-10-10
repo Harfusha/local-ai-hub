@@ -52,7 +52,7 @@ def test_ensure_running_takes_over_local_external_ollama(tmp_path: Path, monkeyp
         state["online"] = True
         return Proc()
 
-    monkeypatch.setattr(ollama_module.subprocess, "Popen", popen)
+    monkeypatch.setattr(ollama_module, "popen_managed", popen)
     monkeypatch.setattr(ollama_module, "pid_alive", lambda pid: pid == 9002)
 
     assert runtime.ensure_running() is True
@@ -109,7 +109,7 @@ def test_ensure_running_cleans_process_when_startup_never_becomes_healthy(tmp_pa
     monkeypatch.setattr(
         ollama_module,
         "terminate_tree",
-        lambda pid, grace_seconds=5.0: terminated.append(pid) or True,
+        lambda pid, grace_seconds=5.0, process_handle=None: terminated.append(pid) or True,
     )
 
     class Proc:
@@ -129,7 +129,7 @@ def test_ensure_running_cleans_process_when_startup_never_becomes_healthy(tmp_pa
             return None
 
     proc = Proc()
-    monkeypatch.setattr(ollama_module.subprocess, "Popen", lambda *_args, **_kwargs: proc)
+    monkeypatch.setattr(ollama_module, "popen_managed", lambda *_args, **_kwargs: proc)
 
     assert runtime.ensure_running() is False
     assert terminated == [9003]

@@ -323,8 +323,19 @@ class Supervisor:
                     return False
                 try:
                     response.read()
+                except (TimeoutError, socket.timeout):
+                    self.last_health_error = "probe_timeout"
+                    return False
+                except URLError as exc:
+                    is_timeout = isinstance(exc.reason, (TimeoutError, socket.timeout)) or "timed out" in str(exc.reason).lower()
+                    self.last_health_error = "probe_timeout" if is_timeout else "probe_transport_error"
+                    return False
+                except OSError:
+                    self.last_health_error = "probe_transport_error"
+                    return False
                 except Exception:
-                    pass
+                    self.last_health_error = "probe_internal_error"
+                    return False
             listener_pid = find_listening_pid(int(server.get("port", 11435)))
             healthy = self._listener_is_owned(listener_pid)
             if not healthy:

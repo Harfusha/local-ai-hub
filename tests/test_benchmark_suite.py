@@ -208,7 +208,7 @@ def test_run_t12_case_reports_live_metrics_and_persists_no_prompt_or_output(tmp_
             time.sleep(0.3)
             yield {
                 "response": generated_json,
-                "load_duration": 5_000_000,
+                "load_duration": 200_000_000,
                 "prompt_eval_count": 6,
             }
 
@@ -244,12 +244,12 @@ def test_run_t12_case_reports_live_metrics_and_persists_no_prompt_or_output(tmp_
     assert result["success"] is True
     assert result["queue_wait_ms"] == 12.5
     assert result["ttft_ms"] >= 0.0
-    assert result["load_duration_ms"] == 5.0
+    assert result["load_duration_ms"] == 200.0
     assert result["model_load_event"] is True
     assert result["model_reuse_event"] is False
     assert result["prefill_tokens"] == 6
     assert result["peak_vram_bytes"] == 110 * 1024 * 1024
-    assert result["peak_vram_scope"] == "sampled_during_inference"
+    assert result["peak_vram_scope"] == "device_wide_sampled_during_inference"
     assert result["quality_score_pct"] == 100.0
     assert result["quality_evaluator_id"] == "model_quality.evaluate_case:t12.v1"
     assert result["routed_profile"] == "reasoning"

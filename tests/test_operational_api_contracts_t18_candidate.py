@@ -90,6 +90,66 @@ def test_telemetry_query_window_clamps_unbounded_days(tmp_path):
         store.close()
 
 
+def test_telemetry_report_caps_high_cardinality_groups(tmp_path):
+    store = TelemetryStore(tmp_path / "telemetry", enabled=True, flush_interval_seconds=0.01)
+    try:
+        for index in range(130):
+            store.record(event_type="http", agent=f"agent-{index}", success=True)
+            store.record(event_type="inference", model=f"model-{index}", success=True)
+            store.record(event_type="inference", cache_layer=f"cache-{index}", success=True)
+            store.record(event_type="http", error_type=f"error-{index}", success=False)
+            store.record_stage(stage="cache_decision", error_type=f"decision-{index}", success=True)
+            store.record(event_type="tool_accounting", input_savings_source=f"source-{index}", gross_input_tokens_avoided=1)
+        store.flush(2.0)
+        report = store.report(days=1)
+        assert len(report["by_agent"]) <= 100
+        assert len(report["by_model"]) <= 100
+        assert len(report["cache_layers"]) <= 100
+        assert len(report["cache_decisions"]) <= 100
+        assert [(-row["requests"], row["agent"]) for row in report["by_agent"]] == sorted(
+            (-row["requests"], row["agent"]) for row in report["by_agent"]
+        )
+        assert [(-row["calls"], row["model"]) for row in report["by_model"]] == sorted(
+            (-row["calls"], row["model"]) for row in report["by_model"]
+        )
+        assert [row["layer"] for row in report["cache_layers"]][1:] == sorted(row["layer"] for row in report["cache_layers"][1:])
+        assert list(report["cache_decisions"]) == sorted(report["cache_decisions"])
+        summary = store.summary(days=1)
+        assert len(summary["cache_layers"]) <= 100
+        assert len(summary["http_outcomes"]) <= 100
+        assert len(summary["token_savings_breakdown"]) <= 100
+        cache_keys = list(summary["cache_layers"])
+        outcome_keys = list(summary["http_outcomes"])
+        assert cache_keys[1:] == sorted(cache_keys[1:])
+        assert outcome_keys[1:] == sorted(outcome_keys[1:])
+        source_keys = list(summary["token_savings_breakdown"])
+        assert source_keys == sorted(source_keys)
+    finally:
+        store.close()
+
+
+def test_dashboard_report_cache_bounds_untrusted_windows(tmp_path):
+    store = TelemetryStore(tmp_path / "telemetry", enabled=True)
+    try:
+        for days in range(1, 80):
+            store.dashboard_report(days=days, ttl_seconds=3600)
+        assert len(store._dashboard_cache) <= 16
+        assert all(1 <= key[0] <= 3650 for key in store._dashboard_cache)
+    finally:
+        store.close()
+
+
+def test_summary_cache_bounds_untrusted_windows(tmp_path):
+    store = TelemetryStore(tmp_path / "telemetry", enabled=True)
+    try:
+        for days in range(1, 80):
+            store.summary(days=days, _flush=False)
+        assert len(store._summary_cache) <= 16
+        assert all(1 <= (key if isinstance(key, int) else key[0]) <= 3650 for key in store._summary_cache)
+    finally:
+        store.close()
+
+
 def test_event_page_reports_empty_retention_gap_and_future_cursor(tmp_path):
     import time
 
@@ -634,7 +694,7 @@ def test_agent_event_sse_emits_later_provider_failure_after_headers(monkeypatch)
 
     assert calls == [0, 1]
     assert statuses == [200]
-    assert "event: error\ndata: {\"success\":false,\"error\":{\"code\":\"later_page_failed\",\"message\":\"event page unavailable\"},\"terminal\":false,\"retryable\":true}" in output
+    assert "event: replay_error\ndata: {\"success\":false,\"error\":{\"code\":\"later_page_failed\",\"message\":\"event page unavailable\"},\"terminal\":false,\"retryable\":true}" in output
 
 
 def test_agent_event_sse_empty_retention_gap_advances_reconnect_cursor(monkeypatch):
@@ -905,9 +965,9 @@ def test_agent_state_detail_reports_degraded_status_on_dependency_timeout(monkey
         http_server,
         "APP",
         SimpleNamespace(
-            _status_dependency_lock=object(),
+            _status_dependency_lock=threading.Lock(),
             _status_dependency_inflight={},
-            _status_dependency_slots=object(),
+            _status_dependency_slots=threading.BoundedSemaphore(2),
             agent_state=SimpleNamespace(enabled=True),
             agent_tasks=SimpleNamespace(list_tasks=lambda: []),
             agent_incidents=SimpleNamespace(list_incidents=lambda: []),
@@ -917,6 +977,8 @@ def test_agent_state_detail_reports_degraded_status_on_dependency_timeout(monkey
     handler = object.__new__(http_server.Handler)
     handler.path = "/api/status?detail=agent_state"
     handler.command = "GET"
+    handler._authorization_root = "C:/project"
+    handler._authorization_tenant = "owner"
     handler._begin_trace = lambda path: None
     handler._require_authorized = lambda: True
     responses = []
@@ -928,6 +990,60 @@ def test_agent_state_detail_reports_degraded_status_on_dependency_timeout(monkey
     assert responses[0][1]["degraded"] is True
     assert responses[0][1]["success"] is False
     assert responses[0][1]["status"] == "degraded"
+
+
+def test_agent_state_detail_includes_contract_counts(monkeypatch):
+    candidate_calls = []
+    monkeypatch.setattr(
+        http_server,
+        "APP",
+        SimpleNamespace(
+            _status_dependency_lock=threading.Lock(),
+            _status_dependency_inflight={},
+            _status_dependency_slots=threading.BoundedSemaphore(2),
+            agent_state=SimpleNamespace(enabled=True),
+            agent_tasks=SimpleNamespace(
+                list_tasks=lambda: [SimpleNamespace(
+                    task_id="t1",
+                    status=http_server.TaskStatus.ACTIVE,
+                    context=SimpleNamespace(repository_id=_EVENT_TEST_ROOT, session_id="owner"),
+                )]
+            ),
+            agent_incidents=SimpleNamespace(list_incidents=lambda: [
+                SimpleNamespace(
+                    repository_key=http_server._incident_scope_key("repository", _EVENT_TEST_ROOT),
+                    tenant_key=http_server._incident_scope_key("tenant", "owner"),
+                ),
+                SimpleNamespace(
+                    repository_key=http_server._incident_scope_key("repository", _EVENT_TEST_ROOT),
+                    tenant_key=http_server._incident_scope_key("tenant", "owner"),
+                ),
+            ]),
+            agent_learning=SimpleNamespace(list_candidates=lambda: candidate_calls.append(True) or [object()]),
+        ),
+    )
+    handler = object.__new__(http_server.Handler)
+    handler.path = "/api/status?detail=agent_state"
+    handler.command = "GET"
+    handler._authorization_root = _EVENT_TEST_ROOT
+    handler._authorization_tenant = "owner"
+    handler._begin_trace = lambda path: None
+    handler._require_authorized = lambda: True
+    responses = []
+    handler._send = lambda status, data: responses.append((status, data))
+
+    handler.do_GET()
+
+    assert len(responses) == 1
+    status, payload = responses[0]
+    assert status == 200
+    assert payload["success"] is True
+    assert payload["enabled"] is True
+    assert payload["active_tasks"] == ["t1"]
+    assert payload["tasks_count"] == 1
+    assert payload["incidents_count"] == 2
+    assert payload["candidates_count"] == 0
+    assert candidate_calls == []
 
 
 def test_db_query_rejects_results_over_byte_budget(monkeypatch, tmp_path):
@@ -1449,22 +1565,6 @@ def test_retryable_error_resolution_returns_503_over_http(monkeypatch, tmp_path)
         thread.join(timeout=3)
 
 
-def test_admin_action_requires_exact_route_and_payload_action():
-    handler = object.__new__(http_server.Handler)
-    handler.command = "POST"
-    handler.path = "/api/control"
-    handler._authorization_succeeded = True
-    handler._admin_payload = {"action": "restart_hub"}
-    sent = []
-    handler._send = lambda status, body: sent.append((status, body))
-
-    assert handler._authorize_admin_action("control.stop_service") is False
-    assert sent[-1][0] == 403
-    handler._admin_payload = {"action": "stop_service"}
-    assert handler._authorize_admin_action("control.stop_service") is True
-    assert handler._admin_operation == "control.stop_service"
-
-
 @pytest.mark.parametrize(
     ("operation", "method", "path", "payload"),
     [
@@ -1474,8 +1574,6 @@ def test_admin_action_requires_exact_route_and_payload_action():
         ("config.read", "GET", "/api/config", {}),
         ("config.update", "POST", "/api/config/update", {"action": "update"}),
         ("config.reset", "POST", "/api/config/update", {"action": "reset"}),
-        ("control.restart_hub", "POST", "/api/control", {"action": "restart_hub"}),
-        ("control.stop_service", "POST", "/api/control", {"action": "stop_service"}),
         ("maintenance.optimize_db", "POST", "/api/maintenance/optimize_db", {}),
         ("maintenance.purge_cache", "POST", "/api/maintenance/purge_cache", {}),
         ("maintenance.resolve_errors", "POST", "/api/maintenance/resolve_errors", {}),
@@ -1546,9 +1644,9 @@ def test_status_action_aliases_route_to_expected_live_status_scope(monkeypatch):
         **{alias: ["/api/live/status?light=1&scope=process"] for alias in aliases},
         "brief": ["/api/live/status?light=1&scope=process"],
         "cache": ["/api/live/status?light=1&scope=process"],
-        "telemetry": ["/api/live/status?light=1&scope=process", "/api/telemetry/report?days=30&scope=process"],
+        "telemetry": ["/api/telemetry/report?days=30&scope=process"],
         "full": ["/api/live/status?light=1&scope=process", "/api/capabilities"],
-        "agent_state": ["/api/live/status?light=1&scope=process", ("status", {"detail": "agent_state"})],
+        "agent_state": [("status", {"detail": "agent_state"})],
     }
     for action, expected in expected_calls.items():
         calls.clear()

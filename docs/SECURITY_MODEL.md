@@ -1,10 +1,12 @@
 # Security model
 
-The Hub binds to `127.0.0.1` by default. A non-loopback bind requires `security.allow_remote = true` and `security.api_token` with at least 16 characters. On loopback, an empty token leaves HTTP data/control routes unauthenticated; when configured, send it in `X-LocalAI-Token` or `Authorization: Bearer`. `/health` and the dashboard shell are public; other data/control routes require the configured token. T13 auth/root isolation is not integrated in this candidate.
+The Hub binds to `127.0.0.1` by default and rejects non-loopback binds. `/health` and the dashboard shell are public. Protected HTTP routes fail closed unless a configured credential grants the route's permission. Send credentials in `X-LocalAI-Token` or `Authorization: Bearer`.
+
+`security.api_token` is the service credential and uses `api_token_permissions` for its coarse role grants. `security.supervisor_token` grants only `admin:read` and `admin:write`. `security.action_tokens` maps exact action names to narrowly scoped credentials. `security.users` maps user names to `{ token, permissions, tenant? }`; permissions are exact `resource:read` or `resource:write` scopes. API, supervisor, action, and user token values must be unique. Configured credentials are redacted from diagnostic config views.
 
 ## Identity and shared state
 
-The current candidate does not implement `allowed_roots` or principal-to-root tenant derivation. Repository `root` identifies the requested path; it is not validated as an authorization boundary. MCP repo/RAG actions usually map omitted or `.` roots to MCP `cwd`; preprocessing alone requires an explicit absolute root.
+Repository/RAG MCP actions reject omitted or `.` roots at the adapter boundary, and preprocessing requires an explicit absolute root. `allowed_roots` and principal-to-root tenant derivation still do not establish an authorization boundary here: repository `root` identifies the requested path, but server-enforced root isolation remains unverified.
 
 HTTP tenant scope uses caller-provided `X-LocalAI-Tenant`, then `X-Tenant-ID`, then `http-default`. Browser routes bind to their configured browser tenant when an API token is configured. Tenant labels do not authenticate callers and are not derived from repository roots.
 

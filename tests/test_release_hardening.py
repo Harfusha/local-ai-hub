@@ -103,8 +103,8 @@ def test_external_index_unexpected_failure_reaps_child(tmp_path: Path, monkeypat
         def wait(self, timeout=None):
             return 0
 
-    monkeypatch.setattr("local_ai_hub.external_tools.subprocess.Popen", lambda *a, **k: BrokenProc())
-    monkeypatch.setattr("local_ai_hub.external_tools.terminate_tree", lambda pid, grace_seconds=1.0: terminated.append(pid) or True)
+    monkeypatch.setattr("local_ai_hub.external_tools.popen_managed", lambda *a, **k: BrokenProc())
+    monkeypatch.setattr("local_ai_hub.external_tools.terminate_tree", lambda pid, grace_seconds=1.0, process_handle=None: terminated.append(pid) or True)
     result = external._run_index("serena", ["fake"], str(tmp_path))
     assert result["success"] is False
     assert terminated == [424242]

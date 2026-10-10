@@ -736,13 +736,13 @@ class AsyncJobManager:
                     if state == "outcome_unknown":
                         return {"success": False, "job_id": str(job_id), "state": state, "error": str(old_error or "async job outcome unknown"), "outcome_unknown": True, "terminal": True, "retryable": False}
                     self._stats["coalesced"] += 1
-                    return {"success": True, "job_id": str(job_id), "trace_id": str(trace_id or ""), "task_id": str(old_task_id or ""), "state": state, "coalesced": state in {"queued", "running"}, "idempotent_replay": True, "admission": admission, "admission_state": admission["state"]}
+                    return {"success": True, "job_id": str(job_id), "trace_id": str(trace_id or ""), "task_id": str(old_task_id or ""), "state": state, "coalesced": state in {"queued", "running"}, "idempotent_replay": True, "durability": "sqlite_committed", "admission": admission, "admission_state": admission["state"]}
             existing = con.execute("SELECT job_id,state,trace_id,task_id FROM async_jobs WHERE tenant=? AND request_hash=? AND state IN ('queued','running')", (tenant, request_hash)).fetchone()
             if existing:
                 self._stats["coalesced"] += 1
                 age_ms = max(0.0, (now - float(con.execute("SELECT created_at FROM async_jobs WHERE job_id=?", (existing[0],)).fetchone()[0])) * 1000.0)
                 admission = self._admission("coalesced", "duplicate_active_job", retryable=False, queue_age_ms=age_ms)
-                return {"success": True, "job_id": existing[0], "trace_id": str(existing[2] or ""), "task_id": str(existing[3] or ""), "state": existing[1], "coalesced": True, "admission": admission, "admission_state": admission["state"]}
+                return {"success": True, "job_id": existing[0], "trace_id": str(existing[2] or ""), "task_id": str(existing[3] or ""), "state": existing[1], "coalesced": True, "durability": "sqlite_committed", "admission": admission, "admission_state": admission["state"]}
             mode_snapshot = self._operational_mode_snapshot()
             mode_rejection = self._mode_blocked_result(action, mode_snapshot)
             if mode_rejection is None:
@@ -766,7 +766,7 @@ class AsyncJobManager:
                 trace_id = self.debug_traces.start(kind="async_job", tenant=tenant, action=action, source="async-job")
                 self.debug_traces.update(
                     trace_id,
-                    request={"capture_status": "metadata_only", "field_count": len(request_hash_payload)},
+                    request=request_hash_payload,
                 )
                 self.debug_traces.link(trace_id, async_job_id=job_id)
                 with self._lock, closing(self._connect()) as con:
@@ -782,7 +782,7 @@ class AsyncJobManager:
             timer.start()
         else:
             self._dispatch_background(job_id)
-        return {"success": True, "job_id": job_id, "trace_id": trace_id, "task_id": task_id, "state": "queued", "coalesced": False, "admission": admission, "admission_state": admission["state"]}
+        return {"success": True, "job_id": job_id, "trace_id": trace_id, "task_id": task_id, "state": "queued", "coalesced": False, "durability": "sqlite_committed", "admission": admission, "admission_state": admission["state"]}
 
     def _row(self, tenant: str, job_id: str) -> sqlite3.Row | None:
         def read() -> sqlite3.Row | None:
@@ -1038,10 +1038,11 @@ class AsyncJobManager:
             con.commit()
         if self.debug_traces is not None and trace_id:
             try:
+                self.debug_traces.update(trace_id, output=final)
                 self.debug_traces.finish(
                     trace_id,
                     state=str(final.get("state") or ("done" if final.get("success") else "failed")),
-                    response={"success": bool(final.get("success")), "field_count": len(final)},
+                    response=None,
                     error="" if final.get("success") else "async job failed",
                 )
             except Exception:
@@ -1173,8 +1174,8 @@ class AsyncJobManager:
         unknown_ids: list[tuple[str, str]] = []
         now = time.time()
         with self._lock, closing(self._connect()) as con:
-            rows = con.execute("SELECT job_id,state,action,attempts,cancel_requested,trace_id,payload_json,lease_until FROM async_jobs WHERE state IN ('queued','running')").fetchall(); ids: list[tuple[str, str]] = []
-            for job_id, state, action, attempts, cancelled, trace_id, payload_json, lease_until in rows:
+            rows = con.execute("SELECT job_id,state,action,attempts,cancel_requested,trace_id,payload_json,lease_until,dispatch_not_before FROM async_jobs WHERE state IN ('queued','running')").fetchall(); ids: list[tuple[str, str]] = []
+            for job_id, state, action, attempts, cancelled, trace_id, payload_json, lease_until, dispatch_not_before in rows:
                 if cancelled:
                     con.execute("UPDATE async_jobs SET state='cancelled',lease_until=0,dispatch_not_before=0,updated_at=? WHERE job_id=?", (time.time(), job_id))
                     cancelled_ids.append((str(job_id), str(trace_id or "")))
@@ -1182,8 +1183,11 @@ class AsyncJobManager:
                     error = "async job outcome unknown after restart; safe replay unavailable"
                     con.execute("UPDATE async_jobs SET state='outcome_unknown',lease_until=0,dispatch_not_before=0,error=?,updated_at=? WHERE job_id=?", (error, time.time(), job_id))
                     unknown_ids.append((str(job_id), str(trace_id or "")))
-                elif state == "queued" and float(lease_until or 0) > now:
-                    # Keep persisted dispatch/worker lease; tick will claim it when due.
+                elif state == "queued" and (
+                    float(lease_until or 0) > now or float(dispatch_not_before or 0) > now
+                ):
+                    # Preserve active leases and delayed dispatches across restart.
+                    # tick will dispatch a queued job once its persisted deadline is due.
                     continue
                 else:
                     con.execute("UPDATE async_jobs SET state='queued',lease_until=0,updated_at=? WHERE job_id=?", (time.time(), job_id)); ids.append((str(job_id), str(trace_id or "")))

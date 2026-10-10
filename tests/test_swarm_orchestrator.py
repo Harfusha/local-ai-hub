@@ -123,6 +123,21 @@ def test_swarm_lifecycle_test_failure_triggers_rejection(tmp_path: Path) -> None
     assert not any("src/payments.py" in str(l.get("path")) for l in active)
 
 
+def test_swarm_root_scope_hides_foreign_operations(tmp_path: Path) -> None:
+    db_path = tmp_path / "agent_state.sqlite3"
+    agent_state = AgentStateStore(db_path)
+    coordinator = SwarmCoordinator(db_path, state_store=agent_state)
+    root_a = str((tmp_path / "repo-a").resolve())
+    root_b = str((tmp_path / "repo-b").resolve())
+    created = coordinator.dispatch(goal="scoped", author="agent", root=root_a)
+    swarm_id = created["swarm_id"]
+
+    assert coordinator.get_status(swarm_id, root=root_a)["success"] is True
+    assert coordinator.get_status(swarm_id, root=root_b)["success"] is False
+    assert coordinator.list_swarms(root=root_b)["count"] == 0
+    assert coordinator.step(swarm_id, "Coder", "submit_patch", {}, root=root_b)["success"] is False
+    assert coordinator.cancel(swarm_id, "foreign scope", root=root_b)["success"] is False
+
 @pytest.mark.parametrize(
     ("stage", "role", "action", "payload", "board_section"),
     [

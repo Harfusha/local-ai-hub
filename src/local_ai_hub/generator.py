@@ -148,7 +148,7 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
     # Delegation section
     if fs.tasks and fs.has_any_model():
         delegation_task = (
-            f"- {_semantic_handoff_contract(fs)} Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression."
+            f"- Semantic delegation is on-demand: after deterministic/indexed evidence, {_semantic_handoff_contract(fs)} Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression."
             f" Use `{fs.fast_model}` only for quick/simple requests, `{fs.general_model}` for ordinary tasks,"
             f" `{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest reasoning."
             " Deterministic/indexed tools remain for exact facts, symbols, diff and tests; they do not replace these semantic tasks."
@@ -162,15 +162,9 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
     work_delegation = ""
     if fs.work_orchestrator:
         work_delegation = (
-            '- **Closed whole task:** prefer `local_ai_work(action="submit")` when the Hub can own planning, bounded edits, '
-            'validation and handoff end-to-end. Use `response_profile="compact"` and request only decision-grade fields; '
-            'fetch the artifact only when details are needed.'
+            '- `local_ai_work`: use only when the user explicitly requests closed whole-task delegation; routine work stays with the primary agent.'
         )
-    work_owner_note = (
-        "A submitted `local_ai_work` order may own its bounded internal planning, edits, validation and integration until handoff."
-        if fs.work_orchestrator
-        else "The main agent owns planning, edits, validation and final integration."
-    )
+    work_owner_note = "The main agent owns planning, edits, review, validation and final integration."
     # Ownership & tiering bullets
     tiering_bullets: list[str] = [
         "- **Local AI Hub first:** its own precise bounded microtasks, repository facts, indexed search,"
@@ -178,7 +172,7 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
         + " impact, diff/security review"
         + (", safe commands" if fs.commands else "")
         + (", compression, local-model synthesis and second opinions." if (fs.tasks and fs.has_any_model()) else " and targeted checks."),
-        "- **Native Codex subagents:** use only for useful independent bounded work; Codex assigns scope, write permission, workspace/worktree, timeout, sandbox, cancellation and integration.",
+        "- **Native Codex subagents:** use only for genuinely independent bounded implementation or explicit user requests; never delegate audits or relay work.",
     ]
     if fs.tasks and fs.has_any_model():
         model_config = cfg.get("models", {}) if isinstance(cfg.get("models", {}), dict) else {}
@@ -277,7 +271,7 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
         routing_lines.append(f'{r_idx}. `local_ai_repo(action="review_diff"|"security_audit"|"impact")` — targeted checks after or around edits.')
         r_idx += 1
     if fs.work_orchestrator:
-        routing_lines.append(f'{r_idx}. `local_ai_work(action="submit")` — delegate one complete bounded repository task; Hub plans a DAG, edits transactionally, validates, verifies, and returns a compact handoff.')
+        routing_lines.append(f'{r_idx}. `local_ai_work(action="submit")` — only for explicit user requests for closed delegation; Hub plans a bounded DAG, validates, verifies, and returns a compact handoff.')
         r_idx += 1
     if fs.rag:
         routing_lines.append(f'{r_idx}. `local_ai_rag` — semantic fallback only when indexed evidence is insufficient.')
@@ -378,6 +372,7 @@ Use Agent OS for every non-trivial multi-step, long-running, delegated, or accep
 ### 1. Goal Contracts & Resumption
 - **Create a task contract before edits:**
   `local_ai_coord(action="task_create", task_id="task-1", contract={{"goal": "Implement feature", "acceptance_criteria": ["All tests pass"]}})`
+- Codex controls subagent permissions per task, including `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.
 - **Checkpoint progress before context truncation:**
   `local_ai_coord(action="task_checkpoint", task_id="task-1", checkpoint={{"phase": "testing", "next_action": "run integration tests", "affected_paths": ["src/main.py"]}})`
 - **Resume after session restart or interruption:**
@@ -407,6 +402,25 @@ Use Agent OS for every non-trivial multi-step, long-running, delegated, or accep
   `local_ai_coord(action="negative_knowledge_record", key="timeout", value="build timed out", reason="unindexed lock", status="add index")`
 - **Check before repeating a failed operation:**
   `local_ai_coord(action="negative_knowledge_find", query="timeout")`
+
+### Public contract notes
+- `local_ai_rag(action="ingest_document")`
+- non-empty `content` is required; `title` and `metadata` are optional.
+- Success returns `success`, `workspace`, `document_title`, `chunks_ingested`, and `embedded`.
+- Embedding errors do not stop lexical publication.
+- `image_path` must resolve to an existing `.png`, `.jpg`, `.jpeg`, `.webp`, `.svg`, or `.bmp` file; `caption` and `metadata` are optional.
+- Success also returns `diagram_indexed` and the resolved image path.
+- `local_ai_repo(action="pipeline")` accepts closed step objects.
+- `local_ai_artifact(action="list")` does not require `artifact_id`.
+- `local_ai_coord(action="pubsub_poll")` accepts `after_seq`.
+- `local_ai_coord` bounds `max_tokens` to 0 through 100000.
+- Repository pipelines serialize preprocessing mutation actions with other mutating steps.
+- Optional repository-analysis tools are installed and configured separately; they are not part of the Hub.
+- `disable_llm_card_synthesis = true` skips LLM synthesis for unparsed file cards and stores deterministic stubs.
+- It does not disable module/project cards:
+- `prefer_deterministic_modules` and `prefer_deterministic_project` are separate preferences.
+- either path can use background LLM synthesis when deterministic output is unavailable or below its confidence threshold.
+- Check active configuration and backend state before claiming synthesis is disabled.
 """
 
     # Full SKILL.md content
@@ -423,13 +437,12 @@ Trigger map:
 Recipes (guidance, not gates):
 {recipe_lines}
 
-Delegation is the default for any task with useful bounded independent work.
+Direct ownership is the default. Do not delegate audits, inventory, status checks, or routine implementation. Use a subagent only for genuinely independent bounded implementation that materially shortens the critical path, or when the user explicitly asks; see the simplified workflow spec.
 {delegation_task}
 {work_delegation}
-- Use the native Codex `multi_agent_v1__spawn_agent` path only for useful independent bounded work or an explicit Codex-subagent request.
-- Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.
-- Do not duplicate the same scope across agents. Keep final decisions, edits, and integration in Codex.
-- Skip delegation only for trivial tasks, pure evidence lookups, security/privacy constraints, or no useful independent scope.
+- Use native Codex subagents only for independent bounded implementation or an explicit user request. Never spawn them for audits or to relay results as a handoff.
+- Keep write scopes disjoint. The primary agent reviews and integrates directly; no ZIPs, custom owner packets, or fingerprint/hash cascades.
+- Do not duplicate tasks or chats. Check the existing plan first and update its existing item.
 
 ## Ownership and tiering
 
@@ -494,11 +507,7 @@ def generate_skill_references(cfg: dict[str, Any]) -> dict[str, str]:
     reasoning_tier = _reasoning_tier_label(cfg, fs)
     local_semantic_enabled = fs.tasks and fs.has_any_model()
     semantic_handoff = _semantic_handoff_contract(fs) if local_semantic_enabled else ""
-    work_owner_note = (
-        "A submitted `local_ai_work` order may own its bounded internal planning, edits, validation and integration until handoff."
-        if fs.work_orchestrator
-        else "The main agent owns planning, edits, validation and final integration."
-    )
+    work_owner_note = "The main agent owns planning, edits, review, validation and final integration."
     refs: dict[str, str] = {}
 
     # tools.md
@@ -590,7 +599,7 @@ Use `local_ai_task(action="compress")` for semantic condensation and `local_ai_a
         whole_task = """
 ## Whole-task handoff
 
-Use `local_ai_work(action="submit", root=ABS_ROOT, task="...", response_profile="compact")` when the task is closed, bounded and independently verifiable. The Hub collects deterministic context, plans dependency-ordered steps, leases edited paths, journals mutations, validates each relevant phase, performs whole-task verification against the original request and returns only a compact handoff. Use `work_get` fields/artifacts lazily for details.
+Use `local_ai_work(action="submit", root=ABS_ROOT, task="...", response_profile="compact")` only when the user explicitly requests closed delegation. The Hub collects deterministic context, plans dependency-ordered steps, leases edited paths, journals mutations, validates each relevant phase, performs whole-task verification against the original request and returns only a compact handoff. The primary agent owns routine planning, edits, review, validation and final integration. Use `work_get` fields/artifacts lazily for details.
 
 """
     refs["workflows.md"] = f"""# Routing workflows
@@ -650,22 +659,19 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
     task_delegation = ""
     if fs.tasks and fs.has_any_model():
         task_delegation = (
-            f"\n- {_semantic_handoff_contract(fs)}"
-            f" Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression."
-            f" Use `{fs.fast_model}` only for quick/simple requests, `{fs.general_model}` for ordinary tasks,"
-            f" `{fs.smart_model}` for more involved work, and {reasoning_tier} for the hardest reasoning."
-            " Deterministic/indexed tools remain for exact facts, symbols, diff and tests; they do not replace these semantic tasks."
+            "\n- Semantic delegation is optional and on-demand: after deterministic/indexed evidence, use `local_ai_task` selectively for bounded generation, review, independent second opinions, test-log compression, commit message generation, and drafting where helpful. Cloud reasoning and planning are never blocked by mandatory local handoffs. Deterministic/indexed tools remain authoritative for exact facts, symbols, diff and tests. Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression. Model routing follows the active hardware profile and user overrides; consult `docs/MODEL_CAPABILITIES.md` for foreground role targets. Preprocessing follows its configured provider; do not switch it silently. Pinned master `2458f72c` has no Gemini preprocessing provider implementation; Gemini agent manifests do not establish runtime preprocessing support. Routing targets do not prove installed-model availability; model pulls remain opt-in."
         )
 
     model_default = ""
     if fs.tasks and fs.has_any_model():
         model_default = (
-            f"\nLocal model policy: `{fs.background_model}` is preprocessing-only, `{fs.fast_model}` handles quick/simple tasks,"
-            f" `{fs.general_model}` handles ordinary tasks, `{fs.smart_model}` handles more involved work, and {reasoning_tier} handles the hardest or highest-risk reasoning."
-            " Treat profile/default model names as routing targets only. Check installed-model inventory before live inference;"
-            " do not infer runtime availability, output quality, or performance from a configured mapping."
-            " Use deterministic and indexed Hub actions first for exact facts, symbols, diff and tests. For semantic generation, reasoning, review, independent second opinions and semantic compression, call `local_ai_task`."
-            " Model routes above are resolved from active config. Keep hard and extreme reasoning as distinct tiers; see `docs/MODEL_CAPABILITIES.md` for the full matrix."
+            "\nLocal model policy: Model routing follows the active hardware profile and user overrides; consult `docs/MODEL_CAPABILITIES.md` for foreground role targets. Preprocessing follows its configured provider; do not switch it silently. Pinned master `2458f72c` has no Gemini preprocessing provider implementation; Gemini agent manifests do not establish runtime preprocessing support. Routing targets do not prove installed-model availability; model pulls remain opt-in. Check installed-model inventory before live inference; do not infer runtime availability, output quality, or performance from a configured mapping."
+        )
+    llama_cpp = cfg.get("llama_cpp", {})
+    if isinstance(llama_cpp, dict) and str(llama_cpp.get("mode", "off")).casefold() == "on":
+        model_default += (
+            "\nModel routes above are resolved from active config. Keep hard and extreme reasoning "
+            "as distinct tiers; see `docs/MODEL_CAPABILITIES.md` for the full matrix."
         )
 
     repo_task_first = ""
@@ -699,29 +705,23 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         "<!-- BEGIN LOCAL AI HUB TOOL POLICY -->\n"
         f"Trigger map:\n{trigger_lines}\n\n"
         f"Recipes (guidance, not gates):\n{recipe_lines}\n\n"
-        "Delegation is the default for any task with useful bounded independent work.\n"
+        "Direct ownership is the default. Do not delegate audits, inventory, status checks, or routine implementation. Use a subagent only for genuinely independent bounded implementation that materially shortens the critical path, or when the user explicitly asks; see the simplified workflow spec.\n"
         f"{task_delegation}\n"
-        "- Use the native Codex `multi_agent_v1__spawn_agent` path only for useful independent bounded work or an explicit Codex-subagent request.\n"
-        "- Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.\n"
-        "- Do not duplicate the same scope across agents. Keep final decisions, edits, and integration in Codex.\n"
-        "- Skip delegation only for trivial tasks, pure evidence lookups, security/privacy constraints, or no useful independent scope.\n\n"
-        "Routing hierarchy: the main agent is the orchestrator, planner, integrator and final owner."
-        " Use Local AI Hub first for its own precise, bounded microtasks: deterministic facts, indexed/search retrieval,"
-        + (" preprocess artifacts," if fs.preprocessing else "")
-        + " targeted impact/review/security checks"
-        + (", safe commands" if fs.commands else "")
-        + (", compression, local-model synthesis and second opinions." if (fs.tasks and fs.has_any_model()) else " and targeted checks.")
-        + " Native `multi_agent_v1__spawn_agent` is used only for useful independent bounded work"
-        " or an explicit Codex-subagent request. It is not routed or managed by Local AI Hub.\n\n"
-        "READ-ONLY AUDIT CONTRACT:\n"
+        "- Use native Codex subagents only for independent bounded implementation or an explicit user request. Never spawn them for audits or to relay results as a handoff.\n"
+        "- Native `multi_agent_v1__spawn_agent` is used only for useful independent bounded work; explicit user requests may also authorize bounded delegation. Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, and sandbox.\n"
+        "- Keep write scopes disjoint. The primary agent reviews and integrates directly; no ZIPs, custom owner packets, or fingerprint/hash cascades.\n"
+        "- Do not duplicate tasks or chats. Check the existing plan first and update its existing item.\n\n"
+        "Routing hierarchy: the main agent plans, audits, implements, reviews, and integrates directly."
+        " Use Local AI Hub for bounded retrieval and commands when available; Hub tools do not create a requirement to hand off work."
+        " On a bounded Hub failure, use the permitted direct local fallback and continue without retry loops.\n\n"
+        + "READ-ONLY AUDIT CONTRACT:\n"
         "- Read-only means no Git writes, `git worktree add` or removal, dependency installation, builds/imports,"
         " generated artifacts, or other workspace side effects. Never label such work read-only when any of these occur;"
         " split validation into a separately owned, explicitly side-effecting task.\n"
         "- Before native discovery or validation, retain preceding Hub result with action, absolute root, status,"
-        " cache/in_progress state, and evidence IDs. Native fallback requires an explicit `terminal=true` and `retryable=false` result.\n"
+        " cache/in_progress state, and evidence IDs. Native discovery is fallback-only after one bounded terminal Hub failure.\n"
         + ("- Native validation fallback is allowed only after `local_ai_command` returns `terminal=true` and `retryable=false`; run one bounded fallback, state side effects/owner, and never repeat identical commands.\n" if fs.commands else "")
-        + "- Codex controls subagent permissions per task. Native Codex subagents may write only when Codex explicitly"
-        " enables it, and write work stays in the assigned workspace/worktree. Codex remains integrator.\n"
+        + "- If an explicitly authorized independent subagent is used, Codex controls its permissions and write scope; the main agent remains integrator. Do not delegate audit-only work.\n"
         "- Do not run parallel duplicate commands or scopes. Tool labels are not evidence;"
         " preserve exact action, arguments, result, and ownership in the audit record.\n"
         f"{repo_task_first}\n"
@@ -847,18 +847,15 @@ Load and follow this skill before any coding or repository task. Apply its disco
 
 def generate_token_economy_policy(cfg: dict[str, Any] | None = None) -> str:
     """Generate the standard TOKEN ECONOMY POLICY block."""
-    fast_model = "qwen2.5-coder:1.5b"
     local_model_enabled = True
     if cfg:
         try:
             fs = FeatureSet.from_config(cfg)
             local_model_enabled = fs.tasks and fs.has_any_model()
-            if fs.fast_model:
-                fast_model = fs.fast_model
         except Exception:
             pass
     local_model_line = (
-        f"- Local model delegation: Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions and compression; use `{fast_model}` only for quick/simple microtasks and configured higher tiers for ordinary, involved and hardest work. Deterministic/indexed tools remain for exact facts, symbols, diff and tests.\n"
+        "- Local model routing follows the active hardware profile and user overrides; use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions and compression. Consult `docs/MODEL_CAPABILITIES.md`; configured routes do not prove models are installed. Deterministic/indexed tools remain authoritative for exact facts, symbols, diff and tests.\n"
         if local_model_enabled
         else ""
     )

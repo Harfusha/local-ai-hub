@@ -203,8 +203,8 @@ class _Artifacts:
 
 
 def _load_source_packages():
-    root_src = Path(r"C:\Users\Adam\.local-ai-hub\src\local_ai_hub")
-    t12_src = Path(r"C:\Users\Adam\.codex\worktrees\4816\.local-ai-hub\src\local_ai_hub")
+    root_src = Path(__file__).resolve().parents[1] / "src" / "local_ai_hub"
+    t12_src = Path.home() / ".codex" / "worktrees" / "4816" / ".local-ai-hub" / "src" / "local_ai_hub"
     if not (root_src / "project_config.py").is_file() or not (t12_src / "services.py").is_file():
         pytest.skip("Root ProjectContext or T12 service source is unavailable")
 
@@ -230,8 +230,8 @@ def _load_source_packages():
 
 def test_async_reason_review_batch_resolve_project_config_through_t12_generate(tmp_path):
     project_config, service_module, repo_tools_module = _load_source_packages()
-    root_src = Path(r"C:\Users\Adam\.local-ai-hub\src\local_ai_hub")
-    t12_src = Path(r"C:\Users\Adam\.codex\worktrees\4816\.local-ai-hub\src\local_ai_hub")
+    root_src = Path(__file__).resolve().parents[1] / "src" / "local_ai_hub"
+    t12_src = Path.home() / ".codex" / "worktrees" / "4816" / ".local-ai-hub" / "src" / "local_ai_hub"
     assert Path(project_config.__file__).resolve() == (root_src / "project_config.py").resolve()
     assert Path(service_module.__file__).resolve() == (t12_src / "services.py").resolve()
 

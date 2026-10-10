@@ -146,7 +146,7 @@ def test_auxiliary_authorization_resolves_registered_task_before_policy(tmp_path
             self, request: ActionRequest, task: object | None, grant: CapabilityGrant | None = None
         ) -> PolicyDecision:
             captured["task"] = task
-            captured["request_task_id"] = request.details.get("task_id")
+            captured["authorized_task_id"] = getattr(task, "task_id", None)
             return PolicyDecision(allowed=True, side_effect_class="process_lifecycle")
 
     broker = CommandBroker(
@@ -160,7 +160,7 @@ def test_auxiliary_authorization_resolves_registered_task_before_policy(tmp_path
     assert result["allowed"] is True
     assert captured["task_id"] == "task-owned"
     assert captured["task"] is registered_task
-    assert captured["request_task_id"] == "task-owned"
+    assert captured["authorized_task_id"] == "task-owned"
 
 
 def test_auxiliary_authorization_rejects_unregistered_task(tmp_path: Path) -> None:
@@ -183,7 +183,7 @@ def test_auxiliary_authorization_rejects_unregistered_task(tmp_path: Path) -> No
     assert result["allowed"] is False
     assert result["terminal"] is True
     assert result["side_effect_class"] == "process_lifecycle"
-    assert result["reason"] == "auxiliary action task is not registered"
+    assert result["reason"] == "task context missing or mismatched for auxiliary action"
 
 
 def test_services_command_authorizes_run_before_broker_dispatch(

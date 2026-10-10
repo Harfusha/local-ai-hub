@@ -171,7 +171,7 @@ def test_startup_retry_cooldown_expires_while_owner_client_stays_alive(
 
 
 
-def test_spawn_failure_returns_false_and_releases_start_lock(
+def test_spawn_failure_returns_false_and_releases_start_lock_for_retry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _enable_startup(monkeypatch)
@@ -181,10 +181,19 @@ def test_spawn_failure_returns_false_and_releases_start_lock(
     monkeypatch.setattr(client, "_online", lambda *_args: False)
     monkeypatch.setattr(client_module, "find_listening_pid", lambda _port: None)
 
+    attempts = 0
+
     def fail_to_spawn(*_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
         raise OSError("python executable unavailable")
 
     monkeypatch.setattr(client_module.subprocess, "Popen", fail_to_spawn)
 
     assert client.ensure_server(timeout=0.5) is False
-    assert not (state_dir / "hub.start.lock").exists()
+    lock_path = state_dir / "hub.start.lock"
+    assert lock_path.is_file()
+    assert lock_path.read_bytes() == b""
+    assert client.ensure_server(timeout=0.5) is False
+    assert attempts == 2
+    assert lock_path.read_bytes() == b""

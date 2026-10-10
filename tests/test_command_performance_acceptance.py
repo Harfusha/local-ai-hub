@@ -192,6 +192,7 @@ def test_command_broker_reports_latency_throughput_and_failure_behavior(tmp_path
     for pair in range(30):
         command = f'"{sys.executable}" -c "print(\'T15_PAIR_{pair}\')"'
         if pair % 2 == 0:
+            broker.repo_state.invalidate(str(worktree))
             starts = time.perf_counter()
             cold = broker.run(command, str(worktree), "tenant", force=True)
             cold_elapsed.append((time.perf_counter() - starts) * 1000)
@@ -204,6 +205,7 @@ def test_command_broker_reports_latency_throughput_and_failure_behavior(tmp_path
             starts = time.perf_counter()
             warm = broker.run(command, str(worktree), "tenant")
             warm_elapsed.append((time.perf_counter() - starts) * 1000)
+            broker.repo_state.invalidate(str(worktree))
             starts = time.perf_counter()
             cold = broker.run(command, str(worktree), "tenant", force=True)
             cold_elapsed.append((time.perf_counter() - starts) * 1000)
@@ -237,6 +239,7 @@ def test_command_broker_reports_latency_throughput_and_failure_behavior(tmp_path
             shell=False,
         )
         if pair % 2 == 0:
+            broker.repo_state.invalidate(str(worktree))
             structured_cold, elapsed = _timed_run(broker, invocation, worktree, force=True)
             structured_cold_elapsed.append(elapsed)
             structured_warm, elapsed = _timed_run(broker, invocation, worktree, force=False)
@@ -246,6 +249,7 @@ def test_command_broker_reports_latency_throughput_and_failure_behavior(tmp_path
             assert primed["success"] is True
             structured_warm, elapsed = _timed_run(broker, invocation, worktree, force=False)
             structured_warm_elapsed.append(elapsed)
+            broker.repo_state.invalidate(str(worktree))
             structured_cold, elapsed = _timed_run(broker, invocation, worktree, force=True)
             structured_cold_elapsed.append(elapsed)
 

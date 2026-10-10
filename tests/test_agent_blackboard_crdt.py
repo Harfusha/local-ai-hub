@@ -114,6 +114,46 @@ def test_concurrent_conflict_lww_resolution():
     assert merged.clock == {"codex": 2, "claude": 2}
 
 
+def test_concurrent_merge_is_commutative_when_timestamp_and_author_match():
+    left = BlackboardSection(
+        section="api",
+        content={"a": 1, "z": 2},
+        author="same-agent",
+        clock={"replica-a": 1, "same-agent": 1},
+        timestamp=170.0,
+        version=1,
+    )
+    right = BlackboardSection(
+        section="api",
+        content={"a": 2, "z": 1},
+        author="same-agent",
+        clock={"replica-b": 1, "same-agent": 1},
+        timestamp=170.0,
+        version=1,
+    )
+
+    assert merge_sections(left, right) == merge_sections(right, left)
+    replica_reloaded = merge_sections(
+        BlackboardSection(
+            section="api",
+            content={"z": 1, "a": 2},
+            author="same-agent",
+            clock={"replica-b": 1, "same-agent": 1},
+            timestamp=170.0,
+            version=1,
+        ),
+        BlackboardSection(
+            section="api",
+            content={"z": 2, "a": 1},
+            author="same-agent",
+            clock={"replica-a": 1, "same-agent": 1},
+            timestamp=170.0,
+            version=1,
+        ),
+    )
+    assert merge_sections(left, right) == replica_reloaded
+
+
 def test_blackboard_store_persistence_and_multiagent_merge(tmp_path: Path):
     db_path = tmp_path / "state" / "agent_state.sqlite3"
     store = BlackboardStore(db_path)

@@ -59,8 +59,9 @@ def test_command_verification_records_server_run_by_command_id(tmp_path: Path) -
     broker.set_verification_store(verification)
     command_id = "1" * 32
 
+    result = {"success": True, "exit_code": 0}
     broker._record_command_verification(
-        {"success": True, "exit_code": 0},
+        result,
         tenant="tenant-a",
         task_id="task-a",
         criterion="pytest",
@@ -72,10 +73,15 @@ def test_command_verification_records_server_run_by_command_id(tmp_path: Path) -
         project_alias="pytest",
         project_config_digest="config-digest",
         project_environment_sha256="environment-digest",
+        configured_command_sha256="configured-command-digest",
+        caller_arguments_sha256="caller-arguments-digest",
         cached=False,
         repository_root=str(tmp_path.resolve()),
     )
 
+    assert "verification_receipt_warning" not in result, result
+    assert len(artifacts.records) == 1
+    assert len(verification.receipts) == 1
     scoped_record = broker.get_command_execution_record(
         command_id, tenant="tenant-a", task_id="task-a", repository_root=str(tmp_path)
     )

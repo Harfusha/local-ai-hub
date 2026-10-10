@@ -2253,11 +2253,16 @@ def test_posix_group_cleanup_does_not_escalate_after_leader_identity_changes(mon
     monkeypatch.setattr(process_utils_module.time, "sleep", sleep)
     monkeypatch.setattr(signal, "SIGKILL", 9, raising=False)
 
+    process_handle = type("PopenHandle", (), {})()
+    process_handle.pid = 24569
+    process_handle.returncode = None
+    process_handle._waitpid_lock = threading.Lock()
     result = process_utils_module.terminate_tree(
         24569,
         process_group=24569,
         expected_identity=expected,
         grace_seconds=0.1,
+        process_handle=process_handle,
     )
 
     assert result is False

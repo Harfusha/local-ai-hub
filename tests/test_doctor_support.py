@@ -5,9 +5,10 @@ import logging
 import sys
 import tomllib
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
-from local_ai_hub import doctor_support
+from local_ai_hub import doctor_support, process_utils
 from local_ai_hub.doctor_support import (
     installed_models_from_status,
     optional_component_lines,
@@ -271,3 +272,55 @@ def test_doctor_text_report_states_presence_without_claiming_fallbacks():
         "Status unavailable" in line and "Hub is offline" in line
         for line in offline_output.splitlines()
     )
+
+
+def test_install_git_precommit_hook_resolves_linked_worktree_git_path(tmp_path, monkeypatch):
+    worktree = tmp_path / "linked-worktree"
+    worktree.mkdir()
+    private_git_dir = tmp_path / "main" / ".git" / "worktrees" / "linked-worktree"
+    private_git_dir.mkdir(parents=True)
+    (worktree / ".git").write_text(f"gitdir: {private_git_dir}\n", encoding="utf-8")
+    hooks_dir = tmp_path / "main" / ".git" / "hooks"
+    calls = []
+
+    def fake_run_hidden(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(returncode=0, stdout=str(hooks_dir))
+
+    monkeypatch.setattr(process_utils, "run_hidden", fake_run_hidden)
+
+    result = doctor_support.install_git_precommit_hook(str(worktree))
+
+    assert result["success"] is True
+    assert Path(result["hook_path"]) == hooks_dir / "pre-commit"
+    assert (hooks_dir / "pre-commit").is_file()
+    hook_script = (hooks_dir / "pre-commit").read_text(encoding="utf-8")
+    assert "set -e" in hook_script
+    assert "python -m compileall -q src tools tests" in hook_script
+    assert "|| true" not in hook_script
+    assert calls[0][0] == ["git", "rev-parse", "--git-path", "hooks"]
+    assert calls[0][1]["cwd"] == str(worktree.resolve())
+
+
+def test_uninstall_git_precommit_hook_resolves_linked_worktree_git_path(tmp_path, monkeypatch):
+    worktree = tmp_path / "linked-worktree"
+    worktree.mkdir()
+    private_git_dir = tmp_path / "main" / ".git" / "worktrees" / "linked-worktree"
+    private_git_dir.mkdir(parents=True)
+    (worktree / ".git").write_text(f"gitdir: {private_git_dir}\n", encoding="utf-8")
+    hooks_dir = tmp_path / "main" / ".git" / "hooks"
+    hooks_dir.mkdir(parents=True)
+    hook_file = hooks_dir / "pre-commit"
+    hook_file.write_text("old hook", encoding="utf-8")
+
+    def fake_run_hidden(argv, **kwargs):
+        return SimpleNamespace(returncode=0, stdout=str(hooks_dir))
+
+    monkeypatch.setattr(process_utils, "run_hidden", fake_run_hidden)
+
+    result = doctor_support.uninstall_git_precommit_hook(str(worktree))
+
+    assert result["success"] is True
+    assert result["removed"] is True
+    assert result["hook_path"] == str(hook_file)
+    assert not hook_file.exists()

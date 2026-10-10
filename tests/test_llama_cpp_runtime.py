@@ -83,20 +83,39 @@ class LlamaCppRuntimeTests(unittest.TestCase):
                     "qwen2.5-coder:1.5b": {"served_model": "hub-qwen-15", "url": "http://127.0.0.1:12438"},
                 }},
             })
-            fake_proc = SimpleNamespace(pid=42, poll=lambda: None)
+            processes = []
+
+            class FakeProc:
+                def __init__(self, pid):
+                    self.pid = pid
+                    self.wait_calls = 0
+
+                def poll(self):
+                    return None
+
+                def wait(self, timeout=None):
+                    self.wait_calls += 1
+                    return -9
+
+            def fake_popen(*_args, **_kwargs):
+                process = FakeProc(42 + len(processes))
+                processes.append(process)
+                return process
+
             with (
                 patch.object(runtime, "is_online", return_value=False),
                 patch.object(runtime, "provision", return_value=runtime.runtime_dir / "bin" / "llama-server.exe"),
                 patch.object(runtime, "_find_server", return_value=runtime.runtime_dir / "bin" / "llama-server.exe"),
                 patch.object(runtime, "_device_attempts", return_value=[("SYCL0", 0.1), ("none", 0.1)]),
                 patch.object(runtime, "_ready", side_effect=[False, True]),
-                patch("local_ai_hub.llama_cpp_runtime.subprocess.Popen", return_value=fake_proc) as popen,
+                patch("local_ai_hub.llama_cpp_runtime.popen_managed", side_effect=fake_popen) as popen,
                 patch("local_ai_hub.llama_cpp_runtime.terminate_tree", return_value=True),
             ):
                 self.assertTrue(runtime.ensure_running())
             self.assertEqual(popen.call_count, 2)
             self.assertEqual(popen.call_args_list[0].args[0][-1], "SYCL0")
             self.assertEqual(popen.call_args_list[1].args[0][-1], "none")
+            self.assertEqual(processes[0].wait_calls, 1)
             self.assertEqual(runtime.mode_path.read_text(encoding="utf-8"), "none")
 
     def test_install_and_update_guidance_share_provider_selection_policy(self):

@@ -77,7 +77,7 @@ class ScopeContext:
         if scope == AgentScope.GLOBAL:
             return True
         if scope == AgentScope.REPOSITORY:
-            return not scope_id or scope_id == self.repository_id
+            return bool(self.repository_id) and (not scope_id or scope_id == self.repository_id)
         if scope == AgentScope.CLONE:
             return bool(self.clone_id) and (not scope_id or scope_id == self.clone_id)
         if scope == AgentScope.WORKTREE:

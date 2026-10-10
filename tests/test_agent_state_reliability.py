@@ -19,6 +19,7 @@ from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStatus, Me
 from local_ai_hub.agent_tasks import GoalContract, ScopeContext, TaskCheckpoint, TaskState, TaskStatus, TaskStore
 from local_ai_hub import trace_context
 from local_ai_hub.agent_verification import VerificationStore
+from local_ai_hub import agent_verification
 from local_ai_hub.leases import ScopeLeaseStore
 from local_ai_hub.rag import RAGStore
 from local_ai_hub.scheduler import QueueFullError
@@ -217,9 +218,11 @@ def test_store_concurrency_locks(tmp_path: Path) -> None:
     state_store = AgentStateStore(db)
 
     errors: list[Exception] = []
+    start = threading.Barrier(8)
 
     def init_stores() -> None:
         try:
+            start.wait()
             m = MemoryStore(state_store)
             i = IncidentStore(state_store)
             v = VerificationStore(state_store)
@@ -238,6 +241,57 @@ def test_store_concurrency_locks(tmp_path: Path) -> None:
         t.join()
 
     assert errors == []
+
+
+def test_verification_schema_is_not_partially_visible_during_init(tmp_path: Path, monkeypatch) -> None:
+    db = tmp_path / "agent_state.sqlite3"
+    state_store = AgentStateStore(db)
+    real_connect = agent_verification.connect_sqlite
+    visible_groups: list[set[str]] = []
+
+    class ObservedConnection:
+        def __init__(self, connection):
+            self.connection = connection
+            self.observed = False
+
+        def __getattr__(self, name):
+            return getattr(self.connection, name)
+
+        def __enter__(self):
+            self.connection.__enter__()
+            return self
+
+        def __exit__(self, *exc):
+            return self.connection.__exit__(*exc)
+
+        def execute(self, sql, *args):
+            result = self.connection.execute(sql, *args)
+            if not self.observed and "create table" in sql.casefold() and "agent_verification_receipts" in sql:
+                self.observed = True
+                observer = sqlite3.connect(db, timeout=0.2)
+                try:
+                    names = {
+                        row[0]
+                        for row in observer.execute(
+                            "SELECT name FROM sqlite_master WHERE type='table'"
+                        )
+                    }
+                    visible_groups.append(names & {
+                        "agent_verification_receipts", "agent_change_intents", "agent_outcomes",
+                    })
+                finally:
+                    observer.close()
+            return result
+
+    monkeypatch.setattr(
+        agent_verification,
+        "connect_sqlite",
+        lambda path: ObservedConnection(real_connect(path)),
+    )
+
+    VerificationStore(state_store)
+
+    assert visible_groups == [set()]
 
 
 def test_disabled_agent_state_keeps_stateless_context_useful(tmp_path: Path) -> None:

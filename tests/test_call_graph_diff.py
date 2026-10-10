@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
+import pytest
 from local_ai_hub.deterministic import DeterministicEngine
 
 
@@ -83,3 +84,35 @@ def test_call_graph_diff_detects_removed_keyword_param(tmp_path: Path) -> None:
     assert len(breaking) == 1
     assert breaking[0]["callee"] == "render"
     assert "unused_flag" in breaking[0]["reason"]
+
+
+def test_call_graph_diff_logs_expected_snippet_render_failure_without_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    (tmp_path / "lib.py").write_text(
+        "def compute(x: int, y: int) -> int:\n    return x + y\n", encoding="utf-8"
+    )
+    (tmp_path / "caller.py").write_text(
+        "from lib import compute\n\ndef run():\n    return compute(10, 20)\n", encoding="utf-8"
+    )
+
+    def fail_unparse(_node: ast.AST) -> str:
+        raise ValueError(f"private source: {tmp_path / 'caller.py'}")
+
+    monkeypatch.setattr(ast, "unparse", fail_unparse)
+    diff = """--- a/lib.py
++++ b/lib.py
+@@ -1,2 +1,2 @@
+-def compute(x: int, y: int) -> int:
++def compute(x: int, y: int, z: int) -> int:
+     return x + y + z
+"""
+
+    with caplog.at_level("DEBUG", logger="local_ai_hub.deterministic"):
+        result = DeterministicEngine().call_graph_diff(tmp_path, diff=diff)
+
+    assert result["success"] is True
+    assert result["breaking_callers"][0]["snippet"] == ""
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("Caller snippet rendering skipped (ValueError)" in message for message in messages)
+    assert all(str(tmp_path) not in message for message in messages)

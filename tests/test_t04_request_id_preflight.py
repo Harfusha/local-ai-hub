@@ -19,8 +19,9 @@ def _run_work_order_post(monkeypatch, request_id: str, payload: dict[str, Any], 
             journal_calls.append(("lookup", args))
             return None
 
-        def begin(self, *args: Any, **_kwargs: Any) -> None:
+        def begin(self, *args: Any, **_kwargs: Any) -> dict[str, bool]:
             journal_calls.append(("begin", args))
+            return {"claimed": True}
 
     app = SimpleNamespace(
         config={},
@@ -97,5 +98,5 @@ def test_request_id_header_wins_over_conflicting_body_request_id(monkeypatch) ->
     )
 
     assert responses[0][0] == 200
-    assert [call[1][0] for call in journal] == ["header-request-id", "header-request-id"]
+    assert [call[1][0] for call in journal] == ["header-request-id"]
     assert submitted == [{"action": "submit", "work_id": "work-1", "request_id": "body-request-id"}]

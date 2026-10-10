@@ -2,7 +2,7 @@
 
 ## Pinned root preimage
 
-- Root: `C:\Users\Adam\.local-ai-hub`
+- Root: `<USER_HOME>\.local-ai-hub`
 - HEAD: `7cb4bcdfb6d7736b64cb8bcb895157c48f4eebdf`
 - `src/local_ai_hub/client.py` preimage SHA-256: `4E250AD3496E665F428FAC5B0E231238AE71017ED9078C2682513932797CA632`
 - `src/local_ai_hub/client.py` expected postimage SHA-256 after this patch only: `2A546D0B5C74FABA304242843F5AED53ED77F3FD5978A7AD38E0332F1F996FEE`
@@ -26,7 +26,7 @@ Not run on root by T16. Delegated root run before patch reported 72 passed, 4 fa
 
 ## Candidate receipt
 
-Worktree: `C:\Users\Adam\.codex\worktrees\t16-e2e-recovery-20261004\.local-ai-hub`, detached HEAD `824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11`.
+Worktree: `<USER_HOME>\.codex\worktrees\t16-e2e-recovery-20261004\.local-ai-hub`, detached HEAD `824c9eb99dfd6baca5a7cf0e43d94f0e33dd4b11`.
 
 ```powershell
 python -B -m pytest -q -p no:cacheprovider --tb=short `

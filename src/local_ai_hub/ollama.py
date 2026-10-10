@@ -47,6 +47,7 @@ def _normalise_keep_alive(payload: dict[str, Any] | None) -> dict[str, Any] | No
 from .process_utils import (
     find_listening_pid,
     hidden_run_kwargs,
+    popen_managed,
     pid_alive,
     process_executable,
     set_process_priority,
@@ -215,6 +216,7 @@ class OllamaRuntime:
         safe_name = "".join(ch for ch in str(managed_name) if ch.isalnum() or ch in {"-", "_"}) or "ollama"
         self.managed_name = safe_name
         self.managed_pid_path = self.state_dir / f"{safe_name}.managed.pid"
+        self._managed_process: subprocess.Popen[Any] | None = None
         self.model_policy = ModelExecutionPolicy(config)
         self.llama_cpp = LlamaCppRouter(config)
         self.llama_cpp_managed = LlamaCppManagedRuntime(config)
@@ -1638,19 +1640,26 @@ class OllamaRuntime:
             time.sleep(0.1)
         return not self.is_online()
 
-    def _cleanup_failed_start(self, proc: subprocess.Popen[Any]) -> None:
+    def _cleanup_failed_start(self, proc: subprocess.Popen[Any]) -> bool:
         """Reap a child whose endpoint never became healthy."""
         try:
             running = proc.poll() is None
         except Exception:
             running = True
-        if running:
+        tree_stopped = False
+        if running or os.name == "nt":
             try:
-                terminate_tree(proc.pid, grace_seconds=2.0)
+                tree_stopped = terminate_tree(
+                    proc.pid,
+                    grace_seconds=2.0,
+                    process_handle=proc,
+                )
             except Exception:
                 pass
+        reaped = False
         try:
             proc.wait(timeout=3.0)
+            reaped = True
         except Exception:
             try:
                 proc.kill()
@@ -1658,13 +1667,20 @@ class OllamaRuntime:
                 pass
             try:
                 proc.wait(timeout=1.0)
+                reaped = True
             except Exception:
                 pass
+        if not reaped or not tree_stopped:
+            self._managed_process = proc
+            return False
+        if self._managed_process is proc:
+            self._managed_process = None
         try:
             if self.managed_pid_path.read_text(encoding="utf-8").strip() == str(proc.pid):
                 self.managed_pid_path.unlink(missing_ok=True)
         except (OSError, ValueError):
             pass
+        return True
 
     def ensure_running(self) -> bool:
         if llama_cpp_managed_selected(self.config):
@@ -1690,23 +1706,23 @@ class OllamaRuntime:
                 old_pid = int(self.managed_pid_path.read_text(encoding="utf-8").strip() or 0)
             except Exception:
                 old_pid = 0
-            if old_pid > 0 and pid_alive(old_pid):
-                executable_path = (process_executable(old_pid) or "").lower()
-                if executable_path and "ollama" not in Path(executable_path).name.lower():
-                    # PID file was reused by an unrelated process. Never terminate it.
-                    try:
-                        self.managed_pid_path.unlink(missing_ok=True)
-                    except OSError:
-                        pass
-                else:
-                    # A process we started exists but its endpoint is not healthy.
-                    # Recycle it instead of leaving every caller behind a permanently
-                    # alive-but-unresponsive PID file.
-                    terminate_tree(old_pid, grace_seconds=2.0)
-                    try:
-                        self.managed_pid_path.unlink(missing_ok=True)
-                    except OSError:
-                        pass
+            if old_pid > 0:
+                owned_process = self._managed_process
+                if owned_process is not None and owned_process.pid == old_pid:
+                    if not self._cleanup_failed_start(owned_process):
+                        return False
+                elif pid_alive(old_pid):
+                    executable_path = (process_executable(old_pid) or "").lower()
+                    if executable_path and "ollama" not in Path(executable_path).name.lower():
+                        # PID file was reused by an unrelated process. Never terminate it.
+                        try:
+                            self.managed_pid_path.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                    else:
+                        # A live PID without its original Popen handle cannot be
+                        # safely recycled. Preserve the PID file and fail closed.
+                        return False
 
             takeover = self._take_over_external_server()
             if takeover is False:
@@ -1720,10 +1736,11 @@ class OllamaRuntime:
                 popen_kwargs["start_new_session"] = True
             proc: subprocess.Popen[Any] | None = None
             try:
-                proc = subprocess.Popen(
+                proc = popen_managed(
                     args, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL, **popen_kwargs,
                 )
+                self._managed_process = proc
                 priority = str(self.config.get("ollama", {}).get("process_priority", "") or "")
                 if not priority and self.managed_name.startswith("ollama-background"):
                     priority = str(self.config.get("background_gpu", {}).get("process_priority", "") or "")
@@ -1788,18 +1805,19 @@ class OllamaRuntime:
             pid = 0
         if pid <= 0:
             return True
+        process = self._managed_process
+        if process is not None and process.pid == pid:
+            return self._cleanup_failed_start(process)
         if pid_alive(pid):
             executable = (process_executable(pid) or "").lower()
             if executable and "ollama" not in Path(executable).name.lower():
                 try: self.managed_pid_path.unlink(missing_ok=True)
                 except OSError: pass
                 return False
-            ok = terminate_tree(pid, grace_seconds=5.0)
-        else:
-            ok = True
+            return False
         try: self.managed_pid_path.unlink(missing_ok=True)
         except OSError: pass
-        return bool(ok)
+        return True
 
     def version(self) -> str | None:
         now = time.monotonic()

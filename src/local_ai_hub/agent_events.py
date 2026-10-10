@@ -52,11 +52,11 @@ class AgentEvent:
         created_at: float | None = None,
     ) -> AgentEvent:
         return cls(
-            event_id=f"evt_{uuid.uuid4().hex[:16]}",
+            event_id=f"evt_{uuid.uuid4().hex}",
             stream_id=stream_id,
             kind=kind,
             payload=dict(payload or {}),
-            idempotency_key=idempotency_key or f"idemp_{uuid.uuid4().hex[:12]}",
+            idempotency_key=idempotency_key or f"idemp_{uuid.uuid4().hex}",
             correlation_id=correlation_id,
             actor=actor,
             created_at=time.time() if created_at is None else float(created_at),
@@ -108,11 +108,11 @@ class AgentEvent:
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> AgentEvent:
         return cls(
-            event_id=str(data.get("event_id") or f"evt_{uuid.uuid4().hex[:16]}"),
+            event_id=str(data.get("event_id") or f"evt_{uuid.uuid4().hex}"),
             stream_id=str(data.get("stream_id", "")),
             kind=str(data.get("kind", "")),
             payload=dict(data.get("payload") or {}),
-            idempotency_key=str(data.get("idempotency_key") or f"idemp_{uuid.uuid4().hex[:12]}"),
+            idempotency_key=str(data.get("idempotency_key") or f"idemp_{uuid.uuid4().hex}"),
             correlation_id=str(data.get("correlation_id", "")),
             actor=str(data.get("actor", "agent")),
             created_at=float(data.get("created_at") or time.time()),

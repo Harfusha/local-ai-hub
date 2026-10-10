@@ -218,7 +218,7 @@ def test_benchmark_subprocess_environment_forces_offline_mode_and_worktree_sourc
 ) -> None:
     repository = tmp_path / "worktree"
     (repository / "src").mkdir(parents=True)
-    monkeypatch.setenv("PYTHONPATH", r"C:\Users\Adam\.local-ai-hub\src")
+    monkeypatch.setenv("PYTHONPATH", r"C:\Users\Example\.local-ai-hub\src")
     environment = run_t02_matrix._offline_environment(repository)
 
     assert environment["HF_HUB_OFFLINE"] == "1"

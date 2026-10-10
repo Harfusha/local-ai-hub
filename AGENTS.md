@@ -40,8 +40,9 @@ Recipes (guidance, not gates):
 
 Direct ownership is the default. Do not delegate audits, inventory, status checks, or routine implementation. Use a subagent only for genuinely independent bounded implementation that materially shortens the critical path, or when the user explicitly asks; see the simplified workflow spec.
 
-- Semantic delegation is on-demand: after deterministic/indexed evidence, use `local_ai_task` selectively for bounded generation, review, independent second opinions, test-log compression, commit message generation, and drafting where helpful. Cloud reasoning and planning are never blocked by mandatory local handoffs. Deterministic/indexed tools remain authoritative for exact facts, symbols, diff and tests. Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression. Model routing follows the active hardware profile and user overrides; consult `docs/MODEL_CAPABILITIES.md` for foreground role targets. Preprocessing follows its configured provider; do not switch it silently. Pinned master `2458f72c` has no Gemini preprocessing provider implementation; Gemini agent manifests do not establish runtime preprocessing support. Routing targets do not prove installed-model availability; model pulls remain opt-in.
+- Semantic delegation is optional and on-demand: after deterministic/indexed evidence, use `local_ai_task` selectively for bounded generation, review, independent second opinions, test-log compression, commit message generation, and drafting where helpful. Cloud reasoning and planning are never blocked by mandatory local handoffs. Deterministic/indexed tools remain authoritative for exact facts, symbols, diff and tests. Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression. Model routing follows the active hardware profile and user overrides; consult `docs/MODEL_CAPABILITIES.md` for foreground role targets. Preprocessing follows its configured provider; do not switch it silently. Pinned master `2458f72c` has no Gemini preprocessing provider implementation; Gemini agent manifests do not establish runtime preprocessing support. Routing targets do not prove installed-model availability; model pulls remain opt-in.
 - Use native Codex subagents only for independent bounded implementation or an explicit user request. Never spawn them for audits or to relay results as a handoff.
+- Native `multi_agent_v1__spawn_agent` is used only for useful independent bounded work; explicit user requests may also authorize bounded delegation. Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, and sandbox.
 - Keep write scopes disjoint. The primary agent reviews and integrates directly; no ZIPs, custom owner packets, or fingerprint/hash cascades.
 - Do not duplicate tasks or chats. Check the existing plan first and update its existing item.
 
@@ -63,17 +64,22 @@ Adaptive retrieval path: call `local_ai_repo(action="context", mode="adaptive")`
  do not repeat the same hub action with the same root/query while repository state is unchanged.
 
 Treat result state as a protocol: `cache_hit`/`coalesced` means reuse the result; `in_progress=true` means another owner is doing identical work, so never duplicate it; `retryable`/429/503 means back off and do independent work; `degraded`/`stale` means verify only the affected path/slice; a non-retryable failure permits one cheaper/native fallback. Never turn a transient result into larger timeouts, force refreshes, or polling loops.
-Before native fallback, require `terminal=true` and `retryable=false`. For `outcome_unknown` or `in_progress`, do independent work without polling or repeating the operation.
 
 Route test/lint/typecheck/build/read-only commands through `local_ai_command` before running them natively. If it returns `in_progress=true`, do not launch a duplicate command. Before an expensive `solve`/model call, search coordination memos for reusable findings. For overlapping multi-agent edits use `local_ai_coord` leases and store concise reusable discoveries as memos.
  After edits, use indexed impact/review plus targeted cached validation; do not rerun broad discovery merely because files changed. `force` and `preprocess_refresh` are recovery/admin controls, never retry buttons. If an optional backend degrades, accept the hub's deterministic/index fallback. If the hub itself is unavailable, make one bounded health/retry attempt, then fall back to native tools. Never loop on health, status, preprocessing, model startup, a failing backend, or an identical command.
 
-Selection guide: `local_ai_repo` for bounded repository facts and checks (including `review_diff` and `security_audit`), `local_ai_command` for bounded repeatable commands, `local_ai_task` for optional bounded semantic generation/reasoning/compression, `local_ai_work` only for closed delegation explicitly requested by the user, `local_ai_rag` only after cheaper indexed evidence, `local_ai_artifact` for exact slices, and `local_ai_coord` for Agent OS task, memory, context, and verification workflows. Keep integration in the primary agent.
+Selection guide: `local_ai_repo` for bounded repository facts and checks (including `review_diff` and `security_audit`), `local_ai_command` for bounded repeatable commands, `local_ai_task` for bounded semantic generation, exploration, reasoning, review, independent second opinions and semantic compression, `local_ai_work` only for closed delegation explicitly requested by the user, `local_ai_rag` only after cheaper indexed evidence, `local_ai_artifact` for exact slices, `local_ai_coord` for leases/memos and Agent OS task, memory, context, and verification workflows.
 
 Local model policy: Model routing follows the active hardware profile and user overrides; consult `docs/MODEL_CAPABILITIES.md` for foreground role targets. Preprocessing follows its configured provider; do not switch it silently. Pinned master `2458f72c` has no Gemini preprocessing provider implementation; Gemini agent manifests do not establish runtime preprocessing support. Routing targets do not prove installed-model availability; model pulls remain opt-in. Check installed-model inventory before live inference; do not infer runtime availability, output quality, or performance from a configured mapping.
 ## Context economy contract
 
-- Every Hub response is aggregate-bounded (default ≈3200 tokens); explicit `max_response_tokens` below 128 are rejected, never silently raised.
+- Every Hub response is aggregate-bounded (default ≈3200 tokens).
+- `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.
+- Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
+- Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
+- Reject `max_response_tokens` below 128; never raise the request silently.
+- Native fallback requires an explicit `terminal=true` and `retryable=false` result.
+- On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 - Prefer `response_profile="minimal"`/`"compact"`; request only decision-grade fields.
 - Pass a stable `reuse_key` for repeated logical queries. Use `response_profile="delta"` when only changes are needed; unchanged calls return a pointer, not missing data.
 - Use the existing `local_ai_task(action="batch")` for independent local tasks; keep each item bounded and consume compact per-item results.
@@ -99,7 +105,7 @@ Local model policy: Model routing follows the active hardware profile and user o
 - Reject `max_response_tokens` below 128; never raise the request silently.
 - Native fallback requires an explicit `terminal=true` and `retryable=false` result.
 - On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
-- Local model delegation: use `local_ai_task` selectively for bounded semantic work after deterministic evidence. Follow `[hardware].profile` and user overrides; consult `docs/MODEL_CAPABILITIES.md` for role routes. Routing targets do not prove model availability; keep model pulls opt-in and hard and extreme reasoning distinct.
+- Local model routing follows the active hardware profile and user overrides; use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions and compression. Consult `docs/MODEL_CAPABILITIES.md`; configured routes do not prove models are installed. Deterministic/indexed tools remain authoritative for exact facts, symbols, diff and tests.
 <!-- END TOKEN ECONOMY POLICY -->
 
 
@@ -112,7 +118,7 @@ Local model policy: Model routing follows the active hardware profile and user o
 - Every subprocess and network wait must be bounded. Drain child stderr/stdout and terminate process trees on timeout.
 - On Windows use helpers from `process_utils.py` so background subprocesses do not flash console windows.
 - Treat client disconnects as normal cancellation/noise, not hub-fatal errors.
-- Never persist prompts, source text, model output, secrets, or full project paths in observability telemetry.
+- Aggregate observability telemetry stays metadata-only. Detailed debug traces are opt-in and remain local; while enabled, retain complete endpoint payloads, paths, and trace events without redaction or truncation. Keep storage bounded with retention and whole-trace eviction, never by trimming content.
 - Do not add migration shims or deprecated aliases to this initial-release branch. Derived SQLite state is disposable and may be rebuilt.
 - Every release and update MUST publish and maintain matching agent prompts:
   - `docs/INSTALL_PROMPT.md`: canonical bootstrap prompt for any agent in any repository.

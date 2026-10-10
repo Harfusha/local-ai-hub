@@ -1,5 +1,7 @@
+import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
@@ -193,6 +195,88 @@ def test_repo_investigate_cascade(tmp_path: Path):
     assert len(inv.get("symbols", [])) > 0
     assert "code" in inv["symbols"][0]
     assert "class OrderService" in inv["symbols"][0]["code"]
+    assert inv["cascade_layers"] == ["code_index", "tests"]
+
+
+def test_repo_investigate_degrades_on_expected_index_storage_failures(tmp_path: Path, caplog) -> None:
+    class FailingCodeIndex:
+        @staticmethod
+        def find_referencing_symbols(*_args, **_kwargs):
+            raise sqlite3.OperationalError("private database path")
+
+    services = make_services(
+        {"server": {"state_dir": str(tmp_path / "state")}}, code_idx=FailingCodeIndex()
+    )
+    services.code_query = lambda *_args, **_kwargs: {
+        "success": True,
+        "symbols": [{"name": "Target", "file": "src/target.py"}],
+    }
+    services.repo_search = lambda *_args, **_kwargs: {"success": True, "results": []}
+    services.affected_tests = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        sqlite3.OperationalError("private test index path")
+    )
+
+    with caplog.at_level("DEBUG", logger="local_ai_hub.services"):
+        result = services.repo_investigate("/repo", "Target")
+
+    assert result["callers"] == []
+    assert result["related_tests"] == []
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("Repository investigation references skipped (OperationalError)" in message for message in messages)
+    assert any("Related test lookup skipped (OperationalError)" in message for message in messages)
+    assert all("private" not in message and "/repo" not in message for message in messages)
+
+
+def test_repo_investigate_propagates_unexpected_reference_errors(tmp_path: Path) -> None:
+    class BrokenCodeIndex:
+        @staticmethod
+        def find_referencing_symbols(*_args, **_kwargs):
+            raise RuntimeError("unexpected reference-index programming failure")
+
+    services = make_services(
+        {"server": {"state_dir": str(tmp_path / "state")}}, code_idx=BrokenCodeIndex()
+    )
+    services.code_query = lambda *_args, **_kwargs: {
+        "success": True,
+        "symbols": [{"name": "Target", "file": "src/target.py"}],
+    }
+    services.repo_search = lambda *_args, **_kwargs: {"success": True, "results": []}
+
+    with pytest.raises(RuntimeError, match="unexpected reference-index programming failure"):
+        services.repo_investigate("/repo", "Target")
+
+
+def test_changed_intelligence_refresh_logs_expected_os_errors_without_paths(
+    tmp_path: Path, caplog
+) -> None:
+    cfg = {"server": {"state_dir": str(tmp_path / "state")}}
+    services = make_services(cfg)
+
+    def fail_cache_state(_root: str) -> dict:
+        raise PermissionError(f"private repository path: {tmp_path}")
+
+    services._repo_cache_state = fail_cache_state
+
+    with caplog.at_level("DEBUG", logger="local_ai_hub.services"):
+        result = services._refresh_changed_intelligence(str(tmp_path))
+
+    assert result is None
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("Changed-file intelligence refresh skipped (PermissionError)" in message for message in messages)
+    assert all(str(tmp_path) not in message for message in messages)
+
+
+def test_changed_intelligence_refresh_propagates_unexpected_errors(tmp_path: Path) -> None:
+    cfg = {"server": {"state_dir": str(tmp_path / "state")}}
+    services = make_services(cfg)
+
+    def fail_cache_state(_root: str) -> dict:
+        raise RuntimeError("unexpected refresh programming failure")
+
+    services._repo_cache_state = fail_cache_state
+
+    with pytest.raises(RuntimeError, match="unexpected refresh programming failure"):
+        services._refresh_changed_intelligence(str(tmp_path))
 
 
 def test_patch_and_verify_clean_success(tmp_path: Path, monkeypatch):
@@ -313,7 +397,12 @@ def test_patch_and_verify_test_failure_rollback(tmp_path: Path, monkeypatch):
 
     assert res["success"] is False
     assert res["applied"] is False
-    assert res["rolled_back"] is True
+    assert res["rolled_back"] is True, {
+        key: res.get(key) for key in (
+            "error", "rollback_error", "failure_kind", "transaction_status",
+            "outcome_unknown", "rollback_paths",
+        )
+    }
     assert "Validation command failed" in res["error"]
     # Verify clean rollback
     assert app_file.read_text(encoding="utf-8") == initial_code
@@ -338,6 +427,45 @@ def test_task_scaffold(tmp_path: Path):
     assert "```" not in res["code"]
     assert res["language"] == "python"
     assert res["validated"] is False
+
+
+@pytest.mark.parametrize(
+    ("framework", "required", "forbidden"),
+    [
+        ("pytest", "@pytest.mark.skip", "assert True"),
+        ("nunit", "[Ignore(", "Assert.Pass()"),
+        ("jest", "test.todo(", "expect(true).toBe(true)"),
+        ("other", "NotImplementedError(", "assert True"),
+    ],
+)
+def test_generate_tests_fast_scaffold_is_explicitly_incomplete(
+    tmp_path: Path, framework: str, required: str, forbidden: str,
+):
+    services = make_services({"server": {"state_dir": str(tmp_path / "state")}})
+
+    result = services.generate_tests(
+        {"symbol": "calculate_total", "framework": framework, "fast_scaffold": True},
+        tenant="test-agent",
+    )
+
+    assert result["success"] is True
+    assert result["method"] == "fast-scaffold"
+    assert result["complete"] is False
+    assert result["requires_review"] is True
+    assert required in result["test_code"]
+    assert forbidden not in result["test_code"]
+
+
+def test_generate_tests_fast_jest_scaffold_escapes_symbol(tmp_path: Path):
+    services = make_services({"server": {"state_dir": str(tmp_path / "state")}})
+    symbol = "name'); process.exit(1); //"
+
+    result = services.generate_tests(
+        {"symbol": symbol, "framework": "jest", "fast_scaffold": True},
+        tenant="test-agent",
+    )
+
+    assert json.dumps(symbol) in result["test_code"]
 
 
 def test_treesitter_go_and_rust():
@@ -483,6 +611,7 @@ def test_patch_and_verify_auto_affected_tests(tmp_path: Path, monkeypatch):
     subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=str(tmp_path), capture_output=True, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=str(tmp_path), capture_output=True, check=True)
+    (tmp_path / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
 
     calc_file = tmp_path / "math_lib.py"
     calc_file.write_text("def multiply(a, b):\n    return a * b\n", encoding="utf-8")
@@ -515,7 +644,7 @@ def test_patch_and_verify_auto_affected_tests(tmp_path: Path, monkeypatch):
         command="auto",
     )
 
-    assert res["success"] is True
+    assert res["success"] is True, (res.get("error"), res.get("stderr"))
     assert res["applied"] is True
     assert res["tests_passed"] is True
     assert "test_math_lib.py" in res.get("affected_tests_run", [])[0]

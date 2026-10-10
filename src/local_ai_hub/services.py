@@ -8,11 +8,13 @@ import fnmatch
 import hashlib
 import itertools
 import json
+import logging
 import math
 import os
 import re
 import shlex
 import shutil
+import sqlite3
 import subprocess
 import time
 import threading
@@ -57,6 +59,8 @@ from .vision_inputs import prepare_vision_inputs
 from .vision_payload import vision_input_error, vision_success_payload
 from .vision_request import build_vision_request, select_vision_model, vision_feature_error, vision_request_timeout
 from .vision_runtime import vision_capability_error, vision_generation_error
+
+logger = logging.getLogger(__name__)
 from .agent_consistency import AdaptiveContextPack, ConsistencyRequest, GuardWarning
 from .agent_context import ContextCompiler, ContextRequest
 from .agent_events import AgentStateStore
@@ -739,20 +743,14 @@ class LocalAIServices:
     def _touch_project(self, root: str) -> None:
         # Local AI: repository reads refresh only explicitly registered projects.
         if self.preprocessor is not None:
-            try:
-                self.preprocessor.touch_if_registered(root)
-            except Exception:
-                pass
+            self.preprocessor.touch_if_registered(root)
 
     def _repo_cache_state(self, root: str) -> dict[str, Any]:
         """Prefer watcher-backed preprocessing state over spawning Git on hot reads."""
         if self.preprocessor is not None:
-            try:
-                fast = self.preprocessor.cache_fingerprint(root)
-                if isinstance(fast, dict) and fast.get("fingerprint"):
-                    return fast
-            except Exception:
-                pass
+            fast = self.preprocessor.cache_fingerprint(root)
+            if isinstance(fast, dict) and fast.get("fingerprint"):
+                return fast
         return self.repo_state.fingerprint(root)
 
     def _resident_optimize(self, route: dict[str, Any], task_type_override: str, complexity_override: str) -> dict[str, Any]:
@@ -834,6 +832,24 @@ class LocalAIServices:
                             self._semantic_scope_locks.pop(key, None)
             return lock
 
+    def _available_vram_mb(self) -> Any:
+        balancer = getattr(self, "vram_balancer", None)
+        if not balancer:
+            return None
+        status = balancer.status()
+        if status.get("available", "vram_available_mb" in status):
+            return status.get("vram_available_mb")
+        return None
+
+    def _observe_tuner_safely(self, model: str, result: dict[str, Any], elapsed_ms: float) -> None:
+        try:
+            self.tuner.observe(model, result, elapsed_ms)
+        except (TypeError, ValueError, OverflowError) as tuner_exc:
+            logger.debug(
+                "Model tuning observation skipped (%s)",
+                type(tuner_exc).__name__,
+            )
+
     def _generate(
         self,
         model: str,
@@ -904,14 +920,7 @@ class LocalAIServices:
         role = source.rsplit(":", 1)[-1].lower()
         if source == "second-opinion":
             role = "second-opinion"
-        vram_free = None
-        if getattr(self, "vram_balancer", None):
-            try:
-                vram_status = self.vram_balancer.status()
-                if vram_status.get("available", "vram_available_mb" in vram_status):
-                    vram_free = vram_status.get("vram_available_mb")
-            except Exception:
-                pass
+        vram_free = self._available_vram_mb()
         initial_profile = self.model_policy.profile(
             model, role=role, input_tokens=estimate_tokens(prompt), output_tokens=max_tokens,
             background=source.startswith("preprocess:"),
@@ -1311,8 +1320,11 @@ class LocalAIServices:
                     clean = {k: v for k, v in result.items() if not str(k).startswith("_lah_")}
                     try:
                         self.semantic_cache.set(semantic_scope, semantic_query, clean)
-                    except Exception:
-                        pass
+                    except (OSError, sqlite3.Error, ValueError) as cache_exc:
+                        logger.debug(
+                            "Semantic generation cache write skipped (%s)",
+                            type(cache_exc).__name__,
+                        )
                 return result
 
         if use_cache:
@@ -1335,19 +1347,16 @@ class LocalAIServices:
             cache_layer = "stale-on-error"
         else:
             cache_layer = "ollama"
-            if semantic_query and isinstance(raw, dict) and raw.get("success", "error" not in raw):
-                clean = {k: v for k, v in raw.items() if not str(k).startswith("_lah_")}
-                try:
-                    self.semantic_cache.set(semantic_scope, semantic_query, clean)
-                except Exception:
-                    pass
 
         if use_cache and isinstance(raw, dict) and raw.get("success", "error" not in raw) and origin != "stale" and not raw.get("fallback_used", False):
             clean_stale = {k: v for k, v in raw.items() if not str(k).startswith("_lah_")}
             try:
                 self.stale_generation_cache.set(cache_key, clean_stale)
-            except Exception:
-                pass
+            except (OSError, sqlite3.Error, ValueError) as cache_exc:
+                logger.debug(
+                    "Stale generation cache write skipped (%s)",
+                    type(cache_exc).__name__,
+                )
 
         result = copy.deepcopy(raw)
         queue_wait_ms = float(result.get("_lah_scheduler_queue_wait_ms", 0) or 0) if cache_layer == "ollama" else 0.0
@@ -1400,10 +1409,11 @@ class LocalAIServices:
         }
 
         if self.tuner is not None and cache_layer == "ollama":
-            try:
-                self.tuner.observe(str(result.get("model", model)), result, (time.perf_counter() - started) * 1000)
-            except Exception:
-                pass
+            self._observe_tuner_safely(
+                str(result.get("model", model)),
+                result,
+                (time.perf_counter() - started) * 1000,
+            )
 
         success = bool(result.get("success", "error" not in result))
         error_type = "" if success else "model_request_failed"
@@ -1556,7 +1566,13 @@ class LocalAIServices:
         if cancel_event is not None and cancel_event.is_set():
             self.conversations.abort(conversation_id, tenant)
             return self._conversation_cancelled(conversation_id)
-        self.conversations.complete(conversation_id, tenant, user_prompt, str(result.get("text", "")))
+        if not self.conversations.complete(
+            conversation_id, tenant, user_prompt, str(result.get("text", "")),
+        ):
+            return self._conversation_error(
+                conversation_id,
+                "conversation expired or was lost while model was running",
+            )
         result["conversation_id"] = conversation_id
         result["route"] = dict(settings["route"])
         return result
@@ -1573,14 +1589,14 @@ class LocalAIServices:
                 root_value,
                 configured_state_dir(getattr(self, "config", {}), create=False),
             )
-        except Exception:
+        except (OSError, ValueError) as project_exc:
+            logger.debug(
+                "Project task context unavailable (%s)",
+                type(project_exc).__name__,
+            )
             return None, "", "", ""
 
-        snapshot = None
-        try:
-            snapshot = self.repo_tools.git_snapshot(root_value)
-        except Exception:
-            pass
+        snapshot = self.repo_tools.git_snapshot(root_value)
         revision = str(getattr(snapshot, "repository_revision", "") or "")[:200]
         namespace = str(project.coordination_id or "")
         return project, project.config_digest, namespace, revision
@@ -2968,12 +2984,20 @@ class LocalAIServices:
         paths: list[str] = []
         if self.deterministic is not None:
             try: paths.extend(self.deterministic.related_paths(root, query, max(16, top_k * 3)))
-            except Exception: pass
+            except (OSError, sqlite3.Error, ValueError) as candidate_exc:
+                logger.debug(
+                    "Deterministic candidate search skipped (%s)",
+                    type(candidate_exc).__name__,
+                )
         if self.code_index is not None:
             try:
                 for p in self.code_index.related_paths(root, query, max(16, top_k * 3)):
                     if p not in paths: paths.append(p)
-            except Exception: pass
+            except (OSError, sqlite3.Error, ValueError) as candidate_exc:
+                logger.debug(
+                    "CodeIndex candidate search skipped (%s)",
+                    type(candidate_exc).__name__,
+                )
         # Warm preprocessing maintains FTS + semantic cards specifically so agents do
         # not need broad scans. Treat these only as candidates; exact source search
         # remains the fallback when a card/FTS hint produces no matches.
@@ -2982,8 +3006,11 @@ class LocalAIServices:
                 for p in self.preprocessor.candidate_paths(root, query, max(16, top_k * 3)):
                     if p not in paths:
                         paths.append(p)
-            except Exception:
-                pass
+            except (OSError, sqlite3.Error, ValueError) as candidate_exc:
+                logger.debug(
+                    "Preprocessor candidate search skipped (%s)",
+                    type(candidate_exc).__name__,
+                )
         hinted_search_paths: list[str] = []
         hinted_force_include = False
         force_include_patterns = tuple(project_context.settings.force_include_paths) + tuple(
@@ -3216,10 +3243,26 @@ class LocalAIServices:
             if self.evidence_store is not None and isinstance(result.get("results"), list):
                 try:
                     result = dict(result)
-                    result["results"] = self.evidence_store.put_many(str(result.get("root", root)), result["results"])
-                    result["progressive_disclosure"] = True
-                except Exception:
-                    pass
+                    stored_results = self.evidence_store.put_many(
+                        str(result.get("root", root)), result["results"]
+                    )
+                    receipts_complete = all(
+                        isinstance(item, dict)
+                        and (
+                            not any(item.get(field) for field in ("text", "raw", "content"))
+                            or bool(item.get("evidence_id"))
+                        )
+                        for item in stored_results
+                    )
+                    result["results"] = stored_results
+                    result["progressive_disclosure"] = receipts_complete
+                except (OSError, sqlite3.Error, ValueError) as store_exc:
+                    logger.debug(
+                        "Repository search evidence persistence skipped (%s)",
+                        type(store_exc).__name__,
+                    )
+                    result = dict(result)
+                    result["progressive_disclosure"] = False
             return result
         return self._repo_cached(
             "search",
@@ -3265,38 +3308,59 @@ class LocalAIServices:
             existing: list[tuple[str, str]] = []
             missing: list[str] = []
             for rel in paths:
-                target = (base / rel).resolve(strict=False)
                 try:
+                    target = (base / rel).resolve(strict=False)
                     target.relative_to(base)
-                except ValueError:
+                except (OSError, RuntimeError, ValueError) as path_exc:
+                    logger.debug(
+                        "Changed-file path skipped (%s)",
+                        type(path_exc).__name__,
+                    )
                     continue
                 if target.is_file():
                     try:
                         existing.append((rel, self.repo_tools._hash_file_only(target)))
-                    except Exception:
-                        pass
+                    except (OSError, ValueError) as hash_exc:
+                        logger.debug(
+                            "Changed-file hash skipped (%s)",
+                            type(hash_exc).__name__,
+                        )
                 else:
                     missing.append(rel)
             if self.code_index is not None:
                 if existing and hasattr(self.code_index, "update_files_batch"):
                     self.code_index.update_files_batch(str(base), existing)
                 for rel in missing:
-                    try: self.code_index.update_file(str(base), rel)
-                    except Exception: pass
+                    try:
+                        self.code_index.update_file(str(base), rel)
+                    except (OSError, sqlite3.Error, ValueError) as index_exc:
+                        logger.debug(
+                            "CodeIndex changed-file update skipped (%s)",
+                            type(index_exc).__name__,
+                        )
             if self.deterministic is not None:
                 if existing and hasattr(self.deterministic, "update_files_batch"):
                     self.deterministic.update_files_batch(str(base), existing)
                 for rel in missing:
-                    try: self.deterministic.update_file(str(base), rel)
-                    except Exception: pass
+                    try:
+                        self.deterministic.update_file(str(base), rel)
+                    except (OSError, sqlite3.Error, ValueError) as index_exc:
+                        logger.debug(
+                            "Deterministic changed-file update skipped (%s)",
+                            type(index_exc).__name__,
+                        )
             with self._index_refresh_lock:
                 if fp:
                     self._index_refresh_state[root_key] = fp
                     if len(self._index_refresh_state) > 256:
                         self._index_refresh_state.pop(next(iter(self._index_refresh_state)), None)
-        except Exception:
+        except (OSError, sqlite3.Error, ValueError) as refresh_exc:
             # Query correctness still falls back to the last durable index plus exact
             # lexical/source tools; this accelerator must never turn a query into 500.
+            logger.debug(
+                "Changed-file intelligence refresh skipped (%s)",
+                type(refresh_exc).__name__,
+            )
             return
 
     def deterministic_query(self, root: str, query: str, limit: int = 24) -> dict[str, Any]:
@@ -3378,8 +3442,11 @@ class LocalAIServices:
                 ref_res = self.code_index.find_referencing_symbols(root, primary_sym)
                 if isinstance(ref_res, dict) and ref_res.get("success"):
                     callers = ref_res.get("references", [])[:10]
-            except Exception:
-                pass
+            except (OSError, sqlite3.Error, ValueError) as reference_exc:
+                logger.debug(
+                    "Repository investigation references skipped (%s)",
+                    type(reference_exc).__name__,
+                )
 
         related_tests: list[str] = []
         try:
@@ -3388,8 +3455,11 @@ class LocalAIServices:
                 aff_res = self.affected_tests(root, changed_paths=target_files)
                 if isinstance(aff_res, dict):
                     related_tests = aff_res.get("test_files", [])[:5]
-        except Exception:
-            pass
+        except (OSError, sqlite3.Error, ValueError) as tests_exc:
+            logger.debug(
+                "Related test lookup skipped (%s)",
+                type(tests_exc).__name__,
+            )
 
         return {
             "success": True,
@@ -3400,7 +3470,7 @@ class LocalAIServices:
             "search_hits": search_hits[:limit] if not symbols else [],
             "callers": callers[:10],
             "related_tests": related_tests,
-            "cascade_layers": ["code_index", "code_graph", "tests"] if symbols else ["search", "tests"],
+            "cascade_layers": ["code_index", "tests"] if symbols else ["search", "tests"],
         }
 
     def repo_diagnose(self, root: str, text: str) -> dict[str, Any]:
@@ -4158,28 +4228,22 @@ class LocalAIServices:
         receipts_data: list[dict[str, Any]] = []
 
         if self.task_store is not None:
-            try:
-                if task_id:
-                    t = self.task_store.get(task_id)
-                    if t:
-                        tasks_data.append(t.to_dict())
-                else:
-                    active = self.task_store.list_tasks(status=None, limit=5)
-                    for t in active:
-                        tasks_data.append(t.to_dict())
-            except Exception:
-                pass
+            if task_id:
+                t = self.task_store.get(task_id)
+                if t:
+                    tasks_data.append(t.to_dict())
+            else:
+                active = self.task_store.list_tasks(status=None, limit=5)
+                for t in active:
+                    tasks_data.append(t.to_dict())
 
         if self.verification_store is not None:
-            try:
-                tids = [task_id] if task_id else [str(t.get("task_id")) for t in tasks_data if t.get("task_id")]
-                for tid in tids[:5]:
-                    comp = self.verification_store.completion(tid)
-                    for r in comp.receipts:
-                        if r.passed:
-                            receipts_data.append(r.to_dict())
-            except Exception:
-                pass
+            tids = [task_id] if task_id else [str(t.get("task_id")) for t in tasks_data if t.get("task_id")]
+            for tid in tids[:5]:
+                comp = self.verification_store.completion(tid)
+                for r in comp.receipts:
+                    if r.passed:
+                        receipts_data.append(r.to_dict())
 
         params = {"hint": hint, "task_id": task_id, "tasks_count": len(tasks_data), "receipts_count": len(receipts_data)}
         return self.deterministic_operation(
@@ -5633,7 +5697,9 @@ class LocalAIServices:
             except Exception as exc:
                 retrieval_warnings.append(f"lexical completeness pass degraded: {type(exc).__name__}")
         try:
-            if candidate_paths:
+            # A targeted request must never silently expand into a repository-wide walk.
+            # Untargeted requests search repository-wide; backend paths only rank results.
+            if candidate_paths and path_controls_active:
                 candidate_paths = list(dict.fromkeys(candidate_paths))
                 pack_kwargs: dict[str, Any] = {
                     "max_tokens": lexical_tokens,
@@ -5652,18 +5718,6 @@ class LocalAIServices:
                 lexical = self.repo_tools.context_pack_paths(
                     root, query, candidate_paths, **pack_kwargs,
                 )
-                # A targeted request must never silently expand into a repository-wide walk.
-                # Untargeted requests may fall back if path-scoped retrieval cannot answer.
-                if not path_controls_active and (
-                    not isinstance(lexical, dict)
-                    or not lexical.get("success")
-                    or not isinstance(lexical.get("evidence"), list)
-                    or not lexical["evidence"]
-                ):
-                    lexical = self.repo_tools.context_pack(
-                        root, query, max_tokens=lexical_tokens,
-                        top_k=int(search_cfg.get("context_top_k", 14)),
-                    )
             elif path_controls_active:
                 lexical = {
                     "success": True, "root": str(root_path), "context": "", "evidence": [],
@@ -6597,14 +6651,34 @@ class LocalAIServices:
 
         if payload.get("fast_scaffold") or payload.get("template_only") or payload.get("deterministic"):
             clean_sym = re.sub(r"[^A-Za-z0-9_]", "_", symbol) or "target"
+            pending_reason = "Replace scaffold with behavior-based assertions before enabling this test."
             if framework == "pytest":
-                scaffold = f"import pytest\n\n\ndef test_{clean_sym}_basic():\n    # TODO: verify expected behavior for {symbol}\n    assert True\n"
+                scaffold = (
+                    "import pytest\n\n"
+                    f"@pytest.mark.skip(reason={json.dumps(pending_reason)})\n"
+                    f"def test_{clean_sym}_basic():\n"
+                    f"    raise NotImplementedError({json.dumps(pending_reason)})\n"
+                )
             elif framework == "nunit":
-                scaffold = f"using NUnit.Framework;\n\n[TestFixture]\npublic class {clean_sym}Tests {{\n    [Test]\n    public void Test_{clean_sym}_Basic() {{\n        Assert.Pass();\n    }}\n}}\n"
+                scaffold = (
+                    "using NUnit.Framework;\n\n"
+                    f"[TestFixture]\npublic class {clean_sym}Tests {{\n"
+                    f"    [Test]\n    [Ignore({json.dumps(pending_reason)})]\n"
+                    f"    public void Test_{clean_sym}_Basic() {{\n"
+                    f"        Assert.Fail({json.dumps(pending_reason)});\n"
+                    "    }\n}\n"
+                )
             elif framework == "jest":
-                scaffold = f"describe('{symbol}', () => {{\n    test('basic functionality', () => {{\n        expect(true).toBe(true);\n    }});\n}});\n"
+                scaffold = (
+                    f"describe({json.dumps(symbol)}, () => {{\n"
+                    f"    test.todo({json.dumps(pending_reason)});\n"
+                    "});\n"
+                )
             else:
-                scaffold = f"def test_{clean_sym}():\n    assert True\n"
+                scaffold = (
+                    f"def test_{clean_sym}():\n"
+                    f"    raise NotImplementedError({json.dumps(pending_reason)})\n"
+                )
             return {
                 "success": True,
                 "framework": framework,
@@ -6612,6 +6686,8 @@ class LocalAIServices:
                 "scaffold": scaffold,
                 "test_code": scaffold,
                 "method": "fast-scaffold",
+                "complete": False,
+                "requires_review": True,
             }
 
         prompt = (

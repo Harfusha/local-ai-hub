@@ -226,6 +226,9 @@ def test_cold_realtime_status_contention_returns_warming_without_waiting():
     assert warming["snapshot_warming"] is True
     assert warming["success"] is False
     assert warming["degraded"] is True
+    assert warming["retryable"] is True
+    assert warming["terminal"] is False
+    assert warming["error"] == "status snapshot is warming"
 
 
 def test_expired_status_cache_returns_degraded_snapshot_while_refresh_runs():
@@ -366,7 +369,7 @@ def test_light_status_cache_hit_does_not_requery_dependencies():
     second = app.realtime_status(light=True)
 
     assert isinstance(first["success"], bool)
-    assert second["cached"] is True
+    assert second["snapshot_cached"] is True
     assert app.scheduler.calls.get("status", 0) == scheduler_calls
 
 

@@ -1,5 +1,3 @@
-warning: in the working copy of 'C:\Users\Adam\.local-ai-hub\tests\test_agent_tasks.py', LF will be replaced by CRLF the next time Git touches it
-warning: in the working copy of 'C:\Users\Adam\.codex\worktrees\t08-agent-os\.local-ai-hub\t08-root-test-copy.tmp', LF will be replaced by CRLF the next time Git touches it
 diff --git a/tests/test_agent_tasks.py b/tests/test_agent_tasks.py
 index 206e01e..02d9d1e 100644
 --- a/tests/test_agent_tasks.py
