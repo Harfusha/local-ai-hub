@@ -61,6 +61,31 @@ def test_compound_validation_replays_only_when_every_part_is_explicitly_safe(tmp
     assert unclassified["class"] == "validation"
     assert unclassified["replay_safe"] is False
 
+
+@pytest.mark.parametrize(
+    ("command", "expected_class"),
+    [
+        ('powershell -NoProfile -Command "Remove-Item -LiteralPath x"', "dangerous"),
+        ('pwsh -NoProfile -Command "Set-Content x y"', "mutating"),
+        ('bash -c "rm -rf /tmp/x"', None),
+        ("cmd /c del /q x", None),
+    ],
+)
+def test_whitelisting_shell_interpreter_does_not_skip_command_safety(
+    tmp_path, command: str, expected_class: str | None
+) -> None:
+    broker = _broker(tmp_path)
+    broker.config["commands"].update(
+        {"allow_mutating": False, "extra_allowed_tools": ["powershell", "pwsh", "bash", "cmd"]}
+    )
+
+    result = broker.classify(command)
+
+    assert result["allowed"] is False
+    if expected_class is not None:
+        assert result["class"] == expected_class
+        assert result["replay_safe"] is False
+
 @pytest.mark.parametrize(
     "command",
     [
