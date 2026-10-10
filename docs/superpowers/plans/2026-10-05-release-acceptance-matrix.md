@@ -2078,3 +2078,25 @@ Each original stash commit, including its index/untracked parents and payloads, 
 - `python -B tools/release_check.py --allow-installed` — **release-check: OK**; `python -B tools/selftest.py` — **6 checks passed**; `python -B -m compileall -q src tools tests` — exit **0**.
 - Regenerated the generated `docs/API_COVERAGE.md` from current source: **723 rows**. `python -B tools/surface_inventory.py --check` plus `git diff --check -- docs/API_COVERAGE.md` — exit **0**, no drift.
 - Full-suite failures remain as recorded above; these bounded gates do not make candidate release-ready. **T20 NO-GO**.
+
+## Master sync and command-policy fix — 2026-10-10
+
+- Checkpoint commit `6e7097b8` contains the previously dirty, user-authorized
+  root snapshot: 186 paths, 9,778 insertions and 2,594 deletions. It is a WIP
+  integration checkpoint, not a release claim.
+- A parallel audit found that `extra_allowed_tools` could return early for
+  shell interpreters and bypass command classification. The classifier now
+  keeps supported shells in the safety path; ordinary custom tools remain
+  allowlistable. Commit `7541ce1b` changes only `commands.py` and
+  `tests/test_command_replay_policy.py`. Owner-reported focused result:
+  27 passed; `git diff --check` passed before commit.
+- All 54 clean, non-pin worktrees were fast-forwarded to `7541ce1b`. Final
+  inventory: root clean, **55/60** worktrees at master, five clean T15
+  benchmark pins remain at `81164e5c`; no dirty worktrees and no stashes.
+- All **151** local branch histories are contained in master (`git branch
+  --no-merged master` is empty). 113 archival/checkpoint refs intentionally
+  still point to historical ancestors; none is divergent or contains a
+  missing commit. Local master is 742 commits ahead of `origin/master`; no push.
+- Full-suite acceptance remains red/unresolved: the recorded complete run had
+  **6,686 passed, 174 failed, 104 skipped, and 1 teardown error**. Release
+  remains **NO-GO** pending triage and final candidate-bound verification.
