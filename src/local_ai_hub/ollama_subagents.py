@@ -36,7 +36,6 @@ class OllamaSubagentCatalog:
         "deterministic_facts",
         "code_index",
         "semantic_symbols",
-        "code_graph",
         "repo_search",
         "rag_search",
         "evidence_get",

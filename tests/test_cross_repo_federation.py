@@ -52,3 +52,28 @@ def test_cross_repo_symbol_find_and_impact(tmp_path: Path):
     assert impact_res["cross_boundary_references_count"] == 2
     assert impact_res["risk_score"] in ("medium", "high", "critical")
     assert impact_res["suggested_order_of_edits"] == [repo_backend, repo_frontend]
+
+
+def test_cross_project_graph_coalesces_shared_route_edges(tmp_path: Path):
+    cfg = {"server": {"state_dir": str(tmp_path / "state")}}
+    engine = DeterministicEngine(cfg, repo_tools=None)
+    repo_backend = str(tmp_path / "backend")
+    repo_frontend = str(tmp_path / "frontend")
+
+    with engine._lock, closing(engine._connect()) as con:
+        con.executemany(
+            "INSERT INTO facts(root, path, kind, name, value, line) VALUES (?, ?, 'route', '', ?, 1)",
+            [
+                (repo_backend, "api.py", "/users"),
+                (repo_backend, "api.py", "/health"),
+                (repo_frontend, "client.ts", "/users"),
+                (repo_frontend, "client.ts", "/health"),
+            ],
+        )
+        con.commit()
+
+    result = engine.cross_project_graph([repo_backend, repo_frontend, repo_backend])
+    route_edges = [edge for edge in result["edges"] if edge["type"] == "shared_route"]
+    assert len(route_edges) == 1
+    assert set(route_edges[0]["labels"]) == {"/users", "/health"}
+    assert result["projects"] == 2

@@ -306,24 +306,31 @@ def _with_budget_meta(
     )
 
 
-def _bounded_context_pack(value: Any, *, budget_chars: int) -> Any:
+def _bounded_context_pack(
+    value: Any, *, budget_chars: int, include_decisions: bool = True, include_revision: bool = True
+) -> Any:
     """Keep context identity and one exact citation in a bounded response."""
     if not isinstance(value, dict):
         return _bounded_pointer_item(value, budget_chars=budget_chars)
     result: dict[str, Any] = {}
-    for key in ("context_id", "repo_revision"):
+    identity_keys = ("context_id", "repo_revision") if include_revision else ("context_id",)
+    for key in identity_keys:
         item = value.get(key)
         if isinstance(item, str) and item:
             result[key] = _bounded_string(item, min(160, budget_chars))
     # Master decision fields remain authoritative when a T14 citation is reduced.
-    for key in (
-        "success", "status", "status_code", "terminal", "retryable", "error",
-        "degraded", "stale", "fallback_used", "requires_override", "requires_approval",
-        "decision_recorded", "decision_persisted", "task_status", "waiting", "stop_code",
-    ):
-        if key in value:
-            result[key] = _bounded_pointer_item(value[key], budget_chars=budget_chars)
+    # They are duplicated by the outer response in rejection envelopes, so omit
+    # them only as a later compaction step when the diagnostic needs the space.
+    if include_decisions:
+        for key in (
+            "success", "status", "status_code", "terminal", "retryable", "error",
+            "degraded", "stale", "fallback_used", "requires_override", "requires_approval",
+            "decision_recorded", "decision_persisted", "task_status", "waiting", "stop_code",
+        ):
+            if key in value:
+                result[key] = _bounded_pointer_item(value[key], budget_chars=budget_chars)
     evidence = value.get("evidence")
+    has_citation = False
     if isinstance(evidence, list):
         citations: list[dict[str, Any]] = []
         for item in evidence[:24]:
@@ -338,11 +345,12 @@ def _bounded_context_pack(value: Any, *, budget_chars: int) -> Any:
                     citation[key] = field
             if citation.get("evidence_id") and citation.get("path"):
                 citations.append(citation)
+                has_citation = True
                 break
         if citations:
             result["evidence"] = citations
     evidence_ids = value.get("evidence_ids")
-    if isinstance(evidence_ids, (list, tuple)) and evidence_ids:
+    if not has_citation and isinstance(evidence_ids, (list, tuple)) and evidence_ids:
         result["evidence_ids"] = [_bounded_string(str(evidence_ids[0]), min(160, budget_chars))]
     return result
 
@@ -373,56 +381,66 @@ def _budget_rejection(
     metadata_variants = (
         {"requested_tokens": requested, "original_tokens": original, "returned_tokens": 0, "truncated": True, "rejected": True, "unit": "estimated_tokens"},
         {"requested_tokens": requested, "returned_tokens": 0, "rejected": True, "unit": "estimated_tokens"},
-        {"requested_tokens": requested, "rejected": True},
-        {},
+        {"requested_tokens": requested, "returned_tokens": 0, "truncated": True, "rejected": True},
+        {"requested_tokens": requested, "returned_tokens": 0, "truncated": True},
     )
-    for evidence_count in (8, 4, 2, 1, 0):
-        # Keep the complete accounting contract whenever it can fit. Trim
-        # diagnostic/evidence payload before dropping returned_tokens or unit.
+    # Try compacting duplicated context diagnostics before shortening the
+    # top-level error. Keep complete context decision fields whenever possible.
+    context_variants = ((True, True), (False, True), (False, False))
+    # Preserve the complete diagnostic and citation before compacting the
+    # duplicated context pointer or its optional accounting metadata.
+    for error_chars in (512, 256, 128, 64, 32, 16, 8, 1):
+        # Keep complete accounting whenever any compact projection fits.
         for budget_metadata in metadata_variants:
-            for error_chars in (512, 256, 128, 64, 32, 16, 8, 1):
-                value: dict[str, Any] = {
-                    "success": False,
-                    "error": _bounded_string(error, error_chars),
-                }
-                if budget_metadata:
-                    value["response_budget"] = dict(budget_metadata)
-                accounting = preserved.get("token_efficiency")
-                if requested >= 128 and isinstance(accounting, dict):
-                    value["token_efficiency"] = {"avoided_payload_tokens_est": 0}
-                for key in protected_keys:
-                    if key not in preserved or key in base_keys:
-                        continue
-                    item = preserved[key]
-                    if key in {"adaptive_context_pack", "context_pack"}:
-                        value[key] = _bounded_context_pack(item, budget_chars=error_chars)
-                    elif key == "evidence_ids" and isinstance(item, (list, tuple)):
-                        # Preserve whole IDs and bound only the number emitted.
-                        value[key] = [str(item[index])[:160] for index in range(min(evidence_count, len(item)))]
-                    elif key == "evidence_id":
-                        value[key] = str(item)[:160]
-                    elif key in _IDENTIFIER_KEYS:
-                        value[key] = _bounded_string(str(item), 160)
-                    else:
-                        value[key] = _bounded_pointer_item(item, budget_chars=error_chars)
+            for include_context_decisions, include_context_revision in context_variants:
+                for evidence_count in (8, 4, 2, 1, 0):
+                    value: dict[str, Any] = {
+                        "success": False,
+                        "error": _bounded_string(error, error_chars),
+                    }
+                    if budget_metadata:
+                        value["response_budget"] = dict(budget_metadata)
+                    accounting = preserved.get("token_efficiency")
+                    if requested >= 128 and isinstance(accounting, dict):
+                        value["token_efficiency"] = {"avoided_payload_tokens_est": 0}
+                    for key in protected_keys:
+                        if key not in preserved or key in base_keys:
+                            continue
+                        item = preserved[key]
+                        if key in {"adaptive_context_pack", "context_pack"}:
+                            value[key] = _bounded_context_pack(
+                                item,
+                                budget_chars=error_chars,
+                                include_decisions=include_context_decisions,
+                                include_revision=include_context_revision,
+                            )
+                        elif key == "evidence_ids" and isinstance(item, (list, tuple)):
+                            # Preserve whole IDs and bound only the number emitted.
+                            value[key] = [str(item[index])[:160] for index in range(min(evidence_count, len(item)))]
+                        elif key == "evidence_id":
+                            value[key] = str(item)[:160]
+                        elif key in _IDENTIFIER_KEYS:
+                            value[key] = _bounded_string(str(item), 160)
+                        else:
+                            value[key] = _bounded_pointer_item(item, budget_chars=error_chars)
 
-                # Retain protocol outcome fields when supplied, but give evidence
-                # and the diagnostic precedence when the requested cap is tiny.
-                for key in ("status", "status_code", "terminal", "retryable"):
-                    if key in preserved and key not in value:
-                        value[key] = _bounded_pointer_item(preserved[key], budget_chars=error_chars)
+                    # Retain protocol outcome fields when supplied, but give evidence
+                    # and the diagnostic precedence when the requested cap is tiny.
+                    for key in ("status", "status_code", "terminal", "retryable"):
+                        if key in preserved and key not in value:
+                            value[key] = _bounded_pointer_item(preserved[key], budget_chars=error_chars)
 
-                if json_tokens(value) <= requested:
-                    stable = "response_budget" not in value or "returned_tokens" not in value["response_budget"]
-                    if "response_budget" in value and "returned_tokens" in value["response_budget"]:
-                        for _ in range(16):
-                            returned = json_tokens(value)
-                            value["response_budget"]["returned_tokens"] = returned
-                            if json_tokens(value) == returned:
-                                stable = True
-                                break
-                    if stable and json_tokens(value) <= requested:
-                        return value
+                    if json_tokens(value) <= requested:
+                        stable = "response_budget" not in value or "returned_tokens" not in value["response_budget"]
+                        if "response_budget" in value and "returned_tokens" in value["response_budget"]:
+                            for _ in range(16):
+                                returned = json_tokens(value)
+                                value["response_budget"]["returned_tokens"] = returned
+                                if json_tokens(value) == returned:
+                                    stable = True
+                                    break
+                        if stable and json_tokens(value) <= requested:
+                            return value
 
     # At the minimum public budget, even protocol metadata may not fit beside
     # unusually large protected fields. Keep the diagnostic keys and evidence

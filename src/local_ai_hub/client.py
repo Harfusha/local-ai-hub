@@ -189,7 +189,7 @@ class HubClient:
         self._inprocess_transport = inprocess_transport
         client_cfg = self.config.get("client", {})
         self.health_timeout = max(0.2, float(client_cfg.get("health_timeout_seconds", 0.75)))
-        self.startup_wait = max(1.0, float(client_cfg.get("startup_wait_seconds", 15.0)))
+        self.startup_wait = max(1.0, float(client_cfg.get("startup_wait_seconds", 30.0)))
         self.startup_poll = max(0.05, float(client_cfg.get("startup_poll_seconds", 0.15)))
         self.start_lock_stale = max(self.startup_wait, float(client_cfg.get("start_lock_stale_seconds", 20.0)))
         self.max_request_timeout = max(5.0, float(client_cfg.get("max_request_timeout_seconds", 1800.0)))
@@ -520,16 +520,16 @@ class HubClient:
             if health_timeout <= 0:
                 return False
             headers = {"X-LocalAI-Token": self.api_token} if self.api_token else {}
-            with urlopen(Request(f"{self.base_url}/health", headers=headers), timeout=health_timeout) as response:
+            with urlopen(Request(f"{self.base_url}/ready", headers=headers), timeout=health_timeout) as response:
                 try:
                     response.read()
                 except Exception:
                     pass
                 return response.status == 200
         except HTTPError as exc:
-            # 503 from the bounded HTTP admission gate proves the singleton is alive
-            # but busy. Treat it as online so clients do not spawn/restart another hub.
-            return exc.code == 503
+            # Readiness 503 means the app is still initializing; liveness alone
+            # must not let MCP requests race partially initialized services.
+            return False
         except Exception:
             return False
 
@@ -645,6 +645,7 @@ class HubClient:
             launch_timeout = remaining()
             if launch_timeout <= 0:
                 return False
+            process: subprocess.Popen[Any] | None = None
             if hasattr(subprocess, "run") and subprocess.run is not _ORIGINAL_SUBPROCESS_RUN:
                 try:
                     from .process_utils import hidden_run_kwargs
@@ -700,6 +701,7 @@ class HubClient:
             ready = self._online(remaining())
             if (
                 not ready
+                and process is not None
                 and process.poll() is None
                 and not find_listening_pid(port)
             ):
@@ -709,6 +711,7 @@ class HubClient:
                     terminate_tree(
                         process.pid,
                         process_group=process.pid,
+                        process_handle=process,
                         expected_identity=getattr(
                             process, "_local_ai_process_identity", None
                         ),
@@ -1188,10 +1191,30 @@ class HubClient:
                 return self._invalid_json_response(request_id, outcome_unknown=False)
             return result if isinstance(result, dict) else self._invalid_json_response(request_id, outcome_unknown=False)
 
+        def once_ready(attempt_timeout: float, deadline: float) -> dict[str, Any]:
+            result = once(attempt_timeout)
+            for _ in range(3):
+                if not result.get("snapshot_warming"):
+                    return result
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or (cancel_event is not None and cancel_event.is_set()):
+                    return result
+                retry_after_ms = result.get("retry_after_ms", 100)
+                try:
+                    delay = min(0.25, max(0.01, float(retry_after_ms) / 1000.0))
+                except (TypeError, ValueError, OverflowError):
+                    delay = 0.1
+                time.sleep(min(delay, remaining))
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return result
+                result = once(remaining)
+            return result
+
         def execute() -> dict[str, Any]:
             deadline = time.monotonic() + timeout
             try:
-                return once(timeout)
+                return once_ready(timeout, deadline)
             except HTTPError as exc:
                 return self._error_response(exc, request_id)
             except (URLError, OSError, http.client.HTTPException) as exc:
@@ -1207,17 +1230,42 @@ class HubClient:
                 else:
                     server_ready = self.ensure_server(timeout=remaining) if self.auto_start and remaining > 0 else not self.auto_start
                 if server_ready:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        return self._transport_failure_response(request_id, exc)
-                    try: return once(remaining)
-                    except HTTPError as retry_http: return self._error_response(retry_http, request_id)
-                    except (URLError, OSError, http.client.HTTPException) as retry_exc:
-                        self._drop_connection()
-                        return self._uncertain_response(request_id, retried=True)
-                    except Exception:
-                        return self._uncertain_response(request_id, retried=True)
-                return self._uncertain_response(request_id)
+                    for attempt in range(4):
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            break
+                        try:
+                            return once_ready(remaining, deadline)
+                        except HTTPError as retry_http:
+                            return self._error_response(retry_http, request_id)
+                        except (URLError, OSError, http.client.HTTPException) as transient_exc:
+                            self._drop_connection()
+                            if getattr(transient_exc, "cancelled", False):
+                                return self._cancelled_response(
+                                    request_id,
+                                    request_not_sent=bool(getattr(transient_exc, "request_not_sent", False)),
+                                )
+                            if attempt < 3 and self.auto_start:
+                                remaining = deadline - time.monotonic()
+                                if remaining > 0:
+                                    try:
+                                        self.ensure_server(timeout=remaining)
+                                    except Exception:
+                                        pass
+                                    remaining = deadline - time.monotonic()
+                                    if remaining > 0:
+                                        time.sleep(min(0.05, remaining))
+                        except Exception:
+                            return self._uncertain_response(request_id, retried=True)
+                return {
+                    "success": False,
+                    "error": "read request unavailable after bounded transport retries",
+                    "status_code": 503,
+                    "retryable": True,
+                    "terminal": False,
+                    "request_id": request_id,
+                    "retried": server_ready,
+                }
             except Exception:
                 return self._uncertain_response(request_id)
 
@@ -1276,7 +1324,7 @@ class HubClient:
         action = str((payload or {}).get("action", "")).strip().lower()
         read_actions = {
             "/api/agent-state/tasks": {"get", "list", "count"},
-            "/api/agent-state/memory": {"get", "find", "relation_find", "relation_traverse"},
+            "/api/agent-state/memory": {"get", "find"},
             "/api/agent-state/blackboard": {"get", "list"},
             "/api/agent-state/incidents": {"find"},
             "/api/agent-state/verification": {"completion"},
@@ -1387,12 +1435,9 @@ class HubClient:
                 return self.post("/api/memory/search", {"root": kwargs.get("root", "."), "query": kwargs.get("query", ""), "limit": kwargs.get("limit", 12)})
             if act == "memo_delete":
                 return self.post("/api/memory/delete", {"root": kwargs.get("root", "."), "key": kwargs.get("key", "")})
-        if act.startswith("memory_"):
+        if act.startswith("memory_") and act != "memory_reap":
             mem_action = act.replace("memory_", "")
             payload = {**kwargs, "action": mem_action}
-            return self.post("/api/agent-state/memory", payload)
-        if act.startswith("relation_"):
-            payload = {**kwargs, "action": act}
             return self.post("/api/agent-state/memory", payload)
         if act == "incident_decision":
 
@@ -1486,12 +1531,24 @@ class HubClient:
                 "publisher": kwargs.get("publisher") or kwargs.get("approver", "agent"),
             })
         if act == "pubsub_poll":
-            return self.post("/api/coord/pubsub_poll", {
+            raw_limit = kwargs.get("limit")
+            payload = {
                 "root": kwargs.get("root", "."),
                 "topic": kwargs.get("topic") or kwargs.get("key", "default"),
-                "after_seq": kwargs.get("after_seq", 0),
-                "limit": int(kwargs.get("limit", 50)),
-            })
+                "limit": int(raw_limit if raw_limit is not None else 50),
+            }
+            # Keep the legacy sequence cursor by default, but preserve the
+            # timestamp-based contract when the caller explicitly selects it.
+            since_timestamp = kwargs.get("since_timestamp")
+            if since_timestamp is not None:
+                payload["since_timestamp"] = float(since_timestamp)
+            else:
+                raw_after_seq = kwargs.get("after_seq")
+                payload["after_seq"] = int(raw_after_seq if raw_after_seq is not None else 0)
+            if "after_seq" in kwargs and since_timestamp is not None:
+                raw_after_seq = kwargs.get("after_seq")
+                payload["after_seq"] = int(raw_after_seq if raw_after_seq is not None else 0)
+            return self.post("/api/coord/pubsub_poll", payload)
         if act == "simulate_merge":
             return self.post("/api/coord/simulate_merge", {
                 "root": kwargs.get("root", "."),
@@ -1745,6 +1802,7 @@ class HubClient:
         after_seq: int = 0,
         timeout: float = 30.0,
         *,
+        root: str = "",
         cancel_event: threading.Event | None = None,
     ):
         """Yield parsed SSE events (event_type, data_dict) from /api/agent-state/events/stream."""
@@ -1759,6 +1817,8 @@ class HubClient:
         params = []
         if stream_id:
             params.append(f"stream_id={urllib.parse.quote(stream_id)}")
+        if root:
+            params.append(f"root={urllib.parse.quote(root)}")
         if kind:
             params.append(f"kind={urllib.parse.quote(kind)}")
         if after_seq > 0:
@@ -1769,10 +1829,11 @@ class HubClient:
         url = f"{self.base_url}/api/agent-state/events/stream{qs}"
         request_id = f"req_{uuid.uuid4().hex[:12]}"
         headers = {
-            "X-LocalAI-Tenant": self.tenant,
             "X-LocalAI-Agent": self.agent,
             "X-LocalAI-Request-ID": request_id,
         }
+        if self.tenant:
+            headers["X-LocalAI-Tenant"] = self.tenant
         if self.api_token:
             headers["X-LocalAI-Token"] = self.api_token
             headers["Authorization"] = f"Bearer {self.api_token}"

@@ -41,7 +41,7 @@ def test_public_action_parameters_are_explicit_literals() -> None:
     expected = {
         "local_ai_task": {"delegate", "explore", "reason", "continue", "review", "second_opinion", "compress", "route", "batch", "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report", "submit", "status", "wait", "result", "cancel", "candidate_create", "candidate_promote", "speculative_draft", "vision", "transcribe", "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold", "gen", "rev", "del"},
         "local_ai_rag": {"index", "search", "list", "docset_index", "docset_search", "ingest_document", "ingest_diagram"},
-        "local_ai_coord": {"claim", "renew", "release", "leases", "memo_put", "memo_get", "memo_search", "memo_delete", "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_complete", "task_fail", "task_heartbeat", "memory_record", "memory_get", "memory_find", "memory_promote", "memory_reap", "context_compile", "verify_receipt", "verify_completion", "negative_knowledge_record", "negative_knowledge_find", "incident_decision", "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_delete", "blackboard_merge", "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel", "worktree_lease", "worktree_release", "pubsub_publish", "pubsub_poll", "simulate_merge", "relation_record", "relation_find", "relation_traverse", "curate_dataset", "task_sync", "task_zombie_reap", "task_cleanup_worktree", "ctx", "compile_ctx", "neg_rec", "neg_find", "mem_put", "mem_rec", "mem_get", "mem_find", "mem_search", "task_new", "task_chk", "task_done"},
+        "local_ai_coord": {"claim", "renew", "release", "leases", "memo_put", "memo_get", "memo_search", "memo_delete", "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_complete", "task_fail", "task_heartbeat", "memory_record", "memory_get", "memory_find", "memory_promote", "context_compile", "verify_receipt", "verify_completion", "negative_knowledge_record", "negative_knowledge_find", "incident_decision", "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_delete", "blackboard_merge", "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel", "worktree_lease", "worktree_release", "pubsub_publish", "pubsub_poll", "simulate_merge", "curate_dataset", "task_sync", "task_zombie_reap", "task_cleanup_worktree", "ctx", "compile_ctx", "neg_rec", "neg_find", "mem_put", "mem_rec", "mem_get", "mem_find", "mem_search", "task_new", "task_chk", "task_done"},
         "local_ai_command": {"run", "cancel", "classify", "discover", "stats", "repair_loop", "auto_fix", "run_affected", "format", "lint_fix", "spawn_daemon", "daemon_status", "stop_daemon", "http_probe", "stash_save", "stash_restore", "record_mock", "replay_mock", "diff_hunk_stage", "flaky_detect", "webhook_replay", "mock_server", "mock_server_start", "mock_server_stop", "mock_server_status", "patch_and_verify", "preflight", "speculative_lint", "patch", "fix", "repair", "fmt"},
     }
     if not local_ai_mcp.FEATURES.speculative_lint:
@@ -84,11 +84,15 @@ def test_live_mcp_catalog_uses_feature_specific_batch_schema(tmp_path: Path, mon
         monkeypatch.setenv("LOCAL_AI_CONFIG", str(enabled_config))
         importlib.reload(local_ai_mcp)
         enabled_schema = local_ai_mcp.mcp._tool_manager._tools["local_ai_repo"].parameters["properties"]
+        coord_schema = local_ai_mcp.mcp._tool_manager._tools["local_ai_coord"].parameters["properties"]
         async_task_schema = local_ai_mcp.mcp._tool_manager._tools["local_ai_task"].parameters["properties"]
         assert "batch_replace" in enabled_schema["action"]["enum"]
         assert "edits" in enabled_schema
         assert "dry_run" in enabled_schema
         assert "request_id" in async_task_schema
+        assert not {"memory_reap", "relation_record", "relation_find", "relation_traverse"}.intersection(
+            coord_schema["action"].get("enum", [])
+        )
         assert "edits" in inspect.signature(local_ai_mcp.local_ai_repo).parameters
         assert "dry_run" in inspect.signature(local_ai_mcp.local_ai_repo).parameters
         enabled_action = get_type_hints(local_ai_mcp.local_ai_repo)["action"]
@@ -299,7 +303,7 @@ def test_successful_repo_evidence_exposes_typed_semantic_handoff(monkeypatch) ->
     monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
     monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *_args, **_kwargs: {"success": True, "matches": []})
 
-    result = local_ai_mcp.local_ai_repo(action="search", query="routing", extra_fields=["routing"])
+    result = local_ai_mcp.local_ai_repo(action="search", root=str(Path(__file__).resolve().parents[1]), query="routing", extra_fields=["routing"])
 
     assert result["routing"]["semantic_handoff"] == semantic_handoff_hint("local_ai_repo", "search", True)
 
@@ -355,7 +359,7 @@ def test_status_disabled_repo_evidence_omits_status_bypass_metadata(monkeypatch)
     monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
     monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *_args, **_kwargs: {"success": True})
 
-    result = local_ai_mcp.local_ai_repo(action="search", query="routing", extra_fields=["routing"])
+    result = local_ai_mcp.local_ai_repo(action="search", root=str(Path(__file__).resolve().parents[1]), query="routing", extra_fields=["routing"])
 
     assert "local_ai_status" not in repr(result)
     assert result["routing"]["semantic_handoff"] == semantic_handoff_hint(
@@ -377,7 +381,7 @@ def test_non_dict_routing_is_preserved_with_semantic_handoff(
         lambda *_args, **_kwargs: {"success": True, "routing": existing_routing},
     )
 
-    result = local_ai_mcp.local_ai_repo(action="search", query="routing", extra_fields=["routing"])
+    result = local_ai_mcp.local_ai_repo(action="search", root=str(Path(__file__).resolve().parents[1]), query="routing", extra_fields=["routing"])
 
     assert result["routing"]["value"] == existing_routing
     assert result["routing"]["semantic_handoff"] == semantic_handoff_hint(
@@ -393,7 +397,7 @@ def test_repo_evidence_recommendation_preserves_used_adoption(monkeypatch, tmp_p
     monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
     monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *_args, **_kwargs: {"success": True})
 
-    local_ai_mcp.local_ai_repo(action="search", query="routing", extra_fields=["routing"])
+    local_ai_mcp.local_ai_repo(action="search", root=str(Path(__file__).resolve().parents[1]), query="routing", extra_fields=["routing"])
 
     totals = store.report(days=1)["totals"]
     assert totals["used"] == 1
@@ -408,7 +412,7 @@ def test_prepopulated_handoff_is_not_counted_as_new_recommendation(monkeypatch, 
     existing_hint = {"required": False, "tool": "external", "actions": [], "bypass_tool": "", "bypass_action": ""}
     monkeypatch.setattr(local_ai_mcp.CLIENT, "post", lambda *_args, **_kwargs: {"success": True, "routing": {"semantic_handoff": existing_hint}})
 
-    result = local_ai_mcp.local_ai_repo(action="search", query="routing", extra_fields=["routing"])
+    result = local_ai_mcp.local_ai_repo(action="search", root=str(Path(__file__).resolve().parents[1]), query="routing", extra_fields=["routing"])
 
     assert result["routing"]["semantic_handoff"]
     assert store.report(days=1)["totals"]["recommended"] == 0
@@ -959,3 +963,47 @@ def test_async_job_submit_rejects_conversation_before_http(monkeypatch):
     assert result["terminal"] is True
     assert result["retryable"] is False
     assert calls == []
+
+
+def test_agent_output_recursively_removes_internal_diagnostics_by_default() -> None:
+    value = {
+        "success": True,
+        "payload": {
+            "answer": "keep",
+            "telemetry": {"requests": 17},
+            "nested": [{"debug": "private", "text": "keep too"}],
+        },
+        "results": [{"path": "src/app.py", "diagnostics": {"trace": "private"}}],
+    }
+
+    result = local_ai_mcp._agent_output(value, "local_ai_repo", {})
+
+    assert result == {
+        "success": True,
+        "payload": {"answer": "keep", "nested": [{"text": "keep too"}]},
+        "results": [{"path": "src/app.py"}],
+    }
+
+
+def test_agent_output_keeps_only_explicitly_requested_nested_diagnostics() -> None:
+    value = {"payload": {"telemetry": {"requests": 2}, "debug": "private"}}
+
+    result = local_ai_mcp._agent_output(
+        value,
+        "local_ai_repo",
+        {"extra_fields": ["telemetry"]},
+    )
+
+    assert result == {"payload": {"telemetry": {"requests": 2}}}
+
+
+def test_operational_mode_keeps_bounded_repo_search_available() -> None:
+    assert local_ai_mcp._classify_mcp_operation(
+        "local_ai_repo", {"action": "search"}
+    ) == ("search", False)
+    assert local_ai_mcp._classify_mcp_operation(
+        "local_ai_repo", {"action": "context"}
+    ) == ("context", True)
+    assert local_ai_mcp._classify_mcp_operation(
+        "local_ai_artifact", {"action": "get"}
+    ) == ("get", False)

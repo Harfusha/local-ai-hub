@@ -18,7 +18,7 @@ from typing import Any
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
-from .process_utils import hidden_run_kwargs, pid_alive, process_executable, terminate_tree
+from .process_utils import hidden_run_kwargs, pid_alive, popen_managed, process_executable, terminate_tree
 
 LLAMA_VERSION = "b10964"
 MODEL_REVISION = "38f6bab61d341b23a6c00226f32c0d6148bf9f43"
@@ -92,6 +92,7 @@ class LlamaCppManagedRuntime:
         self.mode_path = self.state_dir / "llama.cpp.managed-mode"
         self.log_path = self.state_dir / "logs" / "llama.cpp-server.log"
         self._lock = threading.Lock()
+        self._managed_process: subprocess.Popen[Any] | None = None
         self._retry_after = 0.0
         self._last_error = ""
 
@@ -367,6 +368,23 @@ class LlamaCppManagedRuntime:
             time.sleep(0.25)
         return False
 
+    @staticmethod
+    def _terminate_owned_process(process: subprocess.Popen[Any], grace_seconds: float) -> bool:
+        tree_stopped = False
+        try:
+            tree_stopped = terminate_tree(
+                process.pid,
+                grace_seconds=grace_seconds,
+                process_handle=process,
+            )
+        except Exception:
+            pass
+        try:
+            process.wait(timeout=max(0.1, min(grace_seconds, 5.0)))
+            return tree_stopped
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+
     def ensure_running(self) -> bool:
         if self.is_online():
             return True
@@ -385,10 +403,20 @@ class LlamaCppManagedRuntime:
                 stale_pid = int(self.pid_path.read_text(encoding="utf-8").strip() or 0)
             except (OSError, ValueError):
                 stale_pid = 0
-            if stale_pid and pid_alive(stale_pid):
-                executable = Path(process_executable(stale_pid) or "").name.lower()
-                if executable in {"llama-server", "llama-server.exe"}:
-                    terminate_tree(stale_pid, grace_seconds=2.0)
+            if stale_pid:
+                owned_process = self._managed_process
+                if owned_process is not None and owned_process.pid == stale_pid:
+                    if not self._terminate_owned_process(owned_process, 2.0):
+                        self._last_error = "Existing llama-server could not be stopped safely."
+                        self._retry_after = time.monotonic() + 60.0
+                        return False
+                    self._managed_process = None
+                elif pid_alive(stale_pid):
+                    executable = Path(process_executable(stale_pid) or "").name.lower()
+                    if executable in {"llama-server", "llama-server.exe"}:
+                        self._last_error = "Cannot safely recycle an existing llama-server without its owned process handle."
+                        self._retry_after = time.monotonic() + 60.0
+                        return False
             self.pid_path.unlink(missing_ok=True)
             port, url = self._port_and_url()
             binary = self._find_server(self.runtime_dir)
@@ -409,21 +437,27 @@ class LlamaCppManagedRuntime:
                 proc: subprocess.Popen[Any] | None = None
                 with self.log_path.open("ab") as log_file:
                     try:
-                        proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT, **kwargs)
+                        proc = popen_managed(args, stdin=subprocess.DEVNULL, stdout=log_file, stderr=subprocess.STDOUT, **kwargs)
                         self.pid_path.write_text(str(proc.pid), encoding="utf-8")
                     except Exception:
                         if proc is not None:
-                            terminate_tree(proc.pid, grace_seconds=2.0)
+                            if not self._terminate_owned_process(proc, 2.0):
+                                self._managed_process = proc
                         self._last_error = "Could not start llama-server. See state/logs/llama.cpp-server.log."
                         self._retry_after = time.monotonic() + 60.0
                         return False
                 if proc is not None and self._ready(url, wait_seconds, proc):
+                    self._managed_process = proc
                     self.mode_path.write_text(device, encoding="utf-8")
                     self._last_error = ""
                     self._retry_after = 0.0
                     return True
                 if proc is not None:
-                    terminate_tree(proc.pid, grace_seconds=2.0)
+                    if not self._terminate_owned_process(proc, 2.0):
+                        self._managed_process = proc
+                        self._last_error = "llama-server could not be stopped after a failed health check. See state/logs/llama.cpp-server.log."
+                        self._retry_after = time.monotonic() + 60.0
+                        return False
                 self.pid_path.unlink(missing_ok=True)
             self._last_error = "llama-server did not become healthy in SYCL/CPU mode. See state/logs/llama.cpp-server.log."
             self._retry_after = time.monotonic() + 60.0
@@ -434,11 +468,17 @@ class LlamaCppManagedRuntime:
             pid = int(self.pid_path.read_text(encoding="utf-8").strip() or 0)
         except (OSError, ValueError):
             return False
-        executable = Path(process_executable(pid) or "").name.lower()
-        if not pid_alive(pid) or executable not in {"llama-server", "llama-server.exe"}:
-            self.pid_path.unlink(missing_ok=True)
-            return False
-        stopped = terminate_tree(pid, grace_seconds=3.0)
+        process = self._managed_process
+        if process is not None and process.pid == pid:
+            stopped = self._terminate_owned_process(process, 3.0)
+            if stopped:
+                self._managed_process = None
+        else:
+            executable = Path(process_executable(pid) or "").name.lower()
+            if not pid_alive(pid) or executable not in {"llama-server", "llama-server.exe"}:
+                self.pid_path.unlink(missing_ok=True)
+                return False
+            stopped = terminate_tree(pid, grace_seconds=3.0)
         if stopped:
             self.pid_path.unlink(missing_ok=True)
         return stopped

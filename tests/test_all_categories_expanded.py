@@ -103,6 +103,11 @@ def test_generate_tests_for_diff(tmp_path: Path):
     assert test_gen["success"] is True
     assert "test_add_regression" in test_gen["test_skeleton"]
     assert "calculator" in test_gen["target_modules"]
+    assert "pytest.mark.skip" in test_gen["test_skeleton"]
+    assert "assert True" not in test_gen["test_skeleton"]
+    assert "pass\n" not in test_gen["test_skeleton"]
+    assert test_gen["complete"] is False
+    assert test_gen["requires_review"] is True
 
 
 def test_cross_repo_contract(tmp_path: Path):
@@ -331,9 +336,14 @@ def test_vram_context_scaling():
     prof_1g = policy.profile("qwen2.5-coder:7b", requested_ctx=49152, vram_free_mb=1024)
     assert prof_1g.num_ctx == 8192
 
-    # If 3GB VRAM, context clamped to 16384
+    # Large models stay at 8K below 8GB free VRAM; this safety cap was added
+    # after the original scaling expectation.
     prof_3g = policy.profile("qwen2.5-coder:7b", requested_ctx=49152, vram_free_mb=3072)
-    assert prof_3g.num_ctx == 16384
+    assert prof_3g.num_ctx == 8192
+
+    # Small models may use the 16K tier when 3GB is free.
+    prof_3g_small = policy.profile("qwen2.5-coder:3b", requested_ctx=49152, vram_free_mb=3072)
+    assert prof_3g_small.num_ctx == 16384
 
     # The model's 32K context cap applies even with 12GB VRAM.
     prof_12g = policy.profile("qwen2.5-coder:7b", requested_ctx=49152, vram_free_mb=12288)

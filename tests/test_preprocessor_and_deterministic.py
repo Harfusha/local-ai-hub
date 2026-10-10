@@ -7,6 +7,8 @@ import sqlite3
 import threading
 import time
 
+import pytest
+
 from local_ai_hub.code_index import CodeIndex
 from local_ai_hub.config import load_config
 from local_ai_hub.deterministic import DeterministicEngine
@@ -54,7 +56,7 @@ class _RecordingCodeIndex:
         self.pending = []
 
     def prune(self, root, paths):
-        return None
+        return {"success": True}
 
     def _connect(self):
         return sqlite3.connect(":memory:")
@@ -873,8 +875,8 @@ def test_deterministic_prune_removes_stale_facts_and_fts_rows(tmp_path: Path):
                 "INSERT INTO fact_fts(root,path,kind,name,value) VALUES(?,?,?,?,?)",
                 (root, "gone.py", "symbol", "gone", "gone"),
             )
-        except Exception:
-            pass
+        except sqlite3.OperationalError as exc:
+            assert "no such table: fact_fts" in str(exc).lower()
         con.commit()
 
     assert engine.prune(root, ["keep.py"]) == 1
@@ -890,8 +892,19 @@ def test_deterministic_prune_removes_stale_facts_and_fts_rows(tmp_path: Path):
             assert con.execute(
                 "SELECT 1 FROM fact_fts WHERE root=? AND path=?", (root, "gone.py")
             ).fetchone() is None
-        except Exception:
-            pass
+        except sqlite3.OperationalError as exc:
+            assert "no such table: fact_fts" in str(exc).lower()
+
+
+def test_malformed_npm_metadata_is_skipped_with_safe_diagnostic(tmp_path: Path, caplog):
+    cfg = _cfg(tmp_path)
+    engine = DeterministicEngine(cfg, RepositoryTools(cfg), None)
+    with caplog.at_level("DEBUG", logger="local_ai_hub.deterministic"):
+        engine._extract_infra_facts("package.json", "{")
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("Npm package metadata skipped (JSONDecodeError)" in message for message in messages)
+    assert all(str(tmp_path) not in message for message in messages)
 
 
 def test_security_audit_uses_repository_iterator(tmp_path: Path):
@@ -905,3 +918,44 @@ def test_security_audit_uses_repository_iterator(tmp_path: Path):
     result = engine.security_audit(str(repo), limit=10)
     assert result["success"] is True
     assert "findings" in result
+
+
+def test_exact_evidence_propagates_unexpected_store_errors(tmp_path: Path):
+    class SnapshotRepo:
+        @staticmethod
+        def _read_snapshot(path: Path):
+            return "sha256", ["source line"]
+
+    class BrokenEvidenceStore:
+        @staticmethod
+        def put(root: str, item: dict[str, object]):
+            raise RuntimeError("unexpected evidence store failure")
+
+    engine = DeterministicEngine({}, SnapshotRepo(), evidence=BrokenEvidenceStore())
+
+    with pytest.raises(RuntimeError, match="unexpected evidence store failure"):
+        engine._exact_evidence(str(tmp_path), [{"path": "source.py", "line": 1}])
+
+
+def test_exact_evidence_skips_unreadable_source_with_safe_diagnostic(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+):
+    class UnreadableRepo:
+        @staticmethod
+        def _read_snapshot(path: Path):
+            raise PermissionError(f"private path: {path}")
+
+    class UnusedEvidenceStore:
+        @staticmethod
+        def put(root: str, item: dict[str, object]):
+            raise AssertionError("unreadable source must not be stored")
+
+    engine = DeterministicEngine({}, UnreadableRepo(), evidence=UnusedEvidenceStore())
+
+    with caplog.at_level("DEBUG", logger="local_ai_hub.deterministic"):
+        result = engine._exact_evidence(str(tmp_path), [{"path": "private.py", "line": 1}])
+
+    assert result == []
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("Exact evidence source skipped (PermissionError)" in message for message in messages)
+    assert all(str(tmp_path) not in message for message in messages)

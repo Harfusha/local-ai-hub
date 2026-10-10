@@ -14,6 +14,8 @@ from local_ai_hub.client import HubClient
 def test_public_http_conversation_auth_stream_cancel_and_deadline(tmp_path, monkeypatch) -> None:
     from contextlib import ExitStack
     from local_ai_hub.agent_events import AgentEvent
+    from local_ai_hub.agent_identity import ScopeContext
+    from local_ai_hub.agent_tasks import GoalContract
     from local_ai_hub.app import LocalAIApp
 
     token = "T04_PUBLIC_HTTP_STREAM_SECRET_123"
@@ -25,7 +27,9 @@ def test_public_http_conversation_auth_stream_cancel_and_deadline(tmp_path, monk
         config.write_text(
             f'[server]\nbind="127.0.0.1"\nport={server.server_address[1]}\n'
             f'state_dir="{(tmp_path / "state").as_posix()}"\nmax_stream_duration_seconds=5\n'
-            f'[security]\napi_token="{token}"\n[agent_state]\nenabled=true\n',
+            f'[security]\napi_token="{token}"\n'
+            f'api_token_tenant="test-principal"\ntenant_derivation_key="test-derivation-key-material-32-bytes-min"\n'
+            f'allowed_roots=["{tmp_path.as_posix()}"]\n[agent_state]\nenabled=true\n',
             encoding="utf-8",
         )
         app = LocalAIApp(str(config))
@@ -38,6 +42,8 @@ def test_public_http_conversation_auth_stream_cancel_and_deadline(tmp_path, monk
 
         app.services._generate = fake_generate
         monkeypatch.setattr(http_server, "APP", app)
+        monkeypatch.setattr(http_server, "_ACTIVE_TRANSCRIPTIONS", http_server._ActiveTranscriptionRegistry())
+        monkeypatch.setattr(http_server, "_ACTIVE_CONVERSATIONS", http_server._ActiveTranscriptionRegistry())
         server_thread = threading.Thread(target=server.serve_forever, daemon=True)
         server_thread.start()
 
@@ -57,11 +63,36 @@ def test_public_http_conversation_auth_stream_cancel_and_deadline(tmp_path, monk
         )
         unauth_client = HubClient(config_path=str(unauth_config), auto_start=False)
         cleanup.callback(unauth_client.close)
-        stream_id = "t04-public-auth-cancel"
+        root = tmp_path
+        assert http_server._root_is_allowed(
+            http_server._strict_root_path(str(root)), app.config["security"]["allowed_roots"]
+        )
+        task_id = "t04-public-auth-cancel"
+        root_tenant = http_server._derive_root_tenant(
+            "test-principal",
+            str(root.resolve()),
+            "test-derivation-key-material-32-bytes-min",
+        )
+        app.agent_tasks.create(
+            GoalContract(goal="verify scoped event streaming"),
+            ScopeContext(repository_id=str(root), session_id=root_tenant, task_id=task_id),
+            task_id=task_id,
+            actor="agent",
+            repo_root=str(root),
+        )
+        deadline_task_id = "t04-public-deadline"
+        app.agent_tasks.create(
+            GoalContract(goal="verify scoped event deadline"),
+            ScopeContext(repository_id=str(root), session_id=root_tenant, task_id=deadline_task_id),
+            task_id=deadline_task_id,
+            actor="agent",
+            repo_root=str(root),
+        )
+        stream_id = f"task:{task_id}"
         appended = app.agent_state.append(
             AgentEvent.create(stream_id, "update", {"public": True}, idempotency_key="t04-public-seed")
         )
-        assert appended.error is None
+        assert appended.error is None, appended.error
         unauthorized_events = unauth_client.stream_events(stream_id=stream_id, timeout=1)
         cleanup.callback(unauthorized_events.close)
         authorized_events = None
@@ -73,11 +104,17 @@ def test_public_http_conversation_auth_stream_cancel_and_deadline(tmp_path, monk
             assert denied["status_code"] == 401
             assert generated == []
 
+            release_active_before_start = app.async_jobs.resource_release_active()
+            assert release_active_before_start is False
             started = client.post(
                 "/api/delegate", {"task": "authenticated start", "conversation": True}
             )
+            assert app.async_jobs.resource_release_active() is release_active_before_start
+            assert started["success"] is True, {
+                "started": started,
+                "scheduler": app.scheduler.status(),
+            }
             continued = client.continue_conversation(started["conversation_id"], "authenticated follow-up")
-            assert started["success"] is True
             assert continued["success"] is True
             assert continued["conversation_id"] == started["conversation_id"]
             assert len(generated) == 2
@@ -89,11 +126,16 @@ def test_public_http_conversation_auth_stream_cancel_and_deadline(tmp_path, monk
 
             cancel = threading.Event()
             authorized_events = client.stream_events(
-                stream_id=stream_id, timeout=0, cancel_event=cancel
+                stream_id=stream_id, root=str(root), timeout=0, cancel_event=cancel
             )
             cleanup.callback(authorized_events.close)
-            kind, payload = next(authorized_events)
+            try:
+                kind, payload = next(authorized_events)
+            except HTTPError as exc:
+                pytest.fail(f"authorized event stream rejected ({exc.code}): {exc.read()!r}")
             if kind == "replay_page":
+                kind, payload = next(authorized_events)
+            if kind == "task.created":
                 kind, payload = next(authorized_events)
             assert kind == "update"
             assert payload["payload"] == {"public": True}
@@ -101,7 +143,10 @@ def test_public_http_conversation_auth_stream_cancel_and_deadline(tmp_path, monk
 
             def read_next():
                 started.set()
-                return next(authorized_events, None)
+                while True:
+                    item = next(authorized_events, None)
+                    if item is None or item[0] != "replay_page":
+                        return item
 
             with ThreadPoolExecutor(max_workers=1) as pool:
                 pending = pool.submit(read_next)
@@ -115,7 +160,12 @@ def test_public_http_conversation_auth_stream_cancel_and_deadline(tmp_path, monk
             assert cancel_wake.error is None
 
             client.max_request_timeout = 0.2
-            deadline_events = client.stream_events(stream_id="t04-public-deadline", timeout=0)
+            deadline_events = client.stream_events(
+                stream_id=f"task:{deadline_task_id}",
+                root=str(root),
+                kind="update",
+                timeout=0,
+            )
             cleanup.callback(deadline_events.close)
             started_at = time.monotonic()
             kind, result = next(deadline_events)
@@ -126,7 +176,7 @@ def test_public_http_conversation_auth_stream_cancel_and_deadline(tmp_path, monk
             assert result["outcome_unknown"] is True
             assert time.monotonic() - started_at < 1.0
             deadline_wake = app.agent_state.append(
-                AgentEvent.create("t04-public-deadline", "update", {"wake": "deadline"}, idempotency_key="t04-deadline-wake")
+                AgentEvent.create(f"task:{deadline_task_id}", "update", {"wake": "deadline"}, idempotency_key="t04-deadline-wake")
             )
             assert deadline_wake.error is None
         finally:

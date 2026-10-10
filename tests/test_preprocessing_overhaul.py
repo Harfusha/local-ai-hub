@@ -420,6 +420,418 @@ def test_worktree_cache_inheritance(mock_repo: Path, tmp_path: Path):
         assert "foo.py" in hs["data_json"]
 
 
+def test_worktree_cache_seed_logs_expected_sqlite_failures_without_paths(tmp_path: Path, monkeypatch, caplog):
+    config = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "preprocessing": {"enabled": True},
+    }
+    parent = tmp_path / "parent"
+    child = tmp_path / "child"
+    parent.mkdir()
+    child.mkdir()
+
+    class BrokenCacheStore:
+        def _connect(self):
+            raise sqlite3.OperationalError("database is locked")
+
+    repo_tools = RepositoryTools(config)
+    pre = ProjectPreprocessor(
+        config,
+        services=None,
+        rag=None,
+        scheduler=None,
+        runtime=None,
+        repo_tools=repo_tools,
+        code_index=BrokenCacheStore(),
+        deterministic=BrokenCacheStore(),
+    )
+    monkeypatch.setattr(pre, "_connect", BrokenCacheStore()._connect)
+    try:
+        with caplog.at_level("WARNING", logger="local_ai_hub.preprocess"):
+            stats = pre._seed_from_parent(str(child), str(parent))
+
+        assert stats == {"file_refs": 0, "code_index": 0, "deterministic": 0}
+        messages = [record.getMessage() for record in caplog.records]
+        assert len(messages) == 3
+        assert all("OperationalError" in message for message in messages)
+        assert all(str(tmp_path) not in message for message in messages)
+    finally:
+        pre.close()
+
+
+def test_worktree_cache_seed_propagates_unexpected_errors(tmp_path: Path, monkeypatch):
+    config = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "preprocessing": {"enabled": True},
+    }
+    parent = tmp_path / "parent"
+    child = tmp_path / "child"
+    parent.mkdir()
+    child.mkdir()
+    repo_tools = RepositoryTools(config)
+    pre = ProjectPreprocessor(
+        config,
+        services=None,
+        rag=None,
+        scheduler=None,
+        runtime=None,
+        repo_tools=repo_tools,
+    )
+
+    def fail_with_programming_error():
+        raise RuntimeError("unexpected cache seed defect")
+
+    monkeypatch.setattr(pre, "_connect", fail_with_programming_error)
+    try:
+        with pytest.raises(RuntimeError, match="unexpected cache seed defect"):
+            pre._seed_from_parent(str(child), str(parent))
+    finally:
+        pre.close()
+
+
+def test_temp_project_filter_fails_closed_when_temp_path_cannot_be_resolved(tmp_path: Path, monkeypatch, caplog):
+    from local_ai_hub import preprocess as preprocess_module
+
+    config = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "preprocessing": {"enabled": True, "reject_temp_projects": True},
+    }
+    pre = ProjectPreprocessor(
+        config,
+        services=None,
+        rag=None,
+        scheduler=None,
+        runtime=None,
+        repo_tools=RepositoryTools(config),
+    )
+
+    def fail_tempdir():
+        raise OSError("temporary directory unavailable")
+
+    monkeypatch.setattr(preprocess_module.tempfile, "gettempdir", fail_tempdir)
+    try:
+        with caplog.at_level("WARNING", logger="local_ai_hub.preprocess"):
+            assert pre._is_ephemeral_root(str(tmp_path / "project")) is True
+
+        assert any("OSError" in record.getMessage() for record in caplog.records)
+        assert all(str(tmp_path) not in record.getMessage() for record in caplog.records)
+    finally:
+        pre.close()
+
+
+def test_unregister_logs_derived_cache_purge_failure_without_project_path(tmp_path: Path, caplog):
+    config = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "preprocessing": {"enabled": True},
+    }
+
+    class BrokenCodeIndex:
+        def _connect(self):
+            raise sqlite3.OperationalError("database is locked")
+
+    root = tmp_path / "repository"
+    root.mkdir()
+    pre = ProjectPreprocessor(
+        config,
+        services=None,
+        rag=None,
+        scheduler=None,
+        runtime=None,
+        repo_tools=RepositoryTools(config),
+        code_index=BrokenCodeIndex(),
+    )
+    pre._init_db()
+    try:
+        with caplog.at_level("WARNING", logger="local_ai_hub.preprocess"):
+            result = pre.unregister(str(root), purge_data=True)
+
+        assert result["success"] is True
+        assert result["purged"] is True
+        messages = [record.getMessage() for record in caplog.records]
+        assert len(messages) == 1
+        assert "OperationalError" in messages[0]
+        assert str(root) not in messages[0]
+    finally:
+        pre.close()
+
+
+def test_unregister_rolls_back_when_required_source_fts_table_is_missing(tmp_path: Path):
+    config = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "preprocessing": {"enabled": True},
+    }
+    root = tmp_path / "repository"
+    root.mkdir()
+
+    class WorkspaceIdProvider:
+        @staticmethod
+        def workspace_id(path: str) -> str:
+            return Path(path).name
+
+    class SchedulerStub:
+        @staticmethod
+        def background_allowed() -> bool:
+            return True
+
+    pre = ProjectPreprocessor(
+        config,
+        services=None,
+        rag=WorkspaceIdProvider(),
+        scheduler=SchedulerStub(),
+        runtime=None,
+        repo_tools=RepositoryTools(config),
+    )
+    pre._init_db()
+    try:
+        assert pre.register(str(root))["success"] is True
+        with closing(pre._connect()) as con:
+            con.execute("DROP TABLE source_fts")
+            con.commit()
+
+        with pytest.raises(sqlite3.OperationalError, match="no such table: source_fts"):
+            pre.unregister(str(root), purge_data=True)
+
+        with closing(pre._connect()) as con:
+            row = con.execute("SELECT root FROM projects WHERE root=?", (pre._root(str(root)),)).fetchone()
+        assert row is not None
+    finally:
+        pre.close()
+
+
+def test_missing_file_prune_rolls_back_when_required_source_fts_table_is_missing(tmp_path: Path):
+    config = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "preprocessing": {"enabled": True},
+    }
+    root = tmp_path / "repository"
+    root.mkdir()
+    pre = ProjectPreprocessor(
+        config,
+        services=None,
+        rag=None,
+        scheduler=None,
+        runtime=None,
+        repo_tools=RepositoryTools(config),
+    )
+    pre._init_db()
+    resolved = pre._root(str(root))
+    try:
+        with closing(pre._connect()) as con:
+            con.execute(
+                "INSERT INTO file_refs(root,path,content_hash,size,generation,updated_at) VALUES(?,?,?,?,?,?)",
+                (resolved, "deleted.py", "content-hash", 10, 0, 1.0),
+            )
+            con.execute(
+                "INSERT INTO source_index(root,path,content_hash,text,updated_at) VALUES(?,?,?,?,?)",
+                (resolved, "deleted.py", "content-hash", "stale source", 1.0),
+            )
+            con.execute("DROP TABLE source_fts")
+            con.commit()
+
+        with pytest.raises(sqlite3.OperationalError, match="no such table: source_fts"):
+            pre._prune_missing_file_refs(str(root))
+
+        with closing(pre._connect()) as con:
+            assert con.execute(
+                "SELECT 1 FROM file_refs WHERE root=? AND path=?", (resolved, "deleted.py")
+            ).fetchone() is not None
+            assert con.execute(
+                "SELECT 1 FROM source_index WHERE root=? AND path=?", (resolved, "deleted.py")
+            ).fetchone() is not None
+    finally:
+        pre.close()
+
+
+def test_rag_skip_keeps_file_pending_when_stale_rows_cannot_be_removed(tmp_path: Path):
+    config = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "preprocessing": {"enabled": True, "skip_rag_for_deterministic_declarative": True},
+    }
+    root = tmp_path / "repository"
+    root.mkdir()
+
+    class FailingRag:
+        def remove_paths(self, *_args, **_kwargs):
+            raise RuntimeError("RAG cleanup failed")
+
+    class Deterministic:
+        def semantic_needed(self, *_args, **_kwargs):
+            return False
+
+    pre = ProjectPreprocessor(
+        config,
+        services=None,
+        rag=FailingRag(),
+        scheduler=None,
+        runtime=None,
+        repo_tools=RepositoryTools(config),
+        deterministic=Deterministic(),
+    )
+    pre._init_db()
+    resolved = pre._root(str(root))
+    pre._yield = lambda: False
+    try:
+        with closing(pre._connect()) as con:
+            con.execute(
+                "INSERT INTO file_refs(root,path,content_hash,size,generation,updated_at) VALUES(?,?,?,?,?,?)",
+                (resolved, "settings.json", "content-hash", 10, 0, 1.0),
+            )
+            con.commit()
+
+        with pytest.raises(RuntimeError, match="RAG cleanup failed"):
+            pre._step_rag({"root": resolved, "workspace": str(root), "generation": 0})
+
+        with closing(pre._connect()) as con:
+            row = con.execute(
+                "SELECT rag_hash FROM file_refs WHERE root=? AND path=?",
+                (resolved, "settings.json"),
+            ).fetchone()
+        assert row is not None and row["rag_hash"] is None
+    finally:
+        pre.close()
+
+
+def test_lexical_index_does_not_store_empty_text_when_source_read_fails(tmp_path: Path):
+    config = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "preprocessing": {"enabled": True, "compact_lexical_for_deterministic_declarative": False},
+    }
+    root = tmp_path / "repository"
+    root.mkdir()
+    pre = ProjectPreprocessor(
+        config,
+        services=None,
+        rag=None,
+        scheduler=None,
+        runtime=None,
+        repo_tools=RepositoryTools(config),
+    )
+    pre._init_db()
+    resolved = pre._root(str(root))
+    try:
+        with closing(pre._connect()) as con:
+            con.execute(
+                "INSERT INTO file_refs(root,path,content_hash,size,generation,updated_at) VALUES(?,?,?,?,?,?)",
+                (resolved, "missing.py", "content-hash", 10, 0, 1.0),
+            )
+            con.commit()
+
+        with pytest.raises(FileNotFoundError):
+            pre._step_lexical({"root": resolved})
+
+        with closing(pre._connect()) as con:
+            assert con.execute(
+                "SELECT 1 FROM source_index WHERE root=? AND path=?", (resolved, "missing.py")
+            ).fetchone() is None
+    finally:
+        pre.close()
+
+
+def test_disabled_code_index_cleanup_failure_does_not_advance_phase(tmp_path: Path, monkeypatch):
+    config = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "preprocessing": {"enabled": True},
+    }
+    root = tmp_path / "repository"
+    root.mkdir()
+
+    class FailedCodeIndex:
+        def prune(self, _root, _paths):
+            return {"success": False, "error": "private database detail"}
+
+    pre = ProjectPreprocessor(
+        config,
+        services=None,
+        rag=None,
+        scheduler=None,
+        runtime=None,
+        repo_tools=RepositoryTools(config),
+        code_index=FailedCodeIndex(),
+    )
+    pre._init_db()
+    set_calls = []
+    monkeypatch.setattr(pre, "_background_work_allowed", lambda: True)
+    monkeypatch.setattr(pre, "_yield", lambda: False)
+    monkeypatch.setattr(pre, "_project_phase_allowed", lambda *_args: False)
+    monkeypatch.setattr(pre, "_set_project", lambda _root, **kwargs: set_calls.append(kwargs))
+    try:
+        with pytest.raises(RuntimeError, match="code index cleanup failed"):
+            pre._step({"root": str(root), "phase": "code_index"})
+
+        assert {"phase": "deterministic"} not in set_calls
+    finally:
+        pre.close()
+
+
+def test_code_index_prune_failure_does_not_mark_generation_pruned(tmp_path: Path, monkeypatch):
+    config = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "preprocessing": {"enabled": True},
+    }
+    root = tmp_path / "repository"
+    root.mkdir()
+
+    class FailedCodeIndex:
+        def prune(self, _root, _paths):
+            return {"success": False, "error": "private database detail"}
+
+    pre = ProjectPreprocessor(
+        config,
+        services=None,
+        rag=None,
+        scheduler=None,
+        runtime=None,
+        repo_tools=RepositoryTools(config),
+        code_index=FailedCodeIndex(),
+    )
+    pre._init_db()
+    resolved = pre._root(str(root))
+    monkeypatch.setattr(pre, "_project_settings", lambda _root: None)
+    try:
+        with pytest.raises(RuntimeError, match="code index prune failed"):
+            pre._step_code_index({"root": resolved, "generation": 0})
+
+        assert (resolved, 0) not in getattr(pre, "_code_index_pruned_generations", set())
+    finally:
+        pre.close()
+
+
+def test_diagnostic_profile_failure_does_not_mark_phase_complete(tmp_path: Path, monkeypatch):
+    config = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "preprocessing": {"enabled": True, "idle_diagnostics_enabled": True},
+    }
+
+    class FailedServices:
+        def repo_profile(self, _root):
+            raise RuntimeError("profile lookup failed")
+
+    class AvailableScheduler:
+        def background_allowed(self):
+            return True
+
+        def foreground_busy(self):
+            return False
+
+    pre = ProjectPreprocessor(
+        config,
+        services=FailedServices(),
+        rag=None,
+        scheduler=AvailableScheduler(),
+        runtime=None,
+        repo_tools=RepositoryTools(config),
+    )
+    set_calls = []
+    monkeypatch.setattr(pre, "_set_project", lambda _root, **kwargs: set_calls.append(kwargs))
+    try:
+        with pytest.raises(RuntimeError, match="profile lookup failed"):
+            pre._step_diagnostics({"root": str(tmp_path), "workspace": str(tmp_path)})
+
+        assert not any(call.get("phase") == "complete" for call in set_calls)
+    finally:
+        pre.close()
+
+
 def test_code_index_find_callers_and_callees(tmp_path: Path):
     state_dir = tmp_path / "state"
     config = {

@@ -10,6 +10,13 @@ import pytest
 from local_ai_hub import process_utils
 
 
+class _ProcessHandle:
+    def __init__(self, pid: int, returncode: int | None = None) -> None:
+        self.pid = pid
+        self.returncode = returncode
+        self._waitpid_lock = threading.Lock()
+
+
 @pytest.mark.parametrize("pid", [0, -1, True, "123", 2**32])
 def test_process_identity_rejects_invalid_pid(pid):
     assert process_utils.process_identity(pid) is None
@@ -186,7 +193,7 @@ def test_run_hidden_timeout_terminates_tree_before_reporting_timeout(monkeypatch
     monkeypatch.setattr(
         process_utils,
         "terminate_tree",
-        lambda pid, *, process_group=None: calls.append((pid, process_group)) or True,
+        lambda pid, *, process_group=None, process_handle=None: calls.append((pid, process_group)) or True,
     )
 
     with pytest.raises(subprocess.TimeoutExpired) as raised:
@@ -223,7 +230,7 @@ def test_run_hidden_cancellation_terminates_tree_and_drains_output(monkeypatch):
     monkeypatch.setattr(
         process_utils,
         "terminate_tree",
-        lambda pid, *, process_group=None, grace_seconds=5.0: calls.append(
+        lambda pid, *, process_group=None, grace_seconds=5.0, process_handle=None: calls.append(
             (pid, process_group, grace_seconds)
         )
         or True,
@@ -242,13 +249,15 @@ def test_run_hidden_cancellation_terminates_tree_and_drains_output(monkeypatch):
 
 def test_run_hidden_timeout_terminates_explicit_posix_process_group(monkeypatch):
     process = _FakeProcess([subprocess.TimeoutExpired(["tool"], 0.01)])
+    process.returncode = None
+    process._waitpid_lock = threading.Lock()
     calls = []
     monkeypatch.setattr(process_utils.os, "name", "posix")
     monkeypatch.setattr(process_utils.subprocess, "Popen", lambda *a, **k: process)
     monkeypatch.setattr(
         process_utils,
         "terminate_tree",
-        lambda pid, *, process_group=None: calls.append((pid, process_group)) or True,
+        lambda pid, *, process_group=None, process_handle=None: calls.append((pid, process_group)) or True,
     )
 
     with pytest.raises(subprocess.TimeoutExpired):
@@ -271,7 +280,7 @@ def test_run_hidden_timeout_keeps_explicit_no_session_descendants_owned(monkeypa
     monkeypatch.setattr(
         process_utils,
         "terminate_tree",
-        lambda pid, *, process_group=None: terminated.append((pid, process_group)) or True,
+        lambda pid, *, process_group=None, process_handle=None: terminated.append((pid, process_group)) or True,
     )
 
     with pytest.raises(subprocess.TimeoutExpired):
@@ -286,8 +295,10 @@ def test_terminate_tree_escalates_explicit_group_when_leader_owned(monkeypatch):
     calls = []
     ticks = iter([0.0, 0.0, 1.0])
     expected = {"pid": 4321, "creation_identity": 1234}
+    process_handle = _ProcessHandle(4321)
 
     def killpg(group_id, sig):
+        assert process_handle._waitpid_lock.locked()
         calls.append((group_id, sig))
         if sig == 0 and calls.count((7777, 0)) > 1:
             raise ProcessLookupError
@@ -301,7 +312,13 @@ def test_terminate_tree_escalates_explicit_group_when_leader_owned(monkeypatch):
     monkeypatch.setattr(process_utils.time, "monotonic", lambda: next(ticks, 10.0))
     monkeypatch.setattr(process_utils.time, "sleep", lambda seconds: None)
 
-    assert process_utils.terminate_tree(4321, process_group=7777, expected_identity=expected, grace_seconds=0.1)
+    assert process_utils.terminate_tree(
+        4321,
+        process_group=7777,
+        expected_identity=expected,
+        grace_seconds=0.1,
+        process_handle=process_handle,
+    )
     assert calls == [
         (7777, process_utils.signal.SIGTERM),
         (7777, 0),
@@ -324,7 +341,13 @@ def test_terminate_tree_does_not_signal_reused_pid_after_group_disappears(monkey
     monkeypatch.setattr(process_utils.os, "kill", lambda pid, sig: pid_signals.append((pid, sig)))
     monkeypatch.setattr(process_utils, "pid_alive", lambda pid: True)
 
-    assert process_utils.terminate_tree(4321, process_group=4321, expected_identity=expected, grace_seconds=0.1)
+    assert process_utils.terminate_tree(
+        4321,
+        process_group=4321,
+        expected_identity=expected,
+        grace_seconds=0.1,
+        process_handle=_ProcessHandle(4321),
+    )
     assert pid_signals == []
 
 
@@ -344,9 +367,37 @@ def test_terminate_tree_does_not_escalate_after_group_disappears(monkeypatch):
     monkeypatch.setattr(process_utils, "process_identity", lambda pid: expected if pid == 4321 else None)
     monkeypatch.setattr(process_utils.os, "kill", lambda pid, sig: pid_signals.append((pid, sig)))
 
-    assert process_utils.terminate_tree(4321, process_group=7777, expected_identity=expected, grace_seconds=0.1)
+    assert process_utils.terminate_tree(
+        4321,
+        process_group=7777,
+        expected_identity=expected,
+        grace_seconds=0.1,
+        process_handle=_ProcessHandle(4321),
+    )
     assert signals == [(7777, process_utils.signal.SIGTERM), (7777, 0)]
     assert pid_signals == []
+
+
+def test_terminate_tree_requires_unreaped_process_handle_for_posix_group(monkeypatch):
+    expected = {"pid": 4321, "creation_identity": 1234}
+    calls = []
+
+    monkeypatch.setattr(process_utils.os, "name", "posix")
+    monkeypatch.setattr(process_utils.os, "killpg", lambda *args: calls.append(args), raising=False)
+    monkeypatch.setattr(process_utils.os, "getpgid", lambda _pid: 7777, raising=False)
+    monkeypatch.setattr(process_utils, "process_identity", lambda _pid: expected)
+
+    assert not process_utils.terminate_tree(
+        4321, process_group=7777, expected_identity=expected, grace_seconds=0.1
+    )
+    assert not process_utils.terminate_tree(
+        4321,
+        process_group=7777,
+        expected_identity=expected,
+        grace_seconds=0.1,
+        process_handle=_ProcessHandle(4321, returncode=0),
+    )
+    assert calls == []
 
 
 def test_terminate_tree_does_not_fallback_to_pid_after_group_signal_error(monkeypatch):
@@ -363,7 +414,13 @@ def test_terminate_tree_does_not_fallback_to_pid_after_group_signal_error(monkey
     monkeypatch.setattr(process_utils.os, "kill", lambda pid, sig: pid_signals.append((pid, sig)))
     monkeypatch.setattr(process_utils.signal, "SIGKILL", 9, raising=False)
 
-    assert process_utils.terminate_tree(4321, process_group=7777, expected_identity=expected, grace_seconds=0.1) is False
+    assert process_utils.terminate_tree(
+        4321,
+        process_group=7777,
+        expected_identity=expected,
+        grace_seconds=0.1,
+        process_handle=_ProcessHandle(4321),
+    ) is False
     assert pid_signals == []
 
 
@@ -388,7 +445,13 @@ def test_terminate_tree_stops_when_group_liveness_is_unverifiable(monkeypatch):
     monkeypatch.setattr(process_utils.time, "monotonic", lambda: next(ticks, 10.0))
     monkeypatch.setattr(process_utils.time, "sleep", lambda seconds: None)
 
-    assert process_utils.terminate_tree(4321, process_group=7777, expected_identity=expected, grace_seconds=0.1) is False
+    assert process_utils.terminate_tree(
+        4321,
+        process_group=7777,
+        expected_identity=expected,
+        grace_seconds=0.1,
+        process_handle=_ProcessHandle(4321),
+    ) is False
     assert calls == [(7777, process_utils.signal.SIGTERM), (7777, 0)]
     assert pid_checks == []
 
@@ -414,7 +477,13 @@ def test_terminate_tree_does_not_escalate_when_group_liveness_returns_eperm(monk
     monkeypatch.setattr(process_utils.time, "monotonic", lambda: next(ticks, 10.0))
     monkeypatch.setattr(process_utils.time, "sleep", lambda seconds: None)
 
-    assert process_utils.terminate_tree(4321, process_group=7777, expected_identity=expected, grace_seconds=0.1) is False
+    assert process_utils.terminate_tree(
+        4321,
+        process_group=7777,
+        expected_identity=expected,
+        grace_seconds=0.1,
+        process_handle=_ProcessHandle(4321),
+    ) is False
     assert calls == [(7777, process_utils.signal.SIGTERM), (7777, 0)]
     assert pid_checks == []
 
@@ -447,7 +516,11 @@ def test_run_hidden_cancellation_terminates_process_tree(monkeypatch):
     calls = []
     monkeypatch.setattr(process_utils.os, "name", "posix")
     monkeypatch.setattr(process_utils.subprocess, "Popen", lambda *a, **k: process)
-    monkeypatch.setattr(process_utils, "terminate_tree", lambda pid: calls.append(pid) or True)
+    monkeypatch.setattr(
+        process_utils,
+        "terminate_tree",
+        lambda pid, **_kwargs: calls.append(pid) or True,
+    )
 
     with pytest.raises(KeyboardInterrupt):
         process_utils.run_hidden(["tool"], capture_output=True)
@@ -479,7 +552,7 @@ def test_run_hidden_cancellation_terminates_tree_and_drains_output(monkeypatch):
     calls = []
     monkeypatch.setattr(process_utils.os, "name", "posix")
     monkeypatch.setattr(process_utils.subprocess, "Popen", lambda *a, **k: process)
-    def terminate_tree(pid, *, process_group=None, grace_seconds=5.0):
+    def terminate_tree(pid, *, process_group=None, grace_seconds=5.0, process_handle=None):
         calls.append((pid, process_group, grace_seconds))
         process.returncode = -9
         return True
@@ -720,3 +793,147 @@ def test_run_hidden_timeout_kills_real_windows_descendant_after_root_exit(tmp_pa
             grandchild_pid = int(pid_file.read_text())
         if grandchild_pid is not None:
             _kill_windows_pid(grandchild_pid)
+
+
+def test_windows_terminate_tree_refuses_unowned_numeric_pid(monkeypatch):
+    calls = []
+    monkeypatch.setattr(process_utils.os, "name", "nt")
+    monkeypatch.setattr(process_utils.os, "kill", lambda *args: calls.append(("kill", args)))
+    monkeypatch.setattr(
+        process_utils.subprocess,
+        "run",
+        lambda *args, **kwargs: calls.append(("run", args, kwargs)),
+    )
+
+    assert process_utils.terminate_tree(4321) is False
+    assert calls == []
+
+
+def test_windows_terminate_tree_uses_owned_handle_without_taskkill(monkeypatch):
+    calls = []
+
+    class OwnedProcess:
+        pid = 4321
+        returncode = None
+        _local_ai_job_handle = None
+
+        def poll(self):
+            return self.returncode
+
+        def kill(self):
+            calls.append("handle.kill")
+            self.returncode = 1
+
+        def wait(self, timeout=None):
+            calls.append(("handle.wait", timeout))
+            return self.returncode
+
+    process = OwnedProcess()
+    monkeypatch.setattr(process_utils.os, "name", "nt")
+    monkeypatch.setattr(process_utils.os, "kill", lambda *args: calls.append(("kill", args)))
+    monkeypatch.setattr(
+        process_utils.subprocess,
+        "run",
+        lambda *args, **kwargs: calls.append(("run", args, kwargs)),
+    )
+
+    assert process_utils.terminate_tree(4321, process_handle=process) is False
+    assert calls[0] == "handle.kill"
+    assert calls[1][0] == "handle.wait"
+    assert not any(isinstance(call, tuple) and call[0] in {"kill", "run"} for call in calls)
+
+
+def test_popen_managed_assigns_job_before_resuming_windows_process(monkeypatch):
+    events = []
+
+    class OwnedProcess:
+        pid = 4321
+
+        def kill(self):
+            events.append("kill")
+
+        def wait(self, timeout=None):
+            events.append("wait")
+
+    process = OwnedProcess()
+
+    def fake_popen(argv, **kwargs):
+        events.append(("popen", argv, kwargs.get("creationflags", 0)))
+        return process
+
+    monkeypatch.setattr(process_utils.os, "name", "nt")
+    monkeypatch.setattr(process_utils, "create_job_object_kill_on_close", lambda: "job")
+    monkeypatch.setattr(
+        process_utils,
+        "assign_process_to_job",
+        lambda job, pid: events.append(("assign", job, pid)) or True,
+    )
+    monkeypatch.setattr(
+        process_utils,
+        "_resume_suspended_process",
+        lambda proc: events.append(("resume", proc)) or True,
+    )
+    monkeypatch.setattr(
+        process_utils,
+        "close_job_object",
+        lambda job: events.append(("close", job)) or True,
+    )
+    monkeypatch.setattr(process_utils.subprocess, "Popen", fake_popen)
+
+    result = process_utils.popen_managed(["worker"])
+
+    assert result is process
+    assert result._local_ai_job_handle == "job"
+    assert events[1] == ("assign", "job", process.pid)
+    assert events[2] == ("resume", process)
+    assert events[0][0] == "popen"
+    assert events[0][2] & 0x00000004
+    finalizer = result._local_ai_job_finalizer
+    assert process_utils._release_process_job(result) is True
+    assert result._local_ai_job_handle is None
+    assert finalizer.alive is False
+
+
+def test_popen_managed_records_posix_process_group(monkeypatch):
+    class OwnedProcess:
+        pid = 4321
+
+    process = OwnedProcess()
+    spawned = {}
+    monkeypatch.setattr(process_utils.os, "name", "posix")
+    monkeypatch.setattr(process_utils, "process_identity", lambda _pid: {"pid": 4321, "start": 7})
+
+    def fake_popen(argv, **kwargs):
+        spawned.update(kwargs)
+        return process
+
+    monkeypatch.setattr(process_utils.subprocess, "Popen", fake_popen)
+
+    result = process_utils.popen_managed(["worker"])
+
+    assert result is process
+    assert spawned["start_new_session"] is True
+    assert result._local_ai_process_group == result.pid
+    assert result._local_ai_process_identity == {"pid": 4321, "start": 7}
+
+
+def test_terminate_tree_infers_group_and_identity_from_managed_handle(monkeypatch):
+    calls = []
+
+    class OwnedProcess:
+        pid = 4321
+        returncode = None
+        _waitpid_lock = process_utils.threading.Lock()
+        _local_ai_process_group = 4321
+        _local_ai_process_identity = {"pid": 4321, "start": 7}
+
+    monkeypatch.setattr(process_utils.os, "name", "posix")
+    monkeypatch.setattr(
+        process_utils,
+        "_terminate_tree_unlocked",
+        lambda pid, **kwargs: calls.append((pid, kwargs)) or True,
+    )
+
+    assert process_utils.terminate_tree(4321, process_handle=OwnedProcess()) is True
+    assert calls[0][1]["process_group"] == 4321
+    assert calls[0][1]["expected_identity"] == {"pid": 4321, "start": 7}

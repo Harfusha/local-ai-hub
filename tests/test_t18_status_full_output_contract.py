@@ -32,3 +32,15 @@ def test_full_status_requires_identity_but_not_optional_diagnostics() -> None:
     for field in ("success", "hub_online", "version"):
         incomplete = {key: value for key, value in result.items() if key != field}
         assert validate_operation_output("local_ai_status", "full", incomplete) is not None
+
+
+def test_full_status_accepts_evolving_diagnostic_values() -> None:
+    result = {
+        "success": True,
+        "hub_online": True,
+        "version": "test",
+        "capabilities": None,
+        "scheduler": ["warming_up"],
+        "uptime_seconds": 12.5,
+    }
+    assert validate_operation_output("local_ai_status", "full", result) is None

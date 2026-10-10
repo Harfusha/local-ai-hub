@@ -20,7 +20,32 @@ _PARSER_ANALYZER_VERSION = f"{__version__}:call-edges-v13-scoped-fallback"
 from .cache import MemoryLRUCache, stable_hash
 from .normalizer import tokenize_query_terms
 from .process_utils import canonical_root
+from .repo_tools import is_root_archive_path
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, quick_sanity_check
+
+
+def _root_archive_path_sql(path_expression: str = "path") -> str:
+    normalized_path_sql = f"lower(replace({path_expression}, char(92), '/'))"
+    root_path = f"substr({normalized_path_sql}, 1, instr({normalized_path_sql}, '/') - 1)"
+    return (
+        f"NOT ({normalized_path_sql} LIKE 'handoff/%' "
+        f"OR {normalized_path_sql} LIKE '.handoff/%' "
+        f"OR {normalized_path_sql} LIKE 'artifacts/handoff/%' "
+        f"OR {normalized_path_sql} GLOB 'artifacts/t[0-9]*-*overlay-*/*' "
+        f"OR {normalized_path_sql} LIKE '.merge-checks/%' "
+        f"OR {normalized_path_sql} LIKE '.sync-checks/%' "
+        f"OR (instr({normalized_path_sql}, '/') > 0 AND "
+        f"({root_path} GLOB '*-root-overlay-*' OR "
+        f"{root_path} GLOB '*-root-current-check-*' OR "
+        f"{root_path} GLOB 't[0-9]*-review-artifacts-*' OR "
+        f"{root_path} GLOB '.t[0-9]*-review-artifacts-*' OR "
+        f"{root_path} GLOB '*-root-current-overlay*' OR "
+        f"{root_path} GLOB 't[0-9]*-sync-checks' OR "
+        f"{root_path} GLOB '.t[0-9]*-sync-checks' OR "
+        f"{root_path} GLOB 't[0-9]*-main-preflight-overlay*' OR "
+        f"{root_path} GLOB '.t[0-9]*-main-preflight-overlay*')))"
+    )
+
 
 MAX_IMPACT_DEPENDENTS = 100_000
 
@@ -1758,8 +1783,11 @@ class CodeIndex:
         for path, supplied_hash in normalized:
             file_path = (base / path).resolve(strict=False)
             try:
-                file_path.relative_to(base)
+                relative_path = file_path.relative_to(base)
             except ValueError:
+                continue
+            if is_root_archive_path(relative_path):
+                denied_paths.append(path)
                 continue
             if not file_path.is_file():
                 deleted_paths.append((c_root, path))
@@ -2053,11 +2081,24 @@ class CodeIndex:
             like = f"%{term}%"
             clauses.append("(lower(name) LIKE ? OR lower(name_path) LIKE ? OR lower(container) LIKE ? OR lower(path) LIKE ?)")
             args.extend([like, like, like, like])
+        ignored_paths = []
+        for directory in sorted(getattr(self.repo_tools, "ignore_dirs", ())):
+            name = str(directory).strip().strip("/\\").lower()
+            if name and "/" not in name and "\\" not in name:
+                ignored_paths.append(name)
+        ignored_path_sql = " AND ".join(
+            "instr('/' || lower(path) || '/', ?) = 0" for _ in ignored_paths
+        )
+        root_archive_sql = _root_archive_path_sql()
         sql = (
             "SELECT path,name,kind,line,end_line,container,name_path,signature,access,docstring "
-            "FROM symbols WHERE root=? AND (" + " OR ".join(clauses) + ") LIMIT ?"
+            "FROM symbols WHERE root=? AND (" + " OR ".join(clauses) + ")"
+            + " AND " + root_archive_sql
+            + (" AND " + ignored_path_sql if ignored_path_sql else "")
+            + " LIMIT ?"
         )
         candidate_limit = max(limit * 12, 120)
+        args.extend(f"/{name}/" for name in ignored_paths)
         args.append(candidate_limit + 1)
         with self._lock, closing(self._connect()) as con:
             all_rows = con.execute(sql, args).fetchall()
@@ -2927,11 +2968,12 @@ class CodeIndex:
         resolved_root = canonical_root(root)
         try:
             with self._lock, closing(self._connect()) as con:
-                sql = """
+                sql = f"""
                 SELECT s.path, s.name, s.kind, s.line, s.end_line, s.container, s.name_path, s.access
                 FROM symbols s
                 LEFT JOIN refs r ON s.root = r.root AND s.name = r.name
                 WHERE s.root = ?
+                  AND {_root_archive_path_sql("s.path")}
                   AND r.name IS NULL
                   AND s.name NOT IN (
                       'main', 'run', 'cli', 'app', 'handler', '__init__', '__str__', '__repr__',

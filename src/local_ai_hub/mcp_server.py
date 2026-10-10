@@ -197,7 +197,7 @@ def _classify_mcp_operation(tool_name: str, arguments: dict[str, Any]) -> tuple[
     lightweight_read = (
         tool_name == "local_ai_artifact"
         or (tool_name == "local_ai_status" and action in {"brief", "cache", "telemetry"})
-        or (tool_name == "local_ai_repo" and action in {"map", "code_index"})
+        or (tool_name == "local_ai_repo" and action in {"map", "code_index", "search"})
         or (
             tool_name == "local_ai_command"
             and action in {
@@ -245,7 +245,7 @@ try:
     LEAN_SCHEMAS = bool(MCP_CFG.get("lean_schemas", True))
     RESPONSE_BUDGET_CFG = MCP_CFG.get("response_budget", {}) if isinstance(MCP_CFG.get("response_budget", {}), dict) else {}
     RESPONSE_BUDGET_ENABLED = bool(RESPONSE_BUDGET_CFG.get("enabled", True))
-    RESPONSE_DEFAULT_TOKENS = max(128, int(RESPONSE_BUDGET_CFG.get("default_tokens", 6400)))
+    RESPONSE_DEFAULT_TOKENS = max(128, int(RESPONSE_BUDGET_CFG.get("default_tokens", 3200)))
     RESPONSE_TOOL_TOKENS = RESPONSE_BUDGET_CFG.get("tool_tokens", {}) if isinstance(RESPONSE_BUDGET_CFG.get("tool_tokens", {}), dict) else {}
     RESPONSE_REUSE_LIMIT = max(16, int(RESPONSE_BUDGET_CFG.get("reuse_cache_size", 256)))
     CONTEXT_LEDGER = ContextLedger(max_entries=int(RESPONSE_BUDGET_CFG.get("ledger_size", 512)))
@@ -864,7 +864,7 @@ _STATUS_PROTECTED_KEYS = (
     "enabled", "active_tasks", "tasks_count", "incidents_count", "candidates_count", "status",
 )
 _RELIABILITY_PROTECTED_KEYS = (
-    "success", "terminal", "retryable", "degraded", "stale",
+    "success", "terminal", "retryable", "unsupported", "degraded", "stale",
     "fallback_used", "evidence", "evidence_ids", "cancelled", "cancel_requested", "cancel_reason",
 )
 _COMMAND_PROTECTED_KEYS = (
@@ -1163,6 +1163,8 @@ def _preserve_contract_state(raw: Any, projected: Any) -> Any:
             if key not in raw:
                 continue
             value = raw[key]
+            if key == "success" and projected.get("success") is False and value is True:
+                continue
             if key == "error" and isinstance(value, str):
                 value = value[:500]
             elif key == "evidence" and isinstance(value, list):
@@ -1536,8 +1538,18 @@ def _agent_output(value: Any, tool: str, arguments: dict[str, Any]) -> Any:
     requested = set(arguments.get("extra_fields") or ())
     if action in {"diagnostics", "route", "stats"}:
         requested.update({"diagnostics", "routing", "telemetry"})
-    result = {key: item for key, item in value.items()
-              if key not in _AGENT_DIAGNOSTIC_FIELDS or key in requested}
+    def project(item: Any) -> Any:
+        if isinstance(item, dict):
+            return {
+                key: project(nested)
+                for key, nested in item.items()
+                if key not in _AGENT_DIAGNOSTIC_FIELDS or key in requested
+            }
+        if isinstance(item, list):
+            return [project(nested) for nested in item]
+        return item
+
+    result = project(value)
     return _reconcile_existing_budget(result) or result
 
 
@@ -1761,7 +1773,7 @@ def local_ai_status(action: StatusAction = "", detail: StatusDetail = "brief", s
     if scope not in {"process", "window"}:
         return contract_error("scope must be process or window")
 
-    if action:
+    if action and detail not in {"agent_state", "telemetry"}:
         status = CLIENT.get(f"/api/live/status?light=1&scope={scope}")
         runtime_stats = status.get("runtime_stats") if isinstance(status, dict) else {}
         if not isinstance(runtime_stats, dict):
@@ -2610,12 +2622,28 @@ def _local_ai_repo_impl(
         context_query = str(query).strip() or str(task).strip()
         if not context_query:
             return contract_error("context query cannot be empty")
+    if action not in FEATURES.supported_repo_actions():
+        return _invalid_action(
+            "local_ai_repo",
+            action,
+            tuple(FEATURES.supported_repo_actions()),
+            "Keep work bounded in Local AI Hub; use Codex-owned orchestration for peer subagents.",
+        )
     if action in {"preprocess", "preprocess_refresh", "preprocess_cancel", "preprocess_unregister"}:
         candidate = Path(root).expanduser()
         if not candidate.is_absolute():
             return {"success": False, "error": "Preprocessing requires an explicit absolute stable project root; do not use MCP process cwd"}
+    elif action == "skeletonize":
+        # This action only transforms supplied source text; it does not inspect a repository.
+        pass
     else:
-        root = _client_root(root)
+        explicit_root = str(root or "").strip()
+        if not is_rooted_path(explicit_root):
+            return {
+                "success": False,
+                "error": "Repository actions require an explicit absolute project root; do not use MCP process cwd",
+            }
+        root = _client_root(explicit_root)
     if action == "profile":
         return _compact(CLIENT.post("/api/repo/profile", {"root": root}, timeout=_timeout("quick")), "profile")
     if action == "investigate":
@@ -3283,7 +3311,16 @@ def local_ai_rag(
     if not FEATURES.rag:
         return {"success": False, "unsupported": True, "error": "RAG backend is disabled (features.rag=false in config.toml)"}
     action = action.strip().lower().replace("-", "_")
-    root = _client_root(root)
+    if action in {"index", "search", "docset_index"}:
+        explicit_root = str(root or "").strip()
+        if not is_rooted_path(explicit_root):
+            return {
+                "success": False,
+                "error": "RAG repository actions require an explicit absolute project root; do not use MCP process cwd",
+            }
+        root = _client_root(explicit_root)
+    else:
+        root = _client_root(root)
     effective_workspace = workspace.strip() or root
     if action == "index":
         return _compact(CLIENT.post("/api/rag/index", {"root": root, "workspace": effective_workspace}, timeout=_timeout("long")))
@@ -3470,21 +3507,33 @@ def local_ai_coord(
     preload_profile: str = "",
     since_hash: str = "",
     expected_version: int | None = None,
-    after_seq: int = 0,
+    after_seq: int | None = None,
 ) -> dict[str, Any]:
-    """Cross-agent coordination for the main agent and bounded Hub workers. Actions: claim, release, leases, memo_put, memo_get, memo_search, memo_delete, task_create, task_get, task_checkpoint, task_rollback, task_transition, task_resume, task_list, task_complete, task_fail, task_heartbeat, memory_record, memory_get, memory_find, memory_delete, memory_promote, memory_reap, context_compile, verify_receipt, verify_completion, negative_knowledge_record, negative_knowledge_find, incident_decision, blackboard_update, blackboard_get, blackboard_list, blackboard_merge, blackboard_delete, swarm_dispatch, swarm_step, swarm_status, swarm_list, swarm_cancel. Claim overlapping edit paths before concurrent Hub work. Search/get memos before repeating expensive investigation and store concise reusable findings after discovery. Native peer subagents are coordinated by Codex rather than by this Hub tool. Use when: Hub workers share edit paths, leases, or reusable findings. Skip when: work is isolated and no shared Hub state or memo is involved."""
+    """Cross-agent coordination for the main agent and bounded Hub workers. Public actions are limited to the contract enum; unscoped memory relation/reaping storage remains private. Claim overlapping edit paths before concurrent Hub work. Search/get memos before repeating expensive investigation and store concise reusable findings after discovery. Native peer subagents are coordinated by Codex rather than by this Hub tool. Use when: Hub workers share edit paths, leases, or reusable findings. Skip when: work is isolated and no shared Hub state or memo is involved."""
     if not FEATURES.coord:
         return {"success": False, "unsupported": True, "error": "local_ai_coord is disabled in configuration"}
-    if isinstance(after_seq, bool) or not isinstance(after_seq, int) or not 0 <= after_seq <= MAX_EVENT_SEQUENCE:
+    if after_seq is not None and (isinstance(after_seq, bool) or not isinstance(after_seq, int) or not 0 <= after_seq <= MAX_EVENT_SEQUENCE):
         return contract_error(f"after_seq must be an integer between 0 and {MAX_EVENT_SEQUENCE}")
     action = _resolve_action("coord", action)
+    if action in {"memory_reap", "relation_record", "relation_find", "relation_traverse"}:
+        return _invalid_action(
+            "local_ai_coord",
+            action,
+            tuple(CoordAction.__args__),
+            "Unscoped memory maintenance and relations remain private until tenant-scoped storage is available.",
+        )
     requested_root = str(root or "").strip()
     root = _client_root(root)
     if action == "task_sync":
-        sync_act = status.lower() if status in ("export", "import") else "export"
+        requested_sync_action = str(status or "").strip().lower()
+        sync_act = requested_sync_action if requested_sync_action in {"export", "import"} else "export"
         if sync_act == "export":
+            # `after_seq` is the public cursor. Keep the historical
+            # ttl_seconds fallback for older callers, but never let it
+            # override an explicit cursor.
+            sync_after_seq = after_seq if after_seq is not None else int(ttl_seconds or 0)
             return _compact(CLIENT.post("/api/agent-state/events/delta", {
-                "action": "export", "stream_id": key or task_id or "", "after_seq": int(ttl_seconds or 0), "limit": max_tokens or 1000,
+                "action": "export", "stream_id": key or task_id or "", "after_seq": sync_after_seq, "limit": max_tokens or 1000,
             }, timeout=_timeout("quick")), "status")
         else:
             return _compact(CLIENT.post("/api/agent-state/events/delta", {
@@ -3522,17 +3571,6 @@ def local_ai_coord(
         if ttl_seconds is not None and ttl_seconds > 0:
             memory_kwargs["ttl_seconds"] = ttl_seconds
         return _compact(CLIENT.coord(**memory_kwargs), "status")
-    if action.startswith("relation_"):
-        return _compact(CLIENT.coord(
-            action=action, source_entity=key or task_id or query or task,
-            relation=reason or status or "relates_to",
-            target_entity=value or target_scope or "",
-            weight=float(ttl_seconds or 1.0) if ttl_seconds else 1.0,
-            metadata=record,
-            start_entity=key or task_id or query or task,
-            max_depth=max_tokens or 2,
-            limit=max_tokens or 50,
-        ), "status")
     if action == "context_compile":
         since_hash = str(since_hash or fingerprint or record_id or status or "")
         return _compact(CLIENT.post("/api/agent-state/context", {
@@ -3656,16 +3694,19 @@ def local_ai_coord(
             "role": target_scope or "Coder",
             "action": query or "submit_patch",
             "payload": record or ({"value": value} if value else {}),
+            "root": root or ".",
         }, timeout=_timeout("quick")), "status")
     if action == "swarm_status":
         sid = task_id or key or ""
-        return _compact(CLIENT.get(f"/api/agent-state/swarm/{quote(sid)}", timeout=_timeout("quick")), "status")
+        return _compact(CLIENT.get(f"/api/agent-state/swarm/{quote(sid)}?root={quote(root)}", timeout=_timeout("quick")), "status")
     if action == "swarm_list":
-        st_param = f"?state={quote(status)}" if status else ""
-        return _compact(CLIENT.get(f"/api/agent-state/swarm{st_param}", timeout=_timeout("quick")), "status")
+        params = [f"root={quote(root)}"]
+        if status:
+            params.append(f"state={quote(status)}")
+        return _compact(CLIENT.get(f"/api/agent-state/swarm?{'&'.join(params)}", timeout=_timeout("quick")), "status")
     if action == "swarm_cancel":
         sid = task_id or key or ""
-        return _compact(CLIENT.post("/api/agent-state/swarm/cancel", {"swarm_id": sid, "reason": reason or value or "cancelled by agent"}, timeout=_timeout("quick")), "status")
+        return _compact(CLIENT.post("/api/agent-state/swarm/cancel", {"swarm_id": sid, "reason": reason or value or "cancelled by agent", "root": root or "."}, timeout=_timeout("quick")), "status")
     if action == "worktree_lease":
         return _compact(CLIENT.coord(action="worktree_lease", root=root, branch=key or task or task_id or None), "status")
     if action == "worktree_release":
@@ -3902,10 +3943,10 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
 
         action = str(arguments.get("action") or "").lower()
         protected = (
-            _CONTEXT_PROTECTED_KEYS if action in {"context", "context_compile"}
-            else _STATUS_PROTECTED_KEYS if name == "local_ai_status"
-            else _COMMAND_PROTECTED_KEYS if name == "local_ai_command"
-            else ()
+            *_RELIABILITY_PROTECTED_KEYS,
+            *(_CONTEXT_PROTECTED_KEYS if action in {"context", "context_compile"} else ()),
+            *(_STATUS_PROTECTED_KEYS if name == "local_ai_status" else ()),
+            *(_COMMAND_PROTECTED_KEYS if name == "local_ai_command" else ()),
         )
         original_tokens = json_tokens(_mcp_wire_view(value, structured=True))
         raw_efficiency = value.get("token_efficiency") if isinstance(value, dict) else None
@@ -4132,6 +4173,7 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                 payload = {
                     "success": False, "status_code": status_code,
                     "terminal": True, "retryable": False, "error": error,
+                    **({"unsupported": True} if status_code == 403 and "disabled" in error.casefold() else {}),
                 }
                 return finalize(_mcp_budget_payload(name, arguments, payload), account_unwrapped_error=True)
             try:

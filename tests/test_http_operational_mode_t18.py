@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from pathlib import Path
 import threading
 from types import SimpleNamespace
+from urllib.parse import quote
 
 import pytest
 
@@ -69,7 +70,9 @@ def test_mode_get_is_loopback_only_auth_exception_and_returns_snapshot(monkeypat
     remote = _handler("/api/mode", "203.0.113.7")
     del remote._require_authorized
     remote.do_GET()
-    assert remote.responses == [(401, {"success": False, "error": "unauthorized"})]
+    assert remote.responses == [
+        (403, {"success": False, "error": "local_control_requires_loopback"})
+    ]
 
 
 def test_mode_get_without_api_token_does_not_open_admin_post(monkeypatch) -> None:
@@ -112,7 +115,7 @@ def test_dashboard_shell_stays_online_in_maintenance_without_token(monkeypatch) 
     assert "activityModeBadge" in handler.responses[0][1]
 
 
-def test_gaming_mode_keeps_read_only_agent_task_route_available(monkeypatch) -> None:
+def test_gaming_mode_keeps_read_only_agent_task_route_available(monkeypatch, tmp_path) -> None:
     class AgentTasks:
         state_store = SimpleNamespace(enabled=True)
 
@@ -121,41 +124,94 @@ def test_gaming_mode_keeps_read_only_agent_task_route_available(monkeypatch) -> 
 
     _install_mode_api(monkeypatch, "gaming")
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(
+        config={
+            "security": {
+                "api_token_tenant": "tenant-mode",
+                "allowed_roots": [str(tmp_path)],
+                "tenant_derivation_key": "tenant-derivation-test-key-0123456789abcdef",
+            }
+        },
         async_jobs=SimpleNamespace(path=Path("state/jobs.sqlite3")), agent_tasks=AgentTasks(),
     ))
-    handler = _handler("/api/agent-state/tasks")
+    tenant = http_server._derive_root_tenant(
+        "tenant-mode",
+        str(tmp_path),
+        "tenant-derivation-test-key-0123456789abcdef",
+    )
+    handler = _handler(
+        f"/api/agent-state/tasks?root={quote(str(tmp_path))}&tenant={quote(tenant)}"
+    )
 
     handler.do_GET()
 
     assert handler.responses == [(200, {"success": True, "tasks": []})]
 
 
-def test_gaming_mode_keeps_agent_event_export_available(monkeypatch) -> None:
+def test_gaming_mode_keeps_agent_event_export_available(monkeypatch, tmp_path) -> None:
     _install_mode_api(monkeypatch, "gaming")
+    tenant = http_server._derive_root_tenant(
+        "tenant-mode",
+        str(tmp_path),
+        "tenant-derivation-test-key-0123456789abcdef",
+    )
+    agent_tasks = SimpleNamespace(
+        get=lambda task_id: SimpleNamespace(
+            task_id=task_id,
+            context=SimpleNamespace(repository_id=str(tmp_path), session_id=tenant),
+        )
+    )
     state_store = SimpleNamespace(export_delta=lambda stream, after, limit: {
         "success": True, "events": [], "stream_id": stream, "after_seq": after, "limit": limit,
     })
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(
+        config={
+            "security": {
+                "api_token_tenant": "tenant-mode",
+                "allowed_roots": [str(tmp_path)],
+                "tenant_derivation_key": "tenant-derivation-test-key-0123456789abcdef",
+            }
+        },
         async_jobs=SimpleNamespace(path=Path("state/jobs.sqlite3")),
         debug_traces=None,
         recovery=SimpleNamespace(lookup=lambda *_args: None),
+        agent_tasks=agent_tasks,
         agent_state_store=state_store,
     ))
     handler = _handler("/api/agent-state/events/delta")
-    handler._read_json = lambda: {"action": "export", "stream_id": "agent-1", "after_seq": 0, "limit": 50}
-    handler._tenant = lambda: "tenant-test"
+    handler._read_json = lambda: {
+        "action": "export",
+        "stream_id": "task:task-31",
+        "task_id": "task-31",
+        "root": str(tmp_path),
+        "tenant": tenant,
+        "after_seq": 0,
+        "limit": 50,
+    }
+    handler._tenant = lambda: tenant
     handler._async_delivery = lambda *_args: None
 
     handler.do_POST()
 
     assert handler.responses == [(200, {
-        "success": True, "events": [], "stream_id": "agent-1", "after_seq": 0, "limit": 50,
+        "success": True, "events": [], "stream_id": "task:task-31", "after_seq": 0, "limit": 50,
     })]
 
 
-def test_gaming_mode_allows_memory_and_artifact_reads(monkeypatch) -> None:
+def test_gaming_mode_blocks_workspace_memory_but_allows_artifact_reads(monkeypatch, tmp_path) -> None:
     _install_mode_api(monkeypatch, "gaming")
+    tenant = http_server._derive_root_tenant(
+        "tenant-mode",
+        str(tmp_path),
+        "tenant-derivation-test-key-0123456789abcdef",
+    )
     app = SimpleNamespace(
+        config={
+            "security": {
+                "api_token_tenant": "tenant-mode",
+                "allowed_roots": [str(tmp_path)],
+                "tenant_derivation_key": "tenant-derivation-test-key-0123456789abcdef",
+            }
+        },
         async_jobs=SimpleNamespace(path=Path("state/jobs.sqlite3")),
         debug_traces=None,
         recovery=SimpleNamespace(lookup=lambda *_args: None),
@@ -164,16 +220,28 @@ def test_gaming_mode_allows_memory_and_artifact_reads(monkeypatch) -> None:
     )
     monkeypatch.setattr(http_server, "APP", app)
 
-    for path, payload in (
-        ("/api/memory/get", {"root": ".", "key": "note-1"}),
-        ("/api/artifact/get", {"artifact_id": "artifact-1"}),
+    for path, payload, expected_status, expected_error in (
+        (
+            "/api/memory/get",
+            {"root": str(tmp_path), "tenant": tenant, "key": "note-1"},
+            403,
+            "workspace-shared memory access is unavailable through this tenant-scoped endpoint",
+        ),
+        (
+            "/api/artifact/get",
+            {"root": str(tmp_path), "tenant": tenant, "artifact_id": "artifact-1"},
+            200,
+            None,
+        ),
     ):
         handler = _handler(path)
         handler._read_json = lambda body=payload: body
-        handler._tenant = lambda: "tenant-test"
+        handler._tenant = lambda: tenant
         handler._async_delivery = lambda *_args: None
         handler.do_POST()
-        assert handler.responses[0][0] == 200
+        assert handler.responses[0][0] == expected_status, handler.responses[0]
+        if expected_error is not None:
+            assert handler.responses[0][1]["error"] == expected_error
 
 
 def test_maintenance_mode_blocks_same_agent_read_but_keeps_operator_reads(monkeypatch) -> None:
@@ -230,9 +298,50 @@ def test_context_pack_is_gated_in_both_paused_modes(monkeypatch, mode: str) -> N
     ("/api/work-orders", {"action": "status", "id": "work-1"}),
     ("/api/work-orders", {"action": "get", "id": "work-1"}),
     ("/api/work-orders", {"action": "cancel", "id": "work-1"}),
+    ("/api/speculative-lint", {"action": "status", "execution_id": "lint-1"}),
+    ("/api/speculative-lint", {"action": "cancel", "execution_id": "lint-1"}),
+    ("/api/command/speculative-lint", {"action": "status", "execution_id": "lint-1"}),
+    ("/api/command/speculative-lint", {"action": "cancel", "execution_id": "lint-1"}),
 ])
-def test_maintenance_policy_allows_safe_existing_job_actions(path: str, payload: dict[str, str]) -> None:
+def test_maintenance_policy_blocks_all_existing_job_actions(
+    path: str, payload: dict[str, str], monkeypatch, tmp_path: Path
+) -> None:
+    _install_mode_api(monkeypatch, "maintenance")
+    monkeypatch.setattr(
+        http_server,
+        "APP",
+        SimpleNamespace(config={"server": {"state_dir": str(tmp_path)}}),
+    )
     assert http_server._http_mode_policy("POST", path, payload) == "existing_job"
+    for rejection in (
+        http_server._http_mode_gate_error("POST", path),
+        http_server._http_mode_gate_error("POST", path, payload),
+    ):
+        assert rejection is not None
+        assert rejection["error_code"] == "operational_mode_blocked"
+
+
+@pytest.mark.parametrize(("path", "payload"), [
+    ("/api/async-jobs", {"job_action": "submit"}),
+    ("/api/work-orders", {"action": "submit"}),
+    ("/api/speculative-lint", {"action": "submit"}),
+    ("/api/command/speculative-lint", {"action": "submit"}),
+])
+def test_maintenance_mode_blocks_job_submission_before_body_parse(
+    monkeypatch, tmp_path: Path, path: str, payload: dict[str, str]
+) -> None:
+    _install_mode_api(monkeypatch, "maintenance")
+    monkeypatch.setattr(
+        http_server,
+        "APP",
+        SimpleNamespace(config={"server": {"state_dir": str(tmp_path)}}),
+    )
+    for rejection in (
+        http_server._http_mode_gate_error("POST", path),
+        http_server._http_mode_gate_error("POST", path, payload),
+    ):
+        assert rejection is not None
+        assert rejection["error_code"] == "operational_mode_blocked"
 
 
 def test_gaming_policy_rejects_agent_state_mutation_and_unknown_method() -> None:
@@ -313,20 +422,29 @@ def test_heavy_or_mutating_http_route_returns_retryable_mode_envelope(
 
     handler.do_POST()
 
-    assert gate_calls == [(mode, expected_action, True)]
+    # POST keeps an early maintenance preflight and a payload-aware final gate.
+    assert len(gate_calls) in {1, 2}
+    assert all(call == (mode, expected_action, True) for call in gate_calls)
     assert dispatched == []
-    assert handler.responses == [(503, gate_error)]
+    assert handler.responses == [(423, gate_error)]
 
 
 def test_mode_get_returns_current_unload_status(monkeypatch) -> None:
     snapshot = SimpleNamespace(mode="gaming", revision=7, degraded=False)
+    app = SimpleNamespace(
+        config={"server": {"state_dir": "state"}},
+        async_jobs=SimpleNamespace(path=Path("state/jobs.sqlite3")),
+    )
     monkeypatch.setattr(http_server, "_operational_mode_api", lambda: SimpleNamespace(
         load_operational_mode=lambda *, state_dir: snapshot,
     ))
     monkeypatch.setattr(http_server, "_MODE_UNLOAD_STATUS", {
-        7: {"success": False, "state": "partial", "reason": "unload_incomplete", "unloaded": ["model-a"], "remaining": ["model-b"]},
+        http_server._mode_unload_status_key(app, 7): {
+            "success": False, "state": "partial", "reason": "unload_incomplete",
+            "unloaded": ["model-a"], "remaining": ["model-b"],
+        },
     })
-    monkeypatch.setattr(http_server, "APP", SimpleNamespace(async_jobs=SimpleNamespace(path=Path("state/jobs.sqlite3"))))
+    monkeypatch.setattr(http_server, "APP", app)
 
     handler = _handler("/api/mode")
     handler.do_GET()
@@ -344,7 +462,16 @@ def test_mode_get_returns_completed_background_unload(monkeypatch) -> None:
                 complete_status_stored.set()
 
     monkeypatch.setattr(http_server, "_MODE_UNLOAD_STATUS", StatusMap())
-    result = {"success": True, "state": "complete", "reason": "all_models_unloaded", "unloaded": ["model-a"], "remaining": []}
+    result = {
+        "success": True,
+        "state": "complete",
+        "reason": "all_models_unloaded",
+        "unloaded": ["model-a"],
+        "remaining": [],
+        "debug": "must not reach dashboard response",
+        "in_process_cuda_detached": ["embeddings"],
+        "in_process_cuda_release_failed": {"reranker": "TimeoutError", "secret": "must not leak"},
+    }
     http_server._start_gaming_model_unload(8, object(), lambda *_args, **_kwargs: result, SimpleNamespace())
     assert complete_status_stored.wait(1)
 
@@ -357,18 +484,41 @@ def test_mode_get_returns_completed_background_unload(monkeypatch) -> None:
     handler = _handler("/api/mode")
     handler.do_GET()
 
-    assert handler.responses[0][1]["runtime_unload"] == result
+    assert handler.responses[0][1]["runtime_unload"] == {
+        "success": True,
+        "state": "complete",
+        "reason": "all_models_unloaded",
+        "unloaded": ["model-a"],
+        "remaining": [],
+        "in_process_cuda_detached": ["embeddings"],
+        "in_process_cuda_release_failed": {"reranker": "TimeoutError"},
+    }
 
 
-def test_admin_mode_post_starts_unload_after_releasing_guard_and_returns_pending_then_partial(monkeypatch) -> None:
+def test_admin_mode_post_runs_configured_unload_after_releasing_guard(monkeypatch) -> None:
     events = []
-    unload_started = threading.Event()
-    allow_unload_finish = threading.Event()
-    unload_finished = threading.Event()
-    partial_status_stored = threading.Event()
+    original_app = http_server.APP
+    # This route changes module-level request registries to gaming mode. Keep
+    # those process-wide flags isolated from tests that run afterward.
+    monkeypatch.setattr(http_server, "_ACTIVE_TRANSCRIPTIONS", http_server._ActiveTranscriptionRegistry())
+    monkeypatch.setattr(http_server, "_ACTIVE_CONVERSATIONS", http_server._ActiveTranscriptionRegistry())
 
     class Jobs:
         path = Path("state/jobs.sqlite3")
+
+        def __init__(self) -> None:
+            self._resource_release_tokens: set[str] = set()
+
+        def begin_resource_release(self) -> str:
+            token = "test-resource-release"
+            self._resource_release_tokens.add(token)
+            return token
+
+        def end_resource_release(self, token: str) -> None:
+            self._resource_release_tokens.discard(token)
+
+        def resource_release_active(self) -> bool:
+            return bool(self._resource_release_tokens)
 
         @contextmanager
         def operational_mode_change_guard(self):
@@ -382,6 +532,12 @@ def test_admin_mode_post_starts_unload_after_releasing_guard_and_returns_pending
             events.append(("changed", snapshot.mode))
             return {"inference_active": False}
 
+        def inference_actions_active(self):
+            return False
+
+        def wait_for_inference_actions(self, _actions, _timeout):
+            return True
+
     snapshot = SimpleNamespace(mode="gaming", revision=5, degraded=False)
 
     def set_mode(mode, state_dir):
@@ -390,57 +546,115 @@ def test_admin_mode_post_starts_unload_after_releasing_guard_and_returns_pending
         events.append("persist")
         return snapshot
 
-    def unload_models(_runtime, *, inference_active):
-        assert inference_active is False
-        assert events[-1] == "guard_exit"
-        unload_started.set()
-        allow_unload_finish.wait(2)
-        unload_finished.set()
-        return {
+    unload_result = {
             "success": False,
-            "state": "partial",
-            "reason": "unload_incomplete",
+            "backend_available": True,
             "unloaded": ["model-a"],
-            "remaining": ["model-b"],
+            "failed": {"model-b": "TimeoutError"},
         }
 
-    class StatusMap(dict):
-        def __setitem__(self, key, value):
-            super().__setitem__(key, value)
-            if value.get("state") == "partial":
-                partial_status_stored.set()
+    class Runtime:
+        def unload_configured_models(self, *, timeout_seconds):
+            assert timeout_seconds == 3.0
+            assert events[-1] == "guard_exit"
+            events.append("unload")
+            return unload_result
 
-    monkeypatch.setattr(http_server, "_MODE_UNLOAD_STATUS", StatusMap())
     monkeypatch.setattr(http_server, "_operational_mode_api", lambda: SimpleNamespace(
         set_operational_mode=set_mode,
-        unload_ollama_models_for_gaming=unload_models,
+        _empty_torch_cuda_cache=lambda _timeout: {
+            "success": True,
+            "state": "requested",
+            "verified": False,
+        },
     ))
+    monkeypatch.setattr(http_server, "load_operational_mode", lambda *_args, **_kwargs: snapshot)
     monkeypatch.setattr(http_server, "APP", SimpleNamespace(
-        async_jobs=Jobs(), scheduler=SimpleNamespace(foreground_busy=lambda: False), runtime=object(),
+        config={"server": {"state_dir": "state"}},
+        async_jobs=Jobs(), scheduler=SimpleNamespace(foreground_busy=lambda: False), runtime=Runtime(),
     ))
 
     handler = _handler("/api/admin/mode")
     handler.do_POST()
 
-    assert unload_started.wait(1)
-    assert events == ["guard_enter", "persist", ("changed", "gaming"), "guard_exit"]
-    assert handler.responses == [(200, {
-        "success": True,
-        "mode": "gaming",
-        "revision": 5,
-        "degraded": False,
-        "runtime_unload": {
-            "success": False,
-            "state": "pending",
-            "reason": "unload_in_progress",
-            "unloaded": [],
-            "remaining": None,
-        },
-    })]
-    allow_unload_finish.set()
-    assert unload_finished.wait(1)
-    assert partial_status_stored.wait(1)
-    assert http_server._MODE_UNLOAD_STATUS[5]["state"] == "partial"
+    assert events[:4] == ["guard_enter", "persist", ("changed", "gaming"), "guard_exit"]
+    assert events[-3:] == ["guard_enter", "guard_exit", "unload"]
+    assert handler.responses[0][0] == 200
+    assert handler.responses[0][1]["runtime_unload"] == unload_result
+    assert http_server.APP.async_jobs.resource_release_active() is False
+    monkeypatch.undo()
+    assert http_server.APP is original_app
+
+
+def test_admin_gaming_mode_logs_admission_drain_failure_without_exception_text(monkeypatch) -> None:
+    warnings = []
+    pending_callbacks = []
+
+    class Logger:
+        def warning(self, message, *args):
+            warnings.append((message, args))
+
+    class Jobs:
+        path = Path("state/jobs.sqlite3")
+
+        @contextmanager
+        def operational_mode_change_guard(self):
+            yield
+
+        def on_operational_mode_changed(self, _snapshot):
+            return {"inference_active": False}
+
+        def begin_resource_release(self):
+            return "release-token"
+
+        def wait_for_inference_actions(self, _actions, _timeout):
+            raise RuntimeError("sensitive backend detail")
+
+        def inference_actions_active(self):
+            return False
+
+        def when_inference_actions_drained(self, _actions, callback):
+            pending_callbacks.append(callback)
+
+    class Tracker:
+        def enter_gaming(self):
+            pass
+
+        def cancel_and_wait(self, _timeout):
+            return {"inference_active": False}
+
+        def when_drained(self, callback):
+            callback()
+
+    snapshot = SimpleNamespace(mode="gaming", revision=6, degraded=False)
+    jobs = Jobs()
+    monkeypatch.setattr(http_server, "_operational_mode_api", lambda: SimpleNamespace(
+        set_operational_mode=lambda _mode, _state_dir: snapshot,
+        _empty_torch_cuda_cache=lambda _timeout: {"success": True, "verified": False},
+    ))
+    monkeypatch.setattr(http_server, "load_operational_mode", lambda *_args, **_kwargs: snapshot)
+    monkeypatch.setattr(http_server, "_ACTIVE_TRANSCRIPTIONS", Tracker())
+    monkeypatch.setattr(http_server, "_ACTIVE_CONVERSATIONS", Tracker())
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(
+        config={"server": {"state_dir": "state"}},
+        async_jobs=jobs,
+        scheduler=SimpleNamespace(foreground_busy=lambda: False),
+        runtime=SimpleNamespace(unload_configured_models=lambda **_kwargs: {"success": True}),
+        logger=Logger(),
+    ))
+
+    handler = _handler("/api/admin/mode")
+    handler.do_POST()
+
+    assert handler.responses[0][0] == 200
+    assert handler.responses[0][1]["inference_admission_release"] == {
+        "state": "unavailable", "inference_active": True,
+    }
+    assert handler.responses[0][1]["runtime_unload"]["state"] == "deferred"
+    assert len(pending_callbacks) == 1
+    assert len(warnings) == 1
+    assert warnings[0][1] == ("RuntimeError",)
+    assert "sensitive backend detail" not in str(warnings)
 
 
 def test_background_unload_deadline_replaces_pending_status(monkeypatch) -> None:
@@ -463,10 +677,12 @@ def test_background_unload_deadline_replaces_pending_status(monkeypatch) -> None
     monkeypatch.setattr(http_server, "_MODE_UNLOAD_STATUS", StatusMap())
     monkeypatch.setattr(http_server, "_MODE_UNLOAD_DEADLINE_SECONDS", 0.02)
 
-    initial = http_server._start_gaming_model_unload(9, object(), unload, SimpleNamespace())
+    app = SimpleNamespace(config={"server": {"state_dir": "state"}})
+    status_key = http_server._mode_unload_status_key(app, 9)
+    initial = http_server._start_gaming_model_unload(9, object(), unload, app)
     assert initial["state"] == "pending"
     assert deadline_status_stored.wait(1)
-    assert http_server._MODE_UNLOAD_STATUS[9] == {
+    assert http_server._MODE_UNLOAD_STATUS[status_key] == {
         "success": False,
         "state": "failed",
         "reason": "unload_deadline_exceeded",
@@ -475,22 +691,38 @@ def test_background_unload_deadline_replaces_pending_status(monkeypatch) -> None
     }
     release_unload.set()
     assert unload_finished.wait(1)
-    assert http_server._MODE_UNLOAD_STATUS[9]["state"] == "failed"
+    assert http_server._MODE_UNLOAD_STATUS[status_key]["state"] == "failed"
 
 
-def test_in_process_cuda_keeps_runtime_unload_incomplete(monkeypatch) -> None:
-    partial_status_stored = threading.Event()
+def test_in_process_cuda_models_are_detached_with_bounded_release(monkeypatch) -> None:
+    release_status_stored = threading.Event()
 
     class StatusMap(dict):
         def __setitem__(self, key, value):
             super().__setitem__(key, value)
-            if value.get("reason") == "in_process_cuda_unload_unsupported":
-                partial_status_stored.set()
+            if value.get("in_process_cuda_detached") == ["embeddings"]:
+                release_status_stored.set()
+
+    class ReleasableCudaModel:
+        def __init__(self):
+            self._model = object()
+            self.active_backend = "torch"
+            self.active_device = "cuda:0"
+            self.release_timeouts = []
+
+        def release(self, timeout_seconds=3.0):
+            self.release_timeouts.append(timeout_seconds)
+            self._model = None
+            self.active_device = None
+            return True
+
+    embeddings = ReleasableCudaModel()
 
     app = SimpleNamespace(
-        embeddings=SimpleNamespace(_model=object(), active_backend="torch", active_device="cuda"),
+        embeddings=embeddings,
         reranker=SimpleNamespace(_model=None, active_backend="torch", active_device="cpu"),
     )
+    status_key = http_server._mode_unload_status_key(app, 10)
     monkeypatch.setattr(http_server, "_MODE_UNLOAD_STATUS", StatusMap())
 
     initial = http_server._start_gaming_model_unload(
@@ -507,11 +739,54 @@ def test_in_process_cuda_keeps_runtime_unload_incomplete(monkeypatch) -> None:
     )
 
     assert initial["state"] == "pending"
+    assert release_status_stored.wait(1)
+    stored = http_server._MODE_UNLOAD_STATUS[status_key]
+    assert stored["success"] is True
+    assert stored["state"] == "complete"
+    assert stored["in_process_cuda_detached"] == ["embeddings"]
+    assert embeddings.release_timeouts and 0 < embeddings.release_timeouts[0] <= 5.0
+    assert stored.get("physical_vram_reclaimed") is not True
+
+
+def test_in_process_cuda_release_timeout_keeps_runtime_unload_incomplete(monkeypatch) -> None:
+    partial_status_stored = threading.Event()
+
+    class StatusMap(dict):
+        def __setitem__(self, key, value):
+            super().__setitem__(key, value)
+            if value.get("reason") == "in_process_cuda_release_incomplete":
+                partial_status_stored.set()
+
+    app = SimpleNamespace(
+        embeddings=SimpleNamespace(
+            _model=object(), active_backend="torch", active_device="cuda",
+            release=lambda timeout_seconds=3.0: False,
+        ),
+        reranker=SimpleNamespace(_model=None, active_backend="torch", active_device="cpu"),
+    )
+    monkeypatch.setattr(http_server, "_MODE_UNLOAD_STATUS", StatusMap())
+
+    initial = http_server._start_gaming_model_unload(
+        11,
+        object(),
+        lambda _runtime, **_kwargs: {
+            "success": True,
+            "state": "complete",
+            "reason": "all_models_unloaded",
+            "unloaded": ["ollama:model-a"],
+            "remaining": [],
+        },
+        app,
+    )
+
+    assert initial["state"] == "pending"
     assert partial_status_stored.wait(1)
-    stored = http_server._MODE_UNLOAD_STATUS[10]
+    stored = http_server._MODE_UNLOAD_STATUS[
+        http_server._mode_unload_status_key(app, 11)
+    ]
     assert stored["success"] is False
     assert stored["state"] == "partial"
-    assert stored["unsupported_in_process_cuda"] == ["embeddings"]
+    assert stored["in_process_cuda_release_failed"] == {"embeddings": "release_failed"}
     assert "in_process_cuda:embeddings" in stored["remaining"]
 
 
@@ -551,8 +826,7 @@ def test_admin_mode_post_defers_unload_if_inference_active(monkeypatch) -> None:
         "success": False,
         "state": "deferred",
         "reason": "inference_active",
-        "unloaded": [],
-        "remaining": None,
+        "inference_active": True,
     }
 
 

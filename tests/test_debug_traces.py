@@ -34,6 +34,12 @@ def test_trace_list_defaults_to_200_and_accepts_higher_configured_limit(tmp_path
     assert DebugTraceStore(_config(tmp_path / "custom", max_list_limit=500)).max_list_limit == 500
 
 
+def test_detailed_traces_default_to_off_without_explicit_opt_in(tmp_path):
+    store = DebugTraceStore({"server": {"state_dir": str(tmp_path)}})
+    assert store.enabled is False
+    assert store.start(kind="api_request", tenant="test", action="/api/test") == ""
+
+
 def test_trace_defaults_allow_large_retained_payloads(tmp_path):
     config = _config(tmp_path)
     del config["debug_traces"]["max_event_bytes"]
@@ -41,7 +47,7 @@ def test_trace_defaults_allow_large_retained_payloads(tmp_path):
 
     store = DebugTraceStore(config)
 
-    assert store.max_event_bytes == 4 * 1024 * 1024
+    assert store.max_event_bytes == 8 * 1024 * 1024
     assert store.max_session_text_bytes == 64 * 1024 * 1024
 
 
@@ -111,9 +117,9 @@ def test_trace_detail_pages_in_sequence_order_with_stable_cursor(tmp_path):
     assert [first["next_seq"], second["next_seq"], third["next_seq"]] == [2, 4, 5]
     assert first["events_total"] == 5
     assert first["response_bytes"] == len(json_dumps(first).encode("utf-8"))
-    reset = store.detail(trace_id, since_seq=999, limit=2)
-    assert reset["cursor_reset"] is True
-    assert [event["seq"] for event in reset["events"]] == [1, 2]
+    past_end = store.detail(trace_id, since_seq=999, limit=2)
+    assert past_end["cursor_reset"] is False
+    assert past_end["events"] == []
 
 
 def test_trace_detail_byte_budget_pages_at_event_boundaries(tmp_path):
@@ -190,6 +196,16 @@ def test_trace_detail_reports_oversize_event_without_advancing_cursor(tmp_path):
     assert recovered["success"] is True
     assert recovered["events"][0]["payload"]["text"] == "full-payload-" + "x" * 6000
     assert recovered["response_bytes"] <= recovered["max_bytes"]
+def test_trace_list_skips_empty_project_before_root_fallback(tmp_path):
+    store = DebugTraceStore(_config(tmp_path))
+    trace_id = store.start(kind="api_request", tenant="tenant", action="/api/reason")
+    store.update(trace_id, request={"project": "", "root": r"C:\projects\alpha"})
+
+    listed = store.list()
+
+    assert listed["items"][0]["project"] == "alpha"
+
+
 @pytest.mark.parametrize("offset", [2**63 - 1, 2**63, 2**100])
 def test_trace_list_accepts_offsets_beyond_sqlite_integer_range(tmp_path, offset):
     store = DebugTraceStore(_config(tmp_path))
@@ -347,10 +363,10 @@ def test_dashboard_and_favicon_are_monitor_paths():
 
     assert "/dashboard" in MONITOR_PATHS
     assert "/favicon.ico" in MONITOR_PATHS
-    assert "When enabled, trace capture stores prompts, model output, request bodies, and responses" in DASHBOARD_HTML
-    assert "stored records and the authenticated admin API may contain raw values" in DASHBOARD_HTML
-    assert "Reveal loads retained content in bounded chunks" in DASHBOARD_HTML
-    assert "Content removed by storage limits at capture cannot be recovered" in DASHBOARD_HTML
+    assert "Podrobný obsah je vypnutý" in DASHBOARD_HTML
+    assert "Podrobná telemetrie ukládá úplný endpoint input/output lokálně" in DASHBOARD_HTML
+    assert "data-trace-reveal" not in DASHBOARD_HTML
+    assert "Obsah zkrácen limitem trace úložiště" in DASHBOARD_HTML
 
 
 def test_event_count_and_session_text_caps_are_hard_limits(tmp_path):
@@ -409,7 +425,18 @@ def test_missing_debug_trace_detail_returns_not_found(monkeypatch):
     class DebugTraces:
         TERMINAL_STATES = set()
 
-        def detail(self, trace_id, *, since_seq, limit=100, max_bytes=8 * 1024 * 1024):
+        def detail(
+            self,
+            trace_id,
+            *,
+            since_seq,
+            limit=100,
+            max_bytes=8 * 1024 * 1024,
+            before_seq=0,
+            full_payload=False,
+            content_field="",
+            content_offset=0,
+        ):
             return {"success": False, "error": "trace not found"}
 
     class App:
@@ -689,7 +716,7 @@ def test_detail_flags_session_fields_truncated_before_response_serialization(tmp
     assert "[trace output truncated]" in detail["session"]["output"]
 
 
-def test_http_trace_request_capture_redacts_nested_sensitive_fields():
+def test_http_trace_request_capture_keeps_complete_content_and_credentials():
     from local_ai_hub.http_server import Handler
 
     captured = Handler._safe_debug_trace_request({
@@ -698,8 +725,24 @@ def test_http_trace_request_capture_redacts_nested_sensitive_fields():
     })
 
     assert captured["prompt"] == "keep this trace content"
-    assert captured["headers"]["authorization"] == "[redacted]"
-    assert captured["headers"]["nested"]["api_key"] == "[redacted]"
+    assert captured["headers"]["authorization"] == "Bearer secret"
+    assert captured["headers"]["nested"]["api_key"] == "secret-key"
+    assert "capture_status" not in captured
+    assert "Bearer secret" in json.dumps(captured)
+    assert "secret-key" in json.dumps(captured)
+
+
+def test_http_trace_request_metadata_keeps_complete_project_path():
+    from local_ai_hub.http_server import Handler
+
+    captured = Handler._safe_debug_trace_request(
+        {"project": "", "root": r"C:\work\project-alpha", "prompt": "private prompt"}
+    )
+
+    assert captured["project"] == ""
+    assert captured["root"] == r"C:\work\project-alpha"
+    assert captured["prompt"] == "private prompt"
+    assert r"C:\work\project-alpha" in captured["root"]
 
 
 def test_debug_trace_route_forwards_bounded_content_page_cursor(monkeypatch):
@@ -728,13 +771,21 @@ def test_debug_trace_route_forwards_bounded_content_page_cursor(monkeypatch):
 
     assert App.debug_traces.captured == (
         "trace-1",
-        {"since_seq": 0, "limit": 100, "full_payload": True, "content_field": "output", "content_offset": 128, "before_seq": 0},
+        {
+            "since_seq": 0,
+            "limit": 100,
+            "max_bytes": http_server.DEBUG_TRACE_HTTP_MAX_BYTES,
+            "before_seq": 0,
+            "full_payload": True,
+            "content_field": "output",
+            "content_offset": 128,
+        },
     )
     assert responses == [(200, {"success": True, "content_page": {"field": "output", "offset": 128}})]
 
 
 @pytest.mark.parametrize("since_seq", [2**63 - 1, 2**63, 2**100])
-def test_trace_detail_clamps_forward_cursor_and_reports_retained_reset(tmp_path, since_seq):
+def test_trace_detail_clamps_forward_cursor_without_replaying_events(tmp_path, since_seq):
     store = DebugTraceStore(_config(tmp_path))
     trace_id = store.start(kind="async_job", tenant="tenant", action="reason")
     store.event(trace_id, "progress", {"index": 1})
@@ -742,7 +793,7 @@ def test_trace_detail_clamps_forward_cursor_and_reports_retained_reset(tmp_path,
     detail = store.detail(trace_id, since_seq=since_seq)
 
     assert detail["success"] is True
-    assert detail["cursor_reset"] is True
+    assert detail["cursor_reset"] is False
     assert detail["first_retained_seq"] == 1
-    assert detail["next_seq"] == 1
-    assert [event["seq"] for event in detail["events"]] == [1]
+    assert detail["next_seq"] == min(since_seq, 2**63 - 1)
+    assert detail["events"] == []

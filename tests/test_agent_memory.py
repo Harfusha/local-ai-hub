@@ -31,6 +31,42 @@ def store(tmp_path: Path) -> MemoryStore:
     return MemoryStore(state_store)
 
 
+def test_memory_store_falls_back_when_sqlite_lacks_fts5(tmp_path: Path, monkeypatch) -> None:
+    import sqlite3
+
+    state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    original_connect = sqlite3.connect
+
+    class Fts5UnavailableConnection(sqlite3.Connection):
+        def execute(self, sql, parameters=()):
+            normalized_sql = " ".join(sql.split()).casefold()
+            if normalized_sql.startswith("create virtual table") and "using fts5" in normalized_sql:
+                raise sqlite3.OperationalError("no such module: fts5")
+            return super().execute(sql, parameters)
+
+    def connect_without_fts5(*args, **kwargs):
+        kwargs["factory"] = Fts5UnavailableConnection
+        return original_connect(*args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", connect_without_fts5)
+    store_without_fts5 = MemoryStore(state_store)
+    record = MemoryRecord.create(
+        kind=MemoryKind.FACT,
+        scope=AgentScope.GLOBAL,
+        key="ftsless-note",
+        value="needleword remains searchable without full text indexing",
+    )
+
+    store_without_fts5.record(record, actor="user")
+    found = store_without_fts5.find(
+        scope=AgentScope.GLOBAL,
+        query="needleword",
+        semantic=False,
+    )
+
+    assert {item.record_id for item in found} == {record.record_id}
+
+
 def _repository_identity(record: MemoryRecord) -> dict[str, object]:
     return {
         "scope": AgentScope.REPOSITORY,

@@ -47,13 +47,13 @@ def test_task_memory_snapshot_preserves_freshness_provenance_and_evidence(tmp_pa
         trace_context.reset_context(token)
 
     snapshot = task.checkpoint.state_data["memory_context"]
-    assert snapshot["status"] == "compiled"
-    assert snapshot["context_stale"] is False
-    assert snapshot["scope"]["tenant_bound"] is True
-    assert snapshot["used_memory_ids"] == [record.record_id]
-    assert snapshot["evidence_ids"] == ["ev-current-1"]
+    assert snapshot["schema_version"] == 1
+    assert snapshot["tenant_key"]
     item = snapshot["items"][0]
-    assert item["freshness"] == record.updated_at
+    assert item["id"] == record.record_id
+    assert item["scope"] == "repository"
+    assert item["scope_id"] == str(root)
+    assert item["validity"]["updated_at"] == record.updated_at
     assert item["provenance"]["repository_revision"] == "rev-1"
     assert item["provenance"]["evidence_ids"] == ["ev-current-1"]
 
@@ -66,6 +66,8 @@ def test_task_memory_fallback_is_bounded_and_does_not_echo_error_or_tenant(tmp_p
     state = AgentStateStore(tmp_path / "agent_state.sqlite3")
     tasks = TaskStore(state)
     memory = MemoryStore(state)
+    root = tmp_path / "repo"
+    root.mkdir()
     tasks.set_memory_adoption(memory_store=memory, context_compiler=UnavailableCompiler())
 
     token = trace_context.set_context(tenant="tenant-a")
@@ -74,18 +76,16 @@ def test_task_memory_fallback_is_bounded_and_does_not_echo_error_or_tenant(tmp_p
             GoalContract(goal="continue without unavailable memory"),
             ScopeContext(task_id="fallback-task"),
             task_id="fallback-task",
-            repo_root=str(tmp_path / "repo"),
+            repo_root=str(root),
         )
     finally:
         trace_context.reset_context(token)
 
     snapshot = task.checkpoint.state_data["memory_context"]
-    assert snapshot == {
-        "status": "unavailable",
-        "items": [],
-        "used_memory_ids": [],
-        "evidence_ids": [],
-    }
+    assert snapshot["schema_version"] == 1
+    assert snapshot["items"] == []
+    assert snapshot["warnings"] == [{"code": "memory_context_unavailable"}]
+    assert snapshot["estimated_tokens"] == 0
     assert "tenant-a" not in str(snapshot)
     assert "api_key" not in str(snapshot)
 
@@ -118,7 +118,7 @@ def test_task_resume_recompiles_context_after_memory_becomes_stale(tmp_path: Pat
             task_id="stale-task",
             repo_root=str(root),
         )
-        assert task.checkpoint.state_data["memory_context"]["used_memory_ids"] == [record.record_id]
+        assert [item["id"] for item in task.checkpoint.state_data["memory_context"]["items"]] == [record.record_id]
         memory._save_record(replace(record, status=MemoryStatus.STALE))
         tasks.transition(task.task_id, TaskStatus.ACTIVE, reason="start", actor="test", idempotency_key="stale-start")
         tasks.transition(task.task_id, TaskStatus.BLOCKED, reason="wait", actor="test", idempotency_key="stale-block")
@@ -127,7 +127,7 @@ def test_task_resume_recompiles_context_after_memory_becomes_stale(tmp_path: Pat
         trace_context.reset_context(token)
 
     snapshot = resumed.checkpoint.state_data["memory_context"]
-    assert snapshot["used_memory_ids"] == []
+    assert record.record_id not in {item["id"] for item in snapshot["items"]}
 
 
 def test_task_creation_shares_repository_memory_across_worktrees_and_isolates_identity(tmp_path: Path):
@@ -202,8 +202,10 @@ def test_task_creation_shares_repository_memory_across_worktrees_and_isolates_id
 
     snapshot_a = task_a.checkpoint.state_data["memory_context"]
     snapshot_b = task_b.checkpoint.state_data["memory_context"]
-    assert set(snapshot_a["used_memory_ids"]) == {records["repo"].record_id, records["worktree_a"].record_id}
-    assert set(snapshot_b["used_memory_ids"]) == {records["repo"].record_id, records["worktree_b"].record_id}
-    assert records["foreign_tenant"].record_id not in set(snapshot_a["used_memory_ids"] + snapshot_b["used_memory_ids"])
-    assert snapshot_a["scope"]["tenant_bound"] and snapshot_b["scope"]["tenant_bound"]
-    assert snapshot_a["scope"]["worktree_bound"] and snapshot_b["scope"]["worktree_bound"]
+    ids_a = {item["id"] for item in snapshot_a["items"]}
+    ids_b = {item["id"] for item in snapshot_b["items"]}
+    assert ids_a == {records["repo"].record_id, records["worktree_a"].record_id}
+    assert ids_b == {records["repo"].record_id, records["worktree_b"].record_id}
+    assert records["foreign_tenant"].record_id not in ids_a | ids_b
+    assert {item["scope"] for item in snapshot_a["items"]} == {"repository", "worktree"}
+    assert {item["scope"] for item in snapshot_b["items"]} == {"repository", "worktree"}

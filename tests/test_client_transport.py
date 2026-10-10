@@ -230,6 +230,52 @@ def test_get_reuses_request_id_after_autostart_retry(tmp_path, monkeypatch):
     assert result["request_id"] == sent_ids[0]
 
 
+def test_get_retries_transient_read_transport_failures_within_deadline(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    client.auto_start = True
+    start_timeouts = []
+    sent_ids = []
+
+    def ensure_server(*, timeout):
+        start_timeouts.append(timeout)
+        return True
+
+    def open_request(_method, _path, _body, headers, _timeout, **_kwargs):
+        request_id = headers["X-LocalAI-Request-ID"]
+        sent_ids.append(request_id)
+        if len(sent_ids) < 3:
+            raise URLError("listener is restarting")
+        return json.dumps({"success": True, "request_id": request_id}).encode("utf-8")
+
+    monkeypatch.setattr(client, "ensure_server", ensure_server)
+    monkeypatch.setattr(client, "_open", open_request)
+
+    result = client.get("/health", timeout=1)
+
+    assert result["success"] is True
+    assert len(start_timeouts) == 2
+    assert len(sent_ids) == 3 and len(set(sent_ids)) == 1
+
+
+def test_get_retries_snapshot_warming_status_within_deadline(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    sent_ids = []
+
+    def open_request(_method, _path, _body, headers, _timeout, **_kwargs):
+        sent_ids.append(headers["X-LocalAI-Request-ID"])
+        if len(sent_ids) == 1:
+            return json.dumps({"success": False, "snapshot_warming": True, "retry_after_ms": 10}).encode("utf-8")
+        return json.dumps({"success": True, "hub_online": True}).encode("utf-8")
+
+    monkeypatch.setattr(client, "_open", open_request)
+
+    result = client.get("/api/live/status?light=1", timeout=1)
+
+    assert result["success"] is True
+    assert result["hub_online"] is True
+    assert len(sent_ids) == 2 and len(set(sent_ids)) == 1
+
+
 def test_coalesced_replay_safe_post_timeout_returns_owner_request_id(tmp_path, monkeypatch):
     client = _client(tmp_path)
     request_started = threading.Event()
@@ -842,6 +888,7 @@ def test_coord_pubsub_poll_uses_after_seq_in_json_body(tmp_path, monkeypatch):
 def test_stream_events_sends_client_identity_and_caps_timeout(tmp_path, monkeypatch):
     client = _client(tmp_path)
     client.api_token = "test-token"
+    client.tenant = "tenant-a"
     seen = {}
 
     class Response:

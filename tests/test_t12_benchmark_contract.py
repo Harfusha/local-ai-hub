@@ -260,9 +260,12 @@ def test_t12_case_does_not_infer_throughput_without_backend_eval_duration(tmp_pa
 
 def test_t12_case_uses_runtime_request_stream_and_final_metrics(tmp_path: Path) -> None:
     class Runtime:
+        timeout = None
+
         def request_stream(self, endpoint, payload, on_chunk, timeout=None):
             assert endpoint == "/api/generate"
             assert payload["stream"] is True
+            self.timeout = timeout
             time.sleep(0.01)
             on_chunk('{"answer":"42"}')
             return {
@@ -275,9 +278,10 @@ def test_t12_case_uses_runtime_request_stream_and_final_metrics(tmp_path: Path) 
         def submit(self, model, tenant, source, execute, **kwargs):
             return execute()
 
+    runtime = Runtime()
     runner = HardwareBenchmarkRunner(
         benchmarks_path=tmp_path / "benchmarks.json",
-        runtime=Runtime(),
+        runtime=runtime,
         scheduler=Scheduler(),
         config={"models": {"reasoning": "qwen2.5-coder:7b"}},
     )
@@ -292,6 +296,7 @@ def test_t12_case_uses_runtime_request_stream_and_final_metrics(tmp_path: Path) 
     )
 
     assert result["success"] is True
+    assert runtime.timeout == 120.0
     assert result["ttft_ms"] > 0
     assert result["tokens_per_second"] == 4.5
     assert result["deadline_generation_ms"] == 2000.0

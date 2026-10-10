@@ -1077,6 +1077,9 @@ class LocalAIApp:
     def _snapshot_warming(self, scope: str) -> dict[str, Any]:
         return {
             "success": False,
+            "error": "status snapshot is warming",
+            "retryable": True,
+            "terminal": False,
             "degraded": True,
             "snapshot_warming": True,
             "snapshot_cached": False,

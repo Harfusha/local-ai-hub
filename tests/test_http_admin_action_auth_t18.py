@@ -249,9 +249,23 @@ def test_config_view_masks_global_and_action_tokens():
 def test_mutating_admin_routes_have_separate_action_scopes():
     assert http_server._http_admin_action("POST", "/api/maintenance/purge_cache") == "maintenance"
     assert http_server._http_admin_action("POST", "/api/config/update") == "config.write"
-    assert http_server._http_admin_action("POST", "/api/control") == "control"
+    assert http_server._http_admin_action("POST", "/api/control") is None
+    assert http_server.select_http_routes("POST", "/api/control") == ()
+    assert 'id="restartHub"' not in http_server.DASHBOARD_HTML
+    assert 'id="stopService"' not in http_server.DASHBOARD_HTML
     assert http_server._http_admin_action("POST", "/api/models/manage") == "model.manage"
     assert http_server._http_admin_action("POST", "/api/bundle/import") == "bundle.import"
+
+
+def test_detailed_telemetry_toggle_applies_live():
+    store = SimpleNamespace(enabled=False)
+    app = SimpleNamespace(debug_traces=store)
+
+    assert http_server._apply_live_debug_trace_toggle(app, {"debug_traces.enabled": True}) is True
+    assert store.enabled is True
+    assert http_server._apply_live_debug_trace_toggle(app, {"debug_traces.enabled": False}) is True
+    assert store.enabled is False
+    assert http_server._apply_live_debug_trace_toggle(app, {"preprocessing.enabled": True}) is False
 
 
 def test_legacy_global_token_keeps_admin_superuser_access(monkeypatch):

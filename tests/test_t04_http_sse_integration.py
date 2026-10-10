@@ -4,7 +4,7 @@ import json
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import ThreadingHTTPServer
 from types import SimpleNamespace
 from urllib.error import HTTPError
 
@@ -25,11 +25,11 @@ def _fixture(tmp_path, monkeypatch, *, token: str = "expected-local-token"):
     release = threading.Event()
     handler_done = threading.Event()
 
-    class StreamHandler(BaseHTTPRequestHandler):
+    class StreamHandler(http_server.Handler):
         protocol_version = "HTTP/1.1"
 
         def do_GET(self):
-            allowed = http_server.Handler._authorized(self)
+            allowed = self._authorized()
             authorized.append((self.headers.get("X-LocalAI-Token", ""), self.headers.get("Authorization", ""), allowed))
             if not allowed:
                 body = json.dumps({"success": False, "error": "unauthorized"}).encode("utf-8")

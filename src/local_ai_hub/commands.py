@@ -1752,7 +1752,33 @@ def _stop_daemon_tree(info: dict[str, Any]) -> bool:
             return True
         except Exception:
             return False
-    # Numeric PID/PGID is not a continuously owned signal capability.
+    if os.name != "nt":
+        pid = info.get("pid")
+        process_group_id = info.get("process_group_id")
+        identity = info.get("identity")
+        if (
+            isinstance(pid, int)
+            and not isinstance(pid, bool)
+            and pid > 0
+            and getattr(process, "pid", None) == pid
+            and getattr(process, "_waitpid_lock", None) is not None
+            and process_group_id == pid
+            and isinstance(identity, dict)
+            and identity.get("pid") == pid
+        ):
+            # The original Popen handle keeps the leader unreaped while the
+            # captured identity and session PGID are checked and signalled.
+            try:
+                return bool(terminate_tree(
+                    pid,
+                    process_group=process_group_id,
+                    expected_identity=identity,
+                    grace_seconds=1.5,
+                    process_handle=process,
+                ))
+            except Exception:
+                return False
+    # Numeric PID/PGID alone is not a continuously owned signal capability.
     return False
 
 
@@ -3657,7 +3683,6 @@ class CommandBroker:
                 "cached": cached,
             }
             if project_bound:
-                proof["command"] = command
                 binding = {
                     "project_alias": project_alias,
                     "project_config_digest": project_config_digest,
@@ -4667,15 +4692,29 @@ class CommandBroker:
                     or script_path.startswith("./tools/")
                     or script_path.startswith("src/")
                 )
-                if script_name in {
-                    "doctor.py",
-                    "selftest.py",
-                    "telemetry_report.py",
-                    "benchmark.py",
-                    "show_summary.py",
-                    "release_check.py",
-                    "check_contracts.py",
-                } or (is_builtin_tool and any(k in script_name for k in ("test", "validate", "check", "audit", "verify", "lint"))):
+                is_read_only_surface_inventory_check = (
+                    script_name == "surface_inventory.py"
+                    and is_builtin_tool
+                    and "--check" in lower
+                    and "--write-doc" not in lower
+                )
+                is_validation_script = (
+                    script_name in {
+                        "doctor.py",
+                        "selftest.py",
+                        "telemetry_report.py",
+                        "benchmark.py",
+                        "show_summary.py",
+                        "release_check.py",
+                        "check_contracts.py",
+                    }
+                    or is_read_only_surface_inventory_check
+                    or (
+                        is_builtin_tool
+                        and any(k in script_name for k in ("test", "validate", "check", "audit", "verify", "lint"))
+                    )
+                )
+                if is_validation_script:
                     return {"class": "validation", "cacheable": True, "allowed": bool(cfg.get("allow_validation", True)), "replay_safe": True, "reason": "python validation script"}
                 if any(f in script_name for f in ("generate", "build", "compile", "bundle")):
                     return {"class": "build", "cacheable": True, "allowed": bool(cfg.get("allow_build", True)), "reason": "python build/generate script"}
@@ -8207,7 +8246,10 @@ class CommandBroker:
             timeout=timeout, force=True, task_id=task_id, criterion=criterion,
             paths=write_paths,
             record_verification=record_verification,
-            rollback_on_failure=auto_rollback, rollback_paths=write_paths,
+            # patch_and_verify owns restoration from its validated snapshot; a
+            # second rollback inside run() would change the file before this
+            # layer verifies ownership and cause a false unknown outcome.
+            rollback_on_failure=False,
             log_callback=log_callback,
             docker_image=docker_image,
             _transaction_context=_transaction_context,
@@ -8430,10 +8472,9 @@ class CommandBroker:
             )
             if outcome_uncertain or not replay_safe:
                 uncertain = dict(initial_result)
-                out_unk = (
-                    bool(initial_result["outcome_unknown"])
-                    if "outcome_unknown" in initial_result
-                    else outcome_uncertain
+                out_unk = bool(
+                    outcome_uncertain
+                    or initial_result.get("outcome_unknown")
                 )
                 uncertain["outcome_unknown"] = out_unk
                 return {
@@ -8441,6 +8482,8 @@ class CommandBroker:
                     "repaired": False,
                     "repair_skipped": True,
                     "outcome_unknown": out_unk,
+                    "retryable": False,
+                    "terminal": True,
                     "attempts": 0,
                     "result": uncertain,
                     "message": "repair skipped because command outcome or side effects are not safe to replay",
@@ -9123,6 +9166,14 @@ class CommandBroker:
                 process._local_ai_job_handle = job_handle
                 if not assign_process_to_job(job_handle, process.pid):
                     raise OSError("unable to assign suspended daemon to its Job Object")
+                resume_worktree_error = self._require_task_worktree(
+                    task_id, resolved_cwd, invocation
+                )
+                if resume_worktree_error:
+                    raise OSError(
+                        "registered task worktree changed before daemon resume: "
+                        f"{resume_worktree_error}"
+                    )
                 resume_authorization = self.authorize_auxiliary_action(
                     "spawn_daemon", endpoint="commands.spawn_daemon.resume", task_id=task_id
                 )

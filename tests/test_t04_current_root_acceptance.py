@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -35,6 +36,7 @@ def live_api(tmp_path, monkeypatch):
 
 def test_resolve_imports_get_and_post_share_auto_default(live_api):
     app, client = live_api
+    root = str(Path(app.config["server"]["state_dir"]).parent.resolve())
     calls = []
 
     def resolve_imports(root, symbols, language):
@@ -42,12 +44,12 @@ def test_resolve_imports_get_and_post_share_auto_default(live_api):
         return {"success": True, "language": language}
 
     app.services.resolve_imports = resolve_imports
-    get_result = client.get("/api/resolve_imports?root=repo&symbol=Thing")
-    post_result = client.post("/api/resolve_imports", {"root": "repo", "symbol": "Thing"})
+    get_result = client.get(f"/api/resolve_imports?root={root}&symbol=Thing")
+    post_result = client.post("/api/resolve_imports", {"root": root, "symbol": "Thing"})
 
     assert get_result["language"] == "auto"
     assert post_result["language"] == "auto"
-    assert calls == [("repo", ["Thing"], "auto"), ("repo", ["Thing"], "auto")]
+    assert calls == [(root, ["Thing"], "auto"), (root, ["Thing"], "auto")]
 
 
 def test_unsupported_chat_completions_rejects_valid_payload(live_api):

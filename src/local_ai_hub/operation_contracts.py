@@ -125,7 +125,7 @@ _COORD_ACTIONS = (
     "claim", "renew", "release", "leases", "memo_put", "memo_get", "memo_search", "memo_delete",
     "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list",
     "task_complete", "task_fail", "task_heartbeat", "memory_record", "memory_get", "memory_find",
-    "memory_promote", "memory_reap", "relation_record", "relation_find", "relation_traverse", "context_compile",
+    "memory_promote", "context_compile",
     "verify_receipt", "verify_completion", "negative_knowledge_record", "negative_knowledge_find", "incident_decision",
     "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_merge", "blackboard_delete",
     "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel", "worktree_lease",
@@ -479,12 +479,12 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
         "local_ai_coord", "coord", "action", _COORD_ACTIONS, timeout="action-specific coordination budget; HubClient cap applies",
         projection="coordination result", default_effect="coordination_state", read_only=(
             "leases", "memo_get", "memo_search", "task_get", "task_list", "memory_get", "memory_find",
-            "relation_find", "blackboard_get", "blackboard_list", "swarm_status", "swarm_list", "pubsub_poll",
+            "blackboard_get", "blackboard_list", "swarm_status", "swarm_list", "pubsub_poll",
         ),
         action_requirements={name: ("agent_os",) for name in _COORD_ACTIONS[8:]},
         action_effects={name: "coordination_state" for name in _COORD_ACTIONS if name not in {
             "leases", "memo_get", "memo_search", "task_get", "task_list", "memory_get", "memory_find",
-            "relation_find", "blackboard_get", "blackboard_list", "swarm_status", "swarm_list", "pubsub_poll",
+            "blackboard_get", "blackboard_list", "swarm_status", "swarm_list", "pubsub_poll",
         }},
         properties={
             "action": {"type": "string"},
@@ -825,29 +825,17 @@ def _status_output_variants(action: str) -> list[dict[str, Any]]:
                 "success": {"type": "boolean"},
                 "hub_online": {"type": "boolean"},
                 "version": {"type": "string"},
-                "uptime_seconds": {"type": "integer"},
-                "features": {"type": "object"},
-                "runtime_stats": {"type": "object"},
-                "capabilities": {"type": "object"},
-                "ollama_online": {"type": ["boolean", "null"]},
-                "models": {"type": "object"},
-                "hardware": {"type": "object"},
-                "accelerators": {"type": "object"},
-                "code_intelligence": {"type": "object"},
-                "runtime_profile": {"type": "object"},
-                "scheduler": {"type": "object"},
-                "headless": {"type": "object"},
-                "background_gpu": {"type": "object"},
-                "ollama_profile": {"type": "object"},
-                "model_execution": {"type": "object"},
-                "vram_balancer": {"type": "object"},
-                "benchmark": {"type": "object"},
-                "debug_traces": {"type": "object"},
-                "observability": {"type": "object"},
-                "preprocessing": {"type": "object"},
-                "agent_state": {"type": "object"},
-                "http_concurrency": {"type": "object"},
+                **{name: {} for name in (
+                    "uptime_seconds", "features", "runtime_stats", "capabilities", "ollama_online",
+                    "models", "hardware", "accelerators", "code_intelligence", "runtime_profile",
+                    "scheduler", "headless", "background_gpu", "ollama_profile", "model_execution",
+                    "vram_balancer", "benchmark", "debug_traces", "observability", "preprocessing",
+                    "agent_state", "http_concurrency",
+                )},
             },
+            # Diagnostic keys are versioned independently by the status API. Keep
+            # the stable identity contract above, but preserve forward-compatible
+            # diagnostics without rejecting null or newly shaped values.
             "additionalProperties": True,
         }, failure]
     if action == "agent_state":

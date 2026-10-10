@@ -322,16 +322,18 @@ class SwarmCoordinator:
             "version": status.get("version", 1),
         }
 
-    def get_status(self, swarm_id: str) -> dict[str, Any]:
+    def get_status(self, swarm_id: str, *, root: str | None = None) -> dict[str, Any]:
         with closing(self._connect()) as con:
-            row = con.execute(
-                """
+            sql = """
                 SELECT swarm_id, goal, target_paths, test_command, author, root, state,
                        receipt_id, history, created_at, updated_at, version
                 FROM agent_swarms WHERE swarm_id = ?
-                """,
-                (swarm_id,),
-            ).fetchone()
+            """
+            params: list[Any] = [swarm_id]
+            if root is not None:
+                sql += " AND root = ?"
+                params.append(root)
+            row = con.execute(sql, tuple(params)).fetchone()
         if not row:
             return {"success": False, "error": f"Swarm '{swarm_id}' not found"}
         return {
@@ -368,6 +370,7 @@ class SwarmCoordinator:
         *,
         expected_version: int | None = None,
         idempotency_key: str = "",
+        root: str | None = None,
     ) -> dict[str, Any]:
         return self._step_transaction(
             swarm_id,
@@ -376,6 +379,7 @@ class SwarmCoordinator:
             payload or {},
             expected_version=expected_version,
             idempotency_key=idempotency_key,
+            root=root,
         )
 
     @_serialized_event_writer
@@ -388,6 +392,7 @@ class SwarmCoordinator:
         *,
         expected_version: int | None,
         idempotency_key: str,
+        root: str | None,
     ) -> dict[str, Any]:
         con = self._connect()
         published: list[AgentEvent] = []
@@ -398,7 +403,7 @@ class SwarmCoordinator:
             con.execute("BEGIN IMMEDIATE")
             row = con.execute(
                 """
-                SELECT swarm_id, goal, target_paths, test_command, state, receipt_id,
+                SELECT swarm_id, goal, target_paths, test_command, root, state, receipt_id,
                        history, updated_at, version
                 FROM agent_swarms WHERE swarm_id = ?
                 """,
@@ -407,8 +412,11 @@ class SwarmCoordinator:
             if not row:
                 con.execute("ROLLBACK")
                 return {"success": False, "error": f"Swarm '{swarm_id}' not found"}
-            current_state = str(row[4])
-            current_version = int(row[8])
+            if root is not None and str(row[4]) != str(root):
+                con.execute("ROLLBACK")
+                return {"success": False, "error": f"Swarm '{swarm_id}' not found"}
+            current_state = str(row[5])
+            current_version = int(row[9])
             requested_version = (
                 int(expected_version) if expected_version is not None else None
             )
@@ -486,8 +494,8 @@ class SwarmCoordinator:
             goal = str(row[1])
             paths = json.loads(row[2])
             test_command = str(row[3])
-            old_receipt_id = row[5]
-            history = json.loads(row[6])
+            old_receipt_id = row[6]
+            history = json.loads(row[7])
             now = time.time()
             new_state = current_state
             pay = dict(payload)
@@ -668,13 +676,19 @@ class SwarmCoordinator:
             result["lease_release_pending"] = True
         return result
 
-    def list_swarms(self, state: str | None = None, limit: int = 50) -> dict[str, Any]:
+    def list_swarms(self, state: str | None = None, limit: int = 50, *, root: str | None = None) -> dict[str, Any]:
         with closing(self._connect()) as con:
             sql = "SELECT swarm_id, goal, target_paths, test_command, author, state, receipt_id, created_at, updated_at FROM agent_swarms"
             params: list[Any] = []
+            filters: list[str] = []
             if state:
-                sql += " WHERE state = ?"
+                filters.append("state = ?")
                 params.append(state)
+            if root is not None:
+                filters.append("root = ?")
+                params.append(root)
+            if filters:
+                sql += " WHERE " + " AND ".join(filters)
             sql += " ORDER BY updated_at DESC LIMIT ?"
             params.append(max(1, int(limit)))
             rows = con.execute(sql, tuple(params)).fetchall()
@@ -702,22 +716,25 @@ class SwarmCoordinator:
         *,
         expected_version: int | None = None,
         idempotency_key: str = "",
+        root: str | None = None,
     ) -> dict[str, Any]:
         con = self._connect()
         published: list[AgentEvent] = []
         try:
             con.isolation_level = None
             con.execute("BEGIN IMMEDIATE")
-            row = con.execute(
-                "SELECT state, history, version FROM agent_swarms WHERE swarm_id = ?",
-                (swarm_id,),
-            ).fetchone()
+            sql = "SELECT root, state, history, version FROM agent_swarms WHERE swarm_id = ?"
+            params: list[Any] = [swarm_id]
+            if root is not None:
+                sql += " AND root = ?"
+                params.append(root)
+            row = con.execute(sql, tuple(params)).fetchone()
             if not row:
                 con.execute("ROLLBACK")
                 return {"success": False, "error": f"Swarm '{swarm_id}' not found"}
-            current_state = str(row[0])
-            history = json.loads(row[1])
-            version = int(row[2])
+            current_state = str(row[1])
+            history = json.loads(row[2])
+            version = int(row[3])
             requested_version = (
                 int(expected_version) if expected_version is not None else None
             )

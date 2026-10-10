@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 from local_ai_hub.deterministic import DeterministicEngine
 
@@ -56,6 +57,62 @@ def test_generate_mocks_python_class(tmp_path: Path) -> None:
     assert "class MockUserService:" in res["mock_code"]
     assert "@pytest.fixture" in res["fixture_code"]
     assert "create_autospec(UserService" in res["fixture_code"]
+
+
+def test_generate_mocks_python_unknown_symbol_emits_valid_fixture(tmp_path: Path) -> None:
+    p = tmp_path / "module.py"
+    p.write_text("value = 1\n", encoding="utf-8")
+
+    res = DeterministicEngine({"server": {"state_dir": str(tmp_path)}}).generate_mocks(
+        str(tmp_path), "module.py", "MissingSymbol"
+    )
+
+    assert res["success"] is True
+    ast.parse(res["fixture_code"])
+    assert "return unittest.mock.MagicMock" in res["fixture_code"]
+    assert "return mock_MissingSymbol =" not in res["fixture_code"]
+
+
+def test_generate_mocks_python_rejects_invalid_symbol(tmp_path: Path) -> None:
+    p = tmp_path / "module.py"
+    p.write_text("value = 1\n", encoding="utf-8")
+
+    res = DeterministicEngine({"server": {"state_dir": str(tmp_path)}}).generate_mocks(
+        str(tmp_path), "module.py", "Missing-Symbol"
+    )
+
+    assert res == {
+        "success": False,
+        "error": "Python mock symbols must be valid identifiers",
+    }
+
+
+def test_generate_mocks_python_rejects_keyword_symbol(tmp_path: Path) -> None:
+    p = tmp_path / "module.py"
+    p.write_text("value = 1\n", encoding="utf-8")
+
+    res = DeterministicEngine({"server": {"state_dir": str(tmp_path)}}).generate_mocks(
+        str(tmp_path), "module.py", "class"
+    )
+
+    assert res == {
+        "success": False,
+        "error": "Python mock symbols must be valid identifiers",
+    }
+
+
+def test_generate_mocks_python_function_uses_nested_module_path(tmp_path: Path) -> None:
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "service.py").write_text("def fetch():\n    return 1\n", encoding="utf-8")
+
+    res = DeterministicEngine({"server": {"state_dir": str(tmp_path)}}).generate_mocks(
+        str(tmp_path), "pkg/service.py", "fetch"
+    )
+
+    assert res["success"] is True
+    assert "patch('pkg.service.fetch')" in res["fixture_code"]
 
 
 def test_generate_mocks_typescript(tmp_path: Path) -> None:

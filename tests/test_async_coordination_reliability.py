@@ -143,7 +143,7 @@ def test_client_mutating_endpoints_not_replay_safe():
     client = HubClient(auto_start=False)
     captured = []
 
-    def mock_request(path, payload=None, timeout=None, replay_safe=False):
+    def mock_request(path, payload=None, timeout=None, replay_safe=False, *, tenant=None, cancel_event=None):
         captured.append({"path": path, "payload": payload, "replay_safe": replay_safe})
         return {"success": True}
 

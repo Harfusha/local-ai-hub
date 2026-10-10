@@ -126,7 +126,9 @@ def test_http_async_job_submit_rejects_conversation_payload(production_hub):
     assert result["retryable"] is False
 
 
-def test_hub_client_continues_through_production_route_and_preserves_transcript(production_hub):
+def test_hub_client_continues_through_production_route_and_preserves_transcript(production_hub, monkeypatch):
+    from local_ai_hub import http_server
+
     app, client, calls = production_hub
     post_paths = []
     original_do_post = http_server.Handler.do_POST

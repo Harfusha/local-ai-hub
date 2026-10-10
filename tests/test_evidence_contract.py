@@ -68,3 +68,53 @@ def test_current_evidence_identity_requires_current_source_and_stored_row(tmp_pa
             ("forged evidence", evidence_id),
         )
     assert store_validator(evidence_id) is False
+
+
+def test_put_many_does_not_return_unpersisted_evidence_ids(tmp_path, caplog):
+    store = EvidenceStore(tmp_path / "evidence")
+
+    class FailingConnection:
+        @staticmethod
+        def executemany(*_args, **_kwargs):
+            raise sqlite3.OperationalError(f"private storage path: {tmp_path}")
+
+        @staticmethod
+        def close():
+            return None
+
+    store._connect = lambda: FailingConnection()
+    item = {
+        "path": "src/example.py",
+        "file_sha256": "a" * 64,
+        "start_line": 1,
+        "end_line": 1,
+        "text": "source snippet",
+    }
+
+    with caplog.at_level("DEBUG", logger="local_ai_hub.evidence"):
+        result = store.put_many(str(tmp_path), [item])
+
+    assert result == [item]
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("Evidence batch persistence skipped (OperationalError)" in message for message in messages)
+    assert all(str(tmp_path) not in message for message in messages)
+
+
+def test_get_does_not_return_database_error_details(tmp_path):
+    store = EvidenceStore(tmp_path / "evidence")
+
+    class FailingConnection:
+        @staticmethod
+        def execute(*_args, **_kwargs):
+            raise sqlite3.OperationalError(f"database locked at {tmp_path}")
+
+        @staticmethod
+        def close():
+            return None
+
+    store._connect = lambda: FailingConnection()
+
+    result = store.get("evidence-id")
+
+    assert result == {"success": False, "error": "evidence store unavailable"}
+    assert str(tmp_path) not in repr(result)

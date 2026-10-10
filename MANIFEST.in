@@ -24,6 +24,15 @@ prune build
 prune dist
 prune data
 prune generated
+prune .handoff
+prune artifacts
+prune T18-review-artifacts-*
+prune .t03-root-current-overlay
+prune .t*-overlay*
 
 recursive-include docs *.md
 prune docs/superpowers
+exclude docs/integration-*.md
+prune docs/integration
+exclude docs/*SYNC*.md docs/*STASH*.md docs/*WORKTREE*.md docs/PRIORITY_STASH*.md
+exclude docs/T*SYNC*.md docs/T*HANDOFF*.md docs/T*FILES*.txt

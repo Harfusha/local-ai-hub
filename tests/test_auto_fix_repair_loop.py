@@ -547,6 +547,18 @@ def test_classify_quoted_semicolons(temp_dir: Path):
     assert res3["class"] == "dangerous"
 
 
+def test_classify_surface_inventory_check_as_read_only(temp_dir: Path):
+    broker = make_broker(temp_dir)
+
+    check = broker.classify("python -B tools/surface_inventory.py --check")
+    write = broker.classify("python -B tools/surface_inventory.py --write-doc")
+
+    assert check["class"] == "validation"
+    assert check["allowed"] is True
+    assert write["class"] == "mutating"
+    assert write["allowed"] is False
+
+
 def test_classify_python_c_dangerous_patterns(temp_dir: Path):
     """Security: python -c inline code with dangerous calls must be classified
     as 'unknown' and blocked when allow_unknown=False (the secure default).

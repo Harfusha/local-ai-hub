@@ -1874,9 +1874,11 @@ def _behavioral_test_links(root: Path, inventory: dict[str, Any]) -> dict[str, l
                     imports[alias.asname or alias.name] = alias.name
         return imports
 
-    def module_http_request_helpers_for(tree: ast.Module) -> dict[str, tuple[ast.FunctionDef | ast.AsyncFunctionDef, str, str | None, str | None]]:
+    def module_http_request_helpers_for(
+        tree: ast.Module,
+    ) -> dict[str, tuple[ast.FunctionDef | ast.AsyncFunctionDef, str, str | None, str | None, bool]]:
         module_http_request_helpers: dict[
-            str, tuple[ast.FunctionDef | ast.AsyncFunctionDef, str, str | None, str | None]
+            str, tuple[ast.FunctionDef | ast.AsyncFunctionDef, str, str | None, str | None, bool]
         ] = {}
         for helper in (node for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))):
             helper_parameters = [
@@ -1926,6 +1928,11 @@ def _behavioral_test_links(root: Path, inventory: dict[str, Any]) -> dict[str, l
                             request_calls,
                             key=lambda assignment: (assignment.lineno, assignment.col_offset),
                         ).value
+                if spec is None and isinstance(helper_url, ast.Name) and helper_url.id in helper_parameters:
+                    module_http_request_helpers[helper.name] = (
+                        helper, helper_url.id, None, None, True,
+                    )
+                    continue
                 if spec is None or not isinstance(spec[0], ast.Name):
                     continue
                 url_parameter = spec[0].id
@@ -1962,6 +1969,7 @@ def _behavioral_test_links(root: Path, inventory: dict[str, Any]) -> dict[str, l
                         url_parameter,
                         method_parameter,
                         method_value.upper() if method_value else None,
+                        False,
                     )
         return module_http_request_helpers
 
@@ -2168,7 +2176,7 @@ def _behavioral_test_links(root: Path, inventory: dict[str, Any]) -> dict[str, l
                 url_node: ast.AST | None = None
                 module_helper = module_http_request_helpers.get(call_name)
                 if module_helper is not None and isinstance(call.func, ast.Name):
-                    helper, url_parameter, method_parameter, default_method = module_helper
+                    helper, url_parameter, method_parameter, default_method, receives_request = module_helper
                     positional_parameters = [
                         argument.arg for argument in [*helper.args.posonlyargs, *helper.args.args]
                     ]
@@ -2183,6 +2191,23 @@ def _behavioral_test_links(root: Path, inventory: dict[str, Any]) -> dict[str, l
                     url_node = helper_argument(url_parameter)
                     method_node = helper_argument(method_parameter) if method_parameter else None
                     method = string_value(method_node) if method_node is not None else default_method
+                    if receives_request:
+                        request_spec = (
+                            urllib_request_binding_at(
+                                request_specs,
+                                url_node.id,
+                                (getattr(call, "lineno", 0), getattr(call, "col_offset", 0)),
+                            )
+                            if isinstance(url_node, ast.Name)
+                            else urllib_request_spec(url_node)
+                            if isinstance(url_node, ast.Call)
+                            and is_urllib_request_call(url_node, "Request", urllib_modules, urllib_symbols)
+                            else None
+                        )
+                        if request_spec is None:
+                            continue
+                        url_node, request_method = request_spec
+                        method = request_method or method
                     url_text = static_url_text(
                         url_node,
                         body_nodes,

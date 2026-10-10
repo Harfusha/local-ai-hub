@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 import logging
 from pathlib import Path
+import subprocess
 from typing import Any
 
 LOGGER = logging.getLogger(__name__)
@@ -77,6 +78,33 @@ def serena_backend_status(status: dict[str, Any]) -> dict[str, Any] | None:
     return {"serena": serena} if isinstance(serena, dict) else None
 
 
+def _git_hooks_directory(repo_root: Path) -> Path | None:
+    """Resolve Git's active hook directory, including linked worktrees."""
+    from .process_utils import run_hidden
+
+    try:
+        result = run_hidden(
+            ["git", "rev-parse", "--git-path", "hooks"],
+            cwd=str(repo_root),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        LOGGER.warning("doctor git hooks path discovery failed error_type=%s", type(exc).__name__)
+        return None
+    if result.returncode != 0:
+        return None
+    path_text = str(result.stdout or "").strip()
+    if not path_text:
+        return None
+    hooks_dir = Path(path_text)
+    if not hooks_dir.is_absolute():
+        hooks_dir = repo_root / hooks_dir
+    return hooks_dir.resolve()
+
+
 def probe_hub_status(client: Any, *, timeout: float = 15.0) -> dict[str, Any]:
     """Keep a healthy hub distinct from an unavailable diagnostic status payload."""
     try:
@@ -113,17 +141,17 @@ def install_git_precommit_hook(repo_root: str) -> dict[str, Any]:
     """Install a git pre-commit hook that runs Local AI Hub validation before commits."""
     from pathlib import Path
     p_root = Path(repo_root).resolve()
-    git_dir = p_root / ".git"
-    if not git_dir.is_dir():
+    hooks_dir = _git_hooks_directory(p_root)
+    if hooks_dir is None:
         return {"success": False, "error": f"not a git repository: {p_root}"}
-    hooks_dir = git_dir / "hooks"
     hooks_dir.mkdir(parents=True, exist_ok=True)
 
     hook_file = hooks_dir / "pre-commit"
     hook_script = """#!/bin/sh
+set -e
 # Local AI Hub automated pre-commit hook
 echo "[local-ai-hub] Running fast pre-commit checks..."
-python -m compileall -q src tools tests 2>/dev/null || true
+python -m compileall -q src tools tests 2>/dev/null
 echo "[local-ai-hub] Checks passed."
 exit 0
 """
@@ -143,7 +171,10 @@ def uninstall_git_precommit_hook(repo_root: str) -> dict[str, Any]:
     """Remove Local AI Hub git pre-commit hook."""
     from pathlib import Path
     p_root = Path(repo_root).resolve()
-    hook_file = p_root / ".git" / "hooks" / "pre-commit"
+    hooks_dir = _git_hooks_directory(p_root)
+    if hooks_dir is None:
+        return {"success": True, "removed": False, "message": "hook not present"}
+    hook_file = hooks_dir / "pre-commit"
     if not hook_file.exists():
         return {"success": True, "removed": False, "message": "hook not present"}
     try:

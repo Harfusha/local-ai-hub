@@ -12,7 +12,7 @@ from typing import Any
 
 
 CANDIDATE_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_ROOT = Path(r"C:\Users\Adam\.local-ai-hub")
+DEFAULT_ROOT = CANDIDATE_ROOT
 PINNED_ROOT_HEAD = "98a9a1a7611af574caf20a88620c4aa3eb2e918a"
 PINNED_CANDIDATE_HEAD = "a7b0868ac964fd14e160001024e6e0ecaaf4e9db"
 GENERATOR_NAMES = {"_synthetic_query_symbol", "_synthetic_source", "_build_synthetic_repo"}

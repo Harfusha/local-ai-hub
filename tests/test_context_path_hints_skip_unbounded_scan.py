@@ -44,7 +44,9 @@ def test_adaptive_path_hints_use_index_without_full_repository_walk(tmp_path: Pa
     services.preprocessor = None
     services.evidence_store = None
     services.repo_tools = _TargetedRepoTools()
-    services._external_context_candidates = lambda *_args: ({}, [], {"serena": "skipped", "rag": "skipped"})
+    services._external_context_candidates = lambda *_args, **_kwargs: (
+        {}, [], {"serena": "skipped", "rag": "skipped"}
+    )
 
     result = services._hybrid_context_uncached(
         str(root), "find button", "tenant-a", None, 400,

@@ -193,7 +193,7 @@ def test_retryable_executor_failure_requeues_only_with_request_id(manager_factor
     assert stored_payload["request_id"]
     assert stored_payload["_async_request_id_supplied"] is (request_id is not None)
 
-    manager._release_for_retry(submitted["job_id"], "worker interrupted after possible commit")
+    manager._execute(submitted["job_id"])
 
     status = manager.status("tenant-a", submitted["job_id"])
     assert status["state"] == expected_state
@@ -306,7 +306,7 @@ def test_restart_does_not_replay_running_job_without_request_id(manager_factory,
     assert executions == []
 
 
-def test_recovery_replays_legacy_running_job_with_caller_request_id(manager_factory, monkeypatch) -> None:
+def test_recovery_does_not_replay_legacy_running_job_without_caller_provenance(manager_factory, monkeypatch) -> None:
     request_id = "legacy-caller-request-async-001"
     received_payloads: list[dict[str, Any]] = []
     manager = manager_factory(
@@ -338,12 +338,11 @@ def test_recovery_replays_legacy_running_job_with_caller_request_id(manager_fact
     monkeypatch.setattr(manager, "_dispatch", dispatches.append)
 
     recovered = manager.recover()
-    manager._execute(job_id)
 
-    assert recovered == 1
-    assert dispatches == [job_id]
-    assert len(received_payloads) == 1
-    assert received_payloads[0]["request_id"] == request_id
+    assert recovered == 0
+    assert dispatches == []
+    assert received_payloads == []
+    assert manager.status("tenant-a", job_id)["state"] == "outcome_unknown"
 
 
 @pytest.mark.parametrize("artifact_failure", ["raises", "empty_id", "unreadable"])
@@ -421,10 +420,10 @@ def test_tick_respects_persisted_dispatch_not_before_before_timer_registration(
 
         assert dispatches == []
         with closing(manager._connect()) as con:
-            lease_until = float(
-                con.execute("SELECT lease_until FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()[0]
+            dispatch_not_before = float(
+                con.execute("SELECT dispatch_not_before FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()[0]
             )
-        assert lease_until > time.time()
+        assert dispatch_not_before > time.time()
     finally:
         release_submit.set()
         submitter.join(timeout=2)
@@ -452,16 +451,16 @@ def test_restart_recovery_defers_queued_job_until_persisted_dispatch_not_before(
     monkeypatch.setattr(restarted_manager, "_dispatch", dispatches.append)
 
     with closing(restarted_manager._connect()) as con:
-        lease_before = float(
-            con.execute("SELECT lease_until FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()[0]
+        dispatch_not_before = float(
+            con.execute("SELECT dispatch_not_before FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()[0]
         )
-    assert lease_before > time.time()
+    assert dispatch_not_before > time.time()
 
     recovered = restarted_manager.recover()
 
     with closing(restarted_manager._connect()) as con:
         row = con.execute(
-            "SELECT state, lease_until FROM async_jobs WHERE job_id=?", (job_id,)
+            "SELECT state, dispatch_not_before FROM async_jobs WHERE job_id=?", (job_id,)
         ).fetchone()
     assert recovered == 0
     assert dispatches == []
@@ -470,7 +469,7 @@ def test_restart_recovery_defers_queued_job_until_persisted_dispatch_not_before(
 
     with closing(restarted_manager._connect()) as con:
         con.execute(
-            "UPDATE async_jobs SET lease_until=? WHERE job_id=?", (time.time() - 1, job_id)
+            "UPDATE async_jobs SET dispatch_not_before=? WHERE job_id=?", (time.time() - 1, job_id)
         )
         con.commit()
     restarted_manager.tick()
@@ -505,3 +504,34 @@ def test_recovery_distinguishes_unstarted_from_interrupted_reason_without_reques
     assert restarted.recover() == expected_recovered
     assert restarted.status("tenant-a", submitted["job_id"])["state"] == expected_state
     assert dispatched == ([submitted["job_id"]] if expected_recovered else [])
+
+
+def test_submit_reports_sqlite_commit_for_new_and_replayed_acceptance(manager_factory) -> None:
+    manager = manager_factory(lambda *_: {"success": True})
+    payload = {"request_id": "durable-acceptance-001", "task": "persist before acknowledging"}
+
+    first = manager.submit("tenant-a", "reason", payload, dispatch_delay_seconds=30)
+    _cancel_delayed_dispatch(manager, first["job_id"])
+    replay = manager.submit("tenant-a", "reason", payload, dispatch_delay_seconds=30)
+    _cancel_delayed_dispatch(manager, replay["job_id"])
+
+    assert first["success"] is True
+    assert first["state"] == "queued"
+    assert first["durability"] == "sqlite_committed"
+    assert replay["job_id"] == first["job_id"]
+    assert replay["durability"] == "sqlite_committed"
+    assert manager.status("tenant-a", first["job_id"])["state"] == "queued"
+
+
+def test_coalesced_submit_reports_sqlite_commit(manager_factory) -> None:
+    manager = manager_factory(lambda *_: {"success": True})
+    payload = {"task": "coalesce after durable insert"}
+
+    first = manager.submit("tenant-a", "reason", payload, dispatch_delay_seconds=30)
+    _cancel_delayed_dispatch(manager, first["job_id"])
+    coalesced = manager.submit("tenant-a", "reason", payload, dispatch_delay_seconds=30)
+
+    assert coalesced["success"] is True
+    assert coalesced["coalesced"] is True
+    assert coalesced["job_id"] == first["job_id"]
+    assert coalesced["durability"] == "sqlite_committed"

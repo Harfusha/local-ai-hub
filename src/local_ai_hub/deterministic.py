@@ -4,6 +4,8 @@ from .json_utils import dumps as json_dumps
 
 import ast
 import json
+import logging
+import keyword
 import math
 import os
 import re
@@ -35,6 +37,9 @@ from .diff_parsers import (
 )
 from .process_utils import canonical_root, hidden_run_kwargs
 from .state_paths import configured_state_dir
+
+
+logger = logging.getLogger(__name__)
 
 
 _WORD = re.compile(r"[A-Za-z_$][A-Za-z0-9_.$:/-]{1,100}")
@@ -462,13 +467,14 @@ class DeterministicEngine:
                     "DELETE FROM facts WHERE root=? AND path IN (SELECT path FROM _deterministic_prune_paths)",
                     (root,),
                 )
-                try:
+                has_fact_fts = con.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='fact_fts'"
+                ).fetchone()
+                if has_fact_fts:
                     con.execute(
                         "DELETE FROM fact_fts WHERE root=? AND path IN (SELECT path FROM _deterministic_prune_paths)",
                         (root,),
                     )
-                except sqlite3.OperationalError:
-                    pass
             if deleted:
                 self._bump_generation(con, root)
             con.commit()
@@ -490,8 +496,8 @@ class DeterministicEngine:
                 for d in node.decorator_list:
                     try:
                         decorators.append(ast.unparse(d))
-                    except Exception:
-                        pass
+                    except (ValueError, TypeError, RecursionError) as unparse_exc:
+                        logger.debug("Python decorator rendering skipped (%s)", type(unparse_exc).__name__)
                 facts.append(self._fact("function", node.name, node.name, getattr(node, "lineno", 0), decorators=decorators, async_=isinstance(node, ast.AsyncFunctionDef)))
                 if node.name in {"main", "cli", "run", "app", "create_app"}:
                     facts.append(self._fact("entrypoint", node.name, node.name, getattr(node, "lineno", 0)))
@@ -723,8 +729,8 @@ class DeterministicEngine:
                     for dep_key, kind in (("dependencies", "prod"), ("devDependencies", "dev"), ("peerDependencies", "peer")):
                         for dep, ver in (pkg_data.get(dep_key) or {}).items():
                             facts.append(self._fact("dependency", str(dep), str(ver), 1, manager="npm", dep_kind=kind))
-            except Exception:
-                pass
+            except (json.JSONDecodeError, AttributeError, TypeError, ValueError) as parse_exc:
+                logger.debug("Npm package metadata skipped (%s)", type(parse_exc).__name__)
 
         if name == "composer.json":
             try:
@@ -746,8 +752,8 @@ class DeterministicEngine:
                     for script_name, cmd in (comp_data.get("scripts") or {}).items():
                         cmd_val = cmd if isinstance(cmd, str) else json_dumps(cmd)
                         facts.append(self._fact("composer_script", str(script_name), str(cmd_val)[:300], 1, script=str(script_name)))
-            except Exception:
-                pass
+            except (json.JSONDecodeError, AttributeError, TypeError, ValueError) as parse_exc:
+                logger.debug("Composer package metadata skipped (%s)", type(parse_exc).__name__)
 
         return facts
 
@@ -1925,17 +1931,19 @@ class DeterministicEngine:
             target = (base / path).resolve(strict=False)
             try:
                 target.relative_to(base)
+            except ValueError:
+                continue
+            try:
                 digest, lines = self.repo_tools._read_snapshot(target)
-            except Exception:
+            except OSError as read_exc:
+                logger.debug("Exact evidence source skipped (%s)", type(read_exc).__name__)
                 continue
             start = max(1, line - 2); end = min(len(lines), line + 2)
             text = "\n".join(f"{i}: {lines[i-1]}" for i in range(start, end + 1))
             item = {"path": path, "start_line": start, "end_line": end, "text": text, "file_sha256": digest, "deterministic": True}
-            try:
-                eid = self.evidence.put(str(base), item)
+            eid = self.evidence.put(str(base), item)
+            if eid:
                 item["evidence_id"] = eid
-            except Exception:
-                pass
             item.pop("text", None)  # progressive disclosure at the API boundary
             items.append(item)
             if len(items) >= self.max_evidence:
@@ -2685,8 +2693,11 @@ class DeterministicEngine:
                                 snippet = ""
                                 try:
                                     snippet = ast.unparse(node)
-                                except Exception:
-                                    pass
+                                except (ValueError, TypeError, RecursionError) as render_exc:
+                                    logger.debug(
+                                        "Caller snippet rendering skipped (%s)",
+                                        type(render_exc).__name__,
+                                    )
                                 breaking_callers.append({
                                     "file": rel_file,
                                     "line": getattr(node, "lineno", 0),
@@ -2833,8 +2844,16 @@ class DeterministicEngine:
         # Map: route -> list of roots that define/use it
         route_map: dict[str, list[str]] = defaultdict(list)
 
+        unique_roots: list[tuple[str, str]] = []
+        seen_roots: set[str] = set()
         for raw_root in roots:
             root = self._root(raw_root)
+            if root in seen_roots:
+                continue
+            seen_roots.add(root)
+            unique_roots.append((raw_root, root))
+
+        for raw_root, root in unique_roots:
             node: dict[str, Any] = {"root": raw_root, "packages": [], "routes": [], "entrypoints": []}
             try:
                 with self._lock, closing(self._connect()) as con:
@@ -2862,7 +2881,7 @@ class DeterministicEngine:
                         (root,),
                     ).fetchall()
                     node["entrypoints"] = [str(e[0]) for e in eps]
-            except Exception:
+            except (OSError, sqlite3.Error):
                 pass
             nodes[raw_root] = node
 
@@ -2885,12 +2904,21 @@ class DeterministicEngine:
                                 e.setdefault("labels", [e["label"]]).append(pkg)
                                 break
 
+        seen_route_edges: set[frozenset[str]] = set()
         for route, route_roots in route_map.items():
             if len(route_roots) < 2:
                 continue
             for i, r1 in enumerate(route_roots):
                 for r2 in route_roots[i + 1:]:
-                    edges.append({"from": r1, "to": r2, "type": "shared_route", "label": route})
+                    key = frozenset({r1, r2})
+                    if key not in seen_route_edges:
+                        seen_route_edges.add(key)
+                        edges.append({"from": r1, "to": r2, "type": "shared_route", "label": route})
+                    else:
+                        for edge in edges:
+                            if edge.get("type") == "shared_route" and frozenset({edge["from"], edge["to"]}) == key:
+                                edge.setdefault("labels", [edge["label"]]).append(route)
+                                break
 
         return {
             "success": True,
@@ -2927,7 +2955,7 @@ class DeterministicEngine:
                                 "line": int(r[3]),
                                 "end_line": int(r[4] or r[3]),
                             })
-                except Exception:
+                except (OSError, sqlite3.Error):
                     pass
             try:
                 with self._lock, closing(self._connect()) as con:
@@ -2945,7 +2973,7 @@ class DeterministicEngine:
                             "line": int(fr[3] or 1),
                             "detail": str(fr[4] or ""),
                         })
-            except Exception:
+            except (OSError, sqlite3.Error):
                 pass
 
         seen: set[tuple[str, str, str, int]] = set()
@@ -3888,15 +3916,20 @@ class DeterministicEngine:
             if not sym or sym in seen_symbols:
                 continue
             seen_symbols.add(sym)
+            pending_reason = (
+                "Replace generated placeholder with behavior-based assertions "
+                f"for {sym}."
+            )
             test_cases.append(f"""
+@pytest.mark.skip(reason={json.dumps(pending_reason)})
 def test_{sym}_regression_nominal():
     \"\"\"Verify nominal expected output for modified {sym}.\"\"\"
-    # TODO: Verify expected inputs/outputs for {sym}
-    pass
+    raise NotImplementedError({json.dumps(pending_reason)})
 
+@pytest.mark.skip(reason={json.dumps(pending_reason)})
 def test_{sym}_regression_edge_cases():
     \"\"\"Verify boundaries and error handling for modified {sym}.\"\"\"
-    pass
+    raise NotImplementedError({json.dumps(pending_reason)})
 """)
 
         test_code = "\n".join(test_cases)
@@ -3909,6 +3942,8 @@ def test_{sym}_regression_edge_cases():
             "target_modules": target_mods,
             "generated_test_code": test_code,
             "test_skeleton": test_code,
+            "complete": False,
+            "requires_review": bool(seen_symbols),
         }
 
     def cross_repo_contract(
@@ -4132,7 +4167,7 @@ def test_{sym}_regression_edge_cases():
         # Fast framework detection via files in root
         if (resolved_root / "pytest.ini").exists() or (resolved_root / "pyproject.toml").exists() or any((resolved_root / f).is_file() for f in ("setup.py", "requirements.txt", "requirements-core.txt")):
             framework = "pytest"
-            run_all_cmd = "pytest"
+            run_all_cmd = "python -m pytest"
         elif resolved_root.is_dir() and any((resolved_root / f).is_file() for f in os.listdir(root_str) if f.endswith((".sln", ".csproj"))):
             framework = "dotnet"
             run_all_cmd = "dotnet test"
@@ -4514,6 +4549,11 @@ def test_{sym}_regression_edge_cases():
             return {"success": False, "error": f"Failed to read target file: {e}"}
 
         ext = target_path.suffix.lower()
+        if ext == ".py" and (not symbol.isidentifier() or keyword.iskeyword(symbol)):
+            return {
+                "success": False,
+                "error": "Python mock symbols must be valid identifiers",
+            }
         if ext == ".py":
             import ast
             try:
@@ -4566,10 +4606,13 @@ def test_{sym}_regression_edge_cases():
                     "fixture_code": "\n".join(fixture_lines),
                 }
             elif found_node and isinstance(found_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                module_name = norm_target.rsplit(".", 1)[0].replace("/", ".")
+                if module_name.endswith(".__init__"):
+                    module_name = module_name[:-len(".__init__")]
                 fixture_lines = [
                     "@pytest.fixture",
                     f"def mock_{symbol}():",
-                    f"    with unittest.mock.patch('{target_path.stem}.{symbol}') as m:",
+                    f"    with unittest.mock.patch('{module_name}.{symbol}') as m:",
                     "        yield m",
                 ]
                 return {
@@ -4583,7 +4626,11 @@ def test_{sym}_regression_edge_cases():
                 }
             else:
                 mock_code = f"mock_{symbol} = unittest.mock.MagicMock(name='{symbol}')"
-                fixture_code = f"@pytest.fixture\ndef mock_{symbol.lower()}():\n    return {mock_code}"
+                fixture_code = (
+                    "@pytest.fixture\n"
+                    f"def mock_{symbol.lower()}():\n"
+                    f"    return unittest.mock.MagicMock(name={symbol!r})"
+                )
                 return {
                     "success": True,
                     "file": norm_target,

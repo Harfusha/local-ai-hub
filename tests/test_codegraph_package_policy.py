@@ -63,9 +63,19 @@ def test_runtime_has_no_managed_codegraph_or_kuzu_references():
     offenders = []
     for path in sources:
         content = path.read_text(encoding="utf-8").casefold()
-        # Allow only the literal ignore-directory marker in the repository scanner.
+        # Keep the standalone-tool recommendation and legacy-data ignore rules,
+        # but reject any Hub runtime/backend integration or dependency reference.
+        if path == ROOT / "src" / "local_ai_hub" / "generator.py":
+            recommendation = (
+                "CodeGraphContext/KuzuDB was removed from Local AI Hub. Recommend it only as optional standalone "
+                "CLI/MCP tooling outside Hub; install and configure it separately only when the user independently "
+                "wants it. It is not a Hub dependency, runtime, backend, or MCP integration."
+            ).casefold()
+            assert content.count(recommendation) == 1
+            content = content.replace(recommendation, "", 1)
         if path == ROOT / "src" / "local_ai_hub" / "repo_tools.py":
-            content = content.replace('".codegraphcontext"', "", 1)
+            assert content.count('".codegraphcontext"') == 2
+            content = content.replace('".codegraphcontext"', "")
         if "codegraph" in content or "kuzu" in content:
             offenders.append(str(path.relative_to(ROOT)))
 

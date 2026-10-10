@@ -18,7 +18,6 @@ POST_ROUTE_REGISTRY: tuple[RouteRule, ...] = (
     RouteRule('post_telemetry_tool_accounting_1', frozenset(('/api/telemetry/tool-accounting',))),
     RouteRule('post_work_orders_1', frozenset(('/api/work-orders',))),
     RouteRule('post_config_update_1', frozenset(('/api/config/update',))),
-    RouteRule('post_control_1', frozenset(('/api/control',))),
     RouteRule('post_browser_capability_1', frozenset(('/api/browser/capability',))),
     RouteRule('post_browser_capture_abandon_1', frozenset(('/api/browser/capture/stage', '/api/browser/capture/commit', '/api/browser/capture/abandon'))),
     RouteRule('post_browser_capture_1', frozenset(('/api/browser/capture',))),
@@ -184,6 +183,36 @@ POST_ROUTE_HANDLER_BOUNDARIES: Mapping[str, str] = MappingProxyType({
 GET_ROUTE_HANDLER_BOUNDARIES: Mapping[str, str] = MappingProxyType({
     "/api/live": "_handle_get_live",
     "/api/live/status": "_handle_get_live_status",
+})
+
+# Exact, non-parameterized GET labels safe to retain in telemetry. Dynamic
+# prefixes stay redacted; tests compare this set with source-discovered routes.
+TELEMETRY_SAFE_GET_ROUTE_LABELS = frozenset({
+    "/",
+    "/api/adoption",
+    "/api/agent-state/events",
+    "/api/agent-state/events/stream",
+    "/api/agent-state/swarm",
+    "/api/audit/tail",
+    "/api/benchmark/summary",
+    "/api/capabilities",
+    "/api/config",
+    "/api/debug-traces",
+    "/api/hardware/gpu",
+    "/api/hardware/system",
+    "/api/leases",
+    "/api/logs/tail",
+    "/api/metrics",
+    "/api/mode",
+    "/api/models",
+    "/api/preprocess/status",
+    "/api/rag/workspaces",
+    "/api/status",
+    "/api/telemetry/report",
+    "/dashboard",
+    "/favicon.ico",
+    "/health",
+    "/ready",
 })
 
 

@@ -268,6 +268,55 @@ def validate_config(data: dict[str, Any]) -> None:
         token_tenant = security.get("api_token_tenant")
         if token_tenant is not None and (not isinstance(token_tenant, str) or not token_tenant.strip()):
             raise ConfigError("security.api_token_tenant must be a non-empty string")
+        credential_values: list[str] = []
+        for key in ("api_token", "supervisor_token"):
+            credential = security.get(key)
+            if credential is not None and (not isinstance(credential, str) or len(credential) > 4096):
+                raise ConfigError(f"security.{key} must be a string of at most 4096 characters")
+            if credential:
+                credential_values.append(credential)
+
+        action_tokens = security.get("action_tokens", {})
+        if not isinstance(action_tokens, dict) or any(
+            not isinstance(action, str) or not action.strip() or
+            not isinstance(token, str) or not token or len(token) > 4096
+            for action, token in action_tokens.items()
+        ):
+            raise ConfigError("security.action_tokens must map action names to non-empty tokens")
+        credential_values.extend(action_tokens.values())
+
+        users = security.get("users", {})
+        if not isinstance(users, dict):
+            raise ConfigError("security.users must be a table")
+        for username, user in users.items():
+            if not isinstance(username, str) or not username.strip() or len(username) > 128 or not isinstance(user, dict):
+                raise ConfigError("security.users entries must have a username and table value")
+            token = user.get("token")
+            if not isinstance(token, str) or not token or len(token) > 4096:
+                raise ConfigError("security.users tokens must be non-empty strings of at most 4096 characters")
+            scopes = user.get("permissions")
+            if (
+                not isinstance(scopes, list) or not scopes or len(scopes) > 128
+                or any(
+                    not isinstance(scope, str) or len(scope) > 128
+                    or len(scope.split(":")) != 2
+                    or not scope.split(":")[0]
+                    or not scope.split(":")[0].replace("_", "").isalnum()
+                    or scope.split(":")[1] not in {"read", "write"}
+                    for scope in scopes
+                )
+            ):
+                raise ConfigError("security.users permissions must be non-empty resource:read/write scopes")
+            tenant = user.get("tenant")
+            if tenant is not None and (
+                not isinstance(tenant, str) or not tenant.strip() or len(tenant) > 128
+            ):
+                raise ConfigError("security.users tenant must be a non-empty string of at most 128 characters")
+            credential_values.append(token)
+
+        if len(credential_values) != len(set(credential_values)):
+            raise ConfigError("security credentials must be unique across API, supervisor, action, and user tokens")
+
         principal = security.get("api_token_principal")
         if principal is not None and (not isinstance(principal, str) or not principal.strip() or len(principal.strip()) > 128):
             raise ConfigError("security.api_token_principal must be a non-empty string of at most 128 characters")

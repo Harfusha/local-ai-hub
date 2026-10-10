@@ -204,7 +204,7 @@ class FeatureSet:
         if self.tasks and self.has_any_model():
             lines.append('- semantic generation, exploration, reasoning, review, second opinion and compression: `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")`')
         if self.work_orchestrator:
-            lines.append("- closed whole-task delegation with verified handoff: `local_ai_work`")
+            lines.append("- `local_ai_work`: only when the user explicitly requests closed delegation; routine work stays with the primary agent")
         lines.extend(self.specialized_trigger_lines())
         return lines
 
@@ -279,7 +279,7 @@ class FeatureSet:
         if self.tasks and self.has_any_model():
             parts.append("`local_ai_task` for bounded semantic generation, exploration, reasoning, review, independent second opinions and semantic compression")
         if self.work_orchestrator:
-            parts.append("`local_ai_work` for a complete bounded repository task with planning, edits, validation and handoff")
+            parts.append("`local_ai_work` only for closed delegation explicitly requested by the user")
         if self.rag:
             parts.append("`local_ai_rag` only after cheaper indexed evidence")
         if self.artifacts:

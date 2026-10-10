@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
-from .process_utils import hidden_run_kwargs, run_hidden, terminate_tree
+from .process_utils import hidden_run_kwargs, popen_managed, run_hidden, terminate_tree
 
 
 class MCPStdioError(RuntimeError):
@@ -77,7 +77,7 @@ class MCPStdioClient:
         responses: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=128)
         stderr_lines: deque[str] = deque(maxlen=80)
         try:
-            proc = subprocess.Popen(
+            proc = popen_managed(
                 self.command,
                 cwd=self.cwd,
                 env=merged_env,
@@ -329,7 +329,7 @@ class MCPStdioClient:
             pid = getattr(proc, "pid", None)
             if isinstance(pid, int) and pid > 0:
                 try:
-                    terminate_tree(pid, grace_seconds=1.0)
+                    terminate_tree(pid, grace_seconds=1.0, process_handle=proc)
                 except Exception:
                     pass
         try:
@@ -860,11 +860,11 @@ class ExternalCodeIntelligence:
             # force UTF-8 in child Python processes instead of inheriting a
             # Windows ANSI code page that turns diagnostics into a hard failure.
             merged_env.update({"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"})
-            proc = subprocess.Popen(argv, cwd=root, env=merged_env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)
+            proc = popen_managed(argv, cwd=root, env=merged_env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **kwargs)
             try:
                 stdout, stderr = proc.communicate(timeout=self.index_timeout)
             except subprocess.TimeoutExpired as exc:
-                terminate_tree(proc.pid, grace_seconds=1.0)
+                terminate_tree(proc.pid, grace_seconds=1.0, process_handle=proc)
                 try:
                     stdout, stderr = proc.communicate(timeout=2.0)
                 except Exception:
@@ -879,7 +879,7 @@ class ExternalCodeIntelligence:
         except Exception as exc:
             if proc is not None and proc.poll() is None:
                 try:
-                    terminate_tree(proc.pid, grace_seconds=1.0)
+                    terminate_tree(proc.pid, grace_seconds=1.0, process_handle=proc)
                     proc.wait(timeout=1.0)
                 except Exception:
                     pass

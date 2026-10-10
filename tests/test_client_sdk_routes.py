@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -217,6 +218,52 @@ def test_sdk_coord_pubsub_poll_maps_payload_to_production_handler(live_client, h
     assert received == [("release", 123.5, 3)]
 
 
+def test_sdk_coord_pubsub_poll_none_timestamp_keeps_sequence_cursor(live_client, http_post_paths, monkeypatch):
+    _app, client = live_client
+    from local_ai_hub import http_server
+
+    payloads = []
+    original_read_json = http_server.Handler._read_json
+
+    def capture_payload(handler):
+        payload = original_read_json(handler)
+        payloads.append(payload)
+        return payload
+
+    monkeypatch.setattr(http_server.Handler, "_read_json", capture_payload)
+    before = len(http_post_paths)
+    result = client.coord(
+        "pubsub_poll",
+        root="C:/sdk-fixture",
+        topic="release",
+        since_timestamp=None,
+        after_seq=7,
+        limit=2,
+    )
+
+    assert result["success"] is True
+    assert http_post_paths[before:] == ["/api/coord/pubsub_poll"]
+    assert payloads == [{
+        "root": "C:/sdk-fixture",
+        "topic": "release",
+        "after_seq": 7,
+        "limit": 2,
+    }]
+
+
+def test_sdk_coord_pubsub_poll_null_numeric_options_use_defaults(live_client, http_post_paths, monkeypatch):
+    _app, client = live_client
+    before = len(http_post_paths)
+
+    result = client.coord(
+        "pubsub_poll", root="C:/sdk-fixture", topic="release",
+        since_timestamp=None, after_seq=None, limit=None,
+    )
+
+    assert result["success"] is True
+    assert http_post_paths[before:] == ["/api/coord/pubsub_poll"]
+
+
 def test_callers_finds_real_python_call_through_sdk_handler(live_client, tmp_path, http_post_paths):
     _app, client = live_client
     repo = tmp_path / "sdk-caller-repo"
@@ -253,10 +300,12 @@ def test_sdk_resume_and_verification_use_real_agent_state_handlers(live_client, 
     from local_ai_hub.agent_tasks import TaskCheckpoint, TaskStatus
 
     app, client = live_client
+    root = str(Path(__file__).resolve().parents[1])
     created = client.create_task(
         "SDK route flow",
         acceptance_criteria=["change_verified"],
         task_id="sdk-route-task",
+        root=root,
     )
     assert created["success"] is True
     app.agent_tasks.transition(
@@ -285,20 +334,44 @@ def test_sdk_resume_and_verification_use_real_agent_state_handlers(live_client, 
         "task_resume",
         task_id="sdk-route-task",
         idempotency_key="resume-sdk-route-task",
+        root=root,
     )
     assert http_post_paths == ["/api/agent-state/tasks"]
     http_post_paths.clear()
+    evidence_id = app.artifacts.put_json(
+        {
+            "kind": "work_source_review",
+            "task_id": "sdk-route-task",
+            "owner": "generic",
+            "repository_revision": "",
+            "mutation_generation": 0,
+            "passed": True,
+            "criteria": ["change_verified"],
+        },
+        tenant="generic",
+        kind="source_review",
+    )
+    assert evidence_id
+    assert app.artifacts.get(evidence_id, tenant="generic")["success"] is True
     receipt = client.verify_receipt(
         "sdk-route-task",
         "change_verified",
-        evidence_id="E-sdk-route-test",
+        evidence_id=evidence_id,
+        root=root,
     )
     assert http_post_paths == ["/api/agent-state/verification"]
 
     assert resumed["success"] is True
     assert resumed["task"]["status"] == TaskStatus.ACTIVE.value
-    assert resumed["task"]["checkpoint"] == checkpoint.to_dict()
-    assert receipt["success"] is True
+    resumed_checkpoint = resumed["task"]["checkpoint"]
+    assert resumed_checkpoint["phase"] == checkpoint.phase
+    assert resumed_checkpoint["next_action"] == checkpoint.next_action
+    assert resumed_checkpoint["affected_paths"] == list(checkpoint.affected_paths)
+    assert resumed_checkpoint["evidence_ids"] == list(checkpoint.evidence_ids)
+    assert resumed_checkpoint["state_data"]["marker"] == "checkpoint-preserved"
+    assert resumed_checkpoint["state_data"]["repo_root"] == root
+    assert resumed_checkpoint["state_data"]["_agent_task_scope"]["repo_root"] == root
+    assert receipt["success"] is True, receipt
     assert receipt["receipt"]["criterion"] == "change_verified"
 
 
@@ -336,6 +409,13 @@ def test_continue_conversation_uses_real_http_handler_and_store(live_client, htt
 
 def test_cancel_job_reaches_real_queue_through_sdk_handler(live_client, http_post_paths):
     app, client = live_client
+    app.async_jobs._resource_admission = lambda: {
+        "state": "accepted",
+        "reason": "capacity_available",
+        "retryable": False,
+        "pressure_level": "nominal",
+        "context_budget_factor": 1.0,
+    }
     submitted = app.async_jobs.submit(
         "sdk-test",
         "reason",

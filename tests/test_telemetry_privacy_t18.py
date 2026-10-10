@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import ast
+from pathlib import Path
+
 from local_ai_hub.telemetry import TelemetryStore
+from tools.surface_inventory import _extract_http
 
 
 def test_clean_telemetry_event_drops_prompt_source_and_path_fields():
@@ -59,3 +63,20 @@ def test_http_telemetry_preserves_static_routes_but_redacts_dynamic_paths():
     assert started["action"] == route
     assert completed["action"] == route
     assert dynamic["action"] == "<path>"
+
+
+def test_http_telemetry_preserves_every_static_get_route():
+    root = Path(__file__).resolve().parents[1]
+    source = root / "src" / "local_ai_hub" / "http_server.py"
+    routes = _extract_http(ast.parse(source.read_text(encoding="utf-8")), "http_server.py")
+    static_routes = {
+        route["path"] for route in routes
+        if route["method"] == "GET" and route.get("match") == "exact"
+    }
+
+    redacted = {
+        route for route in static_routes
+        if TelemetryStore._clean_event({"event_type": "http", "action": route})["action"] != route
+    }
+
+    assert not redacted

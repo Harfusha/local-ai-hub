@@ -30,6 +30,16 @@ def _catalog(extra: dict | None = None) -> OllamaSubagentCatalog:
     return OllamaSubagentCatalog(config)
 
 
+def test_removed_codegraph_tool_is_not_offered_to_local_agents() -> None:
+    names = {tool["function"]["name"] for tool in TOOLS}
+
+    assert "code_graph" not in names
+    assert "code_graph" not in OllamaSubagentCatalog.READ_ONLY_TOOLS
+    assert "code_graph" not in {
+        tool["function"]["name"] for tool in ToolAwareLocalAgent._tools_for_role("worker")
+    }
+
+
 def test_default_profiles_are_advisory_and_use_fast_model() -> None:
     catalog = _catalog()
 

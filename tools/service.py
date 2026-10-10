@@ -12,8 +12,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-from local_ai_hub.client import HubClient
 from local_ai_hub.config import load_config
+from local_ai_hub.client import HubClient
 from local_ai_hub.process_utils import find_listening_pid, hidden_run_kwargs, pid_alive, process_owner_state, terminate_owned_process
 from local_ai_hub.ollama import OllamaRuntime
 
@@ -171,32 +171,6 @@ def hub_pid() -> int:
     return 0
 
 
-def request_graceful_hub_stop() -> bool:
-    """Ask a live hub to close its telemetry and runtime state before killing it."""
-    security = CFG.get("security", {})
-    tenant = str(security.get("api_token_tenant", "") or "service-control")
-    control = HubClient(tenant=tenant, config_path=_ACTIVE_CONFIG_ARG, auto_start=False)
-    if not control._online():
-        return False
-    try:
-        result = control.request(
-            "/api/control",
-            {"action": "stop_service"},
-            timeout=2.0,
-            replay_safe=False,
-        )
-        if not result.get("success"):
-            return False
-    except Exception:
-        return False
-    deadline = time.monotonic() + 6.0
-    while time.monotonic() < deadline:
-        if not control._online():
-            return True
-        time.sleep(0.15)
-    return not control._online()
-
-
 def managed_service_running() -> bool:
     if supervisor_pid() > 0 or hub_pid() > 0:
         return True
@@ -273,7 +247,6 @@ def native_stop() -> dict[str, object]:
         mark_disabled(True)
     except OSError:
         errors.append("disable_marker_write_failed")
-    request_graceful_hub_stop()
     if os.name == "nt":
         result = run(["schtasks", "/Change", "/TN", "LocalAIHubSupervisor", "/DISABLE"])
         manager.update(_service_manager_stop_result("schtasks", result))

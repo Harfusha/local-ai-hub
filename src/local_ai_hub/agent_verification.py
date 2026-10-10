@@ -964,6 +964,7 @@ class VerificationStore:
                             "agent_outcomes": ("outcome.%",),
                         },
                     )
+                    con.execute("BEGIN IMMEDIATE")
                     with con:
                         con.execute(
                             """

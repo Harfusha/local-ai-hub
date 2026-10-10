@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import sqlite3
 import threading
 import time
@@ -9,6 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error
+
+logger = logging.getLogger(__name__)
 
 
 def is_evidence_id(value: Any) -> bool:
@@ -141,8 +144,15 @@ class EvidenceStore:
                     if count > self.max_entries:
                         con.execute("DELETE FROM evidence WHERE id IN (SELECT id FROM evidence ORDER BY accessed_at ASC LIMIT ?)", (count - self.max_entries + 32,))
                     con.commit()
-            except sqlite3.DatabaseError:
-                pass
+            except sqlite3.DatabaseError as store_exc:
+                logger.debug(
+                    "Evidence batch persistence skipped (%s)",
+                    type(store_exc).__name__,
+                )
+                unpersisted_ids = {str(row[0]) for row in inserts}
+                for item in out:
+                    if str(item.get("evidence_id") or "") in unpersisted_ids:
+                        item.pop("evidence_id", None)
         return out
 
     def get(self, evidence_id: str, *, verify: bool = True) -> dict[str, Any]:
@@ -160,8 +170,8 @@ class EvidenceStore:
                     self._touched_ids.add(evidence_id)
                     if len(self._touched_ids) > 8192:
                         self._touched_ids.clear(); self._touched_ids.add(evidence_id)
-        except sqlite3.DatabaseError as exc:
-            return {"success": False, "error": f"evidence store unavailable: {exc}"}
+        except sqlite3.DatabaseError:
+            return {"success": False, "error": "evidence store unavailable"}
         stale = False
         if verify:
             try:

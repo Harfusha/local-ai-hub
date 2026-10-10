@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from io import BytesIO
 from types import SimpleNamespace
 import threading
@@ -96,15 +96,24 @@ class _NoSemanticCache:
     def get(self, *_args, **_kwargs):
         return None, 0.0
 
+    def set(self, *_args, **_kwargs):
+        return None
+
 
 class _NoStaleCache:
     def get(self, _key):
+        return None
+
+    def set(self, *_args, **_kwargs):
         return None
 
 
 class _Breakers:
     def allow(self, _key):
         return True
+
+    def success(self, _key):
+        return None
 
     def failure(self, _key):
         return None
@@ -141,6 +150,51 @@ def _offline_services() -> LocalAIServices:
     return services
 
 
+def test_vram_status_accessor_does_not_hide_unexpected_errors() -> None:
+    services = _offline_services()
+
+    class BrokenBalancer:
+        def status(self):
+            raise RuntimeError("unexpected status failure")
+
+    services.vram_balancer = BrokenBalancer()
+
+    with pytest.raises(RuntimeError, match="unexpected status failure"):
+        services._available_vram_mb()
+
+
+def test_tuner_observation_logs_expected_metric_errors_without_payload(caplog) -> None:
+    services = object.__new__(LocalAIServices)
+
+    class BrokenTuner:
+        @staticmethod
+        def observe(*_args, **_kwargs):
+            raise ValueError("private model metric payload")
+
+    services.tuner = BrokenTuner()
+
+    with caplog.at_level("DEBUG", logger="local_ai_hub.services"):
+        services._observe_tuner_safely("model", {"eval_count": "invalid"}, 12.0)
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("Model tuning observation skipped (ValueError)" in message for message in messages)
+    assert all("private" not in message and "invalid" not in message for message in messages)
+
+
+def test_tuner_observation_propagates_unexpected_errors() -> None:
+    services = object.__new__(LocalAIServices)
+
+    class BrokenTuner:
+        @staticmethod
+        def observe(*_args, **_kwargs):
+            raise RuntimeError("unexpected tuner programming failure")
+
+    services.tuner = BrokenTuner()
+
+    with pytest.raises(RuntimeError, match="unexpected tuner programming failure"):
+        services._observe_tuner_safely("model", {}, 12.0)
+
+
 def test_generate_fails_fast_without_backend_and_skips_scheduler() -> None:
     services = _offline_services()
 
@@ -159,6 +213,49 @@ def test_generate_fails_fast_without_backend_and_skips_scheduler() -> None:
     assert result["success"] is False
     assert result["retryable"] is True
     assert result["error_code"] == "local_backend_unavailable"
+
+
+def test_generate_persists_semantic_cache_result_once() -> None:
+    services = _offline_services()
+
+    class _OnlineRuntime:
+        def is_online(self) -> bool:
+            return True
+
+        def request(self, _endpoint, _payload):
+            return {"response": "A useful generated response."}
+
+    class _InlineScheduler:
+        def submit(self, _model, _tenant, _source, execute, **_kwargs):
+            return execute()
+
+    class _RecordingSemanticCache(_NoSemanticCache):
+        def __init__(self) -> None:
+            self.writes = []
+
+        def set(self, scope, query, value):
+            self.writes.append((scope, query, value))
+
+    semantic_cache = _RecordingSemanticCache()
+    services.runtime = _OnlineRuntime()
+    services.scheduler = _InlineScheduler()
+    services.semantic_cache = semantic_cache
+    services.inference_admission = lambda _action: nullcontext(None)
+
+    result = LocalAIServices._generate(
+        services,
+        "fast",
+        "A bounded test request",
+        "",
+        64,
+        0.0,
+        "tenant",
+        "delegate:general",
+        5,
+    )
+
+    assert result["success"] is True
+    assert len(semantic_cache.writes) == 1
 
 
 def test_generate_exposes_retryable_scheduler_timeout_metadata() -> None:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from pathlib import Path
 
 from local_ai_hub.project_config import PathHint
@@ -210,3 +211,120 @@ def test_tool_repo_search_routes_request_hints_through_complete_service() -> Non
 
     assert result["results"] == [{"path": "all-candidates-kept"}]
     assert services.call == ("/tmp/repo", "button", 4, request_hints, "task")
+
+
+def test_repo_search_logs_preprocessor_candidate_failure_and_keeps_exact_fallback(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    class FailingPreprocessor:
+        @staticmethod
+        def candidate_paths(*_args, **_kwargs):
+            raise PermissionError(f"private path: {tmp_path}")
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "button.py").write_text("needle button\n", encoding="utf-8")
+    services = _search_service(tmp_path, FailingPreprocessor())
+
+    with caplog.at_level("DEBUG", logger="local_ai_hub.services"):
+        result = services.repo_search(str(tmp_path), "needle", top_k=5, scope="task")
+
+    assert result["success"] is True
+    assert "src/button.py" in {item["path"] for item in result["results"]}
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("Preprocessor candidate search skipped (PermissionError)" in message for message in messages)
+    assert all(str(tmp_path) not in message for message in messages)
+
+
+def test_repo_search_logs_deterministic_candidate_failure_and_keeps_exact_fallback(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    class FailingDeterministicIndex:
+        @staticmethod
+        def related_paths(*_args, **_kwargs):
+            raise PermissionError(f"private path: {tmp_path}")
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "button.py").write_text("needle button\n", encoding="utf-8")
+    services = _search_service(tmp_path, _CandidatePreprocessor([]))
+    services.deterministic = FailingDeterministicIndex()
+
+    with caplog.at_level("DEBUG", logger="local_ai_hub.services"):
+        result = services.repo_search(str(tmp_path), "needle", top_k=5, scope="task")
+
+    assert result["success"] is True
+    assert "src/button.py" in {item["path"] for item in result["results"]}
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("Deterministic candidate search skipped (PermissionError)" in message for message in messages)
+    assert all(str(tmp_path) not in message for message in messages)
+
+
+def test_repo_search_logs_code_index_candidate_failure_and_keeps_exact_fallback(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    class FailingCodeIndex:
+        @staticmethod
+        def related_paths(*_args, **_kwargs):
+            raise PermissionError(f"private path: {tmp_path}")
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "button.py").write_text("needle button\n", encoding="utf-8")
+    services = _search_service(tmp_path, _CandidatePreprocessor([]))
+    services.code_index = FailingCodeIndex()
+
+    with caplog.at_level("DEBUG", logger="local_ai_hub.services"):
+        result = services.repo_search(str(tmp_path), "needle", top_k=5, scope="task")
+
+    assert result["success"] is True
+    assert "src/button.py" in {item["path"] for item in result["results"]}
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("CodeIndex candidate search skipped (PermissionError)" in message for message in messages)
+    assert all(str(tmp_path) not in message for message in messages)
+
+
+def test_repo_search_does_not_claim_progressive_disclosure_without_receipts(tmp_path: Path) -> None:
+    class IncompleteEvidenceStore:
+        @staticmethod
+        def put_many(_root: str, hits: list[dict]) -> list[dict]:
+            return [dict(hit) for hit in hits]
+
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "button.py").write_text("needle button\n", encoding="utf-8")
+    services = _search_service(tmp_path, _CandidatePreprocessor([]))
+    services.evidence_store = IncompleteEvidenceStore()
+
+    result = services.repo_search(str(tmp_path), "needle", top_k=5, scope="task")
+
+    assert result["success"] is True
+    assert result["progressive_disclosure"] is False
+    assert "needle button" in result["results"][0]["text"]
+
+
+def test_tool_repo_search_preserves_text_without_evidence_receipt() -> None:
+    class Services:
+        @staticmethod
+        def repo_search(_root, _query, _top_k, *, path_hints, scope):
+            return {
+                "success": True,
+                "results": [{"path": "src/button.py", "text": "needle button", "file_sha256": "hash"}],
+            }
+
+    class IncompleteEvidenceStore:
+        @staticmethod
+        def put_many(_root, hits):
+            return [dict(hit) for hit in hits]
+
+    agent = ToolAwareLocalAgent.__new__(ToolAwareLocalAgent)
+    agent.services = Services()
+    agent.preprocessor = object()
+    agent.evidence = IncompleteEvidenceStore()
+
+    result = agent._execute_tool(
+        "repo_search",
+        {"query": "needle", "top_k": 1},
+        "/tmp/repo",
+        "tenant",
+        "workspace",
+    )
+
+    assert result["results"][0]["text"] == "needle button"
+    assert result["progressive_disclosure"] is False

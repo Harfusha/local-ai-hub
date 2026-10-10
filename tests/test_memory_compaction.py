@@ -11,6 +11,9 @@ def test_memory_compaction_basic(tmp_path):
     store_dir = tmp_path / "agent_state"
     state_store = AgentStateStore(store_dir)
     mem_store = MemoryStore(state_store)
+    root = str(tmp_path.resolve())
+    tenant = "compaction-test-tenant"
+    task_id = "compaction-test-task"
 
     # Insert 4 task-level fact records
     now = time.time()
@@ -18,15 +21,23 @@ def test_memory_compaction_basic(tmp_path):
         rec = MemoryRecord.create(
             kind=MemoryKind.FACT,
             scope=AgentScope.TASK,
+            scope_id=task_id,
             key=f"discovery_{i}",
             value={"detail": f"found item {i}"},
             confidence=0.9,
             source="test",
+            provenance={"root": root, "tenant": tenant},
         )
         mem_store.record(rec)
 
     # Initial count should be 4
-    active_before = mem_store.find(scope=AgentScope.TASK, status=MemoryStatus.ACTIVE)
+    active_before = mem_store.find(
+        scope=AgentScope.TASK,
+        status=MemoryStatus.ACTIVE,
+        root=root,
+        tenant=tenant,
+        task_id=task_id,
+    )
     assert len(active_before) == 4
 
     # Compact with min_records=3
@@ -41,12 +52,24 @@ def test_memory_compaction_basic(tmp_path):
     assert digest_info["value"]["record_count"] == 4
 
     # Active records in TASK scope: the 4 original should now be SUPERSEDED, and 1 new compacted digest is ACTIVE
-    active_after = mem_store.find(scope=AgentScope.TASK, status=MemoryStatus.ACTIVE)
+    active_after = mem_store.find(
+        scope=AgentScope.TASK,
+        status=MemoryStatus.ACTIVE,
+        root=root,
+        tenant=tenant,
+        task_id=task_id,
+    )
     assert len(active_after) == 1
     assert active_after[0].key.startswith("compacted_fact_")
 
     # Check that superseded records point to the digest
-    superseded = mem_store.find(scope=AgentScope.TASK, status=MemoryStatus.SUPERSEDED)
+    superseded = mem_store.find(
+        scope=AgentScope.TASK,
+        status=MemoryStatus.SUPERSEDED,
+        root=root,
+        tenant=tenant,
+        task_id=task_id,
+    )
     assert len(superseded) == 4
     for r in superseded:
         assert r.supersedes_record_id == active_after[0].record_id
@@ -56,14 +79,19 @@ def test_memory_compaction_insufficient_records(tmp_path):
     store_dir = tmp_path / "agent_state"
     state_store = AgentStateStore(store_dir)
     mem_store = MemoryStore(state_store)
+    root = str(tmp_path.resolve())
+    tenant = "compaction-test-tenant"
+    task_id = "compaction-test-task"
 
     # Insert only 2 records
     for i in range(2):
         rec = MemoryRecord.create(
             kind=MemoryKind.GOTCHA,
             scope=AgentScope.TASK,
+            scope_id=task_id,
             key=f"gotcha_{i}",
             value=f"watch out {i}",
+            provenance={"root": root, "tenant": tenant},
         )
         mem_store.record(rec)
 

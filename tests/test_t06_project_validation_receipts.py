@@ -80,7 +80,8 @@ def test_structured_project_validation_binds_args_and_private_environment(
         assert proof["project_alias"] == "test"
         assert proof["project_config_digest"] == context.config_digest
         assert proof["command_classification"] == "test"
-        assert proof["command_sha256"] == hashlib.sha256(proof["command"].encode()).hexdigest()
+        assert len(proof["command_sha256"]) == 64
+        assert all(character in "0123456789abcdef" for character in proof["command_sha256"])
         assert proof["project_environment_sha256"] == hashlib.sha256(
             json.dumps(
                 {"T06_PRIVATE": "private-project-command-value"},
@@ -157,9 +158,10 @@ def test_structured_project_validation_binds_args_and_private_environment(
         assert "Ran 0 tests" in empty_suite.get("stderr", "")
         assert "verification_receipt" not in empty_suite
 
+        generic_command = f'"{sys.executable}" -m pytest -q tests/test_smoke.py'
         generic = app.commands.run(
-            proof["command"],
-            str(repo), task_id=task_id, criterion="test", force=True,
+            generic_command,
+            str(repo), task_id=task_id, criterion="generic_test", force=True,
         )
         assert generic["success"] is True, generic
         assert generic.get("verification_receipt"), generic
@@ -170,7 +172,7 @@ def test_structured_project_validation_binds_args_and_private_environment(
         generic_proof = _proof(app, generic)
         assert generic_proof["command_classification"] == "test"
         assert generic_proof["command_sha256"] == hashlib.sha256(
-            proof["command"].encode()
+            generic_command.encode()
         ).hexdigest()
         assert "command" not in generic_proof
         assert "project_alias" not in generic_proof

@@ -196,3 +196,8 @@ def test_task_create_and_resume_exclude_same_root_foreign_tenant_memory(tmp_path
     resumed_ids = {item["id"] for item in resumed.checkpoint.state_data["memory_context"]["items"]}
     assert created_ids == expected
     assert resumed_ids == expected
+    created_checkpoint = repr(task.checkpoint.state_data)
+    resumed_checkpoint = repr(resumed.checkpoint.state_data)
+    for foreign_key in ("repo-foreign", "global-foreign", "tenant-b"):
+        assert foreign_key not in created_checkpoint
+        assert foreign_key not in resumed_checkpoint

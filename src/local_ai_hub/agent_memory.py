@@ -794,8 +794,9 @@ class MemoryStore:
                                 );
                                 """
                             )
-                        except Exception:
-                            pass
+                        except sqlite3.OperationalError as exc:
+                            if "no such module: fts5" not in str(exc).casefold():
+                                raise
                         con.execute(
                             """
                             CREATE TABLE IF NOT EXISTS agent_memory_embeddings (
@@ -1444,6 +1445,15 @@ class MemoryStore:
                     f"{_CONTEXT_ROOT_SQL} = '' AND (expires_at IS NULL OR expires_at > ?)"
                 )
                 legacy_params: list[Any] = [AgentScope.REPOSITORY.value, time.time()]
+                legacy_tenant = (
+                    "json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.tenant')"
+                )
+                tenant_value = str(tenant or "").strip()
+                if tenant_value:
+                    legacy_where += f" AND {legacy_tenant} = ?"
+                    legacy_params.append(tenant_value)
+                else:
+                    legacy_where += f" AND ({legacy_tenant} IS NULL OR {legacy_tenant} = '')"
                 count_row = con.execute(
                     f"SELECT COUNT(1) FROM agent_memory_records WHERE {legacy_where}",
                     tuple(legacy_params),
@@ -1919,8 +1929,9 @@ class MemoryStore:
                     fts_cur = con.execute("SELECT record_id, rank FROM agent_memory_fts WHERE agent_memory_fts MATCH ? ORDER BY rank LIMIT 100", (fts_query,))
                     for r_id, rk in fts_cur.fetchall():
                         fts_scores[r_id] = 1.0 / (1.0 + abs(float(rk)))
-                except Exception:
-                    pass
+                except sqlite3.OperationalError as exc:
+                    if "no such table: agent_memory_fts" not in str(exc).casefold():
+                        raise
 
             vec_scores: dict[str, float] = {}
             embed_fn = getattr(services, "embed", None)

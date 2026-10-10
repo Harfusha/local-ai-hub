@@ -160,9 +160,9 @@ class ToolAwareLocalAgent:
         """
         role = str(role).lower()
         if role == "critic":
-            allowed = {"deterministic_facts", "code_index", "semantic_symbols", "code_graph", "repo_search", "evidence_get", "file_slice"}
+            allowed = {"deterministic_facts", "code_index", "semantic_symbols", "repo_search", "evidence_get", "file_slice"}
         elif role == "worker":
-            allowed = {"preprocessed_context", "deterministic_facts", "code_index", "semantic_symbols", "code_graph", "repo_search", "rag_search", "evidence_get", "file_slice"}
+            allowed = {"preprocessed_context", "deterministic_facts", "code_index", "semantic_symbols", "repo_search", "rag_search", "evidence_get", "file_slice"}
         else:
             allowed = {t["function"]["name"] for t in TOOLS}
         return [t for t in TOOLS if t["function"]["name"] in allowed]
@@ -228,8 +228,20 @@ class ToolAwareLocalAgent:
             if self.evidence is not None and isinstance(result.get("results"), list):
                 enriched = self.evidence.put_many(str(result.get("root", root)), result["results"])
                 result = dict(result)
-                result["results"] = [{k:v for k,v in x.items() if k != "text"} for x in enriched]
-                result["progressive_disclosure"] = True
+                receipts_complete = all(
+                    isinstance(item, dict)
+                    and (
+                        not any(item.get(field) for field in ("text", "raw", "content"))
+                        or bool(item.get("evidence_id"))
+                    )
+                    for item in enriched
+                )
+                result["results"] = (
+                    [{k: v for k, v in item.items() if k not in {"text", "raw", "content"}} for item in enriched]
+                    if receipts_complete
+                    else enriched
+                )
+                result["progressive_disclosure"] = receipts_complete
             return result
         if name == "rag_search":
             query = str(args.get("query", ""))
@@ -264,7 +276,7 @@ class ToolAwareLocalAgent:
             if self.code_index is None:
                 return {"success": False, "error": "code index unavailable"}
             return self.services.code_query(root, str(args.get("query", "")), max(1, min(int(args.get("limit") or 20), 30))) if hasattr(self.services, "code_query") else self.code_index.query(root, str(args.get("query", "")), max(1, min(int(args.get("limit") or 20), 30)))
-        if name in {"semantic_symbols", "code_graph"}:
+        if name == "semantic_symbols":
             if self.external_tools is None:
                 return {"success": False, "error": "external code intelligence unavailable"}
             backend = "serena"

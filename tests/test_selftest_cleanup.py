@@ -27,3 +27,39 @@ def test_selftest_temp_cleanup_retries_windows_sharing_violation(tmp_path, monke
     assert len(calls) == 3
     assert sleeps == [0.1, 0.2]
     assert not target.exists()
+
+
+def test_selftest_cleanup_passes_captured_identity_to_tree_terminator(monkeypatch):
+    class Process:
+        pid = 4321
+        stdout = None
+        stderr = None
+
+        def communicate(self, timeout):
+            return (b"", b"")
+
+        def kill(self):
+            raise AssertionError("live-process fallback should not run")
+
+    process = Process()
+    identity = {"pid": process.pid, "creation_identity": 987654321}
+    calls = []
+
+    def terminate(pid, **kwargs):
+        calls.append((pid, kwargs))
+        return True
+
+    monkeypatch.setattr(selftest, "terminate_tree", terminate)
+
+    selftest._terminate_selftest_process(process, identity)
+
+    assert calls == [
+        (
+            process.pid,
+            {
+                "expected_identity": identity,
+                "grace_seconds": 5.0,
+                "process_handle": process,
+            },
+        )
+    ]

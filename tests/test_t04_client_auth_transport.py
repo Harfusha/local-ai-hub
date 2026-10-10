@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import ThreadingHTTPServer
 from types import SimpleNamespace
 
 from local_ai_hub import http_server
@@ -18,10 +18,10 @@ def test_client_token_reaches_http_authorization_boundary(tmp_path, monkeypatch)
 
     observed: list[tuple[str, bool]] = []
 
-    class AuthHandler(BaseHTTPRequestHandler):
+    class AuthHandler(http_server.Handler):
         def do_POST(self):
             token = self.headers.get("X-LocalAI-Token", "")
-            allowed = http_server.Handler._authorized(self)
+            allowed = self._authorized()
             observed.append((token, allowed))
             body = json.dumps({"authorized": allowed}).encode("utf-8")
             self.send_response(200)

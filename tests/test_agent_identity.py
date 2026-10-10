@@ -83,6 +83,12 @@ def test_scope_context_matching():
     assert resolved[0].value == "y"
 
 
+def test_repository_scope_requires_repository_identity():
+    assert not ScopeContext().matches(AgentScope.REPOSITORY)
+    assert not ScopeContext().matches(AgentScope.REPOSITORY, scope_id="repo-1")
+    assert ScopeContext(repository_id="repo-1").matches(AgentScope.REPOSITORY)
+
+
 def test_equal_scope_resolves_by_evidence_confidence_and_freshness():
     resolver = ScopeResolver()
     ctx = ScopeContext(repository_id="repo-1")

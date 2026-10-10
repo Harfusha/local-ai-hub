@@ -20,10 +20,35 @@ from typing import Any, Iterable, Mapping
 
 from .budget import chars_for_tokens, estimate_tokens
 from .normalizer import tokenize_query_terms
-from .process_utils import canonical_root, hidden_run_kwargs, terminate_tree
+from .process_utils import canonical_root, hidden_run_kwargs, popen_managed, terminate_tree
 
 
 _WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_./:-]{1,80}")
+
+
+def is_root_archive_path(relative: str | Path) -> bool:
+    """Return whether a repository-relative path belongs to a root audit overlay."""
+    parts = tuple(
+        part.casefold()
+        for part in str(relative).replace("\\", "/").strip("/").split("/")
+        if part not in {"", "."}
+    )
+    if not parts:
+        return False
+    if parts[0] in {"handoff", ".handoff", ".merge-checks", ".sync-checks"}:
+        return True
+    if len(parts) > 1 and parts[:2] == ("artifacts", "handoff"):
+        return True
+    if len(parts) > 1 and parts[0] == "artifacts" and "-overlay-" in parts[1]:
+        return True
+    root_name = parts[0].lstrip(".")
+    return (
+        "-root-overlay-" in parts[0]
+        or "-root-current-check-" in parts[0]
+        or "-root-current-overlay" in parts[0]
+        or re.match(r"t\d+-review-artifacts-", root_name) is not None
+        or re.match(r"t\d+-(?:sync-checks|main-preflight-overlay)(?:-|$)", root_name) is not None
+    )
 _MAX_DIRECTORY_HINT_FILES = 64
 _MAX_PATH_CONTROLS = 64
 _HARD_SEARCH_DIRS = frozenset({".git", ".local-ai-hub", ".serena", ".codegraphcontext"})
@@ -128,7 +153,8 @@ class RepositoryTools:
             ".git", ".svn", ".hg", ".idea", ".vscode", ".venv", "venv", "node_modules",
             "vendor", "dist", "build", "bin", "obj", "coverage", ".next", ".cache",
             "library", "temp", "logs", "usersettings", "packagestore", "memorycaptures", "builds",
-            ".serena", ".local-ai-hub", ".codegraphcontext",
+            ".serena", ".local-ai-hub", ".codegraphcontext", ".handoff",
+            ".t03-main-preflight-overlay",
         }
         self.ignore_dirs = {str(name).lower() for name in rag.get("ignore_dirs", [])} | default_ignore_dirs
         self.ignore_extensions = {str(x).lower() for x in rag.get("ignore_extensions", [
@@ -293,6 +319,8 @@ class RepositoryTools:
             yield path
 
     def _is_ignored_relative_path(self, relative: Path) -> bool:
+        if is_root_archive_path(relative):
+            return True
         if any(part.lower() in self.ignore_dirs for part in relative.parts[:-1]):
             return True
         if relative.suffix.lower() in self.ignore_extensions:
@@ -332,7 +360,15 @@ class RepositoryTools:
             except Exception:
                 pass
             for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
-                dirnames[:] = [d for d in dirnames if d.lower() not in self.ignore_dirs]
+                try:
+                    relative_dir = Path(dirpath).relative_to(base)
+                except ValueError:
+                    relative_dir = Path()
+                dirnames[:] = [
+                    d for d in dirnames
+                    if d.lower() not in self.ignore_dirs
+                    and not is_root_archive_path(relative_dir / d)
+                ]
                 try:
                     rel_parts = Path(dirpath).relative_to(base).parts
                     if len(rel_parts) >= max_depth:
@@ -1077,7 +1113,7 @@ class RepositoryTools:
                 return None, False
         cmd = self._git_grep_command(base, terms, max_matches)
         try:
-            proc = subprocess.Popen(
+            proc = popen_managed(
                 cmd,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
@@ -1086,6 +1122,13 @@ class RepositoryTools:
             )
         except OSError:
             return None, True
+
+        def terminate_and_reap() -> None:
+            terminate_tree(proc.pid, grace_seconds=1.0, process_handle=proc)
+            try:
+                proc.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                pass
 
         lines: Queue[tuple[str, str | None]] = Queue()
 
@@ -1111,7 +1154,7 @@ class RepositoryTools:
                 with self._git_files_lock:
                     self._git_stats["grep_timeouts"] += 1
                     self._git_grep_slow_until[key] = time.monotonic() + self.git_files_slow_cooldown
-                terminate_tree(proc.pid, grace_seconds=1.0)
+                terminate_and_reap()
                 reader.join(timeout=1.0)
                 if proc.stdout is not None:
                     proc.stdout.close()
@@ -1140,13 +1183,13 @@ class RepositoryTools:
             seen.add(match_key); out.append(match_key)
             if len(out) >= max_matches:
                 capped = True
-                terminate_tree(proc.pid, grace_seconds=1.0)
+                terminate_and_reap()
                 break
         if proc.poll() is None:
             try:
                 proc.wait(timeout=1.0)
             except subprocess.TimeoutExpired:
-                terminate_tree(proc.pid, grace_seconds=1.0)
+                terminate_and_reap()
         reader.join(timeout=1.0)
         if proc.stdout is not None:
             proc.stdout.close()
@@ -1201,6 +1244,8 @@ class RepositoryTools:
             relative_path = resolved.relative_to(base)
             relative = relative_path.as_posix()
             if any(part.casefold() in _HARD_SEARCH_DIRS for part in relative_path.parts[:-1]):
+                return False
+            if is_root_archive_path(relative_path):
                 return False
             if resolved.name in {".local-ai.toml", ".local-ai.worktree.toml"}:
                 return False
@@ -1263,6 +1308,8 @@ class RepositoryTools:
                             relative_parts = child.relative_to(base).parts
                             denied_parts = relative_parts if entry.is_dir(follow_symlinks=False) else relative_parts[:-1]
                             if any(part.casefold() in _HARD_SEARCH_DIRS for part in denied_parts):
+                                continue
+                            if entry.is_dir(follow_symlinks=False) and is_root_archive_path(child.relative_to(base)):
                                 continue
                             if segment == "**":
                                 stack.append((directory, index + 1))
@@ -1831,7 +1878,7 @@ class RepositoryTools:
 
             process = None
             try:
-                process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **hidden_run_kwargs())
+                process = popen_managed(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **hidden_run_kwargs())
                 stdout_thread = threading.Thread(target=drain, args=(process.stdout, retained, digest, "stdout"), daemon=True)
                 stderr_thread = threading.Thread(target=drain, args=(process.stderr, stderr_retained, None, "stderr"), daemon=True)
                 stdout_thread.start()

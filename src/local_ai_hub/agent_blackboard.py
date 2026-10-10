@@ -69,13 +69,16 @@ def merge_sections(s1: BlackboardSection, s2: BlackboardSection) -> BlackboardSe
         winner = s2
         version = s2.version
     else:
-        # Concurrent or identical clocks: LWW on wall timestamp with author string tie-breaker
+        # Concurrent or identical clocks: LWW on timestamp, author, then canonical content.
         if s1.timestamp > s2.timestamp:
             winner = s1
         elif s2.timestamp > s1.timestamp:
             winner = s2
         else:
-            winner = s1 if str(s1.author) >= str(s2.author) else s2
+            winner = max(
+                (s1, s2),
+                key=lambda section: (str(section.author), json_dumps(section.content, sort_keys=True)),
+            )
         is_concurrent_conflict = s1.clock != s2.clock
         version = max(s1.version, s2.version) + (1 if is_concurrent_conflict else 0)
 

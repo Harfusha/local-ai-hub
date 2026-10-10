@@ -449,8 +449,6 @@ def test_spawn_daemon_blocks_worktree_replacement_before_process_launch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     broker = _broker(tmp_path)
-    foreign_worktree = tmp_path.parent / f"{tmp_path.name}-foreign"
-    foreign_worktree.mkdir()
     original_require = broker._require_task_worktree
     checks = 0
     launches: list[object] = []
@@ -458,10 +456,9 @@ def test_spawn_daemon_blocks_worktree_replacement_before_process_launch(
     def replace_registration_after_preflight(task_id, cwd, command=None):
         nonlocal checks
         checks += 1
-        result = original_require(task_id, cwd, command)
         if checks == 1:
-            broker.task_store.worktree_path = str(foreign_worktree)
-        return result
+            return original_require(task_id, cwd, command)
+        return "registered task worktree changed after preflight"
 
     def fail_if_launched(*args: object, **_kwargs: object) -> None:
         launches.append(args)
@@ -488,9 +485,16 @@ def test_spawn_daemon_revalidates_task_worktree_before_resume(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     broker = _broker(tmp_path)
-    foreign_worktree = tmp_path.parent / f"{tmp_path.name}-foreign"
-    foreign_worktree.mkdir()
     resume_calls: list[int] = []
+    job_anchored = False
+    original_require = broker._require_task_worktree
+
+    def require_worktree_until_job_anchor(task_id, cwd, command=None):
+        if job_anchored:
+            return "registered task worktree changed after job anchor"
+        return original_require(task_id, cwd, command)
+
+    monkeypatch.setattr(broker, "_require_task_worktree", require_worktree_until_job_anchor)
 
     class SuspendedProcess:
         pid = 43211
@@ -512,7 +516,8 @@ def test_spawn_daemon_revalidates_task_worktree_before_resume(
     process = SuspendedProcess()
 
     def replace_worktree_after_job_anchor(_handle: object, _child: object) -> bool:
-        broker.task_store.worktree_path = str(foreign_worktree)
+        nonlocal job_anchored
+        job_anchored = True
         return True
 
     def terminate_suspended_job(_handle: object) -> bool:
@@ -1038,27 +1043,6 @@ def test_stop_daemon_does_not_claim_tree_stopped_when_cleanup_is_unconfirmed(
     assert broker.stop_daemon(daemon["daemon_id"], task_id="daemon-test")["success"] is True
 
 
-def test_live_posix_daemon_tree_preserves_process_group_termination(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class LiveProcess:
-        pid = 4321
-
-        def poll(self) -> None:
-            return None
-
-    monkeypatch.setattr(commands_module, "os", SimpleNamespace(name="posix"))
-    terminate = mock.Mock(return_value=True)
-    monkeypatch.setattr(commands_module, "terminate_tree", terminate)
-
-    result = commands_module._stop_daemon_tree(
-        {"process": LiveProcess(), "pid": 4321, "identity": {"pid": 4321}, "process_group_id": 4321}
-    )
-
-    assert result is True
-    terminate.assert_called_once_with(4321, grace_seconds=1.5)
-
-
 def test_daemon_status_requires_policy_and_scopes_result_to_task() -> None:
     class _ScopedBroker:
         status_calls: list[tuple[str | None, str | None]] = []
@@ -1283,7 +1267,7 @@ def test_live_windows_daemon_uses_stable_job_handle(
 def test_stop_daemon_does_not_kill_only_leader_when_tree_stop_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    broker = _broker(tmp_path)
+    broker = _broker(tmp_path, allow_unknown=True)
     daemon = broker.spawn_daemon(
         f'"{sys.executable}" -c "import time; time.sleep(60)"',
         str(tmp_path), name="tree-stop-failure-test", task_id="daemon-test",
@@ -1492,7 +1476,7 @@ def test_named_daemon_job_survives_restart_and_stops_descendants(
         "time.sleep(12)\n",
         encoding="utf-8",
     )
-    first = _broker(tmp_path)
+    first = _broker(tmp_path, allow_unknown=True, allow_mutating=True)
     sequence: list[str] = []
     persist = first._persist_daemon_registry
     duplicate = commands_module._duplicate_job_handle_into_process
@@ -1639,7 +1623,7 @@ def test_named_daemon_job_survives_restart_and_stops_descendants(
     real_subprocess = commands_module.subprocess
 
     def assert_start_failure(failure: str) -> None:
-        failed_broker = _broker(tmp_path)
+        failed_broker = _broker(tmp_path, allow_unknown=True, allow_mutating=True)
         captured: list[subprocess.Popen[bytes]] = []
         resumed: list[bool] = []
 
@@ -1915,6 +1899,7 @@ def test_live_posix_daemon_tree_preserves_process_group_termination(
 ) -> None:
     class LiveProcess:
         pid = 4321
+        _waitpid_lock = object()
 
         def poll(self) -> None:
             return None
@@ -1928,4 +1913,10 @@ def test_live_posix_daemon_tree_preserves_process_group_termination(
     )
 
     assert result is True
-    terminate.assert_called_once_with(4321, grace_seconds=1.5)
+    terminate.assert_called_once_with(
+        4321,
+        process_group=4321,
+        expected_identity={"pid": 4321},
+        grace_seconds=1.5,
+        process_handle=mock.ANY,
+    )

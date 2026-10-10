@@ -25,7 +25,7 @@ def test_run_resolves_windows_batch_executables(tmp_path, monkeypatch):
     assert result.stdout.strip() == 'batch-ok'
 
 
-def test_setup_skip_service_does_not_restart_hub(tmp_path, monkeypatch):
+def test_setup_skip_service_still_restarts_hub_without_registering_service(tmp_path, monkeypatch):
     config_source = tmp_path / "config.toml"
     config_source.write_text("[hardware]\nprofile = \"auto\"\n", encoding="utf-8")
     install_dir = tmp_path / "install"
@@ -75,10 +75,11 @@ def test_setup_skip_service_does_not_restart_hub(tmp_path, monkeypatch):
     ])
 
     assert setup.main() == 0
-    assert not any(
+    assert sum(
         command[-1:] == ["restart"] and any(part.endswith("tools/hubctl.py") or part.endswith("tools\\hubctl.py") for part in command)
         for command in commands
-    )
+    ) == 1
+    assert not any(command[-1:] == ["install"] and any(part.endswith("tools/service.py") or part.endswith("tools\\service.py") for part in command) for command in commands)
 
 
 def test_token_economy_launchers_and_trim_run_allowlist(tmp_path, monkeypatch):
@@ -144,7 +145,9 @@ def test_compact_agent_config_is_default(tmp_path: Path):
     assert entries["local-ai"]["env"]["LOCAL_AI_AGENT"] == "codex"
     assert entries["local-ai"]["args"] == ["-m", "local_ai_hub.mcp_server"]
     assert entries["local-ai"]["env"]["PYTHONPATH"] == str(install / "src")
-    assert entries["local-ai"]["cwd"] == str(install)
+    # Global agent configs inherit the host's project working directory;
+    # pinning this to the Hub install makes relative repo roots target the Hub.
+    assert "cwd" not in entries["local-ai"]
 
 
 def test_global_policy_has_explicit_read_only_and_fallback_contract() -> None:
@@ -210,7 +213,7 @@ def test_antigravity_mcp_sync_uses_gemini_and_prunes_stale_backends(tmp_path: Pa
     data = json.loads(path.read_text(encoding="utf-8"))
     assert set(data["mcpServers"]) == {"user-server", "local-ai"}
     local_ai = data["mcpServers"]["local-ai"]
-    assert local_ai["cwd"] == str(tmp_path / "install")
+    assert "cwd" not in local_ai
     assert local_ai["env"]["LOCAL_AI_AGENT"] == "gemini"
     assert local_ai["env"]["LOCAL_AI_AGENT_PROFILE"] == "gemini"
 

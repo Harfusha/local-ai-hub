@@ -8,7 +8,7 @@ import local_ai_hub.rag as rag_module
 import pytest
 
 RAGStore = rag_module.RAGStore
-ROOT_RAG = Path(r"C:\Users\Adam\.local-ai-hub\src\local_ai_hub\rag.py")
+ROOT_RAG = Path(__file__).parents[1] / "src" / "local_ai_hub" / "rag.py"
 
 
 class RecordingEmbedder:

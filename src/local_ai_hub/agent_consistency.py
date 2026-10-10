@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import json
+import logging
 import math
 import re
 import threading
@@ -837,7 +838,10 @@ class AgentConsistencyGuard:
         if verifier is not None:
             try:
                 passed = bool(verifier())
-            except Exception:
+            except Exception as exc:
+                logging.getLogger(__name__).warning(
+                    "validation verifier failed (%s)", type(exc).__name__
+                )
                 passed = False
         path_refs = tuple(_bounded_sequence(path_refs, 24))
         request_obj = self._request_from_metadata(request, root=root, task_id=task_id, phase=phase, changed_paths=path_refs)

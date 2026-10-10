@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import base64
 import hmac
 import ipaddress
 import inspect
@@ -83,7 +84,7 @@ from .project_config import resolve_project_context, _git_common_dir as _real_gi
 from .state_paths import configured_state_dir
 from .agent_tasks import CompletionGateError, GoalContract, InvalidTransitionError, TaskCheckpoint, TaskStatus
 from .agent_memory import ApprovalRequiredError, MAX_MEMORY_QUERY_LIMIT, MemoryKind, MemoryRecord, MemoryStatus
-from .agent_incidents import IncidentFingerprint, ToolOutcome
+from .agent_incidents import IncidentFingerprint, ToolOutcome, _incident_scope_key
 from .agent_verification import VerificationReceipt
 from .task_context import build_context_request, compose_task_context
 from .agent_learning import ImprovementCandidate, SLOObservation
@@ -365,7 +366,7 @@ MONITOR_PATHS = {
     "/health", "/ready", "/dashboard", "/favicon.ico", "/api/live", "/api/live/status",
     "/api/status", "/api/mode", "/api/capabilities", "/api/metrics", "/api/adoption",
     "/api/telemetry/report", "/api/telemetry/tool-accounting", "/api/telemetry/timeline",
-    "/api/audit/tail", "/api/control",
+    "/api/audit/tail",
     "/api/config", "/api/logs/tail", "/api/hardware/system", "/api/hardware/gpu",
     "/api/mode", "/api/admin/mode",
     "/api/debug-traces",
@@ -395,8 +396,8 @@ READINESS_COMPONENTS = (
 
 def _dashboard_html_with_trace_notice() -> str:
     return DASHBOARD_HTML.replace(
-        "Agent debug traces · bounded prompt/output retention",
-        "Agent debug traces · sensitive full prompt/output · protected access · separate retention policy",
+        "Agent debug traces · off by default; payloads available when enabled",
+        "Agent debug traces · full input/output only when enabled · protected access · separate local retention policy",
         1,
     )
 
@@ -462,6 +463,18 @@ def _public_gaming_unload_status(value: dict[str, Any]) -> dict[str, Any]:
     blockers = names("unsupported_in_process_cuda")
     if blockers:
         status["unsupported_in_process_cuda"] = blockers
+    detached = names("in_process_cuda_detached")
+    if detached:
+        status["in_process_cuda_detached"] = detached
+    failed_value = value.get("in_process_cuda_release_failed")
+    if isinstance(failed_value, dict):
+        failed = {
+            name: str(failed_value[name])[:80]
+            for name in ("embeddings", "reranker")
+            if name in failed_value
+        }
+        if failed:
+            status["in_process_cuda_release_failed"] = failed
     return status
 
 
@@ -479,7 +492,13 @@ HTTP_MODE_GAMING_READ_GET_PATHS = frozenset({
     "/api/agent-state/tasks", "/api/db/query", "/api/rag/workspaces",
     "/api/repo/files", "/api/repo/topology",
 })
-HTTP_MODE_OPERATOR_POST_PATHS = frozenset({"/api/admin/mode", "/api/control"})
+HTTP_MODE_OPERATOR_POST_PATHS = frozenset({"/api/admin/mode"})
+HTTP_MODE_ACTION_POST_PATHS = frozenset({
+    "/api/async-jobs",
+    "/api/work-orders",
+    "/api/speculative-lint",
+    "/api/command/speculative-lint",
+})
 
 
 def _http_admin_action(method: str, path: str) -> str | None:
@@ -493,7 +512,6 @@ def _http_admin_action(method: str, path: str) -> str | None:
             "/api/audit/tail": "audit.read",
             "/api/capabilities": "status.read",
             "/api/config": "config.read",
-            "/api/control": "control.read",
             "/api/db/query": "db.query",
             "/api/hardware/gpu": "hardware.read",
             "/api/hardware/system": "hardware.read",
@@ -515,11 +533,20 @@ def _http_admin_action(method: str, path: str) -> str | None:
             "/api/bundle/import": "bundle.import",
             "/api/config": "config.write",
             "/api/config/update": "config.write",
-            "/api/control": "control",
             "/api/db/query": "db.query",
             "/api/models/manage": "model.manage",
         }.get(path)
     return None
+
+
+def _apply_live_debug_trace_toggle(app: Any, settings: dict[str, Any]) -> bool:
+    if set(settings) != {"debug_traces.enabled"}:
+        return False
+    store = getattr(app, "debug_traces", None)
+    if store is None:
+        return False
+    store.enabled = bool(settings["debug_traces.enabled"])
+    return True
 
 
 def _token_matches(supplied: str, expected: str) -> bool:
@@ -538,6 +565,8 @@ def _redact_config_secrets(config: dict[str, Any]) -> dict[str, Any]:
         return view
     if security.get("api_token"):
         security["api_token"] = "***configured***"
+    if security.get("supervisor_token"):
+        security["supervisor_token"] = "***configured***"
     action_tokens = security.get("action_tokens")
     if isinstance(action_tokens, dict):
         security["action_tokens"] = {
@@ -546,7 +575,21 @@ def _redact_config_secrets(config: dict[str, Any]) -> dict[str, Any]:
         }
     elif action_tokens:
         security["action_tokens"] = "***configured***"
+    users = security.get("users")
+    if isinstance(users, dict):
+        for user in users.values():
+            if isinstance(user, dict) and user.get("token"):
+                user["token"] = "***configured***"
     return view
+
+
+def _safe_config_file_label(value: Any) -> str:
+    """Expose only a config filename, never the host filesystem path."""
+    try:
+        name = Path(str(value or "").replace("\\", "/")).name
+    except (OSError, TypeError, ValueError):
+        return ""
+    return name[:128]
 HTTP_MODE_GAMING_READ_POST_PATHS = frozenset({
     "/api/artifact/get", "/api/artifact/list", "/api/db/query",
     "/api/evidence/get", "/api/memory/get", "/api/memory/search",
@@ -638,7 +681,18 @@ def _http_mode_gate_error(
             snapshot = load_fn(state_dir)
         if not snapshot.degraded and snapshot.mode == "active":
             return None
-        if not snapshot.degraded and snapshot.mode == "gaming" and policy in {"gaming_read", "existing_job"}:
+        if method == "POST" and payload is None and path in HTTP_MODE_ACTION_POST_PATHS:
+            # Gaming may defer safe job controls until parsing the bounded body;
+            # maintenance and unavailable mode state must fail closed pre-trace.
+            if not snapshot.degraded and snapshot.mode == "gaming":
+                return None
+        if (
+            not snapshot.degraded
+            and snapshot.mode == "gaming"
+            and policy == "existing_job"
+        ):
+            return None
+        if not snapshot.degraded and snapshot.mode == "gaming" and policy == "gaming_read":
             return None
         if globals().get("operational_mode_gate_error") is not _op_mod.operational_mode_gate_error:
             gate_fn = globals()["operational_mode_gate_error"]
@@ -667,8 +721,41 @@ def _http_mode_gate_error(
     return result
 
 
-_MODE_UNLOAD_STATUS: dict[int, dict[str, Any]] = {}
+_MODE_UNLOAD_STATUS: dict[tuple[str, int], dict[str, Any]] = {}
 _MODE_UNLOAD_DEADLINE_SECONDS: float = 5.0
+
+
+def _mode_unload_status_key(app: Any, revision: int) -> tuple[str, int]:
+    config = getattr(app, "config", None)
+    server = config.get("server", {}) if isinstance(config, dict) else {}
+    state_dir = server.get("state_dir", "state") if isinstance(server, dict) else "state"
+    try:
+        scope = str(Path(state_dir).expanduser().absolute())
+    except (OSError, TypeError, ValueError):
+        scope = str(state_dir)
+    return scope, int(revision)
+
+
+def _store_mode_unload_status(app: Any, revision: int, status: dict[str, Any]) -> None:
+    key = _mode_unload_status_key(app, revision)
+    with _MODE_UNLOAD_STATUS_LOCK:
+        latest_revision = max(
+            (item_revision for scope, item_revision in _MODE_UNLOAD_STATUS if scope == key[0]),
+            default=-1,
+        )
+        if key[1] < latest_revision:
+            return
+        for old_key in tuple(_MODE_UNLOAD_STATUS):
+            if old_key[0] == key[0] and old_key != key:
+                _MODE_UNLOAD_STATUS.pop(old_key, None)
+        _MODE_UNLOAD_STATUS[key] = dict(status)
+
+
+def _get_mode_unload_status(app: Any, revision: int) -> dict[str, Any] | None:
+    key = _mode_unload_status_key(app, revision)
+    with _MODE_UNLOAD_STATUS_LOCK:
+        status = _MODE_UNLOAD_STATUS.get(key)
+        return dict(status) if isinstance(status, dict) else None
 
 
 def _start_gaming_model_unload(
@@ -681,7 +768,12 @@ def _start_gaming_model_unload(
         "unloaded": [],
         "remaining": None,
     }
-    _MODE_UNLOAD_STATUS[revision] = dict(initial)
+    _store_mode_unload_status(app, revision, initial)
+    try:
+        deadline_seconds = max(0.001, float(globals().get("_MODE_UNLOAD_DEADLINE_SECONDS", 5.0)))
+    except (TypeError, ValueError, OverflowError):
+        deadline_seconds = 5.0
+    unload_deadline = time.monotonic() + deadline_seconds
 
     def worker() -> None:
         worker_done = threading.Event()
@@ -712,40 +804,54 @@ def _start_gaming_model_unload(
         t = threading.Thread(target=run_unload, daemon=True)
         t.start()
 
-        deadline_sec = globals().get("_MODE_UNLOAD_DEADLINE_SECONDS", 5.0)
-        if not worker_done.wait(timeout=max(0.001, float(deadline_sec))):
-            _MODE_UNLOAD_STATUS[revision] = {
+        if not worker_done.wait(timeout=deadline_seconds):
+            _store_mode_unload_status(app, revision, {
                 "success": False,
                 "state": "failed",
                 "reason": "unload_deadline_exceeded",
                 "unloaded": [],
                 "remaining": None,
-            }
+            })
             return
 
         final_res = dict(worker_result[0])
-        unsupported_cuda: list[str] = []
+        detached_cuda: list[str] = []
+        failed_cuda: dict[str, str] = {}
         for name in ("embeddings", "reranker"):
             comp = getattr(app, name, None)
             if comp is not None:
                 has_model = getattr(comp, "_model", None) is not None
-                is_cuda = getattr(comp, "active_device", "") == "cuda"
+                is_cuda = str(getattr(comp, "active_device", "") or "").strip().lower().startswith("cuda")
                 if has_model and is_cuda:
-                    unsupported_cuda.append(name)
-        if unsupported_cuda:
+                    release = getattr(comp, "release", None)
+                    if not callable(release):
+                        failed_cuda[name] = "release_unavailable"
+                        continue
+                    remaining_seconds = max(0.001, unload_deadline - time.monotonic())
+                    try:
+                        release(timeout_seconds=remaining_seconds)
+                    except Exception as exc:
+                        failed_cuda[name] = type(exc).__name__
+                    if getattr(comp, "_model", None) is None:
+                        detached_cuda.append(name)
+                    else:
+                        failed_cuda.setdefault(name, "release_failed")
+        if detached_cuda:
+            final_res["in_process_cuda_detached"] = detached_cuda
+        if failed_cuda:
             final_res["success"] = False
             final_res["state"] = "partial"
-            final_res["reason"] = "in_process_cuda_unload_unsupported"
-            final_res["unsupported_in_process_cuda"] = unsupported_cuda
+            final_res["reason"] = "in_process_cuda_release_incomplete"
+            final_res["in_process_cuda_release_failed"] = failed_cuda
             rem = list(final_res.get("remaining") or [])
-            for c in unsupported_cuda:
-                rem.append(f"in_process_cuda:{c}")
+            for name in failed_cuda:
+                rem.append(f"in_process_cuda:{name}")
             final_res["remaining"] = rem
 
-        cur = _MODE_UNLOAD_STATUS.get(revision)
+        cur = _get_mode_unload_status(app, revision)
         if isinstance(cur, dict) and cur.get("reason") == "unload_deadline_exceeded":
             return
-        _MODE_UNLOAD_STATUS[revision] = final_res
+        _store_mode_unload_status(app, revision, final_res)
 
     watcher = threading.Thread(target=worker, daemon=True)
     watcher.start()
@@ -1342,7 +1448,6 @@ class LocalAIHTTPServer(ThreadingHTTPServer):
 
 
 class Handler(BaseHTTPRequestHandler):
-    DEBUG_TRACE_REQUEST_CAPTURE_BYTES = 8 * 1024
     _ADMIN_ACTIONS = {
         "db.query": ({"GET", "POST"}, "/api/db/query", None),
         "debug_traces.list": ({"GET"}, "/api/debug-traces", None),
@@ -1350,8 +1455,6 @@ class Handler(BaseHTTPRequestHandler):
         "config.read": ({"GET"}, "/api/config", None),
         "config.update": ({"POST"}, "/api/config/update", "update"),
         "config.reset": ({"POST"}, "/api/config/update", "reset"),
-        "control.restart_hub": ({"POST"}, "/api/control", "restart_hub"),
-        "control.stop_service": ({"POST"}, "/api/control", "stop_service"),
         "maintenance.optimize_db": ({"POST"}, "/api/maintenance/optimize_db", None),
         "maintenance.purge_cache": ({"POST"}, "/api/maintenance/purge_cache", None),
         "maintenance.resolve_errors": ({"POST"}, "/api/maintenance/resolve_errors", None),
@@ -1697,11 +1800,10 @@ class Handler(BaseHTTPRequestHandler):
                 if path not in MONITOR_PATHS and not path.startswith("/api/debug-traces/") and path not in excluded:
                     APP.telemetry.record_live(kind="request", event_type="request_start", tenant=self._tenant(), agent=self._agent(), request_id=request_id, trace_id=trace_id, action=path, success=True)
                     trace_store = getattr(APP, "debug_traces", None)
-                    if trace_store is not None:
+                    if trace_store is not None and bool(getattr(trace_store, "enabled", True)):
                         self._debug_trace_id = trace_store.start(kind="api_request", tenant=self._tenant(), agent=self._agent(), action=path, source="http", request_id=request_id)
                         if self._debug_trace_id:
                             trace_store.event(self._debug_trace_id, "request_received", {"method": self.command, "path": path, "request_id": request_id})
-                            trace_store.event(self._debug_trace_id, "content_capture_disabled", {"mode": "metadata_only"})
         except Exception:
             pass
 
@@ -1713,12 +1815,22 @@ class Handler(BaseHTTPRequestHandler):
         return request_id
 
     @classmethod
-    def _safe_debug_trace_request(cls, payload: Any) -> dict[str, Any]:
-        """Return request metadata only; durable traces must not store request values."""
-        if not isinstance(payload, dict):
-            return {"capture_status": "omitted", "reason": "unsupported request body"}
-        return {"capture_status": "metadata_only", "field_count": min(len(payload), 100)}
+    def _safe_debug_trace_request(cls, payload: Any) -> Any:
+        """Normalize values for local trace storage without redacting or truncating."""
+        if isinstance(payload, (bytes, bytearray, memoryview)):
+            return {"encoding": "base64", "data": base64.b64encode(bytes(payload)).decode("ascii")}
 
+        def sanitize(value: Any) -> Any:
+            if isinstance(value, dict):
+                return {str(name): sanitize(item) for name, item in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [sanitize(item) for item in value]
+            if value is None or isinstance(value, (str, bool, int, float)):
+                return value
+            return str(value)
+
+        result = sanitize(payload)
+        return result
     def _finish_debug_trace(self, status: int, data: Any, *, error: str = "") -> None:
         trace_id = str(getattr(self, "_debug_trace_id", "") or "")
         store = getattr(APP, "debug_traces", None) if APP is not None else None
@@ -1726,36 +1838,36 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             failed = status >= 400 or (isinstance(data, dict) and data.get("success") is False)
-            redacted = bool(getattr(self, "_debug_trace_redacted", False))
-            detail = "request failed" if failed and not redacted else ""
-            if redacted:
-                data = {"success": not failed, "conversation_redacted": True}
-            else:
+            detail = "request failed" if failed else ""
+            if isinstance(data, dict):
                 data = self._safe_debug_trace_request(data)
+            else:
+                data = {"output": self._safe_debug_trace_request({"output": data}).get("output", "")}
             state = "failed" if failed else "done"
-            finished = store.finish(trace_id, state=state, response=data, error=detail)
+            update = getattr(store, "update", None)
+            if callable(update):
+                if getattr(self, "_debug_stream_capture", False):
+                    update(trace_id, response=data)
+                else:
+                    update(trace_id, output=data)
+                finished = store.finish(trace_id, state=state, error=detail)
+            else:
+                finished = store.finish(trace_id, state=state, response=data, error=detail)
             if not finished:
                 # A concurrent event writer can briefly hold SQLite's write lock.
                 # Do not mark the trace finished until the terminal write is real;
                 # one bounded second attempt prevents successful requests from
                 # being left visibly running without creating retry loops.
                 time.sleep(0.02)
-                finished = store.finish(trace_id, state=state, response=data, error=detail)
+                if callable(update):
+                    update(trace_id, output=data)
+                    finished = store.finish(trace_id, state=state, error=detail)
+                else:
+                    finished = store.finish(trace_id, state=state, response=data, error=detail)
             if finished:
                 self._debug_trace_finished = True
         except Exception:
             pass
-
-    def _redact_debug_trace(self) -> None:
-        """Keep in-memory conversation transcripts out of durable debug traces."""
-        token = getattr(self, "_debug_observer_token", None)
-        if token is not None:
-            try:
-                reset_observer(token)
-            except Exception:
-                pass
-            self._debug_observer_token = None
-        self._debug_trace_redacted = True
 
     def _reconcile_debug_trace(self, trace: dict[str, Any]) -> dict[str, Any]:
         """Make a stale trace follow the request journal when it is terminal."""
@@ -1816,7 +1928,7 @@ class Handler(BaseHTTPRequestHandler):
         config = getattr(APP, "config", {}) if APP is not None else {}
         security = config.get("security", {}) if isinstance(config, dict) else {}
         if isinstance(security, dict) and security.get("api_token"):
-            return "api-token-default"
+            return self._principal_tenant()
         if getattr(self, "headers", None):
             header_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
             if header_tenant:
@@ -1869,6 +1981,20 @@ class Handler(BaseHTTPRequestHandler):
         allow_principal_header: bool = False,
         require_configured_principal: bool = False,
     ) -> tuple[str, str] | None:
+        supplied_tenants = {
+            str(value).strip()
+            for value in tenant_values
+            if value is not None and str(value).strip()
+        }
+        if len(supplied_tenants) > 1:
+            self._send(403, {
+                "success": False,
+                "error": "tenant binding is ambiguous",
+                "error_code": "tenant_binding_mismatch",
+                "terminal": True,
+                "retryable": False,
+            })
+            return None
         if isinstance(root, str) and root.strip():
             try:
                 candidate = Path(root.strip()).expanduser()
@@ -2150,6 +2276,188 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(403, {"success": False, "error": "task root identity mismatch", "error_code": "root_not_allowed", "terminal": True, "retryable": False})
                 return False
         payload["repo_root"] = canonical_root
+        return True
+
+    def _bind_incident_payload(self, payload: dict[str, Any]) -> bool:
+        """Bind incident requests to an authenticated repository/tenant scope."""
+        bound = self._bind_root_tenant(
+            payload.get("root"),
+            [payload.get("tenant")],
+            allow_principal_header=True,
+            require_configured_principal=True,
+        )
+        if bound is None:
+            return False
+        canonical_root, effective_tenant = bound
+        payload["root"] = canonical_root
+        payload["tenant"] = effective_tenant
+        self._authorization_root = str(canonical_root)
+        self._authorization_tenant = str(effective_tenant)
+        return True
+
+    def _bind_swarm_payload(self, payload: dict[str, Any]) -> bool:
+        bound = self._bind_root_tenant(
+            payload.get("root"),
+            [payload.get("tenant")],
+            allow_principal_header=True,
+            require_configured_principal=True,
+        )
+        if bound is None:
+            return False
+        canonical_root, effective_tenant = bound
+        payload["root"] = canonical_root
+        payload["tenant"] = effective_tenant
+        self._authorization_root = str(canonical_root)
+        self._authorization_tenant = str(effective_tenant)
+        return True
+
+    def _bind_swarm_query(self, query: dict[str, list[str]]) -> bool:
+        bound = self._bind_root_tenant(
+            (query.get("root") or [None])[0],
+            query.get("tenant", []),
+            allow_principal_header=True,
+            require_configured_principal=True,
+        )
+        if bound is None:
+            return False
+        query["root"], query["tenant"] = [[bound[0]], [bound[1]]]
+        self._authorization_root = str(bound[0])
+        self._authorization_tenant = str(bound[1])
+        return True
+
+    def _bind_repository_root_payload(self, payload: dict[str, Any]) -> bool:
+        """Require authenticated repository scope for direct file mutations."""
+        bound = self._bind_root_tenant(
+            payload.get("root"),
+            [payload.get("tenant")],
+            allow_principal_header=True,
+            require_configured_principal=True,
+        )
+        if bound is None:
+            return False
+        canonical_root, effective_tenant = bound
+        payload["root"] = canonical_root
+        payload["tenant"] = effective_tenant
+        self._authorization_root = str(canonical_root)
+        self._authorization_tenant = str(effective_tenant)
+        return True
+
+    def _bind_repository_root_query(self, query: dict[str, list[str]]) -> bool:
+        """Require authenticated repository scope for read-only repo queries."""
+        raw_root = (query.get("root") or [""])[0]
+        if not isinstance(raw_root, str) or not raw_root.strip() or raw_root.strip() == ".":
+            self._send(400, {
+                "success": False,
+                "error": "root is required for repository queries",
+                "error_code": "root_required",
+                "terminal": True,
+                "retryable": False,
+            })
+            return False
+        bound = self._bind_root_tenant(
+            raw_root,
+            query.get("tenant", []),
+            allow_principal_header=True,
+            require_configured_principal=True,
+        )
+        if bound is None:
+            return False
+        canonical_root, effective_tenant = bound
+        try:
+            if any(
+                value and str(_strict_root_path(value)) != canonical_root
+                for value in query.get("root", [])[1:]
+            ):
+                raise ValueError("conflicting roots")
+        except (OSError, TypeError, ValueError):
+            self._send(403, {
+                "success": False,
+                "error": "root identity mismatch",
+                "error_code": "root_not_allowed",
+                "terminal": True,
+                "retryable": False,
+            })
+            return False
+        query["root"] = [canonical_root]
+        query["tenant"] = [effective_tenant]
+        self._authorization_root = canonical_root
+        self._authorization_tenant = effective_tenant
+        return True
+
+    def _bind_multi_repository_query(self, query: dict[str, list[str]]) -> bool:
+        """Require explicit canonical roots and one tenant for cross-repo GETs."""
+        roots = [str(value).strip() for value in query.get("roots", []) if str(value).strip()]
+        if not roots:
+            self._send(400, {
+                "success": False,
+                "error": "explicit roots list is required",
+                "error_code": "roots_required",
+                "terminal": True,
+                "retryable": False,
+            })
+            return False
+        payload: dict[str, Any] = {
+            "roots": roots,
+            "tenant": (query.get("tenant") or [None])[0],
+        }
+        if not self._bind_multi_repository_payload(payload):
+            return False
+        query["roots"] = [str(root) for root in payload["roots"]]
+        query["tenant"] = [str(payload["tenant"])]
+        return True
+
+    def _bind_multi_repository_payload(self, payload: dict[str, Any], *, cross_repo_contract: bool = False) -> bool:
+        """Validate every explicit root in a cross-repository request."""
+        if cross_repo_contract:
+            names = ("backend_root", "frontend_root")
+            raw_roots = [payload.get(name) for name in names]
+        else:
+            names = ("roots",)
+            raw_roots = [payload.get("roots")]
+        if cross_repo_contract:
+            if any(not isinstance(root, str) or not root.strip() for root in raw_roots):
+                self._send(400, {"success": False, "error": "explicit backend_root and frontend_root are required", "terminal": True, "retryable": False})
+                return False
+            roots = list(raw_roots)
+        else:
+            if not isinstance(raw_roots[0], list) or not raw_roots[0]:
+                self._send(400, {"success": False, "error": "explicit roots list is required", "terminal": True, "retryable": False})
+                return False
+            roots = raw_roots[0]
+        canonical: list[str] = []
+        first_tenant: str | None = None
+        for root in roots:
+            bound = self._bind_root_tenant(
+                root,
+                [payload.get("tenant")],
+                allow_principal_header=True,
+                require_configured_principal=True,
+            )
+            if bound is None:
+                return False
+            canonical.append(bound[0])
+            if first_tenant is None:
+                first_tenant = bound[1]
+        if cross_repo_contract:
+            payload["backend_root"], payload["frontend_root"] = canonical
+        else:
+            payload["roots"] = canonical
+            origin_root = payload.get("origin_root")
+            if origin_root not in (None, ""):
+                bound_origin = self._bind_root_tenant(
+                    origin_root,
+                    [payload.get("tenant")],
+                    allow_principal_header=True,
+                    require_configured_principal=True,
+                )
+                if bound_origin is None:
+                    return False
+                if bound_origin[0] not in canonical:
+                    self._send(400, {"success": False, "error": "origin_root must be one of the explicit roots", "terminal": True, "retryable": False})
+                    return False
+                payload["origin_root"] = bound_origin[0]
+        self._authorization_root = canonical[0]
+        self._authorization_tenant = first_tenant
         return True
 
     @staticmethod
@@ -2473,7 +2781,6 @@ class Handler(BaseHTTPRequestHandler):
         method = str(getattr(self, "command", "GET")).upper()
         if (
             path.startswith("/api/admin/")
-            or path == "/api/control"
             or path.startswith("/api/maintenance/")
             or (path == "/api/mode" and method not in {"GET", "HEAD"})
         ):
@@ -2481,6 +2788,22 @@ class Handler(BaseHTTPRequestHandler):
         if method in {"GET", "HEAD"}:
             return "monitor" if path in MONITOR_PATHS else "read"
         return "write"
+
+    def _required_permission(self) -> str:
+        path = urlparse(str(getattr(self, "path", ""))).path.rstrip("/") or "/"
+        method = str(getattr(self, "command", "GET")).upper()
+        read_only = method in {"GET", "HEAD"}
+        if path.startswith("/api/agent-state/"):
+            return "agent_tasks:read" if read_only else "agent_tasks:write"
+        if (
+            path.startswith("/api/admin/")
+            or path.startswith("/api/maintenance/")
+            or (path == "/api/mode" and not read_only)
+        ):
+            return "admin:read" if read_only else "admin:write"
+        if path in {"/", "/dashboard", "/api/metrics", "/api/status"}:
+            return "dashboard:read"
+        return "api:read" if read_only else "api:write"
 
     def _loopback_client(self) -> bool:
         try:
@@ -2492,17 +2815,44 @@ class Handler(BaseHTTPRequestHandler):
     def _authorized(self, action: str | None = None, *, permission: str | None = None) -> bool:
         self._authorization_actor = "unrecognized"
         self._authorization_tenant = None
+        self._authorization_permissions = frozenset()
         self._authorization_status = 401
         if APP is None:
             return _is_loopback_client_address(getattr(self, "client_address", None))
         security = APP.config.get("security", {})
         if not isinstance(security, dict):
-            self._authorization_actor = "unrecognized"
             return False
-        expected = str(security.get("api_token", "") or "")
-        action_tokens = security.get("action_tokens", {})
-        if not isinstance(action_tokens, dict):
-            self._authorization_actor = "unrecognized"
+        expected = security.get("api_token", "") or ""
+        supervisor_token = security.get("supervisor_token", "") or ""
+        action_tokens = security.get("action_tokens", {}) or {}
+        users = security.get("users", {}) or {}
+        if (
+            not isinstance(expected, str)
+            or not isinstance(supervisor_token, str)
+            or not isinstance(action_tokens, dict)
+            or any(not isinstance(key, str) or not isinstance(value, str) for key, value in action_tokens.items())
+            or not isinstance(users, dict)
+        ):
+            return False
+        user_records: list[tuple[str, dict[str, Any], str]] = []
+        for principal, record in users.items():
+            if not isinstance(principal, str) or not principal.strip() or not isinstance(record, dict):
+                return False
+            user_token = record.get("token", "") or ""
+            user_permissions = record.get("permissions")
+            user_tenant = record.get("tenant")
+            if (
+                not isinstance(user_token, str)
+                or not isinstance(user_permissions, list)
+                or not user_permissions
+                or any(not isinstance(item, str) or not item.strip() for item in user_permissions)
+                or (user_tenant is not None and (not isinstance(user_tenant, str) or not user_tenant.strip()))
+            ):
+                return False
+            user_records.append((principal, record, user_token))
+        configured_tokens = [token for token in (expected, supervisor_token, *action_tokens.values()) if token]
+        configured_tokens.extend(token for _, _, token in user_records if token)
+        if len(configured_tokens) != len(set(configured_tokens)):
             return False
         if action is None:
             action = _http_admin_action(
@@ -2514,17 +2864,60 @@ class Handler(BaseHTTPRequestHandler):
         if auth.lower().startswith("bearer "):
             supplied = auth[7:].strip()
         global_valid = _token_matches(supplied, expected)
+        supervisor_valid = _token_matches(supplied, supervisor_token)
         scoped = str(action_tokens.get(action, "")) if action else ""
         scoped_valid = len(scoped) >= 16 and _token_matches(supplied, scoped)
+        matching_users = [
+            (principal, record)
+            for principal, record, token in user_records
+            if _token_matches(supplied, token)
+        ]
+        matching_credentials = int(global_valid) + int(supervisor_valid) + int(scoped_valid) + len(matching_users)
+        if matching_credentials > 1:
+            return False
         local_client = _is_loopback_client_address(getattr(self, "client_address", None))
         configured_principal = self._configured_principal_tenant()
-        self._authorization_actor = (
-            (configured_principal or "api_token") if global_valid else
-            "action_token" if scoped_valid else
-            "local" if not expected and not action_tokens and local_client else
-            "unrecognized"
-        )
-        if global_valid or scoped_valid:
+        if matching_users:
+            principal, record = matching_users[0]
+            grants = frozenset(item.strip().lower() for item in record["permissions"])
+            required = (
+                permission.strip().lower()
+                if isinstance(permission, str) and ":" in permission
+                else action.strip().lower()
+                if isinstance(action, str) and ":" in action
+                else self._required_permission()
+            )
+            self._authorization_actor = principal
+            self._authorization_tenant = str(record.get("tenant") or "").strip() or None
+            self._authorization_permissions = grants
+            if required not in grants:
+                self._authorization_status = 403
+                return False
+            self._authorization_status = 200
+            return True
+        if supervisor_valid:
+            self._authorization_actor = "supervisor"
+            self._authorization_tenant = self._principal_tenant()
+            self._authorization_permissions = frozenset({"admin:read", "admin:write"})
+            required = (
+                permission.strip().lower()
+                if isinstance(permission, str) and ":" in permission
+                else action.strip().lower()
+                if isinstance(action, str) and ":" in action
+                else self._required_permission()
+            )
+            if required not in self._authorization_permissions:
+                self._authorization_status = 403
+                return False
+            self._authorization_status = 200
+            return True
+        if scoped_valid:
+            self._authorization_actor = "action_token"
+            self._authorization_tenant = configured_principal or None
+            self._authorization_permissions = frozenset({str(action)})
+            self._authorization_status = 200
+            return True
+        if global_valid:
             grants = security.get("api_token_permissions", ["monitor", "read", "write", "admin"])
             allowed = {
                 "monitor": {"monitor", "read", "write", "admin"},
@@ -2532,7 +2925,18 @@ class Handler(BaseHTTPRequestHandler):
                 "write": {"write", "admin"},
                 "admin": {"admin"},
             }
-            needed = permission or self._authorization_permission()
+            requested = permission
+            if requested is None and isinstance(action, str) and ":" in action:
+                requested = action
+            if isinstance(requested, str) and ":" in requested:
+                resource, _, verb = requested.partition(":")
+                needed = "admin" if resource == "admin" else "monitor" if resource == "dashboard" and verb == "read" else verb
+            else:
+                needed = self._authorization_permission()
+            self._authorization_actor = configured_principal or "service"
+            self._authorization_permissions = frozenset(
+                item.strip().lower() for item in grants if isinstance(item, str)
+            ) if isinstance(grants, list) else frozenset()
             if (
                 not isinstance(grants, list)
                 or any(not isinstance(item, str) for item in grants)
@@ -2541,11 +2945,14 @@ class Handler(BaseHTTPRequestHandler):
             ):
                 self._authorization_status = 403
                 return False
-            self._authorization_tenant = configured_principal or None
+            self._authorization_tenant = self._principal_tenant()
             self._authorization_status = 200
             return True
-        if expected or action_tokens:
+        if expected or supervisor_token or action_tokens or users:
             return False
+        self._authorization_actor = "local" if local_client else "unrecognized"
+        if local_client:
+            self._authorization_status = 200
         return local_client
 
     def _audit_admin_authorization(self, action: str, *, allowed: bool) -> bool:
@@ -2677,10 +3084,9 @@ class Handler(BaseHTTPRequestHandler):
             for extra in APP.config.get("security", {}).get("allowed_hosts", []):
                 allowed_hosts.add(str(extra).strip("[]").lower())
 
-            if not APP.config.get("security", {}).get("allow_remote", False):
-                if host_name not in allowed_hosts:
-                    self._send(403, {"success": False, "error": "forbidden: invalid Host header"})
-                    return False
+            if host_name not in allowed_hosts:
+                self._send(403, {"success": False, "error": "forbidden: invalid Host header"})
+                return False
 
         origin_header = str(header("Origin", "") or "").strip()
         if origin_header:
@@ -2697,22 +3103,21 @@ class Handler(BaseHTTPRequestHandler):
             for extra in APP.config.get("security", {}).get("allowed_origins", []):
                 allowed_origins.add(str(extra).strip("[]").lower())
 
-            if not APP.config.get("security", {}).get("allow_remote", False):
-                bridge_origin = False
-                bridge_token = False
-                if str(getattr(self, "path", "")).startswith("/api/browser/") or str(getattr(self, "path", "")) == "/api/vision/review":
-                    bridge_origin = origin_allowed(APP.config, origin_header)
-                    expected_token = str(APP.config.get("security", {}).get("api_token", ""))
-                    supplied_token = str(header("X-LocalAI-Token", "") or "")
-                    auth_header = str(header("Authorization", "") or "")
-                    if auth_header.lower().startswith("bearer "):
-                        supplied_token = auth_header[7:].strip()
-                    requested_headers = str(header("Access-Control-Request-Headers", "") or "").lower()
-                    token_preflight = str(getattr(self, "command", "")) == "OPTIONS" and ("x-localai-token" in requested_headers or "authorization" in requested_headers)
-                    bridge_token = bool(expected_token and (hmac.compare_digest(supplied_token, expected_token) or token_preflight))
-                if origin_host not in allowed_origins and not bridge_origin and not bridge_token:
-                    self._send(403, {"success": False, "error": "forbidden: cross-origin requests are not allowed"})
-                    return False
+            bridge_origin = False
+            bridge_token = False
+            if str(getattr(self, "path", "")).startswith("/api/browser/") or str(getattr(self, "path", "")) == "/api/vision/review":
+                bridge_origin = origin_allowed(APP.config, origin_header)
+                expected_token = str(APP.config.get("security", {}).get("api_token", ""))
+                supplied_token = str(header("X-LocalAI-Token", "") or "")
+                auth_header = str(header("Authorization", "") or "")
+                if auth_header.lower().startswith("bearer "):
+                    supplied_token = auth_header[7:].strip()
+                requested_headers = str(header("Access-Control-Request-Headers", "") or "").lower()
+                token_preflight = str(getattr(self, "command", "")) == "OPTIONS" and ("x-localai-token" in requested_headers or "authorization" in requested_headers)
+                bridge_token = bool(expected_token and (hmac.compare_digest(supplied_token, expected_token) or token_preflight))
+            if origin_host not in allowed_origins and not bridge_origin and not bridge_token:
+                self._send(403, {"success": False, "error": "forbidden: cross-origin requests are not allowed"})
+                return False
         return True
 
     def _require_authorized(self, permission: str | None = None) -> bool:
@@ -2822,6 +3227,18 @@ class Handler(BaseHTTPRequestHandler):
             raise RequestBodyError(f"invalid JSON body: {exc}") from exc
         if not isinstance(value, dict):
             raise RequestBodyError("JSON request body must be an object")
+        trace_store = getattr(APP, "debug_traces", None) if APP is not None else None
+        trace_id = str(getattr(self, "_debug_trace_id", "") or "")
+        if trace_store is not None and trace_id:
+            try:
+                captured = self._safe_debug_trace_request(value)
+                trace_store.update(trace_id, request=captured)
+                trace_store.event(trace_id, "request_body_captured", {
+                    "content_type": content_type,
+                    "capture_status": captured.get("capture_status", "captured") if isinstance(captured, dict) else "captured",
+                })
+            except Exception:
+                pass
         return value
 
     @staticmethod
@@ -3245,7 +3662,10 @@ class Handler(BaseHTTPRequestHandler):
         """Finish journal/telemetry for responses whose headers/body were streamed manually."""
         if APP is None:
             return
-        self._finish_debug_trace(200 if success else 500, {"success": success, "streamed": True, "error": error} if error else {"success": success, "streamed": True}, error=error)
+        response = {"success": success, "streamed": True, "error": error} if error else {"success": success, "streamed": True}
+        if getattr(self, "_debug_stream_capture_failed", False):
+            response["trace_capture_status"] = "storage_error"
+        self._finish_debug_trace(200 if success else 500, response, error=error)
         request_id = str(getattr(self, "_journal_request_id", "") or "")
         if request_id and not getattr(self, "_journal_finished", False):
             try:
@@ -3324,24 +3744,13 @@ class Handler(BaseHTTPRequestHandler):
                     next_seq = max(0, int(after_seq))
                 except (TypeError, ValueError, OverflowError):
                     next_seq = 0
-                body = _json_bytes({
-                    "success": False,
-                    "next_seq": next_seq,
-                    "error": {
-                        "code": "event_replay_unavailable",
-                        "message": "Event replay is temporarily unavailable.",
-                    },
-                    "retryable": True,
-                    "terminal": False,
-                })
-                frame = b"event: replay_error\ndata: " + body + b"\n\n"
-                self.send_response(200)
-                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-                self.send_header("Cache-Control", "no-cache")
-                self.send_header("Connection", "close")
+                payload = dict(_payload)
+                self.send_response(_status)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
                 self._common_headers()
                 self.end_headers()
-                self.wfile.write(frame)
+                self.wfile.write(_json_bytes(payload))
                 self.wfile.flush()
             except OSError:
                 pass
@@ -3414,6 +3823,9 @@ class Handler(BaseHTTPRequestHandler):
 
         stream_success = True
         stream_error = ""
+        trace_stream_output = bool(getattr(self, "_debug_trace_id", ""))
+        if trace_stream_output:
+            self._debug_stream_capture = True
         try:
             # Subscribe before fetching history. An event appended in the replay
             # window is then either replayed or queued; duplicate queued events
@@ -3440,6 +3852,16 @@ class Handler(BaseHTTPRequestHandler):
                     return _encode_agent_event_cursor(stream_id, seq)
                 return str(seq)
 
+            def capture_sse_chunk(chunk: bytes) -> None:
+                if not trace_stream_output:
+                    return
+                store = getattr(APP, "debug_traces", None) if APP is not None else None
+                append_output = getattr(store, "append_output", None)
+                if not callable(append_output) or not append_output(
+                    str(getattr(self, "_debug_trace_id", "")), chunk.decode("utf-8")
+                ):
+                    self._debug_stream_capture_failed = True
+
             def write_sse(event_name: str, payload: Mapping[str, Any], seq: int | None = None) -> bool:
                 nonlocal stream_success, stream_error, last_delivered_seq
                 if seq is not None:
@@ -3453,6 +3875,8 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     self.wfile.write(msg)
                     self.wfile.flush()
+                    if trace_stream_output:
+                        capture_sse_chunk(msg)
                     if seq is not None:
                         last_delivered_seq = seq
                     return True
@@ -3702,8 +4126,11 @@ class Handler(BaseHTTPRequestHandler):
                     if kind and ev.kind != kind:
                         if prefixed_cursor and stream_id and ev.seq is not None:
                             try:
-                                self.wfile.write(f"id: {format_seq(ev.seq)}\n\n".encode("utf-8"))
+                                cursor_event = f"id: {format_seq(ev.seq)}\n\n".encode("utf-8")
+                                self.wfile.write(cursor_event)
                                 self.wfile.flush()
+                                if trace_stream_output:
+                                    capture_sse_chunk(cursor_event)
                                 last_delivered_seq = ev.seq
                             except OSError:
                                 stream_success = False
@@ -3716,6 +4143,8 @@ class Handler(BaseHTTPRequestHandler):
                     try:
                         self.wfile.write(b": keep-alive\n\n")
                         self.wfile.flush()
+                        if trace_stream_output:
+                            capture_sse_chunk(b": keep-alive\n\n")
                     except OSError:
                         stream_success = False
                         stream_error = "client disconnected"
@@ -3784,9 +4213,8 @@ class Handler(BaseHTTPRequestHandler):
         if APP is None:
             self._send(503, {"success": False, "error": "hub starting up; please retry", "status_code": 503, "retryable": True})
             return
-        # The shell is public so remote deployments can prompt for a token. The
-        # redacted mode snapshot is the only loopback auth exception; host/origin
-        # checks still apply, and mode mutation remains authenticated.
+        # The dashboard shell is public; loopback mode reads expose only local
+        # runtime state, while mode mutations remain authenticated.
         if path == "/api/mode" and not _is_loopback_peer(self):
             self._send(403, {"success": False, "error": "local_control_requires_loopback"})
             return
@@ -3801,20 +4229,46 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._begin_trace(path)
         query = parse_qs(parsed.query)
+        trace_store = getattr(APP, "debug_traces", None) if APP is not None else None
+        trace_id = str(getattr(self, "_debug_trace_id", "") or "")
+        if trace_store is not None and trace_id and query:
+            try:
+                trace_store.update(trace_id, request={"query": query})
+            except Exception:
+                pass
         allowed_agent_state_get = {
             "/api/agent-state/memory",
             "/api/agent-state/tasks",
             "/api/agent-state/events",
             "/api/agent-state/events/stream",
             "/api/agent-state/blackboard",
+            "/api/agent-state/swarm",
         }
-        if path.startswith("/api/agent-state/") and path not in allowed_agent_state_get:
+        if path.startswith("/api/agent-state/") and path not in allowed_agent_state_get and not path.startswith("/api/agent-state/swarm/"):
             self._send(403, {"success": False, "error": "agent_state route has no root-scoped access contract", "terminal": True, "retryable": False}); return
         if path == "/api/agent-state/memory" and not self._bind_memory_query(query):
             return
         if path in {"/api/agent-state/events", "/api/agent-state/events/stream"} and not self._bind_task_event_query(query):
             return
         if path == "/api/agent-state/blackboard" and not self._bind_task_board_query(query):
+            return
+        if path == "/api/agent-state/swarm" or path.startswith("/api/agent-state/swarm/"):
+            if not self._bind_swarm_query(query):
+                return
+        root_scoped_repo_get_paths = {
+            "/api/git/status", "/api/git/diff", "/api/git/history_search", "/api/git/synthesize_commit",
+            "/api/repo_state", "/api/hotspots", "/api/topology", "/api/dead_code",
+            "/api/symbol_callgraph", "/api/audit_dependencies", "/api/refactor_impact", "/api/test_matrix",
+            "/api/resolve_imports", "/api/security_audit", "/api/search", "/api/leases",
+            "/api/preprocess", "/api/preprocess/status", "/api/coord/worktrees", "/api/worktrees",
+        }
+        if (
+            path.startswith("/api/repo/")
+            or path.startswith("/api/code/")
+            or path in root_scoped_repo_get_paths
+        ) and not self._bind_repository_root_query(query):
+            return
+        if path == "/api/cross_project_graph" and not self._bind_multi_repository_query(query):
             return
         if path == "/api/agent-state/tasks":
             task_identity = self._bind_root_tenant(
@@ -3856,17 +4310,31 @@ class Handler(BaseHTTPRequestHandler):
                     "degraded": bool(getattr(snapshot, "degraded", True)),
                 }
                 if response["mode"] == "gaming":
-                    with _MODE_UNLOAD_STATUS_LOCK:
-                        unload_status = _MODE_UNLOAD_STATUS.get(response["revision"])
+                    unload_status = _get_mode_unload_status(APP, response["revision"])
                     if unload_status is not None:
-                        response["runtime_unload"] = dict(unload_status)
+                        response["runtime_unload"] = _public_gaming_unload_status(unload_status)
                 if response["degraded"]:
                     response["error"] = "operational mode state is invalid"
                 self._send(200, response); return
             if path == "/api/status":
                 detail = str((query.get("detail") or [""])[0]).strip().lower()
                 if detail == "agent_state":
-                    if hasattr(APP, "_status_dependency_lock"):
+                    # The dependency-backed branch reads durable projections.
+                    # Without an already-bound root it must stay capability-only;
+                    # global task IDs/counts are never a valid monitor projection.
+                    if not getattr(self, "_authorization_root", None):
+                        requested_root = (query.get("root") or [""])[0]
+                        if requested_root:
+                            bound = self._bind_root_tenant(
+                                requested_root,
+                                query.get("tenant", []),
+                                allow_principal_header=True,
+                                require_configured_principal=True,
+                            )
+                            if bound is None:
+                                return
+                            query["root"], query["tenant"] = [[bound[0]], [bound[1]]]
+                    if getattr(self, "_authorization_root", None) and hasattr(APP, "_status_dependency_lock"):
                         dependency_status: dict[str, dict[str, Any]] = {}
                         deadline = time.monotonic() + _STATUS_TOTAL_BUDGET_SECONDS
 
@@ -3880,10 +4348,28 @@ class Handler(BaseHTTPRequestHandler):
                             dependency_status[key] = {"deadline_ms": max(0, int(timeout * 1000)), "degraded": not healthy, "status": "ok" if healthy else "degraded"}
                             return value
 
+                        scoped_root = str(getattr(self, "_authorization_root", "") or "")
+                        scoped_tenant = str(getattr(self, "_authorization_tenant", "") or "")
                         tasks = read_agent_detail("tasks", APP.agent_tasks.list_tasks, []) if getattr(APP, "agent_tasks", None) else []
-                        active_tasks = [getattr(t, "task_id", "") for t in tasks if getattr(t, "status", None) == TaskStatus.ACTIVE]
+                        scoped_tasks = [
+                            task for task in tasks
+                            if self._task_matches_request(task, scoped_root, scoped_tenant)
+                        ]
+                        active_tasks = [getattr(t, "task_id", "") for t in scoped_tasks if getattr(t, "status", None) == TaskStatus.ACTIVE]
                         incidents = read_agent_detail("incidents", APP.agent_incidents.list_incidents, []) if getattr(APP, "agent_incidents", None) else []
-                        candidates = read_agent_detail("candidates", APP.agent_learning.list_candidates, []) if getattr(APP, "agent_learning", None) else []
+                        repository_key = _incident_scope_key("repository", scoped_root)
+                        tenant_key = _incident_scope_key("tenant", scoped_tenant)
+                        scoped_incidents = [
+                            incident for incident in incidents
+                            if getattr(incident, "repository_key", "") == repository_key
+                            and getattr(incident, "tenant_key", "") == tenant_key
+                        ]
+                        # Improvement candidates currently have no authenticated
+                        # root/tenant provenance; never expose global candidates.
+                        # Candidate records currently lack authenticated
+                        # root/tenant provenance, so do not scan the global
+                        # candidate store for this scoped projection.
+                        scoped_candidates: list[Any] = []
                         degraded = any(item["degraded"] for item in dependency_status.values())
                         self._send(200, {
                             "success": not degraded,
@@ -3893,16 +4379,25 @@ class Handler(BaseHTTPRequestHandler):
                             "snapshot_cached": False,
                             "enabled": bool(getattr(APP, "agent_state", None) and APP.agent_state.enabled),
                             "active_tasks": active_tasks,
-                            "tasks_count": len(tasks),
+                            "tasks_count": len(scoped_tasks),
+                            "incidents_count": len(scoped_incidents),
+                            "candidates_count": len(scoped_candidates),
                         }); return
-                    if not getattr(self, "_authorization_root", None):
-                        self._send(403, {"success": False, "error": "agent_state status is unavailable without root scope", "terminal": True, "retryable": False}); return
                     # Capability readiness only: global projection counts would
                     # disclose other roots/tenants and require an unbounded scan.
                     state = getattr(APP, "agent_state", None)
                     enabled = bool(state is not None and state.enabled)
                     initialized = bool(enabled and getattr(state, "_initialized", False))
-                    self._send(200, {"success": True, "enabled": enabled, "initialized": initialized}); return
+                    self._send(200, {
+                        "success": True,
+                        "enabled": enabled,
+                        "initialized": initialized,
+                        "status": "ok" if enabled else "disabled",
+                        "active_tasks": [],
+                        "tasks_count": 0,
+                        "incidents_count": 0,
+                        "candidates_count": 0,
+                    }); return
                 scope = str((query.get("scope") or ["process"])[0])
                 if detail in {"summary", "light"}:
                     status = APP.realtime_status(light=True, scope=scope)
@@ -4182,12 +4677,14 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(503, {"success": False, "error": "swarm coordinator unavailable"}); return
                 st = (query.get("state") or [None])[0]
                 lim = int((query.get("limit") or [50])[0])
-                self._send(200, APP.swarm.list_swarms(state=st, limit=lim)); return
+                root = (query.get("root") or [None])[0]
+                self._send(200, APP.swarm.list_swarms(state=st, limit=lim, root=root)); return
             if path.startswith("/api/agent-state/swarm/"):
                 swarm_id = path.split("/api/agent-state/swarm/", 1)[1].strip()
                 if not getattr(APP, "swarm", None):
                     self._send(503, {"success": False, "error": "swarm coordinator unavailable"}); return
-                self._send(200, APP.swarm.get_status(swarm_id)); return
+                root = (query.get("root") or [None])[0]
+                self._send(200, APP.swarm.get_status(swarm_id, root=root)); return
             if path == "/api/agent-state/events/stream":
                 if not getattr(APP, "agent_state", None) or not APP.agent_state.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
@@ -4216,9 +4713,23 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, {"success": True, "available": False}); return
                 self._send(200, {"success": True, "available": True, "adoption": store.report(days=7)}); return
             if path == "/api/metrics":
-                days = int((query.get("days") or [30])[0])
+                try:
+                    days = int((query.get("days") or [30])[0])
+                except (TypeError, ValueError, OverflowError):
+                    self._send(400, {
+                        "success": False,
+                        "error": "days must be an integer",
+                        "terminal": True,
+                        "retryable": False,
+                    }); return
                 scope = str((query.get("scope") or ["window"])[0])
-                self._send(200, {"success": True, "metrics": APP.telemetry.summary(days, scope=scope)}); return
+                try:
+                    metrics = APP.telemetry.summary(days, scope=scope)
+                except ValueError as exc:
+                    self._send(400, {
+                        "success": False, "error": str(exc), "terminal": True, "retryable": False,
+                    }); return
+                self._send(200, {"success": True, "metrics": metrics}); return
             if path == "/api/telemetry/report":
                 try:
                     days = int((query.get("days") or [30])[0])
@@ -4272,7 +4783,15 @@ class Handler(BaseHTTPRequestHandler):
                     }); return
                 self._send(200, {"success": True, **page}); return
             if path == "/api/audit/tail":
-                limit = int((query.get("limit") or [20])[0])
+                try:
+                    limit = int((query.get("limit") or [20])[0])
+                except (TypeError, ValueError, OverflowError):
+                    self._send(400, {
+                        "success": False,
+                        "error": "limit must be an integer",
+                        "terminal": True,
+                        "retryable": False,
+                    }); return
                 self._send(200, {"success": True, "events": APP.telemetry.tail(limit)}); return
             if path == "/api/debug-traces":
                 result = APP.debug_traces.list(
@@ -4286,6 +4805,32 @@ class Handler(BaseHTTPRequestHandler):
                 for item in result.get("items", []):
                     self._reconcile_debug_trace(item)
                 self._send(200 if result.get("success") else 503 if result.get("retryable") else 400, result); return
+            trace_prefix = "/api/debug-traces/"
+            metrics_suffix = "/metrics"
+            if path.startswith(trace_prefix) and path.endswith(metrics_suffix):
+                trace_id = path[len(trace_prefix):-len(metrics_suffix)]
+                if not trace_id or "/" in trace_id:
+                    self._send(404, {"success": False, "error": "trace not found"}); return
+                try:
+                    request_id = APP.debug_traces.request_id_for_trace(trace_id)
+                    if request_id is None:
+                        self._send(404, {"success": False, "error": "trace not found"}); return
+                    metrics_provider = getattr(getattr(APP, "telemetry", None), "request_metrics", None)
+                    if not callable(metrics_provider):
+                        raise RuntimeError("trace telemetry unavailable")
+                    metrics = metrics_provider(request_id)
+                except Exception as exc:
+                    logger = getattr(APP, "logger", None)
+                    warning = getattr(logger, "warning", None)
+                    if callable(warning):
+                        warning("debug trace metrics unavailable error_type=%s", type(exc).__name__)
+                    self._send(503, {
+                        "success": False,
+                        "error": "trace metrics are temporarily unavailable",
+                        "retryable": True,
+                        "terminal": False,
+                    }); return
+                self._send(200, {"success": True, "trace_id": trace_id, "metrics": metrics}); return
             if path.startswith("/api/debug-traces/"):
                 trace_id = path.rsplit("/", 1)[-1]
                 detail_args = {
@@ -4298,6 +4843,11 @@ class Handler(BaseHTTPRequestHandler):
                             DEBUG_TRACE_HTTP_MAX_BYTES,
                         ),
                     ),
+                    "before_seq": _query_int(query, "before_seq", 0),
+                    "full_payload": str((query.get("full") or [""])[0]).strip().lower()
+                    in {"1", "true", "yes", "on"},
+                    "content_field": str((query.get("content_field") or [""])[0])[:64],
+                    "content_offset": _query_int(query, "content_offset", 0),
                 }
                 result = APP.debug_traces.detail(trace_id, **detail_args)
                 if result.get("error") == "trace not found":
@@ -4326,7 +4876,7 @@ class Handler(BaseHTTPRequestHandler):
                 coordination_id = _lease_coordination_id(root)
                 self._send(200, {"success": True, "leases": APP.leases.list(root, coordination_id=coordination_id), "waits": APP.leases.waits(root, coordination_id=coordination_id)}); return
             if path == "/api/cross_project_graph":
-                roots = [str(p.get("root")) for p in APP.preprocessor.status().get("projects", []) if p.get("root")]
+                roots = [str(root) for root in query.get("roots", []) if root]
                 if APP.deterministic is not None:
                     self._send(200, APP.deterministic.cross_project_graph(roots))
                 else:
@@ -4428,20 +4978,31 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/api/config":
                 view = _redact_config_secrets(APP.config)
-                self._send(200, {"success": True, "config": view, "config_path": APP.config.get("_config_path", ""), "runtime_override_path": APP.config.get("_runtime_override_path", "")})
+                self._send(200, {
+                    "success": True,
+                    "config": view,
+                    "config_path": _safe_config_file_label(APP.config.get("_config_path", "")),
+                    "runtime_override_path": _safe_config_file_label(APP.config.get("_runtime_override_path", "")),
+                })
                 return
             if path == "/api/logs/tail":
                 try:
                     lines = max(1, min(int((query.get("lines") or [200])[0]), 1000))
                     log_path = Path(APP.config["server"]["state_dir"]) / "logs" / "hub.log"
                     if not log_path.is_file():
-                        self._send(200, {"success": True, "path": str(log_path), "lines": []}); return
+                        self._send(200, {"success": True, "lines": []}); return
                     with log_path.open("rb") as fh:
                         fh.seek(0, 2); size = fh.tell(); fh.seek(max(0, size - 512 * 1024))
                         text = fh.read(512 * 1024).decode("utf-8", errors="replace")
-                    self._send(200, {"success": True, "path": str(log_path), "lines": text.splitlines()[-lines:]})
-                except (OSError, ValueError) as exc:
-                    self._send(400, {"success": False, "error": str(exc)})
+                    self._send(200, {"success": True, "lines": text.splitlines()[-lines:]})
+                except (OSError, ValueError):
+                    self._send(400, {
+                        "success": False,
+                        "error": "log tail unavailable",
+                        "error_code": "log_tail_unavailable",
+                        "terminal": True,
+                        "retryable": False,
+                    })
                 return
             if path == "/api/doctor":
                 self._send(200, APP.services.run_doctor())
@@ -4522,8 +5083,12 @@ class Handler(BaseHTTPRequestHandler):
                 if tracker is not None:
                     try:
                         self._send(200, tracker.fingerprint(root))
-                    except Exception as exc:
-                        self._send(200, {"success": False, "error": str(exc)})
+                    except Exception:
+                        self._send(200, {
+                            "success": False,
+                            "error": "repo state unavailable",
+                            "error_code": "repo_state_unavailable",
+                        })
                 else:
                     self._send(200, {"success": False, "error": "repo_state tracker unavailable"})
                 return
@@ -4569,8 +5134,14 @@ class Handler(BaseHTTPRequestHandler):
                 return
             try:
                 if APP is not None:
-                    APP.logger.exception("GET request failed path=%s error=%s", path, type(exc).__name__)
-                self._send(500, {"success": False, "error": str(exc)})
+                    APP.logger.error("GET request failed error_type=%s", type(exc).__name__)
+                self._send(500, {
+                    "success": False,
+                    "error": "internal server error",
+                    "error_code": "internal_error",
+                    "terminal": True,
+                    "retryable": False,
+                })
             except Exception:
                 pass
 
@@ -4844,7 +5415,11 @@ class Handler(BaseHTTPRequestHandler):
                             "state": "drained" if drained else "timed_out",
                             "inference_active": not drained,
                         }
-                    except Exception:
+                    except Exception as exc:
+                        APP.logger.warning(
+                            "gaming inference admission drain failed error_type=%s",
+                            type(exc).__name__,
+                        )
                         admission_release = {"state": "unavailable", "inference_active": True}
                 else:
                     admission_release = {
@@ -4860,7 +5435,11 @@ class Handler(BaseHTTPRequestHandler):
                         )
                         if admission_active:
                             admission_release["state"] = "active"
-                    except Exception:
+                    except Exception as exc:
+                        APP.logger.warning(
+                            "gaming inference admission status failed error_type=%s",
+                            type(exc).__name__,
+                        )
                         admission_release = {"state": "unavailable", "inference_active": True}
                 else:
                     admission_release = {
@@ -5029,6 +5608,7 @@ class Handler(BaseHTTPRequestHandler):
                 }
                 response["unload"] = runtime_unload
                 response["transition"] = {"preprocessing_active": preprocessing_active}
+                _store_mode_unload_status(APP, response["revision"], runtime_unload)
             self._send(200, response); return
         content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
         if path == "/api/bundle/import":
@@ -5067,7 +5647,11 @@ class Handler(BaseHTTPRequestHandler):
         self._admin_payload = payload if isinstance(payload, dict) else {}
         mode_rejection = _http_mode_gate_error("POST", path, payload)
         if mode_rejection is not None:
-            status = 423 if mode_rejection.get("error_code") == "operational_mode_blocked" else 503
+            status = (
+                503
+                if path == "/api/context/pack"
+                else 423 if mode_rejection.get("error_code") == "operational_mode_blocked" else 503
+            )
             self._send(status, mode_rejection)
             return
         allowed_agent_state_post = {
@@ -5077,14 +5661,69 @@ class Handler(BaseHTTPRequestHandler):
             "/api/agent-state/context",
             "/api/agent-state/events/delta",
             "/api/agent-state/blackboard",
+            "/api/agent-state/incidents",
+            "/api/agent-state/cleanup",
+            "/api/agent-state/swarm/dispatch",
+            "/api/agent-state/swarm/step",
+            "/api/agent-state/swarm/cancel",
         }
-        if path.startswith("/api/agent-state/") and path not in allowed_agent_state_post:
+        # Learning candidates are global operator state, not repository-scoped
+        # task state. Keep the route behind normal authenticated POST access,
+        # then reject direct/unbound dispatch before touching the store.
+        if path == "/api/agent-state/learning" and getattr(self, "_authorization_actor", "unrecognized") == "unrecognized":
+            self._send(403, {"success": False, "error": "learning route requires authenticated operator scope", "terminal": True, "retryable": False}); return
+        if path == "/api/agent-state/cleanup" and getattr(self, "_authorization_actor", "unrecognized") == "unrecognized":
+            self._send(403, {"success": False, "error": "cleanup route requires authenticated operator scope", "terminal": True, "retryable": False}); return
+        if path.startswith("/api/agent-state/") and path not in allowed_agent_state_post and path != "/api/agent-state/learning":
             self._send(403, {"success": False, "error": "agent_state route has no root-scoped access contract", "terminal": True, "retryable": False}); return
         if path == "/api/agent-state/memory" and not self._bind_memory_payload(payload):
             return
         if path == "/api/agent-state/tasks" and not self._bind_task_payload(payload):
             return
         if path == "/api/agent-state/verification" and not self._bind_task_payload(payload):
+            return
+        if path == "/api/agent-state/incidents" and not self._bind_incident_payload(payload):
+            return
+        if path in {
+            "/api/agent-state/swarm/dispatch",
+            "/api/agent-state/swarm/step",
+            "/api/agent-state/swarm/cancel",
+        } and not self._bind_swarm_payload(payload):
+            return
+        if path in {
+            "/api/code/ast_rename",
+            "/api/ast_rename",
+            "/api/code/batch_replace",
+            "/api/repo/batch_replace",
+        } and not self._bind_repository_root_payload(payload):
+            return
+        if path in {"/api/repo/cross_repo_contract", "/api/cross_repo_contract"} and not self._bind_multi_repository_payload(payload, cross_repo_contract=True):
+            return
+        if path in {"/api/cross_project_graph", "/api/cross_project_symbols", "/api/cross_project_impact"} and not self._bind_multi_repository_payload(payload):
+            return
+        root_scoped_repo_paths = {
+            "/api/git/status", "/api/git/diff", "/api/git/history_search",
+            "/api/repo/state", "/api/repo_state", "/api/repo/hotspots",
+            "/api/hotspots", "/api/repo/generate_tests_for_diff",
+            "/api/generate_tests_for_diff", "/api/repo/affected_tests",
+            "/api/affected_tests", "/api/repo/topology", "/api/topology",
+            "/api/git/synthesize_commit", "/api/test_matrix",
+            "/api/security_audit", "/api/code-intelligence/query",
+            "/api/code-intelligence/reset", "/api/repo/dead_code",
+            "/api/dead_code", "/api/symbol_callgraph",
+            "/api/repo/call_graph_diff", "/api/bundle/export",
+            "/api/reachability_dead_code", "/api/mutation_test",
+            "/api/type_stubs", "/api/split_changes", "/api/synthesize_rules",
+            "/api/code_invariants", "/api/generate_dataset", "/api/callers",
+            "/api/secret_scan", "/api/schema_inspect", "/api/explain_query",
+            "/api/env_compat", "/api/worktree_lease", "/api/worktree_release",
+            "/api/worktrees", "/api/worktree_prune", "/api/lint_fix",
+        }
+        if (
+            path in root_scoped_repo_paths
+            or (path.startswith("/api/repo/") and path not in {"/api/repo/cross_repo_contract"})
+            or path.startswith("/api/code/")
+        ) and not self._bind_repository_root_payload(payload):
             return
         if path == "/api/agent-state/verification":
             action = str(payload.get("action", "")).strip().lower().replace("-", "_")
@@ -5116,9 +5755,26 @@ class Handler(BaseHTTPRequestHandler):
             accepted = 0
             rejected = 0
             rejection_reasons: dict[str, int] = {}
+            bound_tenant = str(getattr(self, "_authorization_tenant", "") or "").strip()
+            if not bound_tenant:
+                configured_tenant = self._configured_principal_tenant()
+                if configured_tenant:
+                    bound_tenant = configured_tenant
+                else:
+                    security = getattr(APP, "config", {}).get("security", {}) if APP is not None else {}
+                    if isinstance(security, dict) and security.get("api_token"):
+                        bound_tenant = self._principal_tenant()
             for event in payload.get("events", []):
                 try:
-                    recorded = APP.telemetry.record_tool_accounting(event)
+                    scoped_event = dict(event) if isinstance(event, dict) else event
+                    supplied_tenant = str(scoped_event.get("tenant", "") or "").strip() if isinstance(scoped_event, dict) else ""
+                    if bound_tenant and supplied_tenant and supplied_tenant != bound_tenant:
+                        rejected += 1
+                        rejection_reasons["tenant_binding_mismatch"] = rejection_reasons.get("tenant_binding_mismatch", 0) + 1
+                        continue
+                    if isinstance(scoped_event, dict) and bound_tenant:
+                        scoped_event["tenant"] = bound_tenant
+                    recorded = APP.telemetry.record_tool_accounting(scoped_event)
                     if recorded is False:
                         rejected += 1
                         tool = event.get("tool") if isinstance(event, dict) else None
@@ -5146,22 +5802,10 @@ class Handler(BaseHTTPRequestHandler):
         if not self._claim_recovery(path, payload):
             return
         self._request_evaluation = payload.get("evaluation")
-        if path == "/api/conversations/continue" or (
-            path in {"/api/delegate", "/api/reason"} and bool(payload.get("conversation", False))
-        ):
-            self._redact_debug_trace()
         trace_store = getattr(APP, "debug_traces", None)
         api_trace_id = str(getattr(self, "_debug_trace_id", "") or "")
         if trace_store is not None and api_trace_id:
             try:
-                if not getattr(self, "_debug_trace_redacted", False):
-                    captured_request = self._safe_debug_trace_request(payload)
-                    trace_store.update(api_trace_id, state="running", request=captured_request)
-                    trace_store.event(
-                        api_trace_id,
-                        "request_body_captured",
-                        {"content_type": content_type, "capture_status": captured_request.get("capture_status", "captured")},
-                    )
                 trace_store.event(api_trace_id, "handler_started", {"action": path, "payload_keys": sorted(str(key) for key in payload)})
             except Exception:
                 # Debug persistence is optional and must not strand a claimed request.
@@ -5197,12 +5841,18 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(500, {"success": False, "error": "active config path unavailable"}); return
                 if action == "reset":
                     target = save_runtime_overrides(config_path, {}, reset=True)
-                    self._send(200, {"success": True, "restart_required": True, "runtime_override_path": str(target), "reset": True}); return
+                    self._send(200, {
+                        "success": True,
+                        "restart_required": True,
+                        "runtime_override_path": _safe_config_file_label(target),
+                        "reset": True,
+                    }); return
                 requested = payload.get("settings", {})
                 if not isinstance(requested, dict):
                     self._send(400, {"success": False, "error": "settings must be an object"}); return
                 allowed = {
                     "hardware.profile": {"auto", "cpu", "integrated", "low", "balanced", "high", "max"},
+                    "debug_traces.enabled": {True, False},
                     "preprocessing.enabled": {True, False},
                     "code_intelligence.enabled": {True, False},
                     "code_intelligence.serena_enabled": {True, False},
@@ -5226,34 +5876,24 @@ class Handler(BaseHTTPRequestHandler):
                     validate_config(prospective)
                     target = save_runtime_overrides(config_path, patch)
                 except (ConfigError, OSError, ValueError) as exc:
-                    self._send(400, {"success": False, "error": str(exc)}); return
-                self._send(200, {"success": True, "restart_required": True, "runtime_override_path": str(target), "settings": requested}); return
-            if 'post_control_1' in post_route_ids:
-                action = str(payload.get("action", "")).strip().lower().replace("-", "_")
-                state_dir = Path(APP.config["server"]["state_dir"])
-                if action == "restart_hub":
-                    self._journal_finished = True; self._telemetry_finished = True
-                    self._send(200, {"success": True, "action": action, "message": "hub restart requested"})
-                    def _graceful_restart():
-                        time.sleep(0.3)
-                        try:
-                            if APP is not None: APP.close()
-                        except Exception: pass
-                        os._exit(0)
-                    threading.Thread(target=_graceful_restart, daemon=True).start(); return
-                if action == "stop_service":
-                    try: (state_dir / "service.disabled").write_text(f"disabled from dashboard {time.time()}\n", encoding="utf-8")
-                    except OSError: pass
-                    self._journal_finished = True; self._telemetry_finished = True
-                    self._send(200, {"success": True, "action": action, "message": "service disabled; supervisor will stop"})
-                    def _graceful_stop():
-                        time.sleep(0.35)
-                        try:
-                            if APP is not None: APP.close()
-                        except Exception: pass
-                        os._exit(0)
-                    threading.Thread(target=_graceful_stop, daemon=True).start(); return
-                self._send(400, {"success": False, "error": "unknown control action"}); return
+                    logger = getattr(APP, "logger", None)
+                    if logger is not None:
+                        logger.error("config update rejected error_type=%s", type(exc).__name__)
+                    self._send(400, {
+                        "success": False,
+                        "error": "configuration update rejected",
+                        "error_code": "config_update_rejected",
+                        "terminal": True,
+                        "retryable": False,
+                    }); return
+                live_trace_toggle = _apply_live_debug_trace_toggle(APP, requested)
+                self._send(200, {
+                    "success": True,
+                    "restart_required": not live_trace_toggle,
+                    "applied_live": live_trace_toggle,
+                    "runtime_override_path": _safe_config_file_label(target),
+                    "settings": requested,
+                }); return
             if 'post_browser_capability_1' in post_route_ids:
                 if not APP.config.get("browser_bridge", {}).get("enabled", True):
                     self._send(501, capture_failure("unsupported")); return
@@ -5355,6 +5995,20 @@ class Handler(BaseHTTPRequestHandler):
                 action = str(payload.get("action", "")).strip().lower().replace("-", "_")
                 idempotency_key = str(payload.get("idempotency_key", "")).strip()
                 actor = self._agent() or "agent"
+                known_task_actions = {
+                    "create", "list", "get", "transition", "complete", "fail",
+                    "checkpoint", "rollback", "resume", "heartbeat",
+                    "cleanup_worktree", "task_cleanup_worktree", "reap",
+                    "reap_expired", "zombie_reap", "recover_zombie_tasks",
+                    "curate_dataset", "curate_training_dataset",
+                }
+                if action not in known_task_actions:
+                    self._send(400, {
+                        "success": False,
+                        "error": f"unknown task action '{action}'",
+                        "terminal": True,
+                        "retryable": False,
+                    }); return
                 scoped_task_actions = {
                     "reap", "reap_expired", "zombie_reap", "recover_zombie_tasks",
                     "curate_dataset", "curate_training_dataset",
@@ -6146,22 +6800,21 @@ class Handler(BaseHTTPRequestHandler):
                 if not getattr(APP, "agent_incidents", None) or not APP.agent_incidents.state_store.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
                 action = str(payload.get("action", "")).strip().lower().replace("-", "_")
+                if action not in {"decision", "record", "find"}:
+                    self._send(403, {"success": False, "error": "incident action requires a scoped mutation contract", "terminal": True, "retryable": False}); return
                 if action == "decision":
-                    fp_data = payload.get("fingerprint") or {}
-                    fp = IncidentFingerprint.from_dict(fp_data)
+                    fp = IncidentFingerprint.from_dict(payload.get("fingerprint") or {})
                     rev = str(payload.get("state_revision", payload.get("revision", "")))
-                    dec = APP.agent_incidents.retry_decision(fp, rev)
-                    self._send(200, {"success": True, "decision": dec.to_dict()}); return
+                    decision = APP.agent_incidents.retry_decision(
+                        fp,
+                        rev,
+                        root=str(payload.get("root", "")),
+                        tenant=str(payload.get("tenant", "")),
+                    )
+                    self._send(200, {"success": True, "decision": decision.to_dict()}); return
                 if action == "record":
-                    inc_id = str(payload.get("incident_id", payload.get("id", payload.get("record_id", ""))))
                     root_cause = str(payload.get("root_cause", payload.get("reason", "")))
                     verified_fix = str(payload.get("verified_fix", payload.get("fix", payload.get("status", ""))))
-                    if inc_id and (verified_fix or root_cause):
-                        try:
-                            inc = APP.agent_incidents.resolve(inc_id, verified_fix=verified_fix or "resolved", root_cause=root_cause or None)
-                            self._send(200, {"success": True, "incident": inc.to_dict()}); return
-                        except KeyError:
-                            pass
                     msg = str(payload.get("message", payload.get("redacted_message", payload.get("value", ""))))
                     op = str(payload.get("operation_class", payload.get("tool_name", payload.get("key", "agent"))))
                     rev = str(payload.get("state_revision", payload.get("revision", "")))
@@ -6173,54 +6826,23 @@ class Handler(BaseHTTPRequestHandler):
                         state_revision=rev, evidence_ids=evidence_ids,
                         metadata={"root_cause": root_cause, "verified_fix": verified_fix},
                         affected_paths=aff_paths,
+                        repository_root=str(payload.get("root", "")),
+                        tenant=str(payload.get("tenant", "")),
                     )
                     inc = APP.agent_incidents.capture(outcome)
                     if inc and (verified_fix or root_cause):
                         inc = APP.agent_incidents.resolve(inc.incident_id, verified_fix=verified_fix or "resolved", root_cause=root_cause or None)
                     self._send(200, {"success": True, "incident": inc.to_dict() if inc else None}); return
-                if action == "resolve":
-                    inc_id = str(payload.get("incident_id", payload.get("id", payload.get("record_id", ""))))
-                    fix = str(payload.get("verified_fix", payload.get("fix", payload.get("status", "manually resolved"))))
-                    rc = str(payload.get("root_cause", payload.get("reason", ""))) or None
-                    conf = float(payload.get("confidence", 1.0))
-                    try:
-                        inc = APP.agent_incidents.resolve(inc_id, verified_fix=fix, confidence=conf, root_cause=rc)
-                        self._send(200, {"success": True, "incident": inc.to_dict()}); return
-                    except KeyError:
-                        self._send(404, {"success": False, "error": f"incident {inc_id} not found", "terminal": True, "retryable": False}); return
-                if action in {"ignore", "unignore"}:
-                    inc_id = str(payload.get("incident_id", payload.get("id", payload.get("record_id", ""))))
-                    try:
-                        inc = APP.agent_incidents.set_ignored(inc_id, ignored=action == "ignore")
-                        self._send(200, {"success": True, "incident": inc.to_dict()}); return
-                    except KeyError:
-                        self._send(404, {"success": False, "error": f"incident {inc_id} not found", "terminal": True, "retryable": False}); return
-                if action == "find_regressions":
-                    paths_param = payload.get("paths") or ([payload.get("path")] if payload.get("path") else [])
-                    p_list = [str(x) for x in paths_param] if isinstance(paths_param, list) else []
-                    regressions = APP.agent_incidents.find_regressions(p_list)
-                    self._send(200, {"success": True, "regressions": regressions}); return
                 if action == "find":
                     query_str = str(payload.get("query", payload.get("key", ""))).strip().lower()
-                    resolved_filter = payload.get("resolved")
-                    status_filter = str(payload.get("status", "") or "")
                     limit_val = int(payload.get("limit", 100))
-                    all_incs = APP.agent_incidents.list_incidents(resolved=resolved_filter, limit=limit_val * 2, status=status_filter)
-                    if query_str:
-                        matched = [
-                            i for i in all_incs
-                            if query_str in i.error_class.lower() or query_str in i.redacted_message.lower() or (i.root_cause and query_str in i.root_cause.lower()) or (i.verified_fix and query_str in i.verified_fix.lower())
-                        ][:limit_val]
-                    else:
-                        matched = all_incs[:limit_val]
-                    self._send(200, {"success": True, "incidents": [i.to_dict() for i in matched]}); return
-                if action == "list":
-                    resolved_filter = payload.get("resolved")
-                    status_filter = str(payload.get("status", "") or "")
-                    limit_val = int(payload.get("limit", 100))
-                    incidents = APP.agent_incidents.list_incidents(resolved=resolved_filter, limit=limit_val, status=status_filter)
-                    self._send(200, {"success": True, "incidents": [i.to_dict() for i in incidents]}); return
-                self._send(400, {"success": False, "error": f"unknown incident action '{action}'", "terminal": True, "retryable": False}); return
+                    scoped = APP.agent_incidents.find_negative_knowledge(
+                        query_str,
+                        limit=limit_val,
+                        root=str(payload.get("root", "")),
+                        tenant=str(payload.get("tenant", "")),
+                    )
+                    self._send(200, {"success": True, "negative_knowledge": scoped, "incidents": scoped}); return
             if 'post_agent_state_verification_1' in post_route_ids:
                 if not getattr(APP, "agent_verification", None) or not APP.agent_verification.state_store.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
@@ -6249,6 +6871,7 @@ class Handler(BaseHTTPRequestHandler):
                                 evidence_id=str(rcpt_data.get("evidence_id", "")),
                                 command_id=str(rcpt_data.get("command_id", "")),
                                 repository_revision=str(rcpt_data.get("repository_revision", "")),
+                                owner=self._agent() or "agent",
                                 expires_at=rcpt_data.get("expires_at"),
                                 details=rcpt_data.get("details"),
                             )
@@ -6534,14 +7157,20 @@ class Handler(BaseHTTPRequestHandler):
                 role = str(payload.get("role", "Coder"))
                 action = str(payload.get("action", "submit_patch"))
                 step_payload = payload.get("payload", payload.get("content", {}))
-                res = APP.swarm.step(swarm_id=swarm_id, role=role, action=action, payload=step_payload)
+                res = APP.swarm.step(
+                    swarm_id=swarm_id, role=role, action=action, payload=step_payload,
+                    root=str(payload.get("root", "")),
+                )
                 self._send(200, res); return
             if 'post_agent_state_swarm_cancel_1' in post_route_ids:
                 if not getattr(APP, "swarm", None):
                     self._send(503, {"success": False, "error": "swarm coordinator unavailable"}); return
                 swarm_id = str(payload.get("swarm_id", payload.get("task_id", "")))
                 reason = str(payload.get("reason", ""))
-                res = APP.swarm.cancel(swarm_id=swarm_id, reason=reason)
+                res = APP.swarm.cancel(
+                    swarm_id=swarm_id, reason=reason,
+                    root=str(payload.get("root", "")),
+                )
                 self._send(200, res); return
             if 'post_benchmark_run_1' in post_route_ids:
                 if not getattr(APP, "benchmark_runner", None):
@@ -6617,8 +7246,12 @@ class Handler(BaseHTTPRequestHandler):
                 if tracker is not None:
                     try:
                         self._send(200, tracker.fingerprint(root))
-                    except Exception as exc:
-                        self._send(200, {"success": False, "error": str(exc)})
+                    except Exception:
+                        self._send(200, {
+                            "success": False,
+                            "error": "repo state unavailable",
+                            "error_code": "repo_state_unavailable",
+                        })
                 else:
                     self._send(200, {"success": False, "error": "repo_state tracker unavailable"})
                 return
@@ -6889,7 +7522,13 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.write(data)
                 except Exception as exc:
                     if not _is_client_disconnect(exc):
-                        self._send(500, {"success": False, "error": str(exc)})
+                        self._send(500, {
+                            "success": False,
+                            "error": "bundle export unavailable",
+                            "error_code": "bundle_export_unavailable",
+                            "terminal": True,
+                            "retryable": False,
+                        })
                 return
             if 'post_benchmark_1' in post_route_ids:
                 self._send(200, APP.services.benchmark(tenant)); return
@@ -7522,18 +8161,23 @@ class Handler(BaseHTTPRequestHandler):
                 self._close_trace_context()
             logger = getattr(APP, "logger", None)
             if logger is not None:
-                logger.exception("request failed path=%s error=%s", path, type(exc).__name__)
+                logger.error("POST request failed error_type=%s", type(exc).__name__)
             try:
-                self._send(500, {"success": False, "error": str(exc)})
+                self._send(500, {
+                    "success": False,
+                    "error": "internal server error",
+                    "error_code": "internal_error",
+                    "terminal": True,
+                    "retryable": False,
+                })
             except Exception:
                 pass
 
 
 def validate_network_security(config: dict[str, Any]) -> None:
     bind = str(config.get("server", {}).get("bind", "127.0.0.1"))
-    security = config.get("security", {})
-    if bind != "127.0.0.1" or bool(security.get("allow_remote", False)):
-        raise RuntimeError("Refusing Local AI Hub network exposure: bind must be 127.0.0.1 and allow_remote must be false")
+    if bind != "127.0.0.1":
+        raise RuntimeError("Refusing Local AI Hub network exposure: server.bind must be 127.0.0.1")
 
 
 def _require_owned_supervisor_parent(state_dir: Path) -> None:

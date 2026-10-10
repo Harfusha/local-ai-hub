@@ -70,6 +70,13 @@ def test_negative_knowledge_stops_repeat_until_state_changes(store: IncidentStor
     assert decision2.action != "stop"
 
 
+def test_retry_decision_rejects_partial_or_invalid_scope(store: IncidentStore):
+    fingerprint = IncidentFingerprint("runtime", "command", "missing")
+    assert store.retry_decision(fingerprint, "rev", root="C:/repo").action == "stop"
+    assert store.retry_decision(fingerprint, "rev", tenant="tenant-a").action == "stop"
+    assert store.retry_decision(fingerprint, "rev", root="", tenant="tenant-a").action == "stop"
+
+
 def test_policy_blocks_and_cancellations_do_not_produce_incidents(store: IncidentStore):
     blocked = ToolOutcome(
         tool_name="command",

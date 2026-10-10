@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import subprocess
+import time
 from pathlib import Path
 
 from local_ai_hub.config import load_config
@@ -47,7 +48,10 @@ def test_generated_tool_metadata_never_enters_inventory(tmp_path: Path):
     repo.mkdir()
     (repo / "src").mkdir()
     (repo / "src" / "main.py").write_text("def main(): return 1\n", encoding="utf-8")
-    for hidden in (".serena", ".codegraphcontext", ".local-ai-hub"):
+    for hidden in (
+        ".serena", ".codegraphcontext", ".local-ai-hub", ".handoff",
+        ".t03-main-preflight-overlay",
+    ):
         d = repo / hidden
         d.mkdir()
         (d / "generated.py").write_text("SHOULD_NOT_INDEX = True\n", encoding="utf-8")
@@ -55,7 +59,10 @@ def test_generated_tool_metadata_never_enters_inventory(tmp_path: Path):
     files = RepositoryTools(_cfg(tmp_path)).iter_files(str(repo))
     rel = {p.relative_to(repo).as_posix() for p in files}
     assert "src/main.py" in rel
-    assert all(not p.startswith((".serena/", ".codegraphcontext/", ".local-ai-hub/")) for p in rel)
+    assert all(not p.startswith((
+        ".serena/", ".codegraphcontext/", ".local-ai-hub/", ".handoff/",
+        ".t03-main-preflight-overlay/",
+    )) for p in rel)
 
 
 def test_unity_generated_directories_never_enter_inventory(tmp_path: Path):
@@ -181,7 +188,7 @@ def test_git_diff_rejects_path_capture_failure(tmp_path: Path, monkeypatch):
             return FailedPathProcess()
         return real_popen(command, *args, **kwargs)
 
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(repo_tools_module, "popen_managed", fake_popen)
     result = RepositoryTools(_cfg(tmp_path)).git_diff(str(repo))
 
     assert result["success"] is False
@@ -214,7 +221,7 @@ def test_git_diff_rejects_path_capture_cap(tmp_path: Path, monkeypatch):
             return CappedPathProcess()
         return real_popen(command, *args, **kwargs)
 
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(repo_tools_module, "popen_managed", fake_popen)
     result = RepositoryTools(_cfg(tmp_path)).git_diff(str(repo))
 
     assert result["success"] is False
@@ -254,7 +261,7 @@ def test_git_diff_rejects_stream_read_failure(tmp_path: Path, monkeypatch):
             return StreamFailureProcess()
         return real_popen(command, *args, **kwargs)
 
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(repo_tools_module, "popen_managed", fake_popen)
     result = RepositoryTools(_cfg(tmp_path)).git_diff(str(repo))
 
     assert result["success"] is False
@@ -268,6 +275,7 @@ def test_search_returns_bounded_retryable_result_after_accelerator_timeouts(tmp_
     (repo / ".git").mkdir()
     tools = RepositoryTools(_cfg(tmp_path))
     tools._rg = "rg"
+    tools.git_grep_timeout = 0.01
 
     calls = {"n": 0, "popen": 0, "killed": 0}
     def fake_run(*args, **kwargs):
@@ -289,11 +297,11 @@ def test_search_returns_bounded_retryable_result_after_accelerator_timeouts(tmp_
         calls["popen"] += 1
         return TimeoutProcess()
 
-    def fake_terminate_tree(_pid, grace_seconds=1.0):
+    def fake_terminate_tree(_pid, grace_seconds=1.0, process_handle=None):
         calls["killed"] += 1
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(repo_tools_module, "popen_managed", fake_popen)
     monkeypatch.setattr(repo_tools_module, "terminate_tree", fake_terminate_tree)
     monkeypatch.setattr(tools, "iter_files", lambda *_args: (_ for _ in ()).throw(AssertionError("unbounded scan")))
 
@@ -305,3 +313,48 @@ def test_search_returns_bounded_retryable_result_after_accelerator_timeouts(tmp_
     assert calls["n"] == 1
     assert calls["popen"] == 1
     assert calls["killed"] == 1
+
+
+def test_git_grep_timeout_reaps_owned_process(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    tools = RepositoryTools(_cfg(tmp_path))
+    tools.git_grep_timeout = 0.5
+    calls = []
+
+    class SlowOutput:
+        def __iter__(self):
+            time.sleep(0.6)
+            yield "src/example.py:1:needle\n"
+
+        def close(self):
+            calls.append("stdout.close")
+
+    class Process:
+        pid = 43210
+        stdout = SlowOutput()
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            calls.append(("wait", timeout))
+            self.returncode = -9
+            return self.returncode
+
+    process = Process()
+    monkeypatch.setattr(repo_tools_module, "popen_managed", lambda *args, **kwargs: process)
+    monkeypatch.setattr(
+        repo_tools_module,
+        "terminate_tree",
+        lambda pid, **kwargs: calls.append(("terminate", pid, kwargs.get("process_handle"))) or True,
+    )
+
+    matches, timed_out = tools._git_grep_candidates(repo, ["needle"], 5)
+
+    assert matches is None
+    assert timed_out is True
+    assert calls[0] == ("terminate", process.pid, process)
+    assert calls[1][0] == "wait"

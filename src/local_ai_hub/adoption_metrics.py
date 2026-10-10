@@ -5,10 +5,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from contextlib import closing
 import re
+import sqlite3
 import threading
+import time
 from typing import Any
 
-from .sqlite_support import connect_sqlite
+from .sqlite_support import connect_sqlite, is_busy_error
 
 
 _IDENTIFIER = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
@@ -56,15 +58,22 @@ class AdoptionMetricsStore:
         self._lock = threading.RLock()
         self._initialize()
 
-    def _connect(self):
-        return connect_sqlite(self.path, timeout_seconds=5.0)
+    def _connect(self, *, timeout_seconds: float = 5.0):
+        return connect_sqlite(self.path, timeout_seconds=timeout_seconds)
 
     def _initialize(self) -> None:
-        with closing(self._connect()) as con:
-            con.execute("PRAGMA journal_mode=WAL")
-            con.execute("CREATE TABLE IF NOT EXISTS daily_adoption (day TEXT NOT NULL, tool TEXT NOT NULL, action TEXT NOT NULL, intent TEXT NOT NULL, outcome TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', latency_bucket TEXT NOT NULL DEFAULT '', output_bucket TEXT NOT NULL DEFAULT '', count INTEGER NOT NULL, PRIMARY KEY(day, tool, action, intent, outcome, reason, latency_bucket, output_bucket))")
-            con.execute("CREATE TABLE IF NOT EXISTS adoption_actions (tool TEXT NOT NULL, action TEXT NOT NULL, last_seen_day TEXT NOT NULL, PRIMARY KEY(tool, action))")
-            con.commit()
+        for attempt in range(5):
+            try:
+                with closing(self._connect(timeout_seconds=0.5)) as con:
+                    con.execute("PRAGMA journal_mode=WAL")
+                    con.execute("CREATE TABLE IF NOT EXISTS daily_adoption (day TEXT NOT NULL, tool TEXT NOT NULL, action TEXT NOT NULL, intent TEXT NOT NULL, outcome TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', latency_bucket TEXT NOT NULL DEFAULT '', output_bucket TEXT NOT NULL DEFAULT '', count INTEGER NOT NULL, PRIMARY KEY(day, tool, action, intent, outcome, reason, latency_bucket, output_bucket))")
+                    con.execute("CREATE TABLE IF NOT EXISTS adoption_actions (tool TEXT NOT NULL, action TEXT NOT NULL, last_seen_day TEXT NOT NULL, PRIMARY KEY(tool, action))")
+                    con.commit()
+                return
+            except sqlite3.OperationalError as exc:
+                if not is_busy_error(exc) or attempt == 4:
+                    raise
+                time.sleep(min(0.02 * (2 ** attempt), 0.2))
 
     def record(self, tool: str, action: str, intent: str, outcome: str, *, fallback_reason: str | None = None, duration_ms: int | float | None = None, output_size: int | None = None, now: datetime | None = None, **unsafe: Any) -> None:
         if unsafe:

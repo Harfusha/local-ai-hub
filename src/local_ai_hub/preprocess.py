@@ -4,6 +4,7 @@ from .json_utils import dumps as json_dumps
 
 import copy
 import json
+import logging
 import os
 import shlex
 import sqlite3
@@ -26,6 +27,9 @@ from .project_config import (
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy
 from .worktrees import discover_worktree_roots
 from .process_utils import canonical_root, set_current_thread_priority
+
+
+logger = logging.getLogger(__name__)
 
 
 CARD_SCHEMA = {
@@ -486,10 +490,7 @@ class ProjectPreprocessor:
                         con.execute("DELETE FROM projects WHERE root=?", (root,))
                         con.execute("DELETE FROM file_refs WHERE root=?", (root,))
                         con.execute("DELETE FROM source_index WHERE root=?", (root,))
-                        try:
-                            con.execute("DELETE FROM source_fts WHERE root=?", (root,))
-                        except sqlite3.OperationalError:
-                            pass
+                        con.execute("DELETE FROM source_fts WHERE root=?", (root,))
                         con.execute("DELETE FROM module_cards WHERE root=?", (root,))
                         con.execute("DELETE FROM project_cards WHERE root=?", (root,))
                         con.execute("DELETE FROM hot_query_state WHERE root=?", (root,))
@@ -499,9 +500,10 @@ class ProjectPreprocessor:
                 con.execute("UPDATE projects SET status='queued' WHERE status='running'")
                 self._rebalance_processing_slots(con)
                 con.commit()
-        except Exception:
-            # Registry repair is an optimization only; a failure must not block startup.
-            pass
+        except (sqlite3.Error, OSError, RuntimeError) as exc:
+            # Registry repair is optional; keep startup available, but expose
+            # expected storage/filesystem failures without leaking project paths.
+            logger.warning("Preprocessing registry repair skipped (%s)", type(exc).__name__)
 
     def _requeue_available_external_indexes(self) -> None:
         """Wake completed projects whose cached optional index can now run."""
@@ -620,10 +622,11 @@ class ProjectPreprocessor:
         if self.reject_temp_projects:
             try:
                 temp = Path(tempfile.gettempdir()).resolve()
-                if path == temp or path.is_relative_to(temp):
-                    return True
-            except Exception:
-                pass
+            except (OSError, RuntimeError) as exc:
+                logger.warning("temporary project boundary unavailable (%s)", type(exc).__name__)
+                return True
+            if path == temp or path.is_relative_to(temp):
+                return True
         return False
 
     @staticmethod
@@ -681,7 +684,8 @@ class ProjectPreprocessor:
         try:
             cur = self._write_retry(lambda con: con.execute("UPDATE projects SET last_requested_at=? WHERE root=?", (now, resolved)))
             return bool(getattr(cur, "rowcount", 0))
-        except Exception:
+        except sqlite3.Error as exc:
+            logger.debug("preprocessor project touch failed error_type=%s", type(exc).__name__)
             return False
 
     def _watch_relevant(self, root: Path, changed: Path) -> str | None:
@@ -879,7 +883,8 @@ class ProjectPreprocessor:
                 "phase": str(row["phase"]), "project_config_digest": config_digest,
                 "created_at": time.time(),
             }
-        except Exception:
+        except (ImportError, OSError, OverflowError, sqlite3.Error, TypeError, ValueError) as exc:
+            logger.debug("watcher cache fingerprint unavailable error_type=%s", type(exc).__name__)
             return None
 
     def indexed_paths(self, root: str) -> list[str]:
@@ -1088,8 +1093,8 @@ class ProjectPreprocessor:
                                 (resolved, now, parent_resolved, rel, parent_hash),
                             )
                     con.commit()
-        except Exception:
-            pass
+        except (OSError, sqlite3.Error) as exc:
+            logger.warning("worktree file cache seed skipped (%s)", type(exc).__name__)
 
         # 2. Seed deterministic.sqlite3 (test_source_links, hotspots_cache)
         if self.deterministic is not None:
@@ -1107,8 +1112,8 @@ class ProjectPreprocessor:
                     )
                     det_con.commit()
                     stats["deterministic"] = 1
-            except Exception:
-                pass
+            except (OSError, sqlite3.Error) as exc:
+                logger.warning("worktree deterministic cache seed skipped (%s)", type(exc).__name__)
 
         # 3. Seed code-index.sqlite3 (files, symbols, refs, edges)
         if self.code_index is not None:
@@ -1136,8 +1141,8 @@ class ProjectPreprocessor:
                     )
                     ci_con.commit()
                     stats["code_index"] = 1
-            except Exception:
-                pass
+            except (OSError, sqlite3.Error) as exc:
+                logger.warning("worktree code-index cache seed skipped (%s)", type(exc).__name__)
 
         return stats
 
@@ -1236,10 +1241,7 @@ class ProjectPreprocessor:
             if purge_data:
                 con.execute("DELETE FROM file_refs WHERE root=?", (resolved,))
                 con.execute("DELETE FROM source_index WHERE root=?", (resolved,))
-                try:
-                    con.execute("DELETE FROM source_fts WHERE root=?", (resolved,))
-                except sqlite3.OperationalError:
-                    pass
+                con.execute("DELETE FROM source_fts WHERE root=?", (resolved,))
                 con.execute("DELETE FROM module_cards WHERE root=?", (resolved,))
                 con.execute("DELETE FROM project_cards WHERE root=?", (resolved,))
                 con.execute("DELETE FROM hot_query_state WHERE root=?", (resolved,))
@@ -1254,8 +1256,8 @@ class ProjectPreprocessor:
                         ci_con.execute("DELETE FROM refs WHERE root=?", (resolved,))
                         ci_con.execute("DELETE FROM edges WHERE root=?", (resolved,))
                         ci_con.commit()
-                except Exception:
-                    pass
+                except sqlite3.Error as exc:
+                    logger.warning("worktree code-index purge incomplete (%s)", type(exc).__name__)
             if self.deterministic is not None:
                 try:
                     with closing(self.deterministic._connect()) as det_con:
@@ -1263,8 +1265,8 @@ class ProjectPreprocessor:
                         det_con.execute("DELETE FROM facts WHERE root=?", (resolved,))
                         det_con.execute("DELETE FROM manifests WHERE root=?", (resolved,))
                         det_con.commit()
-                except Exception:
-                    pass
+                except sqlite3.Error as exc:
+                    logger.warning("worktree deterministic purge incomplete (%s)", type(exc).__name__)
         self._wake_all()
         return {"success": True, "removed": int(cur.rowcount or 0), "project": Path(resolved).name, "purged": purge_data}
 
@@ -1279,10 +1281,7 @@ class ProjectPreprocessor:
                     con.execute("DELETE FROM projects WHERE root=?", (r["root"],))
                     con.execute("DELETE FROM file_refs WHERE root=?", (r["root"],))
                     con.execute("DELETE FROM source_index WHERE root=?", (r["root"],))
-                    try:
-                        con.execute("DELETE FROM source_fts WHERE root=?", (r["root"],))
-                    except sqlite3.OperationalError:
-                        pass
+                    con.execute("DELETE FROM source_fts WHERE root=?", (r["root"],))
                     con.execute("DELETE FROM module_cards WHERE root=?", (r["root"],))
                     con.execute("DELETE FROM project_cards WHERE root=?", (r["root"],))
                     con.execute("DELETE FROM hot_query_state WHERE root=?", (r["root"],))
@@ -1299,8 +1298,8 @@ class ProjectPreprocessor:
                         ci_con.execute("DELETE FROM refs WHERE root=?", (p,))
                         ci_con.execute("DELETE FROM edges WHERE root=?", (p,))
                         ci_con.commit()
-                except Exception:
-                    pass
+                except sqlite3.Error as exc:
+                    logger.warning("deleted-project code-index purge incomplete (%s)", type(exc).__name__)
             if self.deterministic is not None:
                 try:
                     with closing(self.deterministic._connect()) as det_con:
@@ -1308,8 +1307,8 @@ class ProjectPreprocessor:
                         det_con.execute("DELETE FROM facts WHERE root=?", (p,))
                         det_con.execute("DELETE FROM manifests WHERE root=?", (p,))
                         det_con.commit()
-                except Exception:
-                    pass
+                except sqlite3.Error as exc:
+                    logger.warning("deleted-project deterministic purge incomplete (%s)", type(exc).__name__)
 
         self._wake_all()
         return {
@@ -1513,14 +1512,14 @@ class ProjectPreprocessor:
                         try:
                             with closing(self.code_index._connect()) as ci_con:
                                 ci_count = int(ci_con.execute("SELECT COUNT(*) FROM files WHERE root=?", (row["root"],)).fetchone()[0] or 0)
-                        except Exception:
-                            pass
+                        except sqlite3.Error as exc:
+                            logger.warning("Code-index status unavailable (%s)", type(exc).__name__)
                     if self.deterministic is not None:
                         try:
                             with closing(self.deterministic._connect()) as det_con:
                                 det_count = int(det_con.execute("SELECT COUNT(*) FROM files WHERE root=?", (row["root"],)).fetchone()[0] or 0)
-                        except Exception:
-                            pass
+                        except sqlite3.Error as exc:
+                            logger.warning("Deterministic-index status unavailable (%s)", type(exc).__name__)
                 else:
                     file_cards = total_files
                     hashed_files = total_files
@@ -1903,19 +1902,21 @@ class ProjectPreprocessor:
                     prev = 0
                     if current:
                         try:
-                            prev = int(json.loads(current["stats_json"] or "{}").get("consecutive_errors", 0))
-                        except Exception:
-                            pass
+                            saved_stats = json.loads(current["stats_json"] or "{}")
+                            if isinstance(saved_stats, dict):
+                                prev = int(saved_stats.get("consecutive_errors", 0))
+                        except (json.JSONDecodeError, TypeError, ValueError) as stats_exc:
+                            logger.warning("Preprocessing error counter reset (%s)", type(stats_exc).__name__)
                     errors = prev + 1
                     backoff = min(float(self.cfg.get("max_error_backoff_seconds", 300)), 2 ** min(errors, 8))
                     self._set_project(root, status="error", last_error=str(exc)[:1000], retry_after=time.time() + backoff, stats_json=json_dumps({"consecutive_errors": errors}))
                     if self.telemetry is not None:
                         try:
                             self.telemetry.record_error("preprocess", str((current or {}).get("phase") or "step"), exc, retryable=True, recovered=True)
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
+                        except Exception as telemetry_exc:
+                            logger.warning("Preprocessing telemetry write failed (%s)", type(telemetry_exc).__name__)
+                except Exception as record_exc:
+                    logger.error("Could not record preprocessing failure state (%s)", type(record_exc).__name__)
 
     def _gpu_loop(self) -> None:
         startup_delay = max(0.0, float(self.cfg.get("startup_delay_seconds", 2.5)))
@@ -2086,14 +2087,14 @@ class ProjectPreprocessor:
             for watch in list(watches.values()):
                 try:
                     observer.unschedule(watch)
-                except Exception:
-                    pass
+                except Exception as cleanup_exc:
+                    logger.debug("Filesystem watcher cleanup failed (%s)", type(cleanup_exc).__name__)
             watches.clear()
             try:
                 observer.stop()
                 observer.join(timeout=3.0)
-            except Exception:
-                pass
+            except Exception as cleanup_exc:
+                logger.debug("Filesystem watcher stop failed (%s)", type(cleanup_exc).__name__)
 
     def _step(self, row: dict[str, Any]) -> bool:
         # An in-flight step finishes as its existing durable checkpoint boundary.
@@ -2117,10 +2118,9 @@ class ProjectPreprocessor:
             project_phase, next_phase = optional_phase
             if not self._project_phase_allowed(root, project_phase):
                 if phase == "code_index" and self.code_index is not None:
-                    try:
-                        self.code_index.prune(root, [])
-                    except Exception:
-                        pass
+                    prune_result = self.code_index.prune(root, [])
+                    if not isinstance(prune_result, dict) or prune_result.get("success") is not True:
+                        raise RuntimeError("code index cleanup failed")
                 self._set_project(root, phase=next_phase)
                 return True
         if phase == "inventory":
@@ -2251,16 +2251,10 @@ class ProjectPreprocessor:
             for rel in deleted:
                 con.execute("DELETE FROM file_refs WHERE root=? AND path=?", (root, rel))
                 con.execute("DELETE FROM source_index WHERE root=? AND path=?", (root, rel))
-                try:
-                    con.execute("DELETE FROM source_fts WHERE root=? AND path=?", (root, rel))
-                except sqlite3.OperationalError:
-                    pass
+                con.execute("DELETE FROM source_fts WHERE root=? AND path=?", (root, rel))
             for rel in content_changed.difference(deleted):
                 con.execute("DELETE FROM source_index WHERE root=? AND path=?", (root, rel))
-                try:
-                    con.execute("DELETE FROM source_fts WHERE root=? AND path=?", (root, rel))
-                except sqlite3.OperationalError:
-                    pass
+                con.execute("DELETE FROM source_fts WHERE root=? AND path=?", (root, rel))
             for rel, (size, mtime_ns) in present.items():
                 existing = old.get(rel)
                 old_hash = str(existing["content_hash"] or "") if existing else ""
@@ -2434,10 +2428,7 @@ class ProjectPreprocessor:
             for path in deleted:
                 con.execute("DELETE FROM file_refs WHERE root=? AND path=?", (root, path))
                 con.execute("DELETE FROM source_index WHERE root=? AND path=?", (root, path))
-                try:
-                    con.execute("DELETE FROM source_fts WHERE root=? AND path=?", (root, path))
-                except sqlite3.OperationalError:
-                    pass
+                con.execute("DELETE FROM source_fts WHERE root=? AND path=?", (root, path))
             for path, item in new_files.items():
                 existing = old.get(path)
                 stat_changed = force or path in changed
@@ -2501,16 +2492,13 @@ class ProjectPreprocessor:
                      AND NOT EXISTS (SELECT 1 FROM source_index AS s WHERE s.root = ? AND s.path = file_refs.path)""",
                 (root, now, root, root),
             )
-            try:
-                con.execute(
-                    """INSERT INTO source_fts(root, path, content)
-                       SELECT s.root, s.path, s.path || char(10) || s.text
-                       FROM source_index s
-                       WHERE s.root = ? AND NOT EXISTS (SELECT 1 FROM source_fts f WHERE f.root = ? AND f.path = s.path)""",
-                    (root, root),
-                )
-            except sqlite3.OperationalError:
-                pass
+            con.execute(
+                """INSERT INTO source_fts(root, path, content)
+                   SELECT s.root, s.path, s.path || char(10) || s.text
+                   FROM source_index s
+                   WHERE s.root = ? AND NOT EXISTS (SELECT 1 FROM source_fts f WHERE f.root = ? AND f.path = s.path)""",
+                (root, root),
+            )
             con.commit()
 
     def _step_hash(self, row: dict[str, Any]) -> bool:
@@ -2581,16 +2569,13 @@ class ProjectPreprocessor:
                      AND NOT EXISTS (SELECT 1 FROM source_index AS s WHERE s.root = ? AND s.path = file_refs.path)""",
                 (root, now, root, root),
             )
-            try:
-                con.execute(
-                    """INSERT INTO source_fts(root, path, content)
-                       SELECT s.root, s.path, s.path || char(10) || s.text
-                       FROM source_index s
-                       WHERE s.root = ? AND NOT EXISTS (SELECT 1 FROM source_fts f WHERE f.root = ? AND f.path = s.path)""",
-                    (root, root),
-                )
-            except sqlite3.OperationalError:
-                pass
+            con.execute(
+                """INSERT INTO source_fts(root, path, content)
+                   SELECT s.root, s.path, s.path || char(10) || s.text
+                   FROM source_index s
+                   WHERE s.root = ? AND NOT EXISTS (SELECT 1 FROM source_fts f WHERE f.root = ? AND f.path = s.path)""",
+                (root, root),
+            )
             # Do not mark RAG complete from another worktree. Each worktree has a
             # separate path namespace, so it still needs its own chunk rows. The
             # RAG step reuses global content-hash embeddings without re-embedding.
@@ -2649,17 +2634,11 @@ class ProjectPreprocessor:
         if self.deterministic is not None and bool(self.cfg.get("skip_rag_for_deterministic_declarative", True)):
             for item in pending:
                 rel = str(item["path"])
-                try:
-                    needed = bool(self.deterministic.semantic_needed(root, rel))
-                except Exception:
-                    needed = True
+                needed = bool(self.deterministic.semantic_needed(root, rel))
                 if not needed:
                     skipped.append(rel)
         if skipped:
-            try:
-                self.rag.remove_paths("__preprocess__", workspace, skipped)
-            except Exception:
-                pass
+            self.rag.remove_paths("__preprocess__", workspace, skipped)
             now = time.time()
             with self._db_lock, closing(self._connect()) as con:
                 con.executemany(
@@ -2702,10 +2681,7 @@ class ProjectPreprocessor:
             if not ((Path(root) / rel).resolve(strict=False)).is_file()
         ]
         if missing:
-            try:
-                self.rag.remove_paths("__preprocess__", workspace, missing)
-            except Exception:
-                pass
+            self.rag.remove_paths("__preprocess__", workspace, missing)
             placeholders = ",".join("?" for _ in missing)
             with self._db_lock, closing(self._connect()) as con:
                 con.execute(
@@ -2716,13 +2692,10 @@ class ProjectPreprocessor:
                     f"DELETE FROM source_index WHERE root=? AND path IN ({placeholders})",
                     (root, *missing),
                 )
-                try:
-                    con.execute(
-                        f"DELETE FROM source_fts WHERE root=? AND path IN ({placeholders})",
-                        (root, *missing),
-                    )
-                except sqlite3.OperationalError:
-                    pass
+                con.execute(
+                    f"DELETE FROM source_fts WHERE root=? AND path IN ({placeholders})",
+                    (root, *missing),
+                )
                 con.commit()
         if processed:
             now = time.time()
@@ -2768,22 +2741,19 @@ class ProjectPreprocessor:
         def _lex_one(item: sqlite3.Row) -> tuple[str, str, str]:
             rel = str(item["path"])
             path = (base / rel).resolve(strict=False)
-            try:
-                path.relative_to(base)
-                file_hash, lines = self.repo_tools._read_snapshot(path)
-                text = "\n".join(lines)
-                if self.deterministic is not None and bool(self.cfg.get("compact_lexical_for_deterministic_declarative", True)):
-                    try:
-                        compact = self.deterministic.lexical_projection(
-                            root, rel, int(self.cfg.get("deterministic_lexical_max_chars", 12000))
-                        )
-                        if compact is not None:
-                            text = compact
-                    except Exception:
-                        pass
-                return rel, str(item["content_hash"]), text
-            except Exception:
-                return rel, str(item["content_hash"]), ""
+            path.relative_to(base)
+            file_hash, lines = self.repo_tools._read_snapshot(path)
+            text = "\n".join(lines)
+            if self.deterministic is not None and bool(self.cfg.get("compact_lexical_for_deterministic_declarative", True)):
+                try:
+                    compact = self.deterministic.lexical_projection(
+                        root, rel, int(self.cfg.get("deterministic_lexical_max_chars", 12000))
+                    )
+                    if compact is not None:
+                        text = compact
+                except sqlite3.Error as exc:
+                    logger.warning("Deterministic lexical projection unavailable (%s)", type(exc).__name__)
+            return rel, str(item["content_hash"]), text
 
         lex_results = list(self._cpu_pool.map(_lex_one, pending))
 
@@ -2794,13 +2764,10 @@ class ProjectPreprocessor:
                 [(root, rel, chash, text, now) for rel, chash, text in lex_results],
             )
             for rel, _, text in lex_results:
-                try:
-                    con.execute("DELETE FROM source_fts WHERE root=? AND path=?", (root, rel))
-                    # Include path in indexed content so filename/class/module searches
-                    # can narrow candidates without a full repository scan.
-                    con.execute("INSERT INTO source_fts(root,path,content) VALUES(?,?,?)", (root, rel, rel + "\n" + text))
-                except sqlite3.OperationalError:
-                    pass
+                con.execute("DELETE FROM source_fts WHERE root=? AND path=?", (root, rel))
+                # Include path in indexed content so filename/class/module searches
+                # can narrow candidates without a full repository scan.
+                con.execute("INSERT INTO source_fts(root,path,content) VALUES(?,?,?)", (root, rel, rel + "\n" + text))
             con.commit()
         with self._stats_lock:
             self._stats["lexical_files"] = self._stats.get("lexical_files", 0) + len(lex_results)
@@ -2831,10 +2798,7 @@ class ProjectPreprocessor:
         def remove_refs(con: sqlite3.Connection) -> None:
             con.executemany("DELETE FROM file_refs WHERE root=? AND path=?", [(root, path) for path in missing])
             con.executemany("DELETE FROM source_index WHERE root=? AND path=?", [(root, path) for path in missing])
-            try:
-                con.executemany("DELETE FROM source_fts WHERE root=? AND path=?", [(root, path) for path in missing])
-            except sqlite3.OperationalError:
-                pass
+            con.executemany("DELETE FROM source_fts WHERE root=? AND path=?", [(root, path) for path in missing])
             con.execute("DELETE FROM module_cards WHERE root=?", (root,))
             con.execute("DELETE FROM project_cards WHERE root=?", (root,))
             con.execute("DELETE FROM hot_query_state WHERE root=?", (root,))
@@ -2849,8 +2813,8 @@ class ProjectPreprocessor:
                     for table in ("files", "symbols", "refs", "edges") if index is self.code_index else ("files", "facts"):
                         con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", [(root, path) for path in missing])
                     con.commit()
-            except Exception:
-                pass
+            except (sqlite3.Error, OSError) as exc:
+                logger.warning("Could not prune deleted-file derived index (%s)", type(exc).__name__)
         with self._stats_lock:
             self._stats["missing_files_pruned"] = self._stats.get("missing_files_pruned", 0) + len(missing)
         return len(missing)
@@ -2885,12 +2849,11 @@ class ProjectPreprocessor:
         ]
         pruned_generations = getattr(self, "_code_index_pruned_generations", set())
         if generation_key not in pruned_generations:
-            try:
-                self.code_index.prune(root, [p for p,_ in refs])
-                pruned_generations.add(generation_key)
-                self._code_index_pruned_generations = self._bound_generation_set(pruned_generations)
-            except Exception:
-                pass
+            prune_result = self.code_index.prune(root, [p for p,_ in refs])
+            if not isinstance(prune_result, dict) or prune_result.get("success") is not True:
+                raise RuntimeError("code index prune failed")
+            pruned_generations.add(generation_key)
+            self._code_index_pruned_generations = self._bound_generation_set(pruned_generations)
         try:
             select_pending = getattr(self.code_index, "files_needing_reindex", None)
             if callable(select_pending):
@@ -2913,8 +2876,8 @@ class ProjectPreprocessor:
             for p, digest in pending:
                 try:
                     progressed += int(bool(self.code_index.update_file(root, p, digest).get("success")))
-                except Exception:
-                    pass
+                except Exception as index_exc:
+                    logger.warning("Code-index file update failed (%s)", type(index_exc).__name__)
         with self._stats_lock:
             self._stats["code_index_files"] += progressed
         self._record_progress(root, len(pending))
@@ -2944,12 +2907,9 @@ class ProjectPreprocessor:
         generation_key = (root, int(row.get("generation", 0) or 0))
         pruned_generations = getattr(self, "_deterministic_pruned_generations", set())
         if generation_key not in pruned_generations:
-            try:
-                self.deterministic.prune(root, [p for p, _ in refs])
-                pruned_generations.add(generation_key)
-                self._deterministic_pruned_generations = self._bound_generation_set(pruned_generations)
-            except Exception:
-                pass
+            self.deterministic.prune(root, [p for p, _ in refs])
+            pruned_generations.add(generation_key)
+            self._deterministic_pruned_generations = self._bound_generation_set(pruned_generations)
         try:
             with closing(self.deterministic._connect()) as det_con:
                 existing = dict(det_con.execute("SELECT path, content_hash FROM files WHERE root=?", (root,)).fetchall())
@@ -2959,16 +2919,16 @@ class ProjectPreprocessor:
         if not pending:
             try:
                 self.deterministic.refresh_manifests(root)
-            except Exception:
-                pass
+            except Exception as index_exc:
+                logger.warning("Deterministic manifest refresh failed (%s)", type(index_exc).__name__)
             try:
                 self.deterministic.precompute_test_mappings(root)
-            except Exception:
-                pass
+            except Exception as index_exc:
+                logger.warning("Deterministic test-map refresh failed (%s)", type(index_exc).__name__)
             try:
                 self.deterministic.find_hotspots(root, days=30, limit=20)
-            except Exception:
-                pass
+            except Exception as index_exc:
+                logger.warning("Deterministic hotspot refresh failed (%s)", type(index_exc).__name__)
             self._set_project(root, phase="serena")
             return True
 
@@ -2983,8 +2943,8 @@ class ProjectPreprocessor:
             for p, digest in pending:
                 try:
                     progressed += int(bool(self.deterministic.update_file(root, p, digest).get("success")))
-                except Exception:
-                    pass
+                except Exception as index_exc:
+                    logger.warning("Deterministic file update failed (%s)", type(index_exc).__name__)
         with self._stats_lock:
             self._stats["deterministic_files"] += progressed
         self._record_progress(root, len(pending))
@@ -3134,13 +3094,15 @@ class ProjectPreprocessor:
                         (resolved, expression, max(1, min(int(limit), 64))),
                     ).fetchall()
                 paths.extend(str(r[0]) for r in rows)
-            except sqlite3.OperationalError:
+            except sqlite3.OperationalError as fts_exc:
+                logger.debug("Preprocessing FTS candidate search unavailable (%s)", type(fts_exc).__name__)
                 pass
         # Semantic cards cover vocabulary mismatch and FTS-unavailable builds.
         try:
             cards = self.lookup(resolved, query, limit=max(5, min(int(limit), 16)))
             paths.extend(str(x.get("path")) for x in cards.get("files", []) if x.get("path"))
-        except Exception:
+        except Exception as lookup_exc:
+            logger.debug("Semantic card candidate lookup unavailable (%s)", type(lookup_exc).__name__)
             pass
         out: list[str] = []
         seen: set[str] = set()
@@ -3557,7 +3519,8 @@ class ProjectPreprocessor:
         for x in modules:
             try:
                 module_data.append({"module": x["module"], **json.loads(x["card_json"] or "{}")})
-            except Exception:
+            except (KeyError, json.JSONDecodeError, TypeError, ValueError) as card_exc:
+                logger.warning("Malformed module card skipped (%s)", type(card_exc).__name__)
                 pass
         project_data = None
         bg_ready = bool(self.background_gpu and self.background_gpu.ready())
@@ -3622,7 +3585,8 @@ class ProjectPreprocessor:
                     q_str = str(q).strip()
                     if q_str and len(q_str) <= 120 and len(q_str.split()) <= 15 and "\n" not in q_str:
                         queries.append(q_str)
-            except Exception:
+            except Exception as learner_exc:
+                logger.debug("Learned hot-query lookup unavailable (%s)", type(learner_exc).__name__)
                 pass
         for q in self._hot_queries():
             if q not in queries:
@@ -3694,11 +3658,7 @@ class ProjectPreprocessor:
         if not self.scheduler.background_allowed() or self.scheduler.foreground_busy():
             return False
 
-        profile = {}
-        try:
-            profile = self._project_profile(root, self.services.repo_profile(root))
-        except Exception:
-            pass
+        profile = self._project_profile(root, self.services.repo_profile(root))
         validation_cmds = profile.get("validation_commands", [])
         if not validation_cmds:
             completed_at = time.time()
@@ -3724,7 +3684,7 @@ class ProjectPreprocessor:
             return True
 
         import subprocess
-        from .process_utils import hidden_run_kwargs, terminate_tree
+        from .process_utils import hidden_run_kwargs, popen_managed, terminate_tree
         proc = None
         try:
             if isinstance(cmd_value, (list, tuple)):
@@ -3744,7 +3704,7 @@ class ProjectPreprocessor:
                     ]
             if not argv or not argv[0]:
                 raise ValueError("diagnostic command must contain an executable")
-            proc = subprocess.Popen(
+            proc = popen_managed(
                 argv, shell=False, cwd=root,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                 encoding="utf-8", errors="replace",
@@ -3756,10 +3716,10 @@ class ProjectPreprocessor:
             error_count = preview.lower().count("error")
         except subprocess.TimeoutExpired:
             if proc is not None:
-                terminate_tree(proc.pid)
+                terminate_tree(proc.pid, process_handle=proc)
                 try:
                     proc.wait(timeout=2.0)
-                except Exception:
+                except (subprocess.TimeoutExpired, OSError):
                     pass
             exit_code = -1
             preview = "diagnostic timed out after 15s"
@@ -3767,12 +3727,12 @@ class ProjectPreprocessor:
         except Exception as exc:
             if proc is not None:
                 try:
-                    terminate_tree(proc.pid)
-                except Exception:
-                    pass
+                    terminate_tree(proc.pid, process_handle=proc)
+                except Exception as cleanup_exc:
+                    logger.warning("Diagnostic process-tree cleanup failed (%s)", type(cleanup_exc).__name__)
                 try:
                     proc.wait(timeout=2.0)
-                except Exception:
+                except (subprocess.TimeoutExpired, OSError):
                     pass
             exit_code = -1
             preview = f"diagnostic failed: {exc}"
@@ -3782,13 +3742,13 @@ class ProjectPreprocessor:
                 if proc.stdout and not proc.stdout.closed:
                     try:
                         proc.stdout.close()
-                    except Exception:
-                        pass
+                    except OSError as cleanup_exc:
+                        logger.debug("Diagnostic stdout close failed (%s)", type(cleanup_exc).__name__)
                 if proc.stderr and not proc.stderr.closed:
                     try:
                         proc.stderr.close()
-                    except Exception:
-                        pass
+                    except OSError as cleanup_exc:
+                        logger.debug("Diagnostic stderr close failed (%s)", type(cleanup_exc).__name__)
 
         with self._db_lock, closing(self._connect()) as con:
             con.execute(
@@ -3824,14 +3784,15 @@ class ProjectPreprocessor:
                     con.execute("PRAGMA optimize")
                     con.execute("PRAGMA wal_checkpoint(PASSIVE)")
                     con.commit()
-            except sqlite3.DatabaseError:
+            except sqlite3.DatabaseError as maintenance_exc:
+                logger.warning("Preprocessing database maintenance skipped (%s)", type(maintenance_exc).__name__)
                 pass
             for component in (self.code_index, self.deterministic):
                 try:
                     if component is not None and hasattr(component, "optimize"):
                         component.optimize()
-                except Exception:
-                    pass
+                except Exception as maintenance_exc:
+                    logger.debug("Derived-index optimization skipped (%s)", type(maintenance_exc).__name__)
             self.cleanup_orphaned_indexes()
             self._last_db_maintenance = now
             with self._stats_lock:

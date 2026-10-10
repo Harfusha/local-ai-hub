@@ -4,6 +4,7 @@ import asyncio
 import json
 from types import SimpleNamespace
 from pathlib import Path
+from urllib.parse import quote
 
 import mcp.types as mcp_types
 
@@ -30,7 +31,8 @@ class ApiBackend:
         self.calls = []
 
     def post(self, path, payload, **kwargs):
-        self.calls.append((path, payload, kwargs))
+        if path != "/api/telemetry/tool-accounting":
+            self.calls.append((path, payload, kwargs))
         return self.response
 
     def get(self, path, **kwargs):
@@ -240,14 +242,16 @@ def _assert_candidate_import_origin():
     )
 
 
-def test_http_agent_task_rejects_unknown_action_without_store_mutation(tmp_path):
+def test_http_agent_task_rejects_unknown_action_without_store_mutation(tmp_path, monkeypatch):
     _assert_candidate_import_origin()
+    monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args, **_kwargs: None)
     state_store = AgentStateStore(tmp_path / "agent-state.sqlite3")
     tasks = TaskStore(state_store)
-    app = SimpleNamespace(agent_tasks=tasks, config={"security": {}})
+    app = SimpleNamespace(agent_state=state_store, agent_tasks=tasks, config={"security": {}})
 
     status, result = _direct_post(
-        app, "/api/agent-state/tasks", {"action": "delete_all", "task_id": "task-1"}
+        app, "/api/agent-state/tasks",
+        {"action": "delete_all", "task_id": "task-1", "root": str(tmp_path.resolve())},
     )
 
     assert status == 400
@@ -261,6 +265,11 @@ def test_local_ai_coord_task_rollback_restores_and_persists_previous_checkpoint(
     monkeypatch, tmp_path
 ):
     _assert_candidate_import_origin()
+    monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        mcp_server, "load_operational_mode",
+        lambda *_args, **_kwargs: SimpleNamespace(mode="active", revision=1, degraded=False),
+    )
     db_path = tmp_path / "agent-state.sqlite3"
     state_store = AgentStateStore(db_path)
     tasks = TaskStore(state_store)
@@ -269,7 +278,11 @@ def test_local_ai_coord_task_rollback_restores_and_persists_previous_checkpoint(
     target.write_text("baseline", encoding="utf-8")
     tasks.create(
         GoalContract(goal="exercise rollback"),
-        ScopeContext(task_id=task_id),
+        ScopeContext(
+            repository_id=str(tmp_path.resolve()),
+            task_id=task_id,
+            session_id="api-token-default",
+        ),
         task_id=task_id,
     )
     tasks.checkpoint(
@@ -287,7 +300,7 @@ def test_local_ai_coord_task_rollback_restores_and_persists_previous_checkpoint(
             state_data={"file_snapshots": {str(target): "changed"}},
         ),
     )
-    app = SimpleNamespace(agent_tasks=tasks, config={"security": {}})
+    app = SimpleNamespace(agent_state=state_store, agent_tasks=tasks, config={"security": {}})
     monkeypatch.setattr(http_server, "APP", app)
     monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
 
@@ -302,7 +315,10 @@ def test_local_ai_coord_task_rollback_restores_and_persists_previous_checkpoint(
     monkeypatch.setattr(mcp_server.CLIENT, "post", post_without_socket)
     tool_result = asyncio.run(
         mcp_server.mcp.call_tool(
-            "local_ai_coord", {"action": "task_rollback", "task_id": task_id}
+            "local_ai_coord", {
+                "action": "task_rollback", "task_id": task_id,
+                "root": str(tmp_path.resolve()),
+            }
         )
     )
     if isinstance(tool_result, tuple):
@@ -313,7 +329,7 @@ def test_local_ai_coord_task_rollback_restores_and_persists_previous_checkpoint(
     assert isinstance(content, mcp_types.TextContent)
     result = json.loads(content.text)
 
-    assert result["success"] is True
+    assert result["success"] is True, result
     assert target.read_text(encoding="utf-8") == "baseline"
     reopened = TaskStore(AgentStateStore(db_path))
     persisted = reopened.get(task_id)
@@ -329,6 +345,10 @@ def test_local_ai_coord_feature_disabled_rejects_valid_action_before_backend_dis
         def __getattr__(self, name):
             raise AssertionError(f"disabled local_ai_coord reached CLIENT.{name}")
 
+    monkeypatch.setattr(
+        mcp_server, "load_operational_mode",
+        lambda *_args, **_kwargs: SimpleNamespace(mode="active", revision=1, degraded=False),
+    )
     monkeypatch.setattr(mcp_server.FEATURES, "coord", False)
     monkeypatch.setattr(mcp_server, "CLIENT", NeverDispatch())
     tool_result = asyncio.run(
@@ -345,7 +365,7 @@ def test_local_ai_coord_feature_disabled_rejects_valid_action_before_backend_dis
     result = json.loads(content.text)
 
     assert result["success"] is False
-    assert result["unsupported"] is True
+    assert result.get("unsupported") is True, result
     assert result["error"] == "local_ai_coord is disabled in configuration"
 
 
@@ -456,20 +476,14 @@ def test_local_ai_coord_memory_promote_forwards_record_identity(monkeypatch, tmp
     }]
 
 
-def test_local_ai_coord_memory_reap_forwards_scope_and_record(monkeypatch, tmp_path):
+def test_local_ai_coord_memory_reap_is_private(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
-    record = {"reason": "expired"}
     backend = _prepare_coord_rpc(monkeypatch)
-    result = mcp_server.local_ai_coord(action='memory_reap', root=root, record=record, record_id="memory-expired", scope="project", scope_id="project-7", tenant="tenant-2")
-    assert result["success"] is True
-    calls = backend.calls
-    assert calls == [{
-        "action": "memory_reap", "record": record, "record_id": "memory-expired",
-        "target_scope": "", "approver": "", "key": "", "value": "",
-        "query": "", "root": root, "scope": "project", "scope_id": "project-7",
-        "task_id": "", "session_id": "", "clone_id": "", "worktree_id": "",
-        "branch": "", "repository_id": "", "tenant": "tenant-2",
-    }]
+    result = mcp_server.local_ai_coord(action='memory_reap', root=root)
+    assert result["success"] is False
+    assert result["terminal"] is True
+    assert "Unknown local_ai_coord action 'memory_reap'" in result["error"]
+    assert backend.calls == []
 
 
 def test_local_ai_coord_negative_knowledge_find_forwards_query_scope(monkeypatch, tmp_path):
@@ -504,14 +518,14 @@ def test_local_ai_coord_negative_knowledge_record_forwards_verified_fix(monkeypa
     )]
 
 
-def test_local_ai_coord_pubsub_poll_forwards_topic_and_subscriber(monkeypatch, tmp_path):
+def test_local_ai_coord_pubsub_poll_forwards_topic_and_cursor(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
     backend = _prepare_coord_rpc(monkeypatch)
     result = mcp_server.local_ai_coord(action='pubsub_poll', root=root, key="build-status", approver="worker-3", ttl_seconds=9)
     assert result["success"] is True
     calls = backend.calls
     assert calls == [{
-        "action": "pubsub_poll", "topic": "build-status", "subscriber": "worker-3",
+        "action": "pubsub_poll", "topic": "build-status", "after_seq": None,
         "limit": 9, "root": root,
     }]
 
@@ -529,45 +543,14 @@ def test_local_ai_coord_pubsub_publish_forwards_topic_message_and_publisher(monk
     }]
 
 
-def test_local_ai_coord_relation_find_forwards_source_and_target(monkeypatch):
-    record = {"confidence": 0.9}
+def test_local_ai_coord_relation_actions_are_private(monkeypatch):
     backend = _prepare_coord_rpc(monkeypatch)
-    result = mcp_server.local_ai_coord(action='relation_find', key="service-a", value="service-b", reason="depends_on", ttl_seconds=2.5, record=record, max_tokens=4)
-    assert result["success"] is True
-    calls = backend.calls
-    assert calls == [{
-        "action": "relation_find", "source_entity": "service-a",
-        "relation": "depends_on", "target_entity": "service-b", "weight": 2.5,
-        "metadata": record, "start_entity": "service-a", "max_depth": 4,
-        "limit": 4,
-    }]
-
-
-def test_local_ai_coord_relation_record_forwards_relation_metadata(monkeypatch):
-    record = {"owner": "agent-6"}
-    backend = _prepare_coord_rpc(monkeypatch)
-    result = mcp_server.local_ai_coord(action='relation_record', task_id="task-6", target_scope="repo-2", status="blocks", ttl_seconds=3, record=record)
-    assert result["success"] is True
-    calls = backend.calls
-    assert calls == [{
-        "action": "relation_record", "source_entity": "task-6",
-        "relation": "blocks", "target_entity": "repo-2", "weight": 3.0,
-        "metadata": record, "start_entity": "task-6", "max_depth": 2,
-        "limit": 50,
-    }]
-
-
-def test_local_ai_coord_relation_traverse_forwards_depth_and_limit(monkeypatch):
-    backend = _prepare_coord_rpc(monkeypatch)
-    result = mcp_server.local_ai_coord(action='relation_traverse', query="component-x", value="component-y", max_tokens=5)
-    assert result["success"] is True
-    calls = backend.calls
-    assert calls == [{
-        "action": "relation_traverse", "source_entity": "component-x",
-        "relation": "relates_to", "target_entity": "component-y", "weight": 1.0,
-        "metadata": None, "start_entity": "component-x", "max_depth": 5,
-        "limit": 5,
-    }]
+    for action in ("relation_record", "relation_find", "relation_traverse"):
+        result = mcp_server.local_ai_coord(action=action)
+        assert result["success"] is False
+        assert result["terminal"] is True
+        assert f"Unknown local_ai_coord action '{action}'" in result["error"]
+    assert backend.calls == []
 
 
 def test_local_ai_coord_release_forwards_lease_identity(monkeypatch):
@@ -590,14 +573,15 @@ def test_local_ai_coord_renew_forwards_lease_identity_and_ttl(monkeypatch):
     )]
 
 
-def test_local_ai_coord_swarm_cancel_forwards_reason(monkeypatch):
+def test_local_ai_coord_swarm_cancel_forwards_reason(monkeypatch, tmp_path):
     backend = _prepare_coord_api(monkeypatch)
-    result = mcp_server.local_ai_coord(action='swarm_cancel', task_id="swarm-52", reason="scope closed")
+    root = str(tmp_path.resolve())
+    result = mcp_server.local_ai_coord(action='swarm_cancel', root=root, task_id="swarm-52", reason="scope closed")
     assert result["success"] is True
     calls = backend.calls
     assert calls == [(
         "/api/agent-state/swarm/cancel",
-        {"swarm_id": "swarm-52", "reason": "scope closed"},
+        {"swarm_id": "swarm-52", "reason": "scope closed", "root": root},
         {"timeout": mcp_server._timeout("quick")},
     )]
 
@@ -618,38 +602,41 @@ def test_local_ai_coord_swarm_dispatch_forwards_goal_paths_and_test_command(monk
     )]
 
 
-def test_local_ai_coord_swarm_list_forwards_state_filter(monkeypatch):
+def test_local_ai_coord_swarm_list_forwards_state_filter(monkeypatch, tmp_path):
     backend = _prepare_coord_api(monkeypatch)
-    result = mcp_server.local_ai_coord(action='swarm_list', status="active")
+    root = str(tmp_path.resolve())
+    result = mcp_server.local_ai_coord(action='swarm_list', root=root, status="active")
     assert result["success"] is True
     calls = backend.calls
     assert calls == [(
-        "/api/agent-state/swarm?state=active", None,
+        f"/api/agent-state/swarm?root={quote(root)}&state=active", None,
         {"timeout": mcp_server._timeout("quick")},
     )]
 
 
-def test_local_ai_coord_swarm_status_forwards_swarm_identity(monkeypatch):
+def test_local_ai_coord_swarm_status_forwards_swarm_identity(monkeypatch, tmp_path):
     backend = _prepare_coord_api(monkeypatch)
-    result = mcp_server.local_ai_coord(action='swarm_status', task_id="swarm-53")
+    root = str(tmp_path.resolve())
+    result = mcp_server.local_ai_coord(action='swarm_status', root=root, task_id="swarm-53")
     assert result["success"] is True
     calls = backend.calls
     assert calls == [(
-        "/api/agent-state/swarm/swarm-53", None,
+        f"/api/agent-state/swarm/swarm-53?root={quote(root)}", None,
         {"timeout": mcp_server._timeout("quick")},
     )]
 
 
-def test_local_ai_coord_swarm_step_forwards_role_action_and_payload(monkeypatch):
+def test_local_ai_coord_swarm_step_forwards_role_action_and_payload(monkeypatch, tmp_path):
     payload = {"patch": "diff --git a/a b/a"}
     backend = _prepare_coord_api(monkeypatch)
-    result = mcp_server.local_ai_coord(action='swarm_step', task_id="swarm-54", target_scope="Reviewer", query="approve_patch", record=payload)
+    root = str(tmp_path.resolve())
+    result = mcp_server.local_ai_coord(action='swarm_step', root=root, task_id="swarm-54", target_scope="Reviewer", query="approve_patch", record=payload)
     assert result["success"] is True
     calls = backend.calls
     assert calls == [(
         "/api/agent-state/swarm/step",
         {"swarm_id": "swarm-54", "role": "Reviewer",
-         "action": "approve_patch", "payload": payload},
+         "action": "approve_patch", "payload": payload, "root": root},
         {"timeout": mcp_server._timeout("quick")},
     )]
 
@@ -729,6 +716,47 @@ def test_local_ai_coord_task_sync_forwards_export_and_import_payloads(monkeypatc
     ]
 
 
+def test_local_ai_coord_task_sync_prefers_explicit_after_seq(monkeypatch):
+    backend = ApiBackend({"success": True, "summary": "forwarded"})
+    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
+    monkeypatch.setattr(mcp_server, "CLIENT", backend)
+
+    result = mcp_server.local_ai_coord(
+        action="task_sync", status="export", key="stream-60", after_seq=7,
+        ttl_seconds=3, max_tokens=12,
+    )
+
+    assert result["success"] is True
+    assert backend.calls[0][1]["after_seq"] == 7
+
+
+def test_local_ai_coord_task_sync_preserves_explicit_zero_cursor(monkeypatch):
+    backend = ApiBackend({"success": True, "summary": "forwarded"})
+    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
+    monkeypatch.setattr(mcp_server, "CLIENT", backend)
+
+    result = mcp_server.local_ai_coord(
+        action="task_sync", status="export", key="stream-61", after_seq=0,
+        ttl_seconds=3, max_tokens=12,
+    )
+
+    assert result["success"] is True
+    assert backend.calls[0][1]["after_seq"] == 0
+
+
+def test_local_ai_coord_task_sync_normalizes_import_status(monkeypatch):
+    backend = ApiBackend({"success": True, "summary": "forwarded"})
+    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
+    monkeypatch.setattr(mcp_server, "CLIENT", backend)
+
+    result = mcp_server.local_ai_coord(
+        action="task_sync", status=" IMPORT ", record=[{"seq": 8}]
+    )
+
+    assert result["success"] is True
+    assert backend.calls[0][1] == {"action": "import", "events": [{"seq": 8}]}
+
+
 def test_local_ai_coord_task_zombie_reap_forwards_recovery_flag(monkeypatch):
     backend = _prepare_coord_api(monkeypatch)
     result = mcp_server.local_ai_coord(action='task_zombie_reap')
@@ -775,6 +803,7 @@ def test_local_ai_coord_worktree_release_forwards_path_and_branch_policy(monkeyp
     assert calls == [{
         "action": "worktree_release", "root": root,
         "worktree_path": "C:/worktrees/coord", "delete_branch": False,
+        "worktree_id": "",
         "branch": "feature/coord",
     }]
 

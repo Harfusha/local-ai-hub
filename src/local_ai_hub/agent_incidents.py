@@ -218,6 +218,29 @@ def _extract_root_cause_and_fix(error_msg: str, tool_name: str = "", timed_out: 
     return "", "", 0.0
 
 
+def _send_incident_webhooks(urls: list[str], payload: bytes) -> None:
+    import logging
+    import urllib.request
+
+    logger = logging.getLogger(__name__)
+    for url in urls:
+        try:
+            request = urllib.request.Request(
+                url,
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "User-Agent": "LocalAIHub-IncidentHook/1.0",
+                },
+            )
+            with urllib.request.urlopen(request, timeout=3.0) as response:
+                response.read()
+        except Exception as exc:
+            # Keep delivery best-effort without exposing URLs, payloads or
+            # untrusted exception text in logs.
+            logger.warning("Incident webhook delivery failed (%s)", type(exc).__name__)
+
+
 class IncidentStore:
     def __init__(self, state_store: AgentStateStore) -> None:
         self.state_store = state_store
@@ -246,14 +269,7 @@ class IncidentStore:
             return
         payload = json_dumps(record_dict, default=str).encode("utf-8")
         def _send() -> None:
-            import urllib.request
-            for u in urls:
-                try:
-                    req = urllib.request.Request(u, data=payload, headers={"Content-Type": "application/json", "User-Agent": "LocalAIHub-IncidentHook/1.0"})
-                    with urllib.request.urlopen(req, timeout=3.0) as resp:
-                        resp.read()
-                except Exception:
-                    pass
+            _send_incident_webhooks(urls, payload)
         threading.Thread(target=_send, daemon=True).start()
 
     def _init_table(self) -> None:
@@ -645,20 +661,36 @@ class IncidentStore:
         self,
         fingerprint: IncidentFingerprint,
         state_revision: str,
+        *,
+        root: str | None = None,
+        tenant: str | None = None,
     ) -> RetryDecision:
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return RetryDecision(action="proceed", reason="incident store disabled")
         self._init_table()
+        scope_clause = ""
+        scope_params: tuple[Any, ...] = ()
+        if root is not None or tenant is not None:
+            if root is None or tenant is None:
+                return RetryDecision(action="stop", reason="incident scope unavailable")
+            repository_key = _incident_scope_key("repository", root)
+            tenant_key = _incident_scope_key("tenant", tenant)
+            if not repository_key or not tenant_key:
+                return RetryDecision(action="stop", reason="incident scope unavailable")
+            scope_clause = " AND repository_key = ? AND tenant_key = ?"
+            scope_params = (repository_key, tenant_key)
+
         def _fetch_decision() -> Any:
             with closing(connect_sqlite(self.state_store.db_path)) as con:
                 cur = con.execute(
-                    """
+                    f"""
                     SELECT state_revision, verified_fix, confidence, resolved, ignored
                     FROM agent_incidents
                     WHERE operation_class = ? AND error_class = ? AND signature_hash = ?
+                      {scope_clause}
                     ORDER BY updated_at DESC, incident_id DESC LIMIT 1
                     """,
-                    (fingerprint.operation_class, fingerprint.error_class, fingerprint.signature_hash),
+                    (fingerprint.operation_class, fingerprint.error_class, fingerprint.signature_hash, *scope_params),
                 )
                 return cur.fetchone()
 

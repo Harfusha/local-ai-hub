@@ -151,3 +151,43 @@ def test_disabled_tool_accounting_reports_telemetry_disabled(monkeypatch):
             "rejection_reasons": {"telemetry_disabled": 1},
         },
     )]
+
+
+def test_tool_accounting_binds_payload_tenant_to_authenticated_scope(monkeypatch):
+    recorded = []
+
+    class Telemetry:
+        def record_tool_accounting(self, event):
+            recorded.append(event)
+            return True
+
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path = "/api/telemetry/tool-accounting"
+    handler.headers = {"Content-Type": "application/json"}
+    handler._authorization_tenant = "tenant-a"
+    handler._begin_trace = lambda path: None
+    handler._require_authorized = lambda: True
+    handler._read_json = lambda: {
+        "events": [
+            {"tenant": "tenant-a", "tool": "allowed"},
+            {"tenant": "tenant-b", "tool": "spoofed"},
+            {"tool": "implicit"},
+        ]
+    }
+    handler._validate_payload = lambda path, payload: None
+    responses = []
+    handler._send = lambda status, data: responses.append((status, data))
+    monkeypatch.setattr(http_server, "APP", type("App", (), {"telemetry": Telemetry()})())
+
+    handler.do_POST()
+
+    assert responses == [(
+        200,
+        {
+            "success": True,
+            "accepted": 2,
+            "rejected": 1,
+            "rejection_reasons": {"tenant_binding_mismatch": 1},
+        },
+    )]
+    assert [event["tenant"] for event in recorded] == ["tenant-a", "tenant-a"]

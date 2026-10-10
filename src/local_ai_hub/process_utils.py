@@ -15,6 +15,7 @@ import subprocess
 import tempfile
 import time
 import uuid
+import weakref
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
@@ -698,38 +699,34 @@ def process_executable(pid: int) -> str | None:
         return None
 
 
-def terminate_tree(
+def _terminate_tree_unlocked(
     pid: int,
     *,
     process_group: int | None = None,
     expected_identity: Mapping[str, Any] | None = None,
     grace_seconds: float = 5.0,
+    process_handle: subprocess.Popen[Any] | None = None,
 ) -> bool:
     if pid <= 0:
         return True
     if os.name == "nt":
+        if process_handle is None or getattr(process_handle, "pid", None) != pid:
+            return False
+        job_handle = getattr(process_handle, "_local_ai_job_handle", None)
+        if job_handle:
+            return _release_process_job(process_handle)
+        # A Popen handle safely targets its owned process, but does not prove
+        # ownership of descendants. Never replace it with CTRL_BREAK/taskkill
+        # against a numeric PID that may already have been recycled.
         try:
-            # Send CTRL_BREAK_EVENT first so process groups can run cleanup handlers.
-            # Only send to a process group (positive pid); fall through on any error.
-            try:
-                os.kill(pid, signal.CTRL_BREAK_EVENT)
-                deadline = time.monotonic() + max(0.5, min(grace_seconds, 5.0))
-                while time.monotonic() < deadline:
-                    if not pid_alive(pid):
-                        return True
-                    time.sleep(0.05)
-            except (OSError, NotImplementedError):
-                pass
-            # Fall back to force-kill the whole process tree.
-            cp = subprocess.run(
-                ["taskkill", "/PID", str(pid), "/T", "/F"],
-                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                timeout=max(2.0, grace_seconds), check=False,
-                **hidden_run_kwargs(),
-            )
-            return cp.returncode in {0, 128}
+            if process_handle.poll() is None:
+                process_handle.kill()
+                process_handle.wait(timeout=max(0.1, min(grace_seconds, 5.0)))
+        except (OSError, subprocess.TimeoutExpired):
+            return False
         except Exception:
-            return not pid_alive(pid)
+            return False
+        return False
     # A process group is the caller's explicit tree-ownership capability. Never
     # fall back to the leader PID: it may have exited and been reused while the
     # group still contains descendants.
@@ -804,6 +801,47 @@ def terminate_tree(
     return False
 
 
+def terminate_tree(
+    pid: int,
+    *,
+    process_group: int | None = None,
+    expected_identity: Mapping[str, Any] | None = None,
+    grace_seconds: float = 5.0,
+    process_handle: subprocess.Popen[Any] | None = None,
+) -> bool:
+    if process_handle is not None:
+        if expected_identity is None:
+            expected_identity = getattr(process_handle, "_local_ai_process_identity", None)
+        if process_group is None:
+            process_group = getattr(process_handle, "_local_ai_process_group", None)
+    if os.name == "nt" or process_group is None or pid <= 0:
+        return _terminate_tree_unlocked(
+            pid,
+            process_group=process_group,
+            expected_identity=expected_identity,
+            grace_seconds=grace_seconds,
+            process_handle=process_handle,
+        )
+
+    # Keep the Popen child unreaped while killpg uses its numeric PGID. If a
+    # concurrent poll/wait reaps the leader, the PGID can be recycled between
+    # the identity check and the group signal. Missing guard means fail closed.
+    if process_handle is None or getattr(process_handle, "pid", None) != pid:
+        return False
+    wait_lock = getattr(process_handle, "_waitpid_lock", None)
+    if wait_lock is None:
+        return False
+    with wait_lock:
+        if getattr(process_handle, "returncode", None) is not None:
+            return False
+        return _terminate_tree_unlocked(
+            pid,
+            process_group=process_group,
+            expected_identity=expected_identity,
+            grace_seconds=grace_seconds,
+        )
+
+
 _default_terminate_tree = terminate_tree
 
 
@@ -876,19 +914,81 @@ def _release_process_job(process: subprocess.Popen[Any]) -> bool:
     for _ in range(2):
         if close_job_object(job_handle):
             process._local_ai_job_handle = None
+            finalizer = getattr(process, "_local_ai_job_finalizer", None)
+            if finalizer is not None and finalizer.alive:
+                finalizer.detach()
             return True
         terminate_job_object(job_handle)
         if close_job_object(job_handle):
             process._local_ai_job_handle = None
+            finalizer = getattr(process, "_local_ai_job_finalizer", None)
+            if finalizer is not None and finalizer.alive:
+                finalizer.detach()
             return True
     return False
 
 
-def run_hidden(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+def popen_managed(argv: Sequence[str], **kwargs: Any) -> subprocess.Popen[Any]:
+    """Start a hidden child with owned process-tree cleanup on Windows."""
     opts = dict(kwargs)
     text = bool(opts.get("text", False))
     for key, value in hidden_run_kwargs(text=text, new_group=True).items():
         opts.setdefault(key, value)
+
+    job_handle = None
+    if os.name == "nt":
+        required_flags = windows_creationflags(new_group=True)
+        job_handle = create_job_object_kill_on_close()
+        if not job_handle:
+            raise OSError("Unable to create a kill-on-close Windows Job Object")
+        # Keep the child suspended until Job Object ownership is established.
+        opts["creationflags"] = int(opts.get("creationflags", 0)) | required_flags | 0x00000004
+    else:
+        if "start_new_session" not in opts and "process_group" not in opts:
+            opts["start_new_session"] = True
+        elif opts.get("start_new_session") is False and "process_group" not in opts:
+            opts["process_group"] = 0
+
+    process: subprocess.Popen[Any] | None = None
+    try:
+        process = subprocess.Popen([str(value) for value in argv], **opts)
+        if os.name == "nt":
+            process._local_ai_job_handle = job_handle
+            process._local_ai_job_finalizer = weakref.finalize(
+                process, close_job_object, job_handle
+            )
+            if not assign_process_to_job(job_handle, process.pid):
+                raise OSError("Unable to assign suspended process to Windows Job Object")
+            if not _resume_suspended_process(process):
+                raise OSError("Unable to resume suspended Windows process")
+        else:
+            process._local_ai_process_identity = process_identity(process.pid)
+            requested_group = opts.get("process_group")
+            if requested_group is not None:
+                process._local_ai_process_group = (
+                    process.pid if int(requested_group) == 0 else int(requested_group)
+                )
+            elif opts.get("start_new_session"):
+                process._local_ai_process_group = process.pid
+        return process
+    except BaseException:
+        if process is not None:
+            try:
+                process.kill()
+            except OSError:
+                pass
+            try:
+                process.wait(timeout=_POST_TERMINATION_DRAIN_SECONDS)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            _release_process_job(process)
+        elif job_handle:
+            close_job_object(job_handle)
+        raise
+
+
+def run_hidden(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+    opts = dict(kwargs)
     timeout = opts.pop("timeout", 60.0)
     cancel_event = opts.pop("cancel_event", None)
     cancel_grace_seconds = float(opts.pop("cancel_grace_seconds", _CANCEL_GRACE_SECONDS))
@@ -905,18 +1005,8 @@ def run_hidden(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProces
         opts["stdout"] = subprocess.PIPE
         opts["stderr"] = subprocess.PIPE
 
-    job_handle = None
-    if os.name == "nt":
-        required_flags = windows_creationflags(new_group=True)
-        job_handle = create_job_object_kill_on_close()
-        if not job_handle:
-            raise OSError("Unable to create a kill-on-close Windows Job Object")
-        opts["creationflags"] = (
-            int(opts.get("creationflags", 0)) | required_flags | 0x00000004
-        )  # CREATE_SUSPENDED prevents child creation before job assignment.
-    else:
-        # Keep explicit session ownership, but isolate the group unless the caller
-        # selected one so timeout cleanup can still terminate this child's descendants.
+    if os.name != "nt":
+        # Keep group ownership visible to timeout/cancellation cleanup below.
         if "start_new_session" not in opts and "process_group" not in opts:
             opts["start_new_session"] = True
         elif opts.get("start_new_session") is False and "process_group" not in opts:
@@ -925,31 +1015,7 @@ def run_hidden(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProces
     command = [str(x) for x in argv]
     if cancel_event is not None and cancel_event.is_set():
         raise ProcessCancelledError(command)
-    process: subprocess.Popen[Any] | None = None
-    try:
-        process = subprocess.Popen(command, **opts)
-        if os.name != "nt":
-            process._local_ai_process_identity = process_identity(process.pid)
-        if job_handle:
-            process._local_ai_job_handle = job_handle
-            if not assign_process_to_job(job_handle, process.pid):
-                raise OSError("Unable to assign suspended process to Windows Job Object")
-            if not _resume_suspended_process(process):
-                raise OSError("Unable to resume suspended Windows process")
-    except BaseException:
-        if process is not None:
-            try:
-                process.kill()
-            except OSError:
-                pass
-            try:
-                process.wait(timeout=_POST_TERMINATION_DRAIN_SECONDS)
-            except (OSError, subprocess.TimeoutExpired):
-                pass
-            _release_process_job(process)
-        elif job_handle:
-            close_job_object(job_handle)
-        raise
+    process = popen_managed(command, **opts)
     try:
         if cancel_event is None:
             stdout, stderr = process.communicate(input=input_data, timeout=timeout)
@@ -1014,7 +1080,7 @@ def run_hidden(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProces
         raise
 
     returncode = process.wait()
-    if job_handle and not _release_process_job(process):
+    if getattr(process, "_local_ai_job_handle", None) and not _release_process_job(process):
         cleanup = _terminate_and_drain(process)
         if getattr(process, "_local_ai_job_handle", None):
             error = OSError("Unable to close Windows Job Object after process completion")
@@ -1137,7 +1203,7 @@ def _request_tree_cleanup(
         if cleanup_kwargs.get("process_group") is None and terminate_tree is _default_terminate_tree:
             return False
     try:
-        return bool(terminate_tree(process.pid, **cleanup_kwargs))
+        return bool(terminate_tree(process.pid, process_handle=process, **cleanup_kwargs))
     except Exception:
         return False
 

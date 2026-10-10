@@ -1090,7 +1090,7 @@ def test_rootless_global_memory_is_forced_into_principal_scope(monkeypatch):
     assert responses[0][0] == 400
 
 
-def test_debug_trace_request_contains_metadata_only(tmp_path):
+def test_debug_trace_request_keeps_complete_paths_and_ordinary_context(tmp_path):
     raw_root = str(tmp_path / "sensitive-project")
     captured = http_server.Handler._safe_debug_trace_request({
         "root": raw_root,
@@ -1099,9 +1099,13 @@ def test_debug_trace_request_contains_metadata_only(tmp_path):
         "context": {"repo_root": raw_root, "repository_id": raw_root, "tenant": "nested-tenant"},
     })
     serialized = json.dumps(captured)
-    assert raw_root not in serialized
-    assert "sensitive-tenant" not in serialized
-    assert captured == {"capture_status": "metadata_only", "field_count": 4}
+    assert raw_root in serialized
+    assert "sensitive-tenant" in serialized
+    assert captured["root"] == raw_root
+    assert captured["target_root"] == raw_root
+    assert captured["context"]["repo_root"] == raw_root
+    assert captured["context"]["repository_id"] == raw_root
+    assert captured["tenant"] == "sensitive-tenant"
 
 
 def test_agent_state_event_endpoints_fail_closed_without_scoping(monkeypatch):
@@ -1125,7 +1129,9 @@ def test_agent_state_status_does_not_return_global_task_ids(monkeypatch):
 
     responses = _dispatch_get(monkeypatch, "/api/status?detail=agent_state", app)
 
-    assert responses[0][0] == 403
+    assert responses[0][0] == 200
+    assert responses[0][1]["active_tasks"] == []
+    assert responses[0][1]["tasks_count"] == 0
     assert "foreign-task" not in json.dumps(responses[0][1])
 
 
@@ -1275,7 +1281,7 @@ def test_legacy_memory_denies_shared_workspace_read_write_actions(tmp_path, monk
     assert root_responses[0][0] == 403
 
 
-def test_debug_trace_captures_metadata_without_prompt_or_source_content():
+def test_debug_trace_captures_prompt_source_and_complete_project_path():
     captured = http_server.Handler._safe_debug_trace_request({
         "source": "private source body",
         "prompt": "private prompt text",
@@ -1287,9 +1293,13 @@ def test_debug_trace_captures_metadata_without_prompt_or_source_content():
     })
 
     serialized = json.dumps(captured)
-    assert "private" not in serialized
-    assert "C:/private/repository" not in serialized
-    assert captured == {"capture_status": "metadata_only", "field_count": 7}
+    assert "private source body" in serialized
+    assert "private prompt text" in serialized
+    assert "private query" in serialized
+    assert "private transcript" in serialized
+    assert "private code" in serialized
+    assert "C:/private/repository" in serialized
+    assert captured["context"]["repository_id"] == "C:/private/repository"
 
 
 @pytest.mark.parametrize("action", ["reap", "reap_expired", "zombie_reap", "recover_zombie_tasks"])
@@ -1693,7 +1703,382 @@ def test_unscoped_agent_state_post_routes_deny_before_store_access(monkeypatch, 
     assert calls == []
 
 
-def test_debug_trace_never_persists_raw_error_or_exception_text(monkeypatch):
+@pytest.mark.parametrize("path", [
+    "/api/code/ast_rename",
+    "/api/ast_rename",
+    "/api/code/batch_replace",
+    "/api/repo/batch_replace",
+])
+def test_unscoped_file_mutation_routes_deny_before_service_access(monkeypatch, path):
+    calls = []
+    services = SimpleNamespace(
+        ast_rename=lambda *args, **kwargs: calls.append((args, kwargs)),
+        batch_replace=lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    app = SimpleNamespace(
+        config={"security": {"api_token": "mutation-token-long"}},
+        services=services,
+        deterministic=SimpleNamespace(),
+        recovery=None,
+    )
+    responses = _dispatch_post(monkeypatch, path, {"root": ""}, app)
+
+    assert responses[0][0] == 403
+    assert calls == []
+
+
+@pytest.mark.parametrize("path", [
+    "/api/git/status",
+    "/api/repo/dead_code",
+    "/api/code/find_symbol",
+    "/api/worktrees",
+    "/api/preprocess/status",
+])
+def test_unscoped_repository_get_routes_deny_before_service_access(monkeypatch, path):
+    calls = []
+    app = SimpleNamespace(
+        config={"security": {"api_token": "repo-token-long"}},
+        services=SimpleNamespace(
+            git_status=lambda *args, **kwargs: calls.append((args, kwargs)),
+            dead_code=lambda *args, **kwargs: calls.append((args, kwargs)),
+            code_find_symbol=lambda *args, **kwargs: calls.append((args, kwargs)),
+        ),
+        deterministic=SimpleNamespace(),
+        recovery=None,
+    )
+
+    responses = _dispatch_get(monkeypatch, path, app)
+
+    assert responses[0][0] == 400
+    assert responses[0][1]["error_code"] == "root_required"
+    assert calls == []
+
+
+def test_repository_get_rejects_conflicting_duplicate_tenants(monkeypatch, tmp_path):
+    calls = []
+    app = SimpleNamespace(
+        config={"security": {}},
+        services=SimpleNamespace(dead_code=lambda *args, **kwargs: calls.append((args, kwargs))),
+        deterministic=SimpleNamespace(),
+        recovery=None,
+    )
+    path = f"/api/dead_code?root={tmp_path}&tenant=tenant-a&tenant=tenant-b"
+    responses = _dispatch_get(monkeypatch, path, app)
+
+    assert responses[0][0] == 403
+    assert responses[0][1]["error_code"] == "tenant_binding_mismatch"
+    assert calls == []
+
+
+def test_logs_tail_does_not_disclose_state_path(monkeypatch, tmp_path):
+    app = SimpleNamespace(
+        config={"server": {"state_dir": str(tmp_path)}},
+        recovery=None,
+    )
+    responses = _dispatch_get(monkeypatch, "/api/logs/tail?lines=10", app)
+
+    assert responses[0][0] == 200
+    assert "path" not in responses[0][1]
+    assert str(tmp_path) not in str(responses[0][1])
+
+
+def test_get_internal_error_does_not_disclose_exception(monkeypatch):
+    log_calls = []
+    app = SimpleNamespace(
+        config={"security": {}},
+        services=SimpleNamespace(run_doctor=lambda: (_ for _ in ()).throw(RuntimeError("private traceback payload"))),
+        logger=SimpleNamespace(error=lambda *args, **kwargs: log_calls.append((args, kwargs))),
+        recovery=None,
+    )
+    responses = _dispatch_get(monkeypatch, "/api/doctor", app)
+
+    assert responses[0][0] == 500
+    assert responses[0][1]["error_code"] == "internal_error"
+    assert "private traceback payload" not in str(responses[0][1])
+    assert "private traceback payload" not in str(log_calls)
+    assert log_calls[0][0] == ("GET request failed error_type=%s", "RuntimeError")
+    assert "/api/doctor" not in str(log_calls)
+
+
+def test_post_internal_error_does_not_disclose_exception(monkeypatch):
+    log_calls = []
+    app = SimpleNamespace(
+        config={"security": {}},
+        services=SimpleNamespace(run_doctor=lambda: (_ for _ in ()).throw(RuntimeError("private post payload"))),
+        logger=SimpleNamespace(error=lambda *args, **kwargs: log_calls.append((args, kwargs))),
+        recovery=None,
+    )
+    responses = _dispatch_post(monkeypatch, "/api/doctor", {}, app)
+
+    assert responses[0][0] == 500
+    assert responses[0][1]["error_code"] == "internal_error"
+    assert "private post payload" not in str(responses[0][1])
+    assert "private post payload" not in str(log_calls)
+    assert log_calls[0][0] == ("POST request failed error_type=%s", "RuntimeError")
+    assert "/api/doctor" not in str(log_calls)
+
+
+def test_config_route_exposes_file_labels_without_host_paths(monkeypatch, tmp_path):
+    config_path = tmp_path / "private" / "hub.toml"
+    override_path = tmp_path / "private" / "runtime-overrides.toml"
+    app = SimpleNamespace(
+        config={
+            "security": {"api_token": "secret-token"},
+            "_config_path": str(config_path),
+            "_runtime_override_path": str(override_path),
+        },
+        recovery=None,
+    )
+    responses = _dispatch_get(monkeypatch, "/api/config", app)
+
+    assert responses[0][0] == 200
+    payload = responses[0][1]
+    assert payload["config"]["security"]["api_token"] == "***configured***"
+    assert payload["config_path"] == "hub.toml"
+    assert payload["runtime_override_path"] == "runtime-overrides.toml"
+    assert str(tmp_path) not in str(payload)
+
+
+def test_config_update_reset_exposes_file_label_without_host_path(monkeypatch, tmp_path):
+    app = SimpleNamespace(
+        config={
+            "security": {},
+            "features": {"dashboard": True},
+            "_config_path": str(tmp_path / "hub.toml"),
+        },
+        recovery=None,
+    )
+    override_path = tmp_path / "private" / "runtime-overrides.toml"
+    monkeypatch.setattr(http_server, "save_runtime_overrides", lambda *args, **kwargs: override_path)
+    responses = _dispatch_post(monkeypatch, "/api/config/update", {"action": "reset"}, app)
+
+    assert responses[0][0] == 200
+    assert responses[0][1]["runtime_override_path"] == "runtime-overrides.toml"
+    assert str(tmp_path) not in str(responses[0][1])
+
+
+def test_config_update_error_does_not_disclose_host_path(monkeypatch, tmp_path):
+    log_calls = []
+    app = SimpleNamespace(
+        config={"security": {}, "_config_path": str(tmp_path / "hub.toml")},
+        logger=SimpleNamespace(error=lambda *args, **kwargs: log_calls.append((args, kwargs))),
+        recovery=None,
+    )
+    private_path = str(tmp_path / "private" / "runtime-overrides.toml")
+
+    def fail_write(*args, **kwargs):
+        raise OSError(f"permission denied: {private_path}")
+
+    monkeypatch.setattr(http_server, "save_runtime_overrides", fail_write)
+    responses = _dispatch_post(
+        monkeypatch,
+        "/api/config/update",
+        {"settings": {"features.dashboard": False}},
+        app,
+    )
+
+    assert responses[0][0] == 400
+    assert responses[0][1]["error_code"] == "config_update_rejected"
+    assert responses[0][1]["error"] == "configuration update rejected"
+    assert private_path not in str(responses[0][1])
+    assert private_path not in str(log_calls)
+    assert log_calls[0][0] == ("config update rejected error_type=%s", "OSError")
+
+
+@pytest.mark.parametrize("path", [
+    "/api/git/status",
+    "/api/repo/state",
+    "/api/code/find_symbol",
+    "/api/code-intelligence/query",
+    "/api/reachability_dead_code",
+    "/api/callers",
+])
+def test_unscoped_repository_routes_deny_before_service_access(monkeypatch, path):
+    calls = []
+    services = SimpleNamespace(
+        git_status=lambda *args, **kwargs: calls.append((args, kwargs)),
+        code_find_symbol=lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+    app = SimpleNamespace(
+        config={"security": {"api_token": "repo-token-long"}},
+        services=services,
+        deterministic=SimpleNamespace(),
+        external_tools=SimpleNamespace(query=lambda *args, **kwargs: calls.append((args, kwargs))),
+        recovery=None,
+    )
+    responses = _dispatch_post(monkeypatch, path, {}, app)
+
+    assert responses[0][0] == 403
+    assert calls == []
+
+
+@pytest.mark.parametrize("path", [
+    "/api/repo/cross_repo_contract",
+    "/api/cross_repo_contract",
+    "/api/cross_project_graph",
+    "/api/cross_project_symbols",
+    "/api/cross_project_impact",
+])
+def test_cross_repository_routes_require_explicit_roots(monkeypatch, path):
+    calls = []
+    app = SimpleNamespace(
+        config={"security": {"api_token": "cross-repo-token-long"}},
+        services=SimpleNamespace(cross_repo_contract=lambda *args, **kwargs: calls.append(args)),
+        deterministic=SimpleNamespace(cross_project_graph=lambda *args: calls.append(args)),
+        preprocessor=SimpleNamespace(status=lambda: {"projects": [{"root": "C:/untrusted"}]}),
+        recovery=None,
+    )
+    responses = _dispatch_post(monkeypatch, path, {}, app)
+
+    assert responses[0][0] == 400
+    assert calls == []
+
+
+def test_cross_project_graph_get_requires_explicit_roots(monkeypatch):
+    calls = []
+    app = SimpleNamespace(
+        config={"security": {"api_token": "cross-repo-token-long"}},
+        deterministic=SimpleNamespace(cross_project_graph=lambda *args: calls.append(args)),
+        preprocessor=SimpleNamespace(status=lambda: (_ for _ in ()).throw(AssertionError("global fallback"))),
+        recovery=None,
+    )
+    responses = _dispatch_get(monkeypatch, "/api/cross_project_graph", app)
+
+    assert responses[0][0] == 400
+    assert responses[0][1]["error_code"] == "roots_required"
+    assert calls == []
+
+
+def test_cross_project_graph_get_forwards_bound_roots(monkeypatch):
+    calls = []
+    app = SimpleNamespace(
+        config={"security": {"api_token": "cross-repo-token-long"}},
+        deterministic=SimpleNamespace(
+            cross_project_graph=lambda roots: calls.append(roots) or {"success": True}
+        ),
+        recovery=None,
+    )
+
+    def bind_root(_handler, root, *_args, **_kwargs):
+        canonical = str(root).replace("\\", "/").rstrip("/")
+        _handler._authorization_root = canonical
+        _handler._authorization_tenant = "tenant-cross"
+        return canonical, "tenant-cross"
+
+    monkeypatch.setattr(http_server.Handler, "_bind_root_tenant", bind_root)
+    responses = _dispatch_get(
+        monkeypatch,
+        "/api/cross_project_graph?roots=C:/frontend&roots=C:/backend",
+        app,
+    )
+
+    assert responses[0][0] == 200
+    assert calls == [["C:/frontend", "C:/backend"]]
+
+
+def test_cross_project_impact_rejects_origin_outside_explicit_roots(monkeypatch):
+    calls = []
+    app = SimpleNamespace(
+        config={"security": {"api_token": "cross-repo-token-long"}},
+        deterministic=SimpleNamespace(cross_project_impact=lambda *args, **kwargs: calls.append(args)),
+        recovery=None,
+    )
+    def bind_root(_handler, root, *_args, **_kwargs):
+        canonical = str(root).replace("\\", "/")
+        _handler._authorization_root = canonical
+        _handler._authorization_tenant = "tenant-cross"
+        return canonical, "tenant-cross"
+
+    monkeypatch.setattr(http_server.Handler, "_bind_root_tenant", bind_root)
+    responses = _dispatch_post(
+        monkeypatch,
+        "/api/cross_project_impact",
+        {"roots": ["C:/backend", "C:/frontend"], "origin_root": "C:/untrusted", "symbol": "Api"},
+        app,
+    )
+
+    assert responses[0][0] == 400
+    assert calls == []
+
+
+def test_authenticated_learning_route_dispatches_candidate_mutation(monkeypatch):
+    token = "learning-token-long"
+    saved = []
+    learning = SimpleNamespace(
+        state_store=SimpleNamespace(enabled=True),
+        create_candidate=lambda candidate: saved.append(candidate) or candidate,
+    )
+    app = SimpleNamespace(
+        config={
+            "security": {
+                "api_token": token,
+                "api_token_permissions": ["write"],
+                "api_token_tenant": "tenant-learning",
+            }
+        },
+        agent_learning=learning,
+        recovery=None,
+    )
+    monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args, **_kwargs: None)
+    responses = _dispatch_post(
+        monkeypatch,
+        "/api/agent-state/learning",
+        {
+            "action": "create_candidate",
+            "candidate": {
+                "name": "bounded-candidate",
+                "baseline_version": "base",
+                "candidate_version": "next",
+            },
+        },
+        app,
+        headers={"X-LocalAI-Token": token},
+        authenticate=True,
+    )
+
+    assert responses[0][0] == 200
+    assert len(saved) == 1
+    assert saved[0].name == "bounded-candidate"
+
+
+def test_authenticated_incident_find_requires_and_forwards_root_scope(monkeypatch, tmp_path):
+    token = "incident-token-long"
+    calls = []
+    incidents = SimpleNamespace(
+        state_store=SimpleNamespace(enabled=True),
+        find_negative_knowledge=lambda query, limit, root, tenant: calls.append(
+            (query, limit, root, tenant)
+        ) or [],
+    )
+    app = SimpleNamespace(
+        config={
+            "security": {
+                "api_token": token,
+                "api_token_permissions": ["write"],
+                "api_token_tenant": "tenant-incidents",
+                "allowed_roots": [str(tmp_path)],
+                "tenant_derivation_key": token,
+            }
+        },
+        agent_incidents=incidents,
+        recovery=None,
+    )
+    monkeypatch.setattr(http_server, "_http_mode_gate_error", lambda *_args, **_kwargs: None)
+    responses = _dispatch_post(
+        monkeypatch,
+        "/api/agent-state/incidents",
+        {"action": "find", "query": "TimeoutError", "root": str(tmp_path)},
+        app,
+        headers={"X-LocalAI-Token": token},
+        authenticate=True,
+    )
+
+    assert responses[0][0] == 200
+    assert calls and calls[0][0] == "timeouterror"
+    assert calls[0][2] == str(tmp_path.resolve())
+
+
+def test_debug_trace_keeps_user_facing_error_but_not_internal_exception_text(monkeypatch):
     finished = []
     app = SimpleNamespace(debug_traces=SimpleNamespace(
         finish=lambda *args, **kwargs: finished.append((args, kwargs)) or True,
@@ -1710,7 +2095,7 @@ def test_debug_trace_never_persists_raw_error_or_exception_text(monkeypatch):
     )
 
     stored = json.dumps(finished)
-    assert "private response exception text" not in stored
+    assert "private response exception text" in stored
     assert "private traceback and source prompt" not in stored
     assert "traceback" not in stored.lower()
 
@@ -2254,7 +2639,7 @@ def test_hub_pid_resolver_emits_only_identity_verified_owner(tmp_path, monkeypat
     assert resolver._owned_hub_pid("unused-config.toml") is None
 
 
-def test_async_job_trace_persists_metadata_only_request_and_response(tmp_path, monkeypatch):
+def test_async_job_trace_persists_complete_input_and_output_when_enabled(tmp_path, monkeypatch):
     from local_ai_hub import async_jobs
     from local_ai_hub.async_jobs import AsyncJobManager
     from local_ai_hub.debug_traces import DebugTraceStore
@@ -2279,7 +2664,8 @@ def test_async_job_trace_persists_metadata_only_request_and_response(tmp_path, m
         artifacts=Artifacts(),
         executor=lambda _action, _payload, _tenant: {
             "success": True,
-            "answer": "private response text",
+            "answer": "ordinary response text",
+            "api_key": "api-secret",
         },
         debug_traces=traces,
     )
@@ -2293,9 +2679,9 @@ def test_async_job_trace_persists_metadata_only_request_and_response(tmp_path, m
         detail = traces.detail(submitted["trace_id"])
         serialized = json.dumps(detail, ensure_ascii=False)
 
-        assert detail["session"]["request"] == {"capture_status": "metadata_only", "field_count": 2}
-        assert "private prompt text" not in serialized
-        assert "private source text" not in serialized
-        assert "private response text" not in serialized
+        assert "private prompt text" in serialized
+        assert "private source text" in serialized
+        assert "ordinary response text" in serialized
+        assert "api-secret" in serialized
     finally:
         manager.close()

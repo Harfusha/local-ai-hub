@@ -1,6 +1,6 @@
 # hub-audit-repairs committed synchronization — 2026-10-06
 
-Scope: C:/Users/Adam/.codex/worktrees/hub-audit-repairs/.local-ai-hub only.
+Scope: local hub-audit-repairs worktree only.
 Branch: codex/sync-hub-audit-repairs-20261006.
 Native fallback explicitly authorized after the prior terminal Hub failure; no Hub retry, polling, new worktree/chat, stash, push, root-checkout edit or master-ref write.
 

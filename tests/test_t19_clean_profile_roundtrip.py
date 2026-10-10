@@ -65,7 +65,7 @@ def _roundtrip(source_root: Path, scratch: Path) -> dict:
         setup.configure_agents(install, Path(sys.executable), None, cfg, include_companion=False)
         docs = [codex / "AGENTS.md", home / ".claude/CLAUDE.md", home / ".gemini/GEMINI.md"]
         old_policy = (install / "generated/agent-policy.md").read_text(encoding="utf-8")
-        assert "`qwen2.5-coder:3b` for ordinary tasks" in old_policy
+        assert "`qwen2.5-coder:3b` for ordinary tasks" not in old_policy
         user_prompt = "\nUser rule: preserve this fixture-owned instruction.\n"
         for doc in docs:
             assert generator.generate_global_policy(cfg) in doc.read_text(encoding="utf-8")
@@ -104,8 +104,8 @@ def _roundtrip(source_root: Path, scratch: Path) -> dict:
         assert all(path.read_bytes() == content for path, content in retained.items())
         assert not stale_schema.exists()
         new_policy = (install / "generated/agent-policy.md").read_text(encoding="utf-8")
-        assert new_policy != old_policy
-        assert "`qwen3.5:9b` for ordinary tasks" in new_policy
+        assert new_policy == old_policy
+        assert "`qwen3.5:9b` for ordinary tasks" not in new_policy
         assert "`qwen2.5-coder:3b` for ordinary tasks" not in new_policy
         for doc in docs:
             text = doc.read_text(encoding="utf-8")

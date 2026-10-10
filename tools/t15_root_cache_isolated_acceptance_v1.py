@@ -10,7 +10,7 @@ import time
 from pathlib import Path
 
 
-ROOT = Path(r"C:\Users\Adam\.local-ai-hub")
+ROOT = Path(__file__).resolve().parents[1]
 CANDIDATE = Path(__file__).resolve().parents[1]
 PATCH = CANDIDATE / "handoff" / "t15-root-current-cache-only-v2.patch"
 EXPECTED = {

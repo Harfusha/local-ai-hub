@@ -375,7 +375,7 @@ class AgentProjector:
         if "workspace_cache" not in extra:
             data.pop("workspace_cache", None)
 
-        if self.strip_empty:
+        if self.strip_empty and task_kind != "artifact":
             preserve_keys = None
             telemetry_fields = {
                 "success", "window", "summary", "queue", "hotspots", "by_operation",
