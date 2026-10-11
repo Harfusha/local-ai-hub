@@ -376,7 +376,7 @@ class RepositoryTools:
                     if len(rel_parts) >= max_depth:
                         dirnames.clear()
                         continue
-                except Exception:
+                except ValueError:
                     pass
 
                 kept_dirnames: list[str] = []

@@ -82,6 +82,32 @@ def test_unity_generated_directories_never_enter_inventory(tmp_path: Path):
     assert all(not p.startswith(("Library/", "Temp/", "Logs/", "UserSettings/")) for p in rel)
 
 
+def test_filesystem_inventory_does_not_suppress_unexpected_depth_errors(tmp_path: Path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "main.py").write_text("value = 1\n", encoding="utf-8")
+    original_relative_to = Path.relative_to
+    root_relative_calls = 0
+
+    def fail_on_depth_check(path: Path, *other, **kwargs):
+        nonlocal root_relative_calls
+        result = original_relative_to(path, *other, **kwargs)
+        if path == repo and other and other[0] == repo:
+            root_relative_calls += 1
+            if root_relative_calls == 2:
+                raise RuntimeError("unexpected path failure")
+        return result
+
+    monkeypatch.setattr(Path, "relative_to", fail_on_depth_check)
+
+    try:
+        list(RepositoryTools(_cfg(tmp_path)).iter_files(str(repo)))
+    except RuntimeError as exc:
+        assert str(exc) == "unexpected path failure"
+    else:
+        raise AssertionError("unexpected depth-check errors must not be swallowed")
+
+
 def test_path_escape_is_rejected(tmp_path: Path):
     repo = tmp_path / "repo"
     repo.mkdir()
