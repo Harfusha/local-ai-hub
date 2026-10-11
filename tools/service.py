@@ -14,7 +14,15 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from local_ai_hub.config import load_config
 from local_ai_hub.client import HubClient
-from local_ai_hub.process_utils import find_listening_pid, hidden_run_kwargs, pid_alive, process_owner_state, terminate_owned_process
+from local_ai_hub.process_utils import (
+    find_listening_pid,
+    hidden_run_kwargs,
+    pid_alive,
+    process_owner_record,
+    process_owner_state,
+    process_parent_pid,
+    terminate_owned_process,
+)
 from local_ai_hub.ollama import OllamaRuntime
 
 ROOT_CONFIG = ROOT / "config.toml"
@@ -187,6 +195,28 @@ def managed_service_running() -> bool:
 def kill_hub() -> bool:
     owner = _read_owner("hub")
     if owner and process_owner_state(owner, STATE, "hub") == "owned":
+        launcher_pid = int(owner.get("pid", 0))
+        listener_pid = find_listening_pid(int(CFG.get("server", {}).get("port", 11435))) or 0
+        if not listener_pid:
+            try:
+                listener_pid = int((STATE / "hub.pid").read_text(encoding="utf-8").strip())
+            except (FileNotFoundError, OSError, ValueError):
+                listener_pid = 0
+        if listener_pid > 0 and listener_pid != launcher_pid:
+            # On Windows the venv pythonw launcher may own a second interpreter
+            # process that hosts the HTTP listener. Stop it only when both its
+            # parent and its process identity prove it belongs to this hub.
+            if process_parent_pid(listener_pid) != launcher_pid:
+                return False
+            listener_owner = process_owner_record(listener_pid, STATE, "hub")
+            if (
+                listener_owner is None
+                or process_owner_state(listener_owner, STATE, "hub") != "owned"
+                or not terminate_owned_process(
+                    listener_owner, STATE, "hub", grace_seconds=5.0
+                )
+            ):
+                return False
         if not terminate_owned_process(owner, STATE, "hub", grace_seconds=5.0):
             return False
     return _role_stopped("hub")
