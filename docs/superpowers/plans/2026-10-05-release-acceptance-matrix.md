@@ -4,9 +4,9 @@
 
 | Area | Current status | Evidence / blocker |
 |---|---|---|
-| Root/master | Root was clean at `1586997d` before this audit; plan-only updates committed as `6250a0db` | Bounded Git audit: 0 tracked + 0 untracked changes before plan edits; 153 local branches; 0 stashes. User-provided 182/192 dirty snapshot did not match current root and was preserved by taking no cleanup action. |
+| Root/master | Root was clean at `6b061d56` before this revalidation entry | Bounded Git audit: 0 tracked + 0 untracked changes before plan edits; 153 local branches; 0 stashes. User-provided 182/192 dirty snapshot did not match current root and was preserved by taking no cleanup action. |
 | Local branches | No unmerged local branch tips | `git branch --no-merged master` returned no branch names. No branch deletion performed. |
-| Worktrees | 63 clean worktrees fast-forwarded to master; root already current | `git merge --ff-only master`: updated 63, already current 1, skipped dirty 1, non-ancestor 0, failures 0. One dirty detached worktree `release-verify-7cb` remains 17 commits behind and untouched. |
+| Worktrees | 63 clean worktrees fast-forwarded to master; root already current | `git merge --ff-only master` at `6b061d56`: updated 63, already current 1, skipped dirty 1, non-ancestor 0, failures 0. One dirty detached worktree `release-verify-7cb` remains 19 commits behind and untouched. |
 | Dirty worktree | **Review / not integrated** | Only `docs/API_COVERAGE.md` is modified. No matching task thread appeared in current listing; captured diff was oversized (5.2 MB), so exact hunk ownership and current candidate validation are not established. Preserve pending targeted review. |
 | Client startup/transport | Focused checks pass | `python -m pytest -q tests/test_client_transport.py tests/test_client_startup_resilience.py tests/test_client_operational_mode_autostart.py tests/test_client_startup_transport_fallback.py tests/test_client_autostart_timeout.py` — 66 passed on source revision `b528a262`; subsequent `1586997d` is documentation-only. |
 | Release gates | Partial pass; **T20 NO-GO** | `python tools/release_check.py --allow-installed`, `python -m compileall -q src tools tests`, and `python tools/selftest.py` passed on `b528a262`. Full candidate pytest has no successful current receipt; prior run timed out / matrix still records unresolved failures. |
