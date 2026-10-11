@@ -80,5 +80,6 @@ def test_rag_action_keeps_explicit_root(monkeypatch, tmp_path: Path) -> None:
     result = mcp_server.local_ai_rag(action="index", root=str(tmp_path.resolve()))
 
     assert result["success"] is True
-    assert len(calls) == 1
-    assert calls[0][0][1]["root"] == str(tmp_path.resolve())
+    rag_calls = [call for call in calls if call[0][0] == "/api/rag/index"]
+    assert len(rag_calls) == 1
+    assert rag_calls[0][0][1]["root"] == str(tmp_path.resolve())

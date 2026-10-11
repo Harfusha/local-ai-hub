@@ -23,7 +23,7 @@ def test_telemetry_report_error_rows_are_paginated(tmp_path):
     try:
         for index in range(5):
             store.record_error("inference", f"generate-{index}", ValueError("invalid argument"))
-        assert store.flush(1)
+        assert store.flush(5)
 
         first = store.report(recent_errors=2, error_offset=0, _flush=False)
         second = store.report(recent_errors=2, error_offset=2, _flush=False)
@@ -43,7 +43,7 @@ def test_telemetry_error_cursor_survives_rank_changes_between_pages(monkeypatch,
         for index in range(5):
             for _ in range(index + 1):
                 store.record_error("component", f"operation-{index}", ValueError("same safe class"))
-        assert store.flush(1)
+        assert store.flush(5)
 
         first = store.report(recent_errors=2, error_cursor="", _flush=False)
         first_keys = {(row["fingerprint"], row["error_type"], row["component"], row["operation"])
@@ -53,7 +53,7 @@ def test_telemetry_error_cursor_survives_rank_changes_between_pages(monkeypatch,
             for _ in range(8):
                 store.record_error(row["component"], row["operation"], ValueError("new ranking"))
         store.record_error("component", "new-operation", RuntimeError("new group"))
-        assert store.flush(1)
+        assert store.flush(5)
         snapshot_cutoff = first["error_fingerprints_page"]["snapshot_cutoff"]
         monkeypatch.setattr(store, "_scope_cutoff", lambda _days, scope: (snapshot_cutoff + 100_000, scope))
 

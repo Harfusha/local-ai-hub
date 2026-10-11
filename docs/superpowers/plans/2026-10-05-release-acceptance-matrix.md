@@ -4,8 +4,8 @@
 
 | Area | Current status | Evidence / blocker |
 |---|---|---|
-| Root/master | Clean after documentation-only acceptance updates; tested source candidate `a7d42908` | Current source candidate passes release-check, compileall, selftest and surface inventory; six selftest checks green, 687 inventory rows. No source patch in this continuation. No remote release published. |
-| Worktrees | 67 registered including root; one dirty confirmed, remainder not fully audited | `release-verify-7cb` is detached at `3010c894`; only confirmed dirty path is `docs/API_COVERAGE.md` (+204/−240), preserved and not merged. T03 owner chat lacks access; ownership/semantic disposition unresolved. No stashes and no local branches unmerged to master. Do not infer other worktree cleanliness or ancestry from the root branch list. |
+| Root/master | `master` at `66fdc810`; four test files currently modified, no source edits | Source fixes in `66fdc810` passed `release_check.py --allow-installed`, `compileall`, selftest (6/6) and surface inventory (687 rows). The latest full-suite run is recorded below; no remote release published. |
+| Worktrees | 67 registered in latest inventory; ancestry/ownership still not fully audited | A recent scan found no dirty worktree records, no stashes, and no local branches unmerged to master; it did not prove every checkout is at master. Earlier `release-verify-7cb` / T03 disposition remains unresolved until that checkout is rechecked. Do not infer synchronization from branch ancestry alone. |
 | Actionable TODO audit | No actionable Python TODO-marker comments found in source/test directories | `rg -n -m 5 --glob "*.py" "^( +)?# *(TODO|FIXME|XXX|HACK)" src tools tests` returned exit 1 (no matches). `deterministic.py:71` defines `TODO_RE` for the scanner; that is not an unfinished-work comment. Scope: Python comments in `src`, `tools`, `tests`; no claim about prose or other languages. |
 | Dirty worktree | **Preserved / not integrated** | Only `docs/API_COVERAGE.md` modified. `python tools/surface_inventory.py --check` passes at its own stale `3010c894` source (687 rows); this proves its local consistency, not relevance to current master. No overwrite, stash, or removal. |
 | Client startup/transport | **Verified** | On current master `4362a342`: `python -B -m pytest -q --tb=short tests/test_client_transport.py::test_auto_start_initial_health_probe_preserves_startup_budget` — 1 passed in 1.93s; `python -B -m pytest -q --tb=short tests/test_client_transport.py` — 45 passed in 3.35s. Approved initial-probe budget fix and regression test already exist; no source patch needed. |
@@ -16,7 +16,7 @@
 | Agent State memory GET | **Fixed; targeted pass** | Full suite on parent found `test_http_memory_get_is_scope_and_root_isolated` failing HTTP 404 after 440 passed. POST `action=get` ignored caller `repository_id` when project config had no ID; now uses it only as fallback, matching GET behavior. Selector 1 passed; memory/HTTP/state-transport group 56 passed. |
 | Async task integration | **Flake isolated; deterministic test fix** | `submit()` starts background dispatch while this test calls `_execute()` synchronously. The dispatcher can claim the queued job first, making the direct call return `success=false` (“async job is not queued”). Test now disables only its automatic dispatcher. `tests/test_async_jobs_tasks.py tests/test_async_jobs.py` — 31 passed in 6.07s. |
 | Windows daemon lifecycle test | **Race isolated; test fix verified** | Full-suite `--last-failed` showed `test_named_daemon_job_survives_restart_and_stops_descendants` reading the PID file between create/truncate and write (`ValueError` on empty text). Fixture now writes a temporary file and atomically replaces the target. Selector: 1 passed; full file: 58 passed, 4 skipped in 28.50s. |
-| Release gates | In progress; **T20 NO-GO** | Tested source candidate `a7d42908`; later master commits in this continuation are documentation-only. Verified: `python tools/release_check.py --allow-installed` exit 0 after matrix commit; `python -m compileall -q src tools tests` exit 0; `python tools/selftest.py` exit 0 (6/6); `python tools/surface_inventory.py --check` exit 0 (687 rows, no drift). `python -m pytest --collect-only -q` — 6,959 tests collected in 11.24s. Full `python -m pytest -q --tb=short` timed out in tool call after 900s; process ended and no test-level failure was returned. `hubctl status` and `doctor.py` report Hub v4.0.0 online, active, Ollama online, 8 models, compact 8-tool MCP, Serena/Tree-sitter/Whisper installed; OpenVINO remains absent (optional Intel component). Dashboard probe was blocked by command network-scope policy; dashboard UI remains unverified. Worktree snapshot: 67 registered, 0 local branches unmerged to master, 0 stashes; one known dirty checkout `release-verify-7cb` detached at `3010c894`, `docs/API_COVERAGE.md` +204/−240, owner/disposition unverified; preserved. T02/T15 benchmarks not run. Full suite, dashboard, worktree-content audit, and T20 acceptance remain open; **NO-GO**. |
+| Release gates | In progress; **T20 NO-GO** | Most recent full candidate run: `python -B -m pytest -q --tb=short -r f` on source HEAD `66fdc810`, **3 failed, 6,851 passed, 105 skipped, 23 subtests passed** in 43:19. Failures: leaked SQLite connection warning at `test_repo_tools_returns_revision_and_changed_paths_for_guard`; stale request-registry interference in T19 SDK workflow; telemetry `flush(1)` timeout under full-suite load. T19 fixture isolation and bounded telemetry test wait are now changed; related focused suites pass. The SQLite warning remains unexplained. The immediately preceding Hub-broker full run exceeded its 900 s response wait; the owned process was stopped after checking its exact command, then the full run completed natively. `release_check.py --allow-installed`, `compileall`, selftest (6/6), and surface inventory (687 rows) passed on the earlier source candidate; rerun gates on final tree. `hubctl status`/`doctor.py` previously reported v4.0.0 active; latest `local_ai_status brief` returned `success=false`, `degraded=true`. Dashboard UI, every-worktree ancestry/content, and T20 acceptance remain open. **NO-GO**. |
 | Live Hub | **Server online; MCP health projection inconsistent** | `hubctl status`: v4.0.0, active, Ollama online, 8 models, RTX 4060; `doctor`: server/inference/MCP/Serena marked OK, with Serena MCP call timeout noted. `local_ai_status brief` says `success=false`, `degraded=true`; `detail=full` returns HTTP 500 output-contract failure. Root cause not confirmed. |
 | Existing task chats | **20 blocked; T12 verified; T20 blocked** | 2026-10-11: resumed only existing T01–T21 chats, no duplicates. T01–T11 and T13–T21 report missing, unregistered, archived, or foreign-owned assigned checkouts; no source changes or current tests from those tasks. T09’s corrected thread ID also confirmed its checkout missing. T12 source acceptance is verified from its clean checkout at `a7d42908` (138 passed + 20 subtests; T02 case 1 passed); no new changes. T20’s `ec50` path is not a Git checkout and its candidate `3eb4341f` is unverified. No substitutes used; recovery needed before these task scopes can resume. |
 
@@ -3037,3 +3037,27 @@ or lacks Git metadata. No agent used a substitute checkout.
 - The complete suite has **not** been rerun after this fix. Prior full-suite
   result remains 10 failures; nine other failures passed only in targeted runs
   and are not yet explained. T20/release therefore remains **NO-GO**.
+
+## 2026-10-11 full-suite follow-up
+
+- On `66fdc810`, native fallback completed `python -B -m pytest -q --tb=short
+  -r f`: **3 failed, 6,851 passed, 105 skipped, 23 subtests passed** in
+  43:19. The Hub-backed invocation had timed out waiting after 900 seconds;
+  its exact owned pytest process was confirmed and stopped before the native
+  run, so no duplicate full-suite process remained.
+- `test_rag_action_keeps_explicit_root` counted asynchronous tool-accounting as
+  a second business call. The assertion now filters `/api/rag/index` and still
+  verifies the explicit root; selector passed.
+- T19 intermittently inherited stale process-wide request registries after
+  mode-drain tests. Both the mode-defer test and `scenario_hub` fixture now
+  isolate those registries with pytest monkeypatch. The full T18/T19 files pass:
+  **42 passed in 12.62s**.
+- `test_telemetry_report_error_rows_are_paginated` had `flush(1)` fail under
+  full-suite load. Its three bounded flush waits are now 5 seconds; telemetry
+  report tests pass **5/5**. Repo-tools + telemetry focused tests pass **19/19**.
+- The full-suite `ResourceWarning` for an unclosed `sqlite3.Connection` remains
+  unresolved. Relevant focused DB/repo tests (including `-X tracemalloc=10`)
+  pass, but do not identify the allocation or prove its absence in suite order.
+  T20 remains **NO-GO** until the final tree passes a complete suite and this
+  warning is either fixed or shown not to recur; rerun release checks and
+  re-audit worktrees before release.
