@@ -2799,3 +2799,18 @@ or lacks Git metadata. No agent used a substitute checkout.
   no drift. The earlier 42-test focused receipt and all release gates remain
   current for their stated scopes, but cannot replace the missing full-suite
   result.
+
+### 2026-10-11 scoped commit and worktree fast-forward
+
+- Committed only the reviewed T09 receipt comparison fix, removal of the
+  accidental GET-memory `repository_id` reference, and this plan snapshot:
+  `5545efbb` (`fix: accept broker-attested verification receipts`).
+  Staged diff contained exactly those 3 paths; unrelated dirty hunks remain.
+- Fast-forwarded 63 clean worktrees to `5545efbb`. Left the one dirty
+  `release-verify-7cb` worktree untouched; its generated API coverage file is
+  8 commits behind master now. Root remains dirty in 68 tracked paths, with
+  0 untracked. No unique local branch commits and no stashes; no branches were
+  deleted or rewritten.
+- Release remains **NO-GO**: full pytest result is unknown; dirty root work
+  remains unclassified/uncommitted; optional model/benchmark gates and
+  installed-service restart acceptance are incomplete.
