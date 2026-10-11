@@ -5048,8 +5048,9 @@ class CommandBroker:
             if incident:
                 result["incident_id"] = incident.incident_id
                 result["incident_recorded"] = True
-        except Exception:
-            pass
+        except Exception as exc:
+            result["incident_recording_failed"] = True
+            result["incident_recording_error_type"] = type(exc).__name__
 
     def _unavailable_executable(
         self,
