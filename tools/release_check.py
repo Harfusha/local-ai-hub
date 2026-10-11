@@ -61,8 +61,8 @@ def _iter_release_hygiene_violations(
 ) -> Iterable[str]:
     """Yield working-tree or strict release-tree violations.
 
-    Working-tree checks ignore disposable Python and pytest caches. Use
-    ``strict_tree`` for a release tree, where generated caches are forbidden.
+    Working-tree and strict-tree checks ignore disposable Python and pytest
+    caches; package contents are validated separately during release checks.
 
     ``post_test`` tolerates only known test/install caches that are expected to be
     cleaned before packaging. Runtime databases, local configuration, generated
@@ -81,7 +81,7 @@ def _iter_release_hygiene_violations(
         parts = path.relative_to(root).parts
         if ".git" in parts:
             continue
-        if not strict_tree and (
+        if (
             "__pycache__" in parts or ".pytest_cache" in parts
             or (path.is_file() and path.suffix in {".pyc", ".pyo"})
         ):
