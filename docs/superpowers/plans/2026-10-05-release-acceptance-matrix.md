@@ -2676,3 +2676,10 @@ or lacks Git metadata. No agent used a substitute checkout.
   1s/attempt, fail-closed after the retry). ACL/migration group now **54 passed,
   1 platform skip in 21.31s**. This fix is not yet committed; rerun full suite
   on its committed candidate before release.
+- Full suite on `aa28b981` passed the ACL setup issue and reached 30%, then
+  failed `test_async_delivery_maps_reason_payload_to_the_existing_job_contract`
+  because a minimal `Handler` fixture has no `headers` attribute. The async
+  delivery path now treats absent headers as no explicit request ID while
+  preserving normal header forwarding. `tests/test_delivery_policy.py` —
+  **10 passed in 2.18s**. This fix remains uncommitted; full suite must rerun
+  after commit.
