@@ -2888,3 +2888,29 @@ or lacks Git metadata. No agent used a substitute checkout.
 - Root source tree is committed; full-suite, optional inference/Serena
   readiness, dirty-worktree reconciliation, and T20 final acceptance remain
   open. This is an integrated release candidate, **not release GO**.
+
+### 2026-10-11 Windows service lifecycle follow-up
+
+- Fixed `tools/service.py::kill_hub`: resolve the configured port listener,
+  verify it is a direct child of the recorded Hub launcher, capture its current
+  process identity, and terminate that verified child before the launcher.
+  Unknown or foreign listeners fail closed without signaling either PID.
+- Added regression coverage for verified child-first shutdown and refusing an
+  unverified listener. Isolated a pre-existing startup test from the live
+  supervisor by explicitly setting its mocked `supervisor_pid` to zero.
+- `python -B -m pytest -q --tb=short tests/test_service_startup.py
+  tests/test_process_utils.py`: **41 passed in 4.19s**.
+- On the current candidate, `python -B tools/release_check.py --allow-installed`,
+  `python -B -m compileall -q src tools tests`, `python -B tools/selftest.py`,
+  and `python -B tools/surface_inventory.py --check` all passed. Selftest: all
+  six checks green; API inventory: 687 rows, no drift.
+- Live restart stopped the Hub and reported `hub_stopped: true`, but the overall
+  command returned failure because managed Ollama shutdown was unverified
+  (`managed_ollama_stop_unverified`). Hub was then started successfully;
+  `service.py status` reports ready/online and `hubctl status` reports active,
+  Ollama online, eight models installed. No unverified Ollama process was killed.
+- Release remains **NO-GO**: the complete pytest suite has no final captured
+  result, Ollama stop ownership remains unresolved, the existing dirty
+  `release-verify-7cb` worktree is intentionally untouched, and final T20
+  acceptance is still open. Do not interpret the focused green gates as a full
+  release acceptance.

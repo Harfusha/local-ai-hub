@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -37,6 +38,7 @@ def test_wmi_spawn_detached_passes_active_config(tmp_path, monkeypatch):
 
     called = []
     monkeypatch.setattr(service, "all_supervisor_pids", lambda: [])
+    monkeypatch.setattr(service, "supervisor_pid", lambda: 0)
     monkeypatch.setattr(service, "_ACTIVE_CONFIG_ARG", "C:\\custom\\config.toml")
     monkeypatch.setattr(service.shutil, "which", lambda name: "powershell.exe")
     monkeypatch.setattr(service, "run", lambda cmd, **kwargs: called.append(cmd) or subprocess.CompletedProcess([], 0))
@@ -87,3 +89,86 @@ def test_all_supervisor_pids_does_not_match_its_own_powershell_query(monkeypatch
     script = commands[0][-1]
     assert "-Filter" in script
     assert "python.exe" in script
+
+
+def test_kill_hub_terminates_verified_listener_child_before_launcher(tmp_path, monkeypatch):
+    module = importlib.util.spec_from_file_location(
+        "test_hub_service_child_cleanup", Path(__file__).parents[1] / "tools" / "service.py"
+    )
+    service = importlib.util.module_from_spec(module)
+    module.loader.exec_module(service)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    launcher_pid = 101
+    listener_pid = 202
+    launcher_owner = {
+        "pid": launcher_pid,
+        "role": "hub",
+        "state_dir": str(state_dir),
+        "executable": "launcher.exe",
+    }
+    listener_owner = {
+        "pid": listener_pid,
+        "role": "hub",
+        "state_dir": str(state_dir),
+        "executable": "pythonw.exe",
+    }
+    (state_dir / "hub.owner.json").write_text(json.dumps(launcher_owner), encoding="utf-8")
+    (state_dir / "hub.pid").write_text(str(listener_pid), encoding="utf-8")
+    monkeypatch.setattr(service, "STATE", state_dir)
+    monkeypatch.setattr(service, "find_listening_pid", lambda _port: listener_pid)
+    monkeypatch.setattr(service, "process_owner_state", lambda *_args: "owned")
+    monkeypatch.setattr(
+        service,
+        "process_parent_pid",
+        lambda pid: launcher_pid if pid == listener_pid else None,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        service,
+        "process_owner_record",
+        lambda pid, *_args: listener_owner if pid == listener_pid else None,
+        raising=False,
+    )
+    stopped = []
+
+    def terminate(owner, *_args, **_kwargs):
+        stopped.append(owner["pid"])
+        return True
+
+    monkeypatch.setattr(service, "terminate_owned_process", terminate)
+    monkeypatch.setattr(service, "_role_stopped", lambda _role: True)
+
+    assert service.kill_hub() is True
+    assert stopped == [listener_pid, launcher_pid]
+
+
+def test_kill_hub_does_not_signal_unverified_listener_child(tmp_path, monkeypatch):
+    spec = importlib.util.spec_from_file_location(
+        "test_hub_service_unverified_child",
+        Path(__file__).parents[1] / "tools" / "service.py",
+    )
+    service = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(service)
+    launcher_pid, listener_pid = 101, 202
+    owner = {
+        "pid": launcher_pid,
+        "role": "hub",
+        "state_dir": str(tmp_path),
+        "executable": "launcher.exe",
+    }
+    (tmp_path / "hub.owner.json").write_text(json.dumps(owner), encoding="utf-8")
+    (tmp_path / "hub.pid").write_text(str(listener_pid), encoding="utf-8")
+    monkeypatch.setattr(service, "STATE", tmp_path)
+    monkeypatch.setattr(service, "find_listening_pid", lambda _port: listener_pid)
+    monkeypatch.setattr(service, "process_owner_state", lambda *_args: "owned")
+    monkeypatch.setattr(service, "process_parent_pid", lambda _pid: 303)
+    stopped = []
+    monkeypatch.setattr(
+        service,
+        "terminate_owned_process",
+        lambda process_owner, *_args, **_kwargs: stopped.append(process_owner["pid"]) or True,
+    )
+
+    assert service.kill_hub() is False
+    assert stopped == []
