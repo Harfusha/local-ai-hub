@@ -4,7 +4,7 @@
 
 | Area | Current status | Evidence / blocker |
 |---|---|---|
-| Root/master | `master` at `6c91075e`; one test-only edit pending | Current change is limited to `tests/test_async_jobs_tasks.py`; no runtime source edit. Local master is 774 commits ahead of `origin/master`; no remote release published. |
+| Root/master | Clean `master` at `f48e9a42` | Test-only async race fix and evidence docs committed; no runtime source edit in this change. Local master is 775 commits ahead of `origin/master`; no remote release published. |
 | Worktrees | 65 clean, 1 dirty | 66 total including root. `release-strict-check` is at source candidate `ac6323c0`; 63 other clean trees remain at `73bdb084`. The only dirty checkout is detached `release-verify-7cb` at `3010c894`, 27 commits behind current master; preserved, not overwritten. |
 | Dirty worktree | **Preserved / not integrated** | Only `docs/API_COVERAGE.md` modified. `python tools/surface_inventory.py --check` passes at its own stale `3010c894` source (687 rows); this proves its local consistency, not relevance to current master. No overwrite, stash, or removal. |
 | Client startup/transport | **Verified** | `python -m pytest -q tests/test_client_transport.py` — 45 passed in 3.32s at `e02d70db`. The approved initial-probe budget fix and regression test already exist in master; no new source patch needed. |
