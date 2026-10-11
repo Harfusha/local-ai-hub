@@ -2,6 +2,37 @@
 
 ## Current master reconciliation - 2026-10-11
 
+### Installed Windows release verification — 2026-10-12
+
+- Frozen `f1f9706c` full suite: `python -B -m pytest -q -x --tb=short -r f`
+  — **6880 passed, 105 skipped, 23 subtests passed, 2 FutureWarnings**, exit 0,
+  2363.66s. Warnings are deprecated Torch type checks in surface-benchmark tests.
+- The same candidate wheel was installed into the actual home-repository `.venv`
+  with `pip install --no-deps --force-reinstall`; `pip check` passed. Primary
+  verified all 120 installed package files byte-for-byte against the tested wheel.
+  Shared daemon was stopped and started successfully.
+- Post-install live smoke initially failed status only. Read-only measurements:
+  `cache.sqlite` 380 MB and aggregate read 0.752s; `cache.sqlite3` 1.20 GB and
+  aggregate read 4.73s; preprocessing DB 3.00 GB. Disposable caches were moved,
+  with WAL/SHM, into `state/release-cache-backup-20261012-001` while Hub was stopped.
+  Nothing deleted; durable tasks/memories/receipts retained. After restart status
+  returned success=true/degraded=false in 0.182s.
+- Clean-cache installed live smoke — exit 0/success=true/errors=[]
+  (`req_217c50986fff`). This closes the functional live check, not cache-scale
+  performance. T18 follow-up: cover/index or snapshot large cache statistics;
+  do not hide future probe timeouts or call the old data permanently solved.
+- Candidate wheel is retained in the home repository at
+  `state/releases/4.0.0/local_ai_hub-4.0.0-py3-none-any.whl`.
+  No remote publication or release tag has been made yet.
+- Final explicit MCP full-status check found a remaining identity projection
+  bug: large capabilities responses lose mandatory `hub_online`. New four-case
+  live-MCP regression (healthy/degraded, detail/action selectors) failed before
+  adding `hub_online` to `_STATUS_PROTECTED_KEYS`. Focused status/budget/contracts
+  group — 73 passed in 8.94s (`req_5a03a7441691`). Only that protection key changes
+  production behavior; success/degraded flags are not coerced. The saved wheel
+  and full-suite receipt above predate this last correction. Fresh packaging and
+  final candidate validation remain required; do not mark all T01–T21 done.
+
 ### MCP catalog and failure-protocol correction
 
 - Final-candidate packaging sidecar found invalid live `allOf: []` in command
