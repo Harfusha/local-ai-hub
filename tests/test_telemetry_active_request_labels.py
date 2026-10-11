@@ -47,3 +47,24 @@ def test_clean_event_still_redacts_filesystem_paths_from_action_labels():
     )
 
     assert event["action"] == "<path>"
+
+
+def test_http_error_operations_preserve_registered_endpoints_and_distinct_fingerprints(tmp_path):
+    store = TelemetryStore(tmp_path / "telemetry", enabled=True)
+    try:
+        search_fp = store.record_error("http", "/api/search?token=private#fragment", ValueError("private"))
+        command_fp = store.record_error("http", "/api/command", ValueError("private"))
+        store.record_error("http", "/home/adam/private/project.db", ValueError("private"))
+        store.record_error("http", "/api/projects/private-name", ValueError("private"))
+        assert store.flush(5)
+        connection = store._connect()
+        try:
+            operations = connection.execute("SELECT operation FROM errors ORDER BY rowid").fetchall()
+            actions = connection.execute("SELECT action FROM events WHERE event_type='error' ORDER BY rowid").fetchall()
+        finally:
+            connection.close()
+        assert operations == [("/api/search",), ("/api/command",), ("<path>",), ("<path>",)]
+        assert search_fp != command_fp
+        assert actions[:2] == [("/api/search",), ("/api/command",)]
+    finally:
+        store.close()

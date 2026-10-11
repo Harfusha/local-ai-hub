@@ -2,10 +2,42 @@
 
 ## Current master reconciliation - 2026-10-11
 
+### Endpoint visibility correction — 2026-10-11
+
+- Owner: primary agent, `src/local_ai_hub/telemetry.py`,
+  `tests/test_telemetry_active_request_labels.py`; prompts synchronized.
+- Root cause: `record_error` used generic filesystem-path redaction for HTTP
+  operations; fingerprints also collapsed distinct endpoint operations.
+  Registered endpoint labels now survive, queries/fragments are discarded,
+  and unknown paths remain hidden. HTTP error events retain endpoint actions.
+- Red: `python -B -m pytest -q tests/test_telemetry_active_request_labels.py --tb=short`
+  — 1 failed, 3 passed; `/api/search` was persisted as `<path>`.
+- Green: `python -B -m pytest -q tests/test_telemetry_active_request_labels.py tests/test_telemetry_contract.py tests/test_telemetry_error_metadata_privacy_t18.py tests/test_telemetry_privacy_t18.py tests/test_telemetry_report_bounds_t18.py --tb=short`
+  — 23 passed in 9.75s.
+- `python tools/hubctl.py restart` — exit 0, `restarted`.
+  Actual dashboard Queue & requests shows `/api/search` in active requests and
+  six endpoint groups in persisted request history (`/api/command`,
+  `/api/context/pack`, `/api/preprocess`, `/api/review/diff`, `/api/search`,
+  `/api/agent-state/cleanup`), not `<path>`.
+  Historical error rows already redacted cannot identify the original endpoint;
+  they are preserved rather than relabeled with invented values.
+- `compileall` exit 0; selftest 6/6; release check `--allow-installed` OK;
+  surface inventory `--check` 687 rows, no drift.
+- Full pytest on preceding commit was interrupted at 21% before source edits;
+  it is not a passing receipt. Final-candidate full pytest remains open.
+- GPT 6 Luna added `tests/test_telemetry_endpoint_visibility.py` only:
+  real live-request projection, persisted HTTP/timeline views, error-report
+  endpoint/template identity and private-path exclusion. Its focused broker run
+  returned 3 passed in 1.83s. Primary agent reviewed the tests before integration.
+- Integrated telemetry suite (previous Green command plus
+  `tests/test_telemetry_endpoint_visibility.py`) — 26 passed in 12.63s,
+  broker `req_faf817fcf234`. Dashboard/report sweep — 31 passed in 6.98s;
+  diagnostic-classification sweep — 13 passed in 6.10s.
+
 | Area | Current status | Evidence / blocker |
 |---|---|---|
 | Root/master | Source changes and test corrections are recorded on `master` | Source fixes in `66fdc810` passed `release_check.py --allow-installed`, `compileall`, selftest (6/6) and surface inventory (687 rows). Test-isolation fixes are committed as `9fa78ae3`; the SQLite fixture correction is recorded below. No remote release published. |
-| Worktrees | 67 registered in latest inventory; ancestry/ownership still not fully audited | A recent scan found no dirty worktree records, no stashes, and no local branches unmerged to master; it did not prove every checkout is at master. Earlier `release-verify-7cb` / T03 disposition remains unresolved until that checkout is rechecked. Do not infer synchronization from branch ancestry alone. |
+| Worktrees | 67 registered: root at master, 66 behind, none ahead/divergent; 1 dirty | Fresh scan found 0 stashes and 0 unmerged local branches. Dirty `release-verify-7cb` contains only derived `docs/API_COVERAGE.md`: 687 identical operation IDs, no schema changes, line-number drift and three superseded test-name changes. Recoverable archival is pending; this is not missing source implementation. |
 | Actionable TODO audit | No actionable Python TODO-marker comments found in source/test directories | `rg -n -m 5 --glob "*.py" "^( +)?# *(TODO|FIXME|XXX|HACK)" src tools tests` returned exit 1 (no matches). `deterministic.py:71` defines `TODO_RE` for the scanner; that is not an unfinished-work comment. Scope: Python comments in `src`, `tools`, `tests`; no claim about prose or other languages. |
 | Dirty worktree | **Preserved / not integrated** | Only `docs/API_COVERAGE.md` modified. `python tools/surface_inventory.py --check` passes at its own stale `3010c894` source (687 rows); this proves its local consistency, not relevance to current master. No overwrite, stash, or removal. |
 | Client startup/transport | **Verified** | On current master `4362a342`: `python -B -m pytest -q --tb=short tests/test_client_transport.py::test_auto_start_initial_health_probe_preserves_startup_budget` — 1 passed in 1.93s; `python -B -m pytest -q --tb=short tests/test_client_transport.py` — 45 passed in 3.35s. Approved initial-probe budget fix and regression test already exist; no source patch needed. |

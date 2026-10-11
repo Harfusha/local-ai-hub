@@ -251,7 +251,10 @@ _SAFE_ERROR_CODE_MESSAGES = {
 
 def _error_fingerprint(error_type: str, component: str, operation: str, error_code: str = "") -> str:
     # Fingerprint only sanitized classification labels, never free-form error text.
-    labels = (_safe_error_metadata(value) for value in (error_type, component, operation, error_code))
+    labels = (
+        _safe_error_metadata(error_type), _safe_error_metadata(component),
+        _safe_operation_metadata(operation), _safe_error_metadata(error_code),
+    )
     stable = [value.casefold() for value in labels]
     raw = "|".join(stable).encode("utf-8", "replace")
     return hashlib.sha256(raw).hexdigest()[:16]
@@ -302,6 +305,14 @@ def _safe_error_metadata(value: Any, limit: int = _MAX_METADATA_LENGTH) -> str:
     text = re.sub(r"(?i)/api/[^\s,;\"']+", "<path>", text)
     text = _SENSITIVE_METADATA_VALUE_RE.sub(r"\1\2[redacted]", text)
     return " ".join(text.split())[:limit]
+
+
+def _safe_operation_metadata(value: Any) -> str:
+    """Preserve registered endpoint identities, never arbitrary path-like labels."""
+    route = _safe_metadata(value, preserve_route=True)
+    if route in _SAFE_HTTP_ROUTE_LABELS:
+        return route
+    return _safe_error_metadata(value)
 
 
 def _safe_error_code(error: Any) -> str:
@@ -1005,7 +1016,7 @@ class TelemetryStore:
         safe_tenant = _safe_error_metadata(tenant, 160)
         safe_agent = _safe_error_metadata(agent, 80)
         safe_component = _safe_error_metadata(component, 120)
-        safe_operation = _safe_error_metadata(operation, 160)
+        safe_operation = _safe_operation_metadata(operation)
         safe_error_type = _safe_error_metadata(error_type, 120)
         safe_error_code = error_code_override if error_code_override in _SAFE_ERROR_CODE_MESSAGES else _safe_error_code(error)
         message = (
@@ -1023,7 +1034,11 @@ class TelemetryStore:
         self._enqueue("error", payload)
         self.record(
             event_type="error", tenant=safe_tenant, agent=safe_agent, request_id=safe_request_id,
-            action=f"{safe_component}:{safe_operation}", success=False,
+            action=(
+                safe_operation
+                if safe_component == "http" and safe_operation in _SAFE_HTTP_ROUTE_LABELS
+                else f"{safe_component}:{safe_operation}"
+            ), success=False,
             error_type=safe_error_type, error_fingerprint=fp,
         )
         return fp
