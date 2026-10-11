@@ -961,13 +961,25 @@ class AgentStateStore:
                         or any(character in account for character in "\r\n\x00")
                     ):
                         raise PermissionError("agent_state backup process account is unknown")
-                    run_hidden(
-                        ["icacls", str(path), "/inheritance:r", "/grant:r", f"{account}:(F)"],
-                        check=True,
-                        capture_output=True,
-                        text=True,
-                        timeout=1.0,
-                    )
+                    acl_command = ["icacls", str(path), "/inheritance:r", "/grant:r", f"{account}:(F)"]
+                    try:
+                        run_hidden(
+                            acl_command,
+                            check=True,
+                            capture_output=True,
+                            text=True,
+                            timeout=1.0,
+                        )
+                    except subprocess.TimeoutExpired:
+                        # ACL changes are idempotent; one bounded retry absorbs
+                        # transient Windows process-start and filesystem latency.
+                        run_hidden(
+                            acl_command,
+                            check=True,
+                            capture_output=True,
+                            text=True,
+                            timeout=1.0,
+                        )
                 except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
                     raise PermissionError("agent_state backup permissions could not be secured") from exc
             else:

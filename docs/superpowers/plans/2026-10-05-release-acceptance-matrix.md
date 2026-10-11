@@ -2669,3 +2669,10 @@ or lacks Git metadata. No agent used a substitute checkout.
   `docs/DASHBOARD.md` to distinguish complete local storage from display
   redaction. Trace-focused suite — **55 passed in 6.57s**. Full suite must be
   rerun against this dirty candidate; release remains **NO-GO**.
+- Frozen checkpoint `e37ffa96` full-suite run stopped during setup at 6%:
+  **436 passed, 1 error in 320.51s**. A second full run reproduced the same
+  Windows `icacls` 1s timeout during verified SQLite backup ACL setup. Added a
+  regression test, observed RED, then one idempotent bounded retry (still
+  1s/attempt, fail-closed after the retry). ACL/migration group now **54 passed,
+  1 platform skip in 21.31s**. This fix is not yet committed; rerun full suite
+  on its committed candidate before release.

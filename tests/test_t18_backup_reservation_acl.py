@@ -103,6 +103,32 @@ def test_windows_acl_success_is_bounded_and_uses_current_account(tmp_path, monke
         assert not kwargs.get("shell", False)
 
 
+def test_windows_acl_retries_one_bounded_timeout(tmp_path, monkeypatch, windows_reservation):
+    install, descriptors, closed, calls, _ = windows_reservation
+    install()
+    acl_attempts = 0
+
+    def run(argv, **kwargs):
+        nonlocal acl_attempts
+        calls.append((argv, kwargs))
+        if argv[0] == "whoami":
+            return subprocess.CompletedProcess(argv, 0, "HOST\\owner\n", "")
+        acl_attempts += 1
+        if acl_attempts == 1:
+            raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(process_utils, "run_hidden", run)
+    path = tmp_path / "backup.sqlite3"
+
+    identity = AgentStateStore._reserve_backup_destination(path)
+
+    assert identity == (path.stat().st_dev, path.stat().st_ino)
+    assert acl_attempts == 2
+    assert closed == descriptors
+    assert all(0 < kwargs["timeout"] <= 1.0 for _, kwargs in calls)
+
+
 def test_windows_unexpected_exception_is_not_swallowed(tmp_path, windows_reservation):
     install, descriptors, closed, _, _ = windows_reservation
     error = RuntimeError("unexpected helper defect")
