@@ -1856,7 +1856,7 @@ class TaskStore:
                             snaps[p_str] = p.read_text(encoding="utf-8", errors="ignore")
                         else:
                             snaps[p_str] = None
-                    except Exception:
+                    except OSError:
                         pass
             new_sd = dict(checkpoint.state_data)
             new_sd["file_snapshots"] = snaps
