@@ -1465,6 +1465,85 @@ class ProjectPreprocessor:
                 rows = con.execute("SELECT * FROM projects WHERE root=?", (self._root(root),)).fetchall()
             else:
                 rows = con.execute("SELECT * FROM projects ORDER BY updated_at DESC").fetchall()
+
+            roots = [str(row["root"]) for row in rows]
+            incomplete_roots = [
+                str(row["root"])
+                for row in rows
+                if str(row["status"] or "queued") != "complete"
+                and str(row["phase"] or "inventory") != "complete"
+            ]
+
+            def root_batches(values: list[str]):
+                for offset in range(0, len(values), 400):
+                    yield values[offset : offset + 400]
+
+            file_counts: dict[str, tuple[int, int, int, int]] = {}
+            external_by_root: dict[str, dict[str, dict[str, Any]]] = {value: {} for value in roots}
+            source_counts: dict[str, int] = {}
+            module_counts: dict[str, int] = {}
+            project_card_counts: dict[str, int] = {}
+            code_index_counts: dict[str, int] = {}
+            deterministic_counts: dict[str, int] = {}
+
+            for batch in root_batches(roots):
+                placeholders = ",".join("?" for _ in batch)
+                count_rows = con.execute(
+                    f"""SELECT root, COUNT(*),
+                        SUM(CASE WHEN card_key IS NOT NULL THEN 1 ELSE 0 END),
+                        SUM(CASE WHEN needs_hash=0 AND content_hash<>'' THEN 1 ELSE 0 END),
+                        SUM(CASE WHEN COALESCE(rag_hash,'')=content_hash AND content_hash<>'' THEN 1 ELSE 0 END)
+                    FROM file_refs WHERE root IN ({placeholders}) GROUP BY root""",
+                    batch,
+                ).fetchall()
+                file_counts.update({
+                    str(count_row[0]): tuple(int(value or 0) for value in count_row[1:5])
+                    for count_row in count_rows
+                })
+                external_rows = con.execute(
+                    f"SELECT root,backend,status,error,updated_at FROM external_index_state WHERE root IN ({placeholders})",
+                    batch,
+                ).fetchall()
+                for external_row in external_rows:
+                    external_by_root[str(external_row[0])][str(external_row[1])] = {
+                        "status": "unavailable" if str(external_row[2]) == "skipped" else str(external_row[2]),
+                        "error": str(external_row[3] or ""),
+                        "updated_at": float(external_row[4] or 0),
+                    }
+
+            for batch in root_batches(incomplete_roots):
+                placeholders = ",".join("?" for _ in batch)
+                for table, target in (
+                    ("source_index", source_counts),
+                    ("module_cards", module_counts),
+                    ("project_cards", project_card_counts),
+                ):
+                    count_rows = con.execute(
+                        f"SELECT root, COUNT(*) FROM {table} WHERE root IN ({placeholders}) GROUP BY root",
+                        batch,
+                    ).fetchall()
+                    target.update({str(count_row[0]): int(count_row[1] or 0) for count_row in count_rows})
+
+            def index_file_counts(index: Any | None, label: str) -> dict[str, int]:
+                result: dict[str, int] = {}
+                if index is None or not incomplete_roots:
+                    return result
+                try:
+                    with closing(index._connect()) as index_con:
+                        for batch in root_batches(incomplete_roots):
+                            placeholders = ",".join("?" for _ in batch)
+                            count_rows = index_con.execute(
+                                f"SELECT root, COUNT(*) FROM files WHERE root IN ({placeholders}) GROUP BY root",
+                                batch,
+                            ).fetchall()
+                            result.update({str(count_row[0]): int(count_row[1] or 0) for count_row in count_rows})
+                except sqlite3.Error as exc:
+                    logger.warning("%s status unavailable (%s)", label, type(exc).__name__)
+                return result
+
+            code_index_counts = index_file_counts(self.code_index, "Code-index")
+            deterministic_counts = index_file_counts(self.deterministic, "Deterministic-index")
+
             projects: list[dict[str, Any]] = []
             for row in rows:
                 git_common_dir, is_worktree = _project_git_identity(str(row["root"]))
@@ -1476,50 +1555,23 @@ class ProjectPreprocessor:
                 except ValueError:
                     phase_index = total_phases if status_str == "complete" else 1
 
-                counts = con.execute(
-                    """SELECT 
-                        COUNT(*), 
-                        SUM(CASE WHEN card_key IS NOT NULL THEN 1 ELSE 0 END),
-                        SUM(CASE WHEN needs_hash=0 AND content_hash<>'' THEN 1 ELSE 0 END),
-                        SUM(CASE WHEN COALESCE(rag_hash,'')=content_hash AND content_hash<>'' THEN 1 ELSE 0 END)
-                    FROM file_refs WHERE root=?""",
-                    (row["root"],),
-                ).fetchone()
+                counts = file_counts.get(str(row["root"]), (0, 0, 0, 0))
                 total_files = int(counts[0] or 0)
                 file_cards = min(total_files, int(counts[1] or 0))
                 hashed_files = min(total_files, int(counts[2] or 0))
                 rag_files = min(total_files, int(counts[3] or 0))
 
-                source_count = 0
+                source_count = source_counts.get(str(row["root"]), 0)
                 ci_count = 0
                 det_count = 0
                 module_count = 0
                 project_card_count = 0
-                external_rows = con.execute("SELECT backend,status,error,updated_at FROM external_index_state WHERE root=?", (row["root"],)).fetchall()
-                external_indexes = {
-                    str(x[0]): {
-                        "status": "unavailable" if str(x[1]) == "skipped" else str(x[1]),
-                        "error": str(x[2] or ""),
-                        "updated_at": float(x[3] or 0),
-                    }
-                    for x in external_rows
-                }
+                external_indexes = external_by_root.get(str(row["root"]), {})
                 if status_str != "complete" and phase_str != "complete":
-                    source_count = int(con.execute("SELECT COUNT(*) FROM source_index WHERE root=?", (row["root"],)).fetchone()[0] or 0)
-                    module_count = int(con.execute("SELECT COUNT(*) FROM module_cards WHERE root=?", (row["root"],)).fetchone()[0] or 0)
-                    project_card_count = int(con.execute("SELECT COUNT(*) FROM project_cards WHERE root=?", (row["root"],)).fetchone()[0] or 0)
-                    if self.code_index is not None:
-                        try:
-                            with closing(self.code_index._connect()) as ci_con:
-                                ci_count = int(ci_con.execute("SELECT COUNT(*) FROM files WHERE root=?", (row["root"],)).fetchone()[0] or 0)
-                        except sqlite3.Error as exc:
-                            logger.warning("Code-index status unavailable (%s)", type(exc).__name__)
-                    if self.deterministic is not None:
-                        try:
-                            with closing(self.deterministic._connect()) as det_con:
-                                det_count = int(det_con.execute("SELECT COUNT(*) FROM files WHERE root=?", (row["root"],)).fetchone()[0] or 0)
-                        except sqlite3.Error as exc:
-                            logger.warning("Deterministic-index status unavailable (%s)", type(exc).__name__)
+                    ci_count = code_index_counts.get(str(row["root"]), 0)
+                    det_count = deterministic_counts.get(str(row["root"]), 0)
+                    module_count = module_counts.get(str(row["root"]), 0)
+                    project_card_count = project_card_counts.get(str(row["root"]), 0)
                 else:
                     file_cards = total_files
                     hashed_files = total_files

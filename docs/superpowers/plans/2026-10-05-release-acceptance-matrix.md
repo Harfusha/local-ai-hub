@@ -2,6 +2,55 @@
 
 ## Current master reconciliation - 2026-10-11
 
+### Release continuation after endpoint fix
+
+- Full pytest on `84a85f0e` was interrupted at 21% after two failure markers;
+  no traceback was emitted before interruption. Do not infer exact failed nodes
+  from progress or count this as acceptance. Next complete-candidate run uses
+  `-x --tb=short` to expose the first concrete failure immediately.
+- `python tools/release_check.py --allow-installed --live-smoke --json`
+  (`req_51acb2495ad5`) failed: live status, model, transcription, async result.
+  Agent State memory succeeded. This is a failed release receipt.
+- Confirmed runtime causes: only `preprocessing.status` reports a 250ms
+  `probe_timeout`; `reason` with explicit active 3B model is rejected by the
+  configured quality floor. A bounded `reason` call without override succeeds
+  with `qwen2.5-coder:7b`. Preserve the floor; repair smoke routing, not policy.
+- Owners active: GPT 6 Luna (Aristotle), `tools/release_check.py` plus focused
+  release-check tests: valid model routing, silent-audio fixture and diagnostics;
+  GPT 6 Luna (Pasteur), `ProjectPreprocessor.status` and
+  `tests/test_preprocess_status_scaling.py`: eliminate per-project connection
+  and query overhead, preserve scoped progress. Neither is accepted yet.
+- Packaging sidecar GPT 6 Luna (Galileo): wheel built from exported
+  `84a85f0e`; isolated base-dependency install, `pip check`, module and console
+  CLI help/version passed. Packaged defaults and six enabled schemas validated;
+  enabling Ollama in memory produces eight schema-valid tools. No daemon started
+  in the isolated venv. Live MCP transport/clean daemon install remains open.
+  Artifact retained outside the repository under
+  `%TEMP%/local-ai-hub-wheel-audit-cad012e2c27b4f998e1cbf78d5f62cab`.
+- Root `config.toml.bak-20260913-integrated` was tracked. Primary removed its
+  index entry only and ignored `config.toml.bak*`; the local file remains intact.
+  Release export must exclude local configuration backups. No secret values read
+  or displayed. Agent-owned release hygiene regression is pending.
+- Preprocessing status primary integration validation:
+  `python -B -m pytest -q tests/test_preprocess_status_scaling.py tests/test_preprocessing_overhaul.py tests/test_preprocess_operational_mode.py tests/test_t21_project_config_preprocess.py --tb=short`
+  — 44 passed in 21.57s (`req_6719841c0454`). After controlled Hub restart,
+  the real light status returned success=true/degraded=false, 70 projects;
+  total request time 0.448s and preprocessing.status healthy within 250ms.
+- Updated live smoke (`req_6c93916040c6`) failed only async admission; all
+  other required live checks passed. Separate async diagnostic confirms
+  resource-pressure rejection, retryable=true/terminal=false, no new job:
+  VRAM 7373/8188MB (90%, critical) after vision/transcription. Do not weaken
+  admission. The smoke must verify async before its heavier vision/audio steps
+  and preserve genuine pressure rejection as a failed/blocked check.
+- Release hygiene regression: working-tree/default-parity focused group
+  8 passed in 0.39s (`req_913993fc51de`); compileall exit 0 (`req_fff85c5c4b34`).
+- Primary reviewed and integrated both GPT 6 Luna patches. Persisted smoke
+  regressions, hygiene and defaults: `python -B -m pytest -q tests/test_release_check_live_smoke.py tests/test_release_check_working_tree.py tests/test_release_check_defaults_parity.py --tb=short`
+  — 19 passed in 0.54s (`req_6ddab6ba5380`). Status timeout, resource pressure,
+  queue limit and real transcription failure still fail the smoke. Async runs
+  before heavier GPU/audio checks; no automatic retry bypasses admission.
+  Source edits are finished; final full-suite/live acceptance remains pending.
+
 ### Endpoint visibility correction — 2026-10-11
 
 - Owner: primary agent, `src/local_ai_hub/telemetry.py`,
