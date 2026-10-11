@@ -1549,9 +1549,11 @@ def test_named_daemon_job_survives_restart_and_stops_descendants(
     exit_launcher = tmp_path / "daemon_parent_exits.py"
     exit_child_path = tmp_path / "daemon-exit-child.pid"
     exit_launcher.write_text(
-        "import subprocess, sys, time\n"
+        "import os, subprocess, sys, time\n"
         "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(12)'])\n"
-        "with open(sys.argv[1], 'w', encoding='ascii') as stream: stream.write(str(child.pid))\n",
+        "temporary = sys.argv[1] + '.tmp'\n"
+        "with open(temporary, 'w', encoding='ascii') as stream: stream.write(str(child.pid))\n"
+        "os.replace(temporary, sys.argv[1])\n",
         encoding="utf-8",
     )
     exited = first.spawn_daemon(
