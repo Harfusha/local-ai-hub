@@ -2950,11 +2950,11 @@ or lacks Git metadata. No agent used a substitute checkout.
   779 commits ahead of `origin/master`. `git branch --no-merged master` and
   `git stash list` returned no entries. `git worktree list` reports 66 total
   including root.
-- Read-only status checked 39 worktree attachments visible to this chat. One is
-  dirty: detached `release-verify-7cb` at `3010c894`, only
-  `docs/API_COVERAGE.md`; preserved untouched. Other sampled task worktrees are
-  clean, mostly at `73bdb084`. This is not a complete status audit of all 65
-  non-root worktrees; do not claim all are synchronized.
+- Full status audit covered all 66 registered worktrees. 60 are at current
+  master (root plus 59 fast-forwarded clean worktrees); five pinned T15 benchmark
+  trees remain at `73bdb084`; one detached worktree, `release-verify-7cb` at
+  `3010c894`, remains dirty only in `docs/API_COVERAGE.md` and was preserved.
+  No local branch remains unmerged; stash list is empty.
 - `python tools/release_check.py --allow-installed && python -m compileall -q
   src tools tests && python tools/selftest.py`: exit 0; six selftest checks
   green. Hub v4.0.0 is online in `active` mode.
