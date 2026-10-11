@@ -20,10 +20,19 @@ def test_daemon_start_does_not_exceed_remaining_deadline(tmp_path, monkeypatch) 
         launch_timeouts.append(float(timeout))
         raise subprocess.TimeoutExpired(args, timeout)
 
-    monkeypatch.setattr(client, "_online", lambda _timeout=None: False)
+    probe_timeouts: list[float | None] = []
+
+    def offline(_timeout=None):
+        probe_timeouts.append(_timeout)
+        return False
+
+    monkeypatch.setattr(client, "_online", offline)
     monkeypatch.setattr(client_module, "find_listening_pid", lambda _port: None)
     monkeypatch.setattr(client_module.subprocess, "run", timeout_start)
 
     assert client.ensure_server(timeout=0.06) is False
+    assert probe_timeouts
+    assert probe_timeouts[0] is not None
+    assert probe_timeouts[0] <= 0.06 * 0.25
     assert len(launch_timeouts) == 1
     assert 0 < launch_timeouts[0] <= 0.06
