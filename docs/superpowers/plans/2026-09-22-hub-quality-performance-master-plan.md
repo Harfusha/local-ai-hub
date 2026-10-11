@@ -2742,7 +2742,7 @@ Read-only owner audits completed for T01–T21. Clean master checkouts are alrea
 
 ### Release revalidation — 2026-10-11 latest
 
-- Root candidate is `master` at `6c91075e`, 774 commits ahead of `origin/master`. One uncommitted, test-only change exists in `tests/test_async_jobs_tasks.py`; no production source changed. T14 `/api/context/pack` remains untouched.
+- Root candidate is clean `master` at `f48e9a42`, 775 commits ahead of `origin/master`. The test-only async race fix and evidence update are committed; no production source changed. T14 `/api/context/pack` remains untouched.
 - Confirmed async-task test race: `submit()` starts `_dispatch_background()` and the test immediately calls `_execute()` itself. If the background worker claims the job first, the explicit call returns `success=false` because state is no longer `queued`. The test now disables only background dispatch for this synchronous test; production dispatch behavior and assertions remain unchanged.
 - `python -m pytest tests/test_async_jobs_tasks.py tests/test_async_jobs.py -q --tb=short` — **31 passed in 6.07s** on the edited working tree.
 - `python tools/release_check.py --allow-installed && python -m compileall -q src tools tests && python tools/selftest.py` — **exit 0**; release check OK and all six selftest checks passed.
