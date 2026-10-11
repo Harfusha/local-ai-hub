@@ -71,8 +71,9 @@ def test_call_graph_semantic_diff_integration(tmp_path: Path):
 def test_swarm_orchestrator_lifecycle(tmp_path: Path):
     db_path = tmp_path / "agent_state.sqlite3"
     leases = ScopeLeaseStore(tmp_path)
-    blackboard = BlackboardStore(db_path)
-    verifications = VerificationStore(AgentStateStore(db_path, enabled=True))
+    agent_state = AgentStateStore(db_path, enabled=True)
+    blackboard = BlackboardStore(db_path, state_store=agent_state)
+    verifications = VerificationStore(agent_state)
     swarm = SwarmCoordinator(db_path, leases=leases, blackboard=blackboard, verifications=verifications)
 
     dispatch_res = swarm.dispatch(
