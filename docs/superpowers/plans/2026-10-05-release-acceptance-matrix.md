@@ -50,6 +50,16 @@
   queue limit and real transcription failure still fail the smoke. Async runs
   before heavier GPU/audio checks; no automatic retry bypasses admission.
   Source edits are finished; final full-suite/live acceptance remains pending.
+- Integrated candidate `67d3fe6a`: controlled restart succeeded. Final
+  `python -B tools/release_check.py --allow-installed --live-smoke --json`
+  — exit 0, success=true/errors=[] (`req_01b9f88c5939`). All implemented live
+  checks passed, including async result and Agent State memory. Whisper CLI
+  explicitly returned expected empty-input behavior; this proves the silent
+  fixture pipeline, not speech-recognition quality. Quality-floor, status and
+  resource-pressure rejection requirements remain enforced.
+- Same candidate: selftest 6/6 (`req_b150ae09df34`), compileall exit 0
+  (`req_1bc15f73977b`), inventory 687 rows/no drift (`req_903f61f7d71f`).
+  Full pytest remains the outstanding release gate; no remote release published.
 
 ### Endpoint visibility correction — 2026-10-11
 
