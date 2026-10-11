@@ -2690,3 +2690,112 @@ or lacks Git metadata. No agent used a substitute checkout.
   into both stores; no schema acceptance was weakened. The test passes **1/1 in
   0.47s**. This test-fixture correction must be committed and the full suite
   rerun.
+- Full serial suite on committed candidate `ad0fb410` completed collection and
+  execution: **6,735 passed, 122 failed, 105 skipped, 3 errors, 15 subtests
+  passed in 2,765.19s**. Release remains **NO-GO**. A follow-up isolated run of
+  `tests/test_debug_traces.py` passed **43/43 in 6.25s** despite debug-trace
+  failures in the full run, so those failures are order/environment-sensitive
+  and must be reproduced before changing production behavior. The run did
+  expose multiple policy/schema/generator/Agent OS failures; do not mass-update
+  assertions to force green. Triage each against current release contracts.
+- The approved bounded autostart fix is already present in `client.py` at
+  `ad0fb410`: initial readiness probe is capped at
+  `min(health_timeout, budget * 0.25)`, leaving startup-lock budget available.
+  `tests/test_client_operational_mode_autostart.py` asserts the bounded probes;
+  rerun that focused test on the candidate before release.
+- Follow-up candidate repairs: safe `repair_loop` failures now report
+  `outcome_unknown` when replay is refused; repo-memory deletion uses the
+  stored scope ID when caller omits it; `local_ai_work.response_profile` uses
+  the shared enum schema. Search now looks one eligible file beyond its Python
+  fallback cap to report truncation and refuses incomplete cached Git
+  inventories for explicit filtered caps. Updated stale tests to current model
+  profile and reranker cache identity contracts; fixed stale HTTP/task,
+  trace, reliability, and runtime fixtures without weakening production gates.
+  Combined targeted suite — **347 passed, 1 platform skip in 107.85s**;
+  `python -B -m compileall -q src tools tests` — **passed**;
+  `python -B tools/selftest.py` — **6/6 checks passed**;
+  `python -B tools/release_check.py --allow-installed` — **OK**.
+  `python -B tools/release_check.py` without `--allow-installed` rejects known
+  installed/runtime payloads, as expected. Full suite has NOT been rerun on
+  this dirty candidate; release remains **NO-GO**.
+
+## 2026-10-11 release continuation
+
+- Current candidate is root `master` at `ad0fb410`; root has 68 tracked dirty
+  paths and 0 untracked paths. Do not treat dirty work as integrated/committed.
+  There are 65 registered worktrees; this turn did not complete a safe
+  owner-by-owner branch/worktree reconciliation, so that remains open.
+- Full serial run `python -B -m pytest -q --tb=short` completed once on the
+  dirty candidate: **6,840 passed, 9 failed, 106 skipped, 2 warnings, 23
+  subtests passed in 3,015.63s**. It exposed memory GLOBAL lookup returning
+  404 when a trusted repository alias was omitted, project-lint receipts not
+  rejecting altered caller arguments, empty-index fallback contradicting its
+  bounded contract, and multiple stale/flaky test expectations. The T02
+  failures were historical pin/receipt tests incorrectly binding immutable
+  evidence to current edited files; they did not establish that benchmark
+  measurements passed.
+- Repairs were checked with
+  `python -B -m pytest -q --tb=short tests/test_t02_paired_matrix.py
+  tests/test_agent_state_transport.py::test_http_memory_get_is_scope_and_root_isolated
+  tests/test_agent_verification.py::test_project_lint_command_receipt_binds_runner_to_configured_alias
+  tests/test_context_delivery.py::test_empty_available_path_index_does_not_trigger_filesystem_fallback
+  tests/test_project_command_broker.py::test_project_command_config_cache_invalidates_on_git_revision
+  tests/test_repo_tools.py::test_repository_tools_returns_revision_and_changed_paths_for_guard
+  tests/test_t06_project_validation_receipts.py::test_structured_project_validation_binds_args_and_private_environment
+  tests/test_t19_sdk_scenarios.py::test_seven_sdk_workflows_have_measured_production_route_outcomes`:
+  **29 passed in 41.63s**. T02 tests now validate pinned immutable commit blobs and
+  the historical preparation receipt's own provenance; contaminated/no-valid
+  paired benchmark status remains explicit and is not upgraded to acceptance.
+- Post-repair gates:
+  `python -B -m compileall -q src tools tests` — **passed**;
+  `python -B tools/selftest.py` — **6/6 passed**;
+  `python -B tools/release_check.py --allow-installed` — **OK**;
+  `git diff --check` — **passed** (CRLF warnings only).
+- A second full serial run was started after the fixes but the execution
+  session disappeared at approximately 15%; process inventory confirmed no
+  pytest process remained. There is no valid completion summary for that run.
+  Re-run the full suite on the frozen integrated candidate before release.
+- Current decision: **NO-GO**. No commit or cleanup was performed. Outstanding:
+  full final pytest receipt; T02 fresh uncontaminated paired measurement and
+  model-dependent quality goldens; exact ownership/integration of remaining
+  dirty paths and 65 worktrees/branches; installed-runtime/restart validation;
+  and the broader T01–T21/audit acceptance review. Keep existing `/api/context/pack`
+  behavior under T14 ownership.
+
+### 2026-10-11 follow-up after focused regression fixes
+
+- A second focused run covering T05, T09, T14, T19 and the repo-tools warning
+  exposed a T09 provenance mismatch: optional project-command digests were
+  absent in the evidence artifact but empty strings in the durable broker
+  record. Normalize absent proof fields to empty strings in the comparison.
+  The regression suite then passed: **42 passed in 33.97s**.
+- The approved autostart probe cap is present in `client.py`; the bounded
+  startup test asserts initial health probes stay within the caller's short
+  budget; `python -B -m pytest -q --tb=short
+  tests/test_mcp_autostart_contract.py` passed **6 tests in 1.78s**.
+  `python -B -m compileall -q src tools tests` passed.
+  `python -B tools/release_check.py --allow-installed` returned
+  **release-check: OK**; `git diff --check` passed (CRLF conversion notices
+  only).
+- `selftest.py` first found an undefined `payload` in the GET memory route. The
+  stray reference was removed; the route already reads `repository_id` from
+  query parameters. Direct post-fix run passed all 6 checks, including
+  `undefined-globals`, repository filtering, HTTP health/capabilities, and the
+  agent state store.
+- A fresh full serial pytest run was submitted through the Hub broker. The
+  broker call timed out after 900s; later process checks confirmed pytest was
+  still active, then absent. No final summary/exit code was captured, so its
+  result is **unknown**; do not claim a pass. Current release status remains
+  **NO-GO**.
+- Current read-only Git inventory: root is `master` at `ad0fb410`, 69 tracked
+  paths dirty, 0 untracked; 65 registered worktrees total. Of the other 64,
+  63 are clean and exactly at master. One dirty worktree
+  (`release-verify-7cb`) is 7 commits behind and has only its own
+  `docs/API_COVERAGE.md` change; preserve it because it was generated from its
+  older source snapshot. Across 153 local branches, 0 have commits absent
+  from master (40 refs equal, 113 behind-only); stash list is empty. No
+  worktree, branch, or stash was changed.
+- Fresh `python -B tools/surface_inventory.py --check` passed with 687 rows and
+  no drift. The earlier 42-test focused receipt and all release gates remain
+  current for their stated scopes, but cannot replace the missing full-suite
+  result.

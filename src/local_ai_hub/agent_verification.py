@@ -853,8 +853,8 @@ def _receipt_evidence_matches(
                 or execution_record.get("repository_root_sha256") != root_sha256
                 or execution_record.get("repository_revision") != receipt.repository_revision
                 or execution_record.get("mutation_generation") != receipt.mutation_generation
-                or execution_record.get("configured_command_sha256") != proof.get("configured_command_sha256")
-                or execution_record.get("caller_arguments_sha256") != proof.get("caller_arguments_sha256")
+                or execution_record.get("configured_command_sha256", "") != proof.get("configured_command_sha256", "")
+                or execution_record.get("caller_arguments_sha256", "") != proof.get("caller_arguments_sha256", "")
                 or type(execution_record.get("exit_code")) is not int
                 or execution_record.get("exit_code") != 0
                 or execution_record.get("cached") is not False
