@@ -2957,6 +2957,20 @@ or lacks Git metadata. No agent used a substitute checkout.
   All non-pinned clean worktrees are synchronized to master.
 - Clean checkout `release-strict-check` passed `python -B
   tools/release_check.py --strict-tree` at exact candidate `8245a45f`;
+
+### 2026-10-11 full-suite follow-up
+
+- A single direct run of `python -B -m pytest -q --tb=short` completed with
+  exit code 1. The progress output showed five failures, but the tool discarded
+  the final failure summary; exact failing node IDs and tracebacks were not
+  retained. Do not mark the full suite green from this run.
+- Pytest's cached last-failed selection was then run once through the command
+  broker: `python -B -m pytest --lf -q --tb=short` — **5 passed, 466
+  deselected in 13.94s**. This shows those cached failures pass on rerun, but
+  does not replace a passing full-suite receipt or establish why they failed.
+- The full suite remains an unresolved release gate. Preserve the non-green
+  result and obtain a bounded, captured failure report before any release GO;
+  do not rerun the broad suite merely to erase the prior failure.
   `python -B tools/surface_inventory.py --check` passed with 687 rows and no
   drift. Working checkout gates (`release_check --allow-installed`, compileall,
   six selftests) also passed.
