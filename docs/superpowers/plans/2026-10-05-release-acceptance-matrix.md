@@ -2954,6 +2954,17 @@ or lacks Git metadata. No agent used a substitute checkout.
   trees remain at `73bdb084`; one detached worktree, `release-verify-7cb` at
   `3010c894`, remains dirty only in `docs/API_COVERAGE.md` and was preserved.
   All non-pinned clean worktrees are synchronized to master.
+- Clean checkout `release-strict-check` passed `python -B
+  tools/release_check.py --strict-tree` at candidate `0465a57e`;
+  `python -B tools/surface_inventory.py --check` passed with 687 rows and no
+  drift. Working checkout gates (`release_check --allow-installed`, compileall,
+  six selftests) also passed.
+- Full suite collection: 6,959 tests. Targeted files passed: surface inventory
+  743; agent state operations 18; prior last-failed selector 1. Broad runs are
+  still incomplete: 3,159-test shard timed out at 780s, last-failed timed out
+  at 240s, and 402-test shard timed out at 600s. Broker stats confirmed no
+  process remained active; no assertion failure or full summary was returned.
+  T20 remains **NO-GO** until full candidate-bound pytest completes.
 - `python tools/release_check.py --allow-installed && python -m compileall -q
   src tools tests && python tools/selftest.py`: exit 0; six selftest checks
   green. Hub v4.0.0 is online in `active` mode.
