@@ -2946,15 +2946,14 @@ or lacks Git metadata. No agent used a substitute checkout.
 
 ## 2026-10-11 latest continuation recheck
 
-- Root remains clean on `master` at `dc6d3f386f99eed9177ca04a31afe9bbc7d80c1e`,
-  779 commits ahead of `origin/master`. `git branch --no-merged master` and
-  `git stash list` returned no entries. `git worktree list` reports 66 total
-  including root.
+- Master is clean after this evidence commit; it is 782 commits ahead of
+  `origin/master`. `git branch --no-merged master` and `git stash list` return
+  no entries. `git worktree list` reports 66 total including root.
 - Full status audit covered all 66 registered worktrees. 60 are at current
   master (root plus 59 fast-forwarded clean worktrees); five pinned T15 benchmark
   trees remain at `73bdb084`; one detached worktree, `release-verify-7cb` at
   `3010c894`, remains dirty only in `docs/API_COVERAGE.md` and was preserved.
-  No local branch remains unmerged; stash list is empty.
+  All non-pinned clean worktrees are synchronized to master.
 - `python tools/release_check.py --allow-installed && python -m compileall -q
   src tools tests && python tools/selftest.py`: exit 0; six selftest checks
   green. Hub v4.0.0 is online in `active` mode.
