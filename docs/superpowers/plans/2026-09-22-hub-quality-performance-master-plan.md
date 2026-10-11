@@ -2742,7 +2742,7 @@ Read-only owner audits completed for T01–T21. Clean master checkouts are alrea
 
 ### Release revalidation — 2026-10-11 latest
 
-- Root candidate is `master` at `8c0b6897`, 776 commits ahead of `origin/master`. One uncommitted test-only fixture change is in `tests/test_daemon_lifecycle_hardening.py`; no production source changed. T14 `/api/context/pack` remains untouched.
+- Root candidate is clean `master` at `63e327bf`, 777 commits ahead of `origin/master`. The daemon PID fixture fix and evidence update are committed; no production source changed. T14 `/api/context/pack` remains untouched.
 - Confirmed async-task test race: `submit()` starts `_dispatch_background()` and the test immediately calls `_execute()` itself. If the background worker claims the job first, the explicit call returns `success=false` because state is no longer `queued`. The test now disables only background dispatch for this synchronous test; production dispatch behavior and assertions remain unchanged.
 - `python -m pytest tests/test_async_jobs_tasks.py tests/test_async_jobs.py -q --tb=short` — **31 passed in 6.07s** on the edited working tree.
 - Full-suite `python -m pytest -q --tb=short -x` terminated after the command broker’s 900-second MCP wait timed out; broker stats later showed the exact execution no longer active. `python -m pytest --last-failed -q --tb=short -x` recovered the concrete failure: `tests/test_daemon_lifecycle_hardening.py::test_named_daemon_job_survives_restart_and_stops_descendants` read an empty PID file created by a child’s non-atomic truncate/write sequence.
