@@ -2,6 +2,23 @@
 
 ## Current master reconciliation - 2026-10-11
 
+### Project-command cache test isolation — 2026-10-12
+
+- Complete `e67d2c96` run: **1 failed, 6888 passed, 105 skipped,
+  23 subtests passed, 2 FutureWarnings**, 2105.29s. Only failed node:
+  `test_project_command_config_cache_invalidates_on_git_revision`, three
+  global `_git_common_dir` calls instead of two. No resource cleanup error.
+- Original focused node passed in 0.64s (`req_1e60ee46cc63`). Its spy counts
+  every project in the process, although the acceptance concerns one fixture
+  repository. Injecting one unrelated lookup reproduces `3 != 2` deterministically
+  (`req_291713e10087`); the full-run third call's root was not recorded, so this
+  is a demonstrated isolation defect, not invented live cache-corruption proof.
+- Both file-signature and revision-cache spies now count only their fixture root.
+  Strict assertions remain one load for repeated access and a second load after
+  revision/config change. An explicit unrelated lookup is retained as regression.
+  Production code is unchanged. Entire project-command broker file: 16 passed
+  in 2.93s (`req_dc1f710b8d7f`). Final whole-tree run remains required.
+
 ### Lifecycle timing/resource correction — 2026-10-12
 
 - `c79b973d` full run ended at 35%: 1 failed, 2464 passed, 30 skipped,
