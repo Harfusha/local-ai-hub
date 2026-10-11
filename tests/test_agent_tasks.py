@@ -209,10 +209,35 @@ def test_transition_idempotency_reuse_by_different_actor_is_rejected(store: Task
             actor="agent-two",
             idempotency_key="shared-transition-key",
         )
-
     persisted = store.get(task.task_id)
     assert persisted is not None and persisted.status is TaskStatus.ACTIVE
     assert len(store.state_store.events(f"task:{task.task_id}")) == 2
+
+
+def test_checkpoint_file_capture_propagates_unexpected_path_errors(
+    store: TaskStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    task = store.create(contract_with_criteria(), task_context())
+
+    class BrokenPath:
+        def exists(self) -> bool:
+            raise RuntimeError("unexpected path inspection failure")
+
+    target_path = str(tmp_path / "changed.py")
+    real_path = agent_tasks_module.Path
+
+    def path_factory(value):
+        return BrokenPath() if str(value) == target_path else real_path(value)
+
+    monkeypatch.setattr(agent_tasks_module, "Path", path_factory)
+    checkpoint = TaskCheckpoint(
+        phase="verification",
+        next_action="run checks",
+        affected_paths=(target_path,),
+    )
+
+    with pytest.raises(RuntimeError, match="unexpected path inspection failure"):
+        store.checkpoint(task.task_id, checkpoint, capture_files=True)
 
 
 def test_same_status_transition_rejects_idempotency_key_owned_by_another_actor(store: TaskStore):
