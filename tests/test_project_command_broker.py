@@ -381,7 +381,8 @@ def test_project_command_config_cache_uses_file_signature_invalidation(
 
     def counted_common_dir(root: Path):
         nonlocal calls
-        calls += 1
+        if root == project:
+            calls += 1
         return original(root)
 
     monkeypatch.setattr(project_config, "_git_common_dir", counted_common_dir)
@@ -448,7 +449,8 @@ def test_project_command_config_cache_invalidates_on_git_revision(
 
     def counted_common_dir(root: Path):
         nonlocal calls
-        calls += 1
+        if root == project:
+            calls += 1
         return original(root)
 
     monkeypatch.setattr(project_config, "_git_common_dir", counted_common_dir)
@@ -460,6 +462,8 @@ def test_project_command_config_cache_invalidates_on_git_revision(
     (project / "revision.txt").write_text("two\n", encoding="utf-8")
     git("add", "revision.txt")
     git("commit", "-qm", "revision two")
+    # Other projects can resolve configuration while this broker is exercised.
+    project_config._git_common_dir(tmp_path)
     broker._resolve_project_command("probe", str(project))
 
     assert calls == 2
