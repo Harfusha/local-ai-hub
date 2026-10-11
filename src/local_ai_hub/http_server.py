@@ -3496,7 +3496,8 @@ class Handler(BaseHTTPRequestHandler):
         if decision["mode"] != "async":
             return None
         job_payload = dict(payload)
-        supplied_request_id = self.headers.get("X-LocalAI-Request-ID")
+        headers = getattr(self, "headers", None)
+        supplied_request_id = headers.get("X-LocalAI-Request-ID") if hasattr(headers, "get") else None
         if supplied_request_id:
             job_payload["request_id"] = supplied_request_id
         job_payload.pop("delivery", None); job_payload.pop("latency_budget_ms", None)
