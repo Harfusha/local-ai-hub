@@ -2914,3 +2914,11 @@ or lacks Git metadata. No agent used a substitute checkout.
   `release-verify-7cb` worktree is intentionally untouched, and final T20
   acceptance is still open. Do not interpret the focused green gates as a full
   release acceptance.
+- Committed the lifecycle fix and evidence as `91cdecac` on `master`; all 63
+  clean worktrees were fast-forwarded to it. The one dirty
+  `release-verify-7cb` worktree remains unchanged. Root is clean, with no
+  stashes.
+- One final `python -B -m pytest -q --tb=short` attempt exceeded the command
+  broker's 900-second wait without a pytest summary. A bounded process check
+  found no pytest process left running. This is a timeout/unknown result, not a
+  pass; no duplicate full-suite run was started.
