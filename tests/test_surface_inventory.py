@@ -24,6 +24,20 @@ sys.modules[SPEC.name] = MODULE
 SPEC.loader.exec_module(MODULE)
 
 
+def test_git_ignore_check_uses_hidden_process_options(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_run(*args, **kwargs):
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(args[0], 0)
+
+    monkeypatch.setattr(MODULE, "_hidden_run_kwargs", lambda _root: {"creationflags": 123})
+    monkeypatch.setattr(MODULE.subprocess, "run", fake_run)
+
+    assert MODULE._git_ignores(tmp_path, "generated/schemas/local_ai_repo.json") is True
+    assert captured["creationflags"] == 123
+
+
 def write(root: Path, relative: str, text: str) -> None:
     path = root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -1510,6 +1524,35 @@ def test_schema_fallback_uses_project_defaults_not_ambient_config(tmp_path, monk
     assert errors == []
     assert "local_ai_status" in schemas
     assert set(evidence) == set(schemas)
+    assert "local_ai_status" not in disabled_tools
+
+
+def test_ignored_runtime_config_and_schemas_do_not_change_inventory(tmp_path, monkeypatch):
+    make_repo(tmp_path)
+    write(tmp_path, "defaults.toml", (ROOT / "defaults.toml").read_text(encoding="utf-8"))
+    write(
+        tmp_path,
+        "config.toml",
+        "[features]\nstatus = false\n",
+    )
+    write(
+        tmp_path,
+        "generated/schemas/local_ai_rogue.json",
+        json.dumps({"name": "local_ai_rogue", "parameters": {"properties": {}}}),
+    )
+    monkeypatch.setattr(
+        MODULE,
+        "_git_ignores",
+        lambda root, relative: relative in {"config.toml", "generated/schemas/local_ai_repo.json"},
+    )
+
+    schemas, evidence, errors, disabled_tools = MODULE._generated_mcp_schemas(tmp_path)
+
+    assert errors == []
+    assert "local_ai_status" in schemas
+    assert "local_ai_rogue" not in schemas
+    assert set(evidence) == set(schemas)
+    assert all(value.endswith("generate_mcp_tool_schemas") for value in evidence.values())
     assert "local_ai_status" not in disabled_tools
 
 

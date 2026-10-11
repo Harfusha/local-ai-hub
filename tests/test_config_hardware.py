@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 from local_ai_hub.config import ConfigError, load_config
-from local_ai_hub.hardware import choose_profile
+from local_ai_hub.hardware import PROFILE_OVERRIDES, choose_profile
 
 
 def _config(tmp_path: Path, extra: str = "", server_bind: str | None = None):
@@ -17,13 +17,22 @@ def _config(tmp_path: Path, extra: str = "", server_bind: str | None = None):
     return load_config(str(path))
 
 
-def test_cpu_profile_selects_small_models(tmp_path: Path):
+def test_cpu_profile_respects_supported_model_roles(tmp_path: Path):
     cfg = _config(tmp_path)
     assert cfg["_hardware"]["profile"] == "cpu"
-    assert cfg["models"]["background_code"] == "qwen2.5-coder:0.5b"
-    assert cfg["models"]["fast_code"] == "qwen2.5-coder:1.5b"
-    assert cfg["models"]["heavy_code"] == "qwen2.5-coder:3b"
+    assert cfg["models"]["background_code"] == "qwen2.5-coder:3b"
+    assert cfg["models"]["fast_code"] == "qwen2.5-coder:3b"
+    assert cfg["models"]["heavy_code"] == "qwen2.5-coder:7b"
+    assert cfg["models"]["reasoning"] == "qwen3.5:9b"
+    assert cfg["models"]["general"] == "qwen2.5-coder:7b"
     assert cfg["background_gpu"]["enabled"] is False
+
+
+@pytest.mark.parametrize("profile", ("cpu", "integrated", "low", "balanced", "high", "max"))
+def test_hardware_profiles_do_not_use_preprocess_model_for_inference(profile: str) -> None:
+    models = PROFILE_OVERRIDES[profile]["models"]
+    inference_roles = ("background_code", "fast_code", "heavy_code", "reasoning", "general")
+    assert all(models[role] != "qwen2.5-coder:1.5b" for role in inference_roles)
 
 
 def test_background_work_defaults_to_low_os_priority(tmp_path: Path):
@@ -56,18 +65,29 @@ def test_health_probe_timeout_rejects_absurd_values(tmp_path: Path):
         _config(tmp_path, '[headless]\nhealth_probe_timeout_seconds = 3600\n')
 
 
-def test_security_validation_requires_token_for_remote(tmp_path: Path):
-    with pytest.raises(ConfigError, match="server.bind must be 127.0.0.1"):
-        _config(tmp_path, '[security]\nallow_remote = true\napi_token = "short"\n', server_bind="0.0.0.0")
+@pytest.mark.parametrize("value", ["true", "false"])
+def test_security_validation_rejects_removed_remote_access_option(tmp_path: Path, value: str):
+    with pytest.raises(ConfigError, match="security.allow_remote was removed"):
+        _config(tmp_path, f"[security]\nallow_remote = {value}\n")
 
 
-def test_security_validation_rejects_remote_bind_even_with_valid_token(tmp_path: Path):
-    with pytest.raises(ConfigError, match="server.bind must be 127.0.0.1"):
-        _config(
-            tmp_path,
-            '[security]\nallow_remote = true\napi_token = "very-long-secure-secret-token-1234"\n',
-            server_bind="0.0.0.0",
-        )
+def test_security_validation_rejects_removed_client_host_option(tmp_path: Path):
+    path = tmp_path / "config.toml"
+    path.write_text(
+        f'[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\nclient_host = "remote.example"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="server.client_host was removed"):
+        load_config(str(path))
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [("allowed_hosts", '["remote.example"]'), ("allowed_origins", '["https://remote.example"]')],
+)
+def test_security_validation_rejects_host_and_origin_overrides(tmp_path: Path, key: str, value: str):
+    with pytest.raises(ConfigError, match=f"security.{key} was removed"):
+        _config(tmp_path, f"[security]\n{key} = {value}\n")
 
 
 def test_security_validation_rejects_alternate_loopback_bind(tmp_path: Path):

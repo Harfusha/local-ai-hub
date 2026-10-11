@@ -1099,7 +1099,7 @@ def test_debug_trace_request_keeps_complete_paths_and_ordinary_context(tmp_path)
         "context": {"repo_root": raw_root, "repository_id": raw_root, "tenant": "nested-tenant"},
     })
     serialized = json.dumps(captured)
-    assert raw_root in serialized
+    assert json.dumps(raw_root, ensure_ascii=False)[1:-1] in serialized
     assert "sensitive-tenant" in serialized
     assert captured["root"] == raw_root
     assert captured["target_root"] == raw_root
@@ -2432,7 +2432,7 @@ def test_config_rejects_nonliteral_loopback_bind_and_remote_opt_in(tmp_path):
     for bind in ("0.0.0.0", "localhost", "::1", " 127.0.0.1 "):
         config.write_text(
             f'[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\nbind = "{bind}"\n'
-            '[security]\nallow_remote = false\napi_token = "long-secure-token-value-12345"\n',
+            '[security]\napi_token = "long-secure-token-value-12345"\n',
             encoding="utf-8",
         )
         with pytest.raises(ConfigError, match="server.bind must be 127.0.0.1"):
@@ -2440,10 +2440,18 @@ def test_config_rejects_nonliteral_loopback_bind_and_remote_opt_in(tmp_path):
 
     config.write_text(
         f'[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\nbind = "127.0.0.1"\n'
-        '[security]\nallow_remote = true\n',
+        '[security]\nallow_remote = false\n',
         encoding="utf-8",
     )
-    with pytest.raises(ConfigError, match="security.allow_remote is unsupported"):
+    with pytest.raises(ConfigError, match="security.allow_remote was removed"):
+        load_config(str(config))
+
+    config.write_text(
+        f'[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\nbind = "127.0.0.1"\n'
+        'client_host = "remote.example"\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match="server.client_host was removed"):
         load_config(str(config))
 
 
@@ -2465,7 +2473,6 @@ def _load_service_for_test(monkeypatch, state_dir: Path):
 def test_native_stop_reports_managed_ollama_failure(tmp_path, monkeypatch):
     service = _load_service_for_test(monkeypatch, tmp_path)
     monkeypatch.setattr(service, "mark_disabled", lambda _disabled: None)
-    monkeypatch.setattr(service, "request_graceful_hub_stop", lambda: False)
     monkeypatch.setattr(service, "run", lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0))
     monkeypatch.setattr(service, "kill_supervisor", lambda: True)
     monkeypatch.setattr(service, "kill_hub", lambda: True)
@@ -2487,7 +2494,6 @@ def test_native_stop_windows_fallback_requires_verified_registration(tmp_path, m
     monkeypatch.setattr(service.shutil, "which", lambda _name: "powershell.exe")
     disabled = []
     monkeypatch.setattr(service, "mark_disabled", lambda value: disabled.append(value))
-    monkeypatch.setattr(service, "request_graceful_hub_stop", lambda: False)
     monkeypatch.setattr(service, "kill_supervisor", lambda: True)
     monkeypatch.setattr(service, "kill_hub", lambda: True)
     monkeypatch.setattr(service, "find_listening_pid", lambda _port: None)
@@ -2676,7 +2682,7 @@ def test_async_job_trace_persists_complete_input_and_output_when_enabled(tmp_pat
             {"task": "private prompt text", "context": "private source text"},
         )
         assert manager.wait("tenant-a", submitted["job_id"], 3)["state"] == "done"
-        detail = traces.detail(submitted["trace_id"])
+        detail = traces.detail(submitted["trace_id"], full_payload=True)
         serialized = json.dumps(detail, ensure_ascii=False)
 
         assert "private prompt text" in serialized

@@ -309,8 +309,7 @@ class Supervisor:
             self.last_health_error = "child_identity_unverified"
             return False
         server = self.config["server"]
-        bind = str(server.get("bind", "127.0.0.1"))
-        host = str(server.get("client_host", "")).strip() or ("127.0.0.1" if bind in {"0.0.0.0", "::", "[::]"} else bind)
+        host = "127.0.0.1"
         headers: dict[str, str] = {}
         token = str(self.config.get("security", {}).get("api_token", ""))
         if token:
@@ -365,10 +364,7 @@ class Supervisor:
         if not self._owned_hub_child():
             return False
         server = self.config["server"]
-        bind = str(server.get("bind", "127.0.0.1"))
-        host = str(server.get("client_host", "")).strip() or (
-            "127.0.0.1" if bind in {"0.0.0.0", "::", "[::]"} else bind
-        )
+        host = "127.0.0.1"
         headers: dict[str, str] = {}
         security = self.config.get("security", {})
         token = str(security.get("api_token", "") or "")

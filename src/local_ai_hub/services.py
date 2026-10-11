@@ -1868,7 +1868,7 @@ class LocalAIServices:
         if not task:
             return {"success": False, "error": "task or prompt is required"}
 
-        fast_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:1.5b"))
+        fast_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:3b"))
         package = build_prompt(
             operation="speculative_draft",
             model=fast_model,
@@ -6480,7 +6480,7 @@ class LocalAIServices:
         chunks = [text[i:i + chunk_chars] for i in range(0, len(text), chunk_chars)]
         summaries: list[str] = []
         per_chunk_out = max(180, min(700, target_tokens // max(1, len(chunks)) + 120))
-        general_model = str(self.config.get("models", {}).get("general", self.config.get("models", {}).get("fast_code", "qwen2.5-coder:1.5b")))
+        general_model = str(self.config.get("models", {}).get("general", self.config.get("models", {}).get("fast_code", "qwen2.5-coder:7b")))
         for index, chunk in enumerate(chunks):
             package = build_prompt(
                 operation="compress",
@@ -6529,7 +6529,7 @@ class LocalAIServices:
         prefix = str(args.get("prefix", ""))
         suffix = str(args.get("suffix", ""))
         max_tokens = min(256, max(8, int(args.get("max_tokens", 80))))
-        model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:1.5b"))
+        model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:3b"))
 
         # Standard Qwen FIM prompt template
         prompt = f"<|fim_prefix|>{prefix[-3000:]}<|fim_suffix|>{suffix[:1500]}<|fim_middle|>"
@@ -6700,7 +6700,7 @@ class LocalAIServices:
             f"3. Return ONLY clean source code inside a code block, no chat."
         )
 
-        fast_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:1.5b"))
+        fast_model = str(self.config.get("models", {}).get("fast_code", "qwen2.5-coder:3b"))
         res = self._generate(
             fast_model,
             prompt,
@@ -7098,7 +7098,7 @@ class LocalAIServices:
         # needs a verified deterministic fix.
         if confidence >= 0.50 or not artifact_id or not preview or not self._is_bounded_diagnostic_command(command):
             return None
-        model = self.config.get("models", {}).get("fast_code", "qwen2.5-coder:1.5b")
+        model = self.config.get("models", {}).get("heavy_code", "qwen2.5-coder:7b")
         prompt = (
             f"Investigate this low-confidence command failure in {cwd}:\nCommand: {command}\n"
             f"Failure summary: {json_dumps(summary, sort_keys=True)}\n"
@@ -7172,7 +7172,7 @@ class LocalAIServices:
     ) -> dict[str, Any]:
         if payload.get("stream") is True:
             return {"success": False, "error": "streaming is intentionally disabled through the affinity queue"}
-        model = str(payload.get("model") or self.config.get("models", {}).get("general", "qwen2.5-coder:1.5b"))
+        model = str(payload.get("model") or self.config.get("models", {}).get("general", "qwen2.5-coder:7b"))
         clean = dict(payload)
         clean.pop("_hub_timeout_seconds", None)
         has_diagnostic_cap = diagnostic_timeout_seconds is not None
@@ -7436,7 +7436,7 @@ class LocalAIServices:
     def eval_suite(self, payload: dict[str, Any], tenant: str = "default") -> dict[str, Any]:
         """Run bounded local agent benchmark evaluation test cases."""
         suite_name = str(payload.get("suite_name", "default"))
-        requested_model = str(payload.get("model") or getattr(self, "config", {}).get("models", {}).get("fast_code", "qwen2.5-coder:1.5b"))
+        requested_model = str(payload.get("model") or getattr(self, "config", {}).get("models", {}).get("fast_code", "qwen2.5-coder:3b"))
         benchmark_kind = str(payload.get("benchmark_kind", "text") or "text").strip().lower()
         cases = payload.get("cases") or [
             {"id": "c1", "input": "def add(a, b):", "expected": "return a + b"},

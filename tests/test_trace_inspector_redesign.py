@@ -69,34 +69,30 @@ def test_trace_project_label_uses_raw_session_root_fallback():
     assert "root:rawSession.root" in model_source
 
 
-def test_trace_display_always_redacts_credentials_but_keeps_ordinary_content():
+def test_trace_display_redacts_credentials_and_preserves_ordinary_content():
     assert which("node"), "Dashboard JavaScript tests require Node.js"
-    redaction_start = DASHBOARD_HTML.index("function redactDiagnostic(")
-    redaction_end = DASHBOARD_HTML.index("// Lightweight pure-canvas chart renderer", redaction_start)
-    sanitizer_start = DASHBOARD_HTML.index("function traceSensitiveField(")
+    sanitizer_start = DASHBOARD_HTML.index("function traceSecretString(")
     sanitizer_end = DASHBOARD_HTML.index("\nfunction traceRecorded(", sanitizer_start)
     script = (
-        DASHBOARD_HTML[redaction_start:redaction_end]
-        + "let traceRevealRedactedDetails=false;\n"
-        + DASHBOARD_HTML[sanitizer_start:sanitizer_end]
+        DASHBOARD_HTML[sanitizer_start:sanitizer_end]
         + "const payload={prompt:'Show my cache hit rate; used 18 tokens',api_key:'api-secret-value',"
-        + "nested:{access_token:'access-secret-value',note:'Bearer event-secret'}};"
-        + "const rendered=[false,true].map(enabled=>{traceRevealRedactedDetails=enabled;"
-        + "return traceSanitizeValue(payload)});console.log(JSON.stringify(rendered));"
+        + "nested:{access_token:'access-secret-value',note:'Bearer event-secret',db_password:'database-secret',GITHUB_TOKEN:'github-secret'}};"
+        + "console.log(JSON.stringify(traceSanitizeValue(payload)));"
     )
     result = subprocess.run(
-        ["node"], input=script, check=True, capture_output=True, text=True, encoding="utf-8"
+        ["node"], input=script, check=False, capture_output=True, text=True, encoding="utf-8"
     )
+    assert result.returncode == 0, result.stderr
 
     import json
 
     rendered = json.loads(result.stdout)
-    for value in rendered:
-        assert value["prompt"] == "Show my cache hit rate; used 18 tokens"
-        assert value["api_key"] == "<redacted>"
-        assert value["nested"]["access_token"] == "<redacted>"
-        assert value["nested"]["note"] == "Bearer <redacted>"
-        assert all(secret not in json.dumps(value) for secret in ("api-secret-value", "access-secret-value", "event-secret"))
+    assert rendered["prompt"] == "Show my cache hit rate; used 18 tokens"
+    assert rendered["api_key"] == "[redacted]"
+    assert rendered["nested"]["access_token"] == "[redacted]"
+    assert rendered["nested"]["note"] == "Bearer [redacted]"
+    assert rendered["nested"]["db_password"] == "[redacted]"
+    assert rendered["nested"]["GITHUB_TOKEN"] == "[redacted]"
 
 
 def test_detailed_trace_preserves_complete_payload_and_token_metrics():
@@ -117,10 +113,11 @@ def test_detailed_trace_preserves_complete_payload_and_token_metrics():
     assert "output_tokens" in text and "9" in text
     assert "api-secret-value" in text
     assert "access-secret-value" in text
+    assert "[redacted]" not in text
     assert captured["root"] == r"C:\\work\\sample-project"
 
 
-def test_enabled_trace_store_preserves_complete_content_and_token_usage(tmp_path):
+def test_enabled_trace_store_preserves_complete_payload_and_token_usage(tmp_path):
     import json
 
     from local_ai_hub.debug_traces import DebugTraceStore
@@ -143,3 +140,4 @@ def test_enabled_trace_store_preserves_complete_content_and_token_usage(tmp_path
     assert "stored-secret" in stored
     assert "stored-access-secret" in stored
     assert "event-secret" in stored
+    assert "[redacted]" not in stored

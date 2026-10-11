@@ -9,6 +9,7 @@ import hashlib
 import importlib.util
 import json
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -461,7 +462,11 @@ def _generated_mcp_schemas(
     schemas: dict[str, dict[str, Any]] = {}
     evidence: dict[str, str] = {}
     errors: list[str] = []
-    if schema_dir.is_dir():
+    # Ignored runtime artifacts and per-machine config are not reproducible
+    # inputs to checked-in API coverage. Use them only in standalone fixtures
+    # or when the repository explicitly tracks them.
+    schema_artifacts_ignored = _git_ignores(root, "generated/schemas/local_ai_repo.json")
+    if schema_dir.is_dir() and not schema_artifacts_ignored:
         for schema_path in sorted(schema_dir.glob("*.json")):
             try:
                 payload = json.loads(schema_path.read_text(encoding="utf-8"))
@@ -519,7 +524,7 @@ def _generated_mcp_schemas(
         # generate_mcp_tool_schemas returns an in-memory mapping. Never call
         # write_all_generated here; that separate generator persists artifacts.
         config_path = root / "config.toml"
-        if config_path.is_file():
+        if config_path.is_file() and not _git_ignores(root, "config.toml"):
             cfg = load_config(str(config_path))
         else:
             # Inventory generation must not inherit a developer's home config
@@ -542,6 +547,44 @@ def _generated_mcp_schemas(
             except ValueError:
                 pass
     return schemas, evidence, errors, disabled_tools
+
+
+def _git_ignores(root: Path, relative_path: str) -> bool:
+    """Return whether Git ignores a path; non-Git fixtures remain self-contained."""
+    try:
+        result = subprocess.run(
+            ["git", "check-ignore", "--quiet", "--no-index", "--", relative_path],
+            cwd=root,
+            capture_output=True,
+            timeout=2,
+            check=False,
+            **_hidden_run_kwargs(root),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def _hidden_run_kwargs(root: Path) -> dict[str, Any]:
+    """Load the shared no-console subprocess options from this checkout."""
+    source_path = str((root / "src").resolve())
+    added_path = source_path not in sys.path
+    if added_path:
+        sys.path.insert(0, source_path)
+    try:
+        from local_ai_hub.process_utils import hidden_run_kwargs
+
+        return hidden_run_kwargs()
+    except Exception:
+        if sys.platform == "win32":
+            return {"creationflags": int(getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))}
+        return {}
+    finally:
+        if added_path:
+            try:
+                sys.path.remove(source_path)
+            except ValueError:
+                pass
 
 
 def _route_literals(condition: ast.AST) -> tuple[set[str], bool]:

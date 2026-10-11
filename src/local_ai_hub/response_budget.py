@@ -307,13 +307,17 @@ def _with_budget_meta(
 
 
 def _bounded_context_pack(
-    value: Any, *, budget_chars: int, include_decisions: bool = True, include_revision: bool = True
+    value: Any, *, budget_chars: int, include_decisions: bool = True,
+    include_revision: bool = True, include_context_id: bool = True,
 ) -> Any:
     """Keep context identity and one exact citation in a bounded response."""
     if not isinstance(value, dict):
         return _bounded_pointer_item(value, budget_chars=budget_chars)
     result: dict[str, Any] = {}
-    identity_keys = ("context_id", "repo_revision") if include_revision else ("context_id",)
+    identity_keys = (
+        (("context_id",) if include_context_id else ())
+        + (("repo_revision",) if include_revision else ())
+    )
     for key in identity_keys:
         item = value.get(key)
         if isinstance(item, str) and item:
@@ -392,8 +396,11 @@ def _budget_rejection(
     for error_chars in (512, 256, 128, 64, 32, 16, 8, 1):
         # Keep complete accounting whenever any compact projection fits.
         for budget_metadata in metadata_variants:
-            for include_context_decisions, include_context_revision in context_variants:
-                for evidence_count in (8, 4, 2, 1, 0):
+            # Keep at least one exact evidence ID before retaining decisions or
+            # revision duplicated inside the context pack. Top-level decision
+            # fields remain in the envelope and are authoritative.
+            for evidence_count in (8, 4, 2, 1, 0):
+                for include_context_decisions, include_context_revision in context_variants:
                     value: dict[str, Any] = {
                         "success": False,
                         "error": _bounded_string(error, error_chars),
@@ -412,7 +419,8 @@ def _budget_rejection(
                                 item,
                                 budget_chars=error_chars,
                                 include_decisions=include_context_decisions,
-                                include_revision=include_context_revision,
+                                include_revision=include_context_revision and "repo_revision" not in preserved,
+                                include_context_id="context_id" not in preserved,
                             )
                         elif key == "evidence_ids" and isinstance(item, (list, tuple)):
                             # Preserve whole IDs and bound only the number emitted.

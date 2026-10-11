@@ -2,26 +2,36 @@ from local_ai_hub import http_server
 from local_ai_hub.dashboard import DASHBOARD_HTML
 
 
-def test_dashboard_template_contains_complete_payload_views():
+def test_dashboard_template_keeps_primary_content_and_faithful_raw_payload():
     assert DASHBOARD_HTML.startswith("<!doctype html>")
-    assert "Complete endpoint input" in DASHBOARD_HTML
-    assert "Complete endpoint output" in DASHBOARD_HTML
+    assert "Input" in DASHBOARD_HTML
+    assert "Output" in DASHBOARD_HTML
+    assert "Complete endpoint input" not in DASHBOARD_HTML
+    assert "Complete endpoint output" not in DASHBOARD_HTML
+    assert "Complete JSON payload" in DASHBOARD_HTML
+    assert "tracePanel('raw','Raw',()=>traceRaw(detail),true)" in DASHBOARD_HTML
+    assert "JSON.stringify(payload,null,2)" in DASHBOARD_HTML
+    assert "JSON.stringify(traceSanitizeValue(payload)" not in DASHBOARD_HTML
 
 
 def test_served_dashboard_discloses_trace_access_and_retention_policy():
     html = http_server._dashboard_html_with_trace_notice()
     assert "full input/output only when enabled" in html
-    assert "protected access" in html
-    assert "separate retention policy" in html
+    assert "complete stored details shown as recorded" in html
+    assert "local access only" in html
+    assert "separate local retention policy" in html
 
 
 def test_dashboard_has_live_detailed_telemetry_toggle():
     assert 'id="detailedTelemetryToggle"' in DASHBOARD_HTML
     assert "debug_traces.enabled" in DASHBOARD_HTML
     assert "Detailed telemetry:" in DASHBOARD_HTML
-    assert "traceRevealRedactedDetails=Boolean(enabled)" in DASHBOARD_HTML
-    assert "Complete endpoint input" in DASHBOARD_HTML
-    assert "Complete endpoint output" in DASHBOARD_HTML
+    assert "traceRevealRedactedDetails" not in DASHBOARD_HTML
+    assert "Complete endpoint input" not in DASHBOARD_HTML
+    assert "Complete endpoint output" not in DASHBOARD_HTML
+    assert "Complete JSON payload" in DASHBOARD_HTML
+    assert "JSON.stringify(payload,null,2)" in DASHBOARD_HTML
+    assert "tracePanel('raw','Raw',()=>traceRaw(detail),true)" in DASHBOARD_HTML
 
 
 def test_operations_views_name_distinct_records_and_trace_availability() -> None:
@@ -48,7 +58,7 @@ def test_dashboard_marks_degraded_live_status_and_retries_with_backoff() -> None
     poll_source = DASHBOARD_HTML[start:end]
 
     assert "if(!r.ok)throw new Error(`status request failed (HTTP ${r.status})`)" in poll_source
-    assert "if(s.success===false){$('conn').textContent='degraded';$('conn').className='pill warn-t'" in poll_source
+    assert "if(s.success===false){$('conn').textContent=s.snapshot_stale===true?'stale':'degraded';$('conn').className='pill warn-t'" in poll_source
     assert "return false;" in poll_source
 
 

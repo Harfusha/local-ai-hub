@@ -24,6 +24,7 @@ from .context_identity import (
 )
 from .json_utils import backend_name as json_backend_name
 from .json_utils import dumps as json_dumps
+from .json_utils import dumps_bytes as json_dumps_bytes
 from .sqlite_support import connect_sqlite, retry_busy
 
 
@@ -152,7 +153,7 @@ class CompiledContext:
                 and _orjson_canonical_value(element_data)
             ):
                 try:
-                    serialized = json_dumps(
+                    serialized = json_dumps_bytes(
                         element_data,
                         ensure_ascii=False,
                         sort_keys=True,
@@ -166,7 +167,7 @@ class CompiledContext:
                         sort_keys=True,
                         separators=(",", ":"),
                         default=str,
-                    )
+                    ).encode("utf-8", errors="replace")
             else:
                 serialized = json.dumps(
                     element_data,
@@ -174,8 +175,8 @@ class CompiledContext:
                     sort_keys=True,
                     separators=(",", ":"),
                     default=str,
-                )
-            h.update(serialized.encode("utf-8", errors="replace"))
+                ).encode("utf-8", errors="replace")
+            h.update(serialized)
         return h.hexdigest()[:12]
 
     def to_dict(self, compact: bool = False) -> dict[str, Any]:

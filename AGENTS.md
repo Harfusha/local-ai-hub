@@ -159,3 +159,8 @@ Local AI Hub provides durable execution and memory primitives mapped into the st
   - Negative knowledge: `negative_knowledge_record`, `negative_knowledge_find` (prevents repeating failed approaches).
 - `local_ai_command`:
   - Accepts optional `task_id` and `criterion` to auto-mint verification receipts on passing test/lint commands.
+
+## Local model policy
+
+- `qwen2.5-coder:1.5b` is preprocessing-only; `qwen2.5-coder:3b` handles quick or simple tasks; `qwen2.5-coder:7b` handles ordinary and involved tasks; `qwen3.5:9b` handles the hardest reasoning.
+- Resolve routes from active configuration and user overrides. Routing targets do not prove a model is installed; model pulls remain opt-in.

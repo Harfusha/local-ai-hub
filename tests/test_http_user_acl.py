@@ -133,7 +133,6 @@ def test_network_security_rejects_any_bind_except_ipv4_loopback(bind):
             {
                 "server": {"bind": bind},
                 "security": {
-                    "allow_remote": True,
                     "api_token": "long-enough-service-secret",
                 },
             }

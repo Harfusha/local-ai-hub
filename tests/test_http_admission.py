@@ -87,8 +87,8 @@ def test_host_and_origin_validation(monkeypatch):
 
     app_mock = type("App", (), {
         "config": {
-            "server": {"bind": "127.0.0.1", "client_host": "127.0.0.1"},
-            "security": {"allow_remote": False, "allowed_hosts": [], "allowed_origins": []},
+            "server": {"bind": "127.0.0.1"},
+            "security": {"allowed_hosts": [], "allowed_origins": []},
         }
     })()
     monkeypatch.setattr(http_server, "APP", app_mock)
@@ -114,4 +114,3 @@ def test_host_and_origin_validation(monkeypatch):
     assert Handler._validate_host_and_origin(handler) is False
     assert sent[-1][0] == 403
     assert "cross-origin requests are not allowed" in sent[-1][1]["error"]
-

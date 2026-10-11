@@ -20,17 +20,68 @@ def _compact_project_label(value: Any) -> str:
     if not isinstance(value, str):
         return ""
     text = value.strip().rstrip("/\\")
-    return re.split(r"[\\/]", text)[-1] if text else ""
+    if not text or text.casefold() in {"project not recorded", "unknown", "none", "n/a"}:
+        return ""
+    return re.split(r"[\\/]", text)[-1]
 
 
-def _sanitize_trace_content(value: Any) -> Any:
-    """Keep complete detail payloads for explicitly enabled local debug traces."""
+def _trace_project_label(value: Any, *, depth: int = 0) -> str:
+    """Extract only an explicit project/workspace path from a captured request."""
+    if depth > 6:
+        return ""
+    project_fields = (
+        "project", "project_name", "projectName", "project_path", "projectPath",
+        "workspace", "workspace_name", "workspaceName", "workspace_path", "workspacePath",
+        "root", "repo_root", "repoRoot", "repository_root", "repositoryRoot",
+        "repository", "repo", "repo_path", "cwd", "working_directory",
+    )
+    if isinstance(value, dict):
+        for key in project_fields:
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate.strip():
+                label = _compact_project_label(candidate)
+                if label:
+                    return label
+            elif isinstance(candidate, (dict, list)):
+                if isinstance(candidate, list):
+                    for item in candidate:
+                        if isinstance(item, str) and item.strip():
+                            label = _compact_project_label(item)
+                            if label:
+                                return label
+                else:
+                    for nested_key in ("name", "path", "root", "workspace", "repository", "repo"):
+                        nested = candidate.get(nested_key)
+                        if isinstance(nested, str) and nested.strip():
+                            label = _compact_project_label(nested)
+                            if label:
+                                return label
+        for key in ("request", "effective_payload", "payload", "input", "context", "project_settings"):
+            nested = value.get(key)
+            if isinstance(nested, (dict, list)):
+                label = _trace_project_label(nested, depth=depth + 1)
+                if label:
+                    return label
+    elif isinstance(value, list):
+        for item in value:
+            if isinstance(item, (dict, list)):
+                label = _trace_project_label(item, depth=depth + 1)
+                if label:
+                    return label
+    return ""
+
+
+def _normalize_trace_content(value: Any) -> Any:
+    """Preserve opted-in local trace content while making values JSON-safe."""
     if isinstance(value, str):
         return value
     if isinstance(value, dict):
-        return {str(name): _sanitize_trace_content(item) for name, item in value.items()}
+        return {
+            str(name): _normalize_trace_content(item)
+            for name, item in value.items()
+        }
     if isinstance(value, (list, tuple)):
-        return [_sanitize_trace_content(item) for item in value]
+        return [_normalize_trace_content(item) for item in value]
     if isinstance(value, (bytes, bytearray, memoryview)):
         return {"encoding": "base64", "data": base64.b64encode(bytes(value)).decode("ascii")}
     if value is None or isinstance(value, (bool, int, float)):
@@ -70,6 +121,9 @@ class DebugTraceStore:
             self.retention_days = max(1, min(3650, int(self.terminal_ttl_seconds // 86400)))
         self.max_bytes = max(1024, int(cfg.get("max_bytes", 268435456)))
         self.max_sessions = max(1, int(cfg.get("max_sessions", 1000)))
+        self.max_events_per_session = max(1, int(cfg.get("max_events_per_session", 1000)))
+        self.max_event_bytes = max(100, int(cfg.get("max_event_bytes", 8 * 1024 * 1024)))
+        self.max_session_text_bytes = max(64, int(cfg.get("max_session_text_bytes", 64 * 1024 * 1024)))
         self.max_detail_response_bytes = max(
             4096,
             min(_TRACE_DETAIL_MAX_BYTES, int(cfg.get("max_detail_response_bytes", _TRACE_DETAIL_MAX_BYTES))),
@@ -185,23 +239,36 @@ class DebugTraceStore:
             )
 
     def append_output(self, trace_id: str, text: str) -> bool:
-        """Append streamed endpoint output without buffering or truncating it."""
+        """Append complete streamed output or evict the whole oversized trace."""
         if not self.enabled or not trace_id or not text:
             return False
         value = str(text)
-        byte_count = len(value.encode("utf-8"))
         try:
             with closing(self._connect()) as con:
                 con.execute("BEGIN IMMEDIATE")
                 meta = con.execute(
-                    "SELECT total_chars,total_bytes FROM trace_content_meta "
+                    "SELECT total_chars,total_bytes,storage_truncated FROM trace_content_meta "
                     "WHERE trace_id=? AND content_field='output' AND event_seq=0",
                     (trace_id,),
                 ).fetchone()
                 if not meta:
                     con.rollback()
                     return False
+                if bool(meta[2]):
+                    con.execute("DELETE FROM traces WHERE trace_id=?", (trace_id,))
+                    con.commit()
+                    return False
                 total_chars = int(meta[0] or 0)
+                other_bytes = int(con.execute(
+                    "SELECT COALESCE(SUM(total_bytes),0) FROM trace_content_meta "
+                    "WHERE trace_id=? AND event_seq=0 AND content_field NOT IN ('output','project_label')",
+                    (trace_id,),
+                ).fetchone()[0] or 0)
+                byte_count = len(value.encode("utf-8"))
+                if other_bytes + int(meta[1] or 0) + byte_count > self.max_session_text_bytes:
+                    con.execute("DELETE FROM traces WHERE trace_id=?", (trace_id,))
+                    con.commit()
+                    return False
                 remaining = value
                 if total_chars % self.CONTENT_CHUNK_CHARS:
                     last_index = total_chars // self.CONTENT_CHUNK_CHARS
@@ -228,8 +295,10 @@ class DebugTraceStore:
                         for index, start in enumerate(range(0, len(remaining), self.CONTENT_CHUNK_CHARS))
                     ),
                 )
+
                 con.execute(
-                    "UPDATE trace_content_meta SET total_chars=total_chars+?,total_bytes=total_bytes+? "
+                    "UPDATE trace_content_meta SET total_chars=total_chars+?,total_bytes=total_bytes+?,"
+                    "storage_truncated=0 "
                     "WHERE trace_id=? AND content_field='output' AND event_seq=0",
                     (len(value), byte_count, trace_id),
                 )
@@ -300,7 +369,17 @@ class DebugTraceStore:
     def _append_event(self, con: sqlite3.Connection, trace_id: str, event_type: str, payload: Any) -> int | None:
         if not con.execute("SELECT 1 FROM traces WHERE trace_id=?", (trace_id,)).fetchone():
             return None
+        payload = _normalize_trace_content(payload)
         complete_payload = self._encode(payload)
+        original_bytes = len(complete_payload.encode("utf-8"))
+        event_count = int(con.execute("SELECT COUNT(*) FROM trace_events WHERE trace_id=?", (trace_id,)).fetchone()[0] or 0)
+        session_bytes = int(con.execute(
+            "SELECT COALESCE(SUM(total_bytes),0) FROM trace_content_meta WHERE trace_id=? AND event_seq=0",
+            (trace_id,),
+        ).fetchone()[0] or 0)
+        if event_count >= self.max_events_per_session or original_bytes > self.max_event_bytes or session_bytes + original_bytes > self.max_session_text_bytes:
+            con.execute("DELETE FROM traces WHERE trace_id=?", (trace_id,))
+            return None
         seq = self._next_seq(con, trace_id)
         con.execute("INSERT INTO trace_events(trace_id,seq,created_at,event_type,payload_json) VALUES(?,?,?,?,?)", (trace_id, seq, time.time(), str(event_type), complete_payload[:self.CONTENT_PREVIEW_CHARS]))
         self._replace_content(
@@ -329,7 +408,7 @@ class DebugTraceStore:
     def event(self, trace_id: str, event_type: str, payload: Any) -> int | None:
         if not self.enabled or not trace_id:
             return None
-        safe_payload = _sanitize_trace_content(payload)
+        safe_payload = _normalize_trace_content(payload)
         try:
             with closing(self._connect()) as con:
                 con.execute("BEGIN IMMEDIATE")
@@ -351,6 +430,14 @@ class DebugTraceStore:
             with closing(self._connect()) as read_con:
                 read_con.row_factory = sqlite3.Row
                 current = read_con.execute("SELECT request_json,effective_payload_json,output_text,response_json FROM traces WHERE trace_id=?", (trace_id,)).fetchone()
+                content_meta = {
+                    str(row[0]): int(row[1] or 0)
+                    for row in read_con.execute(
+                        "SELECT content_field,total_bytes FROM trace_content_meta "
+                        "WHERE trace_id=? AND event_seq=0 AND content_field!='project_label'",
+                        (trace_id,),
+                    )
+                }
         except sqlite3.Error:
             return False
         if not current:
@@ -364,13 +451,23 @@ class DebugTraceStore:
         for key, value in fields.items():
             if key not in allowed:
                 continue
-            safe_value = _sanitize_trace_content(value)
+            safe_value = _normalize_trace_content(value)
             candidate[key] = self._encode(safe_value) if key in self.JSON_FIELDS or (key == "output" and isinstance(safe_value, (dict, list))) else str(safe_value)
-        content_inputs = {
-            key: candidate[key]
-            for key in ("request", "effective_payload", "output", "response")
-            if key in fields and key in allowed
-        }
+        content_inputs: dict[str, tuple[str, bool]] = {}
+        project_label_updated = "request" in fields or "effective_payload" in fields
+        project_label = (
+            _trace_project_label(fields.get("request"))
+            or _trace_project_label(fields.get("effective_payload"))
+        ) if project_label_updated else ""
+        session_bytes = sum(content_meta.values())
+        for key in ("request", "effective_payload", "output", "response"):
+            if key not in fields or key not in allowed:
+                continue
+            session_bytes -= content_meta.get(key, 0)
+            content = candidate[key]
+            content_inputs[key] = (content, False)
+            session_bytes += len(content.encode("utf-8"))
+        session_oversize = session_bytes > self.max_session_text_bytes
         for key, column in (("request", "request_json"), ("effective_payload", "effective_payload_json"), ("output", "output_text"), ("response", "response_json")):
             if key in fields:
                 stored_preview = candidate[key]
@@ -386,7 +483,7 @@ class DebugTraceStore:
                 updates.append(f"{column}=?"); values.append(stored_preview)
         for key, value in fields.items():
             if key in allowed and key not in self.JSON_FIELDS and key not in {"output", "thinking"} and not (reopening and key == "error"):
-                updates.append(f"{key}=?"); values.append(value)
+                updates.append(f"{key}=?"); values.append(_normalize_trace_content(value))
         if reopening:
             # A recovered async job may reopen a trace that restart recovery
             # temporarily marked terminal. Clear stale terminal metadata so the
@@ -401,19 +498,25 @@ class DebugTraceStore:
         try:
             with closing(self._connect()) as con:
                 con.execute("BEGIN IMMEDIATE")
+                if session_oversize:
+                    con.execute("DELETE FROM traces WHERE trace_id=?", (trace_id,))
+                    con.commit()
+                    return False
                 cur = con.execute(f"UPDATE traces SET {', '.join(updates)} WHERE trace_id=?", values)
-                for key, content in content_inputs.items():
-                    stored = candidate[key]
+                for key, (content, truncated) in content_inputs.items():
                     self._replace_content(
                         con,
                         trace_id,
                         key,
-                        stored,
+                        content,
                         encoding="json" if key in self.JSON_FIELDS else "text",
-                        storage_truncated=False,
+                        storage_truncated=truncated,
                     )
+                if project_label_updated:
+                    self._replace_content(con, trace_id, "project_label", project_label, encoding="text")
                 total_text_bytes = int(con.execute(
-                    "SELECT COALESCE(SUM(total_bytes),0) FROM trace_content_meta WHERE trace_id=? AND event_seq=0",
+                    "SELECT COALESCE(SUM(total_bytes),0) FROM trace_content_meta "
+                    "WHERE trace_id=? AND event_seq=0 AND content_field!='project_label'",
                     (trace_id,),
                 ).fetchone()[0] or 0)
                 con.execute("UPDATE traces SET text_bytes=? WHERE trace_id=?", (total_text_bytes, trace_id))
@@ -426,6 +529,7 @@ class DebugTraceStore:
         if not self.enabled or not trace_id:
             return False
         state = str(state)
+        error = str(error)
         now = time.time()
         if response is not None:
             # Keep the response write bounded but give it the same short lock
@@ -724,9 +828,20 @@ class DebugTraceStore:
                     if field in preview_columns:
                         raw_preview = str(row[preview_columns[field]] or "")
                         meta = session_content_meta.get(field)
-                        if full_payload and meta and meta[1]:
-                            session[field] = value
-                            session_payload_truncated = True
+                        if full_payload and meta and meta[0] > len(raw_preview):
+                            if meta[1]:
+                                session[field] = {
+                                    "truncated": True,
+                                    "preview": raw_preview,
+                                    "original_chars": meta[0],
+                                }
+                                session_payload_truncated = True
+                            else:
+                                session[field] = {
+                                    "preview": raw_preview,
+                                    "has_more": True,
+                                    "original_chars": meta[0],
+                                }
                 events: list[dict[str, Any]] = []
                 result: dict[str, Any] = {
                     "success": True,
@@ -953,13 +1068,18 @@ class DebugTraceStore:
                         CASE WHEN json_valid(request_json) THEN substr(json_extract(request_json, '$.action'), 1, 48) END AS request_action,
                         CASE WHEN json_valid(request_json) THEN substr(json_extract(request_json, '$.command'), 1, 512) END AS request_command,
                         CASE WHEN json_valid(request_json) THEN COALESCE(NULLIF(TRIM(json_extract(request_json, '$.project')), ''), NULLIF(TRIM(json_extract(request_json, '$.workspace')), ''), NULLIF(TRIM(json_extract(request_json, '$.root')), ''), NULLIF(TRIM(json_extract(request_json, '$.repo_root')), '')) END AS request_project,
-                        CASE WHEN json_valid(effective_payload_json) THEN COALESCE(NULLIF(TRIM(json_extract(effective_payload_json, '$.project')), ''), NULLIF(TRIM(json_extract(effective_payload_json, '$.workspace')), ''), NULLIF(TRIM(json_extract(effective_payload_json, '$.root')), ''), NULLIF(TRIM(json_extract(effective_payload_json, '$.repo_root')), '')) END AS payload_project
+                        CASE WHEN json_valid(effective_payload_json) THEN COALESCE(NULLIF(TRIM(json_extract(effective_payload_json, '$.project')), ''), NULLIF(TRIM(json_extract(effective_payload_json, '$.workspace')), ''), NULLIF(TRIM(json_extract(effective_payload_json, '$.root')), ''), NULLIF(TRIM(json_extract(effective_payload_json, '$.repo_root')), '')) END AS payload_project,
+                        (SELECT chunk_text FROM trace_content_chunks c WHERE c.trace_id=traces.trace_id AND c.content_field='project_label' AND c.event_seq=0 AND c.chunk_index=0) AS recorded_project
                         FROM traces{clause} ORDER BY updated_at DESC LIMIT ? OFFSET ?""", [*values, limit, offset]).fetchall()
                 items = []
                 for row in rows:
                     item = dict(row)
                     item["request_summary"] = self._request_summary(item["action"], item.pop("request_action", None), item.pop("request_command", None))
-                    item["project"] = _compact_project_label(item.pop("request_project", None) or item.pop("payload_project", None) or "")
+                    recorded_project = item.pop("recorded_project", None)
+                    request_project = item.pop("request_project", None)
+                    payload_project = item.pop("payload_project", None)
+                    project_value = recorded_project or request_project or payload_project or ""
+                    item["project"] = _compact_project_label(project_value)
                     items.append(item)
                 return {"success": True, "items": items, "total": total, "limit": limit, "offset": offset}
         except sqlite3.Error:
@@ -984,7 +1104,7 @@ class DebugTraceStore:
             with closing(self._connect()) as con:
                 con.execute("PRAGMA foreign_keys=ON")
                 total_count = int(con.execute("SELECT COUNT(*) FROM traces").fetchone()[0])
-                candidates = con.execute("SELECT trace_id,expires_at FROM traces WHERE state IN ('done','failed','cancelled','expired') ORDER BY updated_at ASC").fetchall()
+                candidates = con.execute("SELECT trace_id,expires_at FROM traces ORDER BY updated_at ASC").fetchall()
                 deleted = 0
                 for trace_id, expires_at in candidates:
                     if deleted >= self.cleanup_batch_size:
@@ -1047,10 +1167,6 @@ class DebugTraceObserver:
         if not text:
             return
         self._output += text
-        max_bytes = max(64, int(self.store.max_session_text_bytes))
-        raw = self._output.encode("utf-8")
-        if len(raw) > max_bytes:
-            self._output = raw[:max_bytes].decode("utf-8", errors="ignore") + "\n[trace output truncated]"
         self.store.update(self.trace_id, output=self._output)
         self.event("output_delta", {"text": text})
 
@@ -1059,10 +1175,6 @@ class DebugTraceObserver:
         if not text:
             return
         self._thinking += text
-        max_bytes = max(64, int(self.store.max_session_text_bytes))
-        raw = self._thinking.encode("utf-8")
-        if len(raw) > max_bytes:
-            self._thinking = raw[:max_bytes].decode("utf-8", errors="ignore") + "\n[trace thinking truncated]"
         self.event("thinking", {"text": text})
 
     def tool_call(self, payload: Any) -> None:

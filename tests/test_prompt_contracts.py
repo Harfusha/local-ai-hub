@@ -3,7 +3,7 @@ from local_ai_hub.prompt_contracts import build_prompt, capability_for
 
 def test_capability_matrix_distinguishes_all_configured_model_sizes():
     tiny = capability_for("qwen2.5-coder:0.5b")
-    fast = capability_for("qwen2.5-coder:1.5b")
+    preprocessor = capability_for("qwen2.5-coder:1.5b")
     ordinary = capability_for("qwen2.5-coder:3b")
     reasoning = capability_for("qwen2.5-coder:7b")
     vision = capability_for("qwen3-vl:4b", role="vision")
@@ -11,8 +11,10 @@ def test_capability_matrix_distinguishes_all_configured_model_sizes():
 
     assert "preprocess" in tiny.can
     assert "root_cause" in tiny.cannot
-    assert "single_file_explain" in fast.can
-    assert "architecture" in fast.cannot
+    assert "preprocess" in preprocessor.can
+    assert "inference" in preprocessor.cannot
+    assert "single_file_explain" in preprocessor.cannot
+    assert "architecture" in preprocessor.cannot
     assert "bounded_review" in ordinary.can
     assert "security_decision" in ordinary.cannot
     assert "root_cause" in reasoning.can

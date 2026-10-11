@@ -175,9 +175,7 @@ class HubClient:
     ):
         self.config = load_config(config_path)
         server = self.config["server"]
-        bind_host = str(server.get("bind", "127.0.0.1"))
-        client_host = str(server.get("client_host", "")).strip() or ("127.0.0.1" if bind_host in {"0.0.0.0", "::", "[::]"} else bind_host)
-        self.base_url = f"http://{client_host}:{int(server.get('port', 11435))}"
+        self.base_url = f"http://127.0.0.1:{int(server.get('port', 11435))}"
         endpoint = urlsplit(self.base_url)
         self._http_host = str(endpoint.hostname or "127.0.0.1")
         self._http_port = int(endpoint.port or 80)
@@ -540,14 +538,20 @@ class HubClient:
         def remaining() -> float:
             return max(0.0, deadline - time.monotonic())
 
+        def probe_timeout() -> float:
+            return min(self.health_timeout, remaining())
+
         def wait_until_ready() -> bool:
             while remaining() > 0:
-                if self._online(remaining()):
+                if self._online(probe_timeout()):
                     return True
                 time.sleep(min(self.startup_poll, remaining()))
-            return self._online(remaining())
+            return self._online(probe_timeout())
 
-        if self._online(remaining()):
+        # A failed first health check must not consume the caller's entire short
+        # autostart budget before we get a chance to acquire the startup lock.
+        initial_probe_timeout = min(self.health_timeout, budget * 0.25)
+        if initial_probe_timeout > 0 and self._online(initial_probe_timeout):
             return True
         state_dir = Path(self.config["server"]["state_dir"])
         try:
@@ -601,7 +605,7 @@ class HubClient:
 
             lock_deadline = min(deadline, time.monotonic() + self.startup_wait)
             while time.monotonic() < lock_deadline:
-                if self._online(remaining()):
+                if self._online(probe_timeout()):
                     return True
                 try:
                     owner_lock = _acquire_start_lock(lock_path, self.start_lock_stale)
@@ -613,14 +617,14 @@ class HubClient:
                 time.sleep(min(self.startup_poll, max(0.0, lock_deadline - time.monotonic())))
             if owner:
                 break
-            return self._online(remaining())
+            return self._online(probe_timeout())
 
         if not owner:
-            return self._online(remaining())
+            return self._online(probe_timeout())
         ready = False
         keep_lock = False
         try:
-            if self._online(remaining()):
+            if self._online(probe_timeout()):
                 return True
             if remaining() <= 0:
                 return False
@@ -637,11 +641,6 @@ class HubClient:
             service_script = Path(__file__).resolve().parents[2] / "tools" / "service.py"
             if not service_script.is_file():
                 return False
-            try:
-                from .process_utils import hidden_run_kwargs
-                kwargs = hidden_run_kwargs()
-            except Exception:
-                kwargs = {}
             launch_timeout = remaining()
             if launch_timeout <= 0:
                 return False
@@ -651,6 +650,8 @@ class HubClient:
                     from .process_utils import hidden_run_kwargs
                     kwargs = hidden_run_kwargs()
                 except Exception:
+                    if sys.platform == "win32":
+                        return False
                     kwargs = {}
                 try:
                     completed = subprocess.run(
@@ -681,6 +682,8 @@ class HubClient:
                     from .process_utils import hidden_run_kwargs
                     popen_kwargs = hidden_run_kwargs(detached=True)
                 except Exception:
+                    if sys.platform == "win32":
+                        return False
                     popen_kwargs = {}
                 if sys.platform != "win32":
                     popen_kwargs["start_new_session"] = True
@@ -694,11 +697,11 @@ class HubClient:
                     process._local_ai_process_identity = process_identity(process.pid)
                 _retain_detached_child(process)
             while remaining() > 0:
-                if self._online(remaining()):
+                if self._online(probe_timeout()):
                     ready = True
                     return True
                 time.sleep(min(self.startup_poll, remaining()))
-            ready = self._online(remaining())
+            ready = self._online(probe_timeout())
             if (
                 not ready
                 and process is not None

@@ -175,6 +175,11 @@ class _MCPHubClientAdapter:
     def __setattr__(self, name: str, value: Any) -> None:
         if name in {"_client", "_supports_operational_metadata"}:
             super().__setattr__(name, value)
+        elif callable(getattr(type(self), name, None)):
+            # Keep adapter method overrides on the adapter. Test monkeypatches
+            # and instrumentation must not replace HubClient.get with this
+            # bound proxy method, which would recurse through __getattr__.
+            super().__setattr__(name, value)
         elif hasattr(self, "_client") and self._client is not None:
             setattr(self._client, name, value)
         else:
@@ -1156,7 +1161,7 @@ def _preserve_contract_state(raw: Any, projected: Any) -> Any:
     """Restore bounded result-state fields after projection and compaction."""
     state_keys = {
         "success", "status_code", "error", "terminal", "retryable", "degraded",
-        "stale", "evidence", "cancel", "cancelled", "timed_out",
+        "stale", "evidence", "evidence_ids", "cancel", "cancelled", "timed_out",
     }
     if isinstance(raw, dict) and isinstance(projected, dict):
         for key in state_keys:
@@ -1169,9 +1174,22 @@ def _preserve_contract_state(raw: Any, projected: Any) -> Any:
                 value = value[:500]
             elif key == "evidence" and isinstance(value, list):
                 value = _bound_context_json(value[:MAX_EVIDENCE])
+            elif key == "evidence_ids" and isinstance(value, (list, tuple)):
+                value = [str(item)[:160] for item in value[:MAX_EVIDENCE] if str(item)]
             elif key == "cancel":
                 value = _bound_context_json(value)
             projected[key] = value
+        if not projected.get("evidence_ids"):
+            context_pack = raw.get("adaptive_context_pack") or raw.get("context_pack")
+            evidence = context_pack.get("evidence") if isinstance(context_pack, dict) else None
+            if isinstance(evidence, list):
+                ids = [
+                    str(item.get("evidence_id"))[:160]
+                    for item in evidence[:MAX_EVIDENCE]
+                    if isinstance(item, dict) and item.get("evidence_id")
+                ]
+                if ids:
+                    projected["evidence_ids"] = ids
         for key, value in raw.items():
             if key in projected and key not in state_keys:
                 projected[key] = _preserve_contract_state(value, projected[key])
@@ -1355,7 +1373,7 @@ class _ProtocolAccountingReporter:
     """
 
     def __init__(self) -> None:
-        self._queue: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=2048)
+        self._queue: queue.Queue[tuple[dict[str, Any], Any]] = queue.Queue(maxsize=2048)
         self._lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -1370,12 +1388,14 @@ class _ProtocolAccountingReporter:
 
     def record(self, event: dict[str, Any]) -> None:
         try:
-            self._queue.put_nowait(event)
+            # A queued report must keep the client that owned it at enqueue time;
+            # CLIENT can be replaced during controlled reconfiguration or tests.
+            self._queue.put_nowait((dict(event), CLIENT))
         except queue.Full:
             return
         self._ensure_worker()
 
-    def _send(self, events: list[dict[str, Any]]) -> None:
+    def _send(self, events: list[dict[str, Any]], *, client: Any = None) -> None:
         if not events:
             return
         try:
@@ -1390,7 +1410,7 @@ class _ProtocolAccountingReporter:
         try:
             # batch_id prevents HubClient single-flight from coalescing two
             # numerically identical accounting batches from concurrent MCP clients.
-            CLIENT.post(
+            (CLIENT if client is None else client).post(
                 "/api/telemetry/tool-accounting",
                 {"batch_id": f"{os.getpid()}-{time.time_ns()}", "events": list(events)},
                 timeout=0.25,
@@ -1403,7 +1423,7 @@ class _ProtocolAccountingReporter:
             operational_context.reset(operational_token)
 
     def _run(self) -> None:
-        batch: list[dict[str, Any]] = []
+        batch: list[tuple[dict[str, Any], Any]] = []
         idle_since = time.monotonic()
         while not self._stop.is_set():
             try:
@@ -1417,7 +1437,11 @@ class _ProtocolAccountingReporter:
                 except queue.Empty:
                     break
             if batch:
-                self._send(batch)
+                client_batches: dict[int, tuple[Any, list[dict[str, Any]]]] = {}
+                for event, client in batch:
+                    client_batches.setdefault(id(client), (client, []))[1].append(event)
+                for client, events in client_batches.values():
+                    self._send(events, client=client)
                 batch.clear()
             if time.monotonic() - idle_since > 15.0:
                 # Retire atomically with submit/start. A record that races with

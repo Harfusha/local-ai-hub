@@ -18,7 +18,7 @@ Use a stable project root. The API returns a structured stale/degraded result ra
 Use `local_ai_command(action="classify")`. Unknown, mutating, install/deploy/publish/clean and unsafe formatter commands are denied by default. Run intentional mutation directly under user control rather than weakening the hub policy.
 
 ## Dashboard authentication
-Run `python tools/hubctl.py dashboard` to print the dashboard URL (default `http://127.0.0.1:11435/dashboard`). Set the API token in the dashboard toolbar for the current browser session. The token is not placed in the URL. The Hub accepts only `127.0.0.1`; `allow_remote = true`, non-loopback binds, and anonymous API access are unsupported. `/health` is public liveness; `/ready` and protected API routes require a token with the `monitor` permission for readiness.
+Run `python tools/hubctl.py dashboard` to print the dashboard URL (default `http://127.0.0.1:11435/dashboard`). Set the API token in the dashboard toolbar for the current browser session. The token is not placed in the URL. No remote Hub access/control mode exists. HTTP and HubClient use only `127.0.0.1`; remote host, client-host, and origin overrides are rejected. Non-loopback binds and anonymous API access are unsupported. `/health` is public liveness; `/ready` and protected API routes require a token with the `monitor` permission for readiness.
 # Frontend vision review
 
 ## Offline fixture test fails

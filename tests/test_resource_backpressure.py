@@ -6,6 +6,7 @@ import sys
 import pytest
 
 from local_ai_hub.async_jobs import AsyncJobManager
+import local_ai_hub.async_jobs as async_jobs
 from local_ai_hub.scheduler import AffinityScheduler, QueueFullError
 
 
@@ -171,4 +172,154 @@ def test_async_cancel_terminates_registered_process(tmp_path) -> None:
         if process.poll() is None:
             process.kill()
             process.wait()
+        manager.close()
+
+
+def test_async_cleanup_uses_managed_process_tree_owner(tmp_path, monkeypatch) -> None:
+    manager = AsyncJobManager(
+        {"server": {"state_dir": str(tmp_path / "state")}},
+        scheduler=None,
+        artifacts=None,
+        executor=lambda _action, _payload, _tenant: {"success": True},
+    )
+
+    class _ManagedProcess:
+        pid = 12345
+        _local_ai_process_group = 12345
+        _local_ai_process_identity = {"pid": 12345, "creation_identity": 1}
+
+        def __init__(self) -> None:
+            self.waited = False
+
+        def poll(self):
+            return 0 if self.waited else None
+
+        def wait(self, timeout=None):
+            self.waited = True
+            return 0
+
+        def terminate(self):
+            raise AssertionError("managed process tree must use its ownership handle")
+
+    process = _ManagedProcess()
+    calls = []
+    monkeypatch.setattr(
+        async_jobs,
+        "terminate_tree",
+        lambda pid, **kwargs: calls.append((pid, kwargs)) or True,
+    )
+    try:
+        manager.register_process("job", process)
+        manager._cleanup_processes("job")
+        assert calls == [(process.pid, {"grace_seconds": 1.0, "process_handle": process})]
+        assert process.waited is True
+    finally:
+        manager.close()
+
+
+def test_async_cleanup_does_not_assume_exited_leader_means_tree_stopped(tmp_path, monkeypatch) -> None:
+    manager = AsyncJobManager(
+        {"server": {"state_dir": str(tmp_path / "state")}},
+        scheduler=None,
+        artifacts=None,
+        executor=lambda _action, _payload, _tenant: {"success": True},
+    )
+
+    class _ExitedManagedProcess:
+        pid = 12348
+        _local_ai_process_group = 12348
+        _local_ai_process_identity = {"pid": 12348, "creation_identity": 4}
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            return 0
+
+        def terminate(self):
+            raise AssertionError("managed process tree must not use leader-only termination")
+
+    process = _ExitedManagedProcess()
+    calls = []
+    monkeypatch.setattr(
+        async_jobs,
+        "terminate_tree",
+        lambda pid, **kwargs: calls.append((pid, kwargs)) or False,
+    )
+    try:
+        manager.register_process("job", process)
+        assert manager._cleanup_processes("job") is False
+        assert calls == [(process.pid, {"grace_seconds": 1.0, "process_handle": process})]
+        assert manager._processes["job"] == [process]
+    finally:
+        manager.close()
+
+
+def test_async_cancel_reports_unknown_when_tree_cleanup_is_unconfirmed(tmp_path, monkeypatch) -> None:
+    manager = AsyncJobManager(
+        {"server": {"state_dir": str(tmp_path / "state")}},
+        scheduler=None,
+        artifacts=None,
+        executor=lambda _action, _payload, _tenant: {"success": True},
+    )
+
+    class _ManagedProcess:
+        pid = 12346
+        _local_ai_process_group = 12346
+        _local_ai_process_identity = {"pid": 12346, "creation_identity": 2}
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            raise AssertionError("unconfirmed cleanup must not wait as if the tree stopped")
+
+        def terminate(self):
+            raise AssertionError("managed process tree must not fall back to a leader signal")
+
+    monkeypatch.setattr(async_jobs, "terminate_tree", lambda *_args, **_kwargs: False)
+    process = _ManagedProcess()
+    try:
+        submitted = manager.submit("tenant-a", "reason", {"task": "cleanup"}, dispatch_delay_seconds=30)
+        manager.register_process(submitted["job_id"], process)
+        cancelled = manager.cancel("tenant-a", submitted["job_id"])
+        assert cancelled["state"] == "outcome_unknown"
+        assert cancelled["outcome_unknown"] is True
+        assert cancelled["retryable"] is False
+        assert manager.status("tenant-a", submitted["job_id"])["state"] == "outcome_unknown"
+        assert manager._processes[submitted["job_id"]] == [process]
+    finally:
+        manager.close()
+
+
+def test_async_worker_records_unknown_when_process_tree_cleanup_fails(tmp_path, monkeypatch) -> None:
+    manager = AsyncJobManager(
+        {"server": {"state_dir": str(tmp_path / "state")}},
+        scheduler=None,
+        artifacts=None,
+        executor=lambda _action, _payload, _tenant: {"success": True},
+    )
+
+    class _ManagedProcess:
+        pid = 12347
+        _local_ai_process_group = 12347
+        _local_ai_process_identity = {"pid": 12347, "creation_identity": 3}
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            raise AssertionError("unconfirmed cleanup must not report a stopped process")
+
+        def terminate(self):
+            raise AssertionError("managed process tree must not fall back to a leader signal")
+
+    monkeypatch.setattr(async_jobs, "terminate_tree", lambda *_args, **_kwargs: False)
+    try:
+        submitted = manager.submit("tenant-a", "reason", {"task": "cleanup"}, dispatch_delay_seconds=1.0)
+        manager.register_process(submitted["job_id"], _ManagedProcess())
+        result = manager.wait("tenant-a", submitted["job_id"], timeout_seconds=3.0)
+        assert result["state"] == "outcome_unknown"
+        assert result["outcome_unknown"] is True
+    finally:
         manager.close()

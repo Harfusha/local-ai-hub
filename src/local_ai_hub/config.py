@@ -252,11 +252,11 @@ def validate_config(data: dict[str, Any]) -> None:
     if security is not None:
         if not isinstance(security, dict):
             raise ConfigError("security must be a TOML table")
-        allow_remote = security.get("allow_remote")
-        if allow_remote is not None and not isinstance(allow_remote, bool):
-            raise ConfigError("security.allow_remote must be a boolean")
-        if allow_remote:
-            raise ConfigError("security.allow_remote is unsupported; server.bind must be 127.0.0.1")
+        if "allow_remote" in security:
+            raise ConfigError("security.allow_remote was removed; Local AI Hub has no remote access mode")
+        for key in ("allowed_hosts", "allowed_origins"):
+            if security.get(key):
+                raise ConfigError(f"security.{key} was removed; Local AI Hub accepts local origins only")
         allowed_permissions = {"monitor", "read", "write", "admin"}
         permissions = security.get("api_token_permissions")
         if permissions is not None and (
@@ -334,6 +334,8 @@ def validate_config(data: dict[str, Any]) -> None:
             raise ConfigError("security.allowed_roots entries must be absolute paths")
         if security.get("allow_anonymous") is True:
             raise ConfigError("Anonymous HTTP API access is not supported; configure [security].api_token")
+        if "client_host" in server:
+            raise ConfigError("server.client_host was removed; Hub clients connect only to 127.0.0.1")
         bind = str(server.get("bind", "127.0.0.1"))
         if bind != "127.0.0.1":
             raise ConfigError("Refusing non-approved Local AI Hub bind: server.bind must be 127.0.0.1")

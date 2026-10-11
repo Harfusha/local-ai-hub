@@ -54,3 +54,22 @@ def dumps(value: Any, **kwargs: Any) -> str:
         if _msgspec is not None and not kwargs.get("sort_keys") and kwargs.get("default") is None:
             return _msgspec.json.encode(value).decode("utf-8")
     return json.dumps(value, **kwargs)
+
+
+def dumps_bytes(value: Any, **kwargs: Any) -> bytes:
+    """Serialize compact JSON directly to UTF-8 bytes when a fast backend exists."""
+    kwargs.setdefault("ensure_ascii", False)
+    kwargs.setdefault("separators", (",", ":"))
+
+    supported = {"ensure_ascii", "separators", "sort_keys", "default"}
+    compact = kwargs.get("separators") == (",", ":") and not kwargs.get("ensure_ascii", False)
+    if compact and not (set(kwargs) - supported):
+        if _orjson is not None:
+            options = _orjson.OPT_SORT_KEYS if kwargs.get("sort_keys") else 0
+            default = kwargs.get("default")
+            if default is None:
+                return _orjson.dumps(value, option=options)
+            return _orjson.dumps(value, option=options, default=default)
+        if _msgspec is not None and not kwargs.get("sort_keys") and kwargs.get("default") is None:
+            return _msgspec.json.encode(value)
+    return json.dumps(value, **kwargs).encode("utf-8")

@@ -28,8 +28,8 @@ _CAPABILITIES = {
         ("root_cause", "cross_file_reasoning", "architecture", "security_decision", "apply_changes"),
     ),
     "qwen2.5-coder:1.5b": ModelCapability(
-        "qwen2.5-coder:1.5b", "fast", ("extract", "classify", "compress", "single_file_explain", "checklist"),
-        ("root_cause", "cross_file_reasoning", "architecture", "security_decision", "apply_changes"),
+        "qwen2.5-coder:1.5b", "preprocessing", ("preprocess",),
+        ("inference", "single_file_explain", "root_cause", "cross_file_reasoning", "architecture", "security_decision", "apply_changes"),
     ),
     "qwen2.5-coder:3b": ModelCapability(
         "qwen2.5-coder:3b", "smart", ("single_file_explain", "bounded_review", "test_plan", "simple_patch_plan", "compare"),

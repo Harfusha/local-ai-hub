@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -32,6 +33,20 @@ def _mock_resolutions(monkeypatch, resolutions: dict[Path, Path]) -> None:
         return original_resolve(self, strict=strict)
 
     monkeypatch.setattr(Path, "resolve", controlled_resolve)
+
+
+def test_git_common_dir_uses_hidden_windows_process_options(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_run(*args, **kwargs):
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(args[0], 0, stdout=".git", stderr="")
+
+    monkeypatch.setattr(project_config, "hidden_run_kwargs", lambda: {"creationflags": 123}, raising=False)
+    monkeypatch.setattr(project_config.subprocess, "run", fake_run)
+
+    assert project_config._git_common_dir(tmp_path) == tmp_path / ".git"
+    assert captured["creationflags"] == 123
 
 
 def test_project_context_never_reads_hub_state_as_configuration(

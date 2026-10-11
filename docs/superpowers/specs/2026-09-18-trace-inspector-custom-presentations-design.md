@@ -1,5 +1,7 @@
 # Trace Inspector custom presentations
 
+> **Superseded trace-content policy:** The layout guidance remains historical, but references below to redaction, bounded display values, or truncation are superseded by [Trace Inspector unbounded payloads design](2026-09-21-trace-inspector-unbounded-payloads-design.md). Current opt-in local traces preserve complete ordinary content, redact credential values, and page large payloads.
+
 ## Goal
 
 Make every Trace Inspector request type immediately useful. The first view must answer what ran, what it received, what it produced, whether it succeeded, and what deserves attention. Technical metadata remains available through focused expandable sections instead of hiding the useful result inside one generic disclosure.

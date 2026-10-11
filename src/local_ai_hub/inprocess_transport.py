@@ -7,7 +7,6 @@ import time
 from email.message import Message
 from http import HTTPStatus
 from typing import Any, Mapping
-from urllib.parse import parse_qs, urlparse
 from urllib.error import HTTPError
 
 from .config import load_config
@@ -192,14 +191,8 @@ class InProcessTransport:
         handler.server = self._admission
         handler.request = conn
         handler.connection = conn
-        client_host = str(server_cfg.get("client_host", "") or server_cfg.get("bind", "127.0.0.1"))
-        if client_host in {"0.0.0.0", "::", "[::]"}:
-            client_host = "127.0.0.1"
-        if ":" in client_host and not client_host.startswith("["):
-            host_value = f"[{client_host}]:{int(server_cfg.get('port', 11435))}"
-        else:
-            host_value = f"{client_host}:{int(server_cfg.get('port', 11435))}"
-        handler.client_address = (client_host.strip("[]"), 0)
+        host_value = f"127.0.0.1:{int(server_cfg.get('port', 11435))}"
+        handler.client_address = ("127.0.0.1", 0)
         handler.headers = Message()
         for key, value in headers.items():
             handler.headers[str(key)] = str(value)
@@ -218,18 +211,6 @@ class InProcessTransport:
             if cancel_before_dispatch.is_set():
                 raise InProcessTransportFailure("in-process request timed out before dispatch")
             dispatched.set()
-        parsed_path = urlparse(path)
-        if (
-            method == "GET"
-            and not requires_heavy_work
-            and parsed_path.path == "/api/repo/topology"
-        ):
-            if not handler._require_authorized():
-                return handler._memory_status, handler.wfile.getvalue(), handler._memory_headers
-            query = parse_qs(parsed_path.query)
-            root = (query.get("root") or [""])[0]
-            handler._send(200, app.services.repo_topology(root))
-            return handler._memory_status, handler.wfile.getvalue(), handler._memory_headers
         if method == "GET":
             handler.do_GET()
         else:

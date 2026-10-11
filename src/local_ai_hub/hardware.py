@@ -332,11 +332,11 @@ def detect_hardware(requested_profile: str = "auto") -> dict[str, Any]:
 PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     "cpu": {
         "models": {
-            "background_code": "qwen2.5-coder:0.5b",
-            "fast_code": "qwen2.5-coder:1.5b",
-            "heavy_code": "qwen2.5-coder:3b",
-            "reasoning": "qwen2.5-coder:7b",
-            "general": "qwen2.5-coder:1.5b",
+            "background_code": "qwen2.5-coder:3b",
+            "fast_code": "qwen2.5-coder:3b",
+            "heavy_code": "qwen2.5-coder:7b",
+            "reasoning": "qwen3.5:9b",
+            "general": "qwen2.5-coder:7b",
             "vision": "qwen3-vl:4b",
         },
         "features": {"reranker": True},
@@ -368,18 +368,18 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "same_model_worker_passes": 1,
         },
         "ollama_subagents": {"profiles": {
-            "qwen-explorer": {"model": "qwen2.5-coder:1.5b"},
-            "qwen-drafter": {"model": "qwen2.5-coder:3b"},
+            "qwen-explorer": {"model": "qwen2.5-coder:3b"},
+            "qwen-drafter": {"model": "qwen2.5-coder:7b"},
             "qwen-critic": {"model": "qwen2.5-coder:7b"},
         }},
     },
     "integrated": {
         "models": {
-            "background_code": "qwen2.5-coder:0.5b",
-            "fast_code": "qwen2.5-coder:1.5b",
-            "heavy_code": "qwen2.5-coder:3b",
-            "reasoning": "qwen2.5-coder:7b",
-            "general": "qwen2.5-coder:1.5b",
+            "background_code": "qwen2.5-coder:3b",
+            "fast_code": "qwen2.5-coder:3b",
+            "heavy_code": "qwen2.5-coder:7b",
+            "reasoning": "qwen3.5:9b",
+            "general": "qwen2.5-coder:7b",
             "vision": "qwen3-vl:4b",
         },
         "scheduler": {"max_parallel": 1, "max_loaded_models": 1, "max_queue": 32, "max_queued_per_tenant": 12, "max_inflight_per_tenant": 1},
@@ -413,7 +413,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
         },
         "ollama_subagents": {
             "profiles": {
-                "qwen-explorer": {"model": "qwen2.5-coder:1.5b"},
+                "qwen-explorer": {"model": "qwen2.5-coder:3b"},
                 "qwen-drafter": {"model": "qwen2.5-coder:3b"},
                 "qwen-critic": {"model": "qwen2.5-coder:7b"},
             }
@@ -438,11 +438,11 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     },
     "low": {
         "models": {
-            "background_code": "qwen2.5-coder:0.5b",
-            "fast_code": "qwen2.5-coder:1.5b",
-            "heavy_code": "qwen2.5-coder:3b",
-            "reasoning": "qwen2.5-coder:7b",
-            "general": "qwen2.5-coder:1.5b",
+            "background_code": "qwen2.5-coder:3b",
+            "fast_code": "qwen2.5-coder:3b",
+            "heavy_code": "qwen2.5-coder:7b",
+            "reasoning": "qwen3.5:9b",
+            "general": "qwen2.5-coder:7b",
             "vision": "qwen3-vl:4b",
         },
         "scheduler": {"max_parallel": 1, "max_inflight_per_tenant": 1},
@@ -455,14 +455,14 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
             "smart": {"parallel": 1, "context_tokens": 24576, "max_context_tokens": 32768, "max_prompt_tokens": 22000},
         },
         "ollama_subagents": {"profiles": {
-            "qwen-explorer": {"model": "qwen2.5-coder:1.5b"},
-            "qwen-drafter": {"model": "qwen2.5-coder:3b"},
+            "qwen-explorer": {"model": "qwen2.5-coder:3b"},
+            "qwen-drafter": {"model": "qwen2.5-coder:7b"},
             "qwen-critic": {"model": "qwen2.5-coder:7b"},
         }},
     },
     "balanced": {
         "models": {
-            "background_code": "qwen2.5-coder:1.5b",
+            "background_code": "qwen2.5-coder:3b",
             "fast_code": "qwen2.5-coder:3b",
             "heavy_code": "qwen2.5-coder:7b",
             "reasoning": "qwen3.5:9b",
@@ -476,7 +476,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     },
     "high": {
         "models": {
-            "background_code": "qwen2.5-coder:1.5b",
+            "background_code": "qwen2.5-coder:3b",
             "fast_code": "qwen2.5-coder:3b",
             "heavy_code": "qwen2.5-coder:7b",
             "reasoning": "qwen3.5:9b",
@@ -490,7 +490,7 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
     },
     "max": {
         "models": {
-            "background_code": "qwen2.5-coder:1.5b",
+            "background_code": "qwen2.5-coder:3b",
             "fast_code": "qwen2.5-coder:3b",
             "heavy_code": "qwen3.5:9b",
             "reasoning": "qwen3.5:9b",

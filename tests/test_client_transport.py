@@ -62,6 +62,43 @@ def test_auto_start_timeout_terminates_and_reaps_only_its_child(tmp_path, monkey
     assert child.returncode is not None
 
 
+def test_auto_start_initial_health_probe_preserves_startup_budget(tmp_path, monkeypatch):
+    client = _client(tmp_path)
+    client.startup_wait = 0.2
+    client.health_timeout = 0.2
+    probe_timeouts = []
+    launched = []
+
+    class Child:
+        pid = 43211
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            self.returncode = -15
+            return self.returncode
+
+    child = Child()
+
+    def slow_offline_probe(timeout=None):
+        probe_timeouts.append(timeout)
+        if len(probe_timeouts) == 1:
+            time.sleep(timeout or 0)
+        return False
+
+    monkeypatch.setattr(client, "_online", slow_offline_probe)
+    monkeypatch.setattr(client_module, "find_listening_pid", lambda _port: None)
+    monkeypatch.setattr(client_module.subprocess, "Popen", lambda *_args, **_kwargs: launched.append(child) or child)
+    monkeypatch.setattr(client_module, "_retain_detached_child", lambda _process: None)
+    monkeypatch.setattr(client_module, "terminate_tree", lambda *_args, **_kwargs: None)
+
+    assert client.ensure_server(timeout=0.2) is False
+    assert probe_timeouts[0] <= 0.051
+    assert launched == [child]
+
+
 def test_client_get_non_object_json_uses_complete_invalid_response(tmp_path, monkeypatch):
     client = _client(tmp_path)
     monkeypatch.setattr(client, "_pooled_open", lambda *_args, **_kwargs: b"[]")

@@ -25,7 +25,7 @@ def _context(element_count: int) -> CompiledContext:
         ContextElement(
             element_id=f"element-{index}",
             source_kind="preload",
-            content=f"Unicode payload {index}: café — 雪",
+            content=f"Unicode payload {index}: café — 雪 " + ("x" * 1024),
             estimated_tokens=24,
             reason="legacy digest streaming benchmark",
             confidence=0.75,
@@ -59,8 +59,12 @@ def _legacy_etag(context: CompiledContext) -> str:
     digest.update(context.repo_revision.encode("utf-8"))
     digest.update(getattr(context, "request_identity_digest", "").encode("ascii", errors="ignore"))
     for element in context.elements:
+        element_data = element.to_dict(compact=False)
+        # Freshness is ranking metadata and is intentionally excluded from
+        # CompiledContext.etag(); keep the reference implementation equivalent.
+        element_data.pop("freshness", None)
         serialized = json.dumps(
-            element.to_dict(compact=False),
+            element_data,
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),

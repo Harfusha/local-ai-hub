@@ -30,7 +30,7 @@ class CompletionModelRoutingTests(unittest.TestCase):
         services = object.__new__(LocalAIServices)
         services.config = {"models": {
             "background_code": "qwen2.5-coder:0.5b",
-            "fast_code": "qwen2.5-coder:1.5b",
+            "fast_code": "qwen2.5-coder:3b",
         }}
         services.scheduler = CaptureScheduler()
         services.runtime = CaptureRuntime()
@@ -38,8 +38,8 @@ class CompletionModelRoutingTests(unittest.TestCase):
 
         result = services.complete_code({"prefix": "def answer():"}, "test")
 
-        self.assertEqual(result["model"], "qwen2.5-coder:1.5b")
-        self.assertEqual(services.runtime.model, "qwen2.5-coder:1.5b")
+        self.assertEqual(result["model"], "qwen2.5-coder:3b")
+        self.assertEqual(services.runtime.model, "qwen2.5-coder:3b")
 
     def test_code_completion_falls_back_to_fast_default(self):
         services = object.__new__(LocalAIServices)
@@ -50,7 +50,7 @@ class CompletionModelRoutingTests(unittest.TestCase):
 
         result = services.complete_code({"prefix": "def answer():"}, "test")
 
-        self.assertEqual(result["model"], "qwen2.5-coder:1.5b")
+        self.assertEqual(result["model"], "qwen2.5-coder:3b")
 
     def test_code_completion_rejects_empty_completion(self):
         services = object.__new__(LocalAIServices)

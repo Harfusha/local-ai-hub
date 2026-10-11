@@ -4,6 +4,7 @@ from .json_utils import dumps as json_dumps
 
 import hashlib
 import json
+import logging
 import math
 import os
 import re
@@ -19,6 +20,8 @@ from typing import Any, Collection, Mapping
 from .agent_events import AgentEvent, AgentStateStore
 from .agent_identity import AgentScope
 from .sqlite_support import connect_sqlite, retry_busy
+
+_logger = logging.getLogger(__name__)
 
 
 class ApprovalRequiredError(PermissionError):
@@ -2497,8 +2500,11 @@ class MemoryStore:
             except Exception:
                 try:
                     con.execute("ROLLBACK")
-                except Exception:
-                    pass
+                except sqlite3.Error as rollback_error:
+                    logging.getLogger(__name__).warning(
+                        "memory_delete_rollback_failed exception_type=%s",
+                        type(rollback_error).__name__,
+                    )
                 raise
             finally:
                 con.close()

@@ -1,5 +1,7 @@
 # Trace Output and Limits Implementation Plan
 
+> **Historical plan:** Its trace redaction and bounded-payload steps are superseded by [Trace Inspector unbounded payloads design](../specs/2026-09-21-trace-inspector-unbounded-payloads-design.md). Do not use those steps as the current trace-content contract.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make local model traces complete and readable while giving model operations enough token/time headroom to finish.

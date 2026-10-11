@@ -1,6 +1,5 @@
 [server]
 bind = "127.0.0.1"
-client_host = "" # optional client-side override; wildcard binds automatically connect via loopback
 port = 11435
 ollama_url = "http://127.0.0.1:11434"
 auto_start_ollama = false
@@ -44,11 +43,11 @@ auto_tune = true
 # These are baseline model IDs, not the effective routing for every machine.
 # [hardware].profile="auto" overlays the detected profile; explicit profile
 # and model overrides take precedence. See hardware.py for the role maps.
-background_code = "qwen2.5-coder:0.5b"
-fast_code = "qwen2.5-coder:1.5b"
-heavy_code = "qwen2.5-coder:3b"
-reasoning = "qwen2.5-coder:7b"
-general = "qwen2.5-coder:3b"
+background_code = "qwen2.5-coder:3b"
+fast_code = "qwen2.5-coder:3b"
+heavy_code = "qwen2.5-coder:7b"
+reasoning = "qwen3.5:9b"
+general = "qwen2.5-coder:7b"
 vision = "qwen3-vl:4b"
 embedding = "BAAI/bge-small-en-v1.5"
 embedding_backend = "sentence-transformers"

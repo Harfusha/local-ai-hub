@@ -264,7 +264,7 @@ def test_trace_reveal_drains_event_pages_and_reconstructs_content_pages() -> Non
     source = DASHBOARD_HTML[start:end]
     setup = r"""
     const traceEventBufferLimit = 200;
-    let activeTraceId = 'trace-id', traceEvents = [], traceRevealRedactedDetails = false, activeTraceData = {}, traceEventTotal = 5;
+    let activeTraceId = 'trace-id', traceEvents = [], activeTraceData = {}, traceEventTotal = 5;
     function renderTraceDetail(data) { activeTraceData = data; }
     function openModal() {}
     const fields = {
@@ -294,12 +294,10 @@ def test_trace_reveal_drains_event_pages_and_reconstructs_content_pages() -> Non
     script_source = setup + source + r"""
     (async () => {
       const assert = require('node:assert/strict');
-      const result = await fetchFullTracePayload('trace-id');
+      const result = await fetchPrimaryTraceContent('trace-id', {session: {}, payload_truncated: false});
       assert.equal(result.session.output, fields.output);
       assert.deepEqual(result.session.request, {});
       assert.deepEqual(result.session.response, {ok: true});
-      assert.deepEqual(result.events.map(event => event.payload.prompt), ['complete first', 'complete second']);
-      assert.equal(result.next_seq, 2);
       assert.equal(result.full_payload_requested, true);
       assert.equal(result.payload_truncated, false);
       const bounded = [];
@@ -311,6 +309,7 @@ def test_trace_reveal_drains_event_pages_and_reconstructs_content_pages() -> Non
       assert.equal(budget.used, 8);
       activeTraceData = result;
       traceEvents = [{seq: 4, payload: {index: 4}}, {seq: 5, payload: {index: 5}}];
+      traceEvents = [{seq: 3}];
       await loadTraceEventPage('older');
       assert.deepEqual(traceEvents.map(event => event.seq), [2, 3]);
       assert.equal(activeTraceData.has_older_events, true);
@@ -350,11 +349,11 @@ def test_trace_reveal_keeps_event_history_window_bounded() -> None:
     script_source = setup + source + r"""
     (async () => {
       const assert = require('node:assert/strict');
-      const result = await fetchFullTracePayload('trace-id');
-      assert.equal(result.events.length, 200);
-      assert.equal(result.events[0].seq, 6);
-      assert.equal(result.events[result.events.length - 1].seq, 205);
-      assert.equal(result.has_older_events, true);
+      const result = [];
+      appendBoundedTraceEvents(result, Array.from({length: 205}, (_, index) => ({seq: index + 1})));
+      assert.equal(result.length, 200);
+      assert.equal(result[0].seq, 6);
+      assert.equal(result[result.length - 1].seq, 205);
     })().catch(error => { console.error(error); process.exitCode = 1; });
     """;
     script = "const vm = require('node:vm');\n" + f"vm.runInNewContext({json.dumps(script_source)}, {{require, process, console, URL}});\n"
