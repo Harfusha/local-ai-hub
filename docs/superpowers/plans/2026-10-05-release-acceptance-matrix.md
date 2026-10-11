@@ -4,16 +4,16 @@
 
 | Area | Current status | Evidence / blocker |
 |---|---|---|
-| Root/master | Clean at `e02d70db` | `git status --short --branch` clean; 153 local branches, 0 unmerged branch tips, 0 stashes. Root is 766 commits ahead of `origin/master`; no remote release published. |
-| Worktrees | 64 at master; 1 stale dirty; none missing | Current inventory: 65 total. The only dirty checkout is detached `release-verify-7cb`, 23 commits behind master; all other worktrees match master. |
+| Root/master | Clean at `66827d87` | `git status --short --branch` clean; 153 local branches, 0 unmerged branch tips, 0 stashes. Root is 767 commits ahead of `origin/master`; no remote release published. |
+| Worktrees | 65 at master; 1 stale dirty; none missing | Current inventory: 66 total, including the clean managed `release-strict-check` T20 validation checkout. The only dirty checkout is detached `release-verify-7cb`, 24 commits behind master; all others match master. |
 | Dirty worktree | **Preserved / not integrated** | Only `docs/API_COVERAGE.md` modified. `python tools/surface_inventory.py --check` passes at its own stale `3010c894` source (687 rows); this proves its local consistency, not relevance to current master. No overwrite, stash, or removal. |
 | Client startup/transport | **Verified** | `python -m pytest -q tests/test_client_transport.py` — 45 passed in 3.32s at `e02d70db`. The approved initial-probe budget fix and regression test already exist in master; no new source patch needed. |
 | Audit regressions | **Focused checks pass** | MCP batch schema — 1 passed; global-memory delete with tenant — 1 passed; telemetry error diagnostics — 8 passed; `tests/test_command_rollback.py` exit 0 (platform skips reported). All run at `e02d70db`. |
 | Context hashing / ETag | Partial/review | `tests/test_agent_context.py` — 33 passed at `e33a0529`, including legacy canonical-JSON equivalence. Existing `CompiledContext.etag()` fast path verified; no distinct `element_id` hash generator or measured speedup established. |
 | Preprocessing commands | Partial/review | `tests/test_preprocessing_overhaul.py` — 22 passed on clean `codex/sync-t26-20261006` at `1c9bb734`, including quoted Unicode argv. This is not `.cmd/.bat` security or clean-install acceptance. |
 | Actionable TODOs | Scoped scan: none found | `rg -n -i --max-columns 180 -m 2 "\b(TODO|FIXME|XXX)\b" src/local_ai_hub tools` at `85c172ce`; hits are the scanner regex/report path, generated `test.todo(...)`, and token-router keyword logic. Not a whole-repository/documentation scan. |
-| Release gates | Partial pass; **T20 NO-GO** | On `e02d70db`, `python tools/release_check.py --allow-installed`, `python -m compileall -q src tools tests`, and `python tools/selftest.py` passed. Full `python -m pytest -q` has no receipt: broker wait timed out after 900s, process `51156` was verified and stopped; no test result was produced. |
-| Live Hub | **Degraded / release not verified** | One bounded status result: version `4.0.0`, Ollama online, no active/queued work, `degraded=true`. `doctor.py` exited 0 but its response projection was truncated, so diagnosis remains unknown. |
+| Release gates | Partial pass; **T20 NO-GO** | On `e02d70db`, `--allow-installed` release check, compileall, and selftest passed. `release_check.py --strict-tree` failed in installed root as expected, then passed (`release-check: OK`) in clean worktree at `66827d87`. Full pytest has no receipt: broker wait timed out at 900s; process `51156` was verified and stopped. |
+| Live Hub | **Operational checks pass; status disagreement open** | `hubctl status`: v4.0.0, active, Ollama/qwen2.5-coder:7b, 8 models, GPU RTX 4060; `hubctl doctor`: four components `[OK]`. One separate `local_ai_status` result still reports `degraded=true`; cause not identified. |
 
 Details are recorded in the master plan's “Revalidation — 2026-10-11 continuation” section. This matrix does not claim every worktree or release criterion complete.
 
