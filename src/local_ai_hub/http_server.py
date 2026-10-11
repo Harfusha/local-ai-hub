@@ -6430,6 +6430,9 @@ class Handler(BaseHTTPRequestHandler):
                     if requested_root and project_identity is None:
                         self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
                     root_val, repository_id_val = project_identity or (None, None)
+                    payload_repository_id = str(payload.get("repository_id") or "").strip()
+                    if not repository_id_val and payload_repository_id:
+                        repository_id_val = payload_repository_id
                     explicit_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
                     raw_tenant = payload.get("tenant") or (str(explicit_tenant).strip() if explicit_tenant else None)
                     tenant_val = str(raw_tenant).strip() if raw_tenant else None
