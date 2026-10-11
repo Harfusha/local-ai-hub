@@ -2683,3 +2683,10 @@ or lacks Git metadata. No agent used a substitute checkout.
   preserving normal header forwarding. `tests/test_delivery_policy.py` —
   **10 passed in 2.18s**. This fix remains uncommitted; full suite must rerun
   after commit.
+- Full suite on `ed5e6268` reached 31%, then
+  `test_swarm_orchestrator_lifecycle` initialized the blackboard schema before
+  its strict shared `AgentStateStore`, unlike `LocalAIApp`'s real initialization
+  order. Corrected the fixture to create one `AgentStateStore` first and pass it
+  into both stores; no schema acceptance was weakened. The test passes **1/1 in
+  0.47s**. This test-fixture correction must be committed and the full suite
+  rerun.
