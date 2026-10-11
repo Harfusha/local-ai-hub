@@ -798,6 +798,14 @@ def test_activity_mode_ui_distinguishes_pending_unload() -> None:
 
 def test_admin_mode_post_defers_unload_if_inference_active(monkeypatch) -> None:
     unload_calls = []
+    # The route drains process-wide request registries when switching modes.
+    # Keep this fixture from cancelling requests owned by tests that run later.
+    monkeypatch.setattr(
+        http_server, "_ACTIVE_TRANSCRIPTIONS", http_server._ActiveTranscriptionRegistry()
+    )
+    monkeypatch.setattr(
+        http_server, "_ACTIVE_CONVERSATIONS", http_server._ActiveTranscriptionRegistry()
+    )
 
     class Jobs:
         path = Path("state/jobs.sqlite3")

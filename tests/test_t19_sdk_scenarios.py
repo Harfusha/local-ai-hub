@@ -14,6 +14,15 @@ def scenario_hub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     from local_ai_hub.app import LocalAIApp
     from local_ai_hub.client import HubClient
 
+    # This integration fixture must not inherit stale process-wide requests
+    # from tests that exercise operational-mode draining.
+    monkeypatch.setattr(
+        http_server, "_ACTIVE_TRANSCRIPTIONS", http_server._ActiveTranscriptionRegistry()
+    )
+    monkeypatch.setattr(
+        http_server, "_ACTIVE_CONVERSATIONS", http_server._ActiveTranscriptionRegistry()
+    )
+
     server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
     state_dir = tmp_path / "state"
     config = tmp_path / "config.toml"
