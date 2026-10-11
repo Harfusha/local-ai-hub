@@ -4,7 +4,7 @@
 
 | Area | Current status | Evidence / blocker |
 |---|---|---|
-| Root/master | `master` at `66fdc810`; four test files currently modified, no source edits | Source fixes in `66fdc810` passed `release_check.py --allow-installed`, `compileall`, selftest (6/6) and surface inventory (687 rows). The latest full-suite run is recorded below; no remote release published. |
+| Root/master | Source changes and test corrections are recorded on `master` | Source fixes in `66fdc810` passed `release_check.py --allow-installed`, `compileall`, selftest (6/6) and surface inventory (687 rows). Test-isolation fixes are committed as `9fa78ae3`; the SQLite fixture correction is recorded below. No remote release published. |
 | Worktrees | 67 registered in latest inventory; ancestry/ownership still not fully audited | A recent scan found no dirty worktree records, no stashes, and no local branches unmerged to master; it did not prove every checkout is at master. Earlier `release-verify-7cb` / T03 disposition remains unresolved until that checkout is rechecked. Do not infer synchronization from branch ancestry alone. |
 | Actionable TODO audit | No actionable Python TODO-marker comments found in source/test directories | `rg -n -m 5 --glob "*.py" "^( +)?# *(TODO|FIXME|XXX|HACK)" src tools tests` returned exit 1 (no matches). `deterministic.py:71` defines `TODO_RE` for the scanner; that is not an unfinished-work comment. Scope: Python comments in `src`, `tools`, `tests`; no claim about prose or other languages. |
 | Dirty worktree | **Preserved / not integrated** | Only `docs/API_COVERAGE.md` modified. `python tools/surface_inventory.py --check` passes at its own stale `3010c894` source (687 rows); this proves its local consistency, not relevance to current master. No overwrite, stash, or removal. |
@@ -16,7 +16,7 @@
 | Agent State memory GET | **Fixed; targeted pass** | Full suite on parent found `test_http_memory_get_is_scope_and_root_isolated` failing HTTP 404 after 440 passed. POST `action=get` ignored caller `repository_id` when project config had no ID; now uses it only as fallback, matching GET behavior. Selector 1 passed; memory/HTTP/state-transport group 56 passed. |
 | Async task integration | **Flake isolated; deterministic test fix** | `submit()` starts background dispatch while this test calls `_execute()` synchronously. The dispatcher can claim the queued job first, making the direct call return `success=false` (“async job is not queued”). Test now disables only its automatic dispatcher. `tests/test_async_jobs_tasks.py tests/test_async_jobs.py` — 31 passed in 6.07s. |
 | Windows daemon lifecycle test | **Race isolated; test fix verified** | Full-suite `--last-failed` showed `test_named_daemon_job_survives_restart_and_stops_descendants` reading the PID file between create/truncate and write (`ValueError` on empty text). Fixture now writes a temporary file and atomically replaces the target. Selector: 1 passed; full file: 58 passed, 4 skipped in 28.50s. |
-| Release gates | In progress; **T20 NO-GO** | Most recent full candidate run: `python -B -m pytest -q --tb=short -r f` on source HEAD `66fdc810`, **3 failed, 6,851 passed, 105 skipped, 23 subtests passed** in 43:19. Failures: leaked SQLite connection warning at `test_repo_tools_returns_revision_and_changed_paths_for_guard`; stale request-registry interference in T19 SDK workflow; telemetry `flush(1)` timeout under full-suite load. T19 fixture isolation and bounded telemetry test wait are now changed; related focused suites pass. The SQLite warning remains unexplained. The immediately preceding Hub-broker full run exceeded its 900 s response wait; the owned process was stopped after checking its exact command, then the full run completed natively. `release_check.py --allow-installed`, `compileall`, selftest (6/6), and surface inventory (687 rows) passed on the earlier source candidate; rerun gates on final tree. `hubctl status`/`doctor.py` previously reported v4.0.0 active; latest `local_ai_status brief` returned `success=false`, `degraded=true`. Dashboard UI, every-worktree ancestry/content, and T20 acceptance remain open. **NO-GO**. |
+| Release gates | In progress; **T20 NO-GO** | Most recent completed full run: **3 failed, 6,851 passed, 105 skipped, 23 subtests passed** in 43:19. All three failures now have focused corrections: closed SQLite test fixture (zero leaks, 25 tests passed), isolated T19 request registries (42 tests passed), bounded telemetry flush wait (5 tests passed). The final committed tree still needs a complete passing suite. `release_check.py --allow-installed`, `compileall`, selftest (6/6) and surface inventory (687 rows) passed during this continuation. Live dashboard/API, worktree disposition and T20 acceptance remain to be verified. |
 | Live Hub | **Server online; MCP health projection inconsistent** | `hubctl status`: v4.0.0, active, Ollama online, 8 models, RTX 4060; `doctor`: server/inference/MCP/Serena marked OK, with Serena MCP call timeout noted. `local_ai_status brief` says `success=false`, `degraded=true`; `detail=full` returns HTTP 500 output-contract failure. Root cause not confirmed. |
 | Existing task chats | **20 blocked; T12 verified; T20 blocked** | 2026-10-11: resumed only existing T01–T21 chats, no duplicates. T01–T11 and T13–T21 report missing, unregistered, archived, or foreign-owned assigned checkouts; no source changes or current tests from those tasks. T09’s corrected thread ID also confirmed its checkout missing. T12 source acceptance is verified from its clean checkout at `a7d42908` (138 passed + 20 subtests; T02 case 1 passed); no new changes. T20’s `ec50` path is not a Git checkout and its candidate `3eb4341f` is unverified. No substitutes used; recovery needed before these task scopes can resume. |
 
@@ -3061,3 +3061,21 @@ or lacks Git metadata. No agent used a substitute checkout.
   T20 remains **NO-GO** until the final tree passes a complete suite and this
   warning is either fixed or shown not to recur; rerun release checks and
   re-audit worktrees before release.
+
+## 2026-10-11 confirmed SQLite fixture leak
+
+- The warning reported during the repo-tools test comes from the preceding
+  `test_cache_fingerprint_does_not_hide_unexpected_project_config_error` in
+  `tests/test_repo_cache_outcomes.py`. Its `with sqlite3.connect(...)` commits
+  the transaction but does not close the connection.
+- Calling that existing test in an isolated temporary directory and then
+  `gc.collect()`, with ResourceWarning treated as an error, reproduced exactly
+  **one unclosed SQLite connection**. This proves the allocation mechanism;
+  no product-code change is needed for this failure.
+- The fixture now uses `closing(connection)` around the existing connection
+  transaction context. The same reproducer reports **zero leaks**, exit 0.
+  `python -B -m pytest -q tests/test_repo_cache_outcomes.py tests/test_repo_tools.py
+  -W error::ResourceWarning --tb=short` passes **25/25 in 5.94s**.
+- The full run on `9fa78ae3` was stopped at 14% after this concrete cause was
+  confirmed, before editing the fixture. It is not counted as acceptance.
+  Final full-suite verification must run on the corrected committed tree.

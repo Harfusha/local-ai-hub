@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import threading
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -72,7 +73,7 @@ def test_repo_cache_state_does_not_hide_unexpected_preprocessor_error():
 
 def test_cache_fingerprint_does_not_hide_unexpected_project_config_error(tmp_path: Path):
     db_path = tmp_path / "cache.sqlite3"
-    with sqlite3.connect(db_path) as connection:
+    with closing(sqlite3.connect(db_path)) as connection, connection:
         connection.execute(
             "CREATE TABLE projects (root TEXT, status TEXT, phase TEXT, generation INTEGER, "
             "inventory_hash TEXT, structural_hash TEXT, paused INTEGER)"
