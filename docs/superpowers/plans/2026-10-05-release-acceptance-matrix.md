@@ -2871,3 +2871,20 @@ or lacks Git metadata. No agent used a substitute checkout.
   installed-service restart acceptance, T01 verified completion receipt, and
   final T20 acceptance remain open. Root still has 68 tracked dirty paths;
   no dirty change is discarded or hidden by this record.
+
+### 2026-10-11 integration commit and worktree sync
+
+- Committed the 68 previously dirty tracked paths plus this acceptance update
+  and the feature-aware MCP-description regression fix as
+  `3674f342` (`fix: consolidate release hardening`); 69 files changed.
+- Fast-forwarded every clean worktree from `1317c418` to `3674f342` (**63**);
+  the root was already at target. Preserved the one dirty
+  `release-verify-7cb` checkout at `3010c894` without staging, resetting, or
+  merging it. No stash was created or applied.
+- `release_check.py --allow-installed` passed on the same committed tree
+  before commit. `--strict-tree` exited 1 in this live installed checkout;
+  the compact broker response did not preserve its diagnostics, so do not
+  treat strict packaging as verified.
+- Root source tree is committed; full-suite, optional inference/Serena
+  readiness, dirty-worktree reconciliation, and T20 final acceptance remain
+  open. This is an integrated release candidate, **not release GO**.
