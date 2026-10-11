@@ -5697,9 +5697,9 @@ class LocalAIServices:
             except Exception as exc:
                 retrieval_warnings.append(f"lexical completeness pass degraded: {type(exc).__name__}")
         try:
-            # A targeted request must never silently expand into a repository-wide walk.
-            # Untargeted requests search repository-wide; backend paths only rank results.
-            if candidate_paths and path_controls_active:
+            # A single backend path is only a ranking hint; preserve broad lexical
+            # recall until retrieval has produced multiple bounded candidates.
+            if candidate_paths and (path_controls_active or len(candidate_paths) > 1):
                 candidate_paths = list(dict.fromkeys(candidate_paths))
                 pack_kwargs: dict[str, Any] = {
                     "max_tokens": lexical_tokens,
