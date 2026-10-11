@@ -858,7 +858,7 @@ _CURRENT_ROOT_FAMILY_RESERVATION: contextvars.ContextVar[dict[str, Any] | None] 
     "_CURRENT_ROOT_FAMILY_RESERVATION", default=None
 )
 _STATUS_PROTECTED_KEYS = (
-    "success", "status_code", "error", "warning", "version", "ollama_online",
+    "success", "status_code", "error", "warning", "version", "hub_online", "ollama_online",
     "active_model", "queued", "inflight", "cache_hits", "coalesced_waiters",
     "net_cloud_token_delta_est", "vram_pressure", "context_budget_factor",
     "summary", "window", "queue", "hotspots", "by_operation", "error_fingerprints",
