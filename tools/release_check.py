@@ -95,6 +95,8 @@ def _iter_release_hygiene_violations(
                 continue
             if ".local-ai-hub-backup-" in path.name:
                 continue
+            if path.name.startswith("config.toml.bak"):
+                continue
         if post_test:
             if ".pytest_cache" in parts or "__pycache__" in parts or any(part.endswith(".egg-info") for part in parts):
                 continue
@@ -117,6 +119,9 @@ def _iter_release_hygiene_violations(
             yield f"generated/runtime payload: {rel}"
             continue
         if path.name in _FORBIDDEN_FILE_NAMES:
+            yield f"local-only file: {rel}"
+            continue
+        if path.name.startswith("config.toml.bak"):
             yield f"local-only file: {rel}"
             continue
         if path.name.startswith(".coverage"):
@@ -240,25 +245,86 @@ def run_live_smoke(root: Path) -> dict[str, object]:
 
         status = client.status(detail="brief")
         scheduler = status.get("scheduler") if isinstance(status.get("scheduler"), dict) else {}
-        model = str(status.get("active_model") or scheduler.get("active_model") or "qwen2.5-coder:1.5b")
-        status_ok = status.get("success") is True and status.get("hub_online") is True
-        checks.append({"name": "live-status", "ok": status_ok, "hub_online": status.get("hub_online"), "model": model})
+        benchmark_model = str(status.get("active_model") or scheduler.get("active_model") or "qwen2.5-coder:1.5b")
+        dependency_status = status.get("dependency_status") if isinstance(status.get("dependency_status"), dict) else {}
+        degraded_dependencies = [
+            {
+                "service": name,
+                "classification": "probe_timeout" if detail.get("reason") == "probe_timeout" else "degraded",
+            }
+            for name, detail in dependency_status.items()
+            if isinstance(detail, dict) and detail.get("degraded") is True
+        ]
+        status_ok = (
+            status.get("success") is True
+            and status.get("hub_online") is True
+            and status.get("degraded") is not True
+        )
+        checks.append({
+            "name": "live-status", "ok": status_ok, "hub_online": status.get("hub_online"),
+            "degraded": bool(status.get("degraded", False)),
+            "degraded_dependencies": degraded_dependencies,
+        })
         if not status_ok:
             errors.append("live status check failed")
 
         reason = client.post("/api/reason", {
             "task": "Answer with exactly the word READY.",
             "context": "Release smoke test. No repository changes.",
-            "model": model,
             "max_tokens": 160,
             "delivery": "sync",
             "response_profile": "compact",
         }, timeout=45)
         text = str(reason.get("text") or reason.get("summary") or reason.get("result") or "").strip()
-        model_ok = reason.get("success") is True and bool(text or reason.get("artifact_id"))
-        checks.append({"name": "live-model", "ok": model_ok, "model": model, "has_result": bool(text or reason.get("artifact_id"))})
+        ollama_ready = status.get("ollama_online") is True
+        model_ok = ollama_ready and reason.get("success") is True and bool(text or reason.get("artifact_id"))
+        checks.append({
+            "name": "live-model", "ok": model_ok,
+            "model": reason.get("model"), "has_result": bool(text or reason.get("artifact_id")),
+            "classification": "success" if model_ok else "ollama_offline" if not ollama_ready else "request_failed",
+        })
         if not model_ok:
             errors.append("live model smoke returned no usable result")
+
+        async_job = client.post("/api/async-jobs", {
+            "action": "submit", "job_action": "reason",
+            "task": "Answer with exactly the word ASYNC_READY.",
+            "context": "Release async smoke test.", "max_tokens": 160,
+        }, timeout=15)
+        job_id = str(async_job.get("job_id") or "")
+        async_result: dict[str, object] = async_job
+        if job_id:
+            async_result = client.post("/api/async-jobs", {"action": "wait", "job_id": job_id, "timeout_seconds": 45}, timeout=50)
+            if async_result.get("status") in {"completed", "succeeded", "done"} or async_result.get("state") in {"completed", "succeeded", "done"}:
+                async_result = client.post("/api/async-jobs", {"action": "result", "job_id": job_id}, timeout=15)
+        async_payload = async_result.get("result") if isinstance(async_result.get("result"), dict) else async_result
+        async_text = str(async_payload.get("text") or async_payload.get("summary") or async_payload.get("result") or "").strip()
+        async_ok = ollama_ready and bool(job_id) and async_result.get("success") is True and bool(async_text or async_result.get("artifact_id"))
+        admission = async_job.get("admission") if isinstance(async_job.get("admission"), dict) else {}
+        admission_rejected = (
+            not job_id
+            and async_job.get("state") == "rejected"
+            and async_job.get("retryable") is True
+            and async_job.get("terminal") is False
+        )
+        async_blocked = (
+            admission_rejected and admission.get("reason") == "resource_pressure"
+        )
+        async_queue_limited = admission_rejected and admission.get("reason") == "queue_limit"
+        checks.append({
+            "name": "live-async-job", "ok": async_ok, "job_id_present": bool(job_id),
+            "blocked": async_blocked, "retryable": async_job.get("retryable"),
+            "terminal": async_job.get("terminal"),
+            "classification": (
+                "success" if async_ok
+                else "ollama_offline" if not ollama_ready
+                else "blocked_resource_pressure" if async_blocked
+                else "queue_limit" if async_queue_limited
+                else "request_failed"
+            ),
+        })
+        if not async_ok:
+            errors.append("live async job smoke failed or returned no usable result")
 
         hardware = client.get("/api/hardware/gpu")
         hardware_ok = hardware.get("available") is True or hardware.get("available") is False
@@ -267,9 +333,9 @@ def run_live_smoke(root: Path) -> dict[str, object]:
             errors.append("live hardware probe returned an invalid result")
 
         benchmark = client.post("/api/benchmark/run", {
-            "model": model, "prompt": "Return exactly BENCH_READY.", "num_tokens": 8,
+            "model": benchmark_model, "prompt": "Return exactly BENCH_READY.", "num_tokens": 8,
         }, timeout=60)
-        benchmark_ok = benchmark.get("success") is True and bool(benchmark.get("model"))
+        benchmark_ok = ollama_ready and benchmark.get("success") is True and bool(benchmark.get("model"))
         checks.append({"name": "live-hardware-benchmark", "ok": benchmark_ok, "model": benchmark.get("model")})
         if not benchmark_ok:
             errors.append("live hardware benchmark failed")
@@ -287,7 +353,7 @@ def run_live_smoke(root: Path) -> dict[str, object]:
             "image": "data:image/png;base64," + base64.b64encode(image_data).decode("ascii"),
             "model": vision_model,
         }, timeout=90)
-        vision_ok = vision.get("success") is True and bool(vision.get("response") or vision.get("review"))
+        vision_ok = ollama_ready and vision.get("success") is True and bool(vision.get("response") or vision.get("review"))
         checks.append({"name": "live-vision", "ok": vision_ok, "model": vision_model})
         if not vision_ok:
             errors.append("live vision smoke failed")
@@ -300,30 +366,36 @@ def run_live_smoke(root: Path) -> dict[str, object]:
                 audio.setframerate(8000)
                 audio.writeframes(b"\0\0" * 800)
             transcription = client.post("/api/task/transcribe", {
-                "audio_path": str(audio_path), "model": "whisper",
+                "audio_path": str(audio_path),
             }, timeout=90)
-        transcribe_ok = transcription.get("success") is True and bool(transcription.get("text"))
-        checks.append({"name": "live-transcribe", "ok": transcribe_ok, "engine": transcription.get("engine"), "degraded": bool(transcription.get("degraded", False))})
+        expected_silence = (
+            transcription.get("engine") == "whisper_cli"
+            and transcription.get("reason") == "empty_transcript"
+            and not str(transcription.get("text") or "").strip()
+        )
+        transcription_reason = transcription.get("reason")
+        transcription_failure_class = (
+            transcription_reason
+            if isinstance(transcription_reason, str)
+            and transcription_reason in {"cli_missing", "process_failed", "invalid_audio"}
+            else None
+        )
+        transcription_failed = transcription_failure_class is not None
+        transcribe_ok = not transcription_failed and (
+            expected_silence
+            or (transcription.get("success") is True and bool(str(transcription.get("text") or "").strip()))
+        )
+        checks.append({
+            "name": "live-transcribe", "ok": transcribe_ok, "engine": transcription.get("engine"),
+            "degraded": bool(transcription.get("degraded", False)),
+            "classification": (
+                "expected_empty_input" if expected_silence and transcribe_ok
+                else transcription_failure_class if transcription_failed
+                else "success" if transcribe_ok else "request_failed"
+            ),
+        })
         if not transcribe_ok:
             errors.append("live transcription smoke failed")
-
-        async_job = client.post("/api/async-jobs", {
-            "action": "submit", "job_action": "reason",
-            "task": "Answer with exactly the word ASYNC_READY.",
-            "context": "Release async smoke test.", "model": model, "max_tokens": 160,
-        }, timeout=15)
-        job_id = str(async_job.get("job_id") or "")
-        async_result: dict[str, object] = async_job
-        if job_id:
-            async_result = client.post("/api/async-jobs", {"action": "wait", "job_id": job_id, "timeout_seconds": 45}, timeout=50)
-            if async_result.get("status") in {"completed", "succeeded", "done"} or async_result.get("state") in {"completed", "succeeded", "done"}:
-                async_result = client.post("/api/async-jobs", {"action": "result", "job_id": job_id}, timeout=15)
-        async_payload = async_result.get("result") if isinstance(async_result.get("result"), dict) else async_result
-        async_text = str(async_payload.get("text") or async_payload.get("summary") or async_payload.get("result") or "").strip()
-        async_ok = bool(job_id) and async_result.get("success") is True and bool(async_text or async_result.get("artifact_id"))
-        checks.append({"name": "live-async-job", "ok": async_ok, "job_id_present": bool(job_id)})
-        if not async_ok:
-            errors.append("live async job smoke failed or returned no usable result")
 
         smoke_root = str(root.resolve())
         key = f"release-smoke-{int(time.time())}"
@@ -336,7 +408,7 @@ def run_live_smoke(root: Path) -> dict[str, object]:
         if not memory_ok:
             errors.append("live Agent OS memory round-trip failed")
     except Exception as exc:
-        errors.append(f"live smoke exception: {type(exc).__name__}: {exc}")
+        errors.append(f"live smoke exception: {type(exc).__name__}")
 
     return {"success": not errors, "checks": checks, "errors": errors}
 
