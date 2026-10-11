@@ -3019,3 +3019,21 @@ or lacks Git metadata. No agent used a substitute checkout.
 - Release remains **NO-GO**. Do not change test expectations or mark full-suite
   acceptance done; investigate the cross-suite interference and rerun a complete
   candidate-bound suite only after a concrete fix or justified isolation change.
+
+## 2026-10-11 code-index recovery race fix
+
+- Reproduced the code-index failure with the command broker's flaky detector:
+  five isolated runs yielded **4 passed / 1 failed** (`sqlite3.DatabaseError:
+  file is not a database` in concurrent derived recovery).
+- Changed `src/local_ai_hub/code_index.py` to serialize initialization/schema
+  creation and corrupt-cache recovery with a per-database OS file lock plus an
+  in-process lock. Lock timeout is bounded at 30 seconds; the lock covers only
+  disposable code-index initialization, never durable Agent OS state.
+- Verification on the changed tree: code-index race test **5/5 passed** in the
+  follow-up flaky run; related cache-isolation and nine other previously failing
+  nodes **17 passed in 43.90s**; `release_check.py --allow-installed`,
+  `compileall`, `selftest.py` (**6/6**), and `surface_inventory.py --check`
+  (**687 rows, no drift**) all passed.
+- The complete suite has **not** been rerun after this fix. Prior full-suite
+  result remains 10 failures; nine other failures passed only in targeted runs
+  and are not yet explained. T20/release therefore remains **NO-GO**.

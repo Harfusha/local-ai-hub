@@ -4,15 +4,17 @@ from .json_utils import dumps as json_dumps
 
 import ast
 import copy
+import errno
 import json
 import os
 import re
 import sqlite3
 import threading
 import time
-from contextlib import closing
+import weakref
+from contextlib import closing, contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from . import __version__
 
@@ -22,6 +24,69 @@ from .normalizer import tokenize_query_terms
 from .process_utils import canonical_root
 from .repo_tools import is_root_archive_path
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, quick_sanity_check
+
+_CODE_INDEX_INIT_LOCKS: weakref.WeakValueDictionary[str, threading.RLock] = weakref.WeakValueDictionary()
+_CODE_INDEX_INIT_LOCKS_GUARD = threading.Lock()
+
+
+@contextmanager
+def _code_index_initialization_lock(db_path: Path) -> Iterator[None]:
+    """Serialize schema creation and corrupt-cache recovery across processes."""
+    lock_path = db_path.with_name(db_path.name + ".init.lock")
+    lock_key = os.path.normcase(str(lock_path.resolve()))
+    with _CODE_INDEX_INIT_LOCKS_GUARD:
+        thread_lock = _CODE_INDEX_INIT_LOCKS.get(lock_key)
+        if thread_lock is None:
+            thread_lock = threading.RLock()
+            _CODE_INDEX_INIT_LOCKS[lock_key] = thread_lock
+
+    with thread_lock:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open("a+b") as stream:
+            stream.seek(0, os.SEEK_END)
+            if stream.tell() == 0:
+                stream.write(b"\0")
+                stream.flush()
+
+            deadline = time.monotonic() + 30.0
+            locked = False
+            if os.name == "nt":
+                import msvcrt
+
+                while not locked:
+                    stream.seek(0)
+                    try:
+                        msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                        locked = True
+                    except OSError as exc:
+                        if (
+                            getattr(exc, "winerror", None) not in {33, 36}
+                            and exc.errno not in {errno.EACCES, errno.EDEADLK, errno.EAGAIN}
+                        ):
+                            raise
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError("timed out waiting for code-index initialization lock") from exc
+                        time.sleep(0.05)
+            else:
+                import fcntl
+
+                while not locked:
+                    try:
+                        fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        locked = True
+                    except BlockingIOError as exc:
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError("timed out waiting for code-index initialization lock") from exc
+                        time.sleep(0.05)
+
+            try:
+                yield
+            finally:
+                if os.name == "nt":
+                    stream.seek(0)
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
 
 def _root_archive_path_sql(path_expression: str = "path") -> str:
@@ -1035,6 +1100,10 @@ class CodeIndex:
             )
 
     def _init_db(self) -> None:
+        with _code_index_initialization_lock(self.db_path):
+            self._initialize_db()
+
+    def _initialize_db(self) -> None:
         try:
             with self._lock, closing(self._connect()) as con:
                 initialize_wal(con)
