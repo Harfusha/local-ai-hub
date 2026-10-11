@@ -2990,3 +2990,32 @@ or lacks Git metadata. No agent used a substitute checkout.
   780 seconds (exit -9); a later `--last-failed` attempt timed out after 240
   seconds (exit -9). Neither produced an assertion failure or full summary.
   T20 remains **NO-GO** until a complete candidate-bound pytest result exists.
+
+## 2026-10-11 captured full-suite result
+
+- On clean master, `python -B -m pytest -q --tb=short -r f` completed with
+  **10 failed, 6,844 passed, 105 skipped, 23 subtests passed, 2 warnings** in
+  **2,841.96s** (exit 1). Captured log: `%TEMP%\lah-pytest-beeb50447c9f42649dc50d5e448cadf8.log`.
+- Failed node IDs: `test_mcp_explicit_repo_root::test_rag_action_keeps_explicit_root`,
+  `test_mcp_live_wire_schema::test_stdio_status_call_cold_starts_isolated_hub_and_cleans_up`,
+  `test_operational_mode_http::test_gaming_cleanup_runs_outside_mode_guard_and_keeps_release_reserved`,
+  `test_repo_tools::test_repository_tools_returns_revision_and_changed_paths_for_guard`,
+  `test_status_snapshot_quality::test_realtime_status_surfaces_stored_sqlite_error_summary`,
+  `test_t04_mcp_status_actual_hub_child::test_first_mcp_status_starts_and_reaps_real_hub_entrypoint`,
+  `test_t05_cache_state_isolation::test_concurrent_derived_recovery_preserves_durable_agent_state[code-index]`,
+  `test_t16_http_lease_routes::test_http_lease_routes_resolve_namespace_and_isolate_linked_worktrees`,
+  `test_t19_sdk_scenarios::test_seven_sdk_workflows_have_measured_production_route_outcomes`,
+  and `test_telemetry_flush_retry_t18::test_busy_retry_flushes_held_batch_within_one_second`.
+- Observable causes in captured tracebacks include extra RAG calls (2 vs 1),
+  bounded Hub transport 503 during cold start, telemetry flush returning false,
+  `sqlite3.DatabaseError: file is not a database` during concurrent code-index
+  recovery, an HTTP lease-route timeout, and SDK generation preempted for
+  resource release. These do not yet establish one common root cause.
+- Both follow-up runs passed all 10 failed tests: `python -B -m pytest --lf
+  -q --tb=short` — **10 passed, 466 deselected in 47.40s**; the same ten
+  explicit node IDs in reverse order — **10 passed in 45.01s**. This narrows
+  the issue to full-suite interaction/timing but does not prove order dependence
+  or invalidate the full-suite failures.
+- Release remains **NO-GO**. Do not change test expectations or mark full-suite
+  acceptance done; investigate the cross-suite interference and rerun a complete
+  candidate-bound suite only after a concrete fix or justified isolation change.
