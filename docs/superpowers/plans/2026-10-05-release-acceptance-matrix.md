@@ -2946,16 +2946,16 @@ or lacks Git metadata. No agent used a substitute checkout.
 
 ## 2026-10-11 latest continuation recheck
 
-- Master is clean after this evidence commit; it is 782 commits ahead of
-  `origin/master`. `git branch --no-merged master` and `git stash list` return
-  no entries. `git worktree list` reports 66 total including root.
+- At verification time, clean master was `8245a45f`, 783 commits ahead of
+  `origin/master`; no unmerged branches or stashes. `git worktree list` reports
+  66 total including root. This matrix correction is documentation-only.
 - Full status audit covered all 66 registered worktrees. 60 are at current
   master (root plus 59 fast-forwarded clean worktrees); five pinned T15 benchmark
   trees remain at `73bdb084`; one detached worktree, `release-verify-7cb` at
   `3010c894`, remains dirty only in `docs/API_COVERAGE.md` and was preserved.
   All non-pinned clean worktrees are synchronized to master.
 - Clean checkout `release-strict-check` passed `python -B
-  tools/release_check.py --strict-tree` at candidate `0465a57e`;
+  tools/release_check.py --strict-tree` at exact candidate `8245a45f`;
   `python -B tools/surface_inventory.py --check` passed with 687 rows and no
   drift. Working checkout gates (`release_check --allow-installed`, compileall,
   six selftests) also passed.
