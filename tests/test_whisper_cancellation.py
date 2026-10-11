@@ -53,9 +53,9 @@ def test_run_hidden_cancellation_terminates_tree_and_drains_output(monkeypatch):
     monkeypatch.setattr(process_utils, "process_identity", lambda _pid: identity)
 
     def terminate_tree(
-        pid, *, process_group=None, expected_identity=None, grace_seconds=5.0
+        pid, *, process_group=None, expected_identity=None, grace_seconds=5.0, process_handle=None
     ):
-        calls.append((pid, process_group, expected_identity, grace_seconds))
+        calls.append((pid, process_group, expected_identity, grace_seconds, process_handle))
         process.returncode = -9
         return True
 
@@ -66,7 +66,7 @@ def test_run_hidden_cancellation_terminates_tree_and_drains_output(monkeypatch):
             ["whisper"], capture_output=True, timeout=60, cancel_event=cancel_event
         )
 
-    assert calls == [(4321, 4321, identity, 1.0)]
+    assert calls == [(4321, 4321, identity, 1.0, process)]
     assert process.returncode == -9
     assert raised.value.output == b"partial"
     assert raised.value.stderr == b"err"

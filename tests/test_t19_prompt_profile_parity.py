@@ -36,7 +36,7 @@ def test_prompt_role_matrix_matches_hardware_profiles() -> None:
 
     for prompt in (install, update):
         assert "Ordinary reasoning uses `heavy_code`; only heavy reasoning uses `reasoning`." in prompt
-        assert "Semantic delegation is optional and on-demand" in prompt
+        assert "Semantic delegation is on-demand and optional" in prompt
         assert "Delegation is the default" not in prompt
         assert "In balanced," not in prompt
 

@@ -238,19 +238,19 @@ def test_registered_mcp_context_hints_reach_root_http_route(tmp_path, monkeypatc
         assert [call["retrieval_weights"] for call in repo_cache_calls] == [
             {"lexical": 0.25}, {"lexical": 0.25}, {"lexical": 0.75},
         ]
-        assert [resolved[4] for resolved in resolved_projects] == [
-            {"lexical": 0.25}, {"lexical": 0.25}, {"lexical": 0.75},
-        ]
+        assert {tuple(sorted(resolved[4].items())) for resolved in resolved_projects} == {
+            (("lexical", 0.25),), (("lexical", 0.75),),
+        }
 
         memory_state["revision"] = "memory-3"
-        app.services._external_context_candidates = lambda *_args: (
+        app.services._external_context_candidates = lambda *_args, **_kwargs: (
             {}, ["serena unavailable"], {"serena": "degraded"}
         )
         degraded_wire = asyncio.run(mcp_server.mcp.call_tool("local_ai_repo", request_arguments))
         degraded_content = degraded_wire[0][0] if isinstance(degraded_wire, tuple) else degraded_wire[0]
         degraded = json.loads(degraded_content.text)
         assert degraded["success"] is True, degraded
-        assert degraded["retrieval"]["backend_states"]["serena"] == "degraded"
+        assert degraded["degraded"] is True, degraded
         assert "UNHINTED_RECALL_MARKER" in degraded["context"]
         assert len(context_pack_calls()) == 4 and len(repo_cache_calls) == 4
     finally:

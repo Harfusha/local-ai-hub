@@ -623,6 +623,8 @@ class LlamaCppRouter:
             with socket.create_connection((host, port), timeout=0.04):
                 pass
         except OSError:
+            if _stop_requested(should_stop) or time.monotonic() >= request_deadline:
+                return False
             with self._health_lock:
                 self._health[url] = (time.monotonic(), False)
             return False
@@ -635,10 +637,12 @@ class LlamaCppRouter:
                 healthy = 200 <= int(getattr(response, "status", 200)) < 300
         except Exception:
             healthy = False
-        with self._health_lock:
-            self._health[url] = (time.monotonic(), healthy)
+        # A timed-out or cancelled probe says nothing about endpoint health.
+        # Do not cache it: the next bounded caller must be able to retry.
         if _stop_requested(should_stop) or time.monotonic() >= request_deadline:
             return False
+        with self._health_lock:
+            self._health[url] = (time.monotonic(), healthy)
         return healthy
 
     def _model_info(

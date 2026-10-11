@@ -602,7 +602,11 @@ def test_tenant_label_does_not_authenticate_http_request(monkeypatch):
         SimpleNamespace(config={"security": {"api_token": "expected-local-token"}}),
     )
 
-    request = SimpleNamespace(headers={"X-LocalAI-Tenant": "administrator"})
+    request = http_server.Handler.__new__(http_server.Handler)
+    request.headers = {"X-LocalAI-Tenant": "administrator"}
+    request.client_address = ("127.0.0.1", 1234)
+    request.path = "/api/test"
+    request.command = "GET"
     assert Handler._authorized(request) is False
 
     request.headers["X-LocalAI-Token"] = "wrong-token"

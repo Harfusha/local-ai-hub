@@ -1619,7 +1619,7 @@ def create_git_worktree(
             "expires_at": expires_at_value,
         }
         metadata_tmp = metadata_path.with_name(f".{metadata_path.name}.{uuid.uuid4().hex}.tmp")
-        metadata_tmp.write_text(json.dumps(metadata, sort_keys=True), encoding="utf-8")
+        metadata_tmp.write_text(json.dumps(metadata, sort_keys=True, separators=(",", ":")), encoding="utf-8")
         os.replace(metadata_tmp, metadata_path)
         return {
             "success": True,

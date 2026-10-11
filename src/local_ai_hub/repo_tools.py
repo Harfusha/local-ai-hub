@@ -230,7 +230,9 @@ class RepositoryTools:
             cached = self._git_files_cache.get(key)
             if cached and (self.git_files_cache_ttl <= 0 or now - cached[0] <= self.git_files_cache_ttl):
                 cache_is_complete = len(cached[1]) < self.max_files
-                if max_files is None or cache_is_complete or len(cached[1]) >= limit:
+                # A default inventory may be truncated before explicit caller
+                # eligibility filters (notably max_file_bytes) are applied.
+                if max_files is None or cache_is_complete:
                     self._git_stats["file_list_hits"] += 1
                     return [(root / rel).resolve(strict=False) for rel in cached[1][:limit]]
             if now < self._git_files_slow_until.get(key, 0.0):
@@ -248,7 +250,7 @@ class RepositoryTools:
                 cached = self._git_files_cache.get(key)
                 if cached and (self.git_files_cache_ttl <= 0 or now - cached[0] <= self.git_files_cache_ttl):
                     cache_is_complete = len(cached[1]) < self.max_files
-                    if max_files is None or cache_is_complete or len(cached[1]) >= limit:
+                    if max_files is None or cache_is_complete:
                         self._git_stats["file_list_hits"] += 1
                         self._git_stats["file_list_coalesced"] += 1
                         return [(root / rel).resolve(strict=False) for rel in cached[1][:limit]]
@@ -1009,6 +1011,11 @@ class RepositoryTools:
     ) -> tuple[list[tuple[str, int]] | None, bool]:
         if not self._rg or not terms:
             return None, False
+        cooldown_key = str(base)
+        with self._git_files_lock:
+            if time.monotonic() < self._ripgrep_slow_until.get(cooldown_key, 0.0):
+                self._git_stats["ripgrep_cooldown_skips"] += 1
+                return None, True
         out: list[tuple[str, int]] = []
         seen: set[tuple[str, int]] = set()
         batches: list[list[str] | None]
@@ -1053,6 +1060,7 @@ class RepositoryTools:
             if remaining <= 0:
                 with self._git_files_lock:
                     self._git_stats["ripgrep_timeouts"] = min(1_000_000, self._git_stats["ripgrep_timeouts"] + 1)
+                    self._ripgrep_slow_until[cooldown_key] = time.monotonic() + self.ripgrep_slow_cooldown
                 return None, True
             try:
                 proc = subprocess.run(
@@ -1063,12 +1071,15 @@ class RepositoryTools:
             except subprocess.TimeoutExpired:
                 with self._git_files_lock:
                     self._git_stats["ripgrep_timeouts"] = min(1_000_000, self._git_stats["ripgrep_timeouts"] + 1)
+                    self._ripgrep_slow_until[cooldown_key] = time.monotonic() + self.ripgrep_slow_cooldown
                 return None, True
             except Exception:
                 return None, True
             # rg returns 1 when there are no matches; both 0/1 are successful searches.
             if proc.returncode not in {0, 1}:
                 return None, True
+            with self._git_files_lock:
+                self._ripgrep_slow_until.pop(cooldown_key, None)
             for raw in proc.stdout.splitlines():
                 try:
                     event = json.loads(raw)
@@ -1495,7 +1506,11 @@ class RepositoryTools:
                 self._git_stats["python_search_fallbacks"] = min(
                     1_000_000, self._git_stats["python_search_fallbacks"] + 1
                 )
-            fallback_paths = project_candidates if project_candidates is not None else self.iter_files(str(base))
+            fallback_paths = (
+                project_candidates
+                if project_candidates is not None
+                else self.iter_files(str(base), max_files=self.python_fallback_max_files + 1)
+            )
             for path in fallback_paths:
                 if python_fallback_scanned >= self.python_fallback_max_files:
                     truncation_reasons.append("file_limit")

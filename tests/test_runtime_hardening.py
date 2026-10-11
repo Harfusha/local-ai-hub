@@ -110,7 +110,7 @@ def test_client_does_not_spawn_when_hub_port_is_already_owned(tmp_path, monkeypa
     assert client.ensure_server() is False
 
 
-def test_client_cleans_failed_start_lock_write(tmp_path, monkeypatch):
+def test_client_failed_start_lock_write_leaves_reusable_lock_file(tmp_path, monkeypatch):
     config = tmp_path / "config.toml"
     state = tmp_path / "state"
     config.write_text(
@@ -121,10 +121,21 @@ def test_client_cleans_failed_start_lock_write(tmp_path, monkeypatch):
     client = HubClient(tenant="test", config_path=str(config))
     monkeypatch.setattr(client, "_online", lambda *_args: False)
     monkeypatch.setattr(client_module, "find_listening_pid", lambda _port: 0)
-    monkeypatch.setattr(client_module.os, "write", lambda *_args: (_ for _ in ()).throw(OSError("write failed")))
+    original_write_owner = client_module._write_start_lock_owner
+    monkeypatch.setattr(
+        client_module,
+        "_write_start_lock_owner",
+        lambda _handle: (_ for _ in ()).throw(OSError("write failed")),
+    )
 
     assert client.ensure_server() is False
-    assert not (state / "hub.start.lock").exists()
+    lock_path = state / "hub.start.lock"
+    assert lock_path.exists()
+    assert lock_path.read_bytes().strip(b"\0") == b""
+    monkeypatch.setattr(client_module, "_write_start_lock_owner", original_write_owner)
+    lock = client_module._acquire_start_lock(lock_path, client.start_lock_stale)
+    assert lock is not None
+    lock.close()
 
 
 def test_client_does_not_bypass_live_managed_supervisor(tmp_path, monkeypatch):
@@ -169,7 +180,15 @@ def test_supervisor_status_replaces_stale_hub_pid_with_owned_child(tmp_path):
     supervisor = Supervisor.__new__(Supervisor)
     supervisor.state_dir = tmp_path
     supervisor.status_path = tmp_path / "supervisor.status.json"
+    supervisor.owner_path = tmp_path / "supervisor.owner.json"
+    supervisor.pid_path = tmp_path / "supervisor.pid"
+    supervisor.hub_owner_path = tmp_path / "hub.owner.json"
+    supervisor.hub_pid_path = tmp_path / "hub.pid"
     supervisor.child = _Child()
+    supervisor.child_owner = None
+    supervisor.child_pidfd = None
+    supervisor.cfg = {}
+    supervisor._lock_fd = None
     supervisor.config = {"server": {"port": 11435}}
     supervisor.started_at = 0.0
     supervisor.restarts = 1
@@ -182,24 +201,27 @@ def test_supervisor_status_replaces_stale_hub_pid_with_owned_child(tmp_path):
     assert json.loads(supervisor.status_path.read_text(encoding="utf-8"))["hub_pid"] == os.getpid()
 
 
-def test_supervisor_terminate_child_reaps_orphaned_pid_and_unlinks_file(tmp_path, monkeypatch):
+def test_supervisor_does_not_terminate_unverified_orphan_pid(tmp_path, monkeypatch):
     terminated: list[int] = []
-    monkeypatch.setattr(supervisor_module, "terminate_tree", lambda pid, grace_seconds=5.0: terminated.append(pid))
-    monkeypatch.setattr(supervisor_module, "find_listening_pid", lambda _port: 55555)
-    monkeypatch.setattr(supervisor_module, "pid_alive", lambda pid: True)
-
+    monkeypatch.setattr(
+        supervisor_module,
+        "terminate_owned_process",
+        lambda *_args, **_kwargs: terminated.append(1),
+    )
     supervisor = Supervisor.__new__(Supervisor)
     supervisor.state_dir = tmp_path
     supervisor.child = None
     supervisor.config = {"server": {"port": 11435}}
+    supervisor.hub_owner_path = tmp_path / "hub.owner.json"
+    supervisor.hub_pid_path = tmp_path / "hub.pid"
+    supervisor._lock_fd = None
     pid_file = tmp_path / "hub.pid"
     pid_file.write_text("66666", encoding="utf-8")
 
-    supervisor.terminate_child()
+    assert supervisor.terminate_child() is True
 
-    assert 55555 in terminated
-    assert 66666 in terminated
-    assert not pid_file.exists()
+    assert terminated == []
+    assert pid_file.read_text(encoding="utf-8") == "66666"
 
 
 def test_embedding_first_batch_uses_persistent_cache(tmp_path, monkeypatch):
@@ -213,7 +235,7 @@ def test_embedding_first_batch_uses_persistent_cache(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(embeddings, "_ensure_model", lambda: True)
     identity = f"sentence-transformers:cpu:{model_name}"
-    key = stable_hash({"identity": identity, "query": False, "text": "shared content"})
+    key = embeddings._embedding_cache_key(identity, False, "shared content")
     embeddings.cache.set(key, {"identity": identity, "dimension": 2, "vector": [0.2, 0.8]})
 
     result = embeddings.encode(["shared content"])

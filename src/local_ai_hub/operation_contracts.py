@@ -559,7 +559,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "timeout_seconds": {"type": "number", "default": 90},
             "answer": {"type": "string", "default": ""},
             "return_fields": {"type": "array", "items": {"type": "string"}},
-            "response_profile": {"type": "string", "default": "compact"},
+            "response_profile": deepcopy(_RESPONSE_BUDGET_PROPERTIES["response_profile"]),
             "extra_fields": {"type": "array", "items": {"type": "string"}},
             "max_output_tokens": {"type": "integer", "default": 0},
             "keep_failed_workspace": {"type": "boolean", "default": False},
@@ -998,7 +998,7 @@ def operation_tool_output_schema(tool: str, features: Any = None) -> dict[str, A
     }
     return {
         "type": "object",
-        "properties": json.loads(json.dumps(_OUTPUT_ENVELOPE_PROPERTIES)),
+        "properties": {key: dict(value) for key, value in _OUTPUT_ENVELOPE_PROPERTIES.items()},
         "additionalProperties": True,
         "x-action-output-contracts": action_schemas,
     }

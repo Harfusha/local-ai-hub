@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from local_ai_hub import mcp_server
 
@@ -20,6 +20,7 @@ def _enable_command(monkeypatch: Any, backend: _CommandBackend) -> None:
     monkeypatch.setattr(mcp_server.FEATURES, "commands", True)
     monkeypatch.setattr(mcp_server.FEATURES, "tasks", False)
     monkeypatch.setattr(mcp_server, "_timeout", lambda kind: 77.0)
+    monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, "record", lambda _event: None)
 
 
 def _expected_payload(action: str, root: str, command: str, **overrides: Any) -> dict[str, Any]:
@@ -80,8 +81,8 @@ def test_mcp_command_auto_fix_forwards_bounded_repair_policy(monkeypatch: Any, t
         auto_rollback=False,
     )
 
-    assert len(backend.calls) == 2
-    command_call, accounting_call = backend.calls
+    assert len(backend.calls) == 1
+    command_call = backend.calls[0]
     assert command_call == (
         "/api/command",
         _expected_payload(
@@ -96,12 +97,6 @@ def test_mcp_command_auto_fix_forwards_bounded_repair_policy(monkeypatch: Any, t
         ),
         {"timeout": 77.0},
     )
-    accounting_path, accounting_payload, accounting_options = accounting_call
-    assert accounting_path == "/api/telemetry/tool-accounting"
-    assert isinstance(accounting_payload.get("batch_id"), str)
-    assert accounting_payload["batch_id"]
-    assert accounting_payload["events"] == []
-    assert accounting_options == {"timeout": 0.25}
     _assert_response_fields(result, response)
     assert result["success"] is True
 
@@ -345,6 +340,17 @@ def test_mcp_command_speculative_lint_submits_bounded_paths_and_job_identity(
     response = {"success": True, "status": "queued", "lint_job_id": "lint-job-7"}
     backend = _CommandBackend(response)
     _enable_command(monkeypatch, backend)
+    monkeypatch.setattr(mcp_server.FEATURES, "speculative_lint", True)
+    monkeypatch.setattr(
+        mcp_server,
+        "CommandAction",
+        Literal.__getitem__(tuple((*mcp_server.CommandAction.__args__, "speculative_lint"))),
+    )
+    monkeypatch.setattr(
+        mcp_server,
+        "load_operational_mode",
+        lambda _state_dir: mcp_server.OperationalModeSnapshot("active", 1, None),
+    )
     root = str(tmp_path)
 
     result = mcp_server.local_ai_command(

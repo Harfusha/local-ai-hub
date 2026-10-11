@@ -202,10 +202,10 @@ def test_step_diagnostics_handles_timeout_cleanly(tmp_path: Path) -> None:
         mock_proc.stderr = MagicMock()
         mock_proc.stderr.closed = False
 
-        with patch("subprocess.Popen", return_value=mock_proc), patch("local_ai_hub.process_utils.terminate_tree") as mock_term:
+        with patch("local_ai_hub.process_utils.popen_managed", return_value=mock_proc), patch("local_ai_hub.process_utils.terminate_tree") as mock_term:
             res = prep._step_diagnostics({"root": str(p)})
             assert res is True
-            mock_term.assert_called_once_with(12345)
+            mock_term.assert_called_once_with(12345, process_handle=mock_proc)
             mock_proc.wait.assert_called_once()
             assert mock_proc.stdout.close.called
             assert mock_proc.stderr.close.called

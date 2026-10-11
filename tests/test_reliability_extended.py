@@ -210,6 +210,7 @@ def test_http_server_binds_before_constructing_app(tmp_path: Path, monkeypatch: 
         f'''[server]\nbind="127.0.0.1"\nport={port}\nstate_dir="{(tmp_path / 'state').as_posix()}"\n[hardware]\nprofile="cpu"\nauto_tune=false\n''',
         encoding="utf-8",
     )
+    monkeypatch.setattr(http_server, "_require_owned_supervisor_parent", lambda _state_dir: None)
     constructed = {"n": 0}
     def forbidden(*a, **k):
         constructed["n"] += 1

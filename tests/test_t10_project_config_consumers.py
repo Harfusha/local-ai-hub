@@ -191,7 +191,9 @@ def test_skipped_call_graph_and_modules_resume_at_next_durable_phase(tmp_path, m
     pre = _preprocessor(tmp_path)
     pre._background_work_allowed = lambda: True
     pre._yield = lambda: False
-    pre.code_index = SimpleNamespace(prune=lambda _root, paths: setattr(pre, "pruned", paths))
+    pre.code_index = SimpleNamespace(
+        prune=lambda _root, paths: (setattr(pre, "pruned", paths) or {"success": True})
+    )
     called = []
     pre._step_code_index = lambda _row: called.append("call_graph") or True
     pre._step_module = lambda _row: called.append("modules") or True
@@ -241,7 +243,7 @@ def test_code_index_phase_applies_project_file_size_limit(tmp_path, monkeypatch)
     pre = _preprocessor(tmp_path)
     submitted = []
     pre.code_index = SimpleNamespace(
-        prune=lambda *_args: None,
+        prune=lambda *_args: {"success": True},
         files_needing_reindex=lambda _root, items: items,
         update_files_batch=lambda _root, items: submitted.extend(items) or {"files_processed": len(items), "cached": 0},
     )

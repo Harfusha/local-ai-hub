@@ -404,8 +404,7 @@ def test_11_swarm_pubsub():
 
 
 def test_12_git_precommit_hooks(tmp_path: Path):
-    git_dir = tmp_path / ".git"
-    git_dir.mkdir()
+    subprocess.run(["git", "init", "--quiet", str(tmp_path)], check=True)
 
     res_install = install_git_precommit_hook(str(tmp_path))
     assert res_install["success"] is True

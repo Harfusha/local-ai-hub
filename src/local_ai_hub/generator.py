@@ -404,12 +404,6 @@ Use Agent OS for every non-trivial multi-step, long-running, delegated, or accep
   `local_ai_coord(action="negative_knowledge_find", query="timeout")`
 
 ### Public contract notes
-- `local_ai_rag(action="ingest_document")`
-- non-empty `content` is required; `title` and `metadata` are optional.
-- Success returns `success`, `workspace`, `document_title`, `chunks_ingested`, and `embedded`.
-- Embedding errors do not stop lexical publication.
-- `image_path` must resolve to an existing `.png`, `.jpg`, `.jpeg`, `.webp`, `.svg`, or `.bmp` file; `caption` and `metadata` are optional.
-- Success also returns `diagram_indexed` and the resolved image path.
 - `local_ai_repo(action="pipeline")` accepts closed step objects.
 - `local_ai_artifact(action="list")` does not require `artifact_id`.
 - `local_ai_coord(action="pubsub_poll")` accepts `after_seq`.
@@ -624,10 +618,12 @@ Use `local_ai_work(action="submit", root=ABS_ROOT, task="...", response_profile=
         else "Local AI Hub operates in deterministic/indexed mode (local inference disabled)"
     )
     agent_os_multi_agent_note = " Agent OS through `local_ai_coord` handles non-trivial multi-step, long-running, delegated, or acceptance-criteria work: create a task contract, checkpoint phases, and verify receipts before completion." if fs.agent_os else ""
+    whole_task_multi_agent_note = " For explicitly requested closed whole-task delegation, use `local_ai_work`; routine planning and integration stay with the main agent." if fs.work_orchestrator else ""
     refs["multi-agent.md"] = f"""# Multi-agent coordination
 
 {multi_agent_desc}. External cloud agents (Codex, Claude, Gemini, Cursor, Copilot) remain the principal orchestrators.
 {agent_os_multi_agent_note}
+{whole_task_multi_agent_note}
 
 Rules:
 - Never duplicate the same scope across agents.
@@ -659,7 +655,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
     task_delegation = ""
     if fs.tasks and fs.has_any_model():
         task_delegation = (
-            "\n- Semantic delegation is optional and on-demand: after deterministic/indexed evidence, use `local_ai_task` selectively for bounded generation, review, independent second opinions, test-log compression, commit message generation, and drafting where helpful. Cloud reasoning and planning are never blocked by mandatory local handoffs. Deterministic/indexed tools remain authoritative for exact facts, symbols, diff and tests. Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression. Model routing follows the active hardware profile and user overrides; consult `docs/MODEL_CAPABILITIES.md` for foreground role targets. Preprocessing follows its configured provider; do not switch it silently. Pinned master `2458f72c` has no Gemini preprocessing provider implementation; Gemini agent manifests do not establish runtime preprocessing support. Routing targets do not prove installed-model availability; model pulls remain opt-in."
+            "\n- Semantic delegation is on-demand and optional: after deterministic/indexed evidence, use `local_ai_task` selectively for bounded generation, review, independent second opinions, test-log compression, commit message generation, and drafting where helpful. Cloud reasoning and planning are never blocked by mandatory local handoffs. Deterministic/indexed tools remain authoritative for exact facts, symbols, diff and tests. Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression. Model routing follows the active hardware profile and user overrides; consult `docs/MODEL_CAPABILITIES.md` for foreground role targets. Preprocessing follows its configured provider; do not switch it silently. Pinned master `2458f72c` has no Gemini preprocessing provider implementation; Gemini agent manifests do not establish runtime preprocessing support. Routing targets do not prove installed-model availability; model pulls remain opt-in."
         )
 
     model_default = ""
@@ -708,7 +704,7 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         "Direct ownership is the default. Do not delegate audits, inventory, status checks, or routine implementation. Use a subagent only for genuinely independent bounded implementation that materially shortens the critical path, or when the user explicitly asks; see the simplified workflow spec.\n"
         f"{task_delegation}\n"
         "- Use native Codex subagents only for independent bounded implementation or an explicit user request. Never spawn them for audits or to relay results as a handoff.\n"
-        "- Native `multi_agent_v1__spawn_agent` is used only for useful independent bounded work; explicit user requests may also authorize bounded delegation. Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, and sandbox.\n"
+        "- Native `multi_agent_v1__spawn_agent` is used only for useful independent bounded work; explicit user requests may also authorize bounded delegation. Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.\n"
         "- Keep write scopes disjoint. The primary agent reviews and integrates directly; no ZIPs, custom owner packets, or fingerprint/hash cascades.\n"
         "- Do not duplicate tasks or chats. Check the existing plan first and update its existing item.\n\n"
         "Routing hierarchy: the main agent plans, audits, implements, reviews, and integrates directly."

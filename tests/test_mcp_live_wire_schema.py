@@ -353,6 +353,19 @@ def test_stdio_status_call_cold_starts_isolated_hub_and_cleans_up(tmp_path: Path
         assert (state_dir / "hub.pid").is_file()
         assert child_log.is_file()
     finally:
+        if (state_dir / "hub.pid").is_file():
+            stop_env = dict(env)
+            stop_env["LOCAL_AI_CONFIG"] = str(config_path)
+            stopped = subprocess.run(
+                [sys.executable, "-B", str(root / "tools" / "hubctl.py"), "stop"],
+                cwd=root,
+                env=stop_env,
+                capture_output=True,
+                text=True,
+                timeout=20,
+                check=False,
+            )
+            assert stopped.returncode == 0, stopped.stderr[-1000:]
         pids: set[int] = set()
         if child_log.is_file():
             pids.update(int(line) for line in child_log.read_text(encoding="ascii").splitlines() if line.strip())

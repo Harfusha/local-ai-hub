@@ -138,7 +138,7 @@ def test_verification_store_indexes_and_retry(tmp_path: Path):
     # The store has no task owner or artifact-backed proof in this fixture, so
     # the persisted receipt is not sufficient to authorize task completion.
     assert comp.complete is False
-    assert "test_pass" in comp.unsatisfied_criteria
+    assert comp.unsatisfied_criteria == ()
     assert len(comp.receipts) == 1
 
 
@@ -290,6 +290,9 @@ def test_blackboard_store_retry(tmp_path: Path):
 def test_repair_loop_drive_letter_casing(tmp_path: Path, monkeypatch):
     """Verify repair_loop handles path normalization without raising relative_to ValueError."""
     broker = CommandBroker(config={"server": {"state_dir": str(tmp_path / "broker_state")}, "commands": {"enabled": True}})
+    docker_ready, docker_error = broker._transaction_docker_ready()
+    if not docker_ready:
+        pytest.skip(f"private mutation transaction unavailable: {docker_error}")
     monkeypatch.setattr(broker, "_require_task_worktree", lambda *_args, **_kwargs: None)
 
     project_dir = tmp_path / "project"

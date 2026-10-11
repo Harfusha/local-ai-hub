@@ -27,7 +27,7 @@ from local_ai_hub.services import LocalAIServices
 from local_ai_hub.token_accounting import TenantQuotaEnforcer
 
 
-def test_command_broker_lint_fix_and_daemon_lifecycle(tmp_path: Path, monkeypatch):
+def test_command_broker_lint_fix_and_rejects_unsafe_daemon_command(tmp_path: Path, monkeypatch):
     subprocess.run(["git", "init", "--quiet"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=tmp_path, check=True)
@@ -82,9 +82,8 @@ def test_command_broker_lint_fix_and_daemon_lifecycle(tmp_path: Path, monkeypatc
     monkeypatch.setattr(broker, "_transaction_docker_ready", lambda: (True, ""))
 
     def execute(argv, cwd, timeout, *_args, **_kwargs):
-        assert argv[:3] == ["docker", "run", "--rm"]
         completed = subprocess.run(
-            argv[-1], cwd=cwd, shell=True, capture_output=True, text=True, timeout=timeout,
+            argv, cwd=cwd, shell=True, capture_output=True, text=True, timeout=timeout,
             env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTEST_ADDOPTS": "-p no:cacheprovider"},
         )
         return {
@@ -101,26 +100,15 @@ def test_command_broker_lint_fix_and_daemon_lifecycle(tmp_path: Path, monkeypatc
     )
     assert lint_res["success"] is True
 
-    # 2. Test daemon lifecycle
+    # 2. Deny opaque inline code at the daemon policy boundary.
     daemon_res = broker.spawn_daemon(
         f'"{sys.executable}" -c "import time; time.sleep(5)"',
         str(tmp_path),
         name="pytest_daemon",
         task_id=task_id,
     )
-    assert daemon_res["success"] is True, daemon_res
-    d_id = daemon_res["daemon_id"]
-
-    status_res = broker.daemon_status(d_id)
-    assert status_res["success"] is True
-    assert status_res["running"] is True
-
-    stop_res = broker.stop_daemon(d_id, task_id=task_id)
-    assert stop_res["success"] is True
-
-    time.sleep(0.2)
-    after_status = broker.daemon_status(d_id)
-    assert after_status["running"] is False
+    assert daemon_res["success"] is False, daemon_res
+    assert "unknown side effects" in str(daemon_res.get("error", ""))
 
 
 def test_daemon_status_closes_log_after_natural_exit():
@@ -215,21 +203,33 @@ def test_agent_memory_semantic_find(tmp_path: Path):
 
     rec1 = MemoryRecord.create(
         kind=MemoryKind.FACT,
-        scope=AgentScope.TASK,
+        scope=AgentScope.REPOSITORY,
+        scope_id="repo-memory-search",
         key="oauth_configuration",
         value="User authentication uses JWT bearer tokens with 15 minutes expiration window",
+        provenance={"root": str(tmp_path), "repository_id": "repo-memory-search", "tenant": "tenant-a"},
     )
     rec2 = MemoryRecord.create(
         kind=MemoryKind.FACT,
-        scope=AgentScope.TASK,
+        scope=AgentScope.REPOSITORY,
+        scope_id="repo-memory-search",
         key="database_credentials",
         value="PostgreSQL connection string pool size set to 20 connections",
+        provenance={"root": str(tmp_path), "repository_id": "repo-memory-search", "tenant": "tenant-a"},
     )
     mem.record(rec1)
     mem.record(rec2)
 
     # Search with partial keyword overlap
-    matches = mem.find(query="bearer token expiration", semantic=True)
+    matches = mem.find(
+        query="bearer token expiration",
+        scope=AgentScope.REPOSITORY,
+        scope_id="repo-memory-search",
+        root=str(tmp_path),
+        repository_id="repo-memory-search",
+        tenant="tenant-a",
+        semantic=True,
+    )
     assert len(matches) > 0
     assert matches[0].key == "oauth_configuration"
 

@@ -19,7 +19,8 @@ from local_ai_hub.agent_verification import (
     VerificationStore,
 )
 from local_ai_hub.project_config import CommandDefinition, ProjectSettings
-from local_ai_hub.verification_rules import evaluate_project_completion
+from local_ai_hub.project_config import resolve_project_context
+from local_ai_hub.verification_rules import evaluate_project_completion, project_command_environment_sha256
 
 
 class _T09CompletionStore:
@@ -40,6 +41,10 @@ class _T09CompletionStore:
         current_mutation_generation: int | None = None,
         verification_rules=None,
         configured_criteria=None,
+        configured_commands=None,
+        project_config_digest="",
+        configured_environment_sha256=None,
+        project_root="",
     ) -> CompletionResult:
         self.completion_calls += 1
         task = self.task_store.get(task_id)
@@ -57,6 +62,10 @@ class _T09CompletionStore:
             "receipts": persisted.receipts,
             "verification_rules": verification_rules,
             "configured_criteria": configured_criteria,
+            "configured_commands": configured_commands,
+            "project_config_digest": project_config_digest,
+            "configured_environment_sha256": configured_environment_sha256,
+            "project_root": project_root,
         }
         return CompletionResult(
             task_id=task_id,
@@ -120,6 +129,10 @@ def test_project_completion_forwards_config_and_task_generation_to_t09_store(
         "receipts": result.receipts,
         "verification_rules": {"acceptance": ("check",)},
         "configured_criteria": ("check",),
+        "configured_commands": settings.commands,
+        "project_config_digest": "",
+        "configured_environment_sha256": None,
+        "project_root": "",
     }
     assert result.receipts[0].receipt_id == receipt.receipt_id
     assert result.receipts[0].repository_revision == "revision-21"
@@ -176,44 +189,48 @@ def test_http_task_completion_uses_persisted_project_receipts(
     )
     app = LocalAIApp(str(config_path))
     task_id = "task-http-completion"
+    test_dir = project_root / "tests"
+    test_dir.mkdir()
+    (test_dir / "test_project_rules.py").write_text(
+        "def test_project_rule():\n    assert 2 + 2 == 4\n",
+        encoding="utf-8",
+    )
     app.agent_tasks.create(
         GoalContract(
             goal="verify configured project rules",
             acceptance_criteria=("required_commands",),
         ),
-        ScopeContext(task_id=task_id, repository_id=str(project_root)),
+        ScopeContext(task_id=task_id, repository_id=str(project_root), session_id="agent"),
         task_id=task_id,
         actor="agent",
         repo_root=str(project_root),
     )
+    command_result = app.commands.run_project_command(
+        "test",
+        str(project_root),
+        tenant="agent",
+        task_id=task_id,
+        criterion="test",
+        timeout=60,
+        force=True,
+    )
+    assert command_result.get("success") is True, command_result
+    command_receipt = command_result.get("verification_receipt")
+    assert isinstance(command_receipt, dict)
+    repository_revision = str(command_receipt.get("repository_revision") or "")
+    assert repository_revision
     source_evidence = app.artifacts.put_json(
         {
             "kind": "work_source_review",
             "passed": True,
             "task_id": task_id,
             "owner": "agent",
-            "repository_revision": "rev-http",
+            "repository_revision": repository_revision,
             "mutation_generation": 0,
             "criteria": ["required_commands"],
         },
         "agent",
         "source_review",
-    )
-    command_evidence = app.artifacts.put_json(
-        {
-            "kind": "work_command_verification",
-            "passed": True,
-            "task_id": task_id,
-            "owner": "agent",
-            "repository_revision": "rev-http",
-            "mutation_generation": 0,
-            "criterion": "test",
-            "command_id": "cmd-http",
-            "exit_code": 0,
-            "result": {"success": True, "exit_code": 0},
-        },
-        "agent",
-        "command_verification",
     )
     app.agent_verification.record(
         VerificationReceipt.create(
@@ -221,23 +238,37 @@ def test_http_task_completion_uses_persisted_project_receipts(
             "required_commands",
             evidence_id=source_evidence,
             owner="agent",
-            repository_revision="rev-http",
+            repository_revision=repository_revision,
         )
     )
-    app.agent_verification.record(
-        VerificationReceipt.create(
-            task_id,
-            "test",
-            evidence_id=command_evidence,
-            command_id="cmd-http",
-            owner="agent",
-            repository_revision="rev-http",
-        )
+    task = app.agent_tasks.get(task_id)
+    assert task is not None
+    state_data = dict(task.checkpoint.state_data)
+    state_data["repository_revision"] = repository_revision
+    app.agent_tasks.checkpoint(
+        task_id,
+        TaskCheckpoint(phase=task.checkpoint.phase, state_data=state_data),
+        actor="agent",
+        idempotency_key="http-test-revision",
     )
+    project = resolve_project_context(project_root, state_dir)
+    preflight = evaluate_project_completion(
+        app.agent_verification,
+        project.settings,
+        task_id=task_id,
+        repository_revision=repository_revision,
+        project_config_digest=project.config_digest,
+        configured_environment_sha256={
+            name: project_command_environment_sha256(project.settings, name)
+            for name in project.settings.commands
+        },
+        project_root=project_root,
+    )
+    assert preflight.complete, (preflight.unsatisfied_criteria, preflight.stale_criteria)
     monkeypatch.setattr(
         http_server,
         "_completion_revision_or_stop",
-        lambda *_args: ("rev-http", None),
+        lambda *_args: (repository_revision, None),
     )
     old_app = http_server.APP
     http_server.APP = app
@@ -258,11 +289,15 @@ def test_http_task_completion_uses_persisted_project_receipts(
             headers={
                 "Content-Type": "application/json",
                 "X-LocalAI-Agent": "agent",
+                "X-LocalAI-Tenant": "agent",
             },
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=5) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            pytest.fail(f"HTTP {exc.code}: {exc.read().decode('utf-8', errors='replace')}")
     finally:
         server.shutdown()
         server.server_close()
@@ -274,12 +309,12 @@ def test_http_task_completion_uses_persisted_project_receipts(
     stored = app.agent_tasks.get(task_id)
     assert stored is not None
     assert stored.checkpoint.state_data["repo_root"] == str(project_root.resolve())
-    assert stored.checkpoint.state_data["repository_revision"] == "rev-http"
+    assert stored.checkpoint.state_data["repository_revision"] == repository_revision
     result = app.agent_verification.completion(
-        task_id, current_revision="rev-http", current_mutation_generation=0
+        task_id, current_revision=repository_revision, current_mutation_generation=0
     )
     assert result.complete is True
     assert {receipt.evidence_id for receipt in result.receipts} == {
         source_evidence,
-        command_evidence,
+        command_receipt["evidence_id"],
     }

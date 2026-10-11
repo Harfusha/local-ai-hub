@@ -34,7 +34,8 @@ def test_http_task_complete_uses_persisted_tenant_scoped_receipts(
     config_path.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = 11498\nstate_dir = "{state_dir.as_posix()}"\n'
         "\n[agent_state]\nenabled = true\n"
-        '\n[security]\napi_token = "t09-test-token"\n',
+        f'\n[security]\napi_token = "t09-test-token"\napi_token_tenant = "{tenant_id}"\n'
+        f'allowed_roots = ["{project_root.as_posix()}"]\n',
         encoding="utf-8",
     )
 
@@ -44,7 +45,13 @@ def test_http_task_complete_uses_persisted_tenant_scoped_receipts(
             goal="complete task through production HTTP route",
             acceptance_criteria=("test",),
         ),
-        ScopeContext(repository_id=str(project_root), task_id=task_id),
+        ScopeContext(
+            repository_id=str(project_root),
+            task_id=task_id,
+            session_id=http_server._derive_root_tenant(
+                tenant_id, str(project_root.resolve()), "t09-test-token"
+            ),
+        ),
         task_id=task_id,
         actor=tenant_id,
         repo_root=str(project_root),

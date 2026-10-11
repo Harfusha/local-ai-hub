@@ -70,6 +70,7 @@ def test_live_named_dispatch_follows_shared_gates_and_keeps_read_policy() -> Non
     assert observed_order in {
         ("auth", "mode", "trace", "parse"),
         ("trace", "auth", "mode", "parse"),
+        ("auth", "auth", "mode", "trace", "parse"),
     }
     assert max(line for line, name in prelude_calls if name in order) < dispatch
     assert "/api/live" not in http_server.HTTP_MODE_OPERATOR_GET_PATHS

@@ -141,13 +141,15 @@ def test_generated_manifests_cover_generic_and_vscode(tmp_path: Path):
 
 
 def test_startup_lock_detects_dead_owner_without_waiting(tmp_path: Path):
-    from local_ai_hub.client import _live_start_lock
+    from local_ai_hub.client import _acquire_start_lock
     lock = tmp_path / "hub.start.lock"
     # Negative PID is guaranteed non-live on every supported platform.
     lock.write_text("-1 0", encoding="utf-8")
-    assert _live_start_lock(lock, 20.0) is False
+    stale_owner = _acquire_start_lock(lock, 20.0)
+    assert stale_owner is not None
+    stale_owner.close()
     lock.write_text(f"{__import__('os').getpid()} {time.time()}", encoding="utf-8")
-    assert _live_start_lock(lock, 20.0) is True
+    assert _acquire_start_lock(lock, 20.0) is None
 
 
 def test_git_grep_timeout_enters_cooldown(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -168,6 +170,8 @@ def test_git_grep_timeout_enters_cooldown(tmp_path: Path, monkeypatch: pytest.Mo
         returncode = None
         def poll(self):
             return None
+        def kill(self):
+            self.returncode = -9
         def wait(self, timeout=None):
             raise subprocess.TimeoutExpired(["git"], timeout or 0.1)
     def fake_popen(*args, **kwargs):
@@ -176,7 +180,7 @@ def test_git_grep_timeout_enters_cooldown(tmp_path: Path, monkeypatch: pytest.Mo
     def fake_terminate(*args, **kwargs):
         calls["killed"] += 1
         return True
-    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr("local_ai_hub.repo_tools.popen_managed", fake_popen)
     monkeypatch.setattr("local_ai_hub.repo_tools.terminate_tree", fake_terminate)
     assert tools._git_grep_candidates(repo, ["needle"], 10) == (None, True)
     assert tools._git_grep_candidates(repo, ["needle"], 10) == (None, False)

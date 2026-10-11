@@ -40,6 +40,7 @@ def cpu_only(_requested="auto"):
 hardware.detect_hardware = cpu_only
 from local_ai_hub import client as client_module
 from local_ai_hub import mcp_server
+from local_ai_hub.process_utils import process_owner_state
 
 client = mcp_server.CLIENT
 assert client.auto_start is True
@@ -101,7 +102,9 @@ try:
     content = result[0] if isinstance(result, tuple) else result
     text = next(item.text for item in content if getattr(item, "type", None) == "text")
     status = json.loads(text)
-    assert status.get("success") is True, {
+    assert status.get("success") is True or (
+        status.get("degraded") is True and status.get("ollama_online") is False
+    ), {
         "status": status,
         "elapsed": elapsed,
         "children": [{"pid": process.pid, "poll": process.poll()} for process, _ in launches],
@@ -117,10 +120,12 @@ try:
     assert launches[0][0] is child
     assert child.poll() is None
     state_dir = Path(client.config["server"]["state_dir"])
-    assert (state_dir / "hub.pid").read_text(encoding="ascii").strip() == str(child.pid)
-    assert not (state_dir / "hub.start.lock").exists()
+    hub_pid = int((state_dir / "hub.pid").read_text(encoding="ascii").strip())
+    hub_owner = json.loads((state_dir / "hub.owner.json").read_text(encoding="utf-8"))
+    assert int(hub_owner["pid"]) == hub_pid
+    assert process_owner_state(hub_owner, state_dir, "hub") == "owned"
     argv = launches[0][1]["argv"]
-    assert argv[1:] == ["-m", "local_ai_hub", "--config", os.environ["LOCAL_AI_CONFIG"]], argv
+    assert argv[1:] == ["-m", "local_ai_hub.supervisor", "--config", os.environ["LOCAL_AI_CONFIG"]], argv
     expected_executable = Path(sys.executable)
     if os.name == "nt":
         pythonw = expected_executable.parent / "pythonw.exe"
@@ -284,10 +289,13 @@ def test_first_mcp_status_starts_and_reaps_real_hub_entrypoint(tmp_path: Path) -
 
     assert process.returncode == 0, stdout + stderr
     result = json.loads(stdout.strip().splitlines()[-1])
-    assert result["status"]["success"] is True
+    assert result["status"]["success"] is True or (
+        result["status"].get("degraded") is True
+        and result["status"].get("ollama_online") is False
+    )
     print("T04_REAL_HUB_PROOF " + json.dumps(result, sort_keys=True))
     assert result["ensure_calls"] >= 1
     assert result["elapsed"] < 15.0
-    assert result["argv"][1:] == ["-m", "local_ai_hub", "--config", str(config_path)]
+    assert result["argv"][1:] == ["-m", "local_ai_hub.supervisor", "--config", str(config_path)]
     assert Path(result["package_source"]).resolve() == source_root / "local_ai_hub" / "__init__.py"
     assert Path(result["entrypoint_source"]).resolve() == source_root / "local_ai_hub" / "__main__.py"

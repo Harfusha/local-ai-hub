@@ -42,7 +42,7 @@ def test_http_lease_routes_resolve_namespace_and_isolate_linked_worktrees(tmp_pa
     app = SimpleNamespace(
         config={
             "server": {"state_dir": str(state_dir)},
-            "security": {"api_token": "lease-test-token"},
+            "security": {},
             "observability": {
                 "exclude_http_paths": [
                     "/api/leases", "/api/leases/claim", "/api/leases/claim_batch",

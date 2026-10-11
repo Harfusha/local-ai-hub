@@ -6332,8 +6332,6 @@ class Handler(BaseHTTPRequestHandler):
                         if requested_root and project_identity is None:
                             self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
                         root_val, repository_id_val = project_identity or (None, None)
-                        if not repository_id_val and (payload.get("repository_id") or rec_data.get("repository_id")):
-                            repository_id_val = str(payload.get("repository_id") or rec_data.get("repository_id")).strip()
                         tenant_val = self._tenant()
                         scope_val, resolved_scope_id, ambiguous_scope = _resolve_memory_scope(
                             requested_scope,
@@ -6440,6 +6438,12 @@ class Handler(BaseHTTPRequestHandler):
                     clone_id_val = payload.get("clone_id")
                     worktree_id_val = payload.get("worktree_id")
                     branch_val = payload.get("branch")
+                    # GLOBAL scope is intentionally independent of the
+                    # authenticated transport tenant. Stored tenant
+                    # provenance is still filtered by MemoryStore unless the
+                    # caller explicitly opts into tenant-agnostic access.
+                    if scope_val is AgentScope.GLOBAL:
+                        tenant_val = None
                     scope_val, scope_id_val, ambiguous_scope = _resolve_memory_scope(
                         scope_val,
                         scope_id=scope_id_val,
@@ -6500,8 +6504,6 @@ class Handler(BaseHTTPRequestHandler):
                     if requested_root and project_identity is None:
                         self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
                     root_val, repository_id_val = project_identity or (None, None)
-                    if not repository_id_val and payload.get("repository_id"):
-                        repository_id_val = str(payload.get("repository_id")).strip()
                     requested_scope = _parse_memory_scope(payload.get("scope"))
                     explicit_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
                     raw_tenant = payload.get("tenant") or (str(explicit_tenant).strip() if explicit_tenant else None)
@@ -6566,8 +6568,6 @@ class Handler(BaseHTTPRequestHandler):
                     if requested_root and project_identity is None:
                         self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
                     root_val, repository_id_val = project_identity or (None, None)
-                    if not repository_id_val and payload.get("repository_id"):
-                        repository_id_val = str(payload.get("repository_id")).strip()
                     explicit_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
                     raw_tenant = payload.get("tenant") or (str(explicit_tenant).strip() if explicit_tenant else None)
                     tenant_val = str(raw_tenant).strip() if raw_tenant else None
@@ -6642,8 +6642,6 @@ class Handler(BaseHTTPRequestHandler):
                     if requested_root and project_identity is None:
                         return None, "memory project identity could not be resolved"
                     root_val, repository_id_val = project_identity or (None, None)
-                    if not repository_id_val and payload.get("repository_id"):
-                        repository_id_val = str(payload.get("repository_id")).strip()
                     explicit_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
                     raw_tenant = payload.get("tenant") or (str(explicit_tenant).strip() if explicit_tenant else None)
                     tenant_val = str(raw_tenant).strip() if raw_tenant else None

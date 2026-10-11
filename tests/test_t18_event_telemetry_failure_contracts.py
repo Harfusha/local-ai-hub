@@ -130,11 +130,15 @@ def test_event_stream_provider_failure_emits_retryable_replay_error(monkeypatch,
     handler._stream_agent_events(stream_id="task:task-1", after_seq=7, timeout=0.01)
 
     output = handler.wfile.getvalue().decode("utf-8")
-    assert "event: replay_error" in output
-    error_frame = next(frame for frame in output.split("\n\n") if "event: replay_error" in frame)
-    data = next(line[6:] for line in error_frame.splitlines() if line.startswith("data: "))
-    payload = json.loads(data)
-    assert payload["error"]["code"] == "event_replay_unavailable"
+    if failure_page == 1:
+        payload = json.loads(output)
+        assert payload["error"]["code"] == "event_page_unavailable"
+    else:
+        assert "event: replay_error" in output
+        error_frame = next(frame for frame in output.split("\n\n") if "event: replay_error" in frame)
+        data = next(line[6:] for line in error_frame.splitlines() if line.startswith("data: "))
+        payload = json.loads(data)
+        assert payload["error"]["code"] == "event_replay_unavailable"
     assert payload["retryable"] is True
     assert payload["terminal"] is False
     assert payload["next_seq"] == (7 if failure_page == 1 else 8)

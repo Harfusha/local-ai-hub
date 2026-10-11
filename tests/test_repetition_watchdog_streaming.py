@@ -60,7 +60,7 @@ class RepetitionWatchdogStreamingTests(unittest.TestCase):
         runtime.timeout = 1.0
         response = StreamingResponse(["text ", "text ", "text ", "text ", "unused output"])
 
-        with patch("local_ai_hub.ollama.urlopen", return_value=response):
+        with patch("local_ai_hub.ollama._open_interruptible_response", return_value=response):
             result = runtime.request_interruptible(
                 "/api/chat",
                 {"model": "test", "messages": []},
