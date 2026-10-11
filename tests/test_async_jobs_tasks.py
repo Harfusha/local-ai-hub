@@ -30,7 +30,7 @@ class _Artifacts:
         return "art-123"
 
 
-def test_async_job_updates_agent_task_and_mints_receipt(tmp_path: Path):
+def test_async_job_updates_agent_task_and_mints_receipt(tmp_path: Path, monkeypatch):
     state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
     task_store = TaskStore(state_store)
     verification_store = VerificationStore(state_store, task_store=task_store)
@@ -51,6 +51,9 @@ def test_async_job_updates_agent_task_and_mints_receipt(tmp_path: Path):
         task_store=task_store,
         verification_store=verification_store,
     )
+    # This test drives the job synchronously below. Prevent submit()'s normal
+    # background dispatcher from racing that explicit _execute() call.
+    monkeypatch.setattr(manager, "_dispatch_background", lambda _job_id: None)
 
     submitted = manager.submit("tenant-test", "reason", {"task": "do work", "task_id": task.task_id})
     assert submitted["success"] is True
