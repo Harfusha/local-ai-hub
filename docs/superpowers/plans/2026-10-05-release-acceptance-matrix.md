@@ -4,7 +4,7 @@
 
 | Area | Current status | Evidence / blocker |
 |---|---|---|
-| Root/master | `master` at `1586997d`; root clean before this matrix-only update | Bounded Git audit: 0 tracked + 0 untracked changes; 153 local branches; 0 stashes. User-provided 182/192 dirty snapshot did not match current root and was preserved by taking no cleanup action. |
+| Root/master | Root was clean at `1586997d` before this audit; plan-only updates committed as `6250a0db` | Bounded Git audit: 0 tracked + 0 untracked changes before plan edits; 153 local branches; 0 stashes. User-provided 182/192 dirty snapshot did not match current root and was preserved by taking no cleanup action. |
 | Local branches | No unmerged local branch tips | `git branch --no-merged master` returned no branch names. No branch deletion performed. |
 | Worktrees | 63 clean worktrees fast-forwarded to master; root already current | `git merge --ff-only master`: updated 63, already current 1, skipped dirty 1, non-ancestor 0, failures 0. One dirty detached worktree `release-verify-7cb` remains 17 commits behind and untouched. |
 | Dirty worktree | **Review / not integrated** | Only `docs/API_COVERAGE.md` is modified. No matching task thread appeared in current listing; captured diff was oversized (5.2 MB), so exact hunk ownership and current candidate validation are not established. Preserve pending targeted review. |
