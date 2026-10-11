@@ -54,3 +54,33 @@ def test_failed_sqlite_delete_does_not_serve_stale_cached_value(
     monkeypatch.setattr(cache.l2, "_connect", original_connect)
 
     assert cache.get("command-key") is None
+
+
+def test_incident_capture_failure_is_reported_without_masking_unknown_outcome(
+    tmp_path,
+) -> None:
+    broker = CommandBroker(
+        {"server": {"state_dir": str(tmp_path / "state")}},
+        artifacts=None,
+        repo_state=None,
+    )
+
+    class FailingIncidentStore:
+        def capture(self, outcome):
+            raise sqlite3.OperationalError("database is locked")
+
+    broker.set_incident_store(FailingIncidentStore())
+    result: dict[str, object] = {
+        "outcome_unknown": True,
+        "incident_required": True,
+    }
+    broker._capture_rollback_unknown_incident(
+        result,
+        command="unit-test",
+    )
+
+    assert result["outcome_unknown"] is True
+    assert result["incident_required"] is True
+    assert result["incident_recording_failed"] is True
+    assert result["incident_recording_error_type"] == "OperationalError"
+    assert "database is locked" not in str(result)
