@@ -2726,6 +2726,16 @@ Read-only owner audits completed for T01–T21. Clean master checkouts are alrea
 
 ## Current master reconciliation — 2026-10-11
 
+### Revalidation — 2026-10-11 continuation
+
+- Current root is `master` at `b528a262`; tracked and untracked root changes: **0 / 0**. Current inventory: **65 registered worktrees, 153 local branches, 0 stashes**. This root summary does **not** prove each worktree is clean or synchronized; do not infer that from the counts.
+- Startup/transport regression suite: `python -m pytest -q tests/test_client_transport.py tests/test_client_startup_resilience.py tests/test_client_operational_mode_autostart.py tests/test_client_startup_transport_fallback.py tests/test_client_autostart_timeout.py` — **66 passed**. This verifies the already-integrated initial-health-probe budget fix; no source edit was needed.
+- `python tools/release_check.py --allow-installed` — **OK**; `python -m compileall -q src tools tests` — **OK**; `python tools/selftest.py` — **OK** (all six checks, including repository filtering and HTTP health).
+- An initial `python tools/release_check.py` without `--allow-installed` rejected local installed/runtime payloads as expected for this live checkout; the documented working-checkout mode passed.
+- T20 remains **NO-GO**: the full candidate suite has no successful current-candidate receipt; previous full-suite attempt timed out and the existing matrix records unresolved failures. Focused passes above do not replace it.
+- Current T01/T05/T06/T08/T13/T14/T17/T20/T21 chat snapshots report missing or foreign-owned task worktrees. No source packet from those chats was integrated. Preserve T14 ownership of `/api/context/pack`.
+- Local AI adaptive context returned `max_response_tokens too small`; one bounded native Git-state check was used. No repeated context attempt or broad native scan was made.
+
 **Owner:** primary orchestrator. **Base:** `master` at `e54e51f4ed88a41c02526c5dc15c9d16862744eb` before this entry. Root was clean; 65 registered worktrees total, 64 at master and one dirty `release-verify-7cb` at `3010c894` with only `docs/API_COVERAGE.md` modified. Its own `surface_inventory.py --check` passed, as did current master; leave the dirty historical rendering untouched. There are 153 local branches, zero with unmerged commits, zero stashes, and local master is 757 commits ahead of `origin/master`. Do not push that range as a release without explicit release/push approval.
 
 | Item | Status | Current evidence and exact result | Remaining action |
