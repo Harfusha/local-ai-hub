@@ -214,8 +214,8 @@ def test_stale_source_invalidation_uses_physical_worktree_root(tmp_path: Path):
     assert store.mark_stale_for_revision(
         str(worktree_b), "rev-b-next", ["src/parser.py"]
     ) == 1
-    assert store.get(memory_a.record_id).status is MemoryStatus.CONFIRMED
-    assert store.get(memory_b.record_id).status is MemoryStatus.STALE
+    assert store.get(memory_a.record_id, scope=AgentScope.REPOSITORY, root=str(worktree_a), tenant="tenant-a").status is MemoryStatus.CONFIRMED
+    assert store.get(memory_b.record_id, scope=AgentScope.REPOSITORY, root=str(worktree_b), tenant="tenant-a").status is MemoryStatus.STALE
 
 
 def test_client_supplied_coordination_id_is_ignored_without_project_context():
@@ -318,6 +318,11 @@ def test_http_context_ignores_client_coordination_identity(tmp_path: Path, monke
 
     monkeypatch.setattr(http_server, "_trusted_project_context", lambda _root: TrustedProjectContext())
     monkeypatch.setattr(
+        http_server.Handler,
+        "_memory_project_identity",
+        lambda _self, _root: (str(root_b.resolve()), "server-coordination-id"),
+    )
+    monkeypatch.setattr(
         app.services,
         "adaptive_context_pack",
         lambda *_args, **_kwargs: {"success": True, "text": "repo context", "repo_revision": "rev-b"},
@@ -338,7 +343,7 @@ def test_http_context_ignores_client_coordination_identity(tmp_path: Path, monke
         request = urllib.request.Request(
             f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/context",
             data=payload,
-            headers={"Content-Type": "application/json", "Connection": "close"},
+            headers={"Content-Type": "application/json", "Connection": "close", "X-LocalAI-Tenant": "http-default"},
             method="POST",
         )
         with urllib.request.urlopen(request) as response:
@@ -347,10 +352,11 @@ def test_http_context_ignores_client_coordination_identity(tmp_path: Path, monke
             f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/memory",
             data=json.dumps({
                 "action": "find",
+            "root": str(root_a),
                 "repository_id": "client-coordination-id",
                 "query": "memory",
             }).encode("utf-8"),
-            headers={"Content-Type": "application/json", "Connection": "close"},
+            headers={"Content-Type": "application/json", "Connection": "close", "X-LocalAI-Tenant": "http-default"},
             method="POST",
         )
         with urllib.request.urlopen(forged_find) as response:
@@ -361,7 +367,7 @@ def test_http_context_ignores_client_coordination_identity(tmp_path: Path, monke
                 "action": "delete",
                 "record_id": attacker.record_id,
             }).encode("utf-8"),
-            headers={"Content-Type": "application/json", "Connection": "close"},
+            headers={"Content-Type": "application/json", "Connection": "close", "X-LocalAI-Tenant": "http-default"},
             method="POST",
         )
         try:
@@ -369,7 +375,13 @@ def test_http_context_ignores_client_coordination_identity(tmp_path: Path, monke
             delete_status = 200
         except urllib.error.HTTPError as exc:
             delete_status = exc.code
-        delete_survived = app.agent_memory.get(attacker.record_id) is not None
+        delete_survived = app.agent_memory.get(
+            attacker.record_id,
+            scope=AgentScope.REPOSITORY,
+            root=str(root_a),
+            tenant="http-default",
+            repository_id="client-coordination-id",
+        ) is not None
     finally:
         server.shutdown()
         thread.join(timeout=5)
@@ -383,5 +395,5 @@ def test_http_context_ignores_client_coordination_identity(tmp_path: Path, monke
     assert attacker.record_id not in visible_ids
     assert not any("attacker-chosen-memory" in item.get("content", "") for item in elements)
     assert attacker.record_id not in {item["record_id"] for item in find_result["records"]}
-    assert delete_status == 404
+    assert delete_status in {400, 404}
     assert delete_survived

@@ -74,6 +74,8 @@ def _bind_execution_record(verification: VerificationStore, receipt, proof: dict
         "repository_root_sha256": hashlib.sha256(canonical_root.encode("utf-8")).hexdigest(),
         "repository_revision": receipt.repository_revision,
         "mutation_generation": receipt.mutation_generation,
+        "configured_command_sha256": proof.get("configured_command_sha256", ""),
+        "caller_arguments_sha256": proof.get("caller_arguments_sha256", ""),
         "exit_code": 0,
         "cached": False,
         **{

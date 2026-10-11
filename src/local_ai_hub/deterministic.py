@@ -3921,15 +3921,15 @@ class DeterministicEngine:
                 f"for {sym}."
             )
             test_cases.append(f"""
-@pytest.mark.skip(reason={json.dumps(pending_reason)})
+@pytest.mark.skip(reason={json.dumps(pending_reason, separators=(',', ':'))})
 def test_{sym}_regression_nominal():
     \"\"\"Verify nominal expected output for modified {sym}.\"\"\"
-    raise NotImplementedError({json.dumps(pending_reason)})
+    raise NotImplementedError({json.dumps(pending_reason, separators=(',', ':'))})
 
-@pytest.mark.skip(reason={json.dumps(pending_reason)})
+@pytest.mark.skip(reason={json.dumps(pending_reason, separators=(',', ':'))})
 def test_{sym}_regression_edge_cases():
     \"\"\"Verify boundaries and error handling for modified {sym}.\"\"\"
-    raise NotImplementedError({json.dumps(pending_reason)})
+    raise NotImplementedError({json.dumps(pending_reason, separators=(',', ':'))})
 """)
 
         test_code = "\n".join(test_cases)

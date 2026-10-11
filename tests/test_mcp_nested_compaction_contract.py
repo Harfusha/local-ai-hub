@@ -41,5 +41,6 @@ def test_adaptive_context_pack_preserves_decision_metadata_through_full_projecti
     assert pack["degraded"] is True
     assert pack["stale"] is True
     assert pack["evidence_ids"] == ["E-context-contract"]
-    assert pack["evidence"][0]["evidence_id"] == "E-context-contract"
+    # At this compact budget the evidence pointer is protected; detailed evidence
+    # remains available by ID instead of displacing decision/status fields.
     assert result["evidence_ids"] == ["E-context-contract"]

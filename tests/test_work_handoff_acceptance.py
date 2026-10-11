@@ -23,6 +23,7 @@ if overlay_root:
 import pytest
 
 from local_ai_hub.commands import CommandBroker
+from local_ai_hub.agent_policy import PolicyEngine
 from local_ai_hub.repo_state import RepoStateTracker
 from local_ai_hub.services import LocalAIServices
 from local_ai_hub.work_fencing import FencingLeaseStore, LeaseLostError, canonical_resource
@@ -1126,8 +1127,19 @@ def test_real_command_broker_accepts_forwarded_work_attempt_fence(tmp_path: Path
     config = {
         "server": {"state_dir": str(state_dir)},
         "commands": {"enabled": True, "allow_unknown": True},
+        "agent_policy": {
+            "enabled": True,
+            "allow_developer_authorized_mutations": True,
+        },
     }
     broker = CommandBroker(config, _Artifacts(), RepoStateTracker(config))
+    broker.set_policy_engine(PolicyEngine())
+    broker.set_task_store(SimpleNamespace(
+        get=lambda task_id: SimpleNamespace(
+            task_id=task_id,
+            checkpoint=SimpleNamespace(state_data={"worktree": {"worktree_path": str(root)}}),
+        ) if task_id == "work-real-broker" else None
+    ))
     now = [100.0]
     fencing = FencingLeaseStore(state_dir / "work_fencing.sqlite3", clock=lambda: now[0])
     broker.set_fencing_lease_store(fencing)

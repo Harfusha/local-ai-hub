@@ -63,7 +63,7 @@ def test_search_successful_empty_accelerator_never_scans_repo(tmp_path: Path):
     assert result["scanned_files"] == 0
 
 
-def test_git_repo_uses_git_grep_before_ripgrep_and_reads_exact_candidate(tmp_path: Path):
+def test_git_repo_uses_ripgrep_before_git_grep_fallback_and_reads_exact_candidate(tmp_path: Path):
     config = cfg(tmp_path)
     repo = tmp_path / "repo"
     (repo / ".git").mkdir(parents=True)
@@ -86,12 +86,12 @@ def test_git_repo_uses_git_grep_before_ripgrep_and_reads_exact_candidate(tmp_pat
 
     result = tools.search(str(repo), "needle", 5)
 
-    assert calls == ["git-grep"]
+    assert calls == ["ripgrep", "git-grep"]
     assert result["success"] is True
     assert result["engine"] == "git-grep"
     assert result["results"][0]["path"] == "src/module.py"
     assert result["results"][0]["start_line"] == 1
-def test_git_search_finds_untracked_file_before_ripgrep(tmp_path: Path):
+def test_git_search_finds_untracked_file_with_ripgrep(tmp_path: Path):
     config = cfg(tmp_path)
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -104,7 +104,7 @@ def test_git_search_finds_untracked_file_before_ripgrep(tmp_path: Path):
     result = tools.search(str(repo), "untracked_search_target", 5)
 
     assert result["success"] is True
-    assert result["engine"] == "git-grep"
+    assert result["engine"] == "ripgrep"
     assert result["results"][0]["path"] == "src/new_module.py"
     assert result["results"][0]["start_line"] == 1
 
@@ -311,6 +311,6 @@ def test_git_grep_searches_source_files_when_rag_extensions_are_unconfigured(tmp
     result = RepositoryTools(config).search(str(repo), "needle", top_k=5)
 
     assert result["success"] is True
-    assert result["engine"] == "git-grep"
+    assert result["engine"] == "ripgrep"
     assert result["results"][0]["path"] == "src/module.py"
     assert result["results"][0]["start_line"] == 1

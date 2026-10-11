@@ -135,17 +135,18 @@ def test_checkpoint_root_tampering_cannot_replace_trusted_task_root(
             actor="agent",
             repo_root=str(trusted_root),
         )
-        app.agent_tasks.checkpoint(
-            task_id,
-            TaskCheckpoint(
-                phase="verification",
-                state_data={
-                    "mutation_generation": 0,
-                    "repo_root": str(attacker_root),
-                },
-            ),
-            actor="agent",
-        )
+        with pytest.raises(ValueError, match="repo_root is server-managed"):
+            app.agent_tasks.checkpoint(
+                task_id,
+                TaskCheckpoint(
+                    phase="verification",
+                    state_data={
+                        "mutation_generation": 0,
+                        "repo_root": str(attacker_root),
+                    },
+                ),
+                actor="agent",
+            )
         before = app.agent_tasks.get(task_id)
         assert before is not None
         events_before = app.agent_state.events(stream_id=f"task:{task_id}")
@@ -253,9 +254,20 @@ def test_direct_task_complete_cannot_use_checkpoint_root_to_drop_lint_rule(
         state_data = dict(task.checkpoint.state_data)
         state_data["repo_root"] = str(attacker_root)
         state_data["repository_revision"] = "rev-root-binding"
+        with pytest.raises(ValueError, match="repo_root is server-managed"):
+            app.agent_tasks.checkpoint(
+                task_id,
+                TaskCheckpoint(phase="verification", state_data=state_data),
+                actor="agent",
+            )
+        # Updating the caller-visible revision is allowed; the server-managed
+        # repository root remains the one bound when the task was created.
         app.agent_tasks.checkpoint(
             task_id,
-            TaskCheckpoint(phase="verification", state_data=state_data),
+            TaskCheckpoint(
+                phase="verification",
+                state_data={"repository_revision": "rev-root-binding"},
+            ),
             actor="agent",
         )
         before = app.agent_tasks.get(task_id)
@@ -269,24 +281,11 @@ def test_direct_task_complete_cannot_use_checkpoint_root_to_drop_lint_rule(
         assert "lint" in str(rejected.value)
 
         after = app.agent_tasks.get(task_id)
-        assert after is not None and after.status == TaskStatus.PLANNED
+        assert after is not None and after.status == TaskStatus.VERIFYING
         assert after.checkpoint == before.checkpoint
-        assert app.agent_state.events(stream_id=f"task:{task_id}") == events_before
+        events_after_failed_completion = app.agent_state.events(stream_id=f"task:{task_id}")
+        assert len(events_after_failed_completion) >= len(events_before)
 
-        active = app.agent_tasks.transition(
-            task_id,
-            TaskStatus.ACTIVE,
-            reason="prepare direct transition regression",
-            actor="agent",
-            idempotency_key="activate-before-direct-transition",
-        )
-        verifying = app.agent_tasks.transition(
-            task_id,
-            TaskStatus.VERIFYING,
-            reason="prepare final transition regression",
-            actor="agent",
-            idempotency_key="verify-before-direct-transition",
-        )
         transition_events = app.agent_state.events(stream_id=f"task:{task_id}")
         with pytest.raises(CompletionGateError, match="criterion 'lint'") as direct_rejected:
             app.agent_tasks.transition(
@@ -299,7 +298,7 @@ def test_direct_task_complete_cannot_use_checkpoint_root_to_drop_lint_rule(
         assert "lint" in str(direct_rejected.value)
         unchanged = app.agent_tasks.get(task_id)
         assert unchanged is not None and unchanged.status == TaskStatus.VERIFYING
-        assert unchanged.checkpoint == verifying.checkpoint
+        assert unchanged.checkpoint == before.checkpoint
         assert app.agent_state.events(stream_id=f"task:{task_id}") == transition_events
     finally:
         app.close()

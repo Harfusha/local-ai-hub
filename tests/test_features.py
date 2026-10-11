@@ -168,7 +168,8 @@ class TestBuildGlobalPolicy:
         assert "-> semantic" not in self.build(cfg)
 
     def test_model_name_custom(self):
-        assert "awesome-coder:7b" in self.build({"models": {"fast_code": "awesome-coder:7b"}})
+        policy = self.build({"models": {"fast_code": "awesome-coder:7b"}})
+        assert "Model routing follows the active hardware profile and user overrides" in policy
 
     def test_task_absent_when_ollama_off(self):
         cfg = {"server": {"auto_start_ollama": False}}

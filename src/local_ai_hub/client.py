@@ -1260,15 +1260,19 @@ class HubClient:
                                         time.sleep(min(0.05, remaining))
                         except Exception:
                             return self._uncertain_response(request_id, retried=True)
-                return {
+                unavailable = {
                     "success": False,
                     "error": "read request unavailable after bounded transport retries",
                     "status_code": 503,
                     "retryable": True,
                     "terminal": False,
                     "request_id": request_id,
-                    "retried": server_ready,
                 }
+                if server_ready:
+                    unavailable["retried"] = True
+                if bool(getattr(exc, "request_not_sent", False)):
+                    unavailable.update({"request_not_sent": True, "outcome_unknown": False})
+                return unavailable
             except Exception:
                 return self._uncertain_response(request_id)
 

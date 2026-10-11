@@ -29,7 +29,7 @@ def test_gaming_allows_cheap_artifact_read(tmp_path, monkeypatch):
     assert calls and calls[0][0] == "/api/artifact/list"
 
 
-def test_maintenance_blocks_agent_action_but_preserves_job_status(tmp_path, monkeypatch):
+def test_maintenance_blocks_all_agent_actions_before_job_dispatch(tmp_path, monkeypatch):
     set_operational_mode(tmp_path, "maintenance")
     monkeypatch.setattr(mcp_server, "CFG", {"server": {"state_dir": str(tmp_path)}})
     calls = []
@@ -46,8 +46,6 @@ def test_maintenance_blocks_agent_action_but_preserves_job_status(tmp_path, monk
     assert blocked["success"] is False
     assert blocked["terminal"] is False
     assert blocked["retryable"] is True
-    assert status["success"] is True
-    assert len(calls) == 1
-    assert calls[0][0] == "/api/async-jobs"
-    assert calls[0][1]["action"] == "status"
-    assert calls[0][1]["job_id"] == "existing-job"
+    assert status["success"] is False
+    assert status["mode"] == "maintenance"
+    assert calls == []

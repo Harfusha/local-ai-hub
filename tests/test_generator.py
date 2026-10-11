@@ -78,11 +78,11 @@ class TestSkillGeneration:
         skill = generate_skill_markdown(cfg)
         policy = generate_global_policy(cfg)
 
-        assert features.background_model == "qwen2.5-coder:0.5b"
-        assert features.fast_model == "qwen2.5-coder:1.5b"
-        assert features.general_model == "qwen2.5-coder:3b"
-        assert features.smart_model == "qwen2.5-coder:3b"
-        assert features.reasoning_model == "qwen2.5-coder:7b"
+        assert features.background_model == "qwen2.5-coder:3b"
+        assert features.fast_model == "qwen2.5-coder:3b"
+        assert features.general_model == "qwen2.5-coder:7b"
+        assert features.smart_model == "qwen2.5-coder:7b"
+        assert features.reasoning_model == "qwen3.5:9b"
         assert "Local model inference is disabled" in skill
         assert "qwen2.5-coder:" not in policy
         assert "for ordinary local reasoning" not in skill
@@ -230,7 +230,7 @@ class TestTokenEconomyPolicyGeneration:
     def test_policy_keeps_local_task_wording_when_enabled(self):
         policy = generate_token_economy_policy({})
 
-        assert "- Local model delegation: Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions and compression; use `qwen2.5-coder:1.5b` only for quick/simple microtasks and configured higher tiers for ordinary, involved and hardest work. Deterministic/indexed tools remain for exact facts, symbols, diff and tests." in policy
+        assert "- Local model routing follows the active hardware profile and user overrides; use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions and compression." in policy
 
 
 class TestMcpSchemasGeneration:

@@ -38,6 +38,7 @@ def _public_task_client(tmp_path: Path, monkeypatch):
         request_id: str,
         path: str = "/api/agent-state/tasks",
     ) -> tuple[int, dict]:
+        payload.setdefault("root", str(root))
         handler = object.__new__(http_server.Handler)
         handler.path = path
         handler.command = "POST"
@@ -95,6 +96,7 @@ def test_http_task_checkpoint_cannot_replace_server_memory_context(tmp_path: Pat
         monkeypatch.setattr(http_server.Handler, "_begin_trace", begin_trace)
 
         def post(payload: dict, request_id: str) -> tuple[int, dict]:
+            payload.setdefault("root", str(root))
             handler = object.__new__(http_server.Handler)
             handler.path = "/api/agent-state/tasks"
             handler.command = "POST"
@@ -118,6 +120,7 @@ def test_http_task_checkpoint_cannot_replace_server_memory_context(tmp_path: Pat
             {
                 "action": "create",
                 "task_id": task_id,
+                "root": str(root),
                 "repo_root": str(root),
                 "contract": {"goal": "Use relevant verified memory"},
                 "context": {"repository_id": str(root), "branch": "main", "task_id": task_id},
@@ -284,6 +287,7 @@ def test_public_task_create_resume_and_checkpoint_audit_memory_per_attempt(
             {
                 "action": "create",
                 "task_id": "public-memory-resume",
+                "root": str(root),
                 "repo_root": str(root),
                 "contract": {"goal": "Use scoped memory when useful"},
                 "context": {"repository_id": str(root), "task_id": "public-memory-resume"},
@@ -394,6 +398,7 @@ def test_public_transition_checkpoint_is_guarded_and_completion_uses_supplied_ch
             {
                 "action": "create",
                 "task_id": "public-transition-memory",
+                "root": str(root),
                 "repo_root": str(root),
                 "contract": {"goal": "Guard transition checkpoints"},
                 "context": {"repository_id": str(root), "task_id": "public-transition-memory"},
@@ -516,6 +521,7 @@ def test_public_task_memory_unavailable_is_bounded_and_redacted(
             {
                 "action": "create",
                 "task_id": "public-memory-unavailable",
+                "root": str(root),
                 "repo_root": str(root),
                 "contract": {"goal": "Continue when advisory memory lookup is unavailable"},
                 "context": {"repository_id": str(root), "task_id": "public-memory-unavailable"},

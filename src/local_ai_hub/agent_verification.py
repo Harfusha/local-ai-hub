@@ -720,23 +720,22 @@ def _receipt_evidence_matches(
             ):
                 return False
             if isinstance(expected_project_command, str):
-                if not isinstance(actual_command, str):
-                    return False
                 expected_command_digest = hashlib.sha256(
                     expected_project_command.encode("utf-8")
                 ).hexdigest()
                 if (
                     command_digest != expected_command_digest
-                    or actual_command != expected_project_command
                     or configured_digest != expected_command_digest
-                    or arguments_digest
-                    != hashlib.sha256(b"[]").hexdigest()
+                    or arguments_digest != hashlib.sha256(b"[]").hexdigest()
                 ):
                     return False
-                try:
-                    actual_tokens = shlex.split(actual_command, posix=(os.name != "nt"))
-                except ValueError:
-                    return False
+                if actual_command is not None or not broker_attests_command:
+                    if actual_command != expected_project_command:
+                        return False
+                    try:
+                        actual_tokens = shlex.split(actual_command, posix=(os.name != "nt"))
+                    except ValueError:
+                        return False
             elif expected_project_command is not None:
                 argv = getattr(expected_project_command, "argv", None)
                 if not isinstance(argv, (tuple, list)) or not expected_project_root:

@@ -1862,7 +1862,7 @@ class LocalAIServices:
         task = str(args.get("task", args.get("prompt", "")))
         file_path = str(args.get("file", args.get("path", "")))
         context = str(args.get("context", ""))
-        root = str(args.get("root", args.get("cwd", ".")))
+        root = str(args.get("root") or args.get("cwd") or ".")
         resolved_root = Path(root).resolve()
 
         if not task:
@@ -5537,6 +5537,18 @@ class LocalAIServices:
                 raw_inventory = ()
                 path_inventory_state = "degraded"
                 retrieval_warnings.append("path inventory unavailable; using ranked index candidates")
+            elif (
+                raw_inventory is not None
+                and hasattr(raw_inventory, "__len__")
+                and len(raw_inventory) == 0
+                and not bool(getattr(self.preprocessor, "enabled", True))
+            ):
+                # A disabled preprocessor may expose an empty inventory method,
+                # but that is not an indexed proof that the repository is empty.
+                raw_inventory = self.repo_tools.iter_files(str(base_path))
+                inventory_source = "filesystem_fallback"
+                path_inventory_state = "degraded"
+                retrieval_warnings.append("preprocessor disabled; using bounded filesystem fallback")
             elif raw_inventory is None:
                 raw_inventory = self.repo_tools.iter_files(str(base_path))
                 inventory_source = "filesystem_fallback"
@@ -6655,29 +6667,29 @@ class LocalAIServices:
             if framework == "pytest":
                 scaffold = (
                     "import pytest\n\n"
-                    f"@pytest.mark.skip(reason={json.dumps(pending_reason)})\n"
+                    f"@pytest.mark.skip(reason={json.dumps(pending_reason, separators=(',', ':'))})\n"
                     f"def test_{clean_sym}_basic():\n"
-                    f"    raise NotImplementedError({json.dumps(pending_reason)})\n"
+                    f"    raise NotImplementedError({json.dumps(pending_reason, separators=(',', ':'))})\n"
                 )
             elif framework == "nunit":
                 scaffold = (
                     "using NUnit.Framework;\n\n"
                     f"[TestFixture]\npublic class {clean_sym}Tests {{\n"
-                    f"    [Test]\n    [Ignore({json.dumps(pending_reason)})]\n"
+                    f"    [Test]\n    [Ignore({json.dumps(pending_reason, separators=(',', ':'))})]\n"
                     f"    public void Test_{clean_sym}_Basic() {{\n"
-                    f"        Assert.Fail({json.dumps(pending_reason)});\n"
+                    f"        Assert.Fail({json.dumps(pending_reason, separators=(',', ':'))});\n"
                     "    }\n}\n"
                 )
             elif framework == "jest":
                 scaffold = (
-                    f"describe({json.dumps(symbol)}, () => {{\n"
-                    f"    test.todo({json.dumps(pending_reason)});\n"
+                    f"describe({json.dumps(symbol, separators=(',', ':'))}, () => {{\n"
+                    f"    test.todo({json.dumps(pending_reason, separators=(',', ':'))});\n"
                     "});\n"
                 )
             else:
                 scaffold = (
                     f"def test_{clean_sym}():\n"
-                    f"    raise NotImplementedError({json.dumps(pending_reason)})\n"
+                    f"    raise NotImplementedError({json.dumps(pending_reason, separators=(',', ':'))})\n"
                 )
             return {
                 "success": True,

@@ -80,7 +80,8 @@ def test_mcp_client_bounds_daemon_off_start_failure_without_second_request(monke
     result = client.get("/api/live/status", timeout=0.35)
 
     assert result["success"] is False
-    assert result["outcome_unknown"] is True
+    assert result["request_not_sent"] is True
+    assert result["outcome_unknown"] is False
     assert "retried" not in result
     assert len(opened) == 1
     assert opened[0] <= 0.35

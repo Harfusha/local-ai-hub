@@ -59,7 +59,7 @@ def test_native_start_does_not_spawn_duplicate_after_scheduler_race(monkeypatch)
     monkeypatch.setattr(service, "mark_managed", lambda: None)
     monkeypatch.setattr(service, "mark_disabled", lambda _disabled: None)
     monkeypatch.setattr(service, "run", lambda *args, **kwargs: subprocess.CompletedProcess([], 1))
-    monkeypatch.setattr(service, "all_supervisor_pids", iter([[], [4321]]).__next__)
+    monkeypatch.setattr(service, "supervisor_pid", iter([0, 4321]).__next__)
     spawn = MagicMock()
     monkeypatch.setattr(service, "spawn_detached", spawn)
 

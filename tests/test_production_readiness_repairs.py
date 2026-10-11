@@ -44,6 +44,7 @@ def test_memory_record_find_delete_and_restart_round_trip(tmp_path: Path) -> Non
         scope_id="repo-restart",
         key="restart-fact",
         root=str(tmp_path),
+        repository_id="repo-restart",
         semantic=False,
     )
 

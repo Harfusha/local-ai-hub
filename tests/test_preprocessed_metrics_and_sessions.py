@@ -96,13 +96,13 @@ def test_preprocessed_query_hit_rate_telemetry(tmp_path: Path):
     telemetry = TelemetryStore(tmp_path, enabled=True, flush_interval_seconds=0.05)
     try:
         telemetry.record_http(
-            action="/api/repo/search",
+            action="/api/search",
             status_code=200,
             success=True,
             preprocessed_hit=True,
         )
         telemetry.record_http(
-            action="/api/repo/search",
+            action="/api/search",
             status_code=200,
             success=True,
             preprocessed_hit=False,

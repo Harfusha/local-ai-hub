@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -87,31 +88,38 @@ def test_synthetic_input_provenance_emits_version_seed_and_fingerprint() -> None
     }
 
 
-def test_baseline_candidate_harness_pins_match_seed_aware_harness_bytes() -> None:
+def test_baseline_candidate_harness_pins_match_immutable_commit_blobs() -> None:
     manifest = load_manifest(MANIFEST)
     harness_path = "tools/benchmark_surfaces.py"
-    current_sha = hashlib.sha256((ROOT / harness_path).read_bytes()).hexdigest()
-    baseline_root = Path(manifest["source_pin_checkouts"]["baseline"])
-    candidate_root = Path(manifest["source_pin_checkouts"]["candidate"])
-    baseline_sha = hashlib.sha256((baseline_root / harness_path).read_bytes()).hexdigest()
-    candidate_sha = hashlib.sha256((candidate_root / harness_path).read_bytes()).hexdigest()
+    pinned_hashes = []
+    for side in ("baseline", "candidate"):
+        pin = manifest["source_pins"][side]
+        result = subprocess.run(
+            ["git", "show", f"{pin['commit_sha']}:{harness_path}"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+        )
+        pinned_sha = hashlib.sha256(result.stdout).hexdigest()
+        assert pin["file_sha256"][harness_path] == pinned_sha
+        pinned_hashes.append(pinned_sha)
 
-    assert baseline_sha == candidate_sha == current_sha
-    assert manifest["source_pins"]["baseline"]["file_sha256"][harness_path] == current_sha
-    assert manifest["source_pins"]["candidate"]["file_sha256"][harness_path] == current_sha
+    assert pinned_hashes[0] == pinned_hashes[1]
 
 
-def test_preparation_receipt_hashes_match_current_runner_tests_and_manifest() -> None:
-    receipt = json.loads((ROOT / "handoff/T02-paired-matrix-20261002-v1/preparation-receipt.json").read_text(encoding="utf-8"))
-    actual = {
-        "runner": hashlib.sha256((ROOT / "tools/run_t02_paired_matrix.py").read_bytes()).hexdigest().upper(),
-        "tests": hashlib.sha256((ROOT / "tests/test_t02_paired_matrix.py").read_bytes()).hexdigest().upper(),
-        "manifest": hashlib.sha256(MANIFEST.read_bytes()).hexdigest().upper(),
-    }
+def test_preparation_receipt_hashes_bind_its_historical_artifacts() -> None:
+    receipt = json.loads(
+        (ROOT / "handoff/T02-paired-matrix-20261002-v1/preparation-receipt.json")
+        .read_text(encoding="utf-8")
+    )
+    last_attempt = receipt["last_test_attempt"]
+    pinned_manifest = ROOT / receipt["manifest_path"]
 
-    assert receipt["artifacts"]["runner"]["sha256"] == actual["runner"]
-    assert receipt["artifacts"]["tests"]["sha256"] == actual["tests"]
-    assert receipt["manifest_sha256"] == actual["manifest"]
+    assert receipt["status"] == "terminal_contaminated_slot_released_no_valid_paired_receipt"
+    assert receipt["artifacts"]["runner"]["sha256"] == last_attempt["runner_sha256_after_test"]
+    assert receipt["artifacts"]["tests"]["sha256"] == last_attempt["test_sha256_after_test"]
+    assert receipt["artifacts"]["benchmark_harness"]["sha256"] == last_attempt["harness_sha256_after_test"]
+    assert receipt["manifest_sha256"] == hashlib.sha256(pinned_manifest.read_bytes()).hexdigest().upper()
 RETRIEVAL_METRICS = {
     "recall_at_10": 0.9,
     "ndcg_at_10": 0.8,

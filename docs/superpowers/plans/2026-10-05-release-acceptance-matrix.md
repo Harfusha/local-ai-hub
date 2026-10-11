@@ -2839,3 +2839,35 @@ or lacks Git metadata. No agent used a substitute checkout.
 - Plan-only commit `83c05674` followed `5545efbb`; then 63 clean worktrees
   were fast-forwarded again to `83c05674`. Dirty `release-verify-7cb` remains
   untouched and is 9 commits behind; root is dirty in 68 tracked paths.
+
+### 2026-10-11 release continuation — focused gates and blockers
+
+- Autostart probe fix is already present in `HEAD` (`client.py` bounds the
+  initial readiness probe to 25% of the startup budget); its focused MCP
+  autostart suite passed: **6 passed in 1.87s**.
+- Fresh Agent OS memory/task/verification suite: **329 passed, 1 skipped**
+  (Windows symlink limitation; 139.45s). Fresh MCP/HTTP/identity group:
+  **176 passed, 1 skipped** (Windows symlink privilege; 65.66s).
+- Reliability/runtime group exposed one environment-sensitive test: it
+  expected `local_ai_task` to be registered while the configured backend has
+  no model and `FEATURES.disabled_tools` correctly hides it. Updated the test
+  to assert that disabled tools are absent and continue checking descriptions
+  for enabled tools. `tests/test_reliability_integration.py`: **31 passed,
+  1 skipped**. Command/performance/config/work-handoff group exited 0;
+  `test_slot_rebalance_and_stuck_fixes.py`: **5 passed**.
+- Final current-tree gates: `python -B -m compileall -q src tools tests`
+  exited 0; `python -B tools/selftest.py` passed all 6 checks;
+  `python -B tools/release_check.py --allow-installed` returned **release-check:
+  OK**; `python -B tools/surface_inventory.py --check` matched **687 rows**
+  with no drift; `git diff --check` exited 0 (only Git LF/CRLF notices).
+- Full `pytest -q --tb=short` still has **no final result**. First run remained
+  active beyond 16 minutes; the exact owned PID was stopped. A second run with
+  pytest's 90-second faulthandler setting ended without a captured summary and
+  no pytest process remained. Do not mark the full-suite gate passed.
+- Installed runtime is online on v4.0.0 and operational mode `active`; doctor
+  reports MCP compact surface, but inference has **0 installed models** and
+  Serena is degraded after MCP timeout. OpenVINO is absent (Intel optional).
+- Release remains **NO-GO**: full-suite result, model/backend readiness,
+  installed-service restart acceptance, T01 verified completion receipt, and
+  final T20 acceptance remain open. Root still has 68 tracked dirty paths;
+  no dirty change is discarded or hidden by this record.

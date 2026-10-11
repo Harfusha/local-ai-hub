@@ -70,6 +70,10 @@ class _RejectSocket:
     def __init__(self):
         self.payload = bytearray()
         self.closed = False
+        self.timeout = None
+
+    def settimeout(self, timeout: float) -> None:
+        self.timeout = timeout
 
     def sendall(self, data: bytes) -> None:
         self.payload.extend(data)
@@ -145,6 +149,7 @@ def test_repo_fingerprint_singleflight_is_per_root_not_global(tmp_path: Path, mo
     roots = [tmp_path / "a", tmp_path / "b"]
     for root in roots:
         root.mkdir()
+        (root / ".git").mkdir()
     tracker = RepoStateTracker(config)
     barrier = threading.Barrier(2)
 
@@ -156,7 +161,7 @@ def test_repo_fingerprint_singleflight_is_per_root_not_global(tmp_path: Path, mo
         if args == ("rev-parse", "HEAD"):
             return subprocess.CompletedProcess([], 0, b"abc123\n", b"")
         if args and args[0] == "status":
-            return subprocess.CompletedProcess([], 0, b"", b"")
+            return subprocess.CompletedProcess([], 0, b"# branch.oid abc123\0# branch.head main\0", b"")
         raise AssertionError(args)
 
     monkeypatch.setattr(tracker, "_run_git", fake_git)
@@ -179,7 +184,7 @@ def test_repo_fingerprint_singleflight_is_per_root_not_global(tmp_path: Path, mo
     assert all(result["kind"] == "git" for result in results)
 
 
-def test_client_caps_get_timeout_and_treats_overload_as_live(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def test_client_caps_get_timeout_and_treats_overload_as_not_ready(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     cfg = _config_path(tmp_path, "[client]\nmax_request_timeout_seconds=5\nhealth_timeout_seconds=0.2\nstartup_wait_seconds=1\n")
     client = HubClient(config_path=str(cfg), auto_start=False)
 
@@ -188,7 +193,7 @@ def test_client_caps_get_timeout_and_treats_overload_as_live(tmp_path: Path, mon
 
     import local_ai_hub.client as client_module
     monkeypatch.setattr(client_module, "urlopen", overloaded)
-    assert client._online() is True
+    assert client._online() is False
 
     seen: list[float] = []
 
@@ -524,7 +529,7 @@ def test_ollama_autostart_is_singleflight_and_posix_grouped(tmp_path: Path, monk
         state["online"] = True
         return Proc()
 
-    monkeypatch.setattr(ollama_module.subprocess, "Popen", popen)
+    monkeypatch.setattr(ollama_module, "popen_managed", popen)
     results: list[bool] = []
     threads = [threading.Thread(target=lambda: results.append(runtime.ensure_running())) for _ in range(2)]
     for thread in threads: thread.start()
@@ -560,17 +565,17 @@ def test_prepare_model_reloads_small_context_and_evicts_others(tmp_path: Path, m
     cfg["model_execution"] = {"fast": {"context_tokens": 8192, "large_context_tokens": 8192, "max_context_tokens": 8192}}
     runtime = OllamaRuntime(cfg)
     monkeypatch.setattr(runtime, "ensure_running", lambda: True)
-    monkeypatch.setattr(runtime, "loaded_model_details", lambda: [
+    monkeypatch.setattr(runtime, "loaded_model_details", lambda **_kwargs: [
         {"name": "fast", "context_length": 4096},
         {"name": "other", "context_length": 4096},
     ])
     unloaded: list[str] = []
-    monkeypatch.setattr(runtime, "unload_model", lambda model: (unloaded.append(model) or True))
+    monkeypatch.setattr(runtime, "unload_model", lambda model, **_kwargs: (unloaded.append(model) or True))
     payloads: list[dict] = []
-    monkeypatch.setattr(runtime, "request", lambda _endpoint, payload, timeout=None: (payloads.append(payload) or {"done": True}))
+    monkeypatch.setattr(runtime, "request", lambda _endpoint, payload, timeout=None, **_kwargs: (payloads.append(payload) or {"done": True}))
 
     evicted = runtime.prepare_model("fast", unload_others=True)
-    assert evicted == ["other"]
+    assert evicted == ["other", "fast"]
     assert unloaded == ["other", "fast"]
     assert payloads[0]["options"]["num_ctx"] == 8192
 
@@ -582,10 +587,10 @@ def test_embedding_model_residency_uses_embed_api(tmp_path: Path, monkeypatch: p
     cfg["models"] = {"embedding": "qwen3-embedding:0.6b"}
     runtime = OllamaRuntime(cfg)
     monkeypatch.setattr(runtime, "ensure_running", lambda: True)
-    monkeypatch.setattr(runtime, "loaded_model_details", lambda: [])
+    monkeypatch.setattr(runtime, "loaded_model_details", lambda **_kwargs: [])
     requests: list[tuple[str, dict]] = []
 
-    def request(endpoint: str, payload: dict, timeout=None):
+    def request(endpoint: str, payload: dict, timeout=None, **_kwargs):
         requests.append((endpoint, payload))
         return {"embeddings": [[0.0]]} if endpoint == "/api/embed" else {"done": True}
 
@@ -735,6 +740,9 @@ def test_mcp_tools_have_use_when_and_skip_when_cues(monkeypatch):
         "local_ai_status", "local_ai_task", "local_ai_repo", "local_ai_rag",
         "local_ai_command", "local_ai_coord", "local_ai_artifact",
     ):
+        if tool in mcp_server.FEATURES.disabled_tools:
+            assert tool not in registered_tools, f"{tool}: disabled tool remains registered"
+            continue
         registered = registered_tools.get(tool)
         assert registered is not None, f"{tool}: missing from registered MCP tools"
         description = registered.description or ""
@@ -754,18 +762,18 @@ def test_agent_policy_has_default_delegation_triggers():
     setup = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(setup)
     expected = (
-        "Delegation is the default for any task with useful bounded independent work.",
+        "Direct ownership is the default.",
         "Use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions, and semantic compression.",
-        "Use the native Codex `multi_agent_v1__spawn_agent` path only for useful independent bounded work or an explicit Codex-subagent request.",
-        "Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration.",
-        "Do not duplicate the same scope across agents.",
-        "Skip delegation only for trivial tasks, pure evidence lookups, security/privacy constraints, or no useful independent scope.",
+        "Use native Codex subagents only for independent bounded implementation or an explicit user request.",
+        "Do not duplicate tasks or chats.",
     )
     policy = setup.GLOBAL_POLICY
     skill = generate_skill_markdown({})
     for phrase in expected:
         assert phrase in policy
         assert phrase in skill
+    assert "Codex controls each subagent's scope, `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration." in policy
+    assert "Codex controls subagent permissions per task, including `allow_write`, workspace/worktree, timeout, cancellation, sandbox, and integration." in skill
 
 
 def test_hub_policy_excludes_removed_external_agent_route():

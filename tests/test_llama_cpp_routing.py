@@ -90,6 +90,11 @@ class _BlockingResponse:
         raise TimeoutError("test read should have been cancelled")
 
 
+@contextmanager
+def _connected_socket(*_args, **_kwargs):
+    yield None
+
+
 class LlamaCppRoutingTests(unittest.TestCase):
     def _config(self, vendor: str = "intel", mode: str = "auto") -> dict:
         return {
@@ -285,7 +290,7 @@ class LlamaCppRoutingTests(unittest.TestCase):
             self.fail(f"unexpected URL: {req.full_url}")
 
         chunks: list[str] = []
-        with patch("local_ai_hub.llama_cpp._open_interruptible_response", side_effect=lambda req, deadline, stop: fake_urlopen(req, deadline - time.monotonic())):
+        with patch("local_ai_hub.llama_cpp.socket.create_connection", side_effect=_connected_socket), patch("local_ai_hub.llama_cpp._open_interruptible_response", side_effect=lambda req, deadline, stop: fake_urlopen(req, deadline - time.monotonic())):
             result = router.request_stream(
                 "/api/generate",
                 {
@@ -366,7 +371,7 @@ class LlamaCppRoutingTests(unittest.TestCase):
                             time.sleep(0.12)
                     return _Response({"status": "ok"})
 
-                with patch("local_ai_hub.llama_cpp._open_interruptible_response", side_effect=lambda req, deadline, _stop: fake_urlopen(req, deadline - time.monotonic())):
+                with patch("local_ai_hub.llama_cpp.socket.create_connection", side_effect=_connected_socket), patch("local_ai_hub.llama_cpp._open_interruptible_response", side_effect=lambda req, deadline, _stop: fake_urlopen(req, deadline - time.monotonic())):
                     if cancelled:
                         self.assertFalse(router._healthy("http://127.0.0.1:12438", 0.5, should_stop=stop.is_set))
                     else:
@@ -799,7 +804,7 @@ class LlamaCppRoutingTests(unittest.TestCase):
                 return _Response(lines=lines)
             self.fail(f"unexpected URL: {req.full_url}")
 
-        with patch("local_ai_hub.llama_cpp._open_interruptible_response", side_effect=lambda req, deadline, _stop: fake_urlopen(req, deadline - time.monotonic())):
+        with patch("local_ai_hub.llama_cpp.socket.create_connection", side_effect=_connected_socket), patch("local_ai_hub.llama_cpp._open_interruptible_response", side_effect=lambda req, deadline, _stop: fake_urlopen(req, deadline - time.monotonic())):
             result = router.request_stream(
                 "/api/generate",
                 {"model": "qwen2.5-coder:0.5b", "prompt": "brief factual card", "options": {"num_predict": 8}},
@@ -826,7 +831,7 @@ class LlamaCppRoutingTests(unittest.TestCase):
                 return _Response(lines=lines)
             self.fail(f"unexpected URL: {req.full_url}")
 
-        with patch("local_ai_hub.llama_cpp._open_interruptible_response", side_effect=lambda req, deadline, _stop: fake_urlopen(req, deadline - time.monotonic())):
+        with patch("local_ai_hub.llama_cpp.socket.create_connection", side_effect=_connected_socket), patch("local_ai_hub.llama_cpp._open_interruptible_response", side_effect=lambda req, deadline, _stop: fake_urlopen(req, deadline - time.monotonic())):
             result = router.request_stream("/api/chat", {"model": "qwen2.5-coder:3b", "messages": []}, lambda _text: None, timeout=2)
         call = result["message"]["tool_calls"][0]
         self.assertEqual(call["id"], "c1")
@@ -853,7 +858,7 @@ class LlamaCppRoutingTests(unittest.TestCase):
                 }]})
             self.fail(f"unexpected URL: {req.full_url}")
 
-        with patch("local_ai_hub.llama_cpp._open_interruptible_response", side_effect=lambda req, deadline, _stop: fake_urlopen(req, deadline - time.monotonic())):
+        with patch("local_ai_hub.llama_cpp.socket.create_connection", side_effect=_connected_socket), patch("local_ai_hub.llama_cpp._open_interruptible_response", side_effect=lambda req, deadline, _stop: fake_urlopen(req, deadline - time.monotonic())):
             result = router.model_capabilities("qwen3-vl:4b")
 
         self.assertEqual(result["capabilities"], ["completion", "vision"])
@@ -901,33 +906,33 @@ class LlamaCppRoutingTests(unittest.TestCase):
 
     def test_hardware_profiles_select_model_roles(self):
         expected_background = {
-            "cpu": "qwen2.5-coder:0.5b",
-            "integrated": "qwen2.5-coder:0.5b",
-            "low": "qwen2.5-coder:0.5b",
-            "balanced": "qwen2.5-coder:1.5b",
-            "high": "qwen2.5-coder:1.5b",
-            "max": "qwen2.5-coder:1.5b",
+            "cpu": "qwen2.5-coder:3b",
+            "integrated": "qwen2.5-coder:3b",
+            "low": "qwen2.5-coder:3b",
+            "balanced": "qwen2.5-coder:3b",
+            "high": "qwen2.5-coder:3b",
+            "max": "qwen2.5-coder:3b",
         }
         expected_fast = {
-            "cpu": "qwen2.5-coder:1.5b",
-            "integrated": "qwen2.5-coder:1.5b",
-            "low": "qwen2.5-coder:1.5b",
+            "cpu": "qwen2.5-coder:3b",
+            "integrated": "qwen2.5-coder:3b",
+            "low": "qwen2.5-coder:3b",
             "balanced": "qwen2.5-coder:3b",
             "high": "qwen2.5-coder:3b",
             "max": "qwen2.5-coder:3b",
         }
         expected_reasoning = {
-            "cpu": "qwen2.5-coder:7b",
-            "integrated": "qwen2.5-coder:7b",
-            "low": "qwen2.5-coder:7b",
+            "cpu": "qwen3.5:9b",
+            "integrated": "qwen3.5:9b",
+            "low": "qwen3.5:9b",
             "balanced": "qwen3.5:9b",
             "high": "qwen3.5:9b",
             "max": "qwen3.5:9b",
         }
         expected_heavy = {
-            "cpu": "qwen2.5-coder:3b",
-            "integrated": "qwen2.5-coder:3b",
-            "low": "qwen2.5-coder:3b",
+            "cpu": "qwen2.5-coder:7b",
+            "integrated": "qwen2.5-coder:7b",
+            "low": "qwen2.5-coder:7b",
             "balanced": "qwen2.5-coder:7b",
             "high": "qwen2.5-coder:7b",
             "max": "qwen3.5:9b",
@@ -941,9 +946,9 @@ class LlamaCppRoutingTests(unittest.TestCase):
             "max": "qwen3.5:9b",
         }
         expected_general = {
-            "cpu": "qwen2.5-coder:1.5b",
-            "integrated": "qwen2.5-coder:1.5b",
-            "low": "qwen2.5-coder:1.5b",
+            "cpu": "qwen2.5-coder:7b",
+            "integrated": "qwen2.5-coder:7b",
+            "low": "qwen2.5-coder:7b",
             "balanced": "qwen2.5-coder:7b",
             "high": "qwen3.5:9b",
             "max": "qwen3.5:9b",

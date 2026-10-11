@@ -555,7 +555,7 @@ class FencingLeaseStore:
                             attempt_id,attempt_token,scope_id,active
                         ) VALUES(?,?,?,?,?,?,?,?,?,1)""",
                         (
-                            lease_id, root_id, owner, token, expires_at, json.dumps(scope),
+                            lease_id, root_id, owner, token, expires_at, json.dumps(scope, separators=(",", ":")),
                             attempt.attempt_id,
                             attempt.fencing_token,
                             scope_id,

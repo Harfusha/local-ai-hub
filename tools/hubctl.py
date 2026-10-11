@@ -25,6 +25,9 @@ ACTIVITY_MODES = ("active", "gaming", "maintenance")
 def _config_arg(explicit: Path | None = None) -> str | None:
     if explicit is not None:
         return str(explicit.expanduser())
+    configured = os.environ.get("LOCAL_AI_CONFIG")
+    if configured:
+        return configured
     return str(ROOT_CONFIG) if ROOT_CONFIG.is_file() else None
 
 

@@ -256,7 +256,7 @@ def test_instrumented_mcp_action_reaches_inprocess_client_with_classified_metada
 
     assert calls == [
         ("/api/search", "map", False),
-        ("/api/search", "search", True),
+        ("/api/search", "search", False),
     ]
 
 def test_mcp_client_adapter_forwards_semantic_metadata_to_hub_client_request() -> None:
@@ -349,7 +349,7 @@ def test_mcp_transport_metadata_keeps_deterministic_reads_light() -> None:
     assert _classify_mcp_operation("local_ai_status", {}) == ("brief", False)
     assert _classify_mcp_operation("local_ai_status", {"detail": "agent_state"}) == ("agent_state", True)
     assert _classify_mcp_operation("local_ai_command", {"action": "run"}) == ("run", True)
-    assert _classify_mcp_operation("local_ai_repo", {"action": "search"}) == ("search", True)
+    assert _classify_mcp_operation("local_ai_repo", {"action": "search"}) == ("search", False)
 
 def test_mcp_client_forwards_tenant_config_and_keeps_autostart_lazy(monkeypatch) -> None:
     from local_ai_hub import mcp_server

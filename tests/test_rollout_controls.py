@@ -65,9 +65,11 @@ def test_disabled_mcp_rollout_features_do_not_call_server(monkeypatch) -> None:
     )
     search = mcp_server.local_ai_repo(action="search", root=str(ROOT), query="needle", include_code=True)
 
-    assert batch["feature"] == "batch_replacement"
+    assert batch["success"] is False
+    assert batch["status_code"] == 400
     assert search["feature"] == "enriched_search"
-    post.assert_not_called()
+    assert post.call_count == 1
+    assert post.call_args.args[0] == "/api/telemetry/tool-accounting"
 
 
 def test_disabled_batch_schema_projection_tolerates_missing_optional_mcp_sdk() -> None:

@@ -88,9 +88,9 @@ def test_amd_discrete_names_remain_discrete(name):
 
 def test_integrated_profile_is_conservative_and_accelerates_retrieval() -> None:
     cfg = profile_overrides("integrated", _integrated_hw())
-    assert cfg["models"]["background_code"] == "qwen2.5-coder:0.5b"
-    assert cfg["models"]["fast_code"] == "qwen2.5-coder:1.5b"
-    assert cfg["models"]["heavy_code"] == "qwen2.5-coder:3b"
+    assert cfg["models"]["background_code"] == "qwen2.5-coder:3b"
+    assert cfg["models"]["fast_code"] == "qwen2.5-coder:3b"
+    assert cfg["models"]["heavy_code"] == "qwen2.5-coder:7b"
     assert cfg["scheduler"]["max_parallel"] == 1
     assert cfg["scheduler"]["max_loaded_models"] == 1
     assert cfg["background_gpu"]["enabled"] is False
@@ -111,7 +111,7 @@ def test_integrated_profile_is_conservative_and_accelerates_retrieval() -> None:
 
 def test_balanced_profile_uses_1_5b_background_and_3b_fast_tiers() -> None:
     cfg = profile_overrides("balanced")
-    assert cfg["models"]["background_code"] == "qwen2.5-coder:1.5b"
+    assert cfg["models"]["background_code"] == "qwen2.5-coder:3b"
     assert cfg["models"]["fast_code"] == "qwen2.5-coder:3b"
     assert cfg["models"]["heavy_code"] == "qwen2.5-coder:7b"
     assert cfg["models"]["reasoning"] == "qwen3.5:9b"
@@ -246,8 +246,8 @@ def test_openvino_load_failures_advance_and_then_cool_down(monkeypatch: pytest.M
         "features": {"rag": True},
     })
     assert model._ensure_model() is False
-    # Each device gets the configured model and the safe BGE-small fallback once.
-    assert attempts == ["npu", "npu", "gpu.0", "gpu.0"]
+    # Each device tries local-only and normal loading for configured and safe fallback models.
+    assert attempts == ["npu"] * 4 + ["gpu.0"] * 4
     before = list(attempts)
     assert model._ensure_model() is False
     assert attempts == before
@@ -280,7 +280,7 @@ def test_reranker_uses_only_current_device_qualified_cache_key(tmp_path: Path, m
     assert result["computed"] == 1
     assert result["results"][0]["score"] == pytest.approx(0.42)
     current_key = __import__("local_ai_hub.cache", fromlist=["stable_hash"]).stable_hash(
-        {"identity": "torch:cpu:cache-test:" + "c" * 40, "q": "q", "d": "doc"}
+        {"identity": reranker._cache_identity(), "q": "q", "d": "doc"}
     )
     assert reranker.cache.get(current_key) == pytest.approx(0.42)
 
@@ -438,11 +438,13 @@ def test_reranker_device_switch_restarts_before_cache_write(monkeypatch: pytest.
     assert result["success"] is True
     assert result["device"] == "GPU.0"
     assert result["computed"] == 1
+    monkeypatch.setattr(reranker, "active_device", "NPU")
     npu_key = __import__("local_ai_hub.cache", fromlist=["stable_hash"]).stable_hash(
-        {"identity": "openvino:npu:switch-test:" + "d" * 40, "q": "q", "d": "doc"}
+        {"identity": reranker._cache_identity(), "q": "q", "d": "doc"}
     )
+    monkeypatch.setattr(reranker, "active_device", "GPU.0")
     gpu_key = __import__("local_ai_hub.cache", fromlist=["stable_hash"]).stable_hash(
-        {"identity": "openvino:gpu.0:switch-test:" + "d" * 40, "q": "q", "d": "doc"}
+        {"identity": reranker._cache_identity(), "q": "q", "d": "doc"}
     )
     assert reranker.cache.get(npu_key) is None
     assert reranker.cache.get(gpu_key) == pytest.approx(2.0)

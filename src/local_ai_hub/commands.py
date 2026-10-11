@@ -8479,6 +8479,7 @@ class CommandBroker:
                 out_unk = bool(
                     outcome_uncertain
                     or initial_result.get("outcome_unknown")
+                    or not replay_safe
                 )
                 uncertain["outcome_unknown"] = out_unk
                 return {

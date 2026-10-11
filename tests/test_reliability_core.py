@@ -400,7 +400,12 @@ enabled=false
 def test_http_auth_json_limits_security_headers_and_binary_bundle(tmp_path: Path):
     port = _free_port(); state = tmp_path / "state"; repo = tmp_path / "repo"; repo.mkdir()
     cfg = tmp_path / "server.toml"
-    cfg.write_text(f'''[server]\nbind="127.0.0.1"\nport={port}\nstate_dir="{state.as_posix()}"\nauto_start_ollama=false\nmax_request_body_bytes=1024\n[security]\napi_token="0123456789abcdef"\n[hardware]\nprofile="cpu"\nauto_tune=false\n[prewarm]\nenabled=false\n[preprocessing]\nenabled=false\n[resilience]\nwatchdog_enabled=false\n[code_intelligence]\nenabled=false\n[background_gpu]\nenabled=false\n[observability]\nenabled=false\n''', encoding="utf-8")
+    cfg.write_text(f'''[server]\nbind="127.0.0.1"\nport={port}\nstate_dir="{state.as_posix()}"\nauto_start_ollama=false\nmax_request_body_bytes=1024\n[security]\napi_token="0123456789abcdef"\n[hardware]\nprofile="cpu"\nauto_tune=false\n[prewarm]\nenabled=false\n[preprocessing]\nenabled=false\n[resilience]\nwatchdog_enabled=false\n[code_intelligence]\nenabled=false\n[background_gpu]\nenabled=false\n[observability]\nenabled=true\n[debug_traces]\nenabled=true\n''', encoding="utf-8")
+    from local_ai_hub.process_utils import process_owner_record
+    state.mkdir(parents=True, exist_ok=True)
+    owner = process_owner_record(os.getpid(), state, "supervisor")
+    assert owner is not None
+    (state / "supervisor.owner.json").write_text(json.dumps(owner), encoding="utf-8")
     env=os.environ.copy(); env["PYTHONPATH"]=str(ROOT/"src")+(os.pathsep+env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     proc=subprocess.Popen([sys.executable,"-m","local_ai_hub","--config",str(cfg)],cwd=ROOT,env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
     base=f"http://127.0.0.1:{port}"; auth={"X-LocalAI-Token":"0123456789abcdef"}

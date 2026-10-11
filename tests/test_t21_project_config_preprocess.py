@@ -231,7 +231,7 @@ def test_python_fallback_truncation_requires_omitted_candidate_sentinel(
     tools = RepositoryTools(cfg)
     iterated = []
 
-    def iter_files(_root: str):
+    def iter_files(_root: str, *, max_files: int | None = None):
         for candidate in candidates:
             iterated.append(candidate)
             yield candidate

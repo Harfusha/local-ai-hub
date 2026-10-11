@@ -1541,7 +1541,8 @@ class MemoryStore:
                     ("clone_id", clone_id), ("worktree_id", worktree_id),
                     ("branch", branch),
                 ):
-                    if str(record.provenance.get(identity_key) or "").strip() and not str(requested_identity or "").strip():
+                    stored_identity = str(record.provenance.get(identity_key) or "").strip()
+                    if stored_identity and not str(requested_identity or "").strip():
                         return None
             return record
         self._init_table()
@@ -2414,6 +2415,7 @@ class MemoryStore:
                     if row is None:
                         con.execute("COMMIT")
                         return False, None
+                    stored_scope_id = str(row[0] or "")
                     try:
                         provenance = json.loads(row[2]) if row[2] else {}
                     except (TypeError, ValueError):
@@ -2473,7 +2475,7 @@ class MemoryStore:
 
                     cur = con.execute(
                         "DELETE FROM agent_memory_records WHERE record_id = ? AND scope = ? AND scope_id = ?",
-                        (record_id, scope_value, scope_id_value),
+                        (record_id, scope_value, stored_scope_id),
                     )
                     cnt = cur.rowcount
                     if cnt <= 0:

@@ -1932,7 +1932,7 @@ def test_repair_loop_skips_non_replay_safe_validation(tmp_path) -> None:
 
     assert result["success"] is False
     assert result["repair_skipped"] is True
-    assert result["outcome_unknown"] is False
+    assert result["outcome_unknown"] is True
     assert result["attempts"] == 0
     assert generator_calls == []
 

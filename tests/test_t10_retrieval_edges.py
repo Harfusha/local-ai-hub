@@ -57,7 +57,7 @@ def test_tree_sitter_loader_only_loads_dispatched_languages(monkeypatch) -> None
     monkeypatch.setattr(treesitter_parser, "_LANGUAGES", {})
 
     assert treesitter_parser._init_treesitter() is True
-    assert set(loaded) == {"c_sharp", "typescript", "tsx", "javascript", "python", "go", "rust"}
+    assert set(loaded) == {"c_sharp", "typescript", "tsx", "javascript", "python", "go", "rust", "cpp", "java"}
 
 
 def test_deterministic_callers_intent_combines_direct_symbols_path_hints_and_ast_edges(tmp_path) -> None:
