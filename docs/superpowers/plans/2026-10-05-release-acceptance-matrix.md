@@ -2943,3 +2943,25 @@ or lacks Git metadata. No agent used a substitute checkout.
   broker's 900-second wait without a pytest summary. A bounded process check
   found no pytest process left running. This is a timeout/unknown result, not a
   pass; no duplicate full-suite run was started.
+
+## 2026-10-11 latest continuation recheck
+
+- Root remains clean on `master` at `dc6d3f386f99eed9177ca04a31afe9bbc7d80c1e`,
+  779 commits ahead of `origin/master`. `git branch --no-merged master` and
+  `git stash list` returned no entries. `git worktree list` reports 66 total
+  including root.
+- Read-only status checked 39 worktree attachments visible to this chat. One is
+  dirty: detached `release-verify-7cb` at `3010c894`, only
+  `docs/API_COVERAGE.md`; preserved untouched. Other sampled task worktrees are
+  clean, mostly at `73bdb084`. This is not a complete status audit of all 65
+  non-root worktrees; do not claim all are synchronized.
+- `python tools/release_check.py --allow-installed && python -m compileall -q
+  src tools tests && python tools/selftest.py`: exit 0; six selftest checks
+  green. Hub v4.0.0 is online in `active` mode.
+- `python -m pytest --collect-only -q`: 6,959 tests collected.
+  `tests/test_surface_inventory.py`: 743 passed; `tests/test_agent_state_operations.py`:
+  18 passed; the isolated prior last-failed selector: 1 passed.
+- Full-suite attempts remain incomplete. A 3,159-test shard timed out after
+  780 seconds (exit -9); a later `--last-failed` attempt timed out after 240
+  seconds (exit -9). Neither produced an assertion failure or full summary.
+  T20 remains **NO-GO** until a complete candidate-bound pytest result exists.
