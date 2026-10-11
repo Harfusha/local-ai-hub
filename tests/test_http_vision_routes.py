@@ -7,6 +7,7 @@ import urllib.request
 import urllib.error
 import base64
 from pathlib import Path
+from types import SimpleNamespace
 
 from local_ai_hub.app import LocalAIApp
 from local_ai_hub import http_server
@@ -213,7 +214,7 @@ def test_browser_capability_capture_and_review_routes_are_explicit_and_tenant_sc
         app.close()
 
 
-def test_browser_stage_commit_and_abandon_http_lifecycle(tmp_path: Path) -> None:
+def test_browser_stage_commit_and_abandon_http_lifecycle(tmp_path: Path, monkeypatch) -> None:
     state_dir = tmp_path / "state"
     config_path = tmp_path / "config.toml"
     config_path.write_text(
@@ -233,6 +234,12 @@ def test_browser_stage_commit_and_abandon_http_lifecycle(tmp_path: Path) -> None
     )
     app = LocalAIApp(str(config_path))
     app.config["browser_bridge"]["capability_ttl_seconds"] = 1
+    from local_ai_hub import browser_bridge
+
+    # Logical operations occur before expiry regardless of HTTP/disk scheduling.
+    # Patch only this module's clock, not the shared time module or server timers.
+    capture_clock = [time.monotonic()]
+    monkeypatch.setattr(browser_bridge, "time", SimpleNamespace(monotonic=lambda: capture_clock[0]))
     previous_app = http_server.APP
     http_server.APP = app
     server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
@@ -293,7 +300,7 @@ def test_browser_stage_commit_and_abandon_http_lifecycle(tmp_path: Path) -> None
         )["capability"]
         abandoned_payload = {**payload, "capability": abandoned_capability, "request_id": "http-staged-abandon"}
         abandoned_stage = _post(f"{base}/api/browser/capture/stage", abandoned_payload)
-        assert abandoned_stage["success"] is True
+        assert abandoned_stage["success"] is True, abandoned_stage
         abandoned_request = {**request, "capability": abandoned_capability, "request_id": "http-staged-abandon"}
         abandoned = _post(f"{base}/api/browser/capture/abandon", abandoned_request)
         late_commit = _post(f"{base}/api/browser/capture/commit", abandoned_request)
@@ -309,7 +316,7 @@ def test_browser_stage_commit_and_abandon_http_lifecycle(tmp_path: Path) -> None
         expired_stage = _post(f"{base}/api/browser/capture/stage", expired_payload)
         assert expired_stage["success"] is True
         expired_request = {**request, "capability": expired_capability, "request_id": "http-staged-expiry"}
-        time.sleep(1.1)
+        capture_clock[0] += 1.1
         expired_commit = _post(f"{base}/api/browser/capture/commit", expired_request)
         expired_replay = _post(f"{base}/api/browser/capture/commit", expired_request)
         assert expired_commit["success"] is False, {

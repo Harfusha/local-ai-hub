@@ -11,6 +11,7 @@ import io
 import ipaddress
 import inspect
 import json
+import logging
 import math
 import os
 import queue
@@ -3991,6 +3992,7 @@ class CommandBroker:
                     close_job_object(job_handle)
                 continue
             log_path = self._daemon_state_dir / f"{daemon_id}.log"
+            log_fh = None
             try:
                 if log_path.is_symlink() or log_path.resolve(strict=False).parent != expected_dir:
                     self._daemon_slots.release()
@@ -4003,6 +4005,14 @@ class CommandBroker:
                 log_fh.seek(max(0, size - self.daemon_log_max_bytes), os.SEEK_SET)
                 log_buffer = bytearray(log_fh.read(self.daemon_log_max_bytes))
             except OSError:
+                if log_fh is not None:
+                    try:
+                        log_fh.close()
+                    except OSError as cleanup_error:
+                        logging.getLogger(__name__).warning(
+                            "Recovered daemon log cleanup failed (%s)",
+                            type(cleanup_error).__name__,
+                        )
                 self._daemon_slots.release()
                 if job_handle:
                     close_job_object(job_handle)
