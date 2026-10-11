@@ -170,6 +170,17 @@
 - `docs/INSTALL_PROMPT.md`, `docs/UPDATE_PROMPT.md`, `tests/test_release_contract.py`, and `tools/setup.py` are all dirty. Ownership is unclear; no prompt/test changes made. Requires owner attribution and comparison of the existing generated-skill/prompt changes before repair.
 - Request `req_4f1a236b47cd`; visible failure output included the first two assertion details only.
 
+### 2026-10-11 prompt/setup regression recheck
+
+- Re-ran `python -B -m pytest -q --tb=short tests/test_release_contract.py
+  tests/test_release_hardening.py tests/test_setup.py` on the current dirty
+  candidate: **75 passed, 1 skipped in 61.48s**. Skip requires Linux `/proc`.
+  The previously reported four prompt/setup failures are not reproduced;
+  prompt files and expectations remain unchanged in this recheck.
+- Treat prior red results as historical, not current blockers. The full suite
+  still lacks a captured final result, so this focused pass does not make the
+  release GO.
+
 ## Command performance acceptance - paired evidence incomplete - 2026-10-10
 
 - Current exact-node recheck passed (**1 passed in 18.69s**), request `req_1d60dbf1fd5e`, repository revision `e1b56fba838d16e82d29d55dc9d0b89c51292a78a8b73e8f1cb9786665145f4d`; prior timing assertion failure is not reproduced. Raw warm/cold timing pairs remain unavailable, so no performance improvement claim or source edit.
@@ -2814,3 +2825,17 @@ or lacks Git metadata. No agent used a substitute checkout.
 - Release remains **NO-GO**: full pytest result is unknown; dirty root work
   remains unclassified/uncommitted; optional model/benchmark gates and
   installed-service restart acceptance are incomplete.
+
+### 2026-10-11 current task and focused release checks
+
+- Rechecked prompt/setup gates: `python -B -m pytest -q --tb=short
+  tests/test_release_contract.py tests/test_release_hardening.py
+  tests/test_setup.py` — **75 passed, 1 skipped in 61.48s** (Linux `/proc`
+  only). Prior prompt/setup red entries above are historical.
+- T01 current root inventory check passed (**687 rows, no drift**), and
+  `tests/test_surface_inventory.py` exited 0. Agent OS recorded receipt
+  `rcpt_94768ff51c82`; `verify_completion` still returned `complete=false`,
+  so T01 is not marked done.
+- Plan-only commit `83c05674` followed `5545efbb`; then 63 clean worktrees
+  were fast-forwarded again to `83c05674`. Dirty `release-verify-7cb` remains
+  untouched and is 9 commits behind; root is dirty in 68 tracked paths.
