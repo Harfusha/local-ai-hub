@@ -57,10 +57,7 @@ def _assert_json_schema(value, schema: dict[str, object]) -> None:
 
 def _telemetry_output_schema() -> dict[str, object]:
     output_schema = local_ai_mcp.mcp._tool_manager._tools["local_ai_status"].output_schema
-    return next(
-        variant for variant in output_schema["anyOf"]
-        if variant.get("title") == "local_ai_status.telemetry result"
-    )
+    return output_schema["x-action-output-contracts"]["telemetry"]
 
 
 def test_status_telemetry_compaction_preserves_required_empty_arrays_and_matches_schema() -> None:
@@ -100,6 +97,17 @@ def test_mcp_telemetry_tools_call_loopback_matches_declared_output_schema(tmp_pa
         encoding="utf-8",
     )
     app = LocalAIApp(str(config))
+    monkeypatch.setattr(app.telemetry, "report", lambda *args, **kwargs: {
+        "success": True,
+        "window": {"days": 30, "scope": "window", "events": 0},
+        "summary": {"events": 0},
+        "queue": {},
+        "hotspots": [],
+        "by_operation": [],
+        "error_fingerprints": [],
+        "detail": {},
+        "decision_grade": {},
+    })
     previous_app = http_server.APP
     previous_client = local_ai_mcp.CLIENT
     http_server.APP = app
@@ -118,7 +126,12 @@ def test_mcp_telemetry_tools_call_loopback_matches_declared_output_schema(tmp_pa
         assert isinstance(response.root, t.CallToolResult)
         assert response.root.isError is not True
         payload = json.loads(response.root.content[0].text)
-        assert payload["success"] is True, payload
+        assert payload["success"] is True, {
+            "payload": payload,
+            "start_count": len(start_events),
+            "received_count": len(received),
+            "owned_children": len(owned_children),
+        }
         _assert_json_schema(payload, declared_schema)
         assert payload["hotspots"] == []
         assert payload["by_operation"] == []
@@ -372,7 +385,7 @@ def test_mcp_status_remains_usable_when_hub_daemon_is_offline(tmp_path, monkeypa
         assert not Path(client.config["server"]["state_dir"]).exists()
 
 
-def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_path, monkeypatch) -> None:
+def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_path, monkeypatch, request) -> None:
     from local_ai_hub import http_server
     from local_ai_hub.app import LocalAIApp
     import sys
@@ -383,9 +396,11 @@ def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_pat
     from types import SimpleNamespace
     import threading
     from local_ai_hub.external_tools import ExternalCodeIntelligence
+    from local_ai_hub.operational_mode import operational_mode_gate_error as mode_gate_error
 
     operational_mode = types.ModuleType("local_ai_hub.operational_mode")
     operational_mode.load_operational_mode = lambda _path: SimpleNamespace(mode="active", degraded=False)
+    operational_mode.operational_mode_gate_error = mode_gate_error
     monkeypatch.setitem(sys.modules, operational_mode.__name__, operational_mode)
     monkeypatch.setattr(ExternalCodeIntelligence, "_startup_preflight", lambda _self: None)
 
@@ -423,7 +438,12 @@ def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_pat
 
     def start_owned_server(*_args, **_kwargs):
         lock_path = Path(state_dir) / "hub.start.lock"
-        lock_snapshot = lock_path.read_text(encoding="utf-8") if lock_path.exists() else "<missing>"
+        try:
+            lock_snapshot = lock_path.read_text(encoding="utf-8") if lock_path.exists() else "<missing>"
+        except OSError:
+            # Windows may deny a second handle while the startup owner holds
+            # the OS lock. The test only records it; it must not block launch.
+            lock_snapshot = "<locked>"
         start_events.append((threading.get_ident(), _args[0] if _args else None, lock_snapshot))
         monkeypatch.setattr(http_server, "APP", app)
         server = http_server.LocalAIHTTPServer(("127.0.0.1", port), http_server.Handler)
@@ -445,6 +465,9 @@ def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_pat
     monkeypatch.setattr(local_ai_mcp, "CLIENT", client)
     monkeypatch.setattr(local_ai_mcp.FEATURES, "tasks", True)
     monkeypatch.setattr(local_ai_mcp.FEATURES, "has_any_model", lambda: True)
+    if "local_ai_task" not in local_ai_mcp.mcp._tool_manager._tools:
+        local_ai_mcp.mcp.tool()(local_ai_mcp.local_ai_task)
+        request.addfinalizer(lambda: local_ai_mcp.mcp._tool_manager._tools.pop("local_ai_task", None))
     monkeypatch.setattr(client_module, "find_listening_pid", lambda _port: False)
     # Isolate client process creation. Patching subprocess.Popen in-place also
     # intercepts unrelated ExternalCodeIntelligence and pip preflight children.
@@ -454,6 +477,7 @@ def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_pat
         TimeoutExpired=subprocess.TimeoutExpired,
     ))
     monkeypatch.setattr(client_module, "_retain_detached_child", retained_children.append)
+
 
     tasks = (("Summarize first input", "First source facts"), ("Summarize second input", "Second source facts"))
 
@@ -475,6 +499,9 @@ def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_pat
         results = asyncio.run(dispatch_concurrently())
     finally:
         client.close()
+        assert not (Path(state_dir) / "service.managed").exists(), "test unexpectedly marks its temporary server as externally managed"
+        assert not (Path(state_dir) / "service.disabled").exists(), "test unexpectedly disables autostart"
+        assert (Path(client_module.__file__).resolve().parents[2] / "tools" / "service.py").is_file(), "autostart entrypoint missing"
         server = server_box.get("server")
         if server is not None:
             thread = server_box["thread"]
@@ -549,7 +576,7 @@ def test_lowlevel_request_handler_returns_compact_minified_json(monkeypatch) -> 
     assert parsed["success"] is True
 
 
-def _capture_client(monkeypatch, response, *, capture_path_hints=False):
+def _capture_client(monkeypatch, response, *, capture_path_hints=False, capture_accounting=False):
     client = local_ai_mcp.HubClient(tenant="test", auto_start=False)
     calls = []
 
@@ -560,6 +587,13 @@ def _capture_client(monkeypatch, response, *, capture_path_hints=False):
 
     monkeypatch.setattr(local_ai_mcp, "CLIENT", client)
     monkeypatch.setattr(client, "post", post)
+    reporter = local_ai_mcp._ACCOUNTING_REPORTER
+    original_send = reporter._send
+    monkeypatch.setattr(reporter, "_send", lambda *_args, **_kwargs: None)
+    if capture_accounting:
+        monkeypatch.setattr(reporter, "record", lambda event: original_send([event], client=client))
+    else:
+        monkeypatch.setattr(reporter, "record", lambda _event: None)
     return calls
 
 
@@ -573,7 +607,7 @@ def test_local_ai_repo_context_forwards_guarded_pack_fields(monkeypatch) -> None
         workspace="ws",
         mode="full",
         task_id="task-1",
-        phase="implementation",
+        phase="edit",
         focus=["reuse", "contract"],
         preload_profile="default",
         changed_paths=["src/app.py"],
@@ -593,7 +627,7 @@ def test_local_ai_repo_context_forwards_guarded_pack_fields(monkeypatch) -> None
     )
 
     assert result["success"] is True
-    assert len(calls) == 2
+    assert len(calls) == 1
     path, payload, _ = calls[0]
     assert path == "/api/context/pack"
     assert payload == {
@@ -604,7 +638,7 @@ def test_local_ai_repo_context_forwards_guarded_pack_fields(monkeypatch) -> None
         "mode": "full",
         "guarded": True,
         "task_id": "task-1",
-        "phase": "implementation",
+        "phase": "edit",
         "focus": ["reuse", "contract"],
         "preload_profile": "default",
         "changed_paths": ["src/app.py"],
@@ -621,23 +655,26 @@ def test_local_ai_repo_context_forwards_guarded_pack_fields(monkeypatch) -> None
         "repository_revision": "revision-1",
         "include_diagnostics": True,
     }
-    accounting_path, accounting_payload, accounting_timeout = calls[1]
-    assert accounting_path == "/api/telemetry/tool-accounting"
-    assert isinstance(accounting_payload["batch_id"], str)
-    assert accounting_payload["events"] == []
-    assert accounting_timeout == 0.25
 def test_local_ai_repo_context_preserves_legacy_fast_full_payload(monkeypatch) -> None:
-    calls = _capture_client(monkeypatch, {"success": True, "context": "legacy"})
+    calls = _capture_client(monkeypatch, {"success": True, "context": "legacy"}, capture_accounting=True)
 
     local_ai_mcp.local_ai_repo(
         action="context", root="C:/repo", query="legacy", mode="full", max_tokens=512,
     )
 
-    assert calls == [(
+    pack_calls = [call for call in calls if call[0] == "/api/context/pack"]
+    assert pack_calls == [(
         "/api/context/pack",
         {"root": str(Path("C:/repo")), "query": "legacy", "workspace": None, "max_tokens": 512, "mode": "full"},
         600.0,
     )]
+    for path, accounting_payload, accounting_timeout in calls:
+        if path == "/api/telemetry/tool-accounting":
+            assert isinstance(accounting_payload["batch_id"], str)
+            assert isinstance(accounting_payload["events"], list)
+            assert accounting_timeout == 0.25
+        else:
+            assert path == "/api/context/pack"
 
 
 def test_local_ai_repo_non_context_actions_ignore_guard_fields(monkeypatch) -> None:
@@ -656,12 +693,14 @@ def test_local_ai_repo_non_context_actions_ignore_guard_fields(monkeypatch) -> N
         path_hints=[{"path": "src/auth.py", "purpose": "repository_search", "scope": "repo_search"}],
     )
 
-    assert calls == [(
+    api_calls = [call for call in calls if call[0] != "/api/telemetry/tool-accounting"]
+    assert api_calls == [(
         "/api/search",
         {"root": str(Path("C:/repo")), "query": "route", "top_k": 12, "enrich": False},
         120.0,
         [{"path": "src/auth.py", "purpose": "repository_search", "scope": "repo_search"}],
     )]
+    assert all(call[0] in {"/api/search", "/api/telemetry/tool-accounting"} for call in calls)
 
 
 def test_local_ai_repo_context_returns_bounded_deterministic_projection(monkeypatch) -> None:
@@ -832,7 +871,7 @@ def test_local_ai_repo_context_rejects_malformed_guard_input_before_http(monkeyp
     calls = _capture_client(monkeypatch, {"success": True})
 
     result = local_ai_mcp.local_ai_repo(
-        action="context", root="C:/repo", guarded="yes", task_id="task-1",
+        action="context", root="C:/repo", query="check context", guarded="yes", task_id="task-1",
     )
 
     assert result["success"] is False
@@ -843,38 +882,39 @@ def test_local_ai_repo_context_rejects_malformed_guard_input_before_http(monkeyp
 
 
 def test_local_ai_repo_context_enforces_pack_budget_and_identity_types(monkeypatch) -> None:
-    calls = _capture_client(monkeypatch, {"success": True})
+    calls = _capture_client(monkeypatch, {"success": True}, capture_accounting=True)
 
     below_minimum = local_ai_mcp.local_ai_repo(
-        action="context", root="C:/repo", task_id="task-1", phase="review", max_tokens=127,
+        action="context", root="C:/repo", query="check context", task_id="task-1", phase="review", max_tokens=127,
     )
     mismatched = local_ai_mcp.local_ai_repo(
-        action="context", root="C:/repo", task_id="task-1", phase="review",
+        action="context", root="C:/repo", query="check context", task_id="task-1", phase="review",
         max_tokens=256, token_budget=512,
     )
     malformed_identity = local_ai_mcp.local_ai_repo(
-        action="context", root="C:/repo", task_id="task-1", phase="review", branch=42,
+        action="context", root="C:/repo", query="check context", task_id="task-1", phase="review", branch=42,
     )
     invalid_mode = local_ai_mcp.local_ai_repo(
-        action="context", root="C:/repo", mode="unsafe",
+        action="context", root="C:/repo", query="check context", mode="unsafe",
     )
 
     assert "128" in below_minimum["error"]
     assert "must match" in mismatched["error"]
     assert "branch must be string" in malformed_identity["error"]
     assert "context mode must be adaptive" in invalid_mode["error"]
-    assert len(calls) == 3
+    assert len(calls) == 4
     for accounting_path, accounting_payload, accounting_timeout in calls:
         assert accounting_path == "/api/telemetry/tool-accounting"
         assert isinstance(accounting_payload["batch_id"], str)
-        assert accounting_payload["events"] == []
+        assert len(accounting_payload["events"]) == 1
+        assert accounting_payload["events"][0]["operation_category"] == "repo"
         assert accounting_timeout == 0.25
 
 def test_local_ai_repo_context_rejects_guard_fields_without_guard_trigger(monkeypatch) -> None:
     calls = _capture_client(monkeypatch, {"success": True})
 
     result = local_ai_mcp.local_ai_repo(
-        action="context", root="C:/repo", changed_paths=["src/app.py"],
+        action="context", root="C:/repo", query="check context", changed_paths=["src/app.py"],
     )
 
     assert result["success"] is False

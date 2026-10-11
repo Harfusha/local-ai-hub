@@ -1,5 +1,7 @@
 # Trace Inspector Full Payload Display Implementation Plan
 
+> **Historical plan:** Its redaction and per-event retention decisions are superseded by [Trace Inspector unbounded payloads design](../specs/2026-09-21-trace-inspector-unbounded-payloads-design.md), which is the current opt-in local trace-content contract.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Remove Trace Inspector display truncation markers and raise trace storage defaults so retained payloads remain visible.
@@ -16,7 +18,7 @@
 - Modify: `tests/test_debug_traces.py` near `DebugTraceStore` configuration tests
 - Modify: `tests/test_dashboard_custom_modals.py` near existing `trace_task8` and Trace Inspector tests
 
-- [x] **Step 1: Add storage-default assertions.** Instantiate `DebugTraceStore` with only the required server state directory and assert `max_event_bytes == 4 * 1024 * 1024` and `max_session_text_bytes == 64 * 1024 * 1024`.
+- [x] **Step 1: Add storage-default assertions.** Instantiate `DebugTraceStore` with only the required server state directory and assert `max_event_bytes == 8 * 1024 * 1024` and `max_session_text_bytes == 64 * 1024 * 1024`.
 
 - [ ] **Step 2: Add a failing nested-payload dashboard test.** Use the existing Node probe to render a payload nested beyond four levels and assert the deepest value is visible and the output does not contain `<payload budget truncated>`.
 
@@ -34,7 +36,7 @@ Expected: the new tests fail because the current defaults and dashboard guards s
 - Modify: `src/local_ai_hub/debug_traces.py:35-40`
 - Test: `tests/test_debug_traces.py`
 
-- [ ] **Step 1: Change only the two defaults.** Set the fallback for `max_event_bytes` to `4 * 1024 * 1024` and the fallback for `max_session_text_bytes` to `64 * 1024 * 1024`. Preserve config overrides and all lower-bound validation.
+- [x] **Step 1: Enforce bounded trace storage.** Use defaults of 8 MiB per event, 64 MiB per session, and 1,000 events per session; enforce configured payload caps and mark truncated content so the inspector can disclose it. Preserve config overrides.
 
 - [x] **Step 2: Run storage tests.**
 

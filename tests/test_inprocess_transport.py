@@ -45,7 +45,6 @@ class _App:
             "_config_path": str(state_dir.parent / "config.toml"),
             "server": {
                 "bind": "127.0.0.1",
-                "client_host": "127.0.0.1",
                 "port": 11435,
                 "state_dir": str(state_dir),
                 "request_body_timeout_seconds": 1.0,
@@ -53,7 +52,8 @@ class _App:
             },
             "security": {
                 "api_token": "test-secret",
-                "allow_remote": False,
+                "api_token_tenant": "tenant-a",
+                "allowed_roots": [str(state_dir.parent)],
                 "rate_limit_requests": 600,
                 "rate_limit_window_seconds": 60.0,
                 "allowed_origins": [],
@@ -104,12 +104,12 @@ def inprocess_client(tmp_path, monkeypatch):
     config_path.write_text(
         "[server]\n"
         'bind = "127.0.0.1"\n'
-        'client_host = "127.0.0.1"\n'
         "port = 11435\n"
         f'state_dir = "{state_dir.as_posix()}"\n'
         "[security]\n"
         'api_token = "test-secret"\n'
-        "allow_remote = false\n"
+        'api_token_tenant = "tenant-a"\n'
+        f'allowed_roots = ["{tmp_path.as_posix()}"]\n'
         "rate_limit_requests = 600\n"
         "rate_limit_window_seconds = 60.0\n",
         encoding="utf-8",
@@ -136,6 +136,7 @@ def test_inprocess_transport_routes_to_services_without_http_or_spawn(inprocess_
     import http.client
 
     client, _transport, app, _state_dir = inprocess_client
+    root = _state_dir.parent.as_posix()
 
     def forbidden(*_args, **_kwargs):
         raise AssertionError("in-process transport attempted HTTP or process startup")
@@ -147,12 +148,16 @@ def test_inprocess_transport_routes_to_services_without_http_or_spawn(inprocess_
     monkeypatch.setattr(client, "ensure_server", forbidden)
 
     result = client.get(
-        "/api/repo/topology?root=fixture-root",
+        f"/api/repo/topology?root={root}",
         operational_action="repo_topology",
+        requires_heavy_work=False,
     )
 
-    assert result == {"success": True, "root": "fixture-root", "source": "service"}
-    assert app.topology_calls == ["fixture-root"]
+    assert result["success"] is True, result
+    assert Path(result["root"]) == Path(root)
+    assert result["source"] == "service"
+    assert result["request_id"].startswith("req_")
+    assert [Path(value) for value in app.topology_calls] == [Path(root)]
     event = app.telemetry.live_events[0]
     assert event["tenant"] == "tenant-a"
     assert event["agent"] == client.agent
@@ -183,25 +188,42 @@ def test_inprocess_transport_lazily_creates_app_without_http_or_process(inproces
     monkeypatch.setattr(transport, "_create_app", create_real_app)
     monkeypatch.setattr(http_server, "APP", None)
 
-    def forbidden(*_args, **_kwargs):
-        raise AssertionError("in-process app attempted HTTP or child-process startup")
+    def forbidden_http(*_args, **_kwargs):
+        raise AssertionError("in-process app attempted HTTPConnection")
 
-    monkeypatch.setattr(http.client, "HTTPConnection", forbidden)
-    monkeypatch.setattr(socket, "create_connection", forbidden)
-    monkeypatch.setattr(subprocess, "Popen", forbidden)
-    monkeypatch.setattr(client, "ensure_server", forbidden)
+    def forbidden_socket(*_args, **_kwargs):
+        raise AssertionError("in-process app attempted socket.create_connection")
 
+    def forbidden_autostart(*_args, **_kwargs):
+        raise AssertionError("HubClient attempted server autostart")
+
+    original_popen = subprocess.Popen
+    spawned_commands = []
+
+    def guarded_popen(argv, *args, **kwargs):
+        command = " ".join(str(part) for part in argv).lower()
+        if "local_ai_hub.http_server" in command or "local_ai_hub.supervisor" in command:
+            raise AssertionError("in-process app attempted to start a Hub process")
+        spawned_commands.append(command)
+        return original_popen(argv, *args, **kwargs)
+
+    monkeypatch.setattr(http.client, "HTTPConnection", forbidden_http)
+    monkeypatch.setattr(socket, "create_connection", forbidden_socket)
+    monkeypatch.setattr(subprocess, "Popen", guarded_popen)
+    monkeypatch.setattr(client, "ensure_server", forbidden_autostart)
+    assert transport._app is None
+    assert http_server.APP is None
     result = client.get(
-        "/api/repo/topology?root=fixture-root",
+        f"/api/repo/topology?root={_state_dir.parent.as_posix()}",
         operational_action="repo_topology",
+        requires_heavy_work=False,
     )
 
-    assert result == {
-        "success": True,
-        "root": "fixture-root",
-        "source": "real-app-service",
-    }
     assert len(created) == 1
+    assert result["success"] is True, result
+    assert Path(result["root"]) == _state_dir.parent
+    assert result["source"] == "real-app-service"
+    assert spawned_commands
     assert http_server.APP is created[0]
     client.close()
     assert created[0]._closed is True
@@ -230,18 +252,21 @@ def test_inprocess_transport_preserves_request_identity_and_cancel_route(inproce
 
 def test_inprocess_transport_keeps_http_rate_limit_across_requests(inprocess_client):
     client, transport, _app, _state_dir = inprocess_client
+    path = f"/api/repo/topology?root={_state_dir.parent.as_posix()}"
     transport._admission._rate_limit_requests = 1
 
     first = client.get(
-        "/api/repo/topology?root=fixture-root",
+        path,
         operational_action="repo_topology",
+        requires_heavy_work=False,
     )
     second = client.get(
-        "/api/repo/topology?root=fixture-root",
+        path,
         operational_action="repo_topology",
+        requires_heavy_work=False,
     )
 
-    assert first["success"] is True
+    assert first["success"] is True, first
     assert second["status_code"] == 429
     assert second["retryable"] is True
 
@@ -297,13 +322,15 @@ def test_inprocess_transport_keeps_deterministic_read_allowed_in_restricted_mode
 
     set_operational_mode(state_dir, "gaming")
     result = client.get(
-        "/api/repo/topology?root=fixture-root",
+        f"/api/repo/topology?root={state_dir.parent.as_posix()}",
         operational_action="repo_topology",
         requires_heavy_work=False,
     )
 
-    assert result == {"success": True, "root": "fixture-root", "source": "service"}
-    assert app.topology_calls == ["fixture-root"]
+    assert result["success"] is True, result
+    assert Path(result["root"]) == state_dir.parent
+    assert result["source"] == "service"
+    assert [Path(value) for value in app.topology_calls] == [state_dir.parent]
 
 
 def test_inprocess_timeout_reports_uncertain_result_but_does_not_cancel_service(inprocess_client):

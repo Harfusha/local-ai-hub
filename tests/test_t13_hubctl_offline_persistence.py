@@ -11,7 +11,7 @@ from local_ai_hub.operational_mode import load_operational_mode
 
 @pytest.mark.parametrize(
     ("arguments", "expected_mode"),
-    [(["pause"], "restricted"), (["resume"], "active"), (["mode", "maintenance"], "maintenance")],
+    [(["pause"], "gaming"), (["resume"], "active"), (["mode", "maintenance"], "maintenance")],
 )
 def test_offline_cli_persists_mode_under_configured_state_dir(
     monkeypatch, tmp_path, capsys, arguments, expected_mode
@@ -27,7 +27,7 @@ def test_offline_cli_persists_mode_under_configured_state_dir(
         def __init__(self, **_kwargs):
             pass
 
-        def _online(self):
+        def _online(self, *, timeout=None):
             return False
 
     monkeypatch.setattr(hubctl, "HubClient", OfflineClient)
@@ -39,8 +39,5 @@ def test_offline_cli_persists_mode_under_configured_state_dir(
     # Gaming may also report its separate live-release gate; persisted mode remains authoritative.
     assert exit_code in {0, 1}
     snapshot = load_operational_mode(state_dir)
-    if expected_mode == "restricted":
-        assert snapshot.mode in {"gaming", "maintenance"}
-    else:
-        assert snapshot.mode == expected_mode
+    assert snapshot.mode == expected_mode
     assert snapshot.revision == 1

@@ -15,11 +15,23 @@
 - Current-root release check `python tools/release_check.py --allow-installed`
   passed (`release-check: OK`, `req_7e4efa8c33f9`) on snapshot
   `d1ad5d5d4a3875a05ed2c631699444343d1d616a281b31410ae1cfc9530912a`.
-  This closes only that gate; full pytest, selftest, and remaining P0/P1 checks
-  are still open.
+  This closes only that gate; full pytest and remaining P0/P1 checks remain
+  open. Selftest's separate Windows cleanup blocker is resolved in the later
+  entry below.
 - `python -m compileall -q src tools tests` exited 0 (`req_38b199e1541c`) on
   the same snapshot. This is syntax compilation evidence, not pytest or
   selftest acceptance.
+- Cache hygiene: clean `t19-docs-rollout` failed `--strict-tree` on generated
+  `__pycache__`/`.pyc` files already covered by `.gitignore`. Root patch in
+  `tools/release_check.py` now ignores disposable Python/pytest caches in both
+  working- and strict-tree checks; durable `agent_state.sqlite3` remains fatal.
+  Regression red observed before implementation; `python -B -m pytest -q
+  --tb=short tests/test_release_check_working_tree.py
+  tests/test_release_check_defaults_parity.py` → **5 passed**;
+  `python -B tools/release_check.py --allow-installed` → **OK**;
+  `git diff --check -- tools/release_check.py
+  tests/test_release_check_working_tree.py` → **exit 0**. Root changes remain
+  uncommitted; rerun `--strict-tree` on the integrated clean candidate.
 - Current root/worktree inventory at snapshot
   `0f178cbe9ae5e6c310df0677a7b60f312cd750e000efad7b44f5fd6b33655f26`: branch
   `master` at `0b68dd87`; 61 registered worktrees, only root dirty (167 total:
@@ -250,16 +262,23 @@
 - T20 remains **NO-GO**. The matrix's prior full-suite receipt (6,599 passed, 201 failed, 104 skipped) is explicitly non-candidate-bound; the current dirty candidate is not frozen. Do not repeat the full suite during this audit; collect focused receipts per completed change batch and run the full suite once on the frozen candidate.
 - Current working-tree syntax gate: `python -B -m compileall -q src tools tests` passed, exit 0 (`execution_id=1083f53bf1934dcf889fdf1e8317f4f8`, `request_id=req_614b8ef61e1c`, revision `db17ab9e8bea2585ca2210aaae82f216d69f1b6ba1769a5b3919c98fd1bf3725`). This verifies Python syntax only.
 
-## Selftest Windows cleanup blocker - 2026-10-10
+## Selftest Windows cleanup - resolved on current host; full-suite gate deferred - 2026-10-10
 
 - Regression work: `tools/selftest.py` now captures process identity immediately after spawn and passes both identity and the `Popen` handle to `terminate_tree`. `tests/test_selftest_cleanup.py` proves the forwarding contract: first RED (missing helper), then RED (missing Windows handle), then **2 passed in 0.40s** (`execution_id=b170d04d54824f91a4305e04074ee879`, `request_id=req_06ba1f772adf`).
 - Runtime receipt: one post-change `python tools/selftest.py` still failed at cleanup with `PermissionError: [WinError 32]` for `%TEMP%/local-ai-hub-selftest-*/state/logs/hub.log` (`execution_id=65810343fd694e90a820bccb66333d2b`, `request_id=req_57f502280a2f`, revision `2586166c511838dbd30b4c875b866c9f8f3a77c85995267293c3da57ad02ed83`). The failed run's temp log still existed afterward; no matching supervisor command remained in the bounded process snapshot.
 - Root cause and fix: the selftest launched its supervisor with plain `subprocess.Popen`, so the Windows `terminate_tree` path had only the leader's `Popen` handle and no owned Job Object for helper descendants. A child could outlive the leader and retain `hub.log`. The selftest now launches through `popen_managed`, which assigns the suspended child to a kill-on-close Job Object before resuming it. Historical holder PID was not captured; a current Restart Manager query of that old log found **0 active holders** (`req_8b1d469b4eee`), so no historical PID is claimed.
 - Post-fix runtime receipt: `python -B tools/selftest.py` passed all six checks (`req_b7759f5d887b`) on snapshot `638e3f0fb9a0fa49ae54b38a1ef04cfff0ee5285bcc5c0fdefa6e808ac413188`. This resolves the observed selftest cleanup failure on this host; it does not close other release gates.
 - Follow-up validation: `tests/test_selftest_cleanup.py` passed (**2 passed in 0.36s**, `req_b917b7793095`); `python -B tools/release_check.py --allow-installed` returned `release-check: OK` (`req_66aaf7db0537`) on snapshot `cfa2cc9eec255bfc9353ef2ab01e997f7c4c911e8ee864e32686fd47f1ab9397`. Full pytest remains deferred until the audit candidate is frozen.
-- Root cause boundary: current Windows `terminate_tree` requires an owned Job Object to prove descendant ownership. With only a `Popen` handle it kills the leader and returns false; selftest uses raw `Popen`, so a child can retain `hub.log`. `process_utils.py` and its tests are dirty T06-owned shared work; leave them untouched and do not bypass the fail-closed rule. Resolution needs T06 owner adjudication or its managed-spawn capability.
-- Capability check: `process_utils.py` exposes Job Object create/assign primitives, but the bounded public-function inventory found no managed spawn-and-resume helper. Assigning after a running `Popen` would leave a child-spawn race; do not attach a Job Object that way.
-- Status: selftest remains **FAILED / T06 BLOCKED**; do not rerun until that ownership/capability issue is resolved. T20 remains **NO-GO**.
+- Current-source check: `tools/selftest.py` imports and calls `popen_managed`, then captures the returned process identity and supplies both the identity and process handle to `terminate_tree`. This establishes Job Object ownership before the supervisor can spawn helper processes; the old raw-`Popen` blocker is resolved.
+- Status: selftest passed all six checks on the recorded post-fix Windows run. This does not verify POSIX live process-group cleanup or close T20: full pytest and other candidate-bound acceptance gates remain **NO-GO / open**.
+- Current dirty-root recheck at master HEAD `3010c894`: `python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_setup.py` — **41 passed in 5.40s**. This supersedes the earlier isolated failure for `tests/test_setup.py` only; prompt parity and release gates remain open.
+- Combined current-root release contract check at master HEAD `3010c894`: `python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_release_contract.py tests/test_release_hardening.py tests/test_setup.py` — **75 passed, 1 skipped in 54.69s**. Skip: Linux `/proc`-only test on Windows. Earlier setup-policy failure did not reproduce in this combined run; full candidate suite and T20 acceptance remain open.
+- Current dirty-root release gates at the same master HEAD: `python -B tools/release_check.py --allow-installed` — **release-check: OK**; `python -B -m compileall -q src tools tests` — exit 0; `python -B tools/selftest.py` — **6/6 checks passed**, including repository filtering and HTTP health. These are current candidate receipts, not full-suite acceptance; T20 remains NO-GO until candidate-bound full pytest and remaining release criteria pass.
+- Installed runtime check on the current root: `python -B tools/doctor.py` reports Hub v4.0.0 online, MCP compact (8 tools), Ollama offline, 0 installed models, and Serena MCP `tools/call` timeout; `python -B tools/hubctl.py status` reports active mode and server online. Whisper CLI and Tree-sitter are installed. OpenVINO remains absent (Intel acceleration intentionally excluded). Attempt to inspect `hubctl --help` through the broker was rejected because root is not a registered task-owned worktree; no direct service/model mutation attempted.
+- Context identity hashing: `json_utils.dumps_bytes()` now returns UTF-8 backend bytes directly; `CompiledContext.etag()` hashes those bytes without the prior decode/re-encode cycle. Legacy ETag equality remains checked on Unicode/nested provenance fixtures. `python -m pytest -q --tb=short tests/test_json_utils.py tests/test_context_etag_benchmark.py` — **5 passed in 0.34s**. Paired benchmark `python -B benchmarks/bench_context_element_identity.py --iterations 500 --allocation-samples 20` on Windows 11 / Python 3.13.2: 64-element p50 **1046.4→818.85 µs** (−21.8%), p95 **1166.6→924.2 µs** (−20.8%); peak tracked allocation **30,242→46,154 bytes** (+52.6%). Four-element context follows stdlib path; timing is not a proven speedup there. Result improves large-context latency but increases temporary allocation; performance acceptance remains **partial**, not optimal/full-release proof.
+- T04 current-root API/conversation acceptance: `python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_t04_public_api_contracts.py tests/test_conversations.py tests/test_conversation_continue_route_contract.py tests/test_mcp_agent_routing.py::test_local_ai_repo_investigate_preserves_include_code tests/test_mcp_agent_routing.py::test_repo_review_diff_returns_foreground_result_by_default` — **46 passed in 79.78s**. Candidate-bound focused evidence only; full release suite remains open.
+- Preprocess shell review: current `src/local_ai_hub/preprocess.py` search found no `shell=True`, `subprocess.run`, or `subprocess.Popen` calls. `python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_preprocessing_overhaul.py tests/test_stuck_preprocessing_and_dashboard_fixes.py tests/test_preprocessor_and_deterministic.py` — **56 passed in 9.28s**. No source change needed; bounded behavior is green, full candidate suite remains open.
+- Silent-exception review: exact `except (Exception|BaseException): pass` scan found no matches in `src/local_ai_hub/agent_context.py` or `src/local_ai_hub/agent_blackboard.py`. Existing broad transaction/recovery catches in `agent_context.py` log operation and exception type; context preload failure becomes a warning. `python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_agent_context.py tests/test_agent_context_cleanup.py tests/test_agent_context_identity.py` — **41 passed in 12.91s**. This closes only these two files; repository-wide exception audit remains open.
 
 ## AgentEvent default identifier review - 2026-10-10
 
@@ -1095,7 +1114,7 @@ Historical snapshot: statuses, hashes, and receipts below belong to their record
 - Root is `master` at `680f7f90`, with 38 tracked and 2 untracked paths dirty. Preserve all unrelated changes. Scoped fix commit `680f7f90` owns `src/local_ai_hub/agent_blackboard.py`, `tests/test_agent_blackboard_crdt.py`, and `tests/test_agent_state_reliability.py`; rollback failures now log only exception type and preserve the original failure. Receipts before commit: those two files plus Agent State reliability **15 passed**; event-drop/SSE **19 passed**; `tools/selftest.py` **6/6**; `compileall`, `git diff --check`, and `release_check.py --post-test --allow-installed --expected-version 4.0.0` passed. Fresh check on revision `aad4ee002069a4c858886a85ef1924785a429f6255180934f401c529ed2b4fa5`: both rollback failure regression tests passed (2 passed in 1.29 s), execution `4794f1bafbaa420a85323a9451ea906b`.
 - Current root project-config/path-hint suite: `python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_project_config_service_integration.py` → **17 passed in 0.99s**.
 - Archived T21 candidate `archived/codex/sync-t21-project-config-20261006` is 73 commits behind and 2 ahead; its checkout retains dirty `client.py` and two untracked handoff files. Candidate test run hit `auxiliary action policy boundary unavailable`; no candidate changes integrated. Do not substitute its results for the passing root suite or overwrite its leftovers.
-- T31 branch `codex/t31-element-id-hash` has one unique commit, but it changes only query-path normalization in `http_server.py`, not element hashing. Root `HEAD` already contains equivalent `urlparse(...).path` normalization; no unique T31 behavior established, so do not merge the stale branch. Separately, root `agent_context.py` already has guarded `orjson` serialization for canonical context elements with a stdlib-compatible fallback; `tests/test_agent_context.py` plus `tests/test_agent_context_identity.py` → **36 passed in 6.23s**. Performance-path and legacy-hash equivalence coverage exist; no T31 hash patch to reapply.
+- T31 branch `codex/t31-element-id-hash` has one unique commit, but it changes only query-path normalization in `http_server.py`, not element hashing. Root `HEAD` already contains equivalent `urlparse(...).path` normalization; no unique T31 behavior established, so do not merge the stale branch. Separately, root `agent_context.py` already has guarded `orjson` serialization for canonical context elements with a stdlib-compatible fallback; `tests/test_agent_context.py` plus `tests/test_agent_context_identity.py` → **38 passed in 11.11s** on the current dirty-root snapshot. No performance benchmark was run; no T31 hash patch to reapply.
 - Historical release receipt: **NO-GO** after full suite timed out at 900s; live model smoke and install/start had not yet been attempted at that snapshot. Newer live results are recorded above.
 
 **Architecture:** Use the simplified, primary-agent-owned workflow in [`../specs/2026-10-07-simplified-worktree-integration.md`](../specs/2026-10-07-simplified-worktree-integration.md). The current `master` checkout is the integration target; inspect actual Git diffs and run relevant tests directly. Custom owner packets, ZIPs, fingerprint manifests, and SHA cascades are not release prerequisites.
@@ -1209,11 +1228,11 @@ Fresh root receipt on current master: `python -B -m pytest -q --tb=short tests/t
 | T07 idempotence | blocked | Assigned checkout missing; `f374` is not Git. |
 | T08 Agent OS | blocked | Current T08-named sync checkout `C:\Users\Adam\.codex\worktrees\t08-agent-os\.local-ai-hub` is clean at current master `ca88d9e5` (0 ahead/behind), but it is not the original assigned path. Exact `82de` path exists only as an `artifacts` directory, has no `.git`, and `git rev-parse` fails (verified 2026-10-09); ownership/source delta/receipt remain unverified. Broad-exception findings remain open. Existing focused receipts are historical; no tests rerun (Gaming). |
 | T09 receipts/index | blocked | Assigned artifact snapshot missing; prior 12 tracked/89 untracked state is historical only, not current attribution. |
-| T10 AST/retrieval | blocked | Current T10-named checkout `C:\Users\Adam\.codex\worktrees\t10-exceptions-search\.local-ai-hub` is clean at current master `ca88d9e5` (0 ahead/behind), with no unique source delta. This does not establish identity as original `d4d2` assignment or provide an owned exception-fix receipt; keep blocked. No tests rerun (Gaming). |
+| T10 AST/retrieval | blocked | Current T10-named checkout `C:\Users\Adam\.codex\worktrees\t10-exceptions-search\.local-ai-hub` is clean at current master `3010c8945579895d7506dde8325915a094dea51d`, with no unique source delta. Original `d4d2` assignment identity and owned exception-fix receipt remain unproven; keep blocked. No T10 tests run in this refresh. |
 | T11 RAG/runtime | review | Current master HEAD `81164e5c`; current `src/local_ai_hub/llama_cpp.py` blob `257a25a1…` and `tests/test_t12_llama_cpp_transport.py` blob `7756c139…` are clean in the candidate. Existing owner receipts: RAG 165 passed/3 skipped, transport 11 passed, live embedding smoke 1 passed; these are targeted evidence, not a full current-candidate gate. Earlier commit/blob equivalence was reported against an older master and has not been refreshed against `81164e5c`. CrossEncoder benchmark remains open. `preprocess.py` shell/argv edge audit belongs to T26 per T11. |
 | T12 model routing | review / NO-GO | Current master HEAD `81164e5c`; exact `4816` branch `codex/sync-4816-20261006` is at the same HEAD and currently clean. No T12-only delta remains; owner commits are integrated. The previously reported `.handoff/scratch-root-a411/` is absent from that checkout now. Main master worktree has separate dirty copies of `src/local_ai_hub/config.py` (HEAD blob `141c45a1…`, worktree `0e80318c…`) and `tests/test_local_model_availability.py` (HEAD `f1b264ce…`, worktree `dbb2da93…`); neither exists in the clean assigned checkout, no active lease identifies an owner, so preserve and exclude from T12 acceptance. Existing owner receipts: routing/config 83 passed, focused timeout 1 passed, scheduler/VRAM 73 passed, transport suite 12 passed. The transport receipt used older blobs (`f30162d…`, `e1cc11a…`); current master blobs are `257a25a1…`, `7756c139…`, so that receipt is not current-candidate proof. T02 baseline and live latency/VRAM coverage across profiles remain open. Hub status degraded, operational mode unavailable; no tests/benchmark run. T20 remains NO-GO. |
 | T13 operational mode | blocked | Assigned `t13-lifecycle` checkout unavailable. T13 owner cannot attribute root dirty hunks in `docs/WORKTREE_INTEGRATION_STATUS.md` or `src/local_ai_hub/agent_memory.py`; source/base/postimage ownership remains unknown. Historical 56-passed receipt does not cover these hunks. `t13-operational-mode` is foreign and not used. Separate scope finding remains unverified, not a confirmed defect: current `ScopeContext.matches(REPOSITORY)` requires a nonempty context `repository_id`, but an empty record `scope_id` matches any bound repository. The current test intentionally asserts that wildcard behavior, and a bounded caller search found no production use of `filter_scoped_records`; no code change retained. Current contract node `tests/test_agent_identity.py::test_repository_scope_requires_repository_identity` passed 1/1 in 0.15s (`req_2c73b49f38d1`). Treat future intent/reachability as open until a concrete repository-scoped record creation/read path is proven. No whole-file merge/copy until T13 ownership and relevant receipts are established. |
-| T14 context budget / `/api/context/pack` | blocked | Exact assigned `0c2e` path is absent (verified 2026-10-09). T14 owner confirms only that path is attached to its task; four clean T14-named recovery worktrees are not registered to it, ownership unproven, so no substitution. Current `t14-context-budget-recovery` sync checkout is clean at master `ca88d9e5` (0 ahead/behind), not the original assigned checkout and has no unique delta. No new context-pack code changed. `CompiledContext.etag()` has a conditional canonical `orjson` path and historical equivalence tests; fresh candidate-bound test/performance receipts remain absent. |
+| T14 context budget / `/api/context/pack` | blocked / NO-GO | Canonical owner thread `01a0d8a1-7ce5-7e21-93e7-8a9d4d05c032` still names assigned checkout `0c2e`; it is absent from current `git worktree list`. Five T14-named recovery checkouts are clean at current master `3010c894`; no unique T14 delta. Do not replace owner checkout or alter pack behavior. Current dirty-root snapshot `412c5ec0`: exact MCP contract command below exits 1, 4 failed. One test expects two requests though current adapter sends one `/api/context/pack`; three tests send empty `query`, rejected before their guard/budget assertions. This is current test evidence, not proof that old behavior should return. `CompiledContext.etag()` historical equivalence is not a fresh candidate-bound performance receipt. Command: `python -B -m pytest -q -p no:cacheprovider --tb=line tests/test_mcp_compact_transport.py::test_local_ai_repo_context_forwards_guarded_pack_fields tests/test_mcp_compact_transport.py::test_local_ai_repo_context_rejects_malformed_guard_input_before_http tests/test_mcp_compact_transport.py::test_local_ai_repo_context_enforces_pack_budget_and_identity_types tests/test_mcp_compact_transport.py::test_local_ai_repo_context_rejects_guard_fields_without_guard_trigger`. |
 | T15 command performance | review | Current master `81164e5c`; exact assigned `fefe` checkout is absent (owner restore failed), so current owner source/cleanliness unverified. Historical report at `4459bb33` said clean fast-forwarded checkout with no unique T15 hunk; not refreshed at current HEAD. Old performance result: 1 failed/2 passed (warm p50 slower); paired current benchmark receipts/GO absent. T20 serial slot/GO unavailable; no benchmark run. |
 | T16 orchestration | blocked | Assigned `aad5` artifact missing; no current base, source, or receipt. |
 | T17 browser/vision | blocked | Current master HEAD `81164e5c`; exact assigned `8085` checkout is absent and owner artifact registry is empty. Stash object `f05d3603072c63ff38857649db95e299cb341b76` is a 3-parent commit based on `7cb4bcdf`; untracked parent contains five paths. Combined 15-path stash patch-id verified as `83a354bfd201f78938cfe135bf5e90c2cfa3cf56`; prior reported patch SHA-256 `4be708e2a2eccd6bf455e4b05209b30d560a6119e0bc0d9dd1f1f9d21e475ce3` was not recomputed here. Ten paths differ from current HEAD: `browser_bridge/background.js`, `src/local_ai_hub/frontend_review.py`, `src/local_ai_hub/services.py`, `src/local_ai_hub/vision_contracts.py`, `src/local_ai_hub/vision_request.py`, `tests/fixtures/browser_bridge/current_tab_harness.js`, `tests/test_browser_bridge.py`, `tests/test_browser_bridge_background.js`, `tests/test_vision_contracts.py`, `tests/test_vision_service.py`. Five paths already match: `src/local_ai_hub/vision_inputs.py`, `src/local_ai_hub/vision_payload.py`, `src/local_ai_hub/vision_runtime.py`, `tests/test_browser_bridge_runtime.py`, `tests/test_vision_service_phases.py`. Owner review rejects the stale `vision()` hunk; remaining unique hunks lack verified owner/base/test receipts. `services.py` hunk boundary versus T14 `/api/context/pack` is unverified. Preserve stash; apply/drop/merge none. |
@@ -1229,7 +1248,7 @@ Fresh root receipt on current master: `python -B -m pytest -q --tb=short tests/t
 | Split `http_server.Handler.do_POST` without changing endpoint/auth/recovery contracts | T03 | Recorded in existing chat; no owned source refactor/receipt. |
 | Split `services.vision` while preserving vision/audio contracts | T17 | Recorded; checkout unavailable. |
 | Split `commands.run`; enforce explicit write-set rollback | T06 | Recorded in T06 handoff; checkout unavailable. |
-| Optimize `agent_context` element hash with equivalence + separate performance proof | T14 | Recorded; checkout unavailable. |
+| Optimize `agent_context` element hash with equivalence + separate performance proof | review / no code delta | `agent_context.py` and its two test files are clean in root. Current code has no per-element `json.dumps(element.to_dict())` path; `t31-element-id-hash` checkout is clean at current master `3010c8945579895d7506dde8325915a094dea51d`, no unique delta. Current snapshot `efda12bf`: `python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_agent_context.py tests/test_agent_context_identity.py` — **38 passed**. This proves focused behavior/equivalence coverage only; no fresh performance benchmark was run, so performance acceptance stays open. |
 | Narrow broad `except Exception: pass` handling in Agent OS | T08 | Recorded; checkout unavailable. |
 | `preprocess.py` shell/argv Windows edge cases | T26 per T11; no duplicate task created | Current source uses `shlex.split` and `shell=False`. Fixed the quoted-Unicode regression test to isolate the validation subprocess from the legitimate `git rev-parse --git-common-dir` probe; `python -B -m pytest -q --tb=short tests/test_preprocessing_overhaul.py` -> **11 passed**. Operator/timeout/process-tree acceptance remains pending. |
 | Preprocessor silent-failure follow-up | review / NOT VERIFIED; primary agent owns scoped seed/temp/purge handling | Three `_seed_from_parent` cache-copy catches now handle only `(OSError, sqlite3.Error)` and log exception type only; unexpected errors propagate. `_is_ephemeral_root` now fails closed and logs safe error type if temp boundary resolution raises expected `OSError`/`RuntimeError`. Unregister purge catches only SQLite errors and logs safe type; missing-file secondary-index cleanup catches `(sqlite3.Error, OSError)` and logs safe type; unexpected failures propagate. FTS write-side index mutations now propagate SQLite errors so their DB transactions roll back instead of silently leaving stale rows; optional startup registry repair logs expected storage/filesystem error type. Preprocessor status-summary queries now catch/log SQLite errors only. RAG cleanup for deterministically skipped files now propagates failure before marking their RAG hashes current. Disabled CodeIndex cleanup must return success before advancing phase; regular CodeIndex prune results are also validated before marking a generation pruned, and Deterministic prune errors propagate. `semantic_needed` selection errors propagate; lexical projection falls back to source text only on SQLite errors, while source read/path errors propagate instead of storing empty text. Read-side candidate search retains its semantic fallback. Changed files: `src/local_ai_hub/preprocess.py`, `tests/test_preprocessing_overhaul.py`. Added regressions for expected-SQLite logging/privacy, unexpected seed error propagation, temp-boundary failure, purge warning, unregister rollback, missing-file-prune rollback, failed skipped-file RAG cleanup, lexical source-read failure, disabled-CodeIndex cleanup failure, and failed regular CodeIndex prune. Exact command: `python -B -m pytest -q --tb=short tests/test_preprocessing_overhaul.py -k 'worktree_cache_seed or temp_project_filter or unregister_logs_derived_cache_purge or unregister_rolls_back_when_required_source_fts_table_is_missing or missing_file_prune_rolls_back_when_required_source_fts_table_is_missing or rag_skip_keeps_file_pending_when_stale_rows_cannot_be_removed or lexical_index_does_not_store_empty_text_when_source_read_fails or disabled_code_index_cleanup_failure_does_not_advance_phase or code_index_prune_failure_does_not_mark_generation_pruned'`; result **NOT RUN — user kept Hub in Gaming; no RED/GREEN evidence**. |
@@ -2100,3 +2119,553 @@ Each original stash commit, including its index/untracked parents and payloads, 
 - Full-suite acceptance remains red/unresolved: the recorded complete run had
   **6,686 passed, 174 failed, 104 skipped, and 1 teardown error**. Release
   remains **NO-GO** pending triage and final candidate-bound verification.
+
+## API coverage reproducibility — 2026-10-10
+
+- Root `--check` previously depended on ignored `config.toml` and
+  `generated/schemas/*.json`; a clean worktree used `defaults.toml` and
+  in-memory schemas, producing 723 versus 687 rows for the same commit.
+- `tools/surface_inventory.py` now ignores Git-ignored runtime inputs and
+  falls back to versioned defaults/in-memory generation. Added regression
+  `test_ignored_runtime_config_and_schemas_do_not_change_inventory`.
+- Verification: `python -B -m pytest tests/test_surface_inventory.py -q` —
+  **742 passed in 80.31s**; root `python -B tools/surface_inventory.py
+  --write-doc` — **687 rows, no drift**; root `--check` — **687 rows, clean**;
+  clean release-verification worktree `--check` — **687 rows, clean**;
+  `python -B -m compileall -q src tools tests` — exit 0;
+  `python -B tools/selftest.py` — **6 checks passed**;
+  `python -B tools/release_check.py --allow-installed` — **OK**.
+- These results cover the inventory fix only. Full-suite acceptance and final
+  runtime/install verification remain open; release stays **NO-GO**.
+
+## T14 context-pack MCP contract recheck — 2026-10-10
+
+- Reproduced current render-order failure (`KeyError: 'context'`). Ranked
+  candidates existed, but `_hybrid_context_uncached` only sent them through
+  `context_pack_paths` when explicit path controls were active. Changed that
+  condition to use any existing ranked candidate set; no-control requests now
+  pack those candidates instead of falling through to repository-wide search.
+  The pre-existing `services.py` diff was elsewhere (model defaults); this is
+  one scoped source line. Preserved the other dirty edits in the test file.
+- Updated stale MCP test assumptions: context sends one `/api/context/pack`
+  request; targeted guard/budget/identity validation supplies a nonempty query;
+  accounting side effects are filtered/checked separately from the API payload.
+  This also removes order-sensitive equality against asynchronous accounting
+  flushes. Owner: orchestrator, explicitly authorized to finish T14 acceptance.
+- Exact focused verification on the dirty-root snapshot:
+  `python -B -m pytest -q -p no:cacheprovider --tb=short
+  tests/test_context_pack_snippet_budget.py tests/test_context_pack_render_perf.py
+  tests/test_context_pack_render_order.py tests/test_context_pack_quality_e2e.py
+  tests/test_context_pack_budget_e2e.py tests/test_t14_context_pack_agent_memory.py
+  tests/test_mcp_compact_transport.py` — **41 passed in 38.47s**.
+- T14 remains **review**, not done: full release gates and final integrated
+  verification remain open. Dashboard audit remains active; do not run full suite
+  during its dashboard edits.
+
+## Git/worktree release-state snapshot — 2026-10-10
+
+- Root: branch `master`, HEAD `3010c894`; working tree has 60 modified tracked
+  paths and 3 untracked paths. Do not treat older 182/192 counts as current.
+- Read-only inventory checked 63 worktrees: 2 dirty, 8 behind master, 0 ahead,
+  0 divergent, 0 missing. Dirty entries: root (63 status paths) and
+  `release-verify-7cb` (only `docs/API_COVERAGE.md`, 1 path). Its generated doc
+  differs from root; no content was copied or discarded.
+- Five T15 benchmark pins remain 5 commits behind at `81164e5c`. Three clean
+  detached baseline worktrees remain older (`dashboard-modal-tests` and
+  `mcp-compact-release-fix` at `8c945bde`, `mcp-compact-release-fix-pin` at
+  `2458f72c`); none is ahead of master. Preserve pins and do not clean up the
+  old detached snapshots until their use/ownership is confirmed.
+- `git branch --no-merged master`: **0**; local branches **151**;
+  `git stash list`: **0**. This proves branch ancestry only, not acceptance of
+  dirty changes or release readiness. No branch/worktree cleanup performed.
+
+## Bounded HubClient autostart probe verification — 2026-10-10
+
+- User authorized the narrow `client.py` health-probe fix despite a concurrent
+  edit. The current dirty implementation caps readiness probes at
+  `min(health_timeout, remaining request deadline)`, so an initial probe cannot
+  consume the whole short autostart budget. Existing adjacent edits were
+  preserved; no additional source lines changed in this verification step.
+- Owner: orchestrator. Files under verification:
+  `src/local_ai_hub/client.py` and
+  `tests/test_client_operational_mode_autostart.py`.
+- `python -B -m pytest -q -p no:cacheprovider --tb=short
+  tests/test_client_operational_mode_autostart.py` — **9 passed in 1.61s**,
+  execution `b8ee098a7f49419d9abfe9889039a6bc`, candidate content revision
+  `6e94d5b2645cc489bef32721c763904b95a7fa5513a7ca54c2139561cbdd231e`.
+- `python -B -m pytest -q -p no:cacheprovider --tb=short
+  tests/test_client_transport.py tests/test_inprocess_transport.py` — **54
+  passed in 7.18s**.
+- `git diff --check -- src/local_ai_hub/client.py
+  tests/test_client_operational_mode_autostart.py` — **passed** (only
+  line-ending warnings). This is focused evidence, not full release acceptance.
+- Trace-inspector verification on the same dirty-root revision:
+  `python -B -m pytest -q -p no:cacheprovider --tb=short
+  tests/test_debug_traces.py -k 'not dashboard_and_favicon_are_monitor_paths'`
+  — **42 passed, 1 deselected in 5.38s**. The excluded dashboard assertion is
+  pending the active dashboard owner; this does not certify that test or the
+  dashboard integration.
+- `python -B -m pytest -q -p no:cacheprovider --tb=short
+  tests/test_operational_mode.py tests/test_shared_runtime_security_lifecycle.py
+  tests/test_t13_hubctl_offline_persistence.py` — **169 passed, 1 skipped in
+  16.15s**. Skip is host limitation: directory symlinks unavailable.
+- Latest root snapshot after these checks: `master` is **743 commits ahead** of
+  `origin/master`, with **60 modified tracked paths and 3 untracked paths**.
+  Dashboard work is still active, so this is not a frozen release candidate;
+  no sync, cleanup, install, or commit was performed.
+- The operator had left the Hub in `gaming`. With prior authorization that
+  mode management is ours, ran `python tools/hubctl.py mode active` once; it
+  returned `Mode set to active` (no restart). Then
+  `python -B -m pytest -q -p no:cacheprovider --tb=short
+  tests/test_resource_backpressure.py tests/test_surface_inventory.py` passed:
+  **753 passed in 76.54s**.
+- `python -B tools/release_check.py --allow-installed` — **release-check: OK**
+  on the dirty working-tree snapshot. Final release acceptance remains open
+  until the active dashboard edits stabilize and the full suite/compile/selftest
+  run on one frozen candidate.
+- `python -B tools/selftest.py` — **success**; all six checks passed:
+  undefined globals, config, repository filtering, HTTP health, HTTP
+  capabilities, and Agent OS state store.
+- `python -B -m compileall -q src tools tests` — **exit 0** on the current
+  dirty working tree. This is preliminary syntax evidence; re-run after the
+  dashboard owner finishes editing.
+- `python -B tools/doctor.py` — process exited 0. Installed Hub v4.0.0 is
+  online; 8-tool MCP surface, GPU/SentenceTransformers, Tree-sitter, Whisper,
+  Serena executable, and configured models are present. Hub reports Ollama
+  offline/no active model; Serena's MCP `tools/call` timed out despite doctor
+  marking Serena healthy. OpenVINO is absent; intentionally excluded as Intel
+  optional. Live inference and Serena call quality remain unverified.
+- `python -B tools/hubctl.py status` independently reported Active, Hub online,
+  Ollama offline, and 0 installed models. Direct read-only checks then found
+  Ollama PID 29412 listening on loopback port 11434; `GET
+  http://127.0.0.1:11434/api/tags` returned eight model names. A broker `ollama
+  list` request was classified **not in safe allowlist**, so that output is not
+  used. Source inspection explains the status: `defaults.toml` sets
+  `[ollama].enabled=false`, and `OllamaRuntime.version()` probes `/api/version`
+  only when enabled. So the Hub's offline/zero count is expected default policy,
+  not a dead Ollama service. The user's effective runtime config has not been
+  enabled/verified; do not change the global default. No model pull or
+  additional backend process was started.
+- Refreshed Git inventory on `master` `3010c8945579895d7506dde8325915a094dea51d`:
+  **63 worktrees**, 8 behind, 0 ahead/divergent/missing; 2 dirty (root: 63
+  paths; `release-verify-7cb`: one `docs/API_COVERAGE.md` path). No local branch
+  is unmerged into master; stash list is empty. The dirty worktree report has
+  669 keys like root and differs on 114 rows only in `Reproduction` and
+  `Tenant scope`; a broker-classified-unknown comparison suggested these are
+  source line references only, so it is not accepted as proof or copied. Root
+  `python -B tools/surface_inventory.py --check` is authoritative and passed:
+  687 rows, `coverage_matches=true`, no drift. Preserve the separate dirty file;
+  do not merge or delete it without its owner.
+
+## 2026-10-10 release continuation
+
+- Fixed `_hybrid_context_uncached` so a sparse backend candidate list does not
+  narrow an untargeted lexical lookup; hints only rank evidence. Explicit path
+  controls remain targeted and bounded.
+- `python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_adaptive_retrieval.py::test_path_hints_rank_context_evidence_without_narrowing_lexical_search`:
+  **1 passed** (execution `bdfcf14b16944a65a31bab1189141e4c`).
+- `python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_adaptive_retrieval.py`:
+  **33 passed** (execution `718191d50ff94b24b890f3a1f93e8e17`).
+- `python -B tools/release_check.py --allow-installed`: **release-check: OK**
+  (execution `58c66ffedabf49308e2c861bb473fc7e`).
+- `python -B -m compileall -q src tools tests`: **exit 0**
+  (execution `44ebe16b601a4185ace6902f9c9d80f2`).
+- `python -B tools/selftest.py`: **all six checks passed**, exit 0
+  (execution `ffe4ad35cde7470d82cc531b358fda98`).
+- Whole suite `python -B -m pytest -q -p no:cacheprovider --tb=short --maxfail=1`
+  timed out after 240s; retained output shows 57 passing dots and no failure
+  summary. Full-suite acceptance remains **unverified**.
+- Verbose whole-suite attempt collected **6949 tests** and timed out at 120s
+  around 4%; last visible test was
+  `tests/test_agent_memory_root_snapshot.py::test_memory_query_limit_is_hard_capped`.
+  That test passed alone in 3.34s, and its whole file exited 0 with 33 tests;
+  this does not explain or clear the full-suite runtime limit.
+- `python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_agent_blackboard_crdt.py tests/test_agent_consistency.py`:
+  **69 passed in 34.21s** (execution `0434f7ae9f4f4f21a6cba8802c2b587f`).
+- `python -B tools/surface_inventory.py --check`: **687 rows, no drift**
+  (execution `af11019023e44b7faf016261db8e80b4`).
+- `git diff --check`: **exit 0** (execution `9206e28ea6f64e1b940457028e70b8bb`);
+  Git emitted existing LF-to-CRLF working-copy warnings.
+- `python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_agent_memory_root_snapshot.py`:
+  **33 collected, exit 0** (execution `329c219809a1458b8876f6e865e05ed3`).
+- `python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_dashboard_custom_modals.py tests/test_dashboard_local_only_presentation.py tests/test_dashboard_polling_quality.py tests/test_dashboard_operational_surfaces.py tests/test_client_operational_mode_autostart.py tests/test_mcp_agent_routing.py tests/test_client_transport.py`:
+  **301 passed in 19.82s** (execution `a4a3c53df4444a4cbf30ad3477770f4b`).
+- `python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_context_delivery.py tests/test_context_path_hints_skip_unbounded_scan.py tests/test_adaptive_retrieval.py`:
+  **83 passed in 18.90s** (execution `476b0727b25c4eaf976492ec010f8d69`).
+
+## Current continuation inventory
+
+- Read-only Git snapshot: branch `master`, HEAD
+  `3010c8945579895d7506dde8325915a094dea51d`, 65 dirty paths, 151 local
+  branches, no stashes. This differs from the earlier 182 tracked + 192
+  untracked baseline; preserve the current tree and do not infer those older
+  changes were merged or discarded.
+- Hub brief is degraded (`4.0.0`, Ollama offline, no active model, no queued or
+  inflight work). No further Hub retries in this continuation.
+- Existing T03, T14, T20 and T21 chats report missing/foreign task-owned
+  worktrees. No new chats or worktrees created; their source integration stays
+  blocked until exact owner checkout access is restored.
+- Release remains **not ready**: full 6,949-test suite incomplete; dirty master
+  not frozen or committed; no installed-release smoke verification in this
+  continuation.
+
+## T01–T21 checkout recovery, 2026-10-10
+
+All owners were resumed in their existing chats; no duplicate chats/worktrees
+were created. Every owner confirmed **blocked**, changed files **none**, and
+acceptance tests **not run** because its original checkout is missing, archived,
+or lacks Git metadata. No agent used a substitute checkout.
+
+| Task | Owner | Status | Owner files / tests | Verified blocker |
+|---|---|---|---|---|
+| T01 | Existing T01 chat | blocked | none / none | `1938` checkout missing |
+| T02 | Existing T02 chat | blocked | none / none | `4b5d` is not a Git repository |
+| T03 | Existing T03 chat | blocked | none / none | original `e809` checkout not attached |
+| T04 | Existing T04 chat | blocked | none / none | `393c` has no Git metadata; candidate missing |
+| T05 | Existing T05 chat | blocked | none / none | `a66e` has no Git metadata |
+| T06 | Existing T06 chat | blocked | none / none | archived `57e3` has no Git metadata |
+| T07 | Existing T07 chat | blocked | none / none | `f374` has no Git metadata |
+| T08 | Existing T08 chat | blocked | none / none | `82de` has no Git metadata |
+| T09 | Existing T09 chat | blocked | none / none | `32fc` missing; archived snapshot unavailable |
+| T10 | Existing T10 chat | blocked | none / none | `d4d2` is not a Git repository; `t10-p2` missing |
+| T11 | Existing T11 chat | blocked | none / none | `f678` snapshot unavailable |
+| T12 | Existing T12 chat | blocked | none / none | `4816` root missing (`stale_root=true`) |
+| T13 | Existing T13 chat | blocked | none / none | `87d9` checkout missing; one Hub context call terminal 503 |
+| T14 | Existing T14 chat | blocked | none / none | owner checkout `0c2e` missing; recovery checkout not attached |
+| T15 | Existing T15 chat | blocked | none / none | archived `fefe` snapshot unavailable |
+| T16 | Existing T16 chat | blocked | none / none | `aad5` checkout missing |
+| T17 | Existing T17 chat | blocked | none / none | `8085` checkout missing |
+| T18 | Existing T18 chat | blocked | none / none | expected `1e33` checkout missing |
+| T19 | Existing T19 chat | blocked | none / none | `55ed` checkout missing |
+| T20 | Existing T20 chat | blocked | none / none | `ec50` is not a Git repository; recovery checkout not owned |
+| T21 | Existing T21 chat | blocked | none / none | `4294` checkout has no Git metadata |
+
+## Git census recheck, 2026-10-10
+
+- `git worktree list --porcelain`: 63 worktree records. 53 clean and synced;
+  eight clean and behind; two dirty (root plus `release-verify-7cb`).
+- Root: `master` at `3010c8945579895d7506dde8325915a094dea51d`, 62 tracked and
+  three untracked dirty paths. Preserve all; no reset, blanket merge, or commit.
+- All 151 local branches are merged into master; zero unmerged branches and
+  zero stashes. No unique branch commits remain to integrate.
+- Eight behind worktrees: five T15 benchmark pins at `81164e5c`, plus dashboard
+  modal and two MCP compact release worktrees (`8c945bde`, `2458f72c`,
+  `8c945bde`). Keep benchmark pins frozen; no worktree cleanup performed.
+- Remaining uncommitted integration candidate outside root: one tracked dirty
+  `docs/API_COVERAGE.md` in `release-verify-7cb`, same HEAD as master. Its
+  working file differs from both its HEAD version and root's working file.
+  Owner/content review unavailable in this bounded pass; do not apply until
+  exact hunk is attributed and checked.
+
+## Root release continuation, 2026-10-11
+
+- Current checkout recheck: branch `master`, HEAD
+  `3010c8945579895d7506dde8325915a094dea51d`; 69 status entries, 64 worktree
+  records, zero stashes. Existing dirty state preserved; no branch/worktree
+  merge, cleanup, stage, or commit performed.
+- Local AI Hub status is responsive (`4.0.0`, `success=true`, Ollama offline).
+  Adaptive context and repository search each exceeded the bounded wait; no
+  repeated Hub retrieval used. Bounded command broker remained usable.
+- Current-revision (`05984ec9bcbca3dfd6b867f53ddce2e056bb290269c6bad6eaef184dcf8aa4a1`)
+  receipts:
+  - `python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_client_transport.py tests/test_mcp_accounting_client_binding.py tests/test_mcp_compact_transport.py tests/test_debug_traces.py` — **118 passed in 36.40s**.
+  - `python -B -m pytest -q -p no:cacheprovider --tb=short tests/test_debug_traces.py` — **43 passed in 3.44s**.
+  - `python tools/release_check.py --allow-installed` — **OK**.
+  - `python -B -m compileall -q src tools tests` — **exit 0**.
+  - `python tools/selftest.py` — **6/6 checks passed**.
+  - `git diff --check` — **exit 0**.
+- Follow-up receipts after the generated API coverage document was refreshed:
+  - `python -m pytest tests/test_client_operational_mode_autostart.py -q` —
+    **9 passed in 1.52s**; includes bounded health-probe timeout and fail-closed
+    hidden-launch setup checks. Existing `client.py`/test dirty changes were
+    preserved and not rewritten in this pass.
+  - `python -B tools/surface_inventory.py --check` — **PASS**, 687 rows,
+    `coverage_matches=true`, no drift.
+  - `python -m pytest -q --tb=short tests/test_trace_inspector_redesign.py tests/test_debug_traces.py`
+    — **50 passed in 3.89s** after aligning two stale redaction assertions
+    with the explicit opt-in full-payload trace contract; production behavior
+    was not changed.
+  - `python tools/release_check.py --allow-installed` — **OK** on the current
+    post-test-update working tree.
+  - `git diff --check` — **exit 0**; only CRLF normalization warnings from
+    existing working-copy files.
+- Full-suite gate on the same current working tree:
+  - `python -m pytest -q` — **NOT VERIFIED**; broker terminated it at 300 s
+    after 6% progress, with no failing test name or traceback. Collection
+    reports 6,953 tests, so this bounded run does not establish a test failure
+    or a full-suite pass; the release gate remains open.
+- Release blockers still open:
+  - The current full suite remains unverified: its 300 s broker run stopped at
+    6% without a failing test name. The earlier 26-module run's trace-redaction
+    failures were resolved by correcting only the contradictory expectations;
+    the focused trace/debug pair now passes 50/50. The prior experimental
+    regex caused catastrophic backtracking and remains reverted.
+  - Installed-runtime `doctor.py`: Hub v4.0.0 is online, but Ollama is offline
+    with zero installed models; Serena is degraded after an MCP timeout. No
+    inference or Serena live acceptance was established in this pass.
+- T01, T14, T20 acceptance remains blocked by missing task-owned checkouts;
+  `/api/context/pack` remains untouched. No T01–T21 completion is inferred from
+  these root-level receipts.
+- Narrow source check: `preprocess.py` validation launch uses `shell=False`
+  (line 3708); no `TODO`/`FIXME`/`XXX`/`HACK` comment matched under
+  `src/local_ai_hub`. This does not close the broader exception audit or the
+  deferred safe decomposition/performance refactors.
+
+## Current root and worktree reconciliation, 2026-10-11
+
+- Initial root inventory: `master` at
+  `3010c8945579895d7506dde8325915a094dea51d`; **64 tracked dirty + 5
+  untracked** at that inventory point, not the previously supplied 182 + 192
+  baseline. Subsequent ETag work added scoped changes; no blanket cleanup or
+  restoration was attempted.
+- Git inventory: **65 worktrees** = 55 clean at master, 8 clean/behind, 2 dirty;
+  no missing worktree paths. **153 local branches**, none returned by
+  `git branch --no-merged master`; **0 stashes**. Thus committed branch work
+  is already reachable from master; no branch commits were merged this turn.
+- Five behind worktrees are frozen T15 benchmark pins at `81164e5c`; retain
+  those revisions. Three other clean behind checkouts are the dashboard-modal
+  and MCP compact release worktrees; no source packet or unique commit remains
+  to integrate from them.
+- The only dirty non-root worktree is detached `release-verify-7cb`, with one
+  modified `docs/API_COVERAGE.md` (204 insertions/240 deletions). Its own
+  `python -B tools/surface_inventory.py --check` passes at 687 rows, but its
+  file differs from root's generated file. Root's corresponding check also
+  passes at 687 rows. Preserve both; do not copy one over the other without
+  attribution to the differing source snapshot.
+- Existing T01/T03/T04/T06/T08/T10/T12/T13/T19/T20/T21 chats were inspected;
+  their latest reports are missing, stale, or owner-conflicted assigned
+  checkouts. No duplicate chats were created. They provided no new source
+  changes or current acceptance receipts; their tasks remain open/blocked.
+- Full acceptance is still **NO-GO**: full pytest is unverified after a 300 s
+  timeout at 6% of 6,953 tests; live inference has Ollama offline/zero models
+  and Serena degraded. ETag hashing now has a paired large-context latency
+  win but higher peak allocation; keep performance acceptance partial. Large-
+  function decomposition and repository-wide exception audit remain open.
+- After the ETag patch, focused Agent Context/identity/JSON/benchmark tests
+  passed (**43 passed in 12.75s**); `release_check.py --allow-installed`,
+  `compileall`, and `selftest.py` all passed. These scoped gates do not replace
+  the timed-out full suite or live model/Serena acceptance.
+
+## Autostart and broad exception follow-up, 2026-10-11
+
+- `HubClient.ensure_server` already bounds its first readiness probe to
+  `min(self.health_timeout, budget * 0.25)` before starting the daemon. No
+  duplicate source patch needed. `python -B -m pytest -q -p no:cacheprovider
+  --tb=short tests/test_client_operational_mode_autostart.py` — **9 passed in
+  1.43s**.
+- Broad `except Exception: pass` matches remain across source; classify by
+  operation before changing. The memory-delete rollback catch now logs a
+  metadata-only warning containing the exception type, while re-raising the
+  original FTS failure. TDD evidence: the new warning assertion failed before
+  the implementation; afterward
+  `python -B -m pytest -q -p no:cacheprovider --tb=short
+  tests/test_agent_memory.py tests/test_agent_memory_t08_rollback_masking.py`
+  passed (**55 passed in 23.24s**). `git diff --check` passed. This closes only
+  this rollback diagnostic; the broader exception audit remains open.
+
+## Release gate refresh, 2026-10-11
+
+- Current checkout is `master`, 743 commits ahead of `origin/master`, with 69
+  modified tracked paths, 5 untracked paths, and 65 registered worktrees. No
+  stash entries were returned. These changes/worktrees are not yet a clean,
+  release-ready integrated tree; preserve and classify them before any cleanup.
+- Current checks on this tree: `python -B tools/release_check.py
+  --allow-installed` — **OK**; `python -B -m compileall -q src tools tests` —
+  **exit 0**; `python -B tools/selftest.py` — **6/6 checks passed**.
+- Full `pytest -q` remains **NO-GO / unverified**: the earlier bounded run
+  timed out after 300 s at 5% in the current tree (progress dots only; no
+  assertion failures reported). A prior run was at 6% after 300 s. Do not
+  represent targeted suites as a substitute for the complete suite; diagnose
+  slow collection/execution before another full run.
+- All changed and untracked test files were then selected from this checkout
+  and run once via
+  `$testPaths = @(git -c core.safecrlf=false diff --name-only -- tests) +
+  @(git ls-files --others --exclude-standard tests); python -B -m pytest -q
+  -p no:cacheprovider --tb=short $testPaths` — **exit 0**. The command broker's
+  compact output omitted the final count, so no count is claimed. This is
+  affected-test evidence, not full-suite acceptance.
+- Fresh worktree audit: **65 total; 57 at master, 8 behind, 0 ahead, 0
+  divergent**. The eight behind are five intentionally pinned T15 benchmark
+  worktrees and three clean dashboard/MCP worktrees. Only root (74 dirty
+  paths) and `release-verify-7cb` (one dirty path) are dirty; stash list is
+  empty. The three clean stale worktrees are protected by pinned task/workspace
+  policy, so the supported archive operation rejected them; no filesystem or
+  Git workaround was attempted. The remaining dirty API-coverage doc stays
+  preserved pending source-snapshot reconciliation.
+
+## Preprocess command execution recheck, 2026-10-11
+
+- Current `src/local_ai_hub/preprocess.py` diagnostic runner builds `argv` and
+  calls `popen_managed(argv, shell=False, ...)`; targeted search found no
+  `shell=True` path in this module. Existing Unicode/quoted-argument contract:
+  `python -B -m pytest -q -p no:cacheprovider --tb=short
+  tests/test_preprocessing_overhaul.py::test_idle_diagnostics_launches_quoted_unicode_command_as_argv`
+  — **1 passed in 0.46s**. No additional patch needed for this review item.
+- `src/local_ai_hub/agent_blackboard.py` already catches rollback `sqlite3.Error`
+  narrowly, logs only exception type, and re-raises the primary operation
+  error in both transaction paths. `python -B -m pytest -q
+  -p no:cacheprovider --tb=short tests/test_agent_blackboard_crdt.py` —
+  **7 passed in 0.40s**. No extra patch needed there.
+
+## Monolith sizing recheck, 2026-10-11
+
+- Current AST sizes: `http_server.py::do_POST` **2,911 lines**;
+  `commands.py::run` **780 lines**; `services.py::vision` **206 lines**.
+- Safe extraction remains open for `do_POST` and `commands.run`; `vision` is
+  already 206 lines in this checkout, so prior 734-line concern is stale.
+  Treat extraction as a separate staged refactor, not as release-complete or
+  as a reason to destabilize final release gates.
+
+## Current continuation snapshot, 2026-10-11
+
+- Bounded Hub status: `degraded=true`, Ollama offline, no active model, queue
+  and inflight both zero; no health polling/retry performed.
+- Pytest collection itself is not the bottleneck:
+  `python -B -m pytest --collect-only -q -p no:cacheprovider` — **6,953 tests
+  collected in 15.09s**. The 300-second full-run timeout occurs during test
+  execution, not collection; no assertion failure appeared before termination.
+- Root inventory: branch `master`, 69 tracked paths modified, 5 untracked,
+  65 worktrees, 0 stashes; `origin/master...master` count is `0 743`.
+  Preserve this state; do not commit or clean the broad dirty tree without
+  exact per-hunk ownership and release-candidate review.
+
+## Release continuation — 2026-10-11
+
+- Committed only the owned cache-hygiene fix and regression test:
+  `aae5c3ec` (`tools/release_check.py`,
+  `tests/test_release_check_working_tree.py`). Post-commit focused tests:
+  `python -B -m pytest -q --tb=short tests/test_release_check_working_tree.py
+  tests/test_release_check_defaults_parity.py` — **5 passed in 0.28s**;
+  `python -B tools/release_check.py --allow-installed` — **OK**.
+- Same current revision: `python -B -m compileall -q src tools tests` — exit 0;
+  `python -B tools/selftest.py` — **6/6 checks passed**.
+- Full suite rerun: `python -B -m pytest -q --tb=short` — **timed out at
+  300s, 6% progress**, no assertion failure shown. Full-suite gate remains
+  **NO-GO**; do not infer success from focused tests.
+- Installed `hubctl status`: Hub v4.0.0 online, mode active; Ollama offline,
+  zero models. `tools/doctor.py` broker output was malformed/truncated, so
+  doctor status remains unverified.
+- Current post-commit root: 69 tracked dirty paths, 5 untracked, 65 worktrees,
+  0 stashes; `master` is 744 commits ahead of `origin/master`. Broad dirty
+  changes and worktrees remain unclassified/unintegrated; no blanket commit,
+  merge, cleanup, or release claim made.
+- Existing dirty context-etag change was tested without modifying it:
+  `python -B -m pytest -q --tb=short tests/test_agent_context_identity.py
+  tests/test_agent_context.py` — **38 passed in 11.26s**. Benchmark command
+  `python -B benchmarks/bench_context_element_identity.py` exited 0; on this
+  Windows/Python 3.13.2 run, 64-element p50 was 1,121.95→857.2 µs and median
+  peak allocation 30,242→46,154 bytes; 4-element p50 78.9→62.2 µs and peak
+  19,158→35,114 bytes. Faster here, higher peak allocation; single-run
+  benchmark, not a release SLO. Dirty hunk ownership remains unconfirmed, so
+  it was not committed or declared integrated.
+- Fresh worktree comparison against current master: **65 total; 64 behind,
+  0 ahead; 2 dirty** (root and `release-verify-7cb`), 0 stashes. The clean
+  worktrees at prior `3010c894` are now one commit behind because of
+  `aae5c3ec`; pinned/older worktrees remain at their prior pins. No mass
+  fast-forward or cleanup performed.
+- Existing T01/T20/T21 chats remain unusable for source integration: T01's
+  assigned `1938` checkout is missing; T21's `4294` checkout is empty and
+  registry/attach ownership is absent; T20's `ec50` checkout is missing and
+  attach to `t20-plan-recovery` was refused as owned by another task. No
+  duplicate chats or substitute checkouts used. T14 `/api/context/pack`
+  remains untouched.
+- T01 root verification: `python -B tools/surface_inventory.py --check` —
+  **coverage_matches=true, 687 rows, no drift**; `python -B -m pytest -q
+  --tb=short tests/test_surface_inventory.py` — **743 passed in 77.97s**.
+  This verifies current root inventory behavior, not the missing T01 task
+  checkout or its broader operation-level acceptance audit.
+- Direct installed diagnostic: `python -B tools/doctor.py` exited 0. Hub
+  v4.0.0 and compact eight-tool MCP surface are online; SentenceTransformers,
+  Serena executable, Tree-sitter, Whisper CLI, and CLI utilities are present.
+  Inference backend is **Ollama offline**, configured models show **0
+  installed**, and the background GPU worker reports three failed starts.
+  Serena health probe also reports MCP `tools/call` timeout. OpenVINO is
+  absent (optional accelerator); Agent OS DB has not been created. Runtime
+  inference/recovery acceptance remains open.
+- T06 process-safety regression rerun:
+  `python -B -m pytest -q -p no:cacheprovider --tb=short
+  tests/test_daemon_lifecycle_hardening.py
+  tests/test_process_group_identity_guard.py
+  tests/test_posix_group_signal_lock.py` — **63 passed, 4 skipped in 18.06s**.
+  Skips require Windows Job Objects, stable legacy tree identity, Linux `/proc`,
+  and live POSIX process-group behavior. Cross-platform live POSIX proof remains
+  open; no source edit or claim beyond this host's tests. Bounded WSL probe
+  `wsl.exe -d Ubuntu -- python3 -m pytest --version` failed with
+  `Wsl/Service/E_UNEXPECTED`; no retry.
+- T19 install/update prompt contract rerun:
+  `python -B -m pytest -q -p no:cacheprovider --tb=short
+  tests/test_t19_current_prompt_adoption.py tests/test_t19_install_contracts.py
+  tests/test_t19_parity_contract.py tests/test_t19_project_config_prompts.py
+  tests/test_t19_prompt_profile_parity.py tests/test_t19_shared_daemon_rollout.py
+  tests/test_t19_verified_install_flow.py` — **43 passed in 1.86s**. This is
+  prompt/install contract evidence, not a clean-host installation receipt.
+- T06 rollback incident visibility: added regression test first; it failed with
+  `KeyError: incident_recording_failed` because incident-store exceptions were
+  silently discarded after an unknown rollback outcome. `commands.py` now
+  preserves fail-closed fields and reports only a failure flag plus exception
+  type, not exception text. Commit `9ba5d80c` contains only
+  `src/local_ai_hub/commands.py` and
+  `tests/test_rollback_cache_delete_failure.py`. Verification:
+  `python -B -m pytest -q -p no:cacheprovider --tb=short
+  tests/test_rollback_cache_delete_failure.py tests/test_command_rollback.py`
+  — **75 passed, 7 skipped in 55.24s**; `python -B tools/release_check.py
+  --allow-installed` — **OK**; `python -B -m compileall -q src tools tests` —
+  exit 0. Post-commit rerun on `9ba5d80c`:
+  `python -B -m pytest -q -p no:cacheprovider --tb=short
+  tests/test_rollback_cache_delete_failure.py tests/test_command_rollback.py`
+  — **75 passed, 7 skipped in 59.97s**; release-check — **OK**. Windows skips
+  remain as listed in the T06 receipt above.
+- After `9ba5d80c`, fast-forwarded the same **51 clean non-Temp Codex
+  worktrees** with exact one-commit-behind preflight. Verified: **52/65 at
+  master, 13 behind, 0 ahead, 2 dirty** (root and `release-verify-7cb`),
+  zero stashes. The 13 behind remain the four Temp worktrees, five pinned T15
+  benchmarks, three old pinned worktrees, and dirty release verifier.
+- Current root status count: **74 porcelain entries** (69 tracked, 5
+  untracked); local master is now 745 commits ahead of origin. Preserve all
+  unclassified changes; no broad commit or push.
+- Worktree synchronization after the commit: fast-forwarded **51 clean,
+  non-Temp Codex worktrees** from `3010c894` to `aae5c3ec` (`--ff-only`,
+  preflight required clean status and exactly one commit behind). Post-check:
+  **52 at master, 13 behind, 0 ahead, 2 dirty**. Left unchanged: four
+  temporary managed worktrees (ownership not established), five pinned T15
+  benchmark checkouts (six behind), three old pinned checkouts (414/744
+  behind), and dirty `release-verify-7cb`. No unique commits or dirty changes
+  were merged, discarded, or overwritten.
+- Fresh current-root verification: `python -B -m pytest -q -p
+  no:cacheprovider --tb=short tests/test_client_operational_mode_autostart.py`
+  — **9 passed in 1.60s**. This covers bounded health probes and the existing
+  Windows hidden-launch fail-closed cases; it does not replace the full suite.
+  `python -B tools/selftest.py` — **6/6 passed**. `python -B
+  tools/release_check.py --allow-installed` — **OK**.
+- Strict release-tree check: exported immutable `HEAD` `9ba5d80c` with
+  `git archive` into a temporary directory and ran `python -B
+  tools/release_check.py --strict-tree` there — **OK**. The live T19 checkout
+  still fails strict-tree because it contains `.serena/`, `build/`, `dist/`,
+  `src/local_ai_hub.egg-info/`, and `state/`; none were removed. This archived
+  check does not include root dirty changes.
+- Full pytest remains incomplete: prior current-root run timed out at 300s near
+  6%; no failure traceback was emitted. Root still has **74 dirty paths** and
+  the worktree inventory remains **52/65 at master, 13 behind, 0 ahead, 2
+  dirty, 0 stashes**. Release is **NO-GO** until dirty work is classified and
+  integrated and full required validation completes.
+- A diagnostic full-suite run (`python -B -m pytest -q -x --tb=short -o
+  faulthandler_timeout=45`) reached 24% and exposed
+  `test_fused_lexical_render_order_matches_provenance_before_rag_append`
+  failing with `KeyError: context`. Sparse fused candidates were discarded in
+  favor of an unavailable whole-repository fallback. Fixed narrowly in commit
+  `0a323598`: multiple bounded candidates use path packing; a single candidate
+  remains a ranking hint and preserves broad lexical recall. Regression proof:
+  test failed before fix, then the two contract cases passed; adaptive/context
+  suite — **87 passed in 19.56s**. One earlier run had a transient 1s Windows
+  `icacls` timeout; its isolated rerun passed in 6.06s. Full suite must be
+  rerun after `0a323598`; release remains **NO-GO** meanwhile.
+- The post-fix full run then reached 28% and stopped at
+  `test_http_trace_capture_keeps_complete_local_payload`: its old assertions
+  expected `capture_status=omitted/truncated`, contradicting the current opt-in
+  trace contract (complete local content, JSON-safe base64 bytes, no content
+  truncation). Updated those assertions; also fixed list projection to eagerly
+  remove raw project-path columns even when a recorded label exists. This keeps
+  full paths in local trace detail but only compact labels in list rows. Updated
+  `docs/DASHBOARD.md` to distinguish complete local storage from display
+  redaction. Trace-focused suite — **55 passed in 6.57s**. Full suite must be
+  rerun against this dirty candidate; release remains **NO-GO**.

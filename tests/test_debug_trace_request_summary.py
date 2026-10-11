@@ -86,11 +86,12 @@ class DebugTraceRequestSummaryTests(unittest.TestCase):
         self.assertIn("dot-token-secret", json.dumps(captured))
         self.assertIn("dotted-camel-secret", json.dumps(captured))
         self.assertIn("header-api-secret", json.dumps(captured))
-        self.assertEqual(Handler._safe_debug_trace_request(b"\x00\x01")["capture_status"], "omitted")
-        large_request = Handler._safe_debug_trace_request(
-            {"body": "x" * (Handler.DEBUG_TRACE_REQUEST_CAPTURE_BYTES + 1)}
-        )
-        self.assertEqual(large_request["capture_status"], "truncated")
+        binary_request = Handler._safe_debug_trace_request(b"\x00\x01")
+        self.assertEqual(binary_request, {"encoding": "base64", "data": "AAE="})
+        large_body = "x" * 100_000
+        large_request = Handler._safe_debug_trace_request({"body": large_body})
+        self.assertEqual(large_request["body"], large_body)
+        self.assertNotIn("capture_status", large_request)
 
     def test_enabled_observer_persists_complete_thinking_and_final_output(self):
         with tempfile.TemporaryDirectory() as state_dir:

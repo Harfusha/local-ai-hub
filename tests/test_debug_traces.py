@@ -206,6 +206,19 @@ def test_trace_list_skips_empty_project_before_root_fallback(tmp_path):
     assert listed["items"][0]["project"] == "alpha"
 
 
+def test_trace_list_keeps_project_label_when_request_preview_is_truncated(tmp_path):
+    store = DebugTraceStore(_config(tmp_path))
+    trace_id = store.start(kind="api_request", tenant="tenant", action="/api/reason")
+    store.update(
+        trace_id,
+        request={"root": r"C:\work\project-alpha", "prompt": "x" * (store.CONTENT_PREVIEW_CHARS + 100)},
+    )
+
+    listed = store.list()
+
+    assert listed["items"][0]["project"] == "project-alpha"
+
+
 @pytest.mark.parametrize("offset", [2**63 - 1, 2**63, 2**100])
 def test_trace_list_accepts_offsets_beyond_sqlite_integer_range(tmp_path, offset):
     store = DebugTraceStore(_config(tmp_path))
@@ -311,18 +324,14 @@ def test_forward_page_size_trimming_preserves_cursor_for_omitted_events(tmp_path
     assert detail["next_seq"] == 1
 
 
-def test_trace_link_and_event_payload_limits_keep_trace_bounded(tmp_path):
+def test_trace_event_limit_evicts_whole_trace_without_trimming_payload(tmp_path):
     store = DebugTraceStore(_config(tmp_path, max_event_bytes=100, max_session_text_bytes=120))
     trace_id = store.start(kind="api_request", tenant="tenant")
     store.link(trace_id, request_id="req-1", async_job_id="job-1", scheduler_job_id="7")
     store.event(trace_id, "request_received", {"body": "x" * 1000})
     store.update(trace_id, request={"body": "y" * 1000})
 
-    detail = store.detail(trace_id)
-    assert detail["session"]["request_id"] == "req-1"
-    assert detail["session"]["async_job_id"] == "job-1"
-    assert detail["session"]["scheduler_job_id"] == "7"
-    assert any(event["event_type"] == "trace_truncated" for event in detail["events"])
+    assert store.detail(trace_id)["success"] is False
 
 
 def test_cleanup_deletes_terminal_traces_in_batches_and_protects_live_work(tmp_path):
@@ -369,7 +378,7 @@ def test_dashboard_and_favicon_are_monitor_paths():
     assert "Obsah zkrácen limitem trace úložiště" in DASHBOARD_HTML
 
 
-def test_event_count_and_session_text_caps_are_hard_limits(tmp_path):
+def test_event_count_and_session_text_caps_evict_whole_trace(tmp_path):
     store = DebugTraceStore(_config(tmp_path, max_events_per_session=3, max_session_text_bytes=1024))
     trace_id = store.start(kind="async_job", tenant="tenant")
     store.event(trace_id, "one", {"text": "a"})
@@ -377,10 +386,7 @@ def test_event_count_and_session_text_caps_are_hard_limits(tmp_path):
     store.event(trace_id, "three", {"text": "c"})
     store.update(trace_id, request={"body": "x" * 1000}, response={"text": "y" * 1000})
 
-    detail = store.detail(trace_id)
-    assert len(detail["events"]) <= 3
-    serialized = json.dumps(detail["session"]["request"]) + json.dumps(detail["session"]["response"])
-    assert len(serialized.encode("utf-8")) <= 1024
+    assert store.detail(trace_id)["success"] is False
 
 
 def test_http_trace_finisher_does_not_hide_a_failed_terminal_write(monkeypatch):
@@ -571,7 +577,7 @@ def test_trace_detail_http_rebuilds_page_after_reconciliation(tmp_path, monkeypa
 
 
 
-def test_full_payload_detail_marks_content_beyond_bounded_preview(tmp_path):
+def test_full_payload_detail_marks_content_beyond_preview_as_retrievable(tmp_path):
     store = DebugTraceStore(_config(tmp_path, max_session_text_bytes=2 * 1024 * 1024))
     trace_id = store.start(kind="async_job", tenant="tenant", action="reason")
     output = "x" * 600_000
@@ -580,8 +586,9 @@ def test_full_payload_detail_marks_content_beyond_bounded_preview(tmp_path):
     detail = store.detail(trace_id, full_payload=True)
 
     assert detail["full_payload_requested"] is True
-    assert detail["payload_truncated"] is True
-    assert detail["session"]["output"]["truncated"] is True
+    assert detail["payload_truncated"] is False
+    assert detail["session"]["output"]["has_more"] is True
+    assert detail["session"]["output"]["original_chars"] == len(output)
     assert len(detail["session"]["output"]["preview"]) < len(output)
 
 
@@ -693,43 +700,69 @@ def test_large_unicode_content_pages_use_indexed_chunks_at_late_offsets(tmp_path
     assert any("SEARCH" in str(row[3]) and "trace_content_chunks" in str(row[3]) for row in plan)
 
 
-def test_detail_flags_event_payload_truncated_before_response_serialization(tmp_path):
+def test_oversized_event_evicts_whole_trace_instead_of_truncating(tmp_path):
     store = DebugTraceStore(_config(tmp_path, max_event_bytes=256, max_session_text_bytes=1024))
     trace_id = store.start(kind="async_job", tenant="tenant", action="reason")
     store.event(trace_id, "model_request", {"prompt": "p" * 2000})
 
     detail = store.detail(trace_id, full_payload=True)
-
-    assert detail["payload_truncated"] is True
-    assert any(event["payload"].get("truncated") is True for event in detail["events"])
+    assert detail["success"] is False
 
 
-def test_detail_flags_session_fields_truncated_before_response_serialization(tmp_path):
+def test_oversized_session_content_evicts_whole_trace_instead_of_truncating(tmp_path):
     store = DebugTraceStore(_config(tmp_path, max_session_text_bytes=1024))
     trace_id = store.start(kind="async_job", tenant="tenant", action="reason")
     store.update(trace_id, output="o" * 6000, request={"body": "r" * 6000})
 
     detail = store.detail(trace_id, full_payload=True)
-
-    assert detail["payload_truncated"] is True
-    assert detail["session"]["request"]["truncated"] is True
-    assert "[trace output truncated]" in detail["session"]["output"]
+    assert detail["success"] is False
 
 
-def test_http_trace_request_capture_keeps_complete_content_and_credentials():
+def test_http_trace_request_capture_preserves_complete_payload_when_enabled(tmp_path):
     from local_ai_hub.http_server import Handler
 
     captured = Handler._safe_debug_trace_request({
         "prompt": "keep this trace content",
-        "headers": {"authorization": "Bearer secret", "nested": {"api_key": "secret-key"}},
+        "headers": {"authorization": "Bearer header-secret", "nested": {"api_key": "secret-key", "db_password": "database-secret", "GITHUB_TOKEN": "github-secret"}},
+        "note": 'ordinary text with Bearer inline-secret and JSON {"OPENAI_API_KEY":"inline-key","total_tokens":23}',
+        "input_tokens": 19,
+        "total_tokens": 23,
     })
 
     assert captured["prompt"] == "keep this trace content"
-    assert captured["headers"]["authorization"] == "Bearer secret"
+    assert captured["headers"]["authorization"] == "Bearer header-secret"
     assert captured["headers"]["nested"]["api_key"] == "secret-key"
+    assert captured["headers"]["nested"]["db_password"] == "database-secret"
+    assert captured["headers"]["nested"]["GITHUB_TOKEN"] == "github-secret"
+    assert captured["note"] == 'ordinary text with Bearer inline-secret and JSON {"OPENAI_API_KEY":"inline-key","total_tokens":23}'
+    assert captured["input_tokens"] == 19
+    assert captured["total_tokens"] == 23
     assert "capture_status" not in captured
-    assert "Bearer secret" in json.dumps(captured)
-    assert "secret-key" in json.dumps(captured)
+    assert all(secret in json.dumps(captured) for secret in ("header-secret", "secret-key", "database-secret", "github-secret", "inline-secret", "inline-key"))
+
+    store = DebugTraceStore(_config(tmp_path))
+    trace_id = store.start(kind="api_request", tenant="local")
+    store.update(trace_id, request={
+        "prompt": "ordinary prompt stays visible",
+        "authorization": "Bearer store-secret",
+        "nested": {"access_token": "store-token"},
+        "input_tokens": 23,
+    })
+    store.event(trace_id, "request_body_captured", {"authorization": "Bearer event-secret", "input": "event content stays visible"})
+    stored = store.detail(trace_id, full_payload=True)["session"]["request"]
+    assert stored["prompt"] == "ordinary prompt stays visible"
+    assert stored["authorization"] == "Bearer store-secret"
+    assert stored["nested"]["access_token"] == "store-token"
+    assert stored["input_tokens"] == 23
+    assert store.append_output(trace_id, "visible output; Bearer streamed-secret") is True
+    assert store.finish(trace_id, state="failed", error="request failed api_key=error-secret") is True
+    finished = store.detail(trace_id, full_payload=True)
+    assert "visible output" in finished["session"]["output"]
+    assert "Bearer streamed-secret" in json.dumps(finished)
+    assert "Bearer event-secret" in json.dumps(finished)
+    assert "event content stays visible" in json.dumps(finished)
+    assert "api_key=error-secret" in json.dumps(finished)
+    assert all(secret in json.dumps(finished) for secret in ("store-secret", "store-token", "event-secret", "streamed-secret", "error-secret"))
 
 
 def test_http_trace_request_metadata_keeps_complete_project_path():

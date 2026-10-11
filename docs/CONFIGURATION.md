@@ -24,7 +24,7 @@ For Intel integrated graphics, `[openvino]` controls optional retrieval accelera
 
 ## Server/security
 
-Loopback is the default. Remote binding requires explicit remote access and a configured API token. `request_body_timeout_seconds` bounds slow uploads, `max_concurrent_requests` caps live HTTP handlers, and `overload_wait_seconds` controls the tiny admission wait before a retryable 503. Never treat tenant IDs as security isolation.
+The Hub is local-only: its HTTP server binds to `127.0.0.1`, and remote binding or remote Hub access is unsupported. The same-machine Browser Bridge remains available. `request_body_timeout_seconds` bounds slow uploads, `max_concurrent_requests` caps live HTTP handlers, and `overload_wait_seconds` controls the tiny admission wait before a retryable 503.
 
 ## Foreground repository state
 

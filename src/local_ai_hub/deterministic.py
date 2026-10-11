@@ -79,7 +79,7 @@ _SECURITY_AUDIT_SECRETS: list[tuple[str, re.Pattern[str]]] = [
 ]
 
 _SECURITY_AUDIT_SMELLS: list[tuple[str, re.Pattern[str]]] = [
-    ("Unsafe eval/exec", re.compile(r"\b(eval|exec)\s*\(")),
+    ("Unsafe eval/exec", re.compile(r"(?<![.\w])(eval|exec)\s*\(")),
     ("Unsafe Pickle", re.compile(r"\bpickle\.loads?\s*\(")),
     ("Unsafe PyYAML", re.compile(r"\byaml\.load\s*\([^,]+(?:\)|,\s*Loader\s*=\s*(?:yaml\.)?(?:Unsafe|Full)?Loader\b)")),
     ("Shell Injection Risk", re.compile(r"\bsubprocess\.(?:Popen|run|call)\s*\(.*shell\s*=\s*True", re.S)),
@@ -4699,8 +4699,35 @@ def test_{sym}_regression_edge_cases():
                             break
 
                 for name, pat in code_smell_patterns:
-                    for m in pat.finditer(txt):
-                        line_no = txt[:m.start()].count("\n") + 1
+                    if name == "Unsafe eval/exec" and rel.lower().endswith(".py"):
+                        try:
+                            parsed = ast.parse(txt)
+                        except (SyntaxError, ValueError):
+                            line_numbers = []
+                        else:
+                            line_numbers = sorted(
+                                {
+                                    node.lineno
+                                    for node in ast.walk(parsed)
+                                    if isinstance(node, ast.Call)
+                                    and (
+                                        isinstance(node.func, ast.Name)
+                                        and node.func.id in {"eval", "exec"}
+                                        or isinstance(node.func, ast.Attribute)
+                                        and node.func.attr in {"eval", "exec"}
+                                        and isinstance(node.func.value, ast.Name)
+                                        and node.func.value.id in {"builtins", "__builtins__"}
+                                    )
+                                }
+                            )
+                    else:
+                        line_numbers = sorted(
+                            {
+                                txt[:match.start()].count("\n") + 1
+                                for match in pat.finditer(txt)
+                            }
+                        )
+                    for line_no in line_numbers:
                         matched_line = lines[line_no - 1].strip() if line_no <= len(lines) else ""
                         if matched_line.startswith(("#", "//", "/*", "*")):
                             continue
@@ -4711,7 +4738,7 @@ def test_{sym}_regression_edge_cases():
                                 "title": name,
                                 "path": rel,
                                 "line": line_no,
-                                "snippet": matched_line[:120] or m.group(0)[:120],
+                                "snippet": matched_line[:120] or pat.pattern[:120],
                             })
                         if len(findings) >= limit:
                             break

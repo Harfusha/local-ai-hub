@@ -114,7 +114,7 @@ Upload-only review must work even without a repository. It reports visual facts 
 
 ## Current-tab browser bridge
 
-Use a local browser bridge with explicit user activation. The bridge should support Chrome and Edge first and expose one-time, scoped capture capabilities to the Hub.
+Use a same-machine browser bridge with explicit user activation. The bridge should support Chrome and Edge first and expose one-time, scoped capture capabilities to the loopback Hub only. Capabilities cannot target a remote Hub.
 
 Capture sequence:
 

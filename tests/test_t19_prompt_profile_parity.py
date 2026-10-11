@@ -15,12 +15,15 @@ def test_prompt_role_matrix_matches_hardware_profiles() -> None:
 
     assert install_routing == update_routing
     assert '[hardware].profile="auto"' in install_routing
+    assert "`qwen2.5-coder:1.5b` is preprocessing-only" in install_routing
     assert any(line.startswith("Keep generated contracts aligned:") for line in install.splitlines())
     routes = {
-        "integrated": ("qwen2.5-coder:0.5b", "qwen2.5-coder:1.5b", "qwen2.5-coder:3b", "qwen2.5-coder:7b", "qwen2.5-coder:1.5b", "qwen3-vl:4b"),
-        "balanced": ("qwen2.5-coder:1.5b", "qwen2.5-coder:3b", "qwen2.5-coder:7b", "qwen3.5:9b", "qwen2.5-coder:7b", "qwen3.5:9b"),
-        "high": ("qwen2.5-coder:1.5b", "qwen2.5-coder:3b", "qwen2.5-coder:7b", "qwen3.5:9b", "qwen3.5:9b", "qwen3.5:9b"),
-        "max": ("qwen2.5-coder:1.5b", "qwen2.5-coder:3b", "qwen3.5:9b", "qwen3.5:9b", "qwen3.5:9b", "qwen3.5:9b"),
+        "cpu": ("qwen2.5-coder:3b", "qwen2.5-coder:3b", "qwen2.5-coder:7b", "qwen3.5:9b", "qwen2.5-coder:7b", "qwen3-vl:4b"),
+        "integrated": ("qwen2.5-coder:3b", "qwen2.5-coder:3b", "qwen2.5-coder:7b", "qwen3.5:9b", "qwen2.5-coder:7b", "qwen3-vl:4b"),
+        "low": ("qwen2.5-coder:3b", "qwen2.5-coder:3b", "qwen2.5-coder:7b", "qwen3.5:9b", "qwen2.5-coder:7b", "qwen3-vl:4b"),
+        "balanced": ("qwen2.5-coder:3b", "qwen2.5-coder:3b", "qwen2.5-coder:7b", "qwen3.5:9b", "qwen2.5-coder:7b", "qwen3.5:9b"),
+        "high": ("qwen2.5-coder:3b", "qwen2.5-coder:3b", "qwen2.5-coder:7b", "qwen3.5:9b", "qwen3.5:9b", "qwen3.5:9b"),
+        "max": ("qwen2.5-coder:3b", "qwen2.5-coder:3b", "qwen3.5:9b", "qwen3.5:9b", "qwen3.5:9b", "qwen3.5:9b"),
     }
     for profile, models in routes.items():
         role_order = ("background_code", "fast_code", "heavy_code", "reasoning", "general", "vision")

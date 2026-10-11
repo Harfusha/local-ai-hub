@@ -7,6 +7,8 @@ import subprocess
 import time
 from typing import Sequence
 
+from .process_utils import hidden_run_kwargs
+
 
 SUPPORTED_STAGES = frozenset({"preprocess", "index", "rag", "mcp", "http"})
 
@@ -64,14 +66,28 @@ def run_probe(
     timeout_seconds = max(0.1, min(float(timeout_seconds), 3600.0))
 
     for _ in range(warmup):
-        result = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=timeout_seconds, check=False)
+        result = subprocess.run(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=timeout_seconds,
+            check=False,
+            **hidden_run_kwargs(),
+        )
         if result.returncode:
             raise RuntimeError(f"warmup command failed with exit code {result.returncode}")
 
     samples: list[float] = []
     for _ in range(iterations):
         started = time.perf_counter()
-        result = subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=timeout_seconds, check=False)
+        result = subprocess.run(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=timeout_seconds,
+            check=False,
+            **hidden_run_kwargs(),
+        )
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         if result.returncode:
             raise RuntimeError(f"performance command failed with exit code {result.returncode}")

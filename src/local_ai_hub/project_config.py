@@ -19,6 +19,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal, Mapping
 
+from .process_utils import hidden_run_kwargs
+
 
 _MAX_CONFIG_BYTES = 256 * 1024
 _MAX_RELATIVE_PATH = 1024
@@ -309,10 +311,8 @@ def _git_common_dir(root: Path) -> Path | None:
         "errors": "replace",
         "timeout": _GIT_TIMEOUT_SECONDS,
         "check": False,
+        **hidden_run_kwargs(),
     }
-    no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    if no_window:
-        kwargs["creationflags"] = no_window
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--git-common-dir"], **kwargs
@@ -375,10 +375,8 @@ def _git_primary_worktree_root(root: Path, common_dir: Path | None) -> Path | No
         "errors": "replace",
         "timeout": _GIT_TIMEOUT_SECONDS,
         "check": False,
+        **hidden_run_kwargs(),
     }
-    no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    if no_window:
-        kwargs["creationflags"] = no_window
     try:
         result = subprocess.run(["git", "worktree", "list", "--porcelain"], **kwargs)
     except (OSError, subprocess.TimeoutExpired):

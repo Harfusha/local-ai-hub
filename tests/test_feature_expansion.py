@@ -113,6 +113,26 @@ def run_cmd():
         assert any(f["title"] == "Shell Injection Risk" and f["line"] == 4 for f in audit["findings"])
 
 
+def test_security_audit_ignores_eval_exec_literals_and_property_methods(tmp_path):
+    (tmp_path / "policy.py").write_text(
+        'GUARD = "exec(\"\n'
+        "def evaluate(value):\n"
+        "    return eval(value)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "browser.js").write_text(
+        "const count = /\\\\d+/.exec(input);\n",
+        encoding="utf-8",
+    )
+    repo_tools = RepositoryTools({"rag": {"extensions": [".py", ".js"]}})
+    engine = DeterministicEngine({}, repo_tools)
+
+    audit = engine.security_audit(str(tmp_path))
+
+    findings = [f for f in audit["findings"] if f["title"] == "Unsafe eval/exec"]
+    assert [(f["path"], f["line"]) for f in findings] == [("policy.py", 3)]
+
+
 def test_repo_tools_iter_files_not_starved_by_assets():
     with tempfile.TemporaryDirectory() as tmp:
         repo_dir = Path(tmp)

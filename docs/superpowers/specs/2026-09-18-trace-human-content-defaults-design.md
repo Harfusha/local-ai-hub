@@ -1,5 +1,7 @@
 # Trace Human Content Defaults Design
 
+> **Superseded trace-content policy:** References below to redaction are historical. The current opt-in local trace contract is in [Trace Inspector unbounded payloads design](2026-09-21-trace-inspector-unbounded-payloads-design.md); human content remains complete and HTML-escaped.
+
 ## Goal
 
 Make every trace inspector presentation show human-relevant request and result content immediately. Keep technical metadata available behind expandable disclosures. Human output must remain complete rather than being hidden or shortened because it is long.

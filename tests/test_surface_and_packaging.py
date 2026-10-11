@@ -74,19 +74,30 @@ def test_version_and_disconnect_regressions(tmp_path: Path):
     assert Path(cfg["server"]["state_dir"]).resolve() == (tmp_path / "state").resolve()
 
 
-def test_remote_bind_fails_closed_without_token():
+def test_remote_bind_is_unsupported_and_remote_overrides_are_rejected():
     from local_ai_hub.http_server import validate_network_security
     import pytest
     validate_network_security({"server": {"bind": "127.0.0.1"}, "security": {}})
     for bind, security in (
-        ("0.0.0.0", {"allow_remote": False, "api_token": ""}),
-        ("0.0.0.0", {"allow_remote": True, "api_token": "0123456789abcdef"}),
+        ("0.0.0.0", {"api_token": ""}),
         ("localhost", {}),
         ("::1", {}),
-        ("127.0.0.1", {"allow_remote": True}),
     ):
         with pytest.raises(RuntimeError, match="bind must be 127.0.0.1"):
             validate_network_security({"server": {"bind": bind}, "security": security})
+
+    for config in (
+        {"server": {"bind": "127.0.0.1", "client_host": "remote.example"}},
+        {"server": {"bind": "127.0.0.1"}, "security": {"allow_remote": False}},
+        {"server": {"bind": "127.0.0.1"}, "security": {"allowed_origins": ["https://remote.example"]}},
+    ):
+        with pytest.raises(RuntimeError, match="removed"):
+            validate_network_security(config)
+
+    from local_ai_hub.http_server import Handler, LocalAIHTTPServer
+    for bind in ("0.0.0.0", "localhost", "::", "::1"):
+        with pytest.raises(RuntimeError, match="server.bind must be 127.0.0.1"):
+            LocalAIHTTPServer((bind, 0), Handler)
 
 
 def test_telemetry_summary_cache_is_reachable(tmp_path: Path):

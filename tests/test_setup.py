@@ -145,9 +145,9 @@ def test_compact_agent_config_is_default(tmp_path: Path):
     assert entries["local-ai"]["env"]["LOCAL_AI_AGENT"] == "codex"
     assert entries["local-ai"]["args"] == ["-m", "local_ai_hub.mcp_server"]
     assert entries["local-ai"]["env"]["PYTHONPATH"] == str(install / "src")
-    # Global agent configs inherit the host's project working directory;
-    # pinning this to the Hub install makes relative repo roots target the Hub.
-    assert "cwd" not in entries["local-ai"]
+    # Global MCP adapters launch from the Hub install. Repository-scoped
+    # operations must still receive the caller's explicit root.
+    assert entries["local-ai"]["cwd"] == str(install)
 
 
 def test_global_policy_has_explicit_read_only_and_fallback_contract() -> None:
@@ -213,7 +213,7 @@ def test_antigravity_mcp_sync_uses_gemini_and_prunes_stale_backends(tmp_path: Pa
     data = json.loads(path.read_text(encoding="utf-8"))
     assert set(data["mcpServers"]) == {"user-server", "local-ai"}
     local_ai = data["mcpServers"]["local-ai"]
-    assert "cwd" not in local_ai
+    assert local_ai["cwd"] == str(tmp_path / "install")
     assert local_ai["env"]["LOCAL_AI_AGENT"] == "gemini"
     assert local_ai["env"]["LOCAL_AI_AGENT_PROFILE"] == "gemini"
 

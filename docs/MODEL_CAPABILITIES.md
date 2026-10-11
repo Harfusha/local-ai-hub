@@ -7,7 +7,7 @@ visible with `semantic_quality` and `quality_warning` metadata.
 | Model | Good for | Must not be used as |
 | --- | --- | --- |
 | `qwen2.5-coder:0.5b` | preprocessing, extraction, classification, compression | root-cause analysis, cross-file reasoning, architecture, security decisions, edits |
-| `qwen2.5-coder:1.5b` | bounded extraction, summaries, single-file explanations, checklists | root-cause analysis, cross-file reasoning, architecture, security decisions, edits |
+| `qwen2.5-coder:1.5b` | preprocessing only | inference, code generation, reviews, reasoning, or edits |
 | `qwen2.5-coder:3b` | bounded review, test plans, simple patch plans, comparisons | architecture decisions, high-risk migrations, security decisions, edits |
 | `qwen2.5-coder:7b` | root-cause analysis, cross-file reasoning, diff review, patch/test plans | security decisions, final verification, edits |
 | `qwen3-vl:4b` | visual review, UI observations, accessibility observations | source-only reasoning, security decisions, edits, final verification |
@@ -17,10 +17,12 @@ visible with `semantic_quality` and `quality_warning` metadata.
 
 | Profile | `background_code` | `fast_code` | `heavy_code` | `reasoning` | `general` | `vision` |
 | --- | --- | --- | --- | --- | --- | --- |
-| `integrated` | `qwen2.5-coder:0.5b` | `qwen2.5-coder:1.5b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen2.5-coder:1.5b` | `qwen3-vl:4b` |
-| `balanced` | `qwen2.5-coder:1.5b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen2.5-coder:7b` | `qwen3.5:9b` |
-| `high` | `qwen2.5-coder:1.5b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen3.5:9b` | `qwen3.5:9b` |
-| `max` | `qwen2.5-coder:1.5b` | `qwen2.5-coder:3b` | `qwen3.5:9b` | `qwen3.5:9b` | `qwen3.5:9b` | `qwen3.5:9b` |
+| `cpu` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen2.5-coder:7b` | `qwen3-vl:4b` |
+| `integrated` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen2.5-coder:7b` | `qwen3-vl:4b` |
+| `low` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen2.5-coder:7b` | `qwen3-vl:4b` |
+| `balanced` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen2.5-coder:7b` | `qwen3.5:9b` |
+| `high` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen2.5-coder:7b` | `qwen3.5:9b` | `qwen3.5:9b` | `qwen3.5:9b` |
+| `max` | `qwen2.5-coder:3b` | `qwen2.5-coder:3b` | `qwen3.5:9b` | `qwen3.5:9b` | `qwen3.5:9b` | `qwen3.5:9b` |
 
 These are profile routing targets from `hardware.py`. They do not prove a model
 is installed on a host, and profile selection does not pull models. Runtime

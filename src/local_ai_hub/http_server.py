@@ -72,7 +72,7 @@ def _status_dependency(callback, fallback, *, key, lock, inflight, slots, timeou
         return fallback, False
     return outcome.get("value", fallback), True
 from .scheduler import ModelUnavailableError, QueueFullError
-from .debug_traces import DebugTraceObserver
+from .debug_traces import DebugTraceObserver, _normalize_trace_content
 from .trace_context import reset_context, reset_observer, set_context, set_observer
 from .http_route_registry import select_get_handler, select_http_routes, select_post_handler
 from .dashboard import DASHBOARD_HTML
@@ -397,7 +397,7 @@ READINESS_COMPONENTS = (
 def _dashboard_html_with_trace_notice() -> str:
     return DASHBOARD_HTML.replace(
         "Agent debug traces · off by default; payloads available when enabled",
-        "Agent debug traces · full input/output only when enabled · protected access · separate local retention policy",
+        "Agent debug traces · full input/output only when enabled · complete stored details shown as recorded · local access only · separate local retention policy",
         1,
     )
 
@@ -1319,7 +1319,7 @@ class LocalAIHTTPServer(ThreadingHTTPServer):
     """Threaded HTTP server with a hard cap on live handler threads and per-tenant rate limiting.
 
     ``ThreadingHTTPServer`` is otherwise unbounded: a burst of local agents or a
-    misbehaving remote client can create hundreds of handler threads before the model
+    misbehaving local client can create hundreds of handler threads before the model
     scheduler's own queue limits are reached. Overload is rejected immediately with a
     small 503 so the hub remains responsive to health checks and existing work.
     """
@@ -1353,6 +1353,9 @@ class LocalAIHTTPServer(ThreadingHTTPServer):
         super().__init__(server_address, handler)
 
     def server_bind(self) -> None:
+        host = str(self.server_address[0]) if isinstance(self.server_address, tuple) else ""
+        if host != "127.0.0.1":
+            raise RuntimeError("Refusing Local AI Hub network exposure: server.bind must be 127.0.0.1")
         if os.name == "nt":
             exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
             if exclusive is None:
@@ -1463,10 +1466,6 @@ class Handler(BaseHTTPRequestHandler):
         "models.delete": ({"POST"}, "/api/models/manage", "delete"),
         "bundle.import": ({"POST"}, "/api/bundle/import", None),
     }
-    _DEBUG_TRACE_SENSITIVE_KEY = re.compile(
-        r"(?:^|[_\-.])(?:root|target[_-]?root|repo[_-]?root|repository[_-]?id|tenant|token|api[_-]?(?:key|token)|access[_-]?token|refresh[_-]?token|auth[_-]?token|id[_-]?token|bearer[_-]?token|authorization|secret|password|passwd|credential|cookie|set[-_]?cookie|private[-_]?key|privatekey|passphrase|pem|ssh[-_]?key|certificate)(?:$|[_\-.])",
-        re.IGNORECASE,
-    )
     protocol_version = "HTTP/1.1"
 
     def setup(self) -> None:
@@ -1816,21 +1815,8 @@ class Handler(BaseHTTPRequestHandler):
 
     @classmethod
     def _safe_debug_trace_request(cls, payload: Any) -> Any:
-        """Normalize values for local trace storage without redacting or truncating."""
-        if isinstance(payload, (bytes, bytearray, memoryview)):
-            return {"encoding": "base64", "data": base64.b64encode(bytes(payload)).decode("ascii")}
-
-        def sanitize(value: Any) -> Any:
-            if isinstance(value, dict):
-                return {str(name): sanitize(item) for name, item in value.items()}
-            if isinstance(value, (list, tuple)):
-                return [sanitize(item) for item in value]
-            if value is None or isinstance(value, (str, bool, int, float)):
-                return value
-            return str(value)
-
-        result = sanitize(payload)
-        return result
+        """Normalize content for explicitly enabled local debug traces."""
+        return _normalize_trace_content(payload)
     def _finish_debug_trace(self, status: int, data: Any, *, error: str = "") -> None:
         trace_id = str(getattr(self, "_debug_trace_id", "") or "")
         store = getattr(APP, "debug_traces", None) if APP is not None else None
@@ -3078,11 +3064,6 @@ class Handler(BaseHTTPRequestHandler):
             bind = str(server_cfg.get("bind", "")).strip("[]").lower()
             if bind and bind not in {"0.0.0.0", "::"}:
                 allowed_hosts.add(bind)
-            client_host = str(server_cfg.get("client_host", "")).strip("[]").lower()
-            if client_host:
-                allowed_hosts.add(client_host)
-            for extra in APP.config.get("security", {}).get("allowed_hosts", []):
-                allowed_hosts.add(str(extra).strip("[]").lower())
 
             if host_name not in allowed_hosts:
                 self._send(403, {"success": False, "error": "forbidden: invalid Host header"})
@@ -3097,11 +3078,6 @@ class Handler(BaseHTTPRequestHandler):
             bind = str(server_cfg.get("bind", "")).strip("[]").lower()
             if bind and bind not in {"0.0.0.0", "::"}:
                 allowed_origins.add(bind)
-            client_host = str(server_cfg.get("client_host", "")).strip("[]").lower()
-            if client_host:
-                allowed_origins.add(client_host)
-            for extra in APP.config.get("security", {}).get("allowed_origins", []):
-                allowed_origins.add(str(extra).strip("[]").lower())
 
             bridge_origin = False
             bridge_token = False
@@ -8175,7 +8151,15 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def validate_network_security(config: dict[str, Any]) -> None:
-    bind = str(config.get("server", {}).get("bind", "127.0.0.1"))
+    server = config.get("server", {})
+    security = config.get("security", {})
+    if "client_host" in server:
+        raise RuntimeError("Refusing remote Hub client: server.client_host was removed")
+    if "allow_remote" in security:
+        raise RuntimeError("Refusing remote Hub access: security.allow_remote was removed")
+    if security.get("allowed_hosts") or security.get("allowed_origins"):
+        raise RuntimeError("Refusing remote Hub origins: configured host/origin overrides were removed")
+    bind = str(server.get("bind", "127.0.0.1"))
     if bind != "127.0.0.1":
         raise RuntimeError("Refusing Local AI Hub network exposure: server.bind must be 127.0.0.1")
 

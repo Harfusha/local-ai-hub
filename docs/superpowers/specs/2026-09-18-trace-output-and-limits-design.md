@@ -1,5 +1,7 @@
 # Trace output, capture and resilience
 
+> **Superseded trace-content policy:** The payload redaction and size-limit decisions below are historical. The current opt-in local trace contract is in [Trace Inspector unbounded payloads design](2026-09-21-trace-inspector-unbounded-payloads-design.md): retain complete ordinary content, redact credential values, and evict whole traces at configured limits. The model-output and timeout decisions below remain historical context.
+
 ## Goal
 
 Make local model traces truthful and useful: show the final answer by default, keep thinking and technical payloads expandable, capture repository/review inputs and results, and remove premature failures caused by overly tight token, timeout and retry limits.

@@ -12,6 +12,10 @@ Local AI Hub is a local deterministic-first service between coding agents and re
 6. **Local inference** — Ollama scheduler with background/fast/smart roles selected by configuration/hardware profiles.
 7. **Preprocessing** — checkpointed pipeline that warms indexes and cards without blocking interactive requests.
 
+## Local-only control boundary
+
+Local AI Hub has no remote-use or remote-control mode. The HTTP daemon binds only to `127.0.0.1`; `HubClient` and supervisor probes target that address directly. The dashboard and stdio MCP adapter use loopback HTTP only as same-machine internal transport. `server.client_host`, `security.allow_remote`, and non-empty `security.allowed_hosts` or `security.allowed_origins` are removed and rejected. Credentials do not enable remote access. Same-machine Browser Bridge support is separate from remote Hub access.
+
 ## Task context and model boundary
 
 `/api/agent-state/context` is the unified task-context contract. It joins Agent OS state (goal, checkpoint, receipts, memories, leases and incidents) with the revision-bound repository context pack. `context_id` and `etag` identify the bounded result; stale or mismatched revisions are partial and cannot establish completion. `local_ai_task(task_id=...)` consumes this contract before semantic inference, while deterministic facts and validation remain authoritative.

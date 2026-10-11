@@ -214,7 +214,7 @@ def test_service_discards_uncommitted_turn_after_model_failure() -> None:
     ]
 
 
-def test_conversation_debug_trace_redacts_transcript(monkeypatch) -> None:
+def test_conversation_debug_trace_preserves_opt_in_transcript(monkeypatch) -> None:
     from types import SimpleNamespace
 
     from local_ai_hub import http_server
@@ -234,13 +234,12 @@ def test_conversation_debug_trace_redacts_transcript(monkeypatch) -> None:
     handler._debug_trace_finished = False
     handler._debug_observer_token = None
 
-    handler._redact_debug_trace()
     handler._finish_debug_trace(200, {"success": True, "text": "full transcript", "conversation_id": "opaque"})
 
     assert store.response == {
         "trace_id": "trace-1",
         "state": "done",
-        "response": {"success": True, "conversation_redacted": True},
+        "response": {"success": True, "text": "full transcript", "conversation_id": "opaque"},
         "error": "",
     }
 

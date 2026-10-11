@@ -69,7 +69,7 @@ def _trace_remediation_probe(expression):
                                   DASHBOARD_HTML.index('function traceAvailability(model')]
     script = (
         "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
-        "const n=v=>String(v??0);let traceRevealRedactedDetails=false;"
+        "const n=v=>String(v??0);"
         + _trace_redaction_runtime_source() + source + model_source
         + "function probe(session,events=[]){const model=traceDisplayModel({session,events});return tracePrimaryFallback(renderTracePresentation(model),model.panels,model);}"
         + f"console.log(JSON.stringify({expression}));"
@@ -95,14 +95,22 @@ def test_trace_task8_technical_keys_and_values_render_without_display_markers():
         assert not parsed.errors and not parsed.stack
 
 
-def test_trace_task8_raw_event_projection_keeps_serialized_keys():
+def test_trace_details_preserve_raw_session_and_all_events_but_bound_chips():
     rendered = _trace_remediation_probe("""(()=>{
-      const detail={session:{kind:'async_job'},events:[{event_type:'job_progress',payload:{worker_output:{['K'.repeat(500000)]:1}}}]};
+      const detail={session:{kind:'async_job',effective_payload:{api_key:'input-secret-visible',path:'C:/private/input',prompt:'ordinary input'},output:{authorization:'Bearer output-secret-visible',text:'ordinary output'}},events:Array.from({length:125},(_,index)=>({event_type:'job_progress',seq:index,payload:{event_index:index,token:'event-secret-'+index,worker_output:{['K'.repeat(index+1)]:index}}}))};
       const model=traceDisplayModel(detail);
-      return {size:JSON.stringify(model.events).length,truncated:model.eventsTruncated,raw:model.panels.find(panel=>panel.id==='raw').render()};
+      const chips=traceEventChips(Object.fromEntries(Array.from({length:12},(_,index)=>['field_'+index,'value_'+index])),{});
+      return {size:JSON.stringify(model.events).length,eventCount:model.events.length,truncated:model.eventsTruncated,input:model.panels.find(panel=>panel.id==='input').render(),output:model.panels.find(panel=>panel.id==='output').render(),raw:model.panels.find(panel=>panel.id==='raw').render(),summaryCount:(chips.match(/trace-event-chip/g)||[]).length};
     })()""")
-    assert rendered['size'] > 500000
-    assert rendered['truncated'] is False
+    assert rendered['eventCount'] == 100
+    assert rendered['truncated'] is True
+    assert 'input-secret-visible' in rendered['input']
+    assert 'C:/private/input' in rendered['input']
+    assert 'Bearer output-secret-visible' in rendered['output']
+    assert 'event-secret-0' in rendered['raw']
+    assert 'event-secret-124' in rendered['raw']
+    assert 'event_index' in rendered['raw']
+    assert rendered['summaryCount'] == 5
     assert 'payload budget truncated' not in rendered['raw']
     parsed = _TraceMarkupParser(rendered['raw'])
     assert not parsed.errors and not parsed.stack
@@ -652,7 +660,6 @@ def test_trace_sanitizer_keeps_reused_values_but_marks_true_cycles() -> None:
     source = _trace_presentation_runtime_source()
     script = (
         "function redactDiagnostic(value){return String(value??'');}"
-        "let traceRevealRedactedDetails=true;"
         + source
         + "const shared={value:'visible'};"
         + "const repeated={first:shared,second:shared};"
@@ -692,7 +699,6 @@ def test_trace_sanitizer_redacts_nested_sensitive_key_variants_in_primary_output
     script = (
         "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
         "function redactDiagnostic(value){return String(value??'');}"
-        "let traceRevealRedactedDetails=false;"
         + source
         + f"const fixture={json.dumps(fixture)};"
         + "const sanitized=traceSanitizeValue(fixture);"
@@ -715,7 +721,7 @@ def test_trace_sanitizer_redacts_nested_sensitive_key_variants_in_primary_output
     ]:
         assert secret not in sanitized
         assert secret not in rendered
-    assert "<redacted>" in sanitized
+    assert "[redacted]" in sanitized
     assert "safe command output" in rendered
 
 
@@ -768,7 +774,7 @@ def test_trace_inspector_has_universal_redacted_display_model() -> None:
     ]:
         assert field in source, f"Trace display model omits {field}"
     assert "traceSanitizeValue" in source
-    assert "redactDiagnostic" in source
+    assert "traceSanitizeValue(traceDisplaySession" in source
 
 
 def test_trace_inspector_classifies_stable_presentation_kinds() -> None:
@@ -844,8 +850,8 @@ def test_trace_inspector_prioritizes_input_output_and_demotes_technical_detail()
     assert "traceMainContent('Input','input',tracePrimaryInput(model.input))" in detail_source
     assert "traceMainContent('Output','output',model.output)" in detail_source
     assert "trace-optional-details" in detail_source
-    assert "traceFirstRecorded(events,['prompt'" in model_source
-    assert "traceFirstRecorded(events,['output'" in model_source
+    assert "traceFirstRecorded(rawEvents,['prompt'" in model_source
+    assert "traceFirstRecorded(rawEvents,['output'" in model_source
 
 
 def test_trace_inspector_exposes_core_panels_when_human_presentation_is_empty() -> None:
@@ -917,13 +923,10 @@ def test_trace_inspector_dispatches_primary_body_before_optional_technical_detai
 def test_trace_detail_runtime_keeps_primary_first_and_technical_details_closed() -> None:
     assert which("node"), "Dashboard JavaScript tests require Node.js"
     detail_start = DASHBOARD_HTML.index("function traceDisplayModel(detail){")
-    redactor_start = DASHBOARD_HTML.index("function redactTraceContent(value){")
-    redactor_end = DASHBOARD_HTML.index("\n}", redactor_start) + 2
-    redactor_source = DASHBOARD_HTML[redactor_start:redactor_end]
     content_source = DASHBOARD_HTML[
         DASHBOARD_HTML.index("function traceMainContent(") : DASHBOARD_HTML.index("function renderTraceDetail(d)")
     ]
-    source = redactor_source + _trace_presentation_runtime_source() + content_source + DASHBOARD_HTML[
+    source = _trace_presentation_runtime_source() + content_source + DASHBOARD_HTML[
         detail_start : DASHBOARD_HTML.index("function setTraceView(view)")
     ]
     fixture = {
@@ -945,7 +948,7 @@ def test_trace_detail_runtime_keeps_primary_first_and_technical_details_closed()
         "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
         "const n=v=>String(v??0);"
         "function redactDiagnostic(value){return String(value??'');}"
-        "let traceRevealRedactedDetails=false,traceOptionalDetailsOpen=false,traceView='timeline',activeTraceData=null,traceOpenSteps=new Set();"
+        "let traceOptionalDetailsOpen=false,traceView='timeline',activeTraceData=null,traceOpenSteps=new Set();"
         "const nodes={tracePageBody:null,tracePageTitle:{},tracePageLive:{}};"
         "const body={innerHTML:'',className:'',closest:()=>({scrollTop:0,scrollLeft:0}),querySelector(selector){return selector==='#traceTechnicalDetails'&&this.innerHTML?{open:technicalDetailsOpen}:null},querySelectorAll:()=>[]};"
         "let technicalDetailsOpen=false;nodes.tracePageBody=body;function $(id){return nodes[id]||null;}"
@@ -974,7 +977,6 @@ def test_trace_detail_runtime_keeps_primary_first_and_technical_details_closed()
         "Timeline",
         "Vstupní tokeny",
         "nezaznamenané",
-        "Podrobný obsah je vypnutý",
     ]:
         assert marker in first
     assert "Complete JSON payload" in raw_view
@@ -1184,7 +1186,7 @@ def test_trace_inspector_has_model_chat_renderer_contract_and_codex_timeline() -
     }
     script = (
         "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));const n=v=>String(v??0);"
-        "function redactDiagnostic(value){return String(value??'');} let traceRevealRedactedDetails=false;"
+        "function redactDiagnostic(value){return String(value??'');}"
         + runtime_source
         + f"console.log(JSON.stringify(renderModelChatPresentation({json.dumps(fixture)})));"
     )
@@ -1404,7 +1406,6 @@ def test_trace_inspector_shared_presentation_contract_covers_all_kinds() -> None
     script = (
         "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
         "const n=v=>String(v??0);function redactDiagnostic(value){return String(value??'');}"
-        "let traceRevealRedactedDetails=false;"
         + source
         + f"const fixtures={json.dumps(TRACE_PRESENTATION_CONTRACT_FIXTURES)};"
         + "const renderers={model_chat:renderModelChatPresentation,agent_loop:renderAgentLoopPresentation,command:renderCommandPresentation,review:renderReviewPresentation,repo_intelligence:renderRepoIntelligencePresentation,rag_search:renderRagSearchPresentation,async_job:renderAsyncJobPresentation,request_response:renderRequestResponsePresentation};"
@@ -1464,7 +1465,6 @@ def test_trace_inspector_shell_sanitizes_prebuilt_attention_markup() -> None:
     script = (
         "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
         "function redactDiagnostic(value){return String(value??'');}"
-        "let traceRevealRedactedDetails=false;"
         + source
         + "console.log(tracePresentationShell('title','subtitle','<p>primary</p>','<p>secondary</p>','<section class=\"trace-attention-section\"><img src=x onerror=bad></section>'));"
     )
@@ -1588,7 +1588,7 @@ def test_trace_renderers_render_per_kind_fixtures_as_semantic_output() -> None:
     }
     script = (
         "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));const n=v=>String(v??0);"
-        "function redactDiagnostic(value){return String(value??'');} let traceRevealRedactedDetails=false;"
+        "function redactDiagnostic(value){return String(value??'');}"
         + source
         + f"const fixtures={json.dumps(fixtures)};"
         + "const rendered=Object.fromEntries(Object.entries(fixtures).map(([kind,model])=>[kind,renderTracePresentation(model)]));"
@@ -1625,7 +1625,7 @@ def test_trace_async_and_request_response_outputs_keep_full_human_code_blocks() 
     source = _trace_presentation_runtime_source()
     script = (
         "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));const n=v=>String(v??0);"
-        "function redactDiagnostic(value){return String(value??'');} let traceRevealRedactedDetails=false;"
+        "function redactDiagnostic(value){return String(value??'');}"
         + source
         + "const asyncOutput='async-output-'+ 'x'.repeat(16000);"
         + "const responseOutput='response-output-'+ 'y'.repeat(16000);"
@@ -1669,7 +1669,7 @@ def test_trace_async_job_primary_state_and_worker_details_are_separated() -> Non
     }
     script = (
         "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
-        "function redactDiagnostic(value){return String(value??'');} let traceRevealRedactedDetails=false;"
+        "function redactDiagnostic(value){return String(value??'');}"
         + source
         + "const fixture=" + json.dumps(fixture) + ";const html=renderAsyncJobPresentation(fixture);const primary=html.split('<details class=\"trace-secondary-details',1)[0];console.log(JSON.stringify({html,primary}));"
     )
@@ -1709,7 +1709,7 @@ def test_trace_request_response_primary_fields_and_technical_metadata() -> None:
     }
     script = (
         "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
-        "function redactDiagnostic(value){return String(value??'');} let traceRevealRedactedDetails=false;"
+        "function redactDiagnostic(value){return String(value??'');}"
         + source
         + "const fixture=" + json.dumps(fixture) + ";const html=renderRequestResponsePresentation(fixture);const primary=html.split('<details class=\"trace-secondary-details',1)[0];console.log(JSON.stringify({html,primary}));"
     )
@@ -1720,8 +1720,9 @@ def test_trace_request_response_primary_fields_and_technical_metadata() -> None:
         assert value in primary
     for value in ["HEADER_MARKER", "REQUEST_ID_MARKER", "fixture-agent", "fixture-tenant", "128"]:
         assert value not in primary
-    for label in ["Headers", "Actor / tenant", "Correlations", "Retained bytes", "Lifecycle timing"]:
+    for label in ["Headers", "Actor", "Correlations", "Retained bytes", "Lifecycle timing"]:
         assert label in rendered["html"]
+    assert "fixture-tenant" not in rendered["html"]
 
 
 def test_trace_generic_fallback_keeps_captured_values_outside_technical_details() -> None:
@@ -1735,7 +1736,7 @@ def test_trace_generic_fallback_keeps_captured_values_outside_technical_details(
     }
     script = (
         "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
-        "function redactDiagnostic(value){return String(value??'');} let traceRevealRedactedDetails=false;"
+        "function redactDiagnostic(value){return String(value??'');}"
         + source
         + "const fixture=" + json.dumps(fixture) + ";const html=renderTracePresentation(fixture);const primary=html.split('<details class=\"trace-secondary-details',1)[0];console.log(JSON.stringify({html,primary}));"
     )
@@ -1970,9 +1971,9 @@ def test_trace_timeline_runtime_tolerates_malformed_events_and_caps_cumulative_p
     assert output["bounded"] > 26000
 
 
-def test_trace_bounded_events_uses_one_shared_budget_for_wide_deep_events() -> None:
+def test_trace_bounded_events_preserves_wide_deep_payload_without_per_event_truncation() -> None:
     source = DASHBOARD_HTML[
-        DASHBOARD_HTML.index("function traceBoundedEvents(") : DASHBOARD_HTML.index(
+        DASHBOARD_HTML.index("function traceBoundedKey(") : DASHBOARD_HTML.index(
             "function traceDisplaySession("
         )
     ]
@@ -2032,6 +2033,7 @@ def test_trace_unknown_malformed_and_missing_content_use_safe_bounded_fallbacks(
             "presentation": {"kind": "model_chat", "modelInput": None, "modelOutput": None},
             "events": [],
         },
+        "empty": {"presentation": {"kind": "unknown"}},
         "bounded": {
             "presentation": {"kind": "unknown"},
             "input": {"api_key": "fallback-secret", "text": oversized},
@@ -2042,12 +2044,14 @@ def test_trace_unknown_malformed_and_missing_content_use_safe_bounded_fallbacks(
         "function redactDiagnostic(value){return String(value??'');} let traceRevealRedactedDetails=false;"
         + source
         + f"const fixtures={json.dumps(fixtures)};"
-        + "const rendered={unknown:renderTracePresentation(fixtures.unknown),malformed:renderTracePresentation(fixtures.malformed),missing:renderModelChatPresentation(fixtures.missing),bounded:renderTracePresentation(fixtures.bounded)};"
+        + "const rendered={unknown:renderTracePresentation(fixtures.unknown),malformed:renderTracePresentation(fixtures.malformed),missing:renderModelChatPresentation(fixtures.missing),bounded:renderTracePresentation(fixtures.bounded),empty:renderTracePresentation(fixtures.empty)};"
         + "console.log(JSON.stringify(rendered));"
     )
     rendered = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
     assert "Input / output" in rendered["unknown"]
     assert "fallback input" in rendered["unknown"] and "fallback output" in rendered["unknown"]
+    assert "No input captured" in rendered["empty"]
+    assert "No output captured" in rendered["empty"]
     assert "hidden-id" not in rendered["unknown"]
     assert "malformed input" in rendered["malformed"] and "kept" in rendered["malformed"]
     assert "malformed output" in rendered["malformed"]
@@ -2142,7 +2146,7 @@ def test_trace_inspector_prefers_full_model_payload_over_api_request_wrapper() -
             "function traceAvailability("
         )
     ]
-    assert "const modelInput=traceFirstRecorded(events,['prompt','messages','content','input','arguments','args','query'])" in source
+    assert "const modelInput=traceFirstRecorded(rawEvents,['prompt','messages','content','input','arguments','args','query'])" in source
     assert "traceRecorded(modelInput)?modelInput" in source
     assert "traceRecorded(effectivePayload)?effectivePayload" in source
 
@@ -2177,19 +2181,16 @@ def test_trace_inspector_uses_accessible_conditional_tabs_and_safe_trace_values(
 
 
 def _trace_presentation_runtime_source() -> str:
-    redactor_start = DASHBOARD_HTML.index("function redactTraceContent(value){")
-    redactor_end = DASHBOARD_HTML.index("\n}", redactor_start) + 2
     start = re.search(r"(?m)^[^\r\n]*\r?\n(?=\s*function\s+renderAny\s*\()", DASHBOARD_HTML)
     assert start, "Trace presentation runtime start missing"
     end = re.search(r"\bfunction\s+traceDisplayModel\s*\([^)]*\)\s*\{", DASHBOARD_HTML[start.end() :])
     assert end, "Trace presentation runtime end missing"
-    return DASHBOARD_HTML[redactor_start:redactor_end] + DASHBOARD_HTML[start.start() : start.end() + end.start()]
+    return DASHBOARD_HTML[start.start() : start.end() + end.start()]
 
 
 def _trace_redaction_runtime_source() -> str:
-    start = DASHBOARD_HTML.index("function redactDiagnostic(")
-    end = DASHBOARD_HTML.index("// Lightweight pure-canvas chart renderer", start)
-    return DASHBOARD_HTML[start:end]
+    # Opt-in debug traces preserve full local payloads; this hook is now empty.
+    return ""
 
 
 def test_trace_search_runtime_is_compact_and_keeps_one_result_per_row() -> None:
@@ -2548,6 +2549,9 @@ def test_trace_history_surfaces_project_before_technical_metadata() -> None:
     assert "<th>Project</th>" in DASHBOARD_HTML
     source = DASHBOARD_HTML[DASHBOARD_HTML.index("function renderTraceList(items)") : DASHBOARD_HTML.index("async function pollTraces")]
     assert "traceProjectLabel" in source
+    assert "Project not recorded" not in source
+    assert "no tenant" not in source
+    assert "x.tenant||'—'" not in source
     request_source = DASHBOARD_HTML[DASHBOARD_HTML.index("function workRecentRequestRow(request)") : DASHBOARD_HTML.index("function renderAdoptionRows")]
     assert "traceProjectLabel" in request_source
 
@@ -2615,7 +2619,7 @@ def test_trace_model_chat_runtime_renders_one_chronological_codex_timeline() -> 
     }
     script = (
         "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
-        "function redactDiagnostic(value){return String(value??'').replace(/secret/gi,'<redacted>');} let traceRevealRedactedDetails=false;"
+        "function redactDiagnostic(value){return String(value??'').replace(/secret/gi,'<redacted>');}"
         + source + f"console.log(JSON.stringify(renderAgentLoopPresentation({json.dumps(fixture)})));"
     )
     html = json.loads(subprocess.run(["node"], input=script, check=True, capture_output=True, text=True).stdout)
@@ -3522,30 +3526,30 @@ def test_trace_raw_projection_bounds_events_before_sanitization() -> None:
             "function traceAvailability("
         )
     ]
-    assert "traceRaw(traceRawProjection(detail))" in model_source
+    assert "tracePanel('raw','Raw',()=>traceRaw(detail),true)" in model_source
 
 
-def test_trace_display_model_bounds_events_and_raw_fields_before_sanitization() -> None:
+def test_trace_display_model_bounds_summary_events_but_raw_panel_keeps_full_detail() -> None:
     source = DASHBOARD_HTML[
         DASHBOARD_HTML.index("function traceDisplayModel(detail)") : DASHBOARD_HTML.index(
             "function traceAvailability("
         )
     ]
     assert "traceBoundedEvents(rawEvents)" in source
-    assert "traceSanitizeValue(rawEventProjection.events)" in source
+    assert "events=rawEventProjection.events" in source
     assert "eventsTotal" in source
-    projection_source = DASHBOARD_HTML[
-        DASHBOARD_HTML.index("function traceRawBoundValue(") : DASHBOARD_HTML.index(
-            "function traceRaw("
+    assert "tracePanel('raw','Raw',()=>traceRaw(detail),true)" in source
+    raw_source = DASHBOARD_HTML[
+        DASHBOARD_HTML.index("function traceRaw(payload") : DASHBOARD_HTML.index(
+            "function traceScrollNodes("
         )
     ]
-    assert "value.slice(0,room)" not in projection_source
-    assert "traceRawBoundValue(rawSession.request)" in projection_source
+    assert "JSON.stringify(payload,null,2)" in raw_source
 
 
-def test_bounded_trace_events_retain_request_metadata_and_cap_each_event() -> None:
+def test_bounded_trace_events_retain_request_metadata_without_truncating_payloads() -> None:
     source = DASHBOARD_HTML[
-        DASHBOARD_HTML.index("function traceBoundedEvents(") : DASHBOARD_HTML.index(
+        DASHBOARD_HTML.index("function traceBoundedKey(") : DASHBOARD_HTML.index(
             "function traceDisplaySession("
         )
     ]
@@ -3555,13 +3559,15 @@ def test_bounded_trace_events_retain_request_metadata_and_cap_each_event() -> No
     script = (
         source
         + "const events=[{event_type:'request_received',payload:{method:'POST',path:'/api/reason'}}]"
-        + ".concat(Array.from({length:101},(_,index)=>({event_type:'output_delta',payload:{text:String(index)}})));"
+        + ".concat(Array.from({length:101},(_,index)=>({event_type:'output_delta',payload:{text:index===100?'x'.repeat(5000):String(index)}})));"
         + "const bounded=traceBoundedEvents(events);console.log(JSON.stringify(bounded));"
     )
     result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
     bounded = json.loads(result.stdout)
     assert bounded["eventsTotal"] == 102
+    assert len(bounded["events"]) == 101
     assert any(event["event_type"] == "request_received" for event in bounded["events"])
+    assert len(bounded["events"][-1]["payload"]["text"]) == 5000
 
 
 def test_trace_display_model_derives_http_identity_and_keeps_effective_payload() -> None:
@@ -3575,7 +3581,7 @@ def test_trace_display_model_derives_http_identity_and_keeps_effective_payload()
     assert "requestPayload.method" in source
     assert "requestPayload.path" in source
     assert "requestPayload.request_id" in source
-    assert "session.effective_payload" in source
+    assert "rawSession.effective_payload" in source
     assert "effectivePayload" in source
 
 
@@ -3589,7 +3595,7 @@ def test_trace_inspector_has_keyboard_tabs_and_copyable_content_without_reveal_c
     for key in ["ArrowLeft", "ArrowRight", "Home", "End"]:
         assert key in keyboard_source
     assert "requestAnimationFrame" in keyboard_source
-    assert "traceRevealRedactedDetails=false" in DASHBOARD_HTML
+    assert "traceRevealRedactedDetails" not in DASHBOARD_HTML
     assert 'data-trace-copy="${field}"' in DASHBOARD_HTML
     assert "copyTraceContent" in DASHBOARD_HTML
     assert "data-trace-reveal" not in DASHBOARD_HTML
@@ -3604,7 +3610,7 @@ def test_trace_sanitizer_redacts_sensitive_object_values_by_key() -> None:
         )
     ]
     sanitizer = DASHBOARD_HTML[
-        DASHBOARD_HTML.index("function traceSensitiveField(") : DASHBOARD_HTML.index(
+        DASHBOARD_HTML.index("function traceSecretString(") : DASHBOARD_HTML.index(
             "function traceRecorded("
         )
     ]
@@ -3616,9 +3622,9 @@ def test_trace_sanitizer_redacts_sensitive_object_values_by_key() -> None:
     script = f"let traceRevealRedactedDetails=false;{redact}{sanitizer}console.log(JSON.stringify(traceSanitizeValue({json.dumps(fixture)})));"
     result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
     sanitized = json.loads(result.stdout)
-    assert sanitized["api_key"] == "<redacted>"
-    assert sanitized["authorization"] == "<redacted>"
-    assert sanitized["nested"]["token"] == "<redacted>"
+    assert sanitized["api_key"] == "[redacted]"
+    assert sanitized["authorization"] == "[redacted]"
+    assert sanitized["nested"]["token"] == "[redacted]"
     assert sanitized["nested"]["safe"] == "kept"
 
 
@@ -3630,7 +3636,7 @@ def test_trace_sanitizer_keeps_accounting_metrics_and_model_thinking_expandable(
         )
     ]
     sanitizer = DASHBOARD_HTML[
-        DASHBOARD_HTML.index("function traceSensitiveField(") : DASHBOARD_HTML.index(
+        DASHBOARD_HTML.index("const traceUsageTokenFields=") : DASHBOARD_HTML.index(
             "function traceRecorded("
         )
     ]
@@ -3639,7 +3645,7 @@ def test_trace_sanitizer_keeps_accounting_metrics_and_model_thinking_expandable(
         "estimated_tokens": 342,
         "token_saving": {"compact_output_tokens_avoided_est": 12},
     }
-    script = f"let traceRevealRedactedDetails=false;{redact}{sanitizer}console.log(JSON.stringify(traceSanitizeValue({json.dumps(fixture)})));"
+    script = f"{redact}{sanitizer}console.log(JSON.stringify(traceSanitizeValue({json.dumps(fixture)})));"
     result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
     sanitized = json.loads(result.stdout)
     assert sanitized == fixture
@@ -3796,3 +3802,29 @@ def test_trace_rag_aggregate_budget_structured_truncation_and_malformed_results(
     malformed = rendered["malformed"]
     assert "Malformed results" in malformed
     assert "Results payload must be an array" in malformed
+
+
+def test_trace_metrics_disclose_estimates_and_keep_missing_values_unrecorded() -> None:
+    assert which("node"), "Dashboard JavaScript tests require Node.js"
+    start = DASHBOARD_HTML.index("function traceMetricRow(")
+    end = DASHBOARD_HTML.index(" function renderTraceDetail(", start)
+    metric_row = DASHBOARD_HTML[start:end]
+    script = (
+        metric_row
+        + "console.log(JSON.stringify(["
+        + "traceMetricRow({available:true,input_tokens:18,output_tokens:7,cache_hits:1,cache_hit_rate:0.5,avoided_cloud_tokens:25}),"
+        + "traceMetricRow({available:false,input_tokens:0,output_tokens:0,cache_hits:0,cache_hit_rate:0,avoided_cloud_tokens:0}),"
+        + "traceMetricRow({available:true,input_tokens:'',output_tokens:null,cache_hits:0,cache_hit_rate:null,avoided_cloud_tokens:0})"
+        + "]));"
+    )
+    result = subprocess.run(["node", "-e", script], check=True, capture_output=True, text=True)
+    recorded, unavailable, partial = json.loads(result.stdout)
+
+    assert "Vstupní tokeny (odhad) · 18" in recorded
+    assert "Výstupní tokeny (odhad) · 7" in recorded
+    assert "Cache zásahy · 1" in recorded
+    assert "Úspěšnost cache · 50.0%" in recorded
+    assert "Ušetřené tokeny (odhad) · 25" in recorded
+    assert unavailable.count("nezaznamenané") == 5
+    assert "Vstupní tokeny (odhad) · nezaznamenané" in partial
+    assert "Výstupní tokeny (odhad) · nezaznamenané" in partial

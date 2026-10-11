@@ -1,5 +1,7 @@
 # Trace Inspector custom presentations Implementation Plan
 
+> **Historical plan:** Its references to redaction defaults and bounded display content are superseded by [Trace Inspector unbounded payloads design](../specs/2026-09-21-trace-inspector-unbounded-payloads-design.md), the current opt-in local trace-content contract.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make all eight Trace Inspector request types show useful human content immediately, with focused expandable secondary data and no primary content hidden inside `Technical details`.
@@ -104,7 +106,7 @@ Keep chronological grouping and tool pairing. Move only secondary timeline, reas
 
 - [ ] **Step 5: Run the same tests and confirm GREEN.**
 
-Expected: model-chat and agent-loop contract/runtime tests pass with no redaction or escaping regressions.
+Expected: model-chat and agent-loop contract/runtime tests pass; secrets remain redacted while ordinary input/output stays visible.
 
 ### Task 3: Rebuild command and review presentations
 

@@ -199,8 +199,10 @@ def test_install_update_security_prompts_match_current_http_contract() -> None:
     for prompt in prompts:
         normalized = prompt.lower().replace("`", "")
         assert "loopback-only" in normalized
-        assert "remote binding" in normalized and "security.allow_remote" in normalized
-        assert "unsupported" in normalized
+        assert "no remote-access or remote-control mode" in normalized
+        assert "server.client_host" in normalized and "security.allow_remote" in normalized
+        assert "overrides are removed and rejected" in normalized
+        assert "there is no remote-access switch" in normalized
         assert "at least 16 characters" not in normalized
         assert "empty api_token" in normalized and "unauthenticated" in normalized
         assert "tenant label" in normalized and "not an authorization boundary" in normalized

@@ -12,7 +12,9 @@ from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStore
 from local_ai_hub.sqlite_support import connect_sqlite
 
 
-def test_delete_preserves_primary_fts_error_when_rollback_also_fails(tmp_path, monkeypatch):
+def test_delete_preserves_primary_fts_error_when_rollback_also_fails(
+    tmp_path, monkeypatch, caplog
+):
     root = tmp_path / "repo"
     root.mkdir()
     db_path = tmp_path / "agent_state.sqlite3"
@@ -65,3 +67,14 @@ def test_delete_preserves_primary_fts_error_when_rollback_also_fails(tmp_path, m
                 root=str(root),
                 tenant="tenant-a",
             )
+
+    rollback_warnings = [
+        record
+        for record in caplog.records
+        if record.name == "local_ai_hub.agent_memory"
+        and record.getMessage().startswith("memory_delete_rollback_failed")
+    ]
+    assert [record.getMessage() for record in rollback_warnings] == [
+        "memory_delete_rollback_failed exception_type=OperationalError"
+    ]
+    assert rollback_warnings[0].exc_info is None

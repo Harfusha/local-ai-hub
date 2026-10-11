@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import sys
+import os
 import subprocess
+import sys
 import types
 from pathlib import Path
 from types import SimpleNamespace
@@ -82,8 +83,14 @@ def test_ensure_server_autostarts_for_active_or_missing_mode(
     state_dir = Path(client.config["server"]["state_dir"])
     loaded = _install_mode_loader(monkeypatch, stored_mode or "active")
     online = iter((False, False, True))
+    probe_timeouts: list[float | None] = []
     starts: list[bool] = []
-    monkeypatch.setattr(client, "_online", lambda *_args: next(online))
+
+    def is_online(timeout: float | None = None) -> bool:
+        probe_timeouts.append(timeout)
+        return next(online)
+
+    monkeypatch.setattr(client, "_online", is_online)
     monkeypatch.setattr(client_module, "find_listening_pid", lambda _port: False)
 
     def run(*_args, **_kwargs):
@@ -94,12 +101,47 @@ def test_ensure_server_autostarts_for_active_or_missing_mode(
     monkeypatch.setattr(client_module, "_retain_detached_child", lambda _process: None)
 
     assert client.ensure_server(timeout=1) is True
+    assert probe_timeouts
+    assert all(timeout is not None and timeout <= client.health_timeout for timeout in probe_timeouts)
     assert loaded == [state_dir]
     assert len(starts) == 1
     assert state_dir.is_dir()
     lock = client_module._acquire_start_lock(state_dir / "hub.start.lock", client.start_lock_stale)
     assert lock is not None
     lock.close()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows console visibility contract")
+@pytest.mark.parametrize("use_run", [True, False])
+def test_ensure_server_fails_closed_when_hidden_launch_setup_fails(
+    tmp_path: Path, monkeypatch, use_run: bool
+) -> None:
+    client = _client(tmp_path)
+    _install_mode_loader(monkeypatch, "active")
+    starts: list[bool] = []
+    monkeypatch.setattr(client, "_online", lambda *_args: False)
+    monkeypatch.setattr(client_module, "find_listening_pid", lambda _port: False)
+
+    def fail_hidden_kwargs(**_kwargs):
+        raise OSError("cannot configure hidden process startup")
+
+    monkeypatch.setattr("local_ai_hub.process_utils.hidden_run_kwargs", fail_hidden_kwargs)
+
+    if use_run:
+        def run(*_args, **_kwargs):
+            starts.append(True)
+            return SimpleNamespace(returncode=0)
+
+        monkeypatch.setattr(client_module, "subprocess", _client_subprocess_proxy(run))
+    else:
+        def popen(*_args, **_kwargs):
+            starts.append(True)
+            raise AssertionError("process must not start without hidden-window flags")
+
+        monkeypatch.setattr(subprocess, "Popen", popen)
+
+    assert client.ensure_server(timeout=1) is False
+    assert starts == []
 
 
 def test_ensure_server_keeps_start_cooldown_when_readiness_times_out(

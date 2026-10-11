@@ -637,11 +637,41 @@ class AsyncJobManager:
             if not any(existing is process_or_pid for existing in processes):
                 processes.append(process_or_pid)
 
-    def _cleanup_processes(self, job_id: str) -> None:
+    def _cleanup_processes(self, job_id: str) -> bool:
         with self._lock:
             processes = list(self._processes.pop(str(job_id), []))
+        cleanup_confirmed = True
+        retry: list[Any] = []
         for process in processes:
             if hasattr(process, "poll") and hasattr(process, "terminate"):
+                has_tree_owner = bool(getattr(process, "_local_ai_job_handle", None)) or (
+                    getattr(process, "_local_ai_process_group", None) is not None
+                    and getattr(process, "_local_ai_process_identity", None) is not None
+                )
+                if has_tree_owner:
+                    try:
+                        stopped = terminate_tree(
+                            int(process.pid), grace_seconds=1.0, process_handle=process
+                        )
+                        if not stopped:
+                            cleanup_confirmed = False
+                            retry.append(process)
+                            continue
+                        if process.poll() is None:
+                            process.wait(timeout=1.0)
+                        if process.poll() is None:
+                            cleanup_confirmed = False
+                            retry.append(process)
+                    except Exception:
+                        cleanup_confirmed = False
+                        try:
+                            if process.poll() is None:
+                                retry.append(process)
+                        except Exception:
+                            retry.append(process)
+                    # A managed tree must fail closed when its ownership proof
+                    # cannot be used; never fall back to a bare PID.
+                    continue
                 try:
                     if process.poll() is None:
                         process.terminate()
@@ -652,7 +682,14 @@ class AsyncJobManager:
                         process.kill()
                         process.wait(timeout=1.0)
                     except Exception:
-                        pass
+                        cleanup_confirmed = False
+                    try:
+                        if process.poll() is None:
+                            cleanup_confirmed = False
+                            retry.append(process)
+                    except Exception:
+                        cleanup_confirmed = False
+                        retry.append(process)
                     continue
             try:
                 pid = int(getattr(process, "pid", process))
@@ -660,9 +697,17 @@ class AsyncJobManager:
                 continue
             if pid > 0 and pid != os.getpid():
                 try:
-                    terminate_tree(pid, grace_seconds=1.0)
+                    if not terminate_tree(pid, grace_seconds=1.0):
+                        cleanup_confirmed = False
                 except Exception:
-                    pass
+                    cleanup_confirmed = False
+        if retry:
+            with self._lock:
+                remaining = self._processes.setdefault(str(job_id), [])
+                for process in retry:
+                    if not any(existing is process for existing in remaining):
+                        remaining.append(process)
+        return cleanup_confirmed
 
     def _dispatch_background(self, job_id: str) -> None:
         """Start scheduler admission off the request thread."""
@@ -939,14 +984,32 @@ class AsyncJobManager:
         except Exception as exc:
             result = {"success": False, "error": str(exc), "retryable": True}
         finally:
-            self._cleanup_processes(job_id)
+            cleanup_confirmed = self._cleanup_processes(job_id)
         deferred_for_resource_release = False
         if result.get("success") and str(result.get("state", "")) in {"queued", "running"}:
             result = {"success": False, "error": "async executor returned non-terminal state", "retryable": True}
         with self._lock, closing(self._connect()) as con:
             cur_cancel = con.execute("SELECT cancel_requested FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()
             cancelled = bool(cur_cancel[0]) if cur_cancel else False
-            if cancelled:
+            if not cleanup_confirmed:
+                final = {
+                    "success": False,
+                    "state": "outcome_unknown",
+                    "outcome_unknown": True,
+                    "error": "async process cleanup unconfirmed",
+                    "terminal": True,
+                    "retryable": False,
+                }
+                con.execute(
+                    "UPDATE async_jobs SET state='outcome_unknown',result_json=?,error=?,lease_until=0,updated_at=? WHERE job_id=?",
+                    (json_dumps(final, ensure_ascii=False, separators=(",", ":")), final["error"], time.time(), job_id),
+                )
+                if task_id and self.task_store is not None:
+                    try:
+                        self.task_store.fail(task_id, reason=final["error"])
+                    except Exception:
+                        pass
+            elif cancelled:
                 con.execute("UPDATE async_jobs SET state='cancelled',lease_until=0,updated_at=? WHERE job_id=?", (time.time(), job_id))
                 self._stats["cancelled"] += 1
                 final = {"success": False, "error": "async job cancelled", "terminal": True, "retryable": False}
@@ -1153,19 +1216,56 @@ class AsyncJobManager:
                 delayed.cancel()
             changed = con.execute("UPDATE async_jobs SET cancel_requested=1,state=CASE WHEN state='queued' THEN 'cancelled' ELSE state END,dispatch_not_before=0,updated_at=? WHERE job_id=? AND cancel_requested=0", (time.time(), job_id)).rowcount
             con.commit()
-        self._cleanup_processes(job_id)
-        if changed:
+        cleanup_confirmed = self._cleanup_processes(job_id)
+        if state == "queued" and not cleanup_confirmed:
+            error = "async process cleanup unconfirmed"
+            with self._lock, closing(self._connect()) as con:
+                con.execute(
+                    "UPDATE async_jobs SET state='outcome_unknown',error=?,lease_until=0,updated_at=? WHERE job_id=?",
+                    (error, time.time(), job_id),
+                )
+                con.commit()
+        if changed and cleanup_confirmed:
             self._stats["cancelled"] += 1
         # Running cancellation is only a request until the worker records its
         # terminal outcome. Do not wake waiters with a stale `running` state.
         if state == "queued":
             self._event(job_id).set()
         if self.debug_traces is not None and trace_id and state == "queued":
-            try: self.debug_traces.finish(trace_id, state="cancelled", error="async job cancelled before execution")
+            try:
+                self.debug_traces.finish(
+                    trace_id,
+                    state="cancelled" if cleanup_confirmed else "failed",
+                    error="async job cancelled before execution" if cleanup_confirmed else "async process cleanup unconfirmed",
+                )
             except Exception: pass
         admission = self._admission("accepted", "capacity_available", retryable=False)
+        if state == "queued" and not cleanup_confirmed:
+            self._event(job_id).set()
+            return {
+                "success": False,
+                "job_id": job_id,
+                "state": "outcome_unknown",
+                "error": "async process cleanup unconfirmed",
+                "outcome_unknown": True,
+                "cancel_requested": True,
+                "terminal": True,
+                "retryable": False,
+                "admission": admission,
+                "admission_state": admission["state"],
+            }
         final_state = "cancelled" if state == "queued" else "running"
-        return {"success": True, "job_id": job_id, "state": final_state, "cancel_requested": True, "terminal": final_state == "cancelled", "retryable": final_state == "running", "admission": admission, "admission_state": admission["state"]}
+        return {
+            "success": True,
+            "job_id": job_id,
+            "state": final_state,
+            "cancel_requested": True,
+            "cleanup_unconfirmed": not cleanup_confirmed,
+            "terminal": final_state == "cancelled",
+            "retryable": final_state == "running",
+            "admission": admission,
+            "admission_state": admission["state"],
+        }
 
     def recover(self) -> int:
         if self._shutdown.is_set():
