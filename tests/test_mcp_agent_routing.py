@@ -37,6 +37,15 @@ def test_vision_feature_toggle_removes_vision_action_and_hint() -> None:
     assert not any("vision" in line.lower() for line in features.specialized_trigger_lines())
 
 
+@pytest.mark.parametrize("tool_name", ["local_ai_command", "local_ai_coord"])
+def test_live_mcp_alias_schemas_are_valid_without_empty_combinators(tool_name: str) -> None:
+    from jsonschema import Draft202012Validator
+
+    tool = local_ai_mcp.mcp._tool_manager._tools[tool_name]
+    Draft202012Validator.check_schema(tool.parameters)
+    assert tool.parameters.get("allOf") != []
+
+
 def test_public_action_parameters_are_explicit_literals() -> None:
     expected = {
         "local_ai_task": {"delegate", "explore", "reason", "continue", "review", "second_opinion", "compress", "route", "batch", "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report", "submit", "status", "wait", "result", "cancel", "candidate_create", "candidate_promote", "speculative_draft", "vision", "transcribe", "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold", "gen", "rev", "del"},

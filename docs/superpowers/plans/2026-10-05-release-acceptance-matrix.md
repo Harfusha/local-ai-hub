@@ -2,6 +2,49 @@
 
 ## Current master reconciliation - 2026-10-11
 
+### MCP catalog and failure-protocol correction
+
+- Final-candidate packaging sidecar found invalid live `allOf: []` in command
+  and coordination schemas despite valid generator output. Root cause:
+  `_input_schema_with_action_aliases` inserted an empty combinator. Primary
+  changed only `setdefault` to `get`; two regression cases were red with
+  SchemaError and the routing/contracts group then passed 118 tests.
+- Full pytest with `-x` ended normally at 42%: 1 failed, 2896 passed,
+  40 skipped, 20 subtests passed in 978.13s. Exact failure:
+  `test_repo_scoped_mcp_action_keeps_explicit_root` counted asynchronous
+  `/api/telemetry/tool-accounting` as a second repository request.
+  Tests now exclude only that known transport event, still require exactly
+  one business request and the exact root. The profile test explicitly injects
+  a metadata event so the regression cannot depend on timing.
+- GPT 6 Luna (Galileo) added `tests/test_mcp_stdio_schema_acceptance.py`.
+  Actual initialize/list_tools validates all six enabled input and six output
+  schemas and checks child exit 0; no tool call or daemon autostart. Primary
+  fixed the test's `-I` assumption: global pytest dependencies here are in user
+  site, whereas the independent installed-wheel venv also passes isolated CLI
+  checks. The child bootstrap still verifies the exact repository module path.
+- GPT 6 Luna (Meitner) implemented narrow command-failure identity handling in
+  MCP/response budgeting, with `tests/test_response_budget_failure_identity.py`.
+  Root cause: early failure projection omitted IDs and compact rejection could
+  shorten request/execution IDs to one character. Primary review caught three
+  surrounding context/evidence regressions and restricted the new branch to
+  command failures, preserving other projections.
+- Integrated validation:
+  `python -B -m pytest -q tests/test_mcp_explicit_repo_root.py tests/test_mcp_agent_routing.py tests/test_operation_contracts.py tests/test_mcp_stdio_schema_acceptance.py --tb=short`
+  — 126 passed in 13.17s (`req_23ebe6f59f2e`).
+  Budget/context/stdio/root regression group — 41 passed in 4.80s
+  (`req_556da318443a`). Full pytest must run on the new integrated candidate;
+  the preceding 42% result is a failed receipt, not acceptance.
+- Root-branch cleanup attempt: recoverable archive of `release-verify-7cb`
+  was refused because the app reports a pinned task/workspace. Checkout and
+  dirty generated inventory remain intact; ignored Serena configuration is
+  copied under `.codex/archives/local-ai-hub/release-verify-7cb-20261011`.
+  No protection bypass or checkout deletion.
+- Current integrated MCP/budget candidate: `compileall` exit 0
+  (`req_e73f4637c3ef`), `release_check.py --allow-installed` OK
+  (`req_cb81732c424f`), inventory 687 rows/no drift (`req_582308ddc913`).
+  Existing MCP clients need reconnection to load changed transport code;
+  restarting only the shared HTTP daemon does not reload their Python modules.
+
 ### Release continuation after endpoint fix
 
 - Full pytest on `84a85f0e` was interrupted at 21% after two failure markers;
