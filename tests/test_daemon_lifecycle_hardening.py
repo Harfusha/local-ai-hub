@@ -4,6 +4,7 @@ import os
 import json
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -160,14 +161,124 @@ def test_windows_recovery_requires_live_named_job_for_exited_leader(
     monkeypatch.setattr(commands_module, "_windows_job_has_processes", lambda _handle: job_has_processes)
     monkeypatch.setattr(commands_module, "close_job_object", lambda _handle: None)
 
-    broker._load_daemon_registry()
+    try:
+        broker._load_daemon_registry()
 
-    daemon_id = "dmn_" + "a" * 32
-    if job_has_processes:
-        assert daemon_id in broker._daemons
-        assert broker._daemons[daemon_id]["process"].poll() is None
-    else:
-        assert daemon_id not in broker._daemons
+        daemon_id = "dmn_" + "a" * 32
+        if job_has_processes:
+            assert daemon_id in broker._daemons
+            assert broker._daemons[daemon_id]["process"].poll() is None
+        else:
+            assert daemon_id not in broker._daemons
+    finally:
+        # These recovered processes/Job handles are test doubles, so release
+        # local resources without signaling a numeric PID or stopping a tree.
+        for info in broker._daemons.values():
+            timer = info.get("ttl_timer")
+            if timer is not None:
+                timer.cancel()
+                timer.join(timeout=1.0)
+            broker._close_daemon_log(info)
+            process = info["process"]
+            if process._local_ai_job_handle:
+                commands_module.close_job_object(process._local_ai_job_handle)
+                process._local_ai_job_handle = None
+            broker._release_daemon_slot(info)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows named Job Object recovery")
+def test_windows_recovery_test_closes_its_adopted_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    opened = []
+    original_open = Path.open
+
+    def track_open(path, mode="r", *args, **kwargs):
+        stream = original_open(path, mode, *args, **kwargs)
+        if mode == "r+b" and path.suffix == ".log":
+            opened.append(stream)
+        return stream
+
+    monkeypatch.setattr(Path, "open", track_open)
+    # Isolate file ownership from the real expiry thread in this cleanup proof.
+    monkeypatch.setattr(CommandBroker, "_schedule_daemon_expiry", lambda *_args: None)
+    try:
+        with pytest.MonkeyPatch.context() as recovery_patch:
+            test_windows_recovery_requires_live_named_job_for_exited_leader(
+                tmp_path, recovery_patch, True
+            )
+        assert opened
+        assert all(stream.closed for stream in opened)
+    finally:
+        for stream in opened:
+            stream.close()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows named Job Object recovery")
+@pytest.mark.parametrize("failed_operation", ["seek", "tell", "read"])
+def test_windows_recovery_log_failure_releases_unadopted_resources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failed_operation: str
+) -> None:
+    broker = _broker(tmp_path)
+    broker._daemon_slots = threading.BoundedSemaphore(1)
+    row = _registry_row(broker)
+    _write_registry_row(broker, row, version=4)
+    log_path = broker._daemon_state_dir / f"{row['daemon_id']}.log"
+    stream = log_path.open("r+b")
+    failing_stream = mock.Mock(wraps=stream)
+    getattr(failing_stream, failed_operation).side_effect = OSError("log read failure")
+    original_open = Path.open
+
+    def open_log(path, mode="r", *args, **kwargs):
+        if path == log_path and mode == "r+b":
+            return failing_stream
+        return original_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", open_log)
+    monkeypatch.setattr(commands_module, "process_identity", lambda _pid: None)
+    monkeypatch.setattr(commands_module, "_open_named_daemon_job", lambda _name: 77)
+    monkeypatch.setattr(commands_module, "_windows_job_has_processes", lambda _handle: True)
+    close_job = mock.Mock()
+    monkeypatch.setattr(commands_module, "close_job_object", close_job)
+    try:
+        broker._load_daemon_registry()
+        assert broker._daemons == {}
+        assert stream.closed
+        close_job.assert_called_once_with(77)
+        assert broker._daemon_slots.acquire(blocking=False)
+        broker._daemon_slots.release()
+    finally:
+        stream.close()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows named Job Object recovery")
+def test_windows_recovery_admission_failure_closes_job_without_opening_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker = _broker(tmp_path)
+    _write_registry_row(broker, _registry_row(broker), version=4)
+    broker._daemon_slots = threading.BoundedSemaphore(1)
+    assert broker._daemon_slots.acquire(blocking=False)
+    original_open = Path.open
+
+    def reject_log_open(path, mode="r", *args, **kwargs):
+        if mode == "r+b" and path.suffix == ".log":
+            pytest.fail("admission rejection must not open a daemon log")
+        return original_open(path, mode, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", reject_log_open)
+    monkeypatch.setattr(commands_module, "process_identity", lambda _pid: None)
+    monkeypatch.setattr(commands_module, "_open_named_daemon_job", lambda _name: 77)
+    monkeypatch.setattr(commands_module, "_windows_job_has_processes", lambda _handle: True)
+    close_job = mock.Mock()
+    monkeypatch.setattr(commands_module, "close_job_object", close_job)
+    try:
+        broker._load_daemon_registry()
+        assert broker._daemons == {}
+        close_job.assert_called_once_with(77)
+        assert not broker._daemon_slots.acquire(blocking=False)
+    finally:
+        broker._daemon_slots.release()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="legacy Windows rows lack stable tree ownership")

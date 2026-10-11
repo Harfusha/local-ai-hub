@@ -2,6 +2,32 @@
 
 ## Current master reconciliation - 2026-10-11
 
+### Lifecycle timing/resource correction — 2026-10-12
+
+- `c79b973d` full run ended at 35%: 1 failed, 2464 passed, 30 skipped,
+  951.19s. Exact failure: `test_browser_stage_commit_and_abandon_http_lifecycle`
+  at abandon stage; pytest cleanup also raised an unclosed daemon-log warning
+  originating in `test_windows_recovery_requires_live_named_job_for_exited_leader`.
+- Primary reproduced the lifecycle failure with a controlled 1.1s HTTP delay:
+  `capability_expired`. The fixture has a 1s TTL. It now controls only the browser
+  bridge's monotonic clock: ordinary commit/abandon remains before expiry;
+  explicit advancement of 1.1s verifies expiry and idempotent terminal replay.
+  Real HTTP/artifact behavior is retained. No production TTL was increased.
+  The delayed harness then passed; browser HTTP/bridge group 42 passed in 12.25s
+  (`req_adbb9a7a149d`). Original full-run failure lacked the returned error body;
+  the controlled probe proves the timing mechanism without inventing that body.
+- GPT 6 Luna (Meitner) owns daemon resource correction: the recovery fixture
+  closes its adopted log, timer, fake Job handle and slot without signaling a PID.
+  Production recovery now closes an opened log if seek/tell/read fails, before
+  releasing the slot/Job. Primary logs cleanup failure by exception type only.
+  No JobObject/process-identity admission rule weakened.
+- Primary daemon file validation with ResourceWarning and unraisable warnings
+  treated as errors: 63 passed, 4 platform skips in 16.20s
+  (`req_2864199d9d1d`). A prior command named nonexistent
+  `tests/test_daemon_management.py` and ran no tests (exit 4); it is not a receipt.
+- Next full run collects all failures rather than stopping at the first one.
+  These focused results do not replace final integrated full-suite acceptance.
+
 ### Installed Windows release verification — 2026-10-12
 
 - Frozen `f1f9706c` full suite: `python -B -m pytest -q -x --tb=short -r f`
