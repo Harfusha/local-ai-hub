@@ -2740,6 +2740,16 @@ Read-only owner audits completed for T01–T21. Clean master checkouts are alrea
 - Current T01/T05/T06/T08/T13/T14/T17/T20/T21 chat snapshots report missing or foreign-owned task worktrees. No source packet from those chats was integrated. Preserve T14 ownership of `/api/context/pack`.
 - Local AI adaptive context returned `max_response_tokens too small`; one bounded native Git-state check was used. No repeated context attempt or broad native scan was made.
 
+### Release revalidation — 2026-10-11 latest
+
+- Root candidate is `master` at `6c91075e`, 774 commits ahead of `origin/master`. One uncommitted, test-only change exists in `tests/test_async_jobs_tasks.py`; no production source changed. T14 `/api/context/pack` remains untouched.
+- Confirmed async-task test race: `submit()` starts `_dispatch_background()` and the test immediately calls `_execute()` itself. If the background worker claims the job first, the explicit call returns `success=false` because state is no longer `queued`. The test now disables only background dispatch for this synchronous test; production dispatch behavior and assertions remain unchanged.
+- `python -m pytest tests/test_async_jobs_tasks.py tests/test_async_jobs.py -q --tb=short` — **31 passed in 6.07s** on the edited working tree.
+- `python tools/release_check.py --allow-installed && python -m compileall -q src tools tests && python tools/selftest.py` — **exit 0**; release check OK and all six selftest checks passed.
+- A fresh `python -m pytest -q` was submitted through the command broker with a 900-second limit, but no terminal receipt returned after about 16 minutes. The caller wait was cancelled; a later bounded Hub status showed `inflight=0`. The full-suite result and child cleanup are **unknown**, so this is not acceptance evidence.
+- Latest bounded `local_ai_status brief` reported `success=false`, `degraded=true`, Ollama online, zero queued/inflight requests, nominal VRAM. Investigate the health degradation before release; do not infer service health from Ollama alone.
+- **T20 remains NO-GO.** Remaining release blocker: complete current-candidate full-suite receipt (no failures), resolve current Hub degraded status, then re-run release gates on the exact final candidate. Do not push the 774-commit local range without explicit approval.
+
 **Owner:** primary orchestrator. **Base:** `master` at `e54e51f4ed88a41c02526c5dc15c9d16862744eb` before this entry. Root was clean; 65 registered worktrees total, 64 at master and one dirty `release-verify-7cb` at `3010c894` with only `docs/API_COVERAGE.md` modified. Its own `surface_inventory.py --check` passed, as did current master; leave the dirty historical rendering untouched. There are 153 local branches, zero with unmerged commits, zero stashes, and local master is 757 commits ahead of `origin/master`. Do not push that range as a release without explicit release/push approval.
 
 | Item | Status | Current evidence and exact result | Remaining action |
