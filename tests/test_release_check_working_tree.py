@@ -23,15 +23,14 @@ def test_working_tree_ignores_python_caches_but_rejects_durable_payload(tmp_path
     assert violations == ["runtime/build payload: agent_state.sqlite3"]
 
 
-def test_strict_release_tree_rejects_python_cache_payloads(tmp_path):
+def test_strict_release_tree_ignores_python_cache_payloads(tmp_path):
     _python_caches(tmp_path)
+    (tmp_path / ".pytest_cache").mkdir()
+    (tmp_path / "agent_state.sqlite3").write_bytes(b"durable")
 
     violations = list(_iter_release_hygiene_violations(tmp_path, strict_tree=True))
 
-    assert "forbidden directory: src/__pycache__/" in violations
-    assert "compiled cache payload: src/__pycache__/module.cpython-313.pyc" in violations
-    assert "runtime/build payload: legacy.pyc" in violations
-    assert "runtime/build payload: legacy.pyo" in violations
+    assert violations == ["runtime/build payload: agent_state.sqlite3"]
 
 
 @pytest.mark.parametrize("options", [{"post_test": True}, {"allow_installed": True}])
