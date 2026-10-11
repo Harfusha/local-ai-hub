@@ -432,7 +432,7 @@ def _input_schema_with_action_aliases(tool_name: str, schema: dict[str, Any]) ->
                 "then": {"not": {"required": ["request_id"]}},
             })
 
-    conditions = result.setdefault("allOf", [])
+    conditions = result.get("allOf", [])
     by_action = {
         row.get("if", {}).get("properties", {}).get("action", {}).get("const"): row
         for row in conditions
@@ -3896,38 +3896,84 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
         return wire
 
     def _mcp_bounded_error(value: dict[str, Any], requested: int) -> Any:
-        original = json_tokens(_mcp_wire_view(value, structured=True))
-        error = str(value.get("error") or "tool failed")
+        command_failure = value.get("success") is False and (
+            "execution_id" in value or value.get("exit_code") not in (None, 0)
+        )
+        if not command_failure:
+            # Preserve the existing context/evidence projection for other tools;
+            # the compact command envelope below must not consume their fields.
+            error = str(value.get("error") or "tool failed")
+            for error_chars in (512, 256, 128, 64, 48, 40, 32, 24, 16, 8, 1):
+                for dropped in ((), ("status_code",), ("status_code", "terminal", "retryable")):
+                    candidate = {
+                        "success": False,
+                        "error": error[:error_chars],
+                        **{
+                            key: value[key]
+                            for key in ("status", "status_code", "terminal", "retryable", "request_id", "execution_id")
+                            if key in value and key not in dropped
+                        },
+                    }
+                    for key in (*_CONTEXT_PROTECTED_KEYS, "evidence_id", "evidence_ids", "artifact_id", "artifact_ids"):
+                        if key != "error" and key in value and key not in dropped:
+                            candidate[key] = value[key]
+                    for metadata in (
+                        {"requested_tokens": requested, "returned_tokens": 0, "unit": "estimated_tokens"},
+                        {"requested_tokens": requested, "returned_tokens": 0},
+                    ):
+                        trial = dict(candidate)
+                        trial["response_budget"] = dict(metadata)
+                        for _ in range(16):
+                            returned = json_tokens(_mcp_wire_view(trial, structured=True))
+                            trial["response_budget"]["returned_tokens"] = returned
+                            if json_tokens(_mcp_wire_view(trial, structured=True)) == returned:
+                                break
+                        if json_tokens(_mcp_wire_view(trial, structured=True)) <= requested:
+                            return [mcp_types.TextContent(type="text", text=json_dumps(trial))], trial
+            return None
+        error = str(value.get("error") or "")
         metadata_variants = (
             {"requested_tokens": requested, "returned_tokens": 0, "unit": "estimated_tokens"},
             {"requested_tokens": requested, "returned_tokens": 0},
         )
-        field_drops = ((), ("status_code",), ("status_code", "terminal", "retryable"))
-        for error_chars in (512, 256, 128, 64, 48, 40, 32, 24, 16, 8, 1):
-            for dropped in field_drops:
-                candidate = {
-                    "success": False,
-                    "error": error[:error_chars],
-                    **{
-                        key: value[key]
-                        for key in ("status", "status_code", "terminal", "retryable")
-                        if key in value and key not in dropped
-                    },
-                }
-                for key in (*_CONTEXT_PROTECTED_KEYS, "evidence_id", "evidence_ids", "artifact_id", "artifact_ids"):
-                    if key != "error" and key in value and key not in dropped:
-                        candidate[key] = value[key]
-                for metadata in metadata_variants:
-                    trial = dict(candidate)
-                    trial["response_budget"] = dict(metadata)
-                    for _ in range(16):
-                        returned = json_tokens(_mcp_wire_view(trial, structured=True))
-                        trial["response_budget"]["returned_tokens"] = returned
-                        if json_tokens(_mcp_wire_view(trial, structured=True)) == returned:
-                            break
-                    if json_tokens(_mcp_wire_view(trial, structured=True)) <= requested:
-                        content = [mcp_types.TextContent(type="text", text=json_dumps(trial))]
-                        return content, trial
+        protocol_keys = (
+            "status", "status_code", "terminal", "retryable", "request_id", "execution_id",
+            "exit_code", "outcome_unknown", "request_not_sent", "in_progress", "timed_out",
+        )
+        for include_optional in (True, False):
+            for error_chars in (None, 512, 256, 128, 64, 32, 16, 8, 1):
+                for summary_chars in (None, 512, 256, 128, 64, 32, 16, 8, 1):
+                    candidate: dict[str, Any] = {"success": False}
+                    if "error" in value:
+                        candidate["error"] = error if error_chars is None else error[:error_chars]
+                    for key in protocol_keys:
+                        if key not in value:
+                            continue
+                        item = value[key]
+                        candidate[key] = str(item)[:160] if key in {"request_id", "execution_id"} else item
+                    if "summary" in value:
+                        summary = str(value["summary"])
+                        candidate["summary"] = summary if summary_chars is None else summary[:summary_chars]
+                    if include_optional:
+                        for key in (*_CONTEXT_PROTECTED_KEYS, "evidence_id", "evidence_ids", "artifact_id", "artifact_ids"):
+                            if key in candidate or key not in value:
+                                continue
+                            item = value[key]
+                            if isinstance(item, (list, tuple)):
+                                candidate[key] = [str(part)[:160] for part in item[:8]]
+                            elif isinstance(item, (str, int, float, bool)) or item is None:
+                                candidate[key] = item[:160] if isinstance(item, str) else item
+                    for metadata in metadata_variants:
+                        trial = dict(candidate)
+                        trial["response_budget"] = dict(metadata)
+                        for _ in range(16):
+                            returned = json_tokens(_mcp_wire_view(trial, structured=True))
+                            trial["response_budget"]["returned_tokens"] = returned
+                            if json_tokens(_mcp_wire_view(trial, structured=True)) == returned:
+                                break
+                        if json_tokens(_mcp_wire_view(trial, structured=True)) <= requested:
+                            content = [mcp_types.TextContent(type="text", text=json_dumps(trial))]
+                            return content, trial
         return None
 
     def _mcp_budget_payload(name: str, arguments: dict[str, Any], value: Any) -> Any:
@@ -3958,7 +4004,15 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
         if (
             isinstance(value, dict)
             and value.get("success") is False
-            and "error" in value
+            and (
+                "error" in value
+                or (
+                    name == "local_ai_command"
+                    and isinstance(value.get("exit_code"), int)
+                    and not isinstance(value.get("exit_code"), bool)
+                    and value["exit_code"] != 0
+                )
+            )
             and json_tokens(_mcp_wire_view(value, structured=True)) > requested
         ):
             bounded_error = _mcp_bounded_error(value, requested)

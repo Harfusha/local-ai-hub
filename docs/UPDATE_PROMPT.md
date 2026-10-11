@@ -36,6 +36,8 @@ Preserve privacy-safe adoption telemetry: it contains only normalized aggregate 
 
 Registered HTTP endpoint labels remain readable in request history and error operations; strip query strings/fragments and normalize dynamic identifiers. Filesystem paths and unregistered path-like labels remain redacted. Historical `<path>` records cannot reconstruct their original endpoint.
 
+Validate input/output JSON Schemas from the installed MCP `initialize`/`list_tools` exchange, not only the schema generator. Empty `allOf`/`anyOf`/`oneOf` arrays are invalid. Reconnect existing MCP clients after a catalog update.
+
 Detailed execution traces are opt-in, dashboard-only, and stored locally. While enabled, preserve complete endpoint inputs and outputs, paths, and trace events while redacting credential values; do not truncate ordinary payload content. Page large content for retrieval. Keep storage bounded through retention and whole-trace eviction, never by trimming trace content. Leave detailed traces disabled by default and keep the default aggregate telemetry lightweight.
 
 Follow these execution phases:

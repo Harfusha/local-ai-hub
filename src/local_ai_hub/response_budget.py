@@ -79,6 +79,7 @@ _RESPONSE_PROTECTED_KEYS = (
 )
 _IDENTIFIER_KEYS = {
     "artifact_id", "context_id", "etag", "repo_revision", "revision", "task_id", "work_id",
+    "request_id", "execution_id",
     "delta_from", "since_hash", "reuse_key",
 }
 
@@ -388,6 +389,41 @@ def _budget_rejection(
         {"requested_tokens": requested, "returned_tokens": 0, "truncated": True, "rejected": True},
         {"requested_tokens": requested, "returned_tokens": 0, "truncated": True},
     )
+    # Prefer a compact command-failure protocol envelope over shortening IDs
+    # or retaining artifact payloads that are optional for recovery.
+    protocol_keys = (
+        "status", "status_code", "terminal", "retryable", "request_id", "execution_id",
+        "exit_code", "outcome_unknown", "request_not_sent", "in_progress", "timed_out",
+    )
+    error_limits: tuple[int | None, ...] = (None, 256, 128, 64, 32, 16, 8, 1)
+    summary_limits: tuple[int | None, ...] = (None, 512, 256, 128, 96, 64, 48, 32, 24, 16, 8, 1)
+    command_failure = preserved.get("success") is False and (
+        "execution_id" in preserved or preserved.get("exit_code") not in (None, 0)
+    )
+    for error_limit in error_limits if command_failure else ():
+        for summary_limit in summary_limits:
+            core: dict[str, Any] = {"success": False}
+            if original_error is not None:
+                core["error"] = error if error_limit is None else _bounded_string(error, error_limit)
+            for key in protocol_keys:
+                if key not in preserved:
+                    continue
+                item = preserved[key]
+                core[key] = _bounded_string(str(item), 160) if key in {"request_id", "execution_id"} else item
+            summary = preserved.get("summary")
+            if isinstance(summary, str):
+                core["summary"] = summary if summary_limit is None else _bounded_string(summary, summary_limit)
+            for metadata in metadata_variants:
+                candidate = dict(core)
+                candidate["response_budget"] = dict(metadata)
+                for _ in range(16):
+                    returned = json_tokens(candidate)
+                    candidate["response_budget"]["returned_tokens"] = returned
+                    if json_tokens(candidate) == returned:
+                        break
+                if json_tokens(candidate) <= requested:
+                    return candidate
+
     # Try compacting duplicated context diagnostics before shortening the
     # top-level error. Keep complete context decision fields whenever possible.
     context_variants = ((True, True), (False, True), (False, False))
