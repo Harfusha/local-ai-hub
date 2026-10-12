@@ -279,15 +279,20 @@ class HubClient:
                 active_socket = getattr(conn, "sock", None)
                 if active_socket is None and response is not None:
                     active_socket = getattr(getattr(getattr(response, "fp", None), "raw", None), "_sock", None)
-                if active_socket is not None:
-                    try:
-                        active_socket.shutdown(socket.SHUT_RDWR)
-                    except OSError:
-                        pass
                 try:
-                    conn.close()
-                except Exception:
-                    pass
+                    shutdown = getattr(active_socket, "shutdown", None)
+                    if callable(shutdown):
+                        try:
+                            shutdown(socket.SHUT_RDWR)
+                        except OSError:
+                            pass
+                finally:
+                    # Optional/custom transports can expose a non-socket sock.
+                    # Always retain their close-based cancellation contract.
+                    try:
+                        conn.close()
+                    except Exception:
+                        pass
 
             def close_on_deadline_or_cancel() -> None:
                 while not watchdog_stopped.is_set():
