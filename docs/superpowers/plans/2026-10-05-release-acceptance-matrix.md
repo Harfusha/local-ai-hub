@@ -4,6 +4,17 @@
 
 ### Interrupted broad run and relevance fixture repair — 2026-10-12
 
+- Follow-up scoped memory integration command across HTTP identity/root snapshot,
+  Agent OS enhancements, real LocalAIApp end-to-end and receipt completion/order
+  found **1 failed / 72 passed / 93.87s**, `req_4c94c59bdc4e`. The single failure
+  expected unrelated parser facts alongside a follow-up learning despite a
+  learning-only goal. `tests/test_agent_state_e2e.py` now requires exactly the
+  confirmed learning ID: stronger no-noise assertion, with create/resume parser
+  retrieval, usage audit and successful task completion assertions retained.
+  `.venv/Scripts/python.exe -B -m pytest -q --tb=short
+  tests/test_agent_state_e2e.py tests/test_agent_memory_context_tenant_isolation.py
+  tests/test_task_memory_goal_relevance.py`: **18 passed / 39.54s**,
+  `req_e2a63e55a2b3`, exit zero. This does not establish a whole-suite pass.
 - The full suite on `eed83d25` lost its session handle; current CIM inventory
   found neither its wrapper nor pytest worker. Partial stdout has four failure
   markers and no summary. No final receipt exists: exit code and completeness
