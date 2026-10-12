@@ -3404,12 +3404,51 @@ class Handler(BaseHTTPRequestHandler):
             status["http_concurrency"] = self.server.concurrency_stats()
         self._send(200, status)
 
-    def _handle_post_db_query(self, payload: Any) -> None:
+    def _handle_post_work_orders(self, payload: Any, *, tenant: str) -> None:
+        if not getattr(APP, "work_orchestrator", None) or not APP.work_orchestrator.enabled:
+            self._send(403, {"success": False, "unsupported": True, "error": "work orchestrator is disabled", "terminal": True}); return
+        action = str(payload.get("action", "submit")).strip().lower().replace("-", "_")
+        work_id = str(payload.get("work_id", "")).strip()
+        if action == "submit":
+            self._send(200, APP.work_orchestrator.submit(tenant, payload)); return
+        if action == "status":
+            self._send(200, APP.work_orchestrator.status(tenant, work_id)); return
+        if action == "wait":
+            self._send(200, APP.work_orchestrator.wait(tenant, work_id, float(payload.get("timeout_seconds", 90)))); return
+        if action == "get":
+            self._send(200, APP.work_orchestrator.get(tenant, work_id, profile=str(payload.get("response_profile", "")), return_fields=payload.get("return_fields") if isinstance(payload.get("return_fields"), list) else None, max_output_tokens=int(payload.get("max_output_tokens", 0) or 0))); return
+        if action == "cancel":
+            self._send(200, APP.work_orchestrator.cancel(tenant, work_id)); return
+        if action == "continue":
+            self._send(200, APP.work_orchestrator.continue_work(tenant, work_id, str(payload.get("answer", "")))); return
+        self._send(400, {"success": False, "error": "unknown work-order action", "terminal": True}); return
+
+    def _handle_post_async_jobs(self, payload: Any, *, tenant: str) -> None:
+        action = str(payload.get("action", "")).strip().lower().replace("-", "_")
+        if action == "submit":
+            if bool(payload.get("conversation", False)):
+                self._send(400, {"success": False, "error": "conversations require delivery=sync", "terminal": True, "retryable": False}); return
+            job_payload = dict(payload)
+            supplied_request_id = self.headers.get("X-LocalAI-Request-ID")
+            if supplied_request_id and not job_payload.get("request_id"):
+                job_payload["request_id"] = supplied_request_id
+            self._send(200, APP.async_jobs.submit(tenant, str(payload.get("job_action", "reason")), job_payload)); return
+        if action == "status":
+            self._send(200, APP.async_jobs.status(tenant, str(payload.get("job_id", "")))); return
+        if action == "wait":
+            self._send(200, APP.async_jobs.wait(tenant, str(payload.get("job_id", "")), float(payload.get("timeout_seconds", 90)))); return
+        if action == "result":
+            self._send(200, APP.async_jobs.result(tenant, str(payload.get("job_id", "")))); return
+        if action == "cancel":
+            self._send(200, APP.async_jobs.cancel(tenant, str(payload.get("job_id", "")))); return
+        self._send(400, {"success": False, "error": "unknown async job action", "terminal": True, "retryable": False}); return
+
+    def _handle_post_db_query(self, payload: Any, *, tenant: str = "") -> None:
         db_name = str(payload.get("db", "agent_state"))
         sql_q = str(payload.get("query", "SELECT name FROM sqlite_master WHERE type='table'"))
         self._send(200, self._handle_db_query(db_name, sql_q))
 
-    def _handle_post_telemetry_timeline(self, payload: Any) -> None:
+    def _handle_post_telemetry_timeline(self, payload: Any, *, tenant: str = "") -> None:
         limit = payload.get("limit", 100) if isinstance(payload, dict) else 100
         before_id = payload.get("before_id") if isinstance(payload, dict) else None
         try:
@@ -5791,26 +5830,8 @@ class Handler(BaseHTTPRequestHandler):
             post_route_ids = select_http_routes("POST", path)
             post_handler_name = select_post_handler(post_route_ids)
             if post_handler_name is not None:
-                getattr(self, post_handler_name)(payload)
+                getattr(self, post_handler_name)(payload, tenant=tenant)
                 return
-            if path == "/api/work-orders":
-                if not getattr(APP, "work_orchestrator", None) or not APP.work_orchestrator.enabled:
-                    self._send(403, {"success": False, "unsupported": True, "error": "work orchestrator is disabled", "terminal": True}); return
-                action = str(payload.get("action", "submit")).strip().lower().replace("-", "_")
-                work_id = str(payload.get("work_id", "")).strip()
-                if action == "submit":
-                    self._send(200, APP.work_orchestrator.submit(tenant, payload)); return
-                if action == "status":
-                    self._send(200, APP.work_orchestrator.status(tenant, work_id)); return
-                if action == "wait":
-                    self._send(200, APP.work_orchestrator.wait(tenant, work_id, float(payload.get("timeout_seconds", 90)))); return
-                if action == "get":
-                    self._send(200, APP.work_orchestrator.get(tenant, work_id, profile=str(payload.get("response_profile", "")), return_fields=payload.get("return_fields") if isinstance(payload.get("return_fields"), list) else None, max_output_tokens=int(payload.get("max_output_tokens", 0) or 0))); return
-                if action == "cancel":
-                    self._send(200, APP.work_orchestrator.cancel(tenant, work_id)); return
-                if action == "continue":
-                    self._send(200, APP.work_orchestrator.continue_work(tenant, work_id, str(payload.get("answer", "")))); return
-                self._send(400, {"success": False, "error": "unknown work-order action", "terminal": True}); return
             if 'post_config_update_1' in post_route_ids:
                 action = str(payload.get("action", "update")).strip().lower()
                 config_path = str(APP.config.get("_config_path", ""))
@@ -5934,25 +5955,6 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/conversations/continue":
                 result = _invoke_cancellable_request(_ACTIVE_CONVERSATIONS, APP.services.continue_conversation, payload, tenant)
                 self._send(200, result); return
-            if path == "/api/async-jobs":
-                action = str(payload.get("action", "")).strip().lower().replace("-", "_")
-                if action == "submit":
-                    if bool(payload.get("conversation", False)):
-                        self._send(400, {"success": False, "error": "conversations require delivery=sync", "terminal": True, "retryable": False}); return
-                    job_payload = dict(payload)
-                    supplied_request_id = self.headers.get("X-LocalAI-Request-ID")
-                    if supplied_request_id and not job_payload.get("request_id"):
-                        job_payload["request_id"] = supplied_request_id
-                    self._send(200, APP.async_jobs.submit(tenant, str(payload.get("job_action", "reason")), job_payload)); return
-                if action == "status":
-                    self._send(200, APP.async_jobs.status(tenant, str(payload.get("job_id", "")))); return
-                if action == "wait":
-                    self._send(200, APP.async_jobs.wait(tenant, str(payload.get("job_id", "")), float(payload.get("timeout_seconds", 90)))); return
-                if action == "result":
-                    self._send(200, APP.async_jobs.result(tenant, str(payload.get("job_id", "")))); return
-                if action == "cancel":
-                    self._send(200, APP.async_jobs.cancel(tenant, str(payload.get("job_id", "")))); return
-                self._send(400, {"success": False, "error": "unknown async job action", "terminal": True, "retryable": False}); return
             if 'post_command_speculative_lint_1' in post_route_ids:
                 action = str(payload.get("action", "submit")).strip().lower().replace("-", "_")
                 if action == "submit":
