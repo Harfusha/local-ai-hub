@@ -8,6 +8,20 @@
 
 #### 2026-10-12 implementation-first continuation
 
+The frozen whole suite on `9a737504` was intentionally stopped after two
+confirmed HTTP cancellation/deadline regressions in `test_client_tenant_override`.
+The optional transport test exposes `sock=object()`; the new watchdog attempted
+`shutdown` before reaching `close`, breaking its existing bounded close contract.
+The correction checks whether shutdown is callable and always closes the
+connection in `finally`; real socket interruption remains intact. Existing tests
+were not weakened. Tenant override, real socket/MCP cancellation and client
+transport impact checks pass **75 passed, 1 platform skip / 5.23s**.
+Abort receipt `suite-abort-9a737504-1791826824711564500.json` confirms the exact
+owned pytest worker exit. Whole receipt
+`followup-suite-9a737504744d-1791826087133960000.json` records exit one after
+737.545s and an unchanged clean candidate; this partial run is not acceptance.
+Fresh committed packaging, runtime and final whole-suite proof remain required.
+
 Candidate `71cf5db7` installed cold cohorts (1/10/30) and owner-crash/restart
 passed with one actual Hub and supervisor, scoped task/root memory probes,
 dashboard availability after all adapters exited, and verified cleanup.
