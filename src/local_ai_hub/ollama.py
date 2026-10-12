@@ -1793,8 +1793,12 @@ class OllamaRuntime:
         if llama_cpp_managed_selected(self.config):
             return self.llama_cpp_managed.stop()
         try:
-            with self._ensure_lock, managed_process_lock(self.managed_lock_path) as acquired:
-                return self._stop_managed_server_locked() if acquired else False
+            with self._ensure_lock:
+                if (self._managed_process is None and not self.managed_owner_path.exists()
+                        and not self.managed_pid_path.exists() and not self.managed_lock_path.exists()):
+                    return True
+                with managed_process_lock(self.managed_lock_path) as acquired:
+                    return self._stop_managed_server_locked() if acquired else False
         except OSError:
             return False
 

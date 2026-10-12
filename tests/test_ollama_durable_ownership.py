@@ -284,6 +284,7 @@ def test_online_external_server_is_borrowed_without_owner_or_pid_mutation(
     assert runtime.stop_managed_server() is True
     assert not runtime.managed_pid_path.exists()
     assert not (tmp_path / f"{MANAGED_NAME}.owner.json").exists()
+    assert not runtime.managed_lock_path.exists()
 
 
 @pytest.mark.parametrize(("owner_state", "expected"), [("owned", True), ("stale", False), ("unknown", False)])

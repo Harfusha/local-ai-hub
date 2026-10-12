@@ -481,7 +481,7 @@ def test_supervisor_shutdown_does_not_kill_reused_child_pid(tmp_path, monkeypatc
 def test_service_shutdown_never_kills_pid_reused_by_another_process(tmp_path, monkeypatch):
     from local_ai_hub import config as config_module
 
-    monkeypatch.setattr(config_module, "load_config", lambda *_args: {
+    monkeypatch.setattr(config_module, "load_config", lambda *_args, **_kwargs: {
         "server": {"state_dir": str(tmp_path), "port": 11435},
         "headless": {},
         "_config_path": str(tmp_path / "config.toml"),
@@ -518,7 +518,7 @@ def test_service_shutdown_never_kills_pid_reused_by_another_process(tmp_path, mo
 def test_service_shutdown_terminates_only_matching_owner(tmp_path, monkeypatch):
     from local_ai_hub import config as config_module
 
-    monkeypatch.setattr(config_module, "load_config", lambda *_args: {
+    monkeypatch.setattr(config_module, "load_config", lambda *_args, **_kwargs: {
         "server": {"state_dir": str(tmp_path), "port": 11435},
         "headless": {},
         "_config_path": str(tmp_path / "config.toml"),
@@ -2277,7 +2277,7 @@ def test_managed_service_start_does_not_duplicate_existing_supervisor(tmp_path, 
     from local_ai_hub import config as config_module
 
     state_dir = tmp_path / "service-state"
-    monkeypatch.setattr(config_module, "load_config", lambda *_args: {
+    monkeypatch.setattr(config_module, "load_config", lambda *_args, **_kwargs: {
         "server": {"state_dir": str(state_dir), "port": 11435},
         "headless": {},
         "_config_path": str(tmp_path / "config.toml"),

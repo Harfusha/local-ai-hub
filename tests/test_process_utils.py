@@ -937,3 +937,210 @@ def test_terminate_tree_infers_group_and_identity_from_managed_handle(monkeypatc
     assert process_utils.terminate_tree(4321, process_handle=OwnedProcess()) is True
     assert calls[0][1]["process_group"] == 4321
     assert calls[0][1]["expected_identity"] == {"pid": 4321, "start": 7}
+
+
+class _ApiFunction:
+    def __init__(self, callback):
+        self.callback = callback
+        self.argtypes = None
+        self.restype = None
+
+    def __call__(self, *args):
+        return self.callback(*args)
+
+
+def _job_keeper_kernel(*, live=True, member=True, duplicate=True):
+    from ctypes import wintypes
+
+    calls = []
+
+    def is_in_job(process_handle, job_handle, result):
+        calls.append(("is_in_job", process_handle, job_handle))
+        process_utils.ctypes.cast(result, process_utils.ctypes.POINTER(wintypes.BOOL))[0] = member
+        return 1
+
+    def duplicate_handle(source_process, source_handle, target_process, target_handle,
+                  desired_access, inherit, options):
+        calls.append((
+            "duplicate", source_process, source_handle, target_process,
+            desired_access, inherit, options,
+        ))
+        if duplicate:
+            process_utils.ctypes.cast(
+                target_handle, process_utils.ctypes.POINTER(wintypes.HANDLE)
+            )[0] = 222
+        return int(duplicate)
+
+    class Kernel32:
+        GetCurrentProcess = _ApiFunction(lambda: 99)
+        WaitForSingleObject = _ApiFunction(
+            lambda handle, timeout: calls.append(("wait", handle, timeout))
+            or (0x00000102 if live else 0)
+        )
+        IsProcessInJob = _ApiFunction(is_in_job)
+        DuplicateHandle = _ApiFunction(duplicate_handle)
+
+    return Kernel32(), calls
+
+
+def _managed_job_process():
+    class Process:
+        pid = 4321
+        _handle = 111
+        _local_ai_job_handle = 77
+
+    return Process()
+
+
+def test_retain_process_job_in_child_duplicates_synchronize_keeper_from_retained_handles(monkeypatch):
+    monkeypatch.setattr(process_utils.os, "name", "nt")
+    kernel32, calls = _job_keeper_kernel()
+    monkeypatch.setattr(process_utils, "_job_kernel32", lambda: kernel32)
+    process = _managed_job_process()
+
+    assert process_utils.retain_process_job_in_child(process) is True
+    assert process._local_ai_job_keeper_remote_handle == 222
+    assert calls == [
+        ("wait", 111, 0),
+        ("is_in_job", 111, 77),
+        ("duplicate", 99, 77, 111, 0x00100000, False, 0),
+    ]
+
+
+def test_retain_process_job_in_child_is_idempotent(monkeypatch):
+    monkeypatch.setattr(process_utils.os, "name", "nt")
+    kernel32, calls = _job_keeper_kernel()
+    monkeypatch.setattr(process_utils, "_job_kernel32", lambda: kernel32)
+    process = _managed_job_process()
+
+    assert process_utils.retain_process_job_in_child(process) is True
+    assert process_utils.retain_process_job_in_child(process) is True
+    assert [call[0] for call in calls].count("duplicate") == 1
+
+
+def test_job_kernel_loader_types_keeper_winapi(monkeypatch):
+    from ctypes import wintypes
+
+    class Kernel32:
+        CreateJobObjectW = _ApiFunction(lambda *_args: 1)
+        SetInformationJobObject = _ApiFunction(lambda *_args: 1)
+        OpenProcess = _ApiFunction(lambda *_args: 1)
+        AssignProcessToJobObject = _ApiFunction(lambda *_args: 1)
+        TerminateJobObject = _ApiFunction(lambda *_args: 1)
+        GetCurrentProcess = _ApiFunction(lambda: 1)
+        WaitForSingleObject = _ApiFunction(lambda *_args: 0x102)
+        IsProcessInJob = _ApiFunction(lambda *_args: 1)
+        DuplicateHandle = _ApiFunction(lambda *_args: 1)
+        ResumeThread = _ApiFunction(lambda *_args: 1)
+        CloseHandle = _ApiFunction(lambda *_args: 1)
+
+    kernel32 = Kernel32()
+    monkeypatch.setattr(process_utils.ctypes, "windll", type("WinDll", (), {"kernel32": kernel32})(), raising=False)
+
+    assert process_utils._job_kernel32() is kernel32
+    assert kernel32.WaitForSingleObject.argtypes == [wintypes.HANDLE, wintypes.DWORD]
+    assert kernel32.IsProcessInJob.argtypes == [
+        wintypes.HANDLE, wintypes.HANDLE, process_utils.ctypes.POINTER(wintypes.BOOL),
+    ]
+    assert kernel32.DuplicateHandle.argtypes == [
+        wintypes.HANDLE, wintypes.HANDLE, wintypes.HANDLE,
+        process_utils.ctypes.POINTER(wintypes.HANDLE), wintypes.DWORD, wintypes.BOOL, wintypes.DWORD,
+    ]
+
+
+@pytest.mark.parametrize(
+    ("case", "live", "member", "duplicate"),
+    [
+        ("missing-process", True, True, True),
+        ("missing-job", True, True, True),
+        ("closed-job", True, True, True),
+        ("closed-process", True, True, True),
+        ("invalid-process", True, True, True),
+        ("invalid-job", True, True, True),
+        ("exited", False, True, True),
+        ("not-in-job", True, False, True),
+        ("duplicate-failed", True, True, False),
+    ],
+)
+def test_retain_process_job_in_child_fails_closed_without_signalling(
+    monkeypatch, case, live, member, duplicate,
+):
+    monkeypatch.setattr(process_utils.os, "name", "nt")
+    kernel32, calls = _job_keeper_kernel(live=live, member=member, duplicate=duplicate)
+    monkeypatch.setattr(process_utils, "_job_kernel32", lambda: kernel32)
+    process = _managed_job_process()
+    if case == "missing-process":
+        process._handle = None
+    elif case == "missing-job":
+        process._local_ai_job_handle = None
+    elif case == "closed-job":
+        class ClosedHandle:
+            closed = True
+
+            def __int__(self):
+                return 77
+
+        process._local_ai_job_handle = ClosedHandle()
+    elif case == "closed-process":
+        class ClosedHandle:
+            closed = True
+
+            def __int__(self):
+                return 111
+
+        process._handle = ClosedHandle()
+    elif case == "invalid-process":
+        process._handle = 0
+    elif case == "invalid-job":
+        process._local_ai_job_handle = 0
+
+    assert process_utils.retain_process_job_in_child(process) is False
+    assert not hasattr(process, "_local_ai_job_keeper_remote_handle")
+    if case in {
+        "missing-process", "missing-job", "closed-job", "closed-process",
+        "invalid-process", "invalid-job",
+    }:
+        assert calls == []
+    if case == "exited":
+        assert [call[0] for call in calls] == ["wait"]
+    if case == "not-in-job":
+        assert [call[0] for call in calls] == ["wait", "is_in_job"]
+    if case == "duplicate-failed":
+        assert [call[0] for call in calls] == ["wait", "is_in_job", "duplicate"]
+
+
+def test_terminate_tree_explicitly_terminates_job_when_child_holds_keeper(monkeypatch):
+    events = []
+    process = _managed_job_process()
+    process._local_ai_job_keeper_remote_handle = 222
+    monkeypatch.setattr(process_utils.os, "name", "nt")
+    monkeypatch.setattr(
+        process_utils, "terminate_job_object",
+        lambda job: events.append(("terminate", job)) or True,
+    )
+    monkeypatch.setattr(
+        process_utils, "wait_job_object_empty",
+        lambda job, **kwargs: events.append(("wait_empty", job, kwargs)) or True,
+    )
+    monkeypatch.setattr(
+        process_utils, "close_job_object",
+        lambda job: events.append(("close", job)) or True,
+    )
+
+    assert process_utils.terminate_tree(process.pid, process_handle=process) is True
+    assert events[0] == ("terminate", 77)
+    assert events[1] == ("wait_empty", 77, {"timeout_ms": 2500})
+    assert events[2] == ("close", 77)
+    assert process._local_ai_job_handle is None
+
+
+@pytest.mark.parametrize("terminated,empty", [(False, True), (True, False)])
+def test_keeper_cleanup_retains_job_when_tree_exit_is_unconfirmed(monkeypatch, terminated, empty):
+    process = _managed_job_process()
+    process._local_ai_job_keeper_remote_handle = 222
+    monkeypatch.setattr(process_utils.os, "name", "nt")
+    monkeypatch.setattr(process_utils, "terminate_job_object", lambda _job: terminated)
+    monkeypatch.setattr(process_utils, "wait_job_object_empty", lambda _job, **_kwargs: empty)
+    monkeypatch.setattr(process_utils, "close_job_object", lambda _job: pytest.fail("unconfirmed tree handle must remain owned"))
+    assert process_utils.terminate_tree(process.pid, process_handle=process) is False
+    assert process._local_ai_job_handle == 77

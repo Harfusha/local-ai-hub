@@ -8,6 +8,25 @@
 
 #### 2026-10-12 implementation-first continuation
 
+Candidate `c02392073daffae15c167701f2b75c001354af2b` finished the whole
+suite with **7127 passed, 2 failed, 105 skipped, 23 subtests / 2635.21s**;
+receipt `followup-suite-c02392073daf-1791817200166445000.json`. It is not
+release acceptance: no-op background shutdown also created two root lockfiles,
+which were preserved in the release quarantine after checking their bytes and
+exclusive lock availability. Repairs defer hardware inventory for manually
+configured transport clients, retain a Windows supervisor Job Object in its
+child, and verify tree exit before releasing owned cleanup handles. The
+singleflight fixture now supplies the identity of its simulated spawn. The
+stdio timeout regression retains its 16-second bound and additionally checks
+the actual delayed interpreter, without an adapter-exit cleanup masking the
+production result. Targeted verification passed the production repairs and
+actual stdio timeout/interpreter cleanup (381 passed, four test-fixture failures,
+two skips); corrected Windows API and managed-starter fixtures then passed
+their affected modules (52 passed / 19.16s). Additional startup impact checks
+passed 90 tests with two outdated timeout fixtures and one skip; their corrected
+transport module passed separately. Fresh committed whole-suite proof remains
+required; these focused results do not substitute for it.
+
 Frozen candidate `e26bfe1aa03a66ae6b17356a22c157d5b9d1ca64` completed the
 whole suite: **7110 passed, 105 skipped, 23 subtests / 2494.90s**, exit zero,
 clean unchanged candidate; receipt
