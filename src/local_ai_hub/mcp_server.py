@@ -21,7 +21,7 @@ from pathlib import Path, PureWindowsPath
 from typing import Any, Literal, TypeAlias
 from urllib.parse import quote
 
-from local_ai_hub.client import HubClient
+from local_ai_hub.client import CURRENT_REQUEST_CANCEL_EVENT, HubClient
 try:
     from local_ai_hub.inprocess_transport import InProcessTransport
 except ModuleNotFoundError as exc:
@@ -3961,7 +3961,13 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp._tool_manager, "_tools"):
     def _async_mcp_adapter(sync_fn: Any) -> Any:
         @functools.wraps(sync_fn)
         async def _call(*args: Any, **kwargs: Any) -> Any:
-            return await asyncio.to_thread(sync_fn, *args, **kwargs)
+            cancel_event = threading.Event()
+            token = CURRENT_REQUEST_CANCEL_EVENT.set(cancel_event)
+            try:
+                return await asyncio.to_thread(sync_fn, *args, **kwargs)
+            finally:
+                cancel_event.set()
+                CURRENT_REQUEST_CANCEL_EVENT.reset(token)
 
         return _call
 

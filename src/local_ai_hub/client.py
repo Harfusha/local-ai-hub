@@ -3,6 +3,7 @@ from __future__ import annotations
 from .json_utils import dumps as json_dumps
 
 import copy
+import contextvars
 import hashlib
 import hmac
 import errno
@@ -27,6 +28,11 @@ from urllib.request import Request, urlopen
 
 from .config import load_config
 from .operation_contracts import normalize_transport_error
+
+
+CURRENT_REQUEST_CANCEL_EVENT: contextvars.ContextVar[threading.Event | None] = contextvars.ContextVar(
+    "hub_request_cancel_event", default=None,
+)
 
 
 class PathHint(Protocol):
@@ -261,28 +267,38 @@ class HubClient:
         deadline_expired = threading.Event()
         request_cancelled = threading.Event()
         watchdog_stopped = threading.Event()
+        response = None
         try:
             conn = self._connection(timeout)
             original_send = getattr(conn, "send", None)
 
             deadline = time.monotonic() + max(0.0, timeout)
 
+            def interrupt_connection() -> None:
+                # close() alone does not interrupt a concurrent blocking recv.
+                active_socket = getattr(conn, "sock", None)
+                if active_socket is None and response is not None:
+                    active_socket = getattr(getattr(getattr(response, "fp", None), "raw", None), "_sock", None)
+                if active_socket is not None:
+                    try:
+                        active_socket.shutdown(socket.SHUT_RDWR)
+                    except OSError:
+                        pass
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
             def close_on_deadline_or_cancel() -> None:
                 while not watchdog_stopped.is_set():
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         deadline_expired.set()
-                        try:
-                            conn.close()
-                        except Exception:
-                            pass
+                        interrupt_connection()
                         return
                     if cancel_event is not None and cancel_event.wait(min(0.05, remaining)):
                         request_cancelled.set()
-                        try:
-                            conn.close()
-                        except Exception:
-                            pass
+                        interrupt_connection()
                         return
                     watchdog_stopped.wait(min(0.05, remaining))
 
@@ -971,6 +987,8 @@ class HubClient:
         tenant: str | None = None,
         cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
+        if cancel_event is None:
+            cancel_event = CURRENT_REQUEST_CANCEL_EVENT.get()
         explicit_request_id = request_id is not None
         if request_id is not None and not self._valid_request_id(request_id):
             return {

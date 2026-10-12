@@ -10,12 +10,13 @@ import math
 import os
 import queue
 import re
+import select
 import socket
 import sqlite3
 import uuid
 import time
 import threading
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Mapping
@@ -1269,6 +1270,35 @@ def _response_phase_latency(data: Any) -> dict[str, float]:
         except (TypeError, ValueError):
             return 0.0
     return {"queue_wait_ms": value("queue_wait_ms"), "service_ms": value("service_ms")}
+
+
+@contextmanager
+def _command_peer_cancellation(connection: socket.socket):
+    """Observe EOF without consuming bytes or changing the request socket."""
+    cancelled = threading.Event()
+    stopped = threading.Event()
+
+    def watch() -> None:
+        while not stopped.wait(0.05):
+            try:
+                readable, _, _ = select.select([connection], [], [], 0)
+                if readable and connection.recv(1, socket.MSG_PEEK) == b"":
+                    cancelled.set()
+                    return
+            except OSError as exc:
+                if _is_client_disconnect(exc):
+                    cancelled.set()
+                return
+            except ValueError:
+                return
+
+    watcher = threading.Thread(target=watch, name="command-peer-cancellation", daemon=True)
+    watcher.start()
+    try:
+        yield cancelled
+    finally:
+        stopped.set()
+        watcher.join(timeout=0.25)
 
 
 def _is_client_disconnect(exc: BaseException) -> bool:
@@ -7858,7 +7888,11 @@ class Handler(BaseHTTPRequestHandler):
                     scope=payload.get("scope"),
                 )); return
             if path == "/api/command":
-                result = APP.services.command(payload, tenant)
+                if payload.get("action", "run") == "run":
+                    with _command_peer_cancellation(self.connection) as request_cancel_event:
+                        result = APP.services.command(payload, tenant, request_cancel_event=request_cancel_event)
+                else:
+                    result = APP.services.command(payload, tenant)
                 status = 409 if isinstance(result, dict) and result.get("outcome_unknown") is True else 200
                 self._send(status, result); return
             if path == "/api/embed":
