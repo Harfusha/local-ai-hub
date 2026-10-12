@@ -13,6 +13,8 @@ import threading
 import time
 import uuid
 from collections import defaultdict
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Collection, Mapping
@@ -22,6 +24,38 @@ from .agent_identity import AgentScope
 from .sqlite_support import connect_sqlite, retry_busy
 
 _logger = logging.getLogger(__name__)
+
+_TASK_MEMORY_QUERY: ContextVar[tuple[Any, tuple[str, str, str], frozenset[str]] | None] = ContextVar(
+    "agent_task_memory_query", default=None,
+)
+_GOAL_STOP_WORDS = frozenset({
+    "a", "an", "and", "are", "as", "at", "be", "by", "for", "from", "in",
+    "is", "it", "of", "on", "or", "the", "this", "to", "with", "fix",
+    "change", "implement", "improve", "update", "task", "goal", "feature",
+    "a", "ale", "do", "je", "na", "pro", "se", "to", "v", "ve", "z", "ze",
+    "oprav", "upravit", "implementuj", "změň",
+})
+
+
+def _goal_words(value: str, *, max_words: int | None = 24) -> frozenset[str]:
+    value = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", value)
+    words = re.findall(r"[^\W_]+", value.casefold(), flags=re.UNICODE)
+    words = [word for word in words if len(word) >= 2 and word not in _GOAL_STOP_WORDS]
+    # An English plural is also a useful match for singular task keywords.
+    selected = words if max_words is None else words[:max_words]
+    expanded = [part for word in selected for part in (word, word[:-1] if len(word) > 4 and word.endswith("s") else word)]
+    return frozenset(expanded)
+
+
+def _task_memory_relevance(kind: str, scope: str, scope_id: str, key: str, value: str | None,
+                           terms: frozenset[str], task_id: str) -> int:
+    base_score = 400 if scope == AgentScope.TASK.value and scope_id == task_id else 1 if kind == "convention" else 0
+    try:
+        decoded = json.loads(value) if value else ""
+    except (TypeError, ValueError):
+        return base_score
+    text = decoded if isinstance(decoded, str) else json_dumps(decoded, ensure_ascii=False)
+    return base_score + 10 * len(terms.intersection(_goal_words(f"{key} {text}", max_words=None)))
 
 
 class ApprovalRequiredError(PermissionError):
@@ -1592,6 +1626,23 @@ class MemoryStore:
         finally:
             con.close()
 
+    @contextmanager
+    def task_retrieval_scope(self, goal: str, *, root: str, tenant: str, task_id: str):
+        """Apply goal relevance only within this request's exact memory identity."""
+        identity = (_normalise_scope_root(root), str(tenant).strip(), str(task_id).strip())
+        token = _TASK_MEMORY_QUERY.set((self, identity, _goal_words(str(goal or ""))))
+        try:
+            yield
+        finally:
+            _TASK_MEMORY_QUERY.reset(token)
+
+    def task_relevance_score(self, record: MemoryRecord, goal: str, *, task_id: str) -> int:
+        """Rank a scoped, already validated task candidate without mutating it."""
+        return _task_memory_relevance(
+            record.kind.value, record.scope.value, record.scope_id, record.key,
+            json_dumps(record.value, ensure_ascii=False), _goal_words(goal), task_id,
+        )
+
     def find_for_context(
         self,
         *,
@@ -1654,10 +1705,29 @@ class MemoryStore:
             placeholders = ", ".join("?" for _ in kinds)
             sql += f" AND kind IN ({placeholders})"
             params.extend(kinds)
-        sql += " ORDER BY updated_at DESC LIMIT ?"
+        bound_query = _TASK_MEMORY_QUERY.get()
+        identity = (_normalise_scope_root(root), str(tenant).strip(), str(task_id).strip())
+        goal_terms = (
+            bound_query[2]
+            if bound_query is not None and bound_query[0] is self and bound_query[1] == identity
+            else None
+        )
+        relevance_expression = "task_memory_relevance(kind,scope,scope_id,key,value)"
+        if goal_terms is not None:
+            sql += f" AND {relevance_expression} > 0 ORDER BY {relevance_expression} DESC, updated_at DESC, record_id ASC LIMIT ?"
+        else:
+            sql += " ORDER BY updated_at DESC LIMIT ?"
         params.append(max(1, min(20, _bounded_memory_limit(limit, 20))))
         con = connect_sqlite(self.state_store.db_path)
         try:
+            if goal_terms is not None:
+                con.create_function(
+                    "task_memory_relevance", 5,
+                    lambda kind, scope, scope_id, key, value: _task_memory_relevance(
+                        kind, scope, scope_id, key, value, goal_terms, str(task_id).strip(),
+                    ),
+                    deterministic=True,
+                )
             con.create_function(
                 "canonical_scope_root",
                 1,
