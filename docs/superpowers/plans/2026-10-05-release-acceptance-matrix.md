@@ -2,6 +2,37 @@
 
 ## Current master reconciliation - 2026-10-11
 
+### Fresh candidate checks — 2026-10-12
+
+- Complete MCP memory/budget/stdio regression command uses the existing wire
+  driver and nine test files: **58 passed / 66.78s**, one pre-imported-anyio
+  assertion-rewrite warning. Broker `req_67b7d8dcd2cc` returned terminal,
+  non-retryable mutation-worktree refusal; one native execution exited zero.
+- Combined previous-failure suite `req_d773fda6811f` exited one with three
+  T09 invalid-memory checkpoint fixtures. The newly enforced checkpoint gate
+  rejects these audits earlier than completion, as intended. Test fixtures now
+  first assert rejection with unchanged task/events, then deliberately construct
+  legacy invalid stored state under a fixture-only scoped validator patch;
+  completion's existing negative assertions remain unchanged. No production
+  protection or input contract was weakened. Follow-up:
+  `.venv/Scripts/python.exe -B -m pytest -q --tb=short
+  tests/test_t09_http_task_completion_matrix.py tests/test_task_memory_checkpoint_audit.py`:
+  **21 passed / 56.84s**, `req_68fe43f4f7c4`, exit zero.
+- `tools/selftest.py`: all six checks pass, `req_434b5520ea12`.
+  `tools/surface_inventory.py --check`: **687 rows, no drift**,
+  `req_3289719a95ce`. Both commands use the home `.venv` interpreter.
+- GPT 6 Luna built committed `f815ef5d` into an isolated temporary candidate,
+  not a new Git worktree. Wheel 1,376,204 bytes; archive hygiene/RECORD pass,
+  120 package and four bridge files byte-exact to committed source and isolated
+  install; `pip check` passes. Primary inspected actual `validation-results.json`
+  under `C:/Users/Adam/AppData/Local/Temp/local-ai-hub-candidate-f815ef5d-1791780727231`.
+  Subsequent source diff is the T09 fixture plus this documentation only;
+  installed home runtime has not been upgraded to this candidate yet.
+- Full-suite wrapper now writes unique candidate/time-specific receipts rather
+  than overwriting the earlier failed suite. Whole candidate acceptance and
+  fresh installed live verification remain pending; these focused checks do
+  not close the release goal.
+
 ### Integrated memory adoption proof — 2026-10-12
 
 - Integrated `a2d8b20a`: one per-store daemon lookup worker and bounded admission

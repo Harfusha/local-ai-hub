@@ -271,14 +271,25 @@ def test_task_completion_http_receipt_and_memory_matrix(
         state_data["repository_revision"] = revision
         if memory_audit is not None:
             state_data["memory_audit"] = memory_audit
-        app.agent_tasks.checkpoint(
-            task_id,
-            TaskCheckpoint(
-                phase="verification",
-                state_data=state_data,
-            ),
-            actor=tenant,
-        )
+        checkpoint = TaskCheckpoint(phase="verification", state_data=state_data)
+        if case in {
+            "used-volatile-without-source",
+            "unused-memory-without-reason",
+            "skipped-memory-without-reason",
+        }:
+            # New writes reject invalid audits before persistence. Still exercise
+            # completion's fail-closed handling of legacy/malformed stored state.
+            before_checkpoint = app.agent_tasks.get(task_id)
+            before_checkpoint_events = app.agent_state.events(f"task:{task_id}")
+            with pytest.raises(CompletionGateError):
+                app.agent_tasks.checkpoint(task_id, checkpoint, actor=tenant)
+            assert app.agent_tasks.get(task_id) == before_checkpoint
+            assert app.agent_state.events(f"task:{task_id}") == before_checkpoint_events
+            with monkeypatch.context() as legacy_fixture:
+                legacy_fixture.setattr(app.agent_tasks, "_validate_memory_audit", lambda _task: None)
+                app.agent_tasks.checkpoint(task_id, checkpoint, actor=tenant)
+        else:
+            app.agent_tasks.checkpoint(task_id, checkpoint, actor=tenant)
 
     test_criterion = str(changes.get("test_criterion", "test"))
     test_owner = str(changes.get("test_owner", tenant))
