@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 import sys
 import time
@@ -8,9 +9,13 @@ from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
+import psutil
 
 from local_ai_hub import client as client_module
 from local_ai_hub.client import HubClient
+from local_ai_hub.process_utils import (
+    pid_alive, popen_managed, process_identity, process_parent_pid, terminate_tree,
+)
 
 
 def _start_lock_owner(lock: Path, ready: Path) -> subprocess.Popen:
@@ -18,14 +23,41 @@ def _start_lock_owner(lock: Path, ready: Path) -> subprocess.Popen:
     env = os.environ.copy()
     env["PYTHONPATH"] = str(source_root) + os.pathsep + env.get("PYTHONPATH", "")
     script = (
-        "import time\n"
+        "import os, json, time\n"
         "from pathlib import Path\n"
         "from local_ai_hub.client import _acquire_start_lock\n"
+        "from local_ai_hub.process_utils import process_identity\n"
         f"handle = _acquire_start_lock(Path({str(lock)!r}))\n"
+        f"Path({str(ready.with_suffix('.identity.json'))!r}).write_text(json.dumps(process_identity(os.getpid())))\n"
         f"Path({str(ready)!r}).write_text('locked' if handle else 'busy')\n"
         "time.sleep(30)\n"
     )
-    return subprocess.Popen([sys.executable, "-c", script], env=env)
+    owner = popen_managed([sys.executable, "-c", script], env=env)
+    owner._local_ai_process_identity = process_identity(owner.pid)
+    return owner
+
+
+def _stop_lock_owner(owner: subprocess.Popen, ready: Path) -> None:
+    runtime_identity = json.loads(ready.with_suffix(".identity.json").read_text())
+    assert runtime_identity is not None
+    runtime_pid = runtime_identity["pid"]
+    assert process_identity(runtime_pid) == runtime_identity
+    assert process_identity(owner.pid) == owner._local_ai_process_identity
+    if os.name == "nt" and sys.prefix != sys.base_prefix:
+        assert runtime_pid != owner.pid
+    if runtime_pid != owner.pid:
+        assert process_parent_pid(runtime_pid) == owner.pid
+        assert runtime_identity["creation_identity"] >= owner._local_ai_process_identity["creation_identity"]
+    print("START_LOCK_RUNTIME_PROOF " + json.dumps({"launcher_pid": owner.pid, "runtime_pid": runtime_pid}))
+    runtime = psutil.Process(runtime_pid)
+    deadline = time.monotonic() + 5
+    assert terminate_tree(owner.pid, process_handle=owner, grace_seconds=0.25)
+    owner.wait(timeout=max(0.01, deadline - time.monotonic()))
+    try:
+        runtime.wait(timeout=max(0.01, deadline - time.monotonic()))
+    except psutil.NoSuchProcess:
+        pass
+    assert not pid_alive(runtime_pid)
 
 
 def _client_config(tmp_path: Path) -> Path:
@@ -66,8 +98,7 @@ def test_startup_lock_survives_stale_mtime_and_recovers_after_owner_exit(tmp_pat
         os.utime(lock, (stale, stale))
         assert client_module._acquire_start_lock(lock) is None
     finally:
-        owner.kill()
-        owner.wait(timeout=5)
+        _stop_lock_owner(owner, ready)
 
     recovered = client_module._acquire_start_lock(lock)
     assert recovered is not None
@@ -105,8 +136,7 @@ def test_ensure_server_waits_for_live_owner_past_stale_age(tmp_path: Path, monke
         )
         assert client.ensure_server(timeout=0.1) is False
     finally:
-        owner.kill()
-        owner.wait(timeout=5)
+        _stop_lock_owner(owner, ready)
 
 
 def test_failed_owner_metadata_write_releases_startup_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
