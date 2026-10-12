@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import subprocess
 import time
 from contextlib import closing
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from local_ai_hub.preprocess import ProjectPreprocessor
 
@@ -159,15 +160,14 @@ def test_next_cpu_project_selects_diagnostics_phase(tmp_path: Path) -> None:
 def test_step_diagnostics_handles_timeout_cleanly(tmp_path: Path) -> None:
     cfg = {
         "server": {"state_dir": str(tmp_path / "state")},
-        "preprocessing": {"enabled": True},
+        "preprocessing": {"enabled": False, "idle_diagnostics_enabled": True},
     }
     mock_rag = MagicMock()
     mock_rag.workspace_id.side_effect = lambda r: f"ws-{Path(r).name}"
     mock_services = MagicMock()
     # Mock validation command to sleep
-    mock_services.repo_profile.return_value = {
-        "validation_commands": [{"command": "python -c \"import time; time.sleep(30)\""}]
-    }
+    command = ["python", "-c", "import time; time.sleep(30)"]
+    mock_services.repo_profile.return_value = {"validation_commands": [{"argv": command}]}
     mock_scheduler = MagicMock()
     mock_scheduler.background_allowed.return_value = True
     mock_scheduler.foreground_busy.return_value = False
@@ -191,24 +191,16 @@ def test_step_diagnostics_handles_timeout_cleanly(tmp_path: Path) -> None:
             )
             con.commit()
 
-        from unittest.mock import patch
-        import subprocess
-
-        mock_proc = MagicMock()
-        mock_proc.pid = 12345
-        mock_proc.communicate.side_effect = subprocess.TimeoutExpired(cmd="sleep", timeout=0.1)
-        mock_proc.stdout = MagicMock()
-        mock_proc.stdout.closed = False
-        mock_proc.stderr = MagicMock()
-        mock_proc.stderr.closed = False
-
-        with patch("local_ai_hub.process_utils.popen_managed", return_value=mock_proc), patch("local_ai_hub.process_utils.terminate_tree") as mock_term:
+        timeout_error = subprocess.TimeoutExpired(cmd=command, timeout=15.0)
+        timeout_error.cleanup_confirmed = True
+        with patch("local_ai_hub.process_utils.run_hidden", side_effect=timeout_error) as run_hidden:
             res = prep._step_diagnostics({"root": str(p)})
             assert res is True
-            mock_term.assert_called_once_with(12345, process_handle=mock_proc)
-            mock_proc.wait.assert_called_once()
-            assert mock_proc.stdout.close.called
-            assert mock_proc.stderr.close.called
+        run_hidden.assert_called_once()
+        assert run_hidden.call_args.args == (command,)
+        assert run_hidden.call_args.kwargs["shell"] is False
+        assert run_hidden.call_args.kwargs["timeout"] == 15.0
+        assert run_hidden.call_args.kwargs["cwd"] == str(p)
 
         with closing(prep._connect()) as con:
             row = con.execute("SELECT status, phase FROM projects WHERE root=?", (str(p),)).fetchone()

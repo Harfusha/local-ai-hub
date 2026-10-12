@@ -791,7 +791,7 @@ deterministic_files_per_step = 256
 # Most simple/source/test/config cards are built from parsers instead of Ollama.
 prefer_deterministic_cards = true
 disable_llm_card_synthesis = true
-idle_diagnostics_enabled = true
+idle_diagnostics_enabled = false
 # Aggregate deterministic file cards into module/project cards before considering Ollama enrichment.
 prefer_deterministic_modules = true
 deterministic_module_confidence = 0.84

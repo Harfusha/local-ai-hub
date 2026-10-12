@@ -3702,12 +3702,12 @@ class ProjectPreprocessor:
 
     def _step_diagnostics(self, row: dict[str, Any]) -> bool:
         root = str(row["root"])
-        if not bool(self.cfg.get("idle_diagnostics_enabled", True)):
+        if not bool(self.cfg.get("idle_diagnostics_enabled", False)):
             completed_at = time.time()
             interval = max(30, int(self.cfg.get("auto_recheck_seconds", 1800)))
             self._set_project(root, phase="complete", status="complete", last_complete_at=completed_at, next_check_at=completed_at + interval, force_refresh=0)
             return True
-        if not self.scheduler.background_allowed() or self.scheduler.foreground_busy():
+        if self._gpu_yield() or not self.scheduler.background_allowed():
             return False
 
         profile = self._project_profile(root, self.services.repo_profile(root))
@@ -3736,8 +3736,17 @@ class ProjectPreprocessor:
             return True
 
         import subprocess
-        from .process_utils import hidden_run_kwargs, popen_managed, terminate_tree
-        proc = None
+        from .process_utils import (
+            ProcessCancelledError,
+            hidden_run_kwargs,
+            run_hidden,
+        )
+        cleanup_error: BaseException | None = None
+
+        class _DiagnosticCancelEvent:
+            def is_set(cancel_event_self) -> bool:
+                return self._gpu_yield()
+
         try:
             if isinstance(cmd_value, (list, tuple)):
                 argv = [str(value) for value in cmd_value]
@@ -3756,51 +3765,59 @@ class ProjectPreprocessor:
                     ]
             if not argv or not argv[0]:
                 raise ValueError("diagnostic command must contain an executable")
-            proc = popen_managed(
-                argv, shell=False, cwd=root,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                encoding="utf-8", errors="replace",
+            if os.name == "nt" and Path(argv[0]).suffix.casefold() in {".cmd", ".bat"}:
+                raise ValueError(
+                    "Windows batch files are not permitted as idle diagnostic commands"
+                )
+            completed = run_hidden(
+                argv,
+                shell=False,
+                cwd=root,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=15.0,
+                cancel_event=_DiagnosticCancelEvent(),
                 **hidden_run_kwargs(),
             )
-            stdout, stderr = proc.communicate(timeout=15.0)
-            exit_code = proc.returncode
+            stdout, stderr = completed.stdout or "", completed.stderr or ""
+            exit_code = completed.returncode
             preview = (stderr or stdout or "")[:2000]
             error_count = preview.lower().count("error")
-        except subprocess.TimeoutExpired:
-            if proc is not None:
-                terminate_tree(proc.pid, process_handle=proc)
-                try:
-                    proc.wait(timeout=2.0)
-                except (subprocess.TimeoutExpired, OSError):
-                    pass
+        except ProcessCancelledError as exc:
+            if getattr(exc, "cleanup_confirmed", True):
+                return False
+            cleanup_error = exc
             exit_code = -1
-            preview = "diagnostic timed out after 15s"
+            detail = "diagnostic process-tree cleanup could not be verified"
+            output = str(getattr(exc, "stderr", None) or getattr(exc, "output", None) or "").strip()
+            preview = f"{detail}: {output}"[:2000] if output else detail
+            error_count = 1
+        except subprocess.TimeoutExpired as exc:
+            exit_code = -1
+            if getattr(exc, "cleanup_confirmed", True) is False:
+                cleanup_error = exc
+                output = str(exc.stderr or exc.output or "").strip()
+                detail = "diagnostic process-tree cleanup could not be verified"
+                preview = f"{detail}: {output}"[:2000] if output else detail
+            else:
+                preview = "diagnostic timed out after 15s"
             error_count = 1
         except Exception as exc:
-            if proc is not None:
-                try:
-                    terminate_tree(proc.pid, process_handle=proc)
-                except Exception as cleanup_exc:
-                    logger.warning("Diagnostic process-tree cleanup failed (%s)", type(cleanup_exc).__name__)
-                try:
-                    proc.wait(timeout=2.0)
-                except (subprocess.TimeoutExpired, OSError):
-                    pass
             exit_code = -1
-            preview = f"diagnostic failed: {exc}"
+            cleanup_unconfirmed = (
+                getattr(exc, "cleanup_confirmed", True) is False
+                or getattr(exc, "tree_termination_confirmed", True) is False
+            )
+            if cleanup_unconfirmed:
+                cleanup_error = exc
+                detail = "diagnostic process-tree cleanup could not be verified"
+                output = str(getattr(exc, "stderr", None) or getattr(exc, "output", None) or "").strip()
+                preview = f"{detail}: {output}"[:2000] if output else detail
+            else:
+                preview = f"diagnostic failed: {exc}"
             error_count = 1
-        finally:
-            if proc is not None:
-                if proc.stdout and not proc.stdout.closed:
-                    try:
-                        proc.stdout.close()
-                    except OSError as cleanup_exc:
-                        logger.debug("Diagnostic stdout close failed (%s)", type(cleanup_exc).__name__)
-                if proc.stderr and not proc.stderr.closed:
-                    try:
-                        proc.stderr.close()
-                    except OSError as cleanup_exc:
-                        logger.debug("Diagnostic stderr close failed (%s)", type(cleanup_exc).__name__)
 
         with self._db_lock, closing(self._connect()) as con:
             con.execute(
@@ -3808,6 +3825,9 @@ class ProjectPreprocessor:
                 (root, cmd_str, exit_code, error_count, preview, time.time()),
             )
             con.commit()
+
+        if cleanup_error is not None:
+            raise cleanup_error
 
         completed_at = time.time()
         interval = max(30, int(self.cfg.get("auto_recheck_seconds", 1800)))
@@ -3895,14 +3915,35 @@ class ProjectPreprocessor:
         project: dict[str, Any] = {}
         if project_row:
             try:
-                project = json.loads(project_row["card_json"] or "{}")
-            except Exception:
-                project = {}
+                decoded_project = json.loads(project_row["card_json"] or "{}")
+            except (json.JSONDecodeError, UnicodeDecodeError, TypeError) as exc:
+                logger.debug(
+                    "Skipping invalid preprocessing card (kind=project, error_type=%s)",
+                    type(exc).__name__,
+                )
+            else:
+                if isinstance(decoded_project, dict):
+                    project = decoded_project
+                else:
+                    logger.debug(
+                        "Skipping invalid preprocessing card (kind=project, value_type=%s)",
+                        type(decoded_project).__name__,
+                    )
         scored_modules: list[tuple[int, dict[str, Any]]] = []
         for row in module_rows:
             try:
                 card = json.loads(row["card_json"] or "{}")
-            except Exception:
+            except (json.JSONDecodeError, UnicodeDecodeError, TypeError) as exc:
+                logger.debug(
+                    "Skipping invalid preprocessing card (kind=module, error_type=%s)",
+                    type(exc).__name__,
+                )
+                continue
+            if not isinstance(card, dict):
+                logger.debug(
+                    "Skipping invalid preprocessing card (kind=module, value_type=%s)",
+                    type(card).__name__,
+                )
                 continue
             blob = (str(row["module"]) + " " + json_dumps(card, ensure_ascii=False)).lower()
             score = sum(2 for t in terms if t in str(row["module"]).lower()) + sum(1 for t in terms if t in blob)
@@ -3912,7 +3953,17 @@ class ProjectPreprocessor:
         for row in file_rows:
             try:
                 card = json.loads(row["card_json"] or "{}")
-            except Exception:
+            except (json.JSONDecodeError, UnicodeDecodeError, TypeError) as exc:
+                logger.debug(
+                    "Skipping invalid preprocessing card (kind=file, error_type=%s)",
+                    type(exc).__name__,
+                )
+                continue
+            if not isinstance(card, dict):
+                logger.debug(
+                    "Skipping invalid preprocessing card (kind=file, value_type=%s)",
+                    type(card).__name__,
+                )
                 continue
             blob = (str(row["path"]) + " " + json_dumps(card, ensure_ascii=False)).lower()
             score = sum(3 for t in terms if t in str(row["path"]).lower()) + sum(1 for t in terms if t in blob)
@@ -3923,7 +3974,17 @@ class ProjectPreprocessor:
         for row in capsule_rows:
             try:
                 capsule = json.loads(row["capsule_json"] or "{}")
-            except Exception:
+            except (json.JSONDecodeError, UnicodeDecodeError, TypeError) as exc:
+                logger.debug(
+                    "Skipping invalid preprocessing card (kind=capsule, error_type=%s)",
+                    type(exc).__name__,
+                )
+                continue
+            if not isinstance(capsule, dict):
+                logger.debug(
+                    "Skipping invalid preprocessing card (kind=capsule, value_type=%s)",
+                    type(capsule).__name__,
+                )
                 continue
             blob = (str(row["query"]) + " " + json_dumps(capsule, ensure_ascii=False)).lower()
             score = sum(3 for t in terms if t in str(row["query"]).lower()) + sum(1 for t in terms if t in blob)

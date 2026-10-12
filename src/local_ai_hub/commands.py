@@ -10616,6 +10616,17 @@ class CommandBroker:
     def _compact(self, result: dict[str, Any], tenant: str, command: str) -> dict[str, Any]:
         stdout = str(result.get("stdout", "")); stderr = str(result.get("stderr", ""))
         combined_chars = len(stdout) + len(stderr)
+        try:
+            previously_discarded = max(0, int(result.get("discarded_output_chars", 0) or 0))
+        except (TypeError, ValueError):
+            previously_discarded = 0
+        capture_incomplete = previously_discarded > 0 or any(
+            bool(result.get(flag))
+            for flag in ("output_capture_unconfirmed", "cleanup_unconfirmed")
+        )
+        if capture_incomplete:
+            # Lost or unconfirmed capture cannot produce a complete output artifact.
+            result.pop("output_artifact_id", None)
         diagnostic_artifacts_enabled = rollout_feature_enabled(self.config, "diagnostic_artifacts")
         local_diagnostic_dispatch_enabled = rollout_feature_enabled(self.config, "local_diagnostic_dispatch")
         diagnostic_artifacts_unavailable = {
@@ -10667,15 +10678,18 @@ class CommandBroker:
             elif not diagnostic_artifacts_enabled:
                 result["diagnostic_artifacts"] = diagnostic_artifacts_unavailable
             elif self.artifacts is not None:
-                result["artifact_id"] = self.artifacts.put(full, tenant, "command")
+                artifact_id = self.artifacts.put(full, tenant, "command")
+                result["artifact_id"] = artifact_id
+                if artifact_id and not capture_incomplete:
+                    result["output_artifact_id"] = artifact_id
             retained_stdout = stdout[: self.inline_chars // 2]
             retained_stderr = stderr[-self.inline_chars // 2:]
-            result["discarded_output_chars"] = int(result.get("discarded_output_chars", 0) or 0) + combined_chars - len(retained_stdout) - len(retained_stderr)
+            result["discarded_output_chars"] = previously_discarded + combined_chars - len(retained_stdout) - len(retained_stderr)
             result["stdout"] = retained_stdout
             result["stderr"] = retained_stderr
             result["output_truncated"] = True
         else:
-            result["output_truncated"] = False
+            result["output_truncated"] = bool(result.get("output_truncated")) or bool(previously_discarded)
         return result
 
     def stats(self) -> dict[str, Any]:

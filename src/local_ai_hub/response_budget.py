@@ -378,7 +378,7 @@ def _budget_rejection(
     """Return bounded deterministic error when required metadata cannot fit."""
     preserved = source if isinstance(source, dict) else {}
     original_error = preserved.get("error")
-    error = str(original_error) if original_error is not None else "max_response_tokens too small"
+    error = str(original_error) if original_error else "max_response_tokens too small"
     base_keys = {"success", "error", "status", "status_code", "terminal", "retryable", "response_budget"}
 
     # Shrink values and optional metadata in stages. Protected means the field
@@ -395,7 +395,7 @@ def _budget_rejection(
         "status", "status_code", "terminal", "retryable", "request_id", "execution_id",
         "exit_code", "outcome_unknown", "request_not_sent", "in_progress", "timed_out",
     )
-    error_limits: tuple[int | None, ...] = (None, 256, 128, 64, 32, 16, 8, 1)
+    error_limits: tuple[int | None, ...] = (None, 256, 128, 64, 32, 16)
     summary_limits: tuple[int | None, ...] = (None, 512, 256, 128, 96, 64, 48, 32, 24, 16, 8, 1)
     command_failure = preserved.get("success") is False and (
         "execution_id" in preserved or preserved.get("exit_code") not in (None, 0)
@@ -429,7 +429,7 @@ def _budget_rejection(
     context_variants = ((True, True), (False, True), (False, False))
     # Preserve the complete diagnostic and citation before compacting the
     # duplicated context pointer or its optional accounting metadata.
-    for error_chars in (512, 256, 128, 64, 32, 16, 8, 1):
+    for error_chars in (512, 256, 128, 64, 32, 16):
         # Keep complete accounting whenever any compact projection fits.
         for budget_metadata in metadata_variants:
             # Keep at least one exact evidence ID before retaining decisions or
@@ -489,7 +489,10 @@ def _budget_rejection(
     # At the minimum public budget, even protocol metadata may not fit beside
     # unusually large protected fields. Keep the diagnostic keys and evidence
     # first, with the same deterministic size bounds.
-    minimal: dict[str, Any] = {"success": False, "error": _bounded_string(error, 1)}
+    minimal: dict[str, Any] = {"success": False, "error": _bounded_string(error, 512)}
+    for key in ("status", "status_code", "terminal", "retryable"):
+        if key in preserved:
+            minimal[key] = _bounded_pointer_item(preserved[key], budget_chars=160)
     for key in protected_keys:
         if key in base_keys or key not in preserved:
             continue
@@ -507,9 +510,7 @@ def _budget_rejection(
     if json_tokens(minimal) <= requested:
         for metadata in (
             {"requested_tokens": requested, "rejected": True, "unit": "estimated_tokens"},
-            {"requested_tokens": requested, "unit": "estimated_tokens"},
-            {"unit": "estimated_tokens"},
-            {},
+            {"requested_tokens": requested, "rejected": True},
         ):
             candidate = dict(minimal)
             if metadata:
@@ -523,29 +524,93 @@ def _budget_rejection(
                 return candidate
     # If the full protected envelope is mathematically too large, keep diagnostic
     # and evidence fields first; never return a success-shaped partial result.
-    critical = {"success": False, "error": _bounded_string(error, 1)}
+    protocol: dict[str, Any] = {}
+    for key in (
+        "status", "status_code", "terminal", "retryable", "outcome_unknown",
+        "request_not_sent", "in_progress", "timed_out", "exit_code",
+        "request_id", "execution_id",
+    ):
+        if key not in preserved:
+            continue
+        item = preserved[key]
+        if key in {"request_id", "execution_id"}:
+            identifier = str(item)
+            if len(identifier) <= 160:
+                protocol[key] = _bounded_string(identifier, 160)
+        else:
+            protocol[key] = _bounded_pointer_item(item, budget_chars=160)
     for key in ("evidence_ids", "evidence_id"):
         if key not in protected_keys or key not in preserved:
             continue
         item = preserved[key]
-        critical[key] = [str(part)[:160] for part in item[:1]] if key == "evidence_ids" and isinstance(item, (list, tuple)) else str(item)[:160]
-    if json_tokens(critical) <= requested:
-        for metadata in (
-            {"requested_tokens": requested, "rejected": True, "unit": "estimated_tokens"},
-            {"requested_tokens": requested, "unit": "estimated_tokens"},
-            {"unit": "estimated_tokens"},
-            {},
-        ):
+        protocol[key] = (
+            [str(part)[:160] for part in item[:1]]
+            if key == "evidence_ids" and isinstance(item, (list, tuple))
+            else str(item)[:160]
+        )
+    # Protected payloads can be too large even after compaction. Retain the
+    # diagnostic and protocol outcome, then spend the remaining cap on error.
+    metadata_variants = (
+        {"requested_tokens": requested, "rejected": True, "unit": "estimated_tokens"},
+        {"requested_tokens": requested, "rejected": True},
+    )
+
+    decision_keys = (
+        "terminal", "retryable", "outcome_unknown", "request_not_sent",
+        "in_progress", "timed_out",
+    )
+    protocol_variants = [protocol]
+    without_evidence = {key: item for key, item in protocol.items() if key not in {"evidence_ids", "evidence_id"}}
+    if without_evidence != protocol:
+        protocol_variants.append(without_evidence)
+    without_ids = {
+        key: item for key, item in without_evidence.items()
+        if key not in {"request_id", "execution_id"}
+    }
+    if without_ids != protocol_variants[-1]:
+        protocol_variants.append(without_ids)
+    decisions_only = {key: protocol[key] for key in decision_keys if key in protocol}
+    if decisions_only != protocol_variants[-1]:
+        protocol_variants.append(decisions_only)
+
+    def candidate_for(error_chars: int, fields: dict[str, Any]) -> dict[str, Any] | None:
+        critical = {"success": False, "error": _bounded_string(error, error_chars), **fields}
+        for metadata in metadata_variants:
             candidate = dict(critical)
-            if metadata:
-                candidate["response_budget"] = dict(metadata)
-                for _ in range(16):
-                    returned = json_tokens(candidate)
-                    candidate["response_budget"]["returned_tokens"] = returned
-                    if json_tokens(candidate) == returned:
-                        break
+            candidate["response_budget"] = dict(metadata)
+            for _ in range(16):
+                returned = json_tokens(candidate)
+                candidate["response_budget"]["returned_tokens"] = returned
+                if json_tokens(candidate) == returned:
+                    break
             if json_tokens(candidate) <= requested:
                 return candidate
+        return None
+
+    # Serialized token count is monotonic with this bounded string length.
+    # Binary search keeps the rejection path bounded for pathological payloads.
+    fallback_best: dict[str, Any] | None = None
+    for fields in protocol_variants:
+        low, high = 1, min(512, len(error))
+        best: dict[str, Any] | None = None
+        while low <= high:
+            middle = (low + high) // 2
+            candidate = candidate_for(middle, fields)
+            if candidate is None:
+                high = middle - 1
+            else:
+                best = candidate
+                low = middle + 1
+        # Keep optional protocol detail when it still leaves a readable error.
+        if best is not None and len(str(best.get("error", ""))) >= 12:
+            return best
+        if best is not None and (
+            fallback_best is None
+            or len(str(best.get("error", ""))) > len(str(fallback_best.get("error", "")))
+        ):
+            fallback_best = best
+    if fallback_best is not None:
+        return fallback_best
     return {"success": False, "error": "budget"} if requested >= json_tokens({"success": False, "error": "budget"}) else {"success": False}
 
 

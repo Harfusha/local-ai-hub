@@ -874,7 +874,7 @@ _RELIABILITY_PROTECTED_KEYS = (
 )
 _COMMAND_PROTECTED_KEYS = (
     "exit_code", "summary", "request_id", "execution_id", "artifact_id", "artifact_ids",
-    "outcome_unknown", "request_not_sent", "in_progress", "timed_out",
+    "output_artifact_id", "output_truncated", "outcome_unknown", "request_not_sent", "in_progress", "timed_out",
 )
 _REUSE_DIGESTS: OrderedDict[str, str] = OrderedDict()
 _REUSE_VALUES: OrderedDict[str, Any] = OrderedDict()

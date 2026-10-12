@@ -56,15 +56,20 @@ def compact_result(
     if isinstance(data.get("text"), str) and len(data["text"]) > max_text_chars:
         data["text"] = syntax_aware_truncate(data["text"], max_text_chars)
 
-    # Command output is aggressively bounded because full stdout/stderr is artifact-backed.
+    # Command output is aggressively bounded; a full-log artifact is optional.
+    output_artifact_available = bool(data.get("output_artifact_id"))
     if isinstance(data.get("summary"), str) and len(data["summary"]) > max_text_chars:
         data["summary"] = syntax_aware_truncate(data["summary"], max_text_chars, marker="\n[... summary truncated ...]")
     stream_budget = max(256, max_text_chars // 3)
     if isinstance(data.get("stdout"), str) and len(data["stdout"]) > stream_budget:
-        data["stdout"] = data["stdout"][:stream_budget] + "\n[... stdout truncated; use artifact ...]"
+        marker = "\n[... stdout truncated; use artifact ...]" if output_artifact_available else "\n[... stdout truncated ...]"
+        data["stdout"] = data["stdout"][:stream_budget] + marker
+        data["output_truncated"] = True
     if isinstance(data.get("stderr"), str) and len(data["stderr"]) > stream_budget:
         data["stderr"] = data["stderr"][-stream_budget:]
-        data["stderr"] = "[... stderr head omitted; use artifact ...]\n" + data["stderr"]
+        marker = "[... stderr head omitted; use artifact ...]" if output_artifact_available else "[... stderr head omitted ...]"
+        data["stderr"] = marker + "\n" + data["stderr"]
+        data["output_truncated"] = True
 
     repo_context = data.get("repo_context")
     if isinstance(repo_context, dict) and isinstance(repo_context.get("evidence"), list):

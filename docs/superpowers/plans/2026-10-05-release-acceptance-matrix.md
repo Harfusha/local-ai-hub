@@ -8,6 +8,25 @@
 
 #### 2026-10-12 implementation-first continuation
 
+**Latest user steering:** stop validation and finish all remaining fixes,
+optimization and improvements before starting tests again. The whole suite on
+`6cd9422e` was interrupted around 14%; no final receipt/PASS is claimed.
+Primary confirmed no remaining pytest/wrapper process after cancellation.
+The source freeze has ended. Continue current-source implementation against
+the existing requirements below; all new validation is deferred until that
+implementation pass is complete. Packaging/deployment remain pending.
+
+Active explicit goal: complete the existing release scope; no completion claim
+until current-candidate acceptance is verified. Implementation now includes
+legacy automatic-memory eligibility, one archive predicate shared by inventory
+and SQL retrieval before limits, and opt-in idle diagnostics with verified
+cleanup semantics. New regression files are prepared, not executed. Command
+artifact availability and cold recovery/worktree scenarios are prepared. Lookup
+now skips malformed/non-object/invalid-UTF8 cached cards without losing valid
+siblings. Budget rejections retain readable diagnostics and original outcome
+flags, including the formerly one-character fallback. Source review is closed;
+the next phase is targeted regression execution. No new PASS is asserted here.
+
 **Sole owner after explicit user coordination:** chat `01a12fae-925c-7ed2-a351-e41358c4be3f`.
 The duplicate release chat stopped its workers and preserved the shared changes.
 Primary reviewed and adopted the prepared command, vision and six-route HTTP
