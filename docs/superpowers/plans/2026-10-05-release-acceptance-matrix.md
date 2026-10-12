@@ -8,6 +8,26 @@
 
 #### 2026-10-12 implementation-first continuation
 
+The two isolated timing findings now have controlled contract coverage without
+changing production deadlines. A real delayed tenant-B memory producer reaches
+the existing one-second deadline and emits the exact fail-open warning. The
+scope test accepts only that warning, waits for actual worker completion within
+three seconds, and performs one genuine same-tenant plan/resume; all original
+exact-ID, tenant exclusion, provenance, validity and no-prompt-write assertions
+remain mandatory. Unexpected empty snapshots or other warnings still fail.
+Memory adoption and snapshot bounds pass **35/35 in 30.45s**.
+
+An actual loopback HTTP reply deliberately delayed five seconds reproduced the
+old Gaming assertion after inference had exited and release had completed.
+The corrected test checks the exact release receipt and strict cancellation /
+no-unload-before-worker-exit ordering before a separate bounded reply-delivery
+wait. It covers normal and deliberately delayed cancelled replies. Production
+mode, memory and HTTP deadlines are unchanged. Combined affected memory,
+snapshot, Gaming and T18 checks pass **77/77 in 40.33s**. The original full-run
+memory warning was not recoverable after pytest retention removed its database;
+the controlled case proves the permitted degradation/recovery behavior, not
+an invented original trace. A fresh frozen complete suite remains required.
+
 The complete frozen `6e832f21` run finished with **10 failed, 7144 passed,
 105 skipped, 23 subtests, 2 warnings / 2403.95s**. Candidate remained clean
 and unchanged; receipt `followup-suite-6e832f214ae5-1791827232287718900.json`.

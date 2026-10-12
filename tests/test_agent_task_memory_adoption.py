@@ -146,6 +146,24 @@ def seed_legacy_sensitive_memory(
         con.execute("COMMIT")
     return record
 
+def _require_scoped_snapshot_after_allowed_deadline(tasks, task, tenant):
+    snapshot = task.checkpoint.state_data["memory_context"]
+    if snapshot["items"]:
+        return task
+    # Creation explicitly permits a bounded fail-open lookup. Verify its reason,
+    # then use the real resume API once the same worker has actually finished.
+    assert snapshot["warnings"] == [{"code": "memory_lookup_deadline_exceeded"}], snapshot["warnings"]
+    assert tasks._memory_lookup_slots.acquire(timeout=3), "memory worker did not finish after deadline"
+    tasks._memory_lookup_slots.release()
+    token = with_tenant(tenant)
+    try:
+        if task.status is TaskStatus.DRAFT:
+            tasks.transition(task.task_id, TaskStatus.PLANNED, actor="test", reason="resume scoped lookup")
+        return tasks.resume(task.task_id, actor="test", idempotency_key=f"scoped-resume-{task.task_id}")
+    finally:
+        trace_context.reset_context(token)
+
+
 def test_create_uses_only_matching_root_and_tenant_without_saving_prompt_memory(tmp_path: Path):
     tasks, memory, _ = build_task_store(tmp_path)
     root_a, root_b = tmp_path / "repo-a", tmp_path / "repo-b"
@@ -181,6 +199,7 @@ def test_create_uses_only_matching_root_and_tenant_without_saving_prompt_memory(
     finally:
         trace_context.reset_context(token)
 
+    task = _require_scoped_snapshot_after_allowed_deadline(tasks, task, "tenant-a")
     bundle = task.checkpoint.state_data["memory_context"]
     assert {item["id"] for item in bundle["items"]} == {
         matching.record_id,
@@ -204,6 +223,7 @@ def test_create_uses_only_matching_root_and_tenant_without_saving_prompt_memory(
         )
     finally:
         trace_context.reset_context(token)
+    tenant_b = _require_scoped_snapshot_after_allowed_deadline(tasks, tenant_b, "tenant-b")
     tenant_b_ids = {item["id"] for item in tenant_b.checkpoint.state_data["memory_context"]["items"]}
     assert tenant_b_ids == {global_other_tenant.record_id, global_tenantless.record_id}, tenant_b.checkpoint.state_data["memory_context"].get("warnings", [])
     assert matching.record_id not in tenant_b_ids
@@ -215,10 +235,38 @@ def test_create_uses_only_matching_root_and_tenant_without_saving_prompt_memory(
         task_id="create-scope-no-tenant",
         repo_root=str(root_a),
     )
+    no_tenant = _require_scoped_snapshot_after_allowed_deadline(tasks, no_tenant, "")
     assert {item["id"] for item in no_tenant.checkpoint.state_data["memory_context"]["items"]} == {
         global_tenantless.record_id
     }
     assert len(memory.find(limit=100, semantic=False)) == before
+
+
+def test_scope_filtering_survives_real_producer_deadline_and_same_tenant_resume(tmp_path, monkeypatch):
+    original_collect = TaskStore._collect_task_memory_context
+    original_lookup = TaskStore._task_memory_context
+    delayed = []
+    snapshots = []
+
+    def collect(self, task_id, *args, **kwargs):
+        if task_id == "create-scope-b" and not delayed:
+            delayed.append(task_id)
+            time.sleep(1.15)
+        return original_collect(self, task_id, *args, **kwargs)
+
+    def lookup(self, task_id, *args, **kwargs):
+        result = original_lookup(self, task_id, *args, **kwargs)
+        if task_id == "create-scope-b":
+            snapshots.append(result)
+        return result
+
+    monkeypatch.setattr(TaskStore, "_collect_task_memory_context", collect)
+    monkeypatch.setattr(TaskStore, "_task_memory_context", lookup)
+    test_create_uses_only_matching_root_and_tenant_without_saving_prompt_memory(tmp_path)
+    assert delayed == ["create-scope-b"]
+    assert snapshots[0]["items"] == []
+    assert snapshots[0]["warnings"] == [{"code": "memory_lookup_deadline_exceeded"}]
+    assert len(snapshots[-1]["items"]) == 2
 
 
 def test_create_and_resume_attach_only_scoped_negative_knowledge(tmp_path: Path):
