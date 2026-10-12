@@ -46,7 +46,8 @@ def test_service_start_double_does_not_intercept_hardware_probes(monkeypatch) ->
 
 @pytest.mark.parametrize("setup_delay", [0, 2.1], ids=["normal", "slow-preparation"])
 @pytest.mark.parametrize("client_count", [8, 30], ids=["8-clients", "30-clients"])
-def test_concurrent_process_clients_have_one_supervisor_spawn_authority(tmp_path, setup_delay, client_count) -> None:
+@pytest.mark.parametrize("authority_delay", [0, 2.5], ids=["normal-authority", "delayed-authority"])
+def test_concurrent_process_clients_have_one_supervisor_spawn_authority(tmp_path, setup_delay, client_count, authority_delay) -> None:
     config = tmp_path / "hub.toml"
     state_dir = tmp_path / "state"
     ready_file = state_dir / "ready"
@@ -58,7 +59,7 @@ def test_concurrent_process_clients_have_one_supervisor_spawn_authority(tmp_path
     config.write_text(
         f"[server]\nport=39123\nstate_dir='{state_dir.as_posix()}'\n"
         "[hardware]\nprofile='cpu'\nauto_tune=false\n"
-        "[client]\nstartup_wait_seconds=2\nstartup_poll_seconds=0.02\n",
+        "[client]\nstartup_wait_seconds=10\nstartup_poll_seconds=0.02\n",
         encoding="utf-8",
     )
 
@@ -98,6 +99,7 @@ event("constructed", tenant=client.tenant, owner=worker_owner)
 def service_start(command, **_kwargs):
     assert len(command) == 3 and command[-1] == "start", command
     starts.joinpath(f"{os.getpid()}.request").write_text("start", encoding="ascii")
+    time.sleep(float(sys.argv[12]))
     acquired = supervisor.acquire()
     owner = None
     if acquired:
@@ -111,7 +113,7 @@ def service_start(command, **_kwargs):
         try:
             owners.joinpath(f"{os.getpid()}.owner").write_text("spawn-authority", encoding="ascii")
             ready.touch()
-            deadline = time.monotonic() + 5
+            deadline = time.monotonic() + 10
             while not release_gate.exists() and time.monotonic() < deadline:
                 time.sleep(0.01)
             assert release_gate.exists(), "release gate timed out"
@@ -127,11 +129,11 @@ operational_mode.load_operational_mode = lambda *_args, **_kwargs: operational_m
 client._online = lambda _timeout=None: ready.exists()
 arrivals.joinpath(f"{os.getpid()}.ready").touch()
 event("prepared")
-deadline = time.monotonic() + 5
+deadline = time.monotonic() + 10
 while not start_gate.exists() and time.monotonic() < deadline:
     time.sleep(0.01)
 assert start_gate.exists(), "start gate timed out"
-online = client.ensure_server(timeout=2)
+online = client.ensure_server(timeout=10)
 event("ensure_server", ready=online)
 client.close()
 print("ready" if online else "failed")
@@ -161,6 +163,7 @@ print("ready" if online else "failed")
                 SERVICE_SUBPROCESS_PATCH,
                 str(setup_delay),
                 str(index),
+                str(authority_delay),
             ]
         from local_ai_hub.process_utils import hidden_run_kwargs
 
@@ -187,11 +190,14 @@ print("ready" if online else "failed")
                 ), f"identity-bound cleanup failed: {process.pid}"
 
             try:
-                stdout, stderr = process.communicate(timeout=8)
+                # Preparation, authority acquisition and followers are separate
+                # bounded phases. Do not consume their combined budget in an
+                # unrelated shorter outer process deadline.
+                stdout, stderr = process.communicate(timeout=40)
             except subprocess.TimeoutExpired:
                 stop_owned_process_tree()
                 stdout, stderr = process.communicate(timeout=2)
-                stderr += "\nparent: worker exceeded 8-second budget\n"
+                stderr += "\nparent: worker exceeded 40-second fixture budget\n"
             finally:
                 if process.poll() is None:
                     stop_owned_process_tree()
@@ -202,27 +208,29 @@ print("ready" if online else "failed")
         futures = [pool.submit(run_client, index) for index in range(client_count)]
         phases = {}
         try:
-            deadline = time.monotonic() + 4
+            deadline = time.monotonic() + 10
             while len(list(arrivals.glob("*.ready"))) < client_count and time.monotonic() < deadline:
                 time.sleep(0.01)
             phases["prepared"] = len(list(arrivals.glob("*.ready")))
             phases["requests_before_gate"] = len(list(start_calls.glob("*.request")))
             start_gate.touch()
-            deadline = time.monotonic() + 4
+            deadline = time.monotonic() + 10
             while not list(daemon_owners.glob("*.owner")) and time.monotonic() < deadline:
                 time.sleep(0.01)
             phases["owners_before_release"] = len(list(daemon_owners.glob("*.owner")))
-            deadline = time.monotonic() + 4
+            deadline = time.monotonic() + 10
             while sum(future.done() for future in futures) < client_count - 1 and time.monotonic() < deadline:
                 time.sleep(0.01)
             phases["followers_done_before_release"] = sum(future.done() for future in futures)
         finally:
             start_gate.touch()
             release_gate.touch()
-        results = [future.result(timeout=8) for future in futures]
+        results = [future.result(timeout=40) for future in futures]
 
     diagnostics = {
         "phases": phases,
+        "authority_delay_seconds": authority_delay,
+        "readiness_budget_seconds": 10,
         "start_requests": len(list(start_calls.glob("*.request"))),
         "owner_files": len(list(daemon_owners.glob("*.owner"))),
         "owner_status": {name: (state_dir / name).exists()
