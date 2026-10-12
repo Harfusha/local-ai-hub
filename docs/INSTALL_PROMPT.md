@@ -260,6 +260,7 @@ Local model policy: Model routing follows the active hardware profile and user o
 - On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 - Prefer `response_profile="minimal"`/`"compact"`; request only decision-grade fields.
 - Explicit `extra_fields` retains requested empty values (for example `records=[]`); absence of a field does not prove an empty result. Aggregate response budgets still apply.
+- MCP cancellation closes the current request's HTTP connection. For direct command `run`, disconnect cancels that request's execution; a coalesced waiter cannot cancel the execution owner. The shared Hub remains independent. A sent request with no final response remains `outcome_unknown`; do not retry it automatically.
 - Pass a stable `reuse_key` for repeated logical queries. Use `response_profile="delta"` when only changes are needed; unchanged calls return a pointer, not missing data.
 - Use the existing `local_ai_task(action="batch")` for independent local tasks; keep each item bounded and consume compact per-item results.
 - The Hub keeps a bounded metadata-only context ledger; inspect it only with an explicit cache/status request, never by replaying the whole session.

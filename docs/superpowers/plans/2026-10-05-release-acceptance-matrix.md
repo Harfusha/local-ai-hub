@@ -8,6 +8,25 @@
 
 #### 2026-10-12 implementation-first continuation
 
+Candidate `71cf5db7` installed cold cohorts (1/10/30) and owner-crash/restart
+passed with one actual Hub and supervisor, scoped task/root memory probes,
+dashboard availability after all adapters exited, and verified cleanup.
+The unchanged private harness receipt is
+`20261012T170805Z-cd38e1f6/report.json`. This proves HTTP availability, not
+browser rendering. Preserved baseline wheel failed to establish an owned
+daemon in its first cohort; no matched resource savings are claimed.
+
+Actual in-flight command acceptance then confirmed a product gap: an executing
+command survived adapter EOF, while the shared Hub remained alive. The MCP
+thread adapter now propagates a per-request cancellation event into HubClient;
+socket shutdown interrupts blocking HTTP reads. The command HTTP route observes
+peer EOF and binds its private cancellation event only to its owning execution.
+A cancelled coalesced waiter leaves the owner untouched. Initial focused impact:
+131 passed, 9 skipped, one new assertion corrected to the existing sent-request
+`outcome_unknown` contract; corrected cancellation and HTTP/MCP checks:
+22 passed / 2.82s. Real in-flight acceptance on the new committed candidate and
+the final whole suite remain pending.
+
 Private installed cold acceptance on `dea42c77` exposed a compact projection
 defect: `memory_find` with `extra_fields=["records"]` omitted an empty result
 for a same-root sibling task. Positive same-task reads had already returned

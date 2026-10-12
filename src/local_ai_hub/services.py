@@ -6493,7 +6493,9 @@ class LocalAIServices:
             "retryable": False,
         }
 
-    def command(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
+    def command(
+        self, args: dict[str, Any], tenant: str, *, request_cancel_event: threading.Event | None = None,
+    ) -> dict[str, Any]:
         if self.commands is None:
             return {"success": False, "error": "command broker unavailable"}
         action = str(args.get("action", "run")).strip().lower().replace("-", "_")
@@ -6564,6 +6566,8 @@ class LocalAIServices:
                 {"_work_attempt_fence": args["writer_fence"]}
                 if args.get("writer_fence") is not None else {}
             )
+            if request_cancel_event is not None:
+                fence_kwargs["request_cancel_event"] = request_cancel_event
             return self.commands.run(
                 str(args.get("command", "")), str(args.get("cwd", args.get("root", "."))), tenant,
                 timeout=int(args.get("timeout", 0) or 0) or None, force=bool(args.get("force", False)),

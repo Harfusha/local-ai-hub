@@ -7243,7 +7243,10 @@ class CommandBroker:
         _transaction_context: str = "",
         _work_attempt_fence: WorkAttemptFence | None = None,
         _project_command_context: _ResolvedProjectCommand | None = None,
+        request_cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
+        if request_cancel_event is not None and request_cancel_event.is_set():
+            return {"success": False, "cancelled": True, "request_not_sent": True, "terminal": True, "retryable": False}
         (
             project_alias,
             project_config_digest,
@@ -7612,7 +7615,16 @@ class CommandBroker:
             # behind a very long build/test command. The owner keeps running and will
             # populate the cache; the waiter gets a bounded in-progress response.
             wait_budget = min(float(effective_timeout) + 5.0, self.coalesce_wait_seconds)
-            if not event.wait(wait_budget):
+            if request_cancel_event is None:
+                finished = event.wait(wait_budget)
+            else:
+                wait_deadline = time.monotonic() + wait_budget
+                finished = event.is_set()
+                while not finished and time.monotonic() < wait_deadline:
+                    if request_cancel_event.is_set():
+                        return {"success": False, "cancelled": True, "coalesced": True, "terminal": True, "retryable": False}
+                    finished = event.wait(min(0.05, max(0.0, wait_deadline - time.monotonic())))
+            if not finished:
                 with self._lock:
                     self.coalesced_timeouts += 1
                     active = self._public_active(dict(self._active_commands.get(key, {})))
@@ -7667,7 +7679,9 @@ class CommandBroker:
 
         self.misses += 1
         started_wall = time.time()
-        cancel_event = threading.Event()
+        # Only the singleflight owner binds its transport lifetime to execution.
+        # A disconnected waiter must never signal another request's process.
+        cancel_event = request_cancel_event if request_cancel_event is not None else threading.Event()
         execution_id = uuid.uuid4().hex
         execution_key = key if singleflight else f"mutation:{execution_id}"
         tenant_identity = self._tenant_identity(tenant)
