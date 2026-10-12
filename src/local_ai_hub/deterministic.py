@@ -1345,14 +1345,31 @@ class DeterministicEngine:
                 con.execute("BEGIN IMMEDIATE")
                 if blob_rows:
                     con.executemany("INSERT OR REPLACE INTO fact_blobs(content_hash,analyzer_version,language,facts_json,updated_at) VALUES(?,?,?,?,?)", blob_rows)
+                # FTS root/path filters scan its unindexed columns. Scope one
+                # scan to this batch instead of scanning once per parsed file.
+                fts_by_path = {}
+                for path, _, _, facts in parsed_rows:
+                    # Repeated paths originally delete/reinsert their FTS rows.
+                    # Keep last-occurrence order for bounded BM25 tie candidates.
+                    fts_by_path.pop(path, None)
+                    fts_by_path[path] = facts
+                con.execute("CREATE TEMP TABLE _deterministic_batch_paths(path TEXT PRIMARY KEY)")
+                con.executemany(
+                    "INSERT INTO _deterministic_batch_paths(path) VALUES(?)",
+                    ((path,) for path in fts_by_path),
+                )
+                try:
+                    con.execute(
+                        "DELETE FROM fact_fts WHERE root=? AND path IN (SELECT path FROM _deterministic_batch_paths)",
+                        (root_s,),
+                    )
+                except sqlite3.OperationalError:
+                    pass
                 for path, content_hash, language, facts in parsed_rows:
                     con.execute("DELETE FROM facts WHERE root=? AND path=?", (root_s, path))
-                    try:
-                        con.execute("DELETE FROM fact_fts WHERE root=? AND path=?", (root_s, path))
-                    except sqlite3.OperationalError:
-                        pass
                     con.execute("INSERT OR REPLACE INTO files(root,path,content_hash,language,is_test,updated_at) VALUES(?,?,?,?,?,?)", (root_s, path, content_hash, language, int(self._is_test(path)), now))
                     con.executemany("INSERT INTO facts(root,path,kind,name,value,line,extra_json) VALUES(?,?,?,?,?,?,?)", [(root_s, path, f["kind"], f["name"], f["value"], f["line"], json_dumps(f["extra"], ensure_ascii=False, separators=(",", ":"))) for f in facts])
+                for path, facts in fts_by_path.items():
                     try:
                         con.executemany("INSERT INTO fact_fts(root,path,kind,name,value) VALUES(?,?,?,?,?)", [(root_s, path, f["kind"], f["name"], f["value"]) for f in facts])
                     except sqlite3.OperationalError:
