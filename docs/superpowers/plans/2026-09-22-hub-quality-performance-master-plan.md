@@ -356,6 +356,16 @@ T11 confirmed its assigned `f678` checkout is its own. It briefly tested two T21
 
 # Current master plan — authoritative consolidated plan
 
+**Latest source follow-up, 2026-10-12:** The newer status-executor candidate
+`4488d38c` is NOT release-accepted: its frozen suite stopped at one fixture
+publication race (1849 passed, 27 skipped). Primary repaired only the test PID
+publication; the full daemon lifecycle module now passes 64 tests with four
+platform skips. Production package bytes are unchanged from the independently
+built/installed candidate wheel, but a complete new suite and home deployment
+remain pending. The older installed release checkpoint below is historical,
+not evidence for this newer source. Current receipts and owners are in the
+release acceptance matrix; do not restart already integrated historical tasks.
+
 **2026-10-12 release checkpoint:** Integrated `master` `c2b6db9f` complete suite
 passed: 6891 tests, 105 skips, 23 subtests, two Torch FutureWarnings, exit 0.
 Production-equivalent 4.0.0 wheel `e67d2c96` is installed in the home `.venv`;

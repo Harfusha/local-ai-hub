@@ -2,6 +2,42 @@
 
 ## Current master reconciliation - 2026-10-11
 
+### Daemon fixture publication race — 2026-10-12
+
+- Frozen clean `4488d38c` whole suite stopped at 26%: **1 failed, 1849 passed,
+  27 skipped / 962.79s**, exit one. Candidate stayed unchanged. Exact receipt:
+  `state/releases/4.0.0/followup-suite-4488d38c8b3f-1791788151013445800.json`.
+  `test_named_daemon_job_survives_restart_and_stops_descendants` observed an
+  existing but empty child PID file and raised `ValueError`. Later tests did
+  not run; the status deadline fix has no new whole-suite acceptance yet.
+- Primary owns only `tests/test_daemon_lifecycle_hardening.py` for this repair.
+  Its first launcher opened the final PID path before writing. The fixture now
+  closes a temporary file before `os.replace`, matching the existing dead-leader
+  fixture. No production change, timeout increase, descendant-check removal or
+  weakened Job Object assertion. A filesystem regression observes publication
+  at file-open time; the original code fails deterministically before content
+  exists (**1 failed**, `req_3c77b87f7bb9`), corrected publication passes.
+- Command `.venv/Scripts/python.exe -B -m pytest -q
+  tests/test_daemon_lifecycle_hardening.py -k
+  'test_daemon_child_pid_is_not_visible_before_payload_is_complete or
+  test_named_daemon_job_survives_restart_and_stops_descendants' --tb=short`:
+  **2 passed / 2.25s**, `req_ddf94f3f849b`.
+  Full affected module command `.venv/Scripts/python.exe -B -m pytest -q
+  tests/test_daemon_lifecycle_hardening.py --tb=short`:
+  **64 passed / 4 platform skips / 18.58s**, `req_a765bfd88705`.
+- The `4488d38c` isolated wheel build/install, package-byte comparison (121
+  package files plus four browser files), pip check, CLI and eight-tool/sixteen
+  schema checks pass. They do not replace the failed whole-suite gate or prove
+  home deployment. Artifacts are under
+  `C:/Users/Adam/AppData/Local/Temp/local-ai-hub-candidate-4488d38c-ec9ef61efb`.
+  Subsequent edits here affect only tests/plans, not those package bytes.
+- GPT-6 Luna Descartes owns only temporary cold-daemon acceptance harness
+  preparation. No home runtime changes or process measurements are authorized
+  during the source test window. Cold 1/10/30-client acceptance remains open.
+- Next full suite must run without fail-fast to collect all remaining failures
+  in one bounded run. Do not promote the old installed-runtime smoke or a
+  historical pinned-hunk queue to current candidate acceptance.
+
 ### Status submission deadline follow-up — 2026-10-12
 
 - Frozen `129fa3cb6f51cb0e1613ca8188df82fc964d9591` whole-suite run ended

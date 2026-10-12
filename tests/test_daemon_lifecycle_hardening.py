@@ -1574,6 +1574,32 @@ def test_daemon_ttl_stops_process_and_records_owner(tmp_path: Path) -> None:
             broker.stop_daemon(daemon["daemon_id"], task_id="daemon-test")
 
 
+_DAEMON_CHILD_PID_PUBLICATION = (
+    "temporary = sys.argv[1] + '.tmp'\n"
+    "with open(temporary, 'w', encoding='ascii') as stream: stream.write(str(child.pid))\n"
+    "os.replace(temporary, sys.argv[1])\n"
+)
+
+
+def test_daemon_child_pid_is_not_visible_before_payload_is_complete(tmp_path: Path) -> None:
+    pid_path = tmp_path / "child.pid"
+
+    def observed_open(path, *args, **kwargs):
+        stream = open(path, *args, **kwargs)
+        if pid_path.exists():
+            stream.close()
+            pytest.fail("PID path visible before its payload is complete")
+        return stream
+
+    exec(
+        _DAEMON_CHILD_PID_PUBLICATION,
+        {"sys": SimpleNamespace(argv=["launcher", str(pid_path)]),
+         "child": SimpleNamespace(pid=12345), "os": os, "open": observed_open},
+    )
+    assert pid_path.read_text(encoding="ascii") == "12345"
+    assert not pid_path.with_name(pid_path.name + ".tmp").exists()
+
+
 @pytest.mark.skipif(os.name != "nt", reason="named Job Object persistence is Windows-only")
 def test_named_daemon_job_survives_restart_and_stops_descendants(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1581,9 +1607,9 @@ def test_named_daemon_job_survives_restart_and_stops_descendants(
     launcher = tmp_path / "daemon_parent.py"
     child_pid_path = tmp_path / "daemon-child.pid"
     launcher.write_text(
-        "import subprocess, sys, time\n"
+        "import os, subprocess, sys, time\n"
         "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(12)'])\n"
-        "with open(sys.argv[1], 'w', encoding='ascii') as stream: stream.write(str(child.pid))\n"
+        + _DAEMON_CHILD_PID_PUBLICATION +
         "time.sleep(12)\n",
         encoding="utf-8",
     )
