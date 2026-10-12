@@ -356,6 +356,18 @@ T11 confirmed its assigned `f678` checkout is its own. It briefly tested two T21
 
 # Current master plan — authoritative consolidated plan
 
+**2026-10-12 release checkpoint:** Integrated `master` `c2b6db9f` complete suite
+passed: 6891 tests, 105 skips, 23 subtests, two Torch FutureWarnings, exit 0.
+Production-equivalent 4.0.0 wheel `e67d2c96` is installed in the home `.venv`;
+daemon restarted in active mode. Post-install selftest, doctor, compileall and
+687-row API inventory pass. Installed live-smoke status/async failures remain
+open; no external release or blanket task completion is claimed. Exact current
+receipts and post-release acceptance gaps live in
+[`2026-10-05-release-acceptance-matrix.md`](2026-10-05-release-acceptance-matrix.md).
+Use GPT 6 Luna for explicitly requested independent subagent scopes; primary
+agent retains direct integration. Do not restart full refactors before closing
+the installed runtime release gate.
+
 **Work process:** Follow [`../specs/2026-10-07-simplified-worktree-integration.md`](../specs/2026-10-07-simplified-worktree-integration.md). The primary agent owns audits and integration. Work in current `master` by default; create only necessary isolated worktrees/branches; integrate bounded verified changes promptly; preserve and classify all remaining dirty, untracked, or stashed work before recoverable archival. No routine agent audit handoffs, ZIPs, owner packets, or fingerprint/SHA cascades.
 
 # Local AI Hub — Quality, Performance and Reliability Implementation Plan
