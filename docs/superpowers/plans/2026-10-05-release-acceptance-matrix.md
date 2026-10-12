@@ -95,6 +95,17 @@
   tests/test_http_route_operation_acceptance.py::test_http_post_affected_tests_forwards_json_paths
   --tb=short`: **4 passed / 18.59s**, exit zero, `req_07069dd964cb`.
   Full frozen suite must still establish non-recurrence under combined load.
+- Clean integrated `8d9fc4c9` source gates (all exit zero):
+  `.venv/Scripts/python.exe -m compileall -q src tools tests`
+  (`req_1f4613f4beee`);
+  `.venv/Scripts/python.exe tools/selftest.py` (six checks including repository
+  filtering, HTTP health/capabilities and Agent OS store, `req_1f2ff59706fb`);
+  `.venv/Scripts/python.exe tools/surface_inventory.py --check` (687 rows, no
+  drift, `req_839fae5d59ba`);
+  `.venv/Scripts/python.exe tools/release_check.py --allow-installed`
+  (`req_8dc4d2074e6a`). Selftest's live endpoint uses the currently installed
+  runtime, not proof this source has been deployed. Frozen whole-suite and
+  new-wheel/live verification are still required.
 
 ### Interrupted broad run and relevance fixture repair — 2026-10-12
 
