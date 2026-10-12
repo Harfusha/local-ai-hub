@@ -8,6 +8,26 @@
 
 #### 2026-10-12 implementation-first continuation
 
+Frozen `4c0e9667` completed **7159 passed, 105 skipped, 23 subtests,
+2 Torch deprecation warnings / 2612.98s** with clean unchanged source.
+Release checks for the installed working checkout, compileall, exact wheel
+installation and 123 installed package files against wheel/committed source
+passed. Config and eleven durable databases were backed up before installation.
+Live health/model/async/hardware/benchmark/vision/transcription/memory passed,
+but status failed on preprocessing/telemetry metadata probe timeouts; therefore
+this is not final release acceptance.
+
+The new status repair retains completed successful metadata probes in a
+separate bounded cache of eight fixed view/scope keys for five seconds from
+completion, exposing dependency age/reuse. Active-only inflight semantics,
+worker capacity, timeout degradation and copied response isolation remain.
+Errors, including worker BaseException, are never cached as success. Original
+slow probes can complete after a request deadline and their results can now be
+consumed instead of discarded and recomputed on each request. Focused status,
+HTTP/MCP identity and new expiry/error/scope checks pass **43/43 / 3.80s**
+through the live command broker (`req_c67802096ebe`). New committed candidate,
+packaging, runtime status and final integrated validation are still required.
+
 The two isolated timing findings now have controlled contract coverage without
 changing production deadlines. A real delayed tenant-B memory producer reaches
 the existing one-second deadline and emits the exact fail-open warning. The

@@ -427,6 +427,8 @@ Local model policy: Model routing follows the active hardware profile and user o
 
 Explicit `extra_fields` retains requested empty values (for example `records=[]`); absence of a field does not prove an empty result. Aggregate response budgets still apply.
 
+Status metadata may reuse a successful dependency snapshot for up to five seconds after its probe completes. `dependency_cached` and `dependency_age_ms` identify reuse in dependency diagnostics. Live/full and process/window snapshots remain separate; expired data and failed probes do not become healthy results. Status probe deadlines and active worker limits remain unchanged.
+
 Transport clients defer physical hardware inventory and automatic tuning to the shared server, including when `hardware.auto_tune=true`. Explicit user/runtime overrides remain intact; the server owns hardware-aware model selection and retains its full hardware probe. Client route declarations do not prove detected hardware or installed models.
 
 MCP cancellation closes the current request's HTTP connection. For direct command `run`, disconnect cancels that request's execution; a coalesced waiter cannot cancel the execution owner. Embedded requests follow the same request lifetime rule. The shared Hub remains independent. A sent request with no final response remains `outcome_unknown`; do not retry it automatically.

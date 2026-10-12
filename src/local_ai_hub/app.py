@@ -111,7 +111,19 @@ def _online_probe_status(value: Any, healthy: bool) -> str:
     return "online" if bool(value) else "offline"
 
 
-def _schedule_status_dependency(callback, fallback, *, key, lock, inflight, slots, executor, deadline, diagnostic=None):
+_STATUS_METADATA_CACHE_SECONDS = 5.0
+_STATUS_METADATA_KEYS = frozenset(
+    f"{view}:{scope}:{name}"
+    for view in ("live", "full") for scope in ("process", "window")
+    for name in ("telemetry.summary", "preprocessing.status")
+)
+
+
+def _status_probe_key(view: str, scope: str, key: str) -> str:
+    return f"{view}:{scope}:{key}" if key in {"telemetry.summary", "preprocessing.status"} else key
+
+
+def _schedule_status_dependency(callback, fallback, *, key, lock, inflight, slots, executor, deadline, diagnostic=None, completed_cache=None):
     """Start or reuse bounded status work without waiting for its result."""
     def mark_degraded(reason, error=None):
         if diagnostic is None:
@@ -129,6 +141,14 @@ def _schedule_status_dependency(callback, fallback, *, key, lock, inflight, slot
         mark_degraded("lock_timeout")
         return {"fallback": fallback, "healthy": False}
     try:
+        cached = completed_cache.get(key) if completed_cache is not None and key in _STATUS_METADATA_KEYS else None
+        if cached is not None:
+            age = max(0.0, time.monotonic() - cached["completed_at"])
+            if age < _STATUS_METADATA_CACHE_SECONDS:
+                if diagnostic is not None:
+                    diagnostic.update(dependency_cached=True, dependency_age_ms=int(age * 1000))
+                return {"entry": cached, "fallback": fallback}
+            del completed_cache[key]
         entry = inflight.get(key)
         if entry is None:
             if not slots.acquire(blocking=False):
@@ -140,16 +160,19 @@ def _schedule_status_dependency(callback, fallback, *, key, lock, inflight, slot
             def run() -> None:
                 try:
                     entry["outcome"]["value"] = callback()
-                except Exception as exc:
+                except BaseException as exc:
                     entry["outcome"]["error"] = exc
                 finally:
-                    with lock:
-                        if inflight.get(key) is entry:
-                            del inflight[key]
                     try:
                         slots.release()
                     finally:
-                        entry["completed"].set()
+                        with lock:
+                            entry["completed_at"] = time.monotonic()
+                            entry["completed"].set()
+                            if inflight.get(key) is entry:
+                                del inflight[key]
+                            if completed_cache is not None and key in _STATUS_METADATA_KEYS and "error" not in entry["outcome"]:
+                                completed_cache[key] = entry
 
             try:
                 submitted = executor.submit(run)
@@ -196,10 +219,10 @@ def _resolve_status_dependency(handle, *, deadline, diagnostic=None):
             diagnostic["reason"] = "probe_error"
             diagnostic["error_type"] = type(outcome["error"]).__name__
         return fallback, False
-    return outcome.get("value", fallback), True
+    return deepcopy(outcome.get("value", fallback)), True
 
 
-def _status_dependency(callback, fallback, *, key, lock, inflight, slots, executor, deadline=None, diagnostic=None):
+def _status_dependency(callback, fallback, *, key, lock, inflight, slots, executor, deadline=None, diagnostic=None, completed_cache=None):
     """Reuse active status work and cap workers that remain stuck past their deadline."""
     if deadline is None:
         deadline = time.monotonic() + max(0.0, float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS))
@@ -213,6 +236,7 @@ def _status_dependency(callback, fallback, *, key, lock, inflight, slots, execut
         executor=executor,
         deadline=deadline,
         diagnostic=diagnostic,
+        completed_cache=completed_cache,
     )
     return _resolve_status_dependency(handle, deadline=deadline, diagnostic=diagnostic)
 
@@ -294,6 +318,7 @@ class LocalAIApp:
         self._status_full_cache_lock = threading.Lock()
         self._status_dependency_lock = threading.Lock()
         self._status_dependency_inflight: dict[str, dict[str, Any]] = {}
+        self._status_metadata_cache: dict[str, dict[str, Any]] = {}
         self._status_dependency_slots = threading.BoundedSemaphore(_STATUS_MAX_INFLIGHT_DEPENDENCIES)
         self._status_dependency_executor = _new_status_dependency_executor()
 
@@ -754,7 +779,8 @@ class LocalAIApp:
                 value, healthy = _status_dependency(
                     callback,
                     fallback,
-                    key=key,
+                    key=_status_probe_key("live", scope, key),
+                    completed_cache=getattr(self, "_status_metadata_cache", None),
                     lock=self._status_dependency_lock,
                     inflight=self._status_dependency_inflight,
                     slots=self._status_dependency_slots,
@@ -898,7 +924,8 @@ class LocalAIApp:
             return _status_dependency(
                 callback,
                 fallback,
-                key=key,
+                key=_status_probe_key("full", scope, key),
+                completed_cache=getattr(self, "_status_metadata_cache", None),
                 lock=self._status_dependency_lock,
                 inflight=self._status_dependency_inflight,
                 slots=self._status_dependency_slots,
@@ -1017,7 +1044,8 @@ class LocalAIApp:
                 handle = _schedule_status_dependency(
                     callback,
                     fallback,
-                    key=key,
+                    key=_status_probe_key("full", scope, key),
+                    completed_cache=getattr(self, "_status_metadata_cache", None),
                     lock=self._status_dependency_lock,
                     inflight=self._status_dependency_inflight,
                     slots=self._status_dependency_slots,
