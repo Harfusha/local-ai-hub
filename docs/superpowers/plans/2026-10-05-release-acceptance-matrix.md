@@ -50,8 +50,10 @@
   tests/test_preprocessing_overhaul.py` — **27 passed / 3.93s**
   (`req_b1f638f121c2`). Blackboard rollback already logs narrow SQLite failures;
   other silent optional exceptions and larger command/vision decomposition
-  remain to be classified. No actionable TODO implementation is established
-  merely by regex strings used by the deterministic scanner.
+  remain to be classified. Bounded `rg` scans of Python source under `src` and
+  `tools` found no literal TODO/FIXME/HACK instruction comments, including
+  `TODO ... dodělat` placeholders (zero matches). Regex marker strings used by
+  the deterministic scanner are scanner data, not unfinished implementation.
 - Whole-suite/reinstallation acceptance for this follow-up is still required.
   Prior 6891-pass and installed live receipts remain bound to the release tree,
   not this changed production candidate. T20 stays review for the broader goal.
