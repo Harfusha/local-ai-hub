@@ -2,6 +2,44 @@
 
 ## Current master reconciliation - 2026-10-11
 
+### Memory adoption implementation in progress — 2026-10-12
+
+- **T05, primary, review:** existing `MemoryStore` now exposes a request-local
+  task-goal retrieval guard. Exact store/root/tenant/task identity is required;
+  ordinary `find_for_context` outside the guard retains its existing behavior.
+  Scoped goal relevance is evaluated before the latest-20 limit, preserving
+  older relevant records, Unicode matching, conventions and task-specific state.
+  No second store, schema migration, new chat/worktree or T14 pack edit.
+  Owned files: `agent_memory.py`, `tests/test_task_memory_goal_relevance.py`.
+  Real SQLite tests first failed for the missing guard, long-preamble recall and
+  general-policy crowding. Current six cases pass (`req_540b48ffa38e`, 9.41s);
+  goal relevance plus T05 scope/global/adoption group **80 passed / 13.67s**
+  (`req_c5664b4663e3`). TaskStore integration still requires end-to-end validation.
+- **T05 producer, primary integrating explicit GPT 6 Luna, review:** owned
+  `agent_consistency.py`, `tests/test_consistency_memory_candidate_safety.py`.
+  Automatic guard proposals remain CANDIDATE; only explicit approved decisions
+  become CONFIRMED. Generic manually ACTIVE memory remains supported. Primary
+  strengthened the real-store test and caught persisted `chat` content despite
+  candidate exclusion; automatic producer now omits chat/transcript/message/
+  conversation fields as well as raw/source/prompt/output content. Exact
+  privacy regression was red (`req_31e2b3fbee5e`). Combined consistency/memory/
+  context/relevance group **158 passed / 57.33s** (`req_82ef3ba62fef`).
+- **T08 snapshot, GPT 6 Luna Meitner, active:** ownership restricted to
+  `agent_tasks.py`, new snapshot-bound/checkpoint-audit tests. Implement true
+  one-second bounded lookup/admission, full serialized 512-token accounting,
+  negative-knowledge revision/expiry, goal guard integration, and next explicit
+  agent checkpoint used-ID/reason enforcement. Preserve server-managed context,
+  receipts, mutation generations, owner/revision fences and automatic internal
+  checkpoints. No completion acceptance yet.
+- **T05/T03 MCP adoption, GPT 6 Luna Galileo, active:** ownership restricted to
+  coord memory projection in `mcp_server.py`, budget helpers only if needed, and
+  a new actual MCP wire adoption test. Preserve bounded relevant instruction,
+  IDs/provenance/scope/version/expiry without caller `extra_fields`, or return
+  an explicit terminal budget error instead of silent success. No claim that
+  stored memory is delivered end-to-end until wire and integrated tests pass.
+- These changes are on master; the installed validated local release remains
+  unchanged. Broad T01–T21 and memory-adoption acceptance remain incomplete.
+
 ### Follow-up full-suite result and remaining memory adoption — 2026-10-12
 
 - Frozen `4b176e25`, home `.venv` interpreter:
