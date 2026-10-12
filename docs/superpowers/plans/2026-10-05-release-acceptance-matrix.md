@@ -4428,3 +4428,20 @@ or lacks Git metadata. No agent used a substitute checkout.
   This is a causal payload replay, not installed-daemon or whole-suite proof.
 - Install/update prompts carry the same evidence contract. Final packaging,
   integrated suite, fresh installed MCP/runtime and live-quality gates remain.
+
+## 2026-10-13 Hugging Face download opt-in
+
+- Before real retrieval quality, source inspection found that embedding and
+  reranker constructors retried without `local_files_only=True` after any local
+  cache error. That could implicitly download models despite the opt-in policy.
+- `models.allow_hf_downloads` defaults to boolean `false` in source and packaged
+  defaults. Config validation rejects non-booleans; direct model construction
+  also requires the exact boolean `true` before attempting network loading.
+  Existing cached fallback models and accelerator cooldowns remain supported.
+- Cached/missing cache cases, explicit opt-in, invalid configuration, model
+  lifecycle, embedding/reranker cache and accelerator selection: **73 passed in
+  3.50 seconds**, receipt `req_4f08d61afbc2`. Existing config/prompt/isolation
+  checks: **24 passed in 2.43 seconds**, receipt `req_21fcb8394d92`.
+- Updated install/update prompts and model capability guidance. Operator
+  `config.toml` and durable databases remain unchanged. No model was downloaded
+  or inferred during these checks. Real quality and final runtime gates remain.

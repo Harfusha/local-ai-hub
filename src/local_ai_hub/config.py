@@ -150,6 +150,11 @@ def validate_config(data: dict[str, Any]) -> None:
     )
 
     hardware = data.get("hardware", {})
+    models = data.get("models", {})
+    if not isinstance(models, dict):
+        raise ConfigError("models must be a TOML table")
+    if not isinstance(models.get("allow_hf_downloads", False), bool):
+        raise ConfigError("models.allow_hf_downloads must be boolean")
     profile = str(hardware.get("profile", "auto") or "auto").lower()
     if profile not in {"auto", "cpu", "integrated", "low", "balanced", "high", "max"}:
         raise ConfigError("hardware.profile must be one of auto, cpu, integrated, low, balanced, high, max")

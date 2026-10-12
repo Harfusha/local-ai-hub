@@ -10,6 +10,8 @@ Loopback connection establishment uses the smaller of `client.health_timeout_sec
 
 Compact context responses retain exact evidence citations and original success/error decisions. Source excerpts in `evidence.raw` stay behind evidence IDs for `local_ai_artifact`; they do not consume the protected metadata budget.
 
+Hugging Face embeddings and rerankers load cached model files offline by default. Set `models.allow_hf_downloads=true` only with explicit operator approval for missing model downloads; a cache error alone never authorizes a network retry. Existing cached CPU fallback models remain available without this opt-in.
+
 Local AI Hub has no remote-access or remote-control mode. HTTP binds only to `127.0.0.1`; HubClient and supervisor probes always target `127.0.0.1`. The dashboard and stdio MCP adapter use loopback HTTP only as same-machine transport. Remote host, client-host, and origin overrides are rejected. Protected routes require credentials and route permissions. `security.api_token` uses coarse `api_token_permissions`; `security.supervisor_token` grants administrative read/write only; `security.action_tokens` map exact actions to credentials; `security.users` maps users to unique tokens, exact resource scopes, and optional tenants. Credential values must be unique and redacted from diagnostics. `client.startup_wait_seconds` defaults to `30.0`.
 
 `local_ai_repo` validates actions against its supported registry. `skeletonize` transforms supplied source text only; it does not inspect a repository. `generate_tests_for_diff` returns manual, skipped test scaffolds; it is not test-pass evidence. `local_ai_status` telemetry and agent-state details avoid the live-status request.

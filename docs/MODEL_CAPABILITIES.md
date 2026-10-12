@@ -4,6 +4,11 @@ The Hub keeps every local model advisory. The matrix controls prompt scope and
 expected work; it does not discard a model response. A weak response remains
 visible with `semantic_quality` and `quality_warning` metadata.
 
+Hugging Face embedding and reranker weights use existing local caches by default.
+Missing cache files do not authorize downloads. `models.allow_hf_downloads=true`
+explicitly enables network loading; both shipped defaults set it to `false`.
+Cached fallback models remain eligible while downloads are disabled.
+
 | Model | Good for | Must not be used as |
 | --- | --- | --- |
 | `qwen2.5-coder:0.5b` | preprocessing, extraction, classification, compression | root-cause analysis, cross-file reasoning, architecture, security decisions, edits |
