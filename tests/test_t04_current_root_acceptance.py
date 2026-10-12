@@ -8,30 +8,41 @@ import pytest
 
 @pytest.fixture
 def live_api(tmp_path, monkeypatch):
+    yield from _live_api_resources(tmp_path, monkeypatch)
+
+
+def _live_api_resources(tmp_path, monkeypatch):
     from local_ai_hub import http_server
     from local_ai_hub.app import LocalAIApp
     from local_ai_hub.client import HubClient
 
     server = http_server.LocalAIHTTPServer(("127.0.0.1", 0), http_server.Handler)
-    config = tmp_path / "config.toml"
-    config.write_text(
-        f'[server]\nbind = "127.0.0.1"\nport = {server.server_address[1]}\n'
-        f'state_dir = "{(tmp_path / "state").as_posix()}"\n',
-        encoding="utf-8",
-    )
-    app = LocalAIApp(str(config))
-    monkeypatch.setattr(http_server, "APP", app)
-    client = HubClient(config_path=str(config), auto_start=False)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
+    app = None
+    client = None
+    thread = None
     try:
+        config = tmp_path / "config.toml"
+        config.write_text(
+            f'[server]\nbind = "127.0.0.1"\nport = {server.server_address[1]}\n'
+            f'state_dir = "{(tmp_path / "state").as_posix()}"\n',
+            encoding="utf-8",
+        )
+        app = LocalAIApp(str(config))
+        monkeypatch.setattr(http_server, "APP", app)
+        client = HubClient(config_path=str(config), auto_start=False)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
         yield app, client
     finally:
-        client.close()
-        server.shutdown()
+        if client is not None:
+            client.close()
+        if thread is not None and thread.is_alive():
+            server.shutdown()
         server.server_close()
-        thread.join(timeout=3)
-        app.close()
+        if thread is not None:
+            thread.join(timeout=3)
+        if app is not None:
+            app.close()
 
 
 def test_resolve_imports_get_and_post_share_auto_default(live_api):

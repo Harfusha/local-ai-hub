@@ -74,19 +74,10 @@ _STATUS_MAX_INFLIGHT_DEPENDENCIES = 32
 
 
 def _new_status_dependency_executor() -> ThreadPoolExecutor:
-    executor = ThreadPoolExecutor(
+    return ThreadPoolExecutor(
         max_workers=_STATUS_MAX_WORKERS,
         thread_name_prefix="local-ai-status",
     )
-    ready = threading.Barrier(_STATUS_MAX_WORKERS)
-    try:
-        warmers = [executor.submit(ready.wait, timeout=2.0) for _ in range(_STATUS_MAX_WORKERS)]
-        for warmer in warmers:
-            warmer.result(timeout=2.5)
-    except Exception:
-        executor.shutdown(wait=False, cancel_futures=True)
-        raise
-    return executor
 
 
 def _accelerator_status_fallback(config: dict[str, Any]) -> dict[str, Any]:
