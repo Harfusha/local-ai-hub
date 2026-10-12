@@ -120,6 +120,8 @@ Start conversations synchronously with `POST /api/delegate` or `POST /api/reason
 
 ### PHASE 3: VERIFY SERVICE & HEALTH
 
+Managed Ollama ownership is bound to its executable and creation identity, state directory, role, and (on Windows) a unique named Job Object. A separate service CLI may stop only that verified process tree. A numeric PID or occupied port never grants ownership. Already-running external Ollama endpoints are borrowed without takeover; their configured profile remains unverified. Preserve unknown ownership records and report stop failure rather than killing an unverified process.
+
 `hubctl cleanup` calls `/api/agent-state/cleanup` with a 3-second timeout and `auto_start=False`; it never starts Hub. Port occupancy alone is not kill authority. Listeners without verified ownership are reported in `skipped_ports` with reason `ownership_unverified`, not terminated or reported as cleaned.
 
 Verify `hubctl.py service-status` and exactly one platform user-service entry: Windows Task Scheduler `LocalAIHubSupervisor`, macOS LaunchAgent `com.localai.hub`, or Linux systemd user unit `local-ai-hub.service`. Do not register a service per agent, chat, or worktree. A `detached-fallback` result does not prove reboot-persistent service acceptance. Setup exits nonzero if service registration fails or reports only a detached fallback; preserve its output, inspect the existing service-manager entry and logs, then repair or rerun against the same clean verified commit. Do not report install complete until one persistent service is confirmed.

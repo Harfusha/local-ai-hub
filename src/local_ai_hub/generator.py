@@ -201,7 +201,8 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
             "## Ollama process ownership\n\n"
             "When `headless.manage_ollama = true`, Ollama is owned by the Local AI Hub supervisor. "
             "Never run `ollama serve` or add a separate Ollama startup task; use `python tools/service.py start|restart`. "
-            "The supervisor takes over a local unmanaged Ollama process and applies the configured profile. "
+            "The Hub applies the configured profile only to an Ollama process it starts and owns. "
+            "An already-running external Ollama is borrowed without takeover; its profile remains unverified. "
             "Set `headless.manage_ollama = false` only when intentionally using an external Ollama owner."
         )
     else:

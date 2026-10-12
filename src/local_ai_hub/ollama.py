@@ -9,6 +9,7 @@ import socket
 import subprocess
 import threading
 import time
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
@@ -45,13 +46,20 @@ def _normalise_keep_alive(payload: dict[str, Any] | None) -> dict[str, Any] | No
     return clean
 
 from .process_utils import (
-    find_listening_pid,
+    atomic_write_file,
+    close_job_object,
     hidden_run_kwargs,
+    managed_process_lock,
+    open_named_job_object,
     popen_managed,
     pid_alive,
-    process_executable,
+    process_owner_record,
+    process_owner_state,
     set_process_priority,
+    terminate_job_object,
     terminate_tree,
+    wait_job_object_empty,
+    windows_job_contains_process,
 )
 from .model_policy import ModelExecutionPolicy
 
@@ -216,6 +224,9 @@ class OllamaRuntime:
         safe_name = "".join(ch for ch in str(managed_name) if ch.isalnum() or ch in {"-", "_"}) or "ollama"
         self.managed_name = safe_name
         self.managed_pid_path = self.state_dir / f"{safe_name}.managed.pid"
+        self.managed_owner_path = self.state_dir / f"{safe_name}.owner.json"
+        self.managed_lock_path = self.state_dir / f"{safe_name}.managed.lock"
+        self._managed_owner: dict[str, Any] | None = None
         self._managed_process: subprocess.Popen[Any] | None = None
         self.model_policy = ModelExecutionPolicy(config)
         self.llama_cpp = LlamaCppRouter(config)
@@ -1565,13 +1576,19 @@ class OllamaRuntime:
         env["OLLAMA_MAX_LOADED_MODELS"] = str(int(sched.get("max_loaded_models", 1)))
         if bool(cfg.get("allow_integrated_gpu", False)):
             env["OLLAMA_IGPU_ENABLE"] = "1"
+        else:
+            env.pop("OLLAMA_IGPU_ENABLE", None)
         # Vulkan is the portable Intel/AMD GPU path on Windows/Linux in Ollama.
         # It stays opt-in globally and is enabled by the conservative integrated
         # profile only; Ollama may still fall back to CPU when discovery fails.
         if bool(cfg.get("enable_vulkan", False)):
             env["OLLAMA_VULKAN"] = "1"
+        else:
+            env.pop("OLLAMA_VULKAN", None)
         if bool(cfg.get("flash_attention", True)):
             env["OLLAMA_FLASH_ATTENTION"] = "1"
+        else:
+            env.pop("OLLAMA_FLASH_ATTENTION", None)
         kv_cache = str(cfg.get("kv_cache_type", "q8_0")).strip()
         if kv_cache:
             env["OLLAMA_KV_CACHE_TYPE"] = kv_cache
@@ -1597,48 +1614,31 @@ class OllamaRuntime:
             env["OLLAMA_NUM_THREADS"] = str(int(num_threads))
         return env
 
-    def _management_enabled(self) -> bool:
-        headless = self.config.get("headless", {})
-        return bool(headless.get("manage_ollama", False)) and bool(headless.get("autostart_ollama", True))
-
-    def _managed_pid_alive(self) -> bool:
+    def _read_managed_owner(self) -> dict[str, Any] | None:
         try:
-            pid = int(self.managed_pid_path.read_text(encoding="utf-8").strip() or 0)
-        except Exception:
+            if self.managed_owner_path.stat().st_size > 16_384:
+                return None
+            owner = json.loads(self.managed_owner_path.read_text(encoding="utf-8"))
+            return owner if isinstance(owner, dict) else None
+        except (OSError, ValueError):
+            return None
+
+    def _remove_managed_markers(self, owner: dict[str, Any]) -> bool:
+        # Called while holding the cross-process kernel lock. Never erase a
+        # replacement owner's record after an uncertain cleanup.
+        if not self.managed_owner_path.exists() and not self.managed_pid_path.exists():
+            return True
+        if self._read_managed_owner() != owner:
             return False
-        executable = (process_executable(pid) or "").lower()
-        return bool(pid_alive(pid) and "ollama" in Path(executable).name)
-
-    def _local_external_pid(self) -> int | None:
-        if not self._management_enabled() or self._managed_pid_alive():
-            return None
-        parsed = urlparse(self.base_url)
-        if parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
-            return None
-        pid = find_listening_pid(int(parsed.port or 11434))
-        if not pid or pid == os.getpid():
-            return None
-        executable = (process_executable(pid) or "").lower()
-        return pid if "ollama" in Path(executable).name else None
-
-    def _take_over_external_server(self) -> bool | None:
-        """Stop a local unmanaged Ollama so the Hub can restart it with its profile.
-
-        ``None`` means no safe local Ollama owner was found.  ``False`` means a
-        takeover was attempted but the endpoint did not go offline.  The latter
-        fails closed instead of killing an unknown process repeatedly.
-        """
-        pid = self._local_external_pid()
-        if pid is None:
-            return None
-        if not terminate_tree(pid, grace_seconds=5.0):
+        try:
+            if self.managed_pid_path.exists():
+                if self.managed_pid_path.read_text(encoding="utf-8").strip() != str(owner["pid"]):
+                    return False
+                self.managed_pid_path.unlink()
+            self.managed_owner_path.unlink()
+            return True
+        except (OSError, KeyError):
             return False
-        deadline = time.monotonic() + 6.0
-        while time.monotonic() < deadline:
-            if not self.is_online():
-                return True
-            time.sleep(0.1)
-        return not self.is_online()
 
     def _cleanup_failed_start(self, proc: subprocess.Popen[Any]) -> bool:
         """Reap a child whose endpoint never became healthy."""
@@ -1675,6 +1675,12 @@ class OllamaRuntime:
             return False
         if self._managed_process is proc:
             self._managed_process = None
+        owner = self._managed_owner
+        if owner is not None:
+            removed = self._remove_managed_markers(owner)
+            if removed:
+                self._managed_owner = None
+            return removed
         try:
             if self.managed_pid_path.read_text(encoding="utf-8").strip() == str(proc.pid):
                 self.managed_pid_path.unlink(missing_ok=True)
@@ -1689,106 +1695,93 @@ class OllamaRuntime:
             return self.llama_cpp.is_online()
         if not bool(self.config.get("llama_cpp", {}).get("fallback_to_ollama", True)):
             return False
+        # An already-running endpoint is borrowed. PID/name/port discovery
+        # never grants permission to stop it or apply a different profile.
         if self.is_online():
-            takeover = self._take_over_external_server()
-            if takeover is None:
-                return True
-            if not takeover:
-                return False
+            return True
         if not bool(self.config.get("headless", {}).get("autostart_ollama", True)):
             return False
-        with self._ensure_lock:
-            # Re-check after waiting for another starter. This prevents watchdog,
-            # scheduler and preprocessing threads from spawning parallel servers.
-            if self.is_online():
-                return True
-            try:
-                old_pid = int(self.managed_pid_path.read_text(encoding="utf-8").strip() or 0)
-            except Exception:
-                old_pid = 0
-            if old_pid > 0:
-                owned_process = self._managed_process
-                if owned_process is not None and owned_process.pid == old_pid:
-                    if not self._cleanup_failed_start(owned_process):
-                        return False
-                elif pid_alive(old_pid):
-                    executable_path = (process_executable(old_pid) or "").lower()
-                    if executable_path and "ollama" not in Path(executable_path).name.lower():
-                        # PID file was reused by an unrelated process. Never terminate it.
-                        try:
-                            self.managed_pid_path.unlink(missing_ok=True)
-                        except OSError:
-                            pass
-                    else:
-                        # A live PID without its original Popen handle cannot be
-                        # safely recycled. Preserve the PID file and fail closed.
-                        return False
-
-            takeover = self._take_over_external_server()
-            if takeover is False:
-                return False
-
-            env = self._configured_environment()
-            executable = self.config.get("ollama", {}).get("executable") or "ollama"
-            args = [executable, "serve"]
-            popen_kwargs: dict[str, Any] = hidden_run_kwargs(new_group=True)
-            if os.name != "nt":
-                popen_kwargs["start_new_session"] = True
-            proc: subprocess.Popen[Any] | None = None
-            try:
-                proc = popen_managed(
-                    args, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL, **popen_kwargs,
-                )
-                self._managed_process = proc
-                priority = str(self.config.get("ollama", {}).get("process_priority", "") or "")
-                if not priority and self.managed_name.startswith("ollama-background"):
-                    priority = str(self.config.get("background_gpu", {}).get("process_priority", "") or "")
-                set_process_priority(proc.pid, priority)
-                self.managed_pid_path.write_text(str(proc.pid), encoding="utf-8")
-            except Exception:
-                if proc is not None:
-                    self._cleanup_failed_start(proc)
-                return False
-
-            startup_timeout = max(1.0, float(self.config.get("ollama", {}).get("startup_timeout_seconds", 12.0)))
-            deadline = time.monotonic() + startup_timeout
-            while time.monotonic() < deadline:
-                if self.is_online():
-                    return True
-                if proc.poll() is not None:
-                    break
-                time.sleep(min(0.4, max(0.05, deadline - time.monotonic())))
-            if self.is_online():
-                return True
-            self._cleanup_failed_start(proc)
+        try:
+            with self._ensure_lock, managed_process_lock(self.managed_lock_path) as acquired:
+                return self._start_managed_server_locked() if acquired else False
+        except OSError:
             return False
 
-    def managed_profile_status(self) -> dict[str, Any]:
-        pid = 0
+    def _start_managed_server_locked(self) -> bool:
+        if self.is_online():
+            return True
+        if not self._stop_managed_server_locked():
+            return False
+
+        env = self._configured_environment()
+        executable = self.config.get("ollama", {}).get("executable") or "ollama"
+        args = [executable, "serve"]
+        popen_kwargs: dict[str, Any] = hidden_run_kwargs(new_group=True)
+        if os.name != "nt":
+            popen_kwargs["start_new_session"] = True
+        proc: subprocess.Popen[Any] | None = None
         try:
-            if self.managed_pid_path.exists():
-                pid = int(self.managed_pid_path.read_text(encoding="utf-8").strip() or 0)
+            job_name = f"Local\\LocalAIHubManaged-{uuid.uuid4().hex}" if os.name == "nt" else None
+            proc = popen_managed(
+                args, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL, job_name=job_name, **popen_kwargs,
+            )
+            self._managed_process = proc
+            owner = process_owner_record(proc.pid, self.state_dir, self.managed_name)
+            if owner is None:
+                raise OSError("Cannot retain managed Ollama process identity")
+            if job_name:
+                owner["windows_job_name"] = job_name
+            owner["profile"] = self._expected_managed_profile()
+            atomic_write_file(self.managed_owner_path, json_dumps(owner))
+            self._managed_owner = owner
+            priority = str(self.config.get("ollama", {}).get("process_priority", "") or "")
+            if not priority and self.managed_name.startswith("ollama-background"):
+                priority = str(self.config.get("background_gpu", {}).get("process_priority", "") or "")
+            set_process_priority(proc.pid, priority)
+            atomic_write_file(self.managed_pid_path, str(proc.pid))
         except Exception:
-            pid = 0
-        managed = bool(pid > 0 and pid_alive(pid))
+            if proc is not None:
+                self._cleanup_failed_start(proc)
+            return False
+
+        startup_timeout = max(1.0, float(self.config.get("ollama", {}).get("startup_timeout_seconds", 12.0)))
+        deadline = time.monotonic() + startup_timeout
+        while time.monotonic() < deadline:
+            if self.is_online():
+                return True
+            if proc.poll() is not None:
+                break
+            time.sleep(min(0.4, max(0.05, deadline - time.monotonic())))
+        if self.is_online():
+            return True
+        self._cleanup_failed_start(proc)
+        return False
+
+    def _expected_managed_profile(self) -> dict[str, Any]:
         cfg = self.config.get("ollama", {})
         sched = self.config.get("scheduler", {})
+        return {
+            "num_parallel": int(cfg.get("num_parallel", sched.get("max_parallel", 1))),
+            "max_loaded_models": int(sched.get("max_loaded_models", 1)),
+            "allow_integrated_gpu": bool(cfg.get("allow_integrated_gpu", False)),
+            "enable_vulkan": bool(cfg.get("enable_vulkan", False)),
+            "flash_attention": bool(cfg.get("flash_attention", True)),
+            "kv_cache_type": str(cfg.get("kv_cache_type", "q8_0")),
+            "gpu_overhead_bytes": int(cfg.get("gpu_overhead_bytes", 0) or 0),
+        }
+
+    def managed_profile_status(self) -> dict[str, Any]:
+        owner = self._read_managed_owner()
+        managed = owner is not None and process_owner_state(owner, self.state_dir, self.managed_name) == "owned"
+        expected = self._expected_managed_profile()
         return {
             "managed": managed,
             "managed_name": self.managed_name,
             "url": self.base_url,
-            "pid": pid if managed else None,
-            "profile_verifiable": managed,
-            "expected": {
-                "num_parallel": int(cfg.get("num_parallel", sched.get("max_parallel", 1))),
-                "max_loaded_models": int(sched.get("max_loaded_models", 1)),
-                "allow_integrated_gpu": bool(cfg.get("allow_integrated_gpu", False)),
-                "enable_vulkan": bool(cfg.get("enable_vulkan", False)),
-                "flash_attention": bool(cfg.get("flash_attention", True)),
-                "kv_cache_type": str(cfg.get("kv_cache_type", "q8_0")),
-                "gpu_overhead_bytes": int(cfg.get("gpu_overhead_bytes", 0) or 0),
-            },
+            "pid": owner["pid"] if managed else None,
+            "profile_verifiable": bool(managed and owner.get("profile") == expected),
+            "expected": expected,
             "llama_cpp": {
                 "mode": str(self.config.get("llama_cpp", {}).get("mode", "auto")),
                 "online_models": self.llama_cpp.available_models(),
@@ -1800,24 +1793,53 @@ class OllamaRuntime:
         if llama_cpp_managed_selected(self.config):
             return self.llama_cpp_managed.stop()
         try:
-            pid = int(self.managed_pid_path.read_text(encoding="utf-8").strip() or 0)
-        except Exception:
-            pid = 0
-        if pid <= 0:
-            return True
-        process = self._managed_process
-        if process is not None and process.pid == pid:
-            return self._cleanup_failed_start(process)
-        if pid_alive(pid):
-            executable = (process_executable(pid) or "").lower()
-            if executable and "ollama" not in Path(executable).name.lower():
-                try: self.managed_pid_path.unlink(missing_ok=True)
-                except OSError: pass
-                return False
+            with self._ensure_lock, managed_process_lock(self.managed_lock_path) as acquired:
+                return self._stop_managed_server_locked() if acquired else False
+        except OSError:
             return False
-        try: self.managed_pid_path.unlink(missing_ok=True)
-        except OSError: pass
-        return True
+
+    def _stop_managed_server_locked(self) -> bool:
+        owner = self._read_managed_owner()
+        process = self._managed_process
+        if process is not None:
+            return self._cleanup_failed_start(process)
+        if owner is None:
+            if self.managed_owner_path.exists():
+                return False
+            try:
+                pid = int(self.managed_pid_path.read_text(encoding="utf-8").strip() or 0)
+            except FileNotFoundError:
+                return True
+            except (OSError, ValueError):
+                return False
+            if pid > 0 and pid_alive(pid):
+                return False  # A numeric PID is not an owner record.
+            try:
+                self.managed_pid_path.unlink(missing_ok=True)
+                return True
+            except OSError:
+                return False
+        state = process_owner_state(owner, self.state_dir, self.managed_name)
+        name = owner.get("windows_job_name", "")
+        if state == "unknown" or os.name != "nt" or not re.fullmatch(r"Local\\LocalAIHubManaged-[0-9a-f]{32}", str(name)):
+            return False
+        job = None
+        try:
+            job = open_named_job_object(name)
+            if job is None:
+                return self._remove_managed_markers(owner) if state == "stale" else False
+            if state == "stale":
+                return self._remove_managed_markers(owner) if wait_job_object_empty(job, 0) else False
+            if not windows_job_contains_process(job, int(owner["pid"]), owner):
+                return False
+            if not terminate_job_object(job) or not wait_job_object_empty(job, 5000):
+                return False
+            return self._remove_managed_markers(owner)
+        except (OSError, ValueError, TypeError, KeyError):
+            return False
+        finally:
+            if job is not None:
+                close_job_object(job)
 
     def version(self) -> str | None:
         now = time.monotonic()
