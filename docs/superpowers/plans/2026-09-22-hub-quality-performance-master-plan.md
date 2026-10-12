@@ -360,8 +360,10 @@ T11 confirmed its assigned `f678` checkout is its own. It briefly tested two T21
 passed: 6891 tests, 105 skips, 23 subtests, two Torch FutureWarnings, exit 0.
 Production-equivalent 4.0.0 wheel `e67d2c96` is installed in the home `.venv`;
 daemon restarted in active mode. Post-install selftest, doctor, compileall and
-687-row API inventory pass. Installed live-smoke status/async failures remain
-open; no external release or blanket task completion is claimed. Exact current
+687-row API inventory pass. The latest complete installed live smoke now passes
+all sixteen checks, exit 0: local functional Windows release GO. Earlier
+intermittent status/async failures remain recorded for follow-up; no external
+publication or blanket task completion is claimed. Exact current
 receipts and post-release acceptance gaps live in
 [`2026-10-05-release-acceptance-matrix.md`](2026-10-05-release-acceptance-matrix.md).
 Use GPT 6 Luna for explicitly requested independent subagent scopes; primary
