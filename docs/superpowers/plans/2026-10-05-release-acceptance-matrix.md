@@ -2,6 +2,51 @@
 
 ## Current master reconciliation - 2026-10-11
 
+### Integrated memory adoption proof — 2026-10-12
+
+- Integrated `a2d8b20a`: one per-store daemon lookup worker and bounded admission
+  keep a genuinely blocked backend from delaying create/resume beyond the fixed
+  one-second retrieval deadline; further requests receive a bounded busy warning.
+  Trace/request-local goal scope is copied and reset. Full serialized snapshots,
+  including warning-only envelopes, are truthfully counted at or below 512 tokens.
+  Negative knowledge preserves revision/expiry; invalid/expired entries skip.
+  Explicit agent checkpoints require used IDs or a reason when advice exists;
+  volatile use requires the same source-check policy as completion. Resume resets
+  the current usage audit. Internal automatic mutation/receipt checkpoints,
+  immutable memory context, owners and revision/generation fences are preserved.
+- Primary combined command:
+  `.venv/Scripts/python.exe -B -m pytest -q --tb=short
+  tests/test_task_memory_goal_relevance.py tests/test_task_memory_snapshot_bounds.py
+  tests/test_task_memory_checkpoint_audit.py tests/test_consistency_memory_candidate_safety.py
+  tests/test_agent_task_memory_adoption.py tests/test_t05_memory_adoption_context.py
+  tests/test_t05_memory_task_scope_guard.py tests/test_t08_http_memory_context_immutable.py
+  tests/test_agent_tasks.py tests/test_agent_verification.py`:
+  **236 passed / 111.63s**, `req_afd60ebefd4c`. Legacy goals now describe their
+  asserted relevant facts; privacy/foreign-ID/tenant/root assertions remain,
+  zero-token assumptions became full-envelope accounting, and accepted agent
+  checkpoints supply the required audit. Negative missing/invalid source checks
+  remain tested; no production contract was weakened for green results.
+- Integrated `b56a183e` adds a composed real-store wire test: actual MemoryStore,
+  ContextCompiler, TaskStore, loopback HTTP adapter, HubClient and FastMCP stdio.
+  Create receives the seeded relevant fact with ID/origin/scope/version/validity;
+  checkpoint stores declared used IDs; get returns audit; resume refreshes advice
+  and resets audit. Each actual MCP envelope satisfies schema/action contract and
+  quota; the snapshot's measured count equals `estimated_tokens` and is <=512.
+  Focused actual test: **1 passed / 4.29s**, native fallback after terminal
+  broker refusal `req_c3bc906ec7a8`. Initial attempt correctly rejected an invalid
+  `task` dictionary; fixture then used the existing `contract` parameter rather
+  than changing the public input schema. No additional HubServices instance,
+  model inference, operator-state mutation or parallel memory system was started.
+- A loopback adapter rather than the complete production HTTP handler is used
+  for that composed wire proof; the separate real production-HTTP suite covers
+  immutable checkpoint/tenant/source-check behavior. This proves protocol use
+  declarations, not that an LLM cognitively used an item. Shared tenantless
+  GLOBAL policy remains explicit; foreign scoped items stay rejected.
+- Memory source/bounded scope acceptance is review with substantially stronger
+  end-to-end evidence, not blanket release done. Full candidate suite, fresh
+  package/live install and deployment verification remain required. Broader
+  architectural refactors and platform/performance acceptance remain open.
+
 ### MCP adoption transport integrated, snapshot still under review — 2026-10-12
 
 - Primary took back both implementation scopes after confirming no actual
