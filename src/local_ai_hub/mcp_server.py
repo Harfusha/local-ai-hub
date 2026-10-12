@@ -4117,7 +4117,7 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                             if key in value and key not in dropped
                         },
                     }
-                    for key in (*_CONTEXT_PROTECTED_KEYS, "evidence_id", "evidence_ids", "artifact_id", "artifact_ids"):
+                    for key in (*_CONTEXT_PROTECTED_KEYS, "evidence", "evidence_id", "evidence_ids", "artifact_id", "artifact_ids"):
                         if key != "error" and key in value and key not in dropped:
                             candidate[key] = value[key]
                     for metadata in (
