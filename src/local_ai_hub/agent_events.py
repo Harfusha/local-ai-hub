@@ -28,6 +28,65 @@ from .sqlite_support import (
 
 _MAX_EVENT_GAP_RANGES = 128
 
+
+def _windows_process_user_sid() -> str:
+    """Read the primary process token locally; no child, account lookup or cache.
+
+    Environment usernames are not authenticated identities. Numeric SIDs also
+    avoid domain/account-name resolution when icacls secures the backup.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    security = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel.GetCurrentProcess.argtypes = []
+    kernel.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.CloseHandle.restype = wintypes.BOOL
+    kernel.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel.LocalFree.restype = ctypes.c_void_p
+    security.OpenProcessToken.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE),
+    ]
+    security.OpenProcessToken.restype = wintypes.BOOL
+    security.GetTokenInformation.argtypes = [
+        wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+        ctypes.POINTER(wintypes.DWORD),
+    ]
+    security.GetTokenInformation.restype = wintypes.BOOL
+    security.ConvertSidToStringSidW.argtypes = [
+        ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR),
+    ]
+    security.ConvertSidToStringSidW.restype = wintypes.BOOL
+
+    token = wintypes.HANDLE()
+    if not security.OpenProcessToken(kernel.GetCurrentProcess(), 0x0008, ctypes.byref(token)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        required = wintypes.DWORD()
+        # TokenUser starts with SID_AND_ATTRIBUTES, whose first field is PSID.
+        security.GetTokenInformation(token, 1, None, 0, ctypes.byref(required))
+        if ctypes.get_last_error() != 122 or not (ctypes.sizeof(ctypes.c_void_p) <= required.value <= 65536):
+            raise OSError("agent_state backup process token size unavailable")
+        buffer = ctypes.create_string_buffer(required.value)
+        if not security.GetTokenInformation(token, 1, buffer, len(buffer), ctypes.byref(required)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        sid = ctypes.cast(buffer, ctypes.POINTER(ctypes.c_void_p))[0]
+        text = wintypes.LPWSTR()
+        if not security.ConvertSidToStringSidW(sid, ctypes.byref(text)):
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            result = text.value
+            if not result or not result.startswith("S-1-"):
+                raise OSError("agent_state backup process SID unavailable")
+            return result
+        finally:
+            kernel.LocalFree(ctypes.cast(text, ctypes.c_void_p))
+    finally:
+        kernel.CloseHandle(token)
+
+
 @dataclass(frozen=True)
 class AgentEvent:
     event_id: str
@@ -946,22 +1005,8 @@ class AgentStateStore:
                 from .process_utils import run_hidden
 
                 try:
-                    # USERNAME is caller-controlled, not proof of the process account.
-                    account = run_hidden(
-                        ["whoami"],
-                        check=True,
-                        capture_output=True,
-                        text=True,
-                        timeout=1.0,
-                    ).stdout.strip()
-                    if (
-                        not account
-                        or len(account.split("\\")) != 2
-                        or not all(account.split("\\"))
-                        or any(character in account for character in "\r\n\x00")
-                    ):
-                        raise PermissionError("agent_state backup process account is unknown")
-                    acl_command = ["icacls", str(path), "/inheritance:r", "/grant:r", f"{account}:(F)"]
+                    sid = _windows_process_user_sid()
+                    acl_command = ["icacls", str(path), "/inheritance:r", "/grant:r", f"*{sid}:(F)"]
                     try:
                         run_hidden(
                             acl_command,
@@ -1029,17 +1074,24 @@ class AgentStateStore:
         *,
         destination_path: Path | None = None,
     ) -> Path:
+        # sqlite3_backup cannot copy from its own active write transaction.
+        # Never commit/rollback caller-owned durable changes to make it proceed.
+        if source.in_transaction:
+            raise RuntimeError("agent_state backup requires a source without an active transaction")
         timeout = float(cls._MIGRATION_BACKUP_TIMEOUT_SECONDS)
         deadline = time.monotonic() + timeout
         if timeout <= 0:
             raise TimeoutError("agent_state migration backup time limit exceeded")
 
-        def check_deadline() -> None:
+        def check_deadline(stage: str = "prepare", status: int | None = None) -> None:
             if time.monotonic() >= deadline:
-                raise TimeoutError("agent_state migration backup time limit exceeded")
+                raise TimeoutError(
+                    "agent_state migration backup time limit exceeded "
+                    f"(stage={stage} sqlite_status={status} source_in_transaction={source.in_transaction})"
+                )
 
         def backup_progress(_status: int, _remaining: int, _total: int) -> None:
-            check_deadline()
+            check_deadline("copy", _status)
 
         remaining_ms = max(1, min(10, int(timeout * 1000)))
         source.set_progress_handler(lambda: 1 if time.monotonic() >= deadline else 0, 100)
@@ -1055,6 +1107,7 @@ class AgentStateStore:
                 f"{db_path}.migration-v0-v1-{uuid.uuid4().hex}.bak"
             )
             backup_identity = cls._reserve_backup_destination(backup_path)
+            check_deadline("secure_destination")
             backup = sqlite3.connect(backup_path, timeout=min(0.1, timeout))
             if not cls._backup_path_matches(backup_path, backup_identity):
                 raise RuntimeError("agent_state backup destination changed before SQLite opened it")
@@ -1065,7 +1118,7 @@ class AgentStateStore:
                 progress=backup_progress,
                 sleep=min(0.002, timeout),
             )
-            check_deadline()
+            check_deadline("copy_complete")
             backup.commit()
             cls._verify_backup(source, backup, deadline=deadline)
             verified = True

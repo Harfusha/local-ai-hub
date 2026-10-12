@@ -65,6 +65,36 @@
   Owned files: `src/local_ai_hub/app.py`,
   `tests/test_t04_current_root_acceptance.py`,
   `tests/test_status_executor_startup_cleanup.py`. Installed runtime unchanged.
+- GPT-6 Luna Galileo Windows backup repair reviewed: process identity comes
+  directly from the primary Windows process token, not an environment username
+  or deadline-sensitive `whoami` child. Native SID failures close token handles
+  and fail closed; real DACL test verifies only the current process user gets
+  full access with inherited access removed. An active source transaction now
+  fails immediately without committing/rolling back caller data. ACL work stays
+  inside the unchanged five-second backup budget; timeout details identify
+  stage, SQLite status and transaction state. External SQLite lock and cleanup
+  are tested. **The original full-suite copy-progress timeout cause remains
+  unconfirmed**: self-block was reproduced separately, but real migration
+  connection was observed outside a transaction. No claim it caused that run.
+- Primary adapted `tests/test_t18_backup_reservation_acl.py` doubles from removed
+  child-account lookup to native-token lookup, preserving failure, descriptor,
+  bounded ACL retry, replaced-inode and identity-race assertions. New real native
+  tests live in `tests/test_agent_backup_windows_identity.py`; production scope
+  is only `src/local_ai_hub/agent_events.py`. Old T18 baseline was red
+  (`req_728e89b09550`). Integrated command `.venv/Scripts/python.exe -B -m pytest
+  -q tests/test_t18_backup_reservation_acl.py
+  tests/test_agent_backup_windows_identity.py tests/test_agent_state_migrations.py
+  tests/test_agent_state_migrations_root.py tests/test_t05_agent_state_migrations.py
+  --tb=short`: **66 passed / 1 POSIX skip / 27.64s**, exit zero,
+  `req_ee8ac9bdcb77`.
+- Primary reran the four original backup-affected application cases:
+  `.venv/Scripts/python.exe -B -m pytest -q
+  tests/test_agent_state_operations.py::test_cleanup_removes_expired_terminal_records_but_never_active_task
+  tests/test_agent_state_operations.py::test_selective_export_rejects_record_with_disallowed_scope
+  tests/test_http_vision_routes.py::test_browser_stage_commit_and_abandon_http_lifecycle
+  tests/test_http_route_operation_acceptance.py::test_http_post_affected_tests_forwards_json_paths
+  --tb=short`: **4 passed / 18.59s**, exit zero, `req_07069dd964cb`.
+  Full frozen suite must still establish non-recurrence under combined load.
 
 ### Interrupted broad run and relevance fixture repair — 2026-10-12
 

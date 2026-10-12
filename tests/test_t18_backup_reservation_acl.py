@@ -36,21 +36,31 @@ def windows_reservation(monkeypatch):
 
     monkeypatch.setattr(agent_events, "os", WindowsOS())
 
-    def install(failure=None, output="HOST\\owner\n"):
+    def install(failure=None, identity_error=None):
+        def process_sid():
+            if identity_error is not None:
+                raise identity_error
+            if failure is not None and failure[0] == "process_token":
+                raise failure[1]
+            return "S-1-5-21-100-200-300-1001"
+
+        monkeypatch.setattr(agent_events, "_windows_process_user_sid", process_sid)
+
         def run(argv, **kwargs):
             calls.append((argv, kwargs))
             if failure is not None and argv[0] == failure[0]:
                 raise failure[1]
-            return subprocess.CompletedProcess(argv, 0, output if argv[0] == "whoami" else "", "")
+            assert argv[0] == "icacls", "identity must not spawn a child"
+            return subprocess.CompletedProcess(argv, 0, "", "")
 
-        # Old implementation and hidden helper share the mocked OS boundary.
+        # Keep the same fail-closed boundary with native process-token identity.
         monkeypatch.setattr(agent_events.subprocess, "run", run)
         monkeypatch.setattr(process_utils, "run_hidden", run)
 
     return install, descriptors, closed, calls, replacement
 
 
-@pytest.mark.parametrize("command", ["whoami", "icacls"])
+@pytest.mark.parametrize("command", ["process_token", "icacls"])
 @pytest.mark.parametrize("error", [
     subprocess.CalledProcessError(5, "mock"),
     subprocess.TimeoutExpired("mock", 1.0),
@@ -69,19 +79,19 @@ def test_windows_acl_failure_is_closed(tmp_path, windows_reservation, command, e
     for descriptor in descriptors:
         with pytest.raises(OSError):
             os.fstat(descriptor)
-    assert calls
+    assert bool(calls) == (command == "icacls")
 
 
-@pytest.mark.parametrize("output", ["", " \n", "unknown", "HOST\\owner\nOTHER\\user"])
-def test_windows_unknown_account_is_closed(tmp_path, windows_reservation, output):
+@pytest.mark.parametrize("message", ["token unavailable", "token user unavailable", "SID conversion failed", "invalid process SID"])
+def test_windows_unknown_process_identity_is_closed(tmp_path, windows_reservation, message):
     install, descriptors, closed, calls, _ = windows_reservation
-    install(output=output)
+    install(identity_error=OSError(message))
     path = tmp_path / "backup.sqlite3"
     with pytest.raises(PermissionError):
         AgentStateStore._reserve_backup_destination(path)
     assert not path.exists()
     assert closed == descriptors
-    assert [call[0][0] for call in calls] == ["whoami"]
+    assert calls == []
 
 
 def test_windows_acl_success_is_bounded_and_uses_current_account(tmp_path, monkeypatch, windows_reservation):
@@ -95,8 +105,8 @@ def test_windows_acl_success_is_bounded_and_uses_current_account(tmp_path, monke
     identity = AgentStateStore._reserve_backup_destination(path)
     assert identity == (path.stat().st_dev, path.stat().st_ino)
     assert closed == descriptors
-    assert [call[0][0] for call in calls] == ["whoami", "icacls"]
-    assert calls[1][0][-1] == "HOST\\owner:(F)"
+    assert [call[0][0] for call in calls] == ["icacls"]
+    assert calls[0][0][-1] == "*S-1-5-21-100-200-300-1001:(F)"
     for _, kwargs in calls:
         assert 0 < kwargs["timeout"] <= 1.0
         assert kwargs["check"] is True
@@ -111,8 +121,7 @@ def test_windows_acl_retries_one_bounded_timeout(tmp_path, monkeypatch, windows_
     def run(argv, **kwargs):
         nonlocal acl_attempts
         calls.append((argv, kwargs))
-        if argv[0] == "whoami":
-            return subprocess.CompletedProcess(argv, 0, "HOST\\owner\n", "")
+        assert argv[0] == "icacls"
         acl_attempts += 1
         if acl_attempts == 1:
             raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
