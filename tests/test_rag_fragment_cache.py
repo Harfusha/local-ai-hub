@@ -9,6 +9,8 @@ import struct
 from contextlib import closing
 from pathlib import Path
 
+import pytest
+
 from local_ai_hub.rag import RAGStore, _fragment_hash
 
 
@@ -87,27 +89,71 @@ def test_index_embeds_identical_fragments_once(tmp_path):
     assert [_fragment_hash(text) for text in services.calls[0]] == [_fragment_hash(source)]
 
 
-def test_index_coalesces_identical_concurrent_requests(tmp_path):
+@pytest.mark.parametrize("defer_worker_until_embedding", [False, True])
+def test_index_coalesces_identical_concurrent_requests(tmp_path, monkeypatch, defer_worker_until_embedding):
     root = tmp_path / "project"
     root.mkdir()
     (root / "one.py").write_text("def same():\n    return 1\n", encoding="utf-8")
-    services = _Services(block=True)
+    services = _Services()
     store = _store(tmp_path, services)
-    first: dict[str, object] = {}
     second: dict[str, object] = {}
+    errors: list[BaseException] = []
+    follower_waiting = threading.Event()
+    leader_at_embedding = threading.Event()
+    original_embed = services.embed
+    original_index = store.index
+    main_thread = threading.current_thread()
 
-    first_thread = threading.Thread(target=lambda: first.update(store.index(str(root), "tenant")))
-    second_thread = threading.Thread(target=lambda: second.update(store.index(str(root), "tenant")))
-    first_thread.start()
-    assert services.started.wait(2)
-    second_thread.start()
-    services.release.set()
-    first_thread.join(2)
-    second_thread.join(2)
+    def scheduled_index(*args, **kwargs):
+        if defer_worker_until_embedding and threading.current_thread() is not main_thread:
+            # Deterministically model a worker unable to run pre-embedding
+            # setup until the owner is ready, without sleeps or CPU load.
+            assert leader_at_embedding.wait(2)
+        return original_index(*args, **kwargs)
 
-    assert first["success"] is True
-    assert second["success"] is True
+    monkeypatch.setattr(store, "index", scheduled_index)
+
+    def follow():
+        try:
+            second.update(store.index(str(root), "tenant"))
+        except BaseException as exc:
+            errors.append(exc)
+
+    second_thread = threading.Thread(target=follow)
+
+    def embed_with_waiting_follower(texts, tenant, **kwargs):
+        # Leader setup runs synchronously: policy/discovery/SQLite readiness is
+        # not a two-second background-thread startup requirement of coalescing.
+        leader_at_embedding.set()
+        with store._index_flights_lock:
+            assert len(store._index_flights) == 1
+            flight = next(iter(store._index_flights.values()))
+        original_wait = flight["event"].wait
+
+        def observe_wait(timeout=None):
+            follower_waiting.set()
+            return original_wait(timeout)
+
+        # Observe the real completion event; do not replace singleflight or its
+        # result. Thread.start alone does not prove the follower joined it.
+        monkeypatch.setattr(flight["event"], "wait", observe_wait)
+        second_thread.start()
+        assert follower_waiting.wait(2), {"result": second, "errors": errors}
+        return original_embed(texts, tenant, **kwargs)
+
+    monkeypatch.setattr(services, "embed", embed_with_waiting_follower)
+    try:
+        first = store.index(str(root), "tenant")
+    finally:
+        if second_thread.ident is not None:
+            second_thread.join(2)
+
+    assert not second_thread.is_alive(), {"result": second, "errors": errors}
+    assert not errors
+    assert first["success"] is True, first
+    assert second["success"] is True, second
     assert second["coalesced"] is True
+    assert {key: value for key, value in second.items() if key != "coalesced"} == first
     assert len(services.calls) == 1
 
 
