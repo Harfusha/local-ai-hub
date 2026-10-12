@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+import os
+import socket
+import tempfile
 import sys
 from pathlib import Path
 
@@ -10,6 +14,58 @@ if str(SRC) not in sys.path:
 
 
 import pytest
+
+_TEST_PORT_GUARD: socket.socket | None = None
+_ORIGINAL_CONFIG_CAPTURED = False
+_ORIGINAL_CONFIG_PRESENT = False
+_ORIGINAL_CONFIG: str | None = None
+
+
+def pytest_configure(config):
+    """Isolate default config, mode state, and loopback port before collection."""
+    global _TEST_PORT_GUARD
+    global _ORIGINAL_CONFIG_CAPTURED, _ORIGINAL_CONFIG_PRESENT, _ORIGINAL_CONFIG
+    if _ORIGINAL_CONFIG_CAPTURED:
+        return
+    _ORIGINAL_CONFIG_CAPTURED = True
+    _ORIGINAL_CONFIG_PRESENT = "LOCAL_AI_CONFIG" in os.environ
+    _ORIGINAL_CONFIG = os.environ.get("LOCAL_AI_CONFIG")
+    root = Path(tempfile.mkdtemp(prefix="local-ai-hub-pytest-"))
+    guard = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        if hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            guard.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        guard.bind(("127.0.0.1", 0))
+        port = guard.getsockname()[1]
+        config_path = root / "config.toml"
+        config_path.write_text(
+            "[server]\n"
+            'bind = "127.0.0.1"\n'
+            f"port = {port}\n"
+            "auto_start_ollama = false\n"
+            "state_dir = " + json.dumps((root / "state").as_posix()) + "\n",
+            encoding="utf-8",
+        )
+        _TEST_PORT_GUARD = guard
+        os.environ["LOCAL_AI_CONFIG"] = str(config_path)
+    except BaseException:
+        guard.close()
+        raise
+
+
+def pytest_unconfigure(config):
+    """Restore inherited environment; retain isolated config/state as artifacts."""
+    global _TEST_PORT_GUARD, _ORIGINAL_CONFIG_CAPTURED
+    if not _ORIGINAL_CONFIG_CAPTURED:
+        return
+    if _ORIGINAL_CONFIG_PRESENT:
+        os.environ["LOCAL_AI_CONFIG"] = _ORIGINAL_CONFIG or ""
+    else:
+        os.environ.pop("LOCAL_AI_CONFIG", None)
+    if _TEST_PORT_GUARD is not None:
+        _TEST_PORT_GUARD.close()
+        _TEST_PORT_GUARD = None
+    _ORIGINAL_CONFIG_CAPTURED = False
 
 
 @pytest.fixture(autouse=True)

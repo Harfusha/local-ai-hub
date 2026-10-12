@@ -1,12 +1,11 @@
 from __future__ import annotations
 
-import json
 import os
-import subprocess
 import sys
 from pathlib import Path
 
 from local_ai_hub.operation_contracts import operation_tool_output_schema
+from mcp_stdio_catalog_support import stdio_catalog
 
 
 def test_stdio_handshake_publishes_all_registered_live_schemas() -> None:
@@ -32,7 +31,7 @@ def test_stdio_handshake_publishes_all_registered_live_schemas() -> None:
         {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
     ]
 
-    completed = subprocess.run(
+    initialized, listed = stdio_catalog(
         [
             sys.executable,
             "-B",
@@ -43,19 +42,12 @@ def test_stdio_handshake_publishes_all_registered_live_schemas() -> None:
         ],
         cwd=root,
         env=env,
-        input="".join(json.dumps(message, separators=(",", ":")) + "\n" for message in messages),
-        capture_output=True,
-        text=True,
+        initialize_params=messages[0]["params"],
         timeout=15,
-        check=False,
     )
 
-    assert completed.returncode == 0, completed.stderr[-2000:]
-    responses = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
-    initialize = next(response for response in responses if response.get("id") == 1)
-    listing = next(response for response in responses if response.get("id") == 2)
-    assert initialize.get("result", {}).get("protocolVersion") == "2025-06-18"
-    wire_tools = {tool["name"]: tool for tool in listing["result"]["tools"]}
+    assert initialized["protocolVersion"] == "2025-06-18"
+    wire_tools = {tool["name"]: tool for tool in listed["tools"]}
     expected_names = set(mcp_server.FEATURES.enabled_tools)
     assert set(wire_tools) == expected_names
     assert expected_names == set(mcp_server.mcp._tool_manager._tools)
@@ -89,21 +81,16 @@ def test_stdio_list_hides_feature_disabled_tools(tmp_path: Path) -> None:
         {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
         {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
     ]
-    completed = subprocess.run(
+    initialized, listed = stdio_catalog(
         [sys.executable, "-B", "-c", "from local_ai_hub import mcp_server; "
          "mcp_server.CLIENT.ensure_server = lambda **_kwargs: True; mcp_server.main()"],
         cwd=root,
         env=env,
-        input="".join(json.dumps(message, separators=(",", ":")) + "\n" for message in messages),
-        capture_output=True,
-        text=True,
+        initialize_params=messages[0]["params"],
         timeout=15,
-        check=False,
     )
-    assert completed.returncode == 0, completed.stderr[-2000:]
-    responses = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
-    listing = next(response for response in responses if response.get("id") == 2)
-    wire_tools = {tool["name"]: tool for tool in listing["result"]["tools"]}
+    assert initialized["protocolVersion"] == "2025-06-18"
+    wire_tools = {tool["name"]: tool for tool in listed["tools"]}
     assert "local_ai_rag" not in wire_tools
     assert "local_ai_command" not in wire_tools
     assert all(tool.get("outputSchema") for tool in wire_tools.values())

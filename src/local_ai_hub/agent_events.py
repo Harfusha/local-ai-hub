@@ -735,6 +735,27 @@ class AgentStateStore:
 
         return (version, layout, event_columns, snapshot_columns, objects)
 
+    @staticmethod
+    def _is_pristine_auxiliary_database(con: sqlite3.Connection, schema: tuple[Any, ...]) -> bool:
+        """Recognize only an empty, already-classified auxiliary schema."""
+        version, layout, _event_columns, _snapshot_columns, objects = schema
+        if version != 0 or layout != "empty":
+            return False
+        tables = {name for kind, name, _table, _sql in objects if kind == "table"}
+        if not tables:
+            return not objects
+        if tables != {"leases", "lease_waits", "agent_state_schema_versions"}:
+            return False
+        markers = con.execute(
+            "SELECT component, version FROM agent_state_schema_versions ORDER BY component"
+        ).fetchall()
+        if markers != [("leases", 1)]:
+            return False
+        for table in ("leases", "lease_waits"):
+            if con.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone() is not None:
+                return False
+        return True
+
     @classmethod
     def _migrate_known_schema(cls, con: sqlite3.Connection, *, existed_before_open: bool) -> None:
         """Migrate known v0 layouts only; callers preflight nonempty files read-only."""
@@ -743,7 +764,10 @@ class AgentStateStore:
         if layout == "current" and version == cls._SCHEMA_VERSION:
             return
 
-        if existed_before_open:
+        # Keep the caller contract, but back up every non-pristine schema,
+        # even when another process created the file after the initial stat.
+        pristine_auxiliary = cls._is_pristine_auxiliary_database(con, initial)
+        if not pristine_auxiliary:
             baseline_data_version = int(con.execute("PRAGMA data_version").fetchone()[0])
             cls._verified_backup(con)
             after_backup = int(con.execute("PRAGMA data_version").fetchone()[0])
@@ -766,6 +790,19 @@ class AgentStateStore:
                 raise RuntimeError("agent_state changed before migration; retry initialization")
         else:
             con.execute("BEGIN IMMEDIATE")
+            try:
+                locked = cls._classify_schema(con)
+            except Exception:
+                con.rollback()
+                raise
+            if locked[0] == cls._SCHEMA_VERSION:
+                con.rollback()
+                return
+            if locked != initial or not cls._is_pristine_auxiliary_database(con, locked):
+                con.rollback()
+                raise RuntimeError(
+                    "agent_state changed before fresh schema initialization; retry initialization"
+                )
 
         try:
             con.execute("""
