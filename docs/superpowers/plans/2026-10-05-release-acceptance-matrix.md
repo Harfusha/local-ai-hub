@@ -2,6 +2,60 @@
 
 ## Current master reconciliation - 2026-10-11
 
+### Post-release owned implementation batch — 2026-10-12
+
+- `v4.0.0` remains the installed, fully validated local release. The following
+  source changes are a separate master follow-up, not silently applied to that
+  running package. Owners work directly on disjoint paths; no new worktrees,
+  branches, packet manifests or parallel memory system were created.
+- **T03 — review, primary integrating GPT 6 Luna:** owned
+  `tests/test_t03_multi_client_single_daemon.py`. Real cross-process start-lock
+  and Supervisor ownership test now covers 8 and 30 clients, normal and 2.1s
+  preparation delay, unchanged deadlines, distinct tenants, identity-bound
+  cleanup and released OS lock. Service start remains stubbed: this does not
+  prove thirty real cold daemon clients. Primary combined client/router test:
+  `python -B -m pytest -q --tb=short tests/test_t03_multi_client_single_daemon.py
+  tests/test_client_transport.py tests/test_client_startup_transport_fallback.py
+  tests/test_http_post_route_registry_t18.py` — **81 passed / 12.21s**,
+  `req_2aec157416ed`. The owner's earlier truncated combined output proves
+  exit 0 but does not provide an independently retained exact summary count.
+- **T18 — review, primary:** owned `http_server.py`, `http_route_registry.py`,
+  `tests/test_http_post_route_registry_t18.py`, generated `docs/API_COVERAGE.md`.
+  Async jobs/work orders now dispatch through named map handlers, with the
+  precomputed tenant passed explicitly. Recovery, mode/auth gates, request ID,
+  wait conversion, disabled/unknown-action responses remain preserved.
+  New boundary tests were red before extraction (`req_e245d00dcbb6`).
+  Router/mutation-replay/task-receipt group: **115 passed / 8.82s**
+  (`req_23e780051f48`); router/mode/async-coordination group **98 passed / 8.21s**
+  (`req_e81da74e78b9`). Both context-pack conditional blocks are AST-identical
+  to `v4.0.0`. `do_POST` is reduced from 2910 to 2873 lines: the complete
+  decomposition remains open, not done.
+- **T10 — review, primary integrating GPT 6 Luna:** owned `deterministic.py`
+  and `tests/test_deterministic_batch_fts_cleanup.py`. A single nonblocking
+  stack sample attributes CPU thread 52176 to preprocessing `update_files_batch`
+  scanning unindexed FTS root/path per file; no busy loop inferred. FTS cleanup
+  now performs one scoped delete per batch via a connection-local TEMP table,
+  in the existing transaction. No persistent schema change, live DB reset or
+  rowid identity assumption. Normal single-file updates/pruning stay unchanged.
+  Primary found and reproduced an initial duplicate-path BM25 candidate-order
+  regression (`req_c134bd70b620`); pop/reinsert retains last-occurrence order.
+  Batch/deterministic/preprocessing group: **64 passed / 10.41s**
+  (`req_1c6fe21376b7`), including rollback, no-FTS, cache hits, root isolation
+  and real bounded-search regression. Owner isolated 8192-fact benchmark:
+  batch 1 old/new 22.584/19.581ms (1/1 deletes); 32 132.600/31.481ms (32/1);
+  128 475.752/64.004ms (128/1). These are single observations, not live CPU proof.
+- **Existing audit fixes verified, not duplicated:** canonical context identity
+  equivalence plus shell-free quoted/Unicode preprocessing validation:
+  `python -B -m pytest -q --tb=short tests/test_agent_context_identity.py
+  tests/test_preprocessing_overhaul.py` — **27 passed / 3.93s**
+  (`req_b1f638f121c2`). Blackboard rollback already logs narrow SQLite failures;
+  other silent optional exceptions and larger command/vision decomposition
+  remain to be classified. No actionable TODO implementation is established
+  merely by regex strings used by the deterministic scanner.
+- Whole-suite/reinstallation acceptance for this follow-up is still required.
+  Prior 6891-pass and installed live receipts remain bound to the release tree,
+  not this changed production candidate. T20 stays review for the broader goal.
+
 ### Shared runtime warm-client measurement — 2026-10-12
 
 - GPT 6 Luna ran the corrected process-family measurement once; primary
