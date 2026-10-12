@@ -2,6 +2,41 @@
 
 ## Current master reconciliation - 2026-10-11
 
+### MCP adoption transport integrated, snapshot still under review — 2026-10-12
+
+- Primary took back both implementation scopes after confirming no actual
+  pending test/tool handle remained. No changes discarded or stashed.
+- Current MCP source was revalidated after the owner's three last unverified
+  fixes (default fixture quota, preflight rejection, current usage audit).
+  Exact native fallback after broker terminal refusal `req_5ec9e96fef51`:
+  `.venv/Scripts/python.exe -B tests/test_mcp_task_memory_adoption_wire.py -q
+  -p no:cacheprovider --tb=short tests/test_mcp_task_memory_adoption_wire.py
+  tests/test_mcp_response_budget.py tests/test_mcp_budget_wire_accounting.py
+  tests/test_response_budget.py tests/test_response_budget_failure_identity.py
+  tests/test_mcp_full_status_identity.py tests/test_unified_task_context_transport.py
+  tests/test_mcp_stdio_schema_acceptance.py tests/test_mcp_stdio_contract.py`.
+  **57 passed / 52.40s**, exit 0, session 65095. One pytest anyio assertion-rewrite
+  warning is from the same-process isolated test driver, not runtime failure.
+- Integrated `8396e829`: actual FastMCP stdio retains bounded task memories,
+  instructions and current audit for create/resume/get/checkpoint, including
+  minimal/delta/reuse profiles. Subminimum quota is rejected before mutation;
+  an unrepresentable accepted quota returns explicit terminal budget failure,
+  not successful advice-free response. No task context arbitrary blob/history
+  or generic command/status/context budget behavior was added to the bundle.
+- Snapshot/checkpoint producer source remains owned by primary and under
+  review. Owner new/scoped test group: **69 passed / 30.43s** (`req_a22614dfaaca`).
+  Older adoption/HTTP group had **12 failed, 12 passed**: generic goal fixtures,
+  old zero-token error-envelope assumptions and checkpoint-without-audit
+  acceptance conflict with the newly requested relevance/accounting/audit
+  behavior. Primary reran the failing group (`req_e9de7ea9b8af`) before assigning
+  bounded fixture alignment. Keep privacy/foreign-root/tenant/used-ID assertions;
+  make scenario goals express their claimed relevance, count full JSON, and
+  supply an explicit audit where the scenario expects checkpoint acceptance.
+  Do not restore unrelated-memory retrieval or suppress real budget regressions.
+- Installed `v4.0.0` is unchanged. Wire proof uses an isolated loopback stub,
+  not the deployed MemoryStore; complete store-to-wire adoption and broad
+  candidate release gates still remain.
+
 ### Memory adoption implementation in progress — 2026-10-12
 
 - **T05, primary, review:** existing `MemoryStore` now exposes a request-local
