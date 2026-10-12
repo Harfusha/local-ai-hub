@@ -48,6 +48,8 @@ def test_auto_start_timeout_terminates_and_reaps_only_its_child(tmp_path, monkey
     monkeypatch.setattr(client, "_online", lambda _timeout=None: False)
     monkeypatch.setattr(client_module, "find_listening_pid", lambda _port: None)
     monkeypatch.setattr(client_module.subprocess, "Popen", lambda *_args, **_kwargs: launched.append(child) or child)
+    monkeypatch.setattr(client_module, "popen_managed", lambda *_args, **_kwargs: launched.append(child) or child)
+    monkeypatch.setattr(client_module, "retain_process_job_in_child", lambda process: process is child)
     monkeypatch.setattr(client_module, "_retain_detached_child", lambda _process: None)
     monkeypatch.setattr(
         client_module,
@@ -91,6 +93,8 @@ def test_auto_start_initial_health_probe_preserves_startup_budget(tmp_path, monk
     monkeypatch.setattr(client, "_online", slow_offline_probe)
     monkeypatch.setattr(client_module, "find_listening_pid", lambda _port: None)
     monkeypatch.setattr(client_module.subprocess, "Popen", lambda *_args, **_kwargs: launched.append(child) or child)
+    monkeypatch.setattr(client_module, "popen_managed", lambda *_args, **_kwargs: launched.append(child) or child)
+    monkeypatch.setattr(client_module, "retain_process_job_in_child", lambda process: process is child)
     monkeypatch.setattr(client_module, "_retain_detached_child", lambda _process: None)
     monkeypatch.setattr(client_module, "terminate_tree", lambda *_args, **_kwargs: None)
 

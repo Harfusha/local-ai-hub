@@ -20,7 +20,7 @@ import time
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlsplit
 
-from .process_utils import find_listening_pid, pid_alive, process_identity, terminate_tree
+from .process_utils import find_listening_pid, pid_alive, popen_managed, process_identity, retain_process_job_in_child, terminate_tree
 from typing import Any, Mapping, Protocol, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -173,7 +173,7 @@ class HubClient:
         auto_start: bool = True,
         inprocess_transport: _InProcessTransport | None = None,
     ):
-        self.config = load_config(config_path)
+        self.config = load_config(config_path, probe_hardware=False)
         server = self.config["server"]
         self.base_url = f"http://127.0.0.1:{int(server.get('port', 11435))}"
         endpoint = urlsplit(self.base_url)
@@ -688,9 +688,17 @@ class HubClient:
                 if sys.platform != "win32":
                     popen_kwargs["start_new_session"] = True
                 try:
-                    process = subprocess.Popen(
+                    starter = popen_managed if sys.platform == "win32" else subprocess.Popen
+                    process = starter(
                         cmd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **popen_kwargs
                     )
+                    if sys.platform == "win32" and not retain_process_job_in_child(process):
+                        terminate_tree(process.pid, process_handle=process, grace_seconds=1.0)
+                        try:
+                            process.wait(timeout=1.0)
+                        except (OSError, subprocess.TimeoutExpired):
+                            _retain_detached_child(process)
+                        return False
                 except OSError:
                     return False
                 if sys.platform != "win32":

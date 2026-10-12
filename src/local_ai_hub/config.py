@@ -402,7 +402,7 @@ def save_runtime_overrides(config_path: str | os.PathLike[str], patch: dict[str,
     os.replace(tmp, target)
     return target
 
-def load_config(path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
+def load_config(path: str | os.PathLike[str] | None = None, *, probe_hardware: bool = True) -> dict[str, Any]:
     if path is None:
         path = os.environ.get("LOCAL_AI_CONFIG")
     package_dir = Path(__file__).resolve().parent
@@ -434,10 +434,15 @@ def load_config(path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
     # This makes the stock install portable while keeping every knob overridable.
     hardware_cfg = deep_merge(deep_merge(defaults.get("hardware", {}), user.get("hardware", {})), runtime.get("hardware", {}))
     try:
-        from .hardware import detect_hardware, profile_overrides
-        detected = detect_hardware(str(hardware_cfg.get("profile", "auto")))
-        if bool(hardware_cfg.get("auto_tune", True)):
-            defaults = deep_merge(defaults, profile_overrides(str(detected.get("profile", "balanced")), detected))
+        if not probe_hardware and not bool(hardware_cfg.get("auto_tune", True)):
+            # Transport clients need no device inventory when tuning is disabled.
+            # Servers retain full probes; automatic tuning keeps its exact overlay.
+            detected = {"profile": str(hardware_cfg.get("profile", "auto")), "inventory_deferred": True}
+        else:
+            from .hardware import detect_hardware, profile_overrides
+            detected = detect_hardware(str(hardware_cfg.get("profile", "auto")))
+            if bool(hardware_cfg.get("auto_tune", True)):
+                defaults = deep_merge(defaults, profile_overrides(str(detected.get("profile", "balanced")), detected))
     except Exception as exc:
         detected = {"profile": str(hardware_cfg.get("profile", "auto")), "detection_error": type(exc).__name__}
 

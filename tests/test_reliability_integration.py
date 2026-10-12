@@ -530,12 +530,25 @@ def test_ollama_autostart_is_singleflight_and_posix_grouped(tmp_path: Path, monk
         return Proc()
 
     monkeypatch.setattr(ollama_module, "popen_managed", popen)
+    def owner_record(pid, state_dir, role):
+        assert pid == Proc.pid
+        assert Path(state_dir) == tmp_path
+        assert role == "ollama"
+        return {"pid": pid, "executable": "test-ollama", "creation_identity": 123,
+                "creation_identity_type": "test-spawn", "state_dir": str(state_dir), "role": role}
+    monkeypatch.setattr(ollama_module, "process_owner_record", owner_record)
+    monkeypatch.setattr(ollama_module, "set_process_priority", lambda *_args: True)
     results: list[bool] = []
     threads = [threading.Thread(target=lambda: results.append(runtime.ensure_running())) for _ in range(2)]
     for thread in threads: thread.start()
-    for thread in threads: thread.join(1)
+    for thread in threads: thread.join(5)
+    assert not any(thread.is_alive() for thread in threads)
     assert results == [True, True]
     assert state["spawns"] == 1
+    owner = json.loads(runtime.managed_owner_path.read_text(encoding="utf-8"))
+    assert owner["pid"] == Proc.pid
+    assert owner["creation_identity"] == 123
+    assert runtime.managed_pid_path.read_text(encoding="utf-8") == str(Proc.pid)
     if ollama_module.os.name != "nt":
         assert state["kwargs"]["start_new_session"] is True
 

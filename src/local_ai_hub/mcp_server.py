@@ -239,7 +239,7 @@ def _operational_mode_rejection(
 try:
     # CLIENT = HubClient(tenant=TENANT)
     CLIENT = _build_mcp_client(TENANT, CONFIG_PATH)
-    CFG = load_config(CONFIG_PATH)
+    CFG = load_config(CONFIG_PATH, probe_hardware=False)
     atexit.register(CLIENT.close)
     FEATURES = FeatureSet.from_config(CFG)
     MCP_CFG = CFG.get("mcp", {})

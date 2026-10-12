@@ -88,6 +88,8 @@ client_module.subprocess = SimpleNamespace(
     DEVNULL=real_subprocess.DEVNULL,
     TimeoutExpired=real_subprocess.TimeoutExpired,
 )
+if os.name == "nt":
+    client_module.popen_managed = tracked_popen
 ensure_calls = []
 original_ensure = client.ensure_server
 

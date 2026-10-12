@@ -13,7 +13,7 @@ import pytest
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
-from local_ai_hub.process_utils import pid_alive, process_identity, terminate_tree
+from local_ai_hub.process_utils import pid_alive, process_identity, terminate_owned_process, terminate_tree
 
 
 def _free_port() -> int:
@@ -62,7 +62,7 @@ def _stdio_parameters(
     })
     (probe_dir / "sitecustomize.py").write_text(
         "import atexit, json, os, subprocess, time\n"
-        "from local_ai_hub.process_utils import process_identity\n"
+        "from local_ai_hub.process_utils import process_identity, process_owner_record\n"
         "_Popen = subprocess.Popen\n"
         "_owned = []\n"
         "class _TrackedPopen(_Popen):\n"
@@ -94,6 +94,10 @@ def _stdio_parameters(
         "if os.environ.get('T04_KEEP_HUB_AFTER_CLIENT_EXIT') != '1':\n"
         "    atexit.register(_cleanup_owned)\n"
         "if os.environ.get('T04_DELAY_HUB_CHILD_SECONDS'):\n"
+        "    state_dir = os.path.dirname(os.environ['LOCAL_AI_CONFIG'])\n"
+        "    owner = process_owner_record(os.getpid(), state_dir, 't04-delayed-worker')\n"
+        "    with open(os.environ['T04_TRACKED_CHILD_FILE'] + '.workers', 'a', encoding='utf-8') as stream:\n"
+        "        stream.write(json.dumps({'pid': os.getpid(), 'identity': process_identity(os.getpid()), 'owner': owner}) + '\\n')\n"
         "    time.sleep(float(os.environ['T04_DELAY_HUB_CHILD_SECONDS']))\n",
         encoding="utf-8",
     )
@@ -199,6 +203,7 @@ def test_stdio_handshake_timeout_reaps_owned_hub_child(tmp_path: Path) -> None:
     config_path, state_dir = _config(tmp_path, startup_wait=8)
     parameters = _stdio_parameters(
         source_root, probe_dir, config_path, child_log, delay_child_seconds=20,
+        keep_hub_after_client_exit=True,
     )
 
     try:
@@ -217,9 +222,15 @@ def test_stdio_handshake_timeout_reaps_owned_hub_child(tmp_path: Path) -> None:
         while time.monotonic() < deadline and _same_process(rows[0]):
             time.sleep(0.05)
         assert not _same_process(rows[0]), f"timed-out Hub child {pid} was orphaned"
+        workers = _launches(Path(str(child_log) + ".workers"))
+        assert workers, "delayed supervisor interpreter never reached its startup marker"
+        assert all(not _same_process(row) for row in workers), "timed-out supervisor interpreter survived owned tree cleanup"
         lock_owner = (state_dir / "hub.start.lock").read_text(encoding="ascii").split()
         assert len(lock_owner) >= 2
         assert int(lock_owner[0]) > 0
         assert float(lock_owner[1]) > 0
     finally:
+        for worker in _launches(Path(str(child_log) + ".workers")):
+            if _same_process(worker):
+                assert terminate_owned_process(worker["owner"], config_path.parent, "t04-delayed-worker", grace_seconds=1.0)
         _stop_recorded_children(_launches(child_log))

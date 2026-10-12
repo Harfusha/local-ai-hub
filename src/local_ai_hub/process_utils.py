@@ -912,6 +912,14 @@ def _release_process_job(process: subprocess.Popen[Any]) -> bool:
     job_handle = getattr(process, "_local_ai_job_handle", None)
     if not job_handle:
         return True
+    if getattr(process, "_local_ai_job_keeper_remote_handle", None) is not None:
+        # A child-side keeper prevents closing our local handle from triggering
+        # KILL_ON_JOB_CLOSE. Explicit tree cleanup must therefore terminate and
+        # drain the whole job before releasing the local handle.
+        if not terminate_job_object(job_handle) or not wait_job_object_empty(
+            job_handle, timeout_ms=2500,
+        ):
+            return False
     for _ in range(2):
         if close_job_object(job_handle):
             process._local_ai_job_handle = None
@@ -989,6 +997,65 @@ def popen_managed(argv: Sequence[str], *, job_name: str | None = None, **kwargs:
         elif job_handle:
             close_job_object(job_handle)
         raise
+
+
+def retain_process_job_in_child(process: subprocess.Popen[Any]) -> bool:
+    """Duplicate this process's owned Job Object into its retained child process.
+
+    The remote duplicate carries SYNCHRONIZE access only. It keeps the Job Object
+    alive if the parent's local handle is closed, and Windows closes that duplicate
+    automatically when the child exits. This helper never terminates a process.
+    """
+    if os.name != "nt" or process is None:
+        return False
+    job_handle = getattr(process, "_local_ai_job_handle", None)
+    process_handle = getattr(process, "_handle", None)
+    if not job_handle or process_handle is None:
+        return False
+    try:
+        if getattr(job_handle, "closed", False) or getattr(process_handle, "closed", False):
+            return False
+        job_value = int(getattr(job_handle, "value", job_handle) or 0)
+        process_value = int(getattr(process_handle, "value", process_handle) or 0)
+        if job_value <= 0 or process_value <= 0:
+            return False
+
+        from ctypes import wintypes
+
+        kernel32 = _job_kernel32()
+        # A retained process handle is the authority here; never reopen process.pid.
+        if kernel32.WaitForSingleObject(process_value, 0) != 0x00000102:  # WAIT_TIMEOUT
+            return False
+        in_job = wintypes.BOOL()
+        if not kernel32.IsProcessInJob(
+            process_value, job_value, ctypes.byref(in_job),
+        ) or not in_job.value:
+            return False
+        if getattr(process, "_local_ai_job_keeper_remote_handle", None) is not None:
+            return True
+
+        current_process = kernel32.GetCurrentProcess()
+        if not current_process:
+            return False
+        keeper = wintypes.HANDLE()
+        # SYNCHRONIZE-only, non-inheritable, with no SAME_ACCESS escalation.
+        if not kernel32.DuplicateHandle(
+            current_process,
+            job_value,
+            process_value,
+            ctypes.byref(keeper),
+            0x00100000,
+            False,
+            0,
+        ):
+            return False
+        remote_value = int(keeper.value or 0)
+        if remote_value <= 0:
+            return False
+        process._local_ai_job_keeper_remote_handle = remote_value
+        return True
+    except Exception:
+        return False
 
 
 def run_hidden(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
@@ -1390,6 +1457,13 @@ def _job_kernel32() -> Any:
         ("OpenProcess", [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD], wintypes.HANDLE),
         ("AssignProcessToJobObject", [wintypes.HANDLE, wintypes.HANDLE], wintypes.BOOL),
         ("TerminateJobObject", [wintypes.HANDLE, wintypes.UINT], wintypes.BOOL),
+        ("GetCurrentProcess", [], wintypes.HANDLE),
+        ("WaitForSingleObject", [wintypes.HANDLE, wintypes.DWORD], wintypes.DWORD),
+        ("IsProcessInJob", [wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)], wintypes.BOOL),
+        ("DuplicateHandle", [
+            wintypes.HANDLE, wintypes.HANDLE, wintypes.HANDLE,
+            ctypes.POINTER(wintypes.HANDLE), wintypes.DWORD, wintypes.BOOL, wintypes.DWORD,
+        ], wintypes.BOOL),
         ("ResumeThread", [wintypes.HANDLE], wintypes.DWORD),
         ("CloseHandle", [wintypes.HANDLE], wintypes.BOOL),
     ):

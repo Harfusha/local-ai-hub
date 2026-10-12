@@ -97,8 +97,10 @@ def test_ensure_running_cleans_process_when_startup_never_becomes_healthy(tmp_pa
 
         def __init__(self) -> None:
             self.waited = False
+            self.poll_calls = 0
 
         def poll(self):
+            self.poll_calls += 1
             return None
 
         def wait(self, timeout=None):
@@ -110,11 +112,18 @@ def test_ensure_running_cleans_process_when_startup_never_becomes_healthy(tmp_pa
 
     proc = Proc()
     monkeypatch.setattr(ollama_module, "popen_managed", lambda *_args, **_kwargs: proc)
+    monkeypatch.setattr(ollama_module, "process_owner_record", lambda pid, state, role: {
+        "pid": pid, "executable": "test-ollama", "creation_identity": 321,
+        "creation_identity_type": "test-spawn", "state_dir": str(state), "role": role,
+    })
+    monkeypatch.setattr(ollama_module, "set_process_priority", lambda *_args: True)
 
     assert runtime.ensure_running() is False
     assert terminated == [9003]
     assert proc.waited is True
+    assert proc.poll_calls > 1  # Startup polling occurred before owned cleanup.
     assert not runtime.managed_pid_path.exists()
+    assert not runtime.managed_owner_path.exists()
 
 
 def test_generated_agent_instructions_define_ollama_ownership():

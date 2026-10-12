@@ -50,6 +50,7 @@ def test_autostart_launches_real_hub_child_and_returns_http_search_result(tmp_pa
         assert client_module.subprocess.Popen is OwnedPopen
         assert client_module.subprocess.run is subprocess.run
         assert client_module.subprocess.TimeoutExpired is subprocess.TimeoutExpired
+        monkeypatch.setattr(client_module, "popen_managed", OwnedPopen)
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "needle.py").write_text(
