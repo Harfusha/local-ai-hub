@@ -358,6 +358,21 @@ T11 confirmed its assigned `f678` checkout is its own. It briefly tested two T21
 
 ## Active resumption — 2026-10-12
 
+Latest integrated follow-up: frozen clean `d2873fab` completed the whole suite
+with **7102 passed, 7 failed, 105 skipped, 23 subtests / 2765.46s**. Candidate
+HEAD and checkout stayed unchanged. The seven failures were a stale capture
+truncation expectation, three catalog tests comparing different configurations,
+two generated-policy drifts and a one-second telemetry flush timeout. The first
+six causes are repaired; the telemetry test now guarantees cleanup and reports
+writer counters/aliveness on failure without extending its one-second bound.
+The runtime cause of that timeout remains unproven. Combined affected tests,
+including actual stdio catalogs and policy generation: **113 passed / 37.36s**,
+`req_e2961c9471cf`. Full-suite acceptance remains open on the next clean candidate.
+The isolated `d2873fab` wheel passed package/RECORD/payload/CLI/dependency checks;
+it is historical package evidence after subsequent source changes. Cold cohorts,
+crash/EOF/in-flight recovery, real image/speech quality and deployment are prepared
+but unexecuted for this follow-up. Existing explicit goal remains active.
+
 Implementation-first continuation: primary chat `01a12fae-925c-7ed2-a351-e41358c4be3f`
 is sole integrator after explicit user coordination. Prepared command phases,
 per-call vision helper, repository-analysis HTTP router and backup/CLI/TTL

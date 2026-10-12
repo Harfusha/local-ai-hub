@@ -15,16 +15,14 @@ from local_ai_hub.operation_contracts import (
     operation_tool_input_schema,
     operation_tool_output_schema,
 )
+from mcp_stdio_catalog_support import explicit_catalog_environment
 
 
-def test_stdio_handshake_publishes_all_registry_input_and_output_schemas() -> None:
+def test_stdio_handshake_publishes_all_registry_input_and_output_schemas(tmp_path: Path) -> None:
     from local_ai_hub import mcp_server
 
     root = Path(__file__).resolve().parents[1]
-    env = os.environ.copy()
-    env["PYTHONPATH"] = os.pathsep.join(
-        value for value in (str(root / "src"), env.get("PYTHONPATH", "")) if value
-    )
+    env, features = explicit_catalog_environment(tmp_path, root=root)
     messages = [
         {
             "jsonrpc": "2.0",
@@ -123,17 +121,20 @@ def test_stdio_handshake_publishes_all_registry_input_and_output_schemas() -> No
     assert process.returncode == 0, "".join(stderr_lines)[-2000:]
     assert initialize.get("result", {}).get("protocolVersion") == "2025-06-18"
     wire_tools = {tool["name"]: tool for tool in tool_list["result"]["tools"]}
-    enabled_tools = set(mcp_server.FEATURES.enabled_tools)
+    enabled_tools = set(features.enabled_tools)
     assert set(wire_tools) == enabled_tools
 
-    for name in enabled_tools:
-        expected_input = mcp_server._input_schema_with_action_aliases(
-            name, operation_tool_input_schema(name, mcp_server.FEATURES)
-        )
-        assert wire_tools[name]["inputSchema"] == expected_input, name
-        assert wire_tools[name]["outputSchema"] == operation_tool_output_schema(
-            name, mcp_server.FEATURES
-        ), name
+    from unittest.mock import patch
+
+    with patch.object(mcp_server, "FEATURES", features):
+        for name in enabled_tools:
+            expected_input = mcp_server._input_schema_with_action_aliases(
+                name, operation_tool_input_schema(name, features)
+            )
+            assert wire_tools[name]["inputSchema"] == expected_input, name
+            assert wire_tools[name]["outputSchema"] == operation_tool_output_schema(
+                name, features
+            ), name
 
 
 def _isolated_config(tmp_path: Path) -> tuple[Path, Path, int]:

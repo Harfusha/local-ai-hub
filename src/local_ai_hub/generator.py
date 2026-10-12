@@ -131,7 +131,7 @@ def context_economy_contract(cfg: dict[str, Any] | None = None) -> str:
 - The Hub keeps a bounded metadata-only context ledger; inspect it only with an explicit cache/status request, never by replaying the whole session.
 - Broad native shell reads are guarded by the optional host hook; use bounded limits or the Hub command/repository tools for discovery.
 - Fetch exact source, logs, or evidence only with `local_ai_artifact` slices. Never ask a broad tool for the same payload twice.
-- Commands return status, summary, changed paths, and failures; full stdout/stderr stays artifact-backed.
+- Commands return status, summary, changed paths, and failures; full stdout/stderr is retrievable only when `output_artifact_id` is returned. `artifact_id` may refer to a diagnostic preview or partial capture. `discarded_output_chars` counts characters omitted during capture or response compaction; a full artifact can retain characters omitted from the response. MCP trimming also sets `output_truncated=true`.
 -{context_pack_guidance()}
 - Do not bypass the budget with native broad reads unless Hub has one bounded terminal failure."""
 
@@ -720,7 +720,8 @@ def generate_global_policy(cfg: dict[str, Any]) -> str:
         + "- If an explicitly authorized independent subagent is used, Codex controls its permissions and write scope; the main agent remains integrator. Do not delegate audit-only work.\n"
         "- Do not run parallel duplicate commands or scopes. Tool labels are not evidence;"
         " preserve exact action, arguments, result, and ownership in the audit record.\n"
-        f"{repo_task_first}\n"
+        + ("\nBackground preprocessing may inspect and index project files, but project-derived `validation_commands` execute repository code. Keep `preprocessing.idle_diagnostics_enabled=false` by default; set it to `true` only with explicit operator approval for those commands. On Windows, `.cmd` and `.bat` validation executables are rejected; do not route them through a shell or interpreter.\n" if fs.preprocessing else "")
+        + f"{repo_task_first}\n"
         "Adaptive retrieval path: call `local_ai_repo(action=\"context\", mode=\"adaptive\")` first; it runs bounded deterministic/indexed, structural, lexical and RAG retrieval, fuses agreement and diversity, and degrades optional backends independently."
         " Stop escalating when evidence is sufficient; reuse cached results and bounded evidence. Do not fan out duplicate native retrieval layers or translate the task into a long grep-term list."
         " Before native `find`/`rg`/`grep`/recursive glob/tree or opening more than two files for discovery, use that hub path first."

@@ -474,8 +474,11 @@ def test_command_broker_benchmarks_cpu_and_dual_stream_workloads(tmp_path: Path)
             assert cold["repository_revision"] == warm["repository_revision"]
             _assert_git_revision(cold)
             _assert_git_revision(warm)
-            assert cold["output_truncated"] is False
-            assert warm["output_truncated"] is False
+            capture_discarded = workload_name == "dual_stream"
+            assert cold["output_truncated"] is capture_discarded
+            assert warm["output_truncated"] is capture_discarded
+            assert (cold.get("discarded_output_chars", 0) > 0) is capture_discarded
+            assert cold.get("discarded_output_chars", 0) == warm.get("discarded_output_chars", 0)
             if workload_name == "cpu":
                 assert cold["stdout"].startswith("CPU_DIGEST:")
             else:

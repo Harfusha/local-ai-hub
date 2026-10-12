@@ -8,6 +8,31 @@
 
 #### 2026-10-12 implementation-first continuation
 
+Latest terminal whole-suite receipt: `followup-suite-d2873fabde4b-1791805422985718700.json`,
+**7102 passed, 7 failed, 105 skipped, 23 subtests / 2765.46s**, exit one; exact
+candidate unchanged and clean throughout. Source/fixture repairs now synchronize
+the canonical policy generator and AGENTS with both prompts, assert truthful
+capture/discard/cache behavior, and bind real stdio catalog expectations and
+child configuration explicitly while retaining all eight tools and exact schemas.
+Telemetry's one-second flush failure is not yet attributed; the test now retains
+writer diagnostics and always closes the writer, preserving its original bound.
+Affected combined verification: **113 passed / 37.36s**, `req_e2961c9471cf`, execution
+`549e2a4ca04b4826969b4d1a3fd185d8`. Indexed impact: `req_87a4b2d7b93b`.
+Indexed model review `req_bb362bf7d2ce` failed format recovery; primary reviewed
+the bounded exact diff directly. Full-suite acceptance is still open.
+Release check with `--allow-installed` passed (`req_b7aabae2d7d7`), compileall
+passed (`req_8f000c971e6e`), and selftest passed (`req_213cba604ceb`). Selftest's
+HTTP checks reached the existing installed daemon; they do not establish the
+new candidate's installed provenance or model quality.
+
+Isolated `d2873fab` packaging passed: 1,382,342-byte wheel, 123 package files and
+four browser-bridge files byte-verified, wheel RECORD/CLI/pip dependency checks
+passed, source untouched. Subsequent source fixes require a new matching wheel.
+Prepared private cold 1/10/30-client, stale-owner crash/restart and observed
+in-flight EOF scenarios have not executed. Five fixed public read-speech samples
+and three inspected public photographs are prepared for real quality evaluation;
+neither model quality nor installed candidate acceptance is claimed yet.
+
 **Latest user steering:** stop validation and finish all remaining fixes,
 optimization and improvements before starting tests again. The whole suite on
 `6cd9422e` was interrupted around 14%; no final receipt/PASS is claimed.

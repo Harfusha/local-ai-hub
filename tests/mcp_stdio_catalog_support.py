@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
+import os
 import tempfile
 from unittest.mock import patch
 
@@ -9,6 +11,32 @@ import anyio
 from mcp import ClientSession, types
 from mcp.client.stdio import StdioServerParameters, stdio_client
 import mcp.client.stdio as stdio
+
+from local_ai_hub.config import load_config
+from local_ai_hub.features import FeatureSet
+
+
+def explicit_catalog_environment(
+    tmp_path: Path, *, root: Path, base_env: dict[str, str] | None = None,
+) -> tuple[dict[str, str], FeatureSet]:
+    """Give the stdio child and parent schema expectations one fixed feature config."""
+    config = tmp_path / "stdio-catalog.toml"
+    config.write_text(
+        "[server]\n"
+        "state_dir = " + json.dumps((tmp_path / "stdio-catalog-state").as_posix()) + "\n"
+        "auto_start_ollama = true\n"
+        "[features]\n"
+        "status = true\nrepo = true\ncommands = true\ncoord = true\n"
+        "artifacts = true\nrag = true\ntasks = true\nlocal_models = true\n"
+        "vision = true\nwork_orchestrator = true\n",
+        encoding="utf-8",
+    )
+    env = (base_env if base_env is not None else os.environ).copy()
+    env["LOCAL_AI_CONFIG"] = str(config)
+    env["PYTHONPATH"] = os.pathsep.join(
+        value for value in (str(root / "src"), env.get("PYTHONPATH", "")) if value
+    )
+    return env, FeatureSet.from_config(load_config(config))
 
 
 def stdio_catalog(
