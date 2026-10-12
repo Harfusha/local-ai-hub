@@ -417,19 +417,20 @@ def test_protocol_accounting_uses_shared_mcp_client_as_light_telemetry(monkeypat
 
 
 
-def test_stdio_tools_list_matches_registered_output_contracts() -> None:
-    import os
+def test_stdio_tools_list_matches_registered_output_contracts(tmp_path) -> None:
     import sys
     from pathlib import Path
 
     from local_ai_hub import mcp_server
-    from local_ai_hub.operation_contracts import OPERATION_CONTRACTS
+    from local_ai_hub.operation_contracts import (
+        OPERATION_CONTRACTS,
+        operation_tool_input_schema,
+        operation_tool_output_schema,
+    )
+    from mcp_stdio_catalog_support import explicit_catalog_environment, stdio_catalog
 
     root = Path(__file__).resolve().parents[1]
-    env = os.environ.copy()
-    env["PYTHONPATH"] = os.pathsep.join(
-        value for value in (str(root / "src"), env.get("PYTHONPATH", "")) if value
-    )
+    env, features = explicit_catalog_environment(tmp_path, root=root)
     messages = [
         {
             "jsonrpc": "2.0",
@@ -444,8 +445,6 @@ def test_stdio_tools_list_matches_registered_output_contracts() -> None:
         {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}},
         {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
     ]
-    from mcp_stdio_catalog_support import stdio_catalog
-
     initialized, listed = stdio_catalog(
         [
             sys.executable,
@@ -463,15 +462,19 @@ def test_stdio_tools_list_matches_registered_output_contracts() -> None:
 
     assert initialized["protocolVersion"] == "2025-06-18"
     wire_tools = {tool["name"]: tool for tool in listed["tools"]}
-    expected_names = set(mcp_server.FEATURES.enabled_tools)
+    expected_names = set(features.enabled_tools)
     assert set(wire_tools) == expected_names
-    assert expected_names == set(OPERATION_CONTRACTS) & expected_names
+    assert expected_names == set(OPERATION_CONTRACTS)
 
-    registered = mcp_server.mcp._tool_manager._tools
-    for name in expected_names:
-        assert wire_tools[name]["inputSchema"] == registered[name].parameters, name
-        assert wire_tools[name]["outputSchema"] == registered[name].output_schema, name
-        assert registered[name].output_schema is not None, name
+    from unittest.mock import patch
+
+    with patch.object(mcp_server, "FEATURES", features):
+        for name in expected_names:
+            expected_input = mcp_server._input_schema_with_action_aliases(
+                name, operation_tool_input_schema(name, features)
+            )
+            assert wire_tools[name]["inputSchema"] == expected_input, name
+            assert wire_tools[name]["outputSchema"] == operation_tool_output_schema(name, features), name
     if "local_ai_rag" in wire_tools:
         search_schema = wire_tools["local_ai_rag"]["outputSchema"]["x-action-output-contracts"]["search"]
         result_item = search_schema["results"]["items"]

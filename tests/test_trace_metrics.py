@@ -81,9 +81,10 @@ def test_request_metrics_marks_missing_or_disabled_data_unavailable(tmp_path):
         disabled.close()
 
 
-def test_trace_metrics_endpoint_joins_by_request_id(tmp_path, monkeypatch):
+def test_trace_metrics_endpoint_joins_by_request_id(tmp_path, monkeypatch, request):
     traces = DebugTraceStore({"server": {"state_dir": str(tmp_path / "traces")}, "debug_traces": {"enabled": True}})
     telemetry = TelemetryStore(tmp_path / "telemetry", flush_interval_seconds=0.01)
+    request.addfinalizer(telemetry.close)
     trace_id = traces.start(
         kind="api_request",
         tenant="test",
@@ -99,7 +100,10 @@ def test_trace_metrics_endpoint_joins_by_request_id(tmp_path, monkeypatch):
         output_tokens=6,
         avoided_cloud_tokens=20,
     )
-    assert telemetry.flush(1.0)
+    assert telemetry.flush(1.0), {
+        "writer": dict(telemetry._stats),
+        "writer_alive": bool(telemetry._thread and telemetry._thread.is_alive()),
+    }
     monkeypatch.setattr(
         http_server,
         "APP",
@@ -124,10 +128,7 @@ def test_trace_metrics_endpoint_joins_by_request_id(tmp_path, monkeypatch):
     handler.responses = []
     handler._send = lambda status, data: handler.responses.append((status, data))
 
-    try:
-        handler.do_GET()
-    finally:
-        telemetry.close()
+    handler.do_GET()
 
     assert handler.responses[0][0] == 200
     assert handler.responses[0][1]["trace_id"] == trace_id
