@@ -181,7 +181,7 @@ def test_task_create_and_resume_exclude_same_root_foreign_tenant_memory(tmp_path
     token = trace_context.set_context(tenant="tenant-a")
     try:
         task = tasks.create(
-            GoalContract(goal="scoped task"),
+            GoalContract(goal="Use repo-current, global-current and global-tenantless facts"),
             ScopeContext(branch="main", task_id="memory-task"),
             task_id="memory-task",
             repo_root=str(root),

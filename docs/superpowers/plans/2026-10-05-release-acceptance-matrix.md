@@ -2,6 +2,34 @@
 
 ## Current master reconciliation - 2026-10-11
 
+### Interrupted broad run and relevance fixture repair — 2026-10-12
+
+- The full suite on `eed83d25` lost its session handle; current CIM inventory
+  found neither its wrapper nor pytest worker. Partial stdout has four failure
+  markers and no summary. No final receipt exists: exit code and completeness
+  are unknown, NOT a passing or complete failed suite. Preserved stdout:
+  `state/releases/4.0.0/followup-suite-eed83d25217d-1791780928409207400.stdout.log`.
+  An explicit interrupted receipt preserves this disposition. No identical
+  whole-suite retry was started on an observation timeout.
+- Diagnostic `.venv/Scripts/python.exe -B -m pytest -q --tb=short -x`
+  (`req_5838b17edcdc`, exit one) identified
+  `test_task_create_and_resume_exclude_same_root_foreign_tenant_memory[False]`:
+  an unrelated generic goal legitimately produces no memory snapshot after
+  relevance filtering. GPT 6 Luna changed only the fixture goal in
+  `tests/test_agent_memory_context_tenant_isolation.py` to refer to seeded facts;
+  all expected IDs, foreign-tenant and resume assertions remain unchanged.
+  File validation: **7 passed / 3.93s**, `req_0cb8b314c433`, exit zero.
+  Primary reviewed the actual one-line diff and `git diff --check` passes.
+- A diagnostic command accidentally named nonexistent
+  `tests/test_agent_os_memory_adoption.py`: pytest exit four, no tests ran
+  (`req_a78228f1996a`). Corrected independent aliases-only command:
+  **3 passed / 1.58s**, `req_96821c051abd`. Neither result proves the other
+  unidentified markers from the interrupted full run are resolved.
+- Candidate wheel isolated CLI `-I -m local_ai_hub --help` also passes,
+  `req_8c0afcba47e3`; receipt is `cli-validation.json` in the existing candidate
+  temp directory. Home runtime not upgraded; complete-suite/live acceptance
+  remains open. No source production changes or new worktrees in this repair.
+
 ### Fresh candidate checks — 2026-10-12
 
 - Complete MCP memory/budget/stdio regression command uses the existing wire
