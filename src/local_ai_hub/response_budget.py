@@ -710,7 +710,7 @@ def delta_response(previous: Any, current: Any, *, result_id: str = "") -> dict[
     return out
 
 
-_INLINE_EVIDENCE_TEXT_KEYS = frozenset({"content", "text", "snippet", "excerpt", "source_text"})
+_INLINE_EVIDENCE_TEXT_KEYS = frozenset({"content", "text", "raw", "snippet", "excerpt", "source_text"})
 
 
 def _redact_inline_evidence_text(value: Any, *, inside_evidence: bool = False) -> Any:

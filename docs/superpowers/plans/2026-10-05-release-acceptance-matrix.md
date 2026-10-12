@@ -4404,3 +4404,27 @@ or lacks Git metadata. No agent used a substitute checkout.
 - A further complete suite is deferred while the observed adaptive-context
   budget failure is investigated. Home still runs the previously verified
   installed revision; no operator configuration or durable data was replaced.
+
+## 2026-10-13 adaptive-context evidence budget repair
+
+- The actual failing T04 retrieval query was reproduced against current source.
+  HTTP `/api/context/pack` returned success with 11,101 estimated tokens; the
+  initial MCP compactor incorrectly returned a budget error, and the final wire
+  response discarded citations. This was not merely an old-adapter hypothesis.
+- Retained evidence entries use `raw` for source excerpts. That alias was absent
+  from inline-evidence removal, so protected-field restoration restored full
+  source excerpts and forced rejection. `raw` now follows the existing inline
+  source aliases; complete evidence IDs, paths and line citations remain.
+- The non-command bounded-error envelope now retains `evidence`, preserving
+  exact citations together with original failure and retry/terminal decisions.
+- End-to-end MCP regression cases cover successful and failed HTTP context
+  payloads, exact citations, original payload preservation and serialized wire
+  accounting. Selected existing budget/failure/isolation checks: **35 passed in
+  3.21 seconds**, broker receipt `req_ff8805e4805f`.
+- Offline replay of the exact retained HTTP artifact through current registered
+  MCP context projection returns **success, 1725 wire tokens** at the unchanged
+  **3200-token** request budget and preserves all three source evidence IDs.
+  Artifact: `state/releases/4.0.0/context-budget-diagnosis-1791846000520727100.raw.stages-1791846172014375700.json`.
+  This is a causal payload replay, not installed-daemon or whole-suite proof.
+- Install/update prompts carry the same evidence contract. Final packaging,
+  integrated suite, fresh installed MCP/runtime and live-quality gates remain.
