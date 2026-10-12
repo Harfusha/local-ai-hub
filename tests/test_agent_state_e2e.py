@@ -393,7 +393,9 @@ def test_local_app_wires_scoped_memory_adoption_on_create_and_resume(tmp_path: P
         follow_up_ids = {
             item["id"] for item in follow_up.checkpoint.state_data["memory_context"]["items"]
         }
-        assert follow_up_ids == {first.record_id, later.record_id, learned.record_id}
+        # The follow-up needs the confirmed learning, not unrelated parser facts.
+        # Require exact IDs so relevance filtering cannot silently add noise.
+        assert follow_up_ids == {learned.record_id}
     finally:
         trace_context.reset_context(token)
         app.close()
