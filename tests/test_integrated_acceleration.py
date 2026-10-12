@@ -224,7 +224,8 @@ def test_reranker_openvino_falls_from_npu_to_gpu(monkeypatch: pytest.MonkeyPatch
     assert attempts[:2] == [("openvino", "cpu", "npu"), ("openvino", "cpu", "gpu.0")]
 
 
-def test_openvino_load_failures_advance_and_then_cool_down(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize("allow_downloads", [False, True])
+def test_openvino_load_failures_advance_and_then_cool_down(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, allow_downloads: bool) -> None:
     attempts: list[str] = []
 
     class BrokenSentenceTransformer:
@@ -240,14 +241,16 @@ def test_openvino_load_failures_advance_and_then_cool_down(monkeypatch: pytest.M
 
     model = EmbeddingModel({
         "server": {"state_dir": str(tmp_path)},
-        "models": {"embedding": "test", "embedding_backend": "openvino", "embedding_device": "auto"},
+        "models": {"embedding": "test", "embedding_backend": "openvino", "embedding_device": "auto",
+                   "allow_hf_downloads": allow_downloads},
         "openvino": {"enabled": True, "cpu_fallback": False},
         "cache": {"embeddings": False},
         "features": {"rag": True},
     })
     assert model._ensure_model() is False
-    # Each device tries local-only and normal loading for configured and safe fallback models.
-    assert attempts == ["npu"] * 4 + ["gpu.0"] * 4
+    # Both model IDs remain eligible; online retries require explicit opt-in.
+    expected = 4 if allow_downloads else 2
+    assert attempts == ["npu"] * expected + ["gpu.0"] * expected
     before = list(attempts)
     assert model._ensure_model() is False
     assert attempts == before

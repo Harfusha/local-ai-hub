@@ -369,6 +369,8 @@ class EmbeddingModel:
                 try:
                     return SentenceTransformer(name, local_files_only=True, **kw)
                 except Exception:
+                    if self.config.get("models", {}).get("allow_hf_downloads") is not True:
+                        raise
                     return SentenceTransformer(name, **kw)
 
             def create_model():

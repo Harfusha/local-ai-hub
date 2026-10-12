@@ -128,6 +128,8 @@ class Reranker:
                 try:
                     return CrossEncoder(self.model_name, local_files_only=True, **kwargs)
                 except Exception:
+                    if self.config.get("models", {}).get("allow_hf_downloads") is not True:
+                        raise
                     return CrossEncoder(self.model_name, **kwargs)
 
             self._model = load_model(
