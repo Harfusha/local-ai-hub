@@ -36,30 +36,55 @@ def _sha(data: bytes) -> str:
 
 def _inputs(root: Path) -> list[Path]:
     """Select packaging inputs from existing MANIFEST rules, never Git HEAD."""
+    try:
+        from setuptools._distutils.filelist import FileList
+        from setuptools._distutils.text_file import TextFile
+    except ImportError:
+        raise unittest.SkipTest("local setuptools MANIFEST parser unavailable; no installation") from None
     paths = {root / "pyproject.toml", root / "MANIFEST.in"}
     paths.update((root / "src").rglob("*"))
-    pruned = []
-    for line in (root / "MANIFEST.in").read_text(encoding="utf-8").splitlines():
+    selected = FileList()
+    selected.files = [str(path.relative_to(root)) for path in sorted(paths) if path.is_file()]
+    universe = set(selected.files)
+    template = TextFile(str(root / "MANIFEST.in"), strip_comments=True, skip_blanks=True,
+                        join_lines=True, collapse_join=True)
+    try:
+        lines = template.readlines()
+    finally:
+        template.close()
+    for line in lines:
         parts = line.split()
-        if not parts or parts[0].startswith("#"):
-            continue
         action, *args = parts
-        if action == "include":
+        additions = set()
+        if action in {"include", "global-include"} and args:
             for pattern in args:
-                paths.update(root.glob(pattern))
+                additions.update(root.glob(pattern) if action == "include" else root.rglob(pattern))
         elif action == "recursive-include" and len(args) >= 2:
             directory, *patterns = args
-            for pattern in patterns:
-                paths.update((root / directory).rglob(pattern))
-        elif action == "prune" and len(args) == 1:
-            pruned.append(root / args[0])
+            for parent in root.glob(directory):
+                if parent.is_dir():
+                    for pattern in patterns:
+                        additions.update(parent.rglob(pattern))
+        elif action == "graft" and len(args) == 1:
+            for parent in root.glob(args[0]):
+                if parent.is_dir():
+                    additions.update(parent.rglob("*"))
+        elif ((action in {"exclude", "global-exclude"} and args)
+              or (action == "recursive-exclude" and len(args) >= 2)
+              or (action == "prune" and len(args) == 1)):
+            pass
         else:
             raise AssertionError(f"unsupported MANIFEST rule: {line}")
+        universe.update(str(path.relative_to(root)) for path in additions if path.is_file())
+        selected.set_allfiles(sorted(universe))
+        # Let the actual backend enforce anchored/case-sensitive globs and
+        # ordered subtraction/re-inclusion; prune is not a permanent blacklist.
+        selected.process_template_line(line)
+    paths = {root / relative for relative in selected.files}
     result = []
     for path in sorted(paths):
         relative = path.relative_to(root)
         if (EXCLUDED.intersection(relative.parts)
-                or any(path.is_relative_to(item) for item in pruned)
                 or path.suffix in {".pyc", ".pyo"}
                 or any(part.endswith(".egg-info") for part in relative.parts)):
             continue
