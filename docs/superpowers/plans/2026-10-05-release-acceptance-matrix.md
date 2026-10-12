@@ -48,6 +48,23 @@
   tests/test_rag_fragment_cache.py --tb=short`: **29 passed / 17.83s**, exit zero,
   `req_500846243b43`. Owner also reports negative controls detect a bypassed
   follower flight; these are owner evidence, not independently rerun here.
+- Primary additional Agent OS regression command
+  `.venv/Scripts/python.exe -m pytest -q tests/test_agent_tasks.py
+  tests/test_agent_verification.py --tb=short`: **134 passed / 34.48s**, exit zero,
+  `req_53fd9798996a`.
+- GPT-6 Luna Goodall repair reviewed: status dependency executor starts lazily,
+  removing a 32-worker startup barrier rather than increasing its timeout.
+  T04 HTTP fixture now closes its allocated server even if app/client
+  construction fails. New tests inject a broken barrier and constructor error;
+  socket closure is checked using its actual descriptor. No warnings suppressed.
+  Primary command `.venv/Scripts/python.exe -m pytest -q
+  tests/test_status_executor_startup_cleanup.py
+  tests/test_t04_current_root_acceptance.py tests/test_http_get_live_status_t18.py
+  tests/test_status_snapshot_quality.py --tb=short`:
+  **41 passed / 27.62s**, exit zero, `req_5563aa5589cf`.
+  Owned files: `src/local_ai_hub/app.py`,
+  `tests/test_t04_current_root_acceptance.py`,
+  `tests/test_status_executor_startup_cleanup.py`. Installed runtime unchanged.
 
 ### Interrupted broad run and relevance fixture repair — 2026-10-12
 
