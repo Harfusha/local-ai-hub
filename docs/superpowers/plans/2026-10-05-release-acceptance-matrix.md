@@ -2,6 +2,37 @@
 
 ## Current master reconciliation - 2026-10-11
 
+### Shared runtime warm-client measurement — 2026-10-12
+
+- GPT 6 Luna ran the corrected process-family measurement once; primary
+  independently inspected the exact JSON, identities, metrics and cleanup:
+  `.venv/Scripts/python.exe -I -B state/releases/4.0.0/measure_shared_runtime_families.py
+  --groups 1 10 30 --sample-seconds 5 --protocol-timeout-seconds 20`.
+  Exit 0; all 1/10/30 initialize/list-tools sessions ready. Receipt:
+  `state/releases/4.0.0/shared-runtime-families-7ddd50aab73b41a5a451ce638d45b7dd.json`.
+- Owned adapter-family RSS: **86.20 / 866.32 / 2597.89 MiB** for 1/10/30 clients.
+  Each family includes its Windows venv launcher, actual Python MCP worker and
+  conhost helper. The original launcher-only measurement is preserved but is
+  explicitly NOT family RSS acceptance. RSS sums count shared pages repeatedly.
+- Maximum per-adapter readiness: **1.781 / 2.730 / 6.609s**. Whole group wall
+  windows including pre-group inventory: **6.027 / 7.325 / 11.777s**. Actual CPU
+  sample intervals: **10.060 / 11.586 / 12.220s** despite a requested 5s hold,
+  because process inventory sampling costs time. Owned idle-family CPU delta was
+  0s at observed platform resolution; this is not a claim of zero startup CPU.
+- Existing baseline: 15 logical adapters / 30 Python PIDs. The shared Hub
+  remains **one logical HTTP daemon** (Windows launcher plus worker), with
+  stable PID/creation identities across all groups, RSS **730.90 MiB**.
+  Its baseline already uses 99.70% of one core; group samples 99.40–104.85% of
+  one core. The measurement does not attribute that background CPU to inference
+  or new clients; diagnose the existing daemon background load separately.
+- All 41 owned SDK child handles exit 0. Verified owned process survivors after
+  each group: empty. Existing clients remain preserved. No tool calls,
+  restarts, cold autostart or model inference occurred in this measurement.
+- This closes the missing **warm 1/10/30 protocol/RSS/CPU measurement**, not
+  thirty simultaneous cold starts, real project/task isolation, power restart,
+  inference scaling, or controlled before/after savings versus the historical
+  55-process snapshot. Those acceptance items remain open; no savings invented.
+
 ### Local functional 4.0.0 release — 2026-10-12
 
 - The installed complete live gate now passes, exit 0, `success=true`, all
