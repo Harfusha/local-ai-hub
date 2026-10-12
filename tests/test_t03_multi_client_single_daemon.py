@@ -1,17 +1,50 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
 
 from local_ai_hub import client as client_module
 
+SERVICE_SUBPROCESS_PATCH = (
+    "client_module.subprocess = SimpleNamespace(**{**vars(client_module.subprocess), "
+    "'run': service_start})"
+)
 
-def test_concurrent_process_clients_have_one_supervisor_spawn_authority(tmp_path) -> None:
+
+def test_service_start_double_does_not_intercept_hardware_probes(monkeypatch) -> None:
+    from local_ai_hub import hardware
+
+    probes, starts = [], []
+
+    def hardware_probe(command, **kwargs):
+        probes.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="hardware", stderr="")
+
+    def service_start(*args, **kwargs):
+        starts.append(args)
+        return subprocess.CompletedProcess(args, 0, stdout="service", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", hardware_probe)
+    monkeypatch.setattr(client_module, "subprocess", subprocess)
+    exec(SERVICE_SUBPROCESS_PATCH, {"client_module": client_module,
+                                  "service_start": service_start,
+                                  "SimpleNamespace": SimpleNamespace})
+    result = hardware._run(["fixture-hardware-probe"])
+    assert starts == [], f"hardware probe entered service_start: {starts}"
+    assert probes == [["fixture-hardware-probe"]]
+    assert result.stdout == "hardware"
+
+
+@pytest.mark.parametrize("setup_delay", [0, 2.1], ids=["normal", "slow-preparation"])
+def test_concurrent_process_clients_have_one_supervisor_spawn_authority(tmp_path, setup_delay) -> None:
     config = tmp_path / "hub.toml"
     state_dir = tmp_path / "state"
     ready_file = state_dir / "ready"
@@ -22,6 +55,7 @@ def test_concurrent_process_clients_have_one_supervisor_spawn_authority(tmp_path
         path.mkdir()
     config.write_text(
         f"[server]\nport=39123\nstate_dir='{state_dir.as_posix()}'\n"
+        "[hardware]\nprofile='cpu'\nauto_tune=false\n"
         "[client]\nstartup_wait_seconds=2\nstartup_poll_seconds=0.02\n",
         encoding="utf-8",
     )
@@ -29,41 +63,63 @@ def test_concurrent_process_clients_have_one_supervisor_spawn_authority(tmp_path
     start_gate = tmp_path / "start.gate"
     release_gate = tmp_path / "release.gate"
     worker = r'''
-import os, sys, time
+import json, os, sys, time
 from pathlib import Path
 from types import SimpleNamespace
 sys.path.insert(0, sys.argv[8])
-from local_ai_hub import client as client_module, operational_mode
+from local_ai_hub import client as client_module, hardware, operational_mode
 from local_ai_hub.client import HubClient
 from local_ai_hub.supervisor import Supervisor
 
-config_path, ready_name, arrivals_name, starts_name, owners_name, start_name, release_name, source_root = sys.argv[1:]
+config_path, ready_name, arrivals_name, starts_name, owners_name, start_name, release_name, source_root = sys.argv[1:9]
 assert Path(client_module.__file__).resolve().is_relative_to(Path(source_root).resolve()), client_module.__file__
 ready, arrivals, starts, owners = map(Path, (ready_name, arrivals_name, starts_name, owners_name))
 start_gate, release_gate = Path(start_name), Path(release_name)
+def event(stage, **fields):
+    print(json.dumps({"pid": os.getpid(), "stage": stage, **fields}), file=sys.stderr, flush=True)
+
+# Host profiling is unrelated to singleton ownership. Configuration and object
+# construction finish before publishing arrival at the startup barrier.
+hardware.detect_hardware = lambda profile: {"profile": "cpu", "gpus": []}
+time.sleep(float(sys.argv[10]))
+client = HubClient(config_path=config_path, auto_start=True)
+supervisor = Supervisor(config_path)
+event("constructed")
+
+def service_start(command, **_kwargs):
+    assert len(command) == 3 and command[-1] == "start", command
+    starts.joinpath(f"{os.getpid()}.request").write_text("start", encoding="ascii")
+    acquired = supervisor.acquire()
+    event("acquire", acquired=acquired,
+          lock_exists=supervisor.lock_path.exists(), pid_exists=supervisor.pid_path.exists())
+    if acquired:
+        try:
+            owners.joinpath(f"{os.getpid()}.owner").write_text("spawn-authority", encoding="ascii")
+            ready.touch()
+            deadline = time.monotonic() + 5
+            while not release_gate.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert release_gate.exists(), "release gate timed out"
+        finally:
+            supervisor.release_lock()
+            event("released", lock_exists=supervisor.lock_path.exists(),
+                  pid_exists=supervisor.pid_path.exists())
+    return SimpleNamespace(returncode=0)
+
+exec(sys.argv[9])
+client_module.find_listening_pid = lambda _port: None
+operational_mode.load_operational_mode = lambda *_args, **_kwargs: operational_mode.OperationalModeSnapshot("active", 0, None)
+client._online = lambda _timeout=None: ready.exists()
 arrivals.joinpath(f"{os.getpid()}.ready").touch()
+event("prepared")
 deadline = time.monotonic() + 5
 while not start_gate.exists() and time.monotonic() < deadline:
     time.sleep(0.01)
-
-def service_start(*_args, **_kwargs):
-    starts.joinpath(f"{os.getpid()}.request").write_text("start", encoding="ascii")
-    supervisor = Supervisor(config_path)
-    if supervisor.acquire():
-        owners.joinpath(f"{os.getpid()}.owner").write_text("spawn-authority", encoding="ascii")
-        ready.touch()
-        deadline = time.monotonic() + 5
-        while not release_gate.exists() and time.monotonic() < deadline:
-            time.sleep(0.01)
-        supervisor.release_lock()
-    return SimpleNamespace(returncode=0)
-
-client_module.subprocess.run = service_start
-client_module.find_listening_pid = lambda _port: None
-operational_mode.load_operational_mode = lambda *_args, **_kwargs: operational_mode.OperationalModeSnapshot("active", 0, None)
-client = HubClient(config_path=config_path, auto_start=True)
-client._online = lambda _timeout=None: ready.exists()
-print("ready" if client.ensure_server(timeout=2) else "failed")
+assert start_gate.exists(), "start gate timed out"
+online = client.ensure_server(timeout=2)
+event("ensure_server", ready=online)
+client.close()
+print("ready" if online else "failed")
 '''
     python_root = str(Path(client_module.__file__).resolve().parents[1])
     env = os.environ.copy()
@@ -72,8 +128,7 @@ print("ready" if client.ensure_server(timeout=2) else "failed")
     )
 
     def run_client(_index: int) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [
+        command = [
                 sys.executable,
                 "-B",
                 "-c",
@@ -86,43 +141,85 @@ print("ready" if client.ensure_server(timeout=2) else "failed")
                 str(start_gate),
                 str(release_gate),
                 python_root,
-            ],
+                SERVICE_SUBPROCESS_PATCH,
+                str(setup_delay),
+            ]
+        from local_ai_hub.process_utils import hidden_run_kwargs
+
+        with subprocess.Popen(
+            command,
             cwd=tmp_path,
             env=env,
-            capture_output=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
-            timeout=8,
-            check=False,
-        )
+            **hidden_run_kwargs(),
+        ) as process:
+            try:
+                stdout, stderr = process.communicate(timeout=8)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                stdout, stderr = process.communicate(timeout=2)
+                stderr += "\nparent: worker exceeded 8-second budget\n"
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=2)
+            return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
     with ThreadPoolExecutor(max_workers=8) as pool:
         futures = [pool.submit(run_client, index) for index in range(8)]
+        phases = {}
         try:
             deadline = time.monotonic() + 4
             while len(list(arrivals.glob("*.ready"))) < 8 and time.monotonic() < deadline:
                 time.sleep(0.01)
-            assert len(list(arrivals.glob("*.ready"))) == 8
+            phases["prepared"] = len(list(arrivals.glob("*.ready")))
+            phases["requests_before_gate"] = len(list(start_calls.glob("*.request")))
             start_gate.touch()
             deadline = time.monotonic() + 4
             while not list(daemon_owners.glob("*.owner")) and time.monotonic() < deadline:
                 time.sleep(0.01)
-            assert len(list(daemon_owners.glob("*.owner"))) == 1
+            phases["owners_before_release"] = len(list(daemon_owners.glob("*.owner")))
             deadline = time.monotonic() + 4
             while sum(future.done() for future in futures) < 7 and time.monotonic() < deadline:
                 time.sleep(0.01)
-            assert sum(future.done() for future in futures) >= 7
+            phases["followers_done_before_release"] = sum(future.done() for future in futures)
         finally:
             start_gate.touch()
             release_gate.touch()
         results = [future.result(timeout=8) for future in futures]
 
-    assert all(result.returncode == 0 for result in results), [
-        result.stderr[-1000:] for result in results if result.returncode != 0
-    ]
-    assert [result.stdout.strip() for result in results] == ["ready"] * 8
-    assert len(list(daemon_owners.glob("*.owner"))) == 1
+    diagnostics = {
+        "phases": phases,
+        "start_requests": len(list(start_calls.glob("*.request"))),
+        "owner_files": len(list(daemon_owners.glob("*.owner"))),
+        "owner_status": {name: (state_dir / name).exists()
+                         for name in ("supervisor.lock", "supervisor.pid", "supervisor.owner.json")},
+        "children": [{"returncode": result.returncode, "stdout": result.stdout.strip(),
+                      "stderr": result.stderr[-4000:]} for result in results],
+    }
+    assert phases["prepared"] == 8, diagnostics
+    assert phases["requests_before_gate"] == 0, diagnostics
+    assert phases["owners_before_release"] == 1, diagnostics
+    assert phases["followers_done_before_release"] >= 7, diagnostics
+    assert all(result.returncode == 0 for result in results), diagnostics
+    assert [result.stdout.strip() for result in results] == ["ready"] * 8, diagnostics
+    assert diagnostics["owner_files"] == 1, diagnostics
+    assert not any(diagnostics["owner_status"].values()), diagnostics
+    events = [json.loads(line) for result in results for line in result.stderr.splitlines()]
+    acquisitions = [event for event in events
+                    if event["stage"] == "acquire" and event["acquired"]]
+    assert len(acquisitions) == 1, diagnostics
+    assert acquisitions[0]["lock_exists"] and acquisitions[0]["pid_exists"], diagnostics
+    assert sum(event["stage"] == "prepared" for event in events) == 8, diagnostics
+    assert sum(event["stage"] == "released" for event in events) == 1, diagnostics
     print(
         "measurement: clients=8 "
         f"service_start_requests={len(list(start_calls.glob('*.request')))} "
-        "supervisor_spawn_authorities=1"
+        "supervisor_spawn_authorities=1 "
+        f"returncodes={[result.returncode for result in results]} "
+        f"owner_status_after_close={diagnostics['owner_status']} "
+        "stderr=8-prepared,1-real-acquire,1-released"
     )

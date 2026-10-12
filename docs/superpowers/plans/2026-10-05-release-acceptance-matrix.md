@@ -2,6 +2,28 @@
 
 ## Current master reconciliation - 2026-10-11
 
+### Concurrent-start fixture correction — 2026-10-12
+
+- Complete `7d7c13e6` run: **1 failed, 6888 passed, 105 skipped,
+  23 subtests passed, 2 FutureWarnings**, 2302.64s. Only failed node:
+  `test_concurrent_process_clients_have_one_supervisor_spawn_authority`,
+  zero owner markers at its parent gate. Cache-counter correction passed.
+- Original focused process test passed in 2.55s (`req_d662514f8b88`).
+  GPT 6 Luna (Galileo) then proved a fixture defect: patching the shared
+  `subprocess.run` intercepted hardware probing as `service_start`, which
+  constructed Supervisor recursively while configuration was resolving.
+- The subprocess double is now client-local; client/Supervisor construction
+  finishes before publishing arrival. CPU profiling is deterministic for this
+  ownership test. All original deadlines remain unchanged and Supervisor.acquire
+  stays real. Child diagnostics are bounded; cleanup verifies no lock/PID/owner.
+- Normal and 2.1s delayed preparation both return all eight clients ready,
+  one start request and one spawn authority, children exit 0. New interception
+  regression plus both process scenarios: 3 passed in 3.00s (`req_4bbc98d163a4`).
+  Primary combined client transport/process group: 48 passed in 6.23s
+  (`req_e45335a0ddb3`). Production files unchanged. This verifies eight clients,
+  not the separate requested thirty-client/RSS/CPU acceptance measurement.
+  Final integrated whole-suite validation remains open.
+
 ### Project-command cache test isolation — 2026-10-12
 
 - Complete `e67d2c96` run: **1 failed, 6888 passed, 105 skipped,
