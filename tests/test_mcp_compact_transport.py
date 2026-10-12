@@ -476,6 +476,11 @@ def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_pat
         DEVNULL=subprocess.DEVNULL,
         TimeoutExpired=subprocess.TimeoutExpired,
     ))
+    monkeypatch.setattr(client_module, "popen_managed", start_owned_server)
+    monkeypatch.setattr(
+        client_module, "retain_process_job_in_child",
+        lambda process: any(process is child for child in owned_children),
+    )
     monkeypatch.setattr(client_module, "_retain_detached_child", retained_children.append)
 
 

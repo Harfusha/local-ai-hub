@@ -8,6 +8,23 @@
 
 #### 2026-10-12 implementation-first continuation
 
+Candidate `dc7a48b91630dd7083bce145e84389a054a6df9c` whole suite was
+intentionally aborted after one observed MCP autostart fixture failure and
+identification of a second fake wheel-startup process reaching the real Windows
+managed starter. The verified owned pytest interpreter was terminated through
+its retained OS identity; wrapper/session ended exit one after 1457.519s, with
+unchanged clean candidate. Receipts:
+`followup-suite-dc7a48b91630-1791821723101680100.json` and
+`suite-abort-dc7a48b9-1791823180637014900.json`. This is incomplete failed
+validation, not a full-suite result. Two test-only corrections explicitly
+intercept the managed starter and keeper for their simulated children; all
+HTTP payload, response, argv/environment and ownership assertions remain.
+The bounded impact selection covered all 21 test files referencing client_module:
+**212 passed, 2 skipped / 136.51s**, exit zero, broker fallback
+`req_16f215d114b5`. Production source remains unchanged from dc7. Before the
+next final whole suite, private cold/shared-daemon, mode and in-flight lifecycle
+acceptance run serially without heavy tests to catch actual startup failures.
+
 Candidate `c02392073daffae15c167701f2b75c001354af2b` finished the whole
 suite with **7127 passed, 2 failed, 105 skipped, 23 subtests / 2635.21s**;
 receipt `followup-suite-c02392073daf-1791817200166445000.json`. It is not
