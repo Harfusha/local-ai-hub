@@ -16,6 +16,18 @@ Operator maintenance: error resolution shares a bounded deadline and rolls back 
 
 Gaming unload uses GET `/api/ps` before and after POST `/api/generate` with `keep_alive=0`, sharing one cancellation/deadline budget. Empty verified inventory is not proof of physical VRAM reclamation. Task completion rejects malformed checkpoint generations, including boolean values that Python otherwise compares equal to integers.
 
+Agent OS memory adoption must be verified through the actual MCP transport after installation:
+new/resumed tasks receive a small relevant advisory bundle with memory IDs, origin, scope,
+version and validity, without requiring an extra `memory_find` or `extra_fields` call.
+Checkpoints cite used IDs or a non-empty reason for not using relevant items; volatile facts
+must be checked against current source. `memory_context` is server-managed, never caller-editable.
+An unavailable lookup returns a bounded warning and does not block the task. Verify the full
+serialized memory/response budget, not content-only estimates. Automatic guard proposals stay
+`CANDIDATE`; only explicitly approved guard decisions become `CONFIRMED`. Manual operator facts
+remain supported. Never automatically retain chats, source/prompt/model-output fields, secrets
+or personal data. Reconnect existing MCP adapters after upgrading; passing store/HTTP tests
+alone does not prove that the agent received the bundle or used it.
+
 Routing source contract: hardware profile selects role targets; `router.apply_model_override` rejects overrides below the configured quality floor. Model names are routing targets, not proof of installed models; pulls remain opt-in. Semantic local tasks stay on-demand after deterministic/indexed evidence; cloud reasoning and planning never require a mandatory local handoff.
 
 Local model routing starts from `[hardware].profile="auto"`; hardware detection or an explicit profile selects a role map, then user overrides apply. Model `qwen2.5-coder:1.5b` is preprocessing-only. In order `background_code/fast_code/heavy_code/reasoning/general/vision`: cpu=`qwen2.5-coder:3b/qwen2.5-coder:3b/qwen2.5-coder:7b/qwen3.5:9b/qwen2.5-coder:7b/qwen3-vl:4b`; integrated=`qwen2.5-coder:3b/qwen2.5-coder:3b/qwen2.5-coder:7b/qwen3.5:9b/qwen2.5-coder:7b/qwen3-vl:4b`; low=`qwen2.5-coder:3b/qwen2.5-coder:3b/qwen2.5-coder:7b/qwen3.5:9b/qwen2.5-coder:7b/qwen3-vl:4b`; balanced=`qwen2.5-coder:3b/qwen2.5-coder:3b/qwen2.5-coder:7b/qwen3.5:9b/qwen2.5-coder:7b/qwen3.5:9b`; high=`qwen2.5-coder:3b/qwen2.5-coder:3b/qwen2.5-coder:7b/qwen3.5:9b/qwen3.5:9b/qwen3.5:9b`; max=`qwen2.5-coder:3b/qwen2.5-coder:3b/qwen3.5:9b/qwen3.5:9b/qwen3.5:9b/qwen3.5:9b`. Ordinary reasoning uses `heavy_code`; only heavy reasoning uses `reasoning`. These are routing targets, not proof that models are installed; model pulls remain opt-in. Run deterministic and indexed Hub actions first for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, exploration, reasoning, review, independent second opinions and compression.
