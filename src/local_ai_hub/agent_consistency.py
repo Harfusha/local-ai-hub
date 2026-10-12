@@ -317,7 +317,10 @@ def _memory_value(value: Any, depth: int = 0) -> Any:
         for key, item in itertools.islice(value.items(), _MAX_MEMORY_VALUE_ITEMS):
             name = _text(key, 80)
             lowered = name.casefold()
-            if any(token in lowered for token in ("raw", "source", "prompt", "output", "content", "text")):
+            if any(token in lowered for token in (
+                "raw", "source", "prompt", "output", "content", "text",
+                "chat", "transcript", "message", "conversation",
+            )):
                 continue
             if any(token in lowered for token in ("reason", "claim", "stable_key")):
                 output[name] = _redact_memory_text(item)
@@ -636,7 +639,7 @@ class AgentConsistencyGuard:
         revision = self._revision(request_obj, repository_revision)
         try:
             from .agent_identity import AgentScope
-            from .agent_memory import MemoryKind, MemoryRecord
+            from .agent_memory import MemoryKind, MemoryRecord, MemoryStatus
 
             memory_kind = kind if isinstance(kind, MemoryKind) else MemoryKind(str(kind).lower())
             bounded_evidence = tuple(dict.fromkeys(_text(item, 200) for item in evidence_ids if item))[:24]
@@ -662,12 +665,18 @@ class AgentConsistencyGuard:
                 "phase": _text(request_obj.phase if request_obj else phase, 80),
                 "stable_key": stable,
             }
+            approved_decision = (
+                memory_kind is MemoryKind.DECISION
+                and isinstance(value, Mapping)
+                and value.get("approved") is True
+            )
             record = MemoryRecord.create(
                 kind=memory_kind,
                 scope=AgentScope.REPOSITORY,
                 key=record_key,
                 value=_memory_value(value),
                 confidence=max(0.0, min(1.0, float(confidence))),
+                status=MemoryStatus.CONFIRMED if approved_decision else MemoryStatus.CANDIDATE,
                 source="consistency_guard",
                 evidence_ids=bounded_evidence,
                 provenance=provenance,
