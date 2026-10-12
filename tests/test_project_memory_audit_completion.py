@@ -15,6 +15,7 @@ from local_ai_hub.verification_rules import complete_task_with_project_rules
 
 def test_project_completion_rejects_skipped_memory_without_not_used_reason(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project_root = tmp_path / "repo"
     project_root.mkdir()
@@ -63,14 +64,20 @@ def test_project_completion_rejects_skipped_memory_without_not_used_reason(
         warning["code"] == "memory_stale_skipped"
         for warning in task.checkpoint.state_data["memory_context"]["warnings"]
     )
-    app.agent_tasks.checkpoint(
-        task_id,
-        TaskCheckpoint(
-            phase="work",
-            state_data={"memory_audit": {"used_ids": []}},
-        ),
-        actor="agent",
+    checkpoint = TaskCheckpoint(
+        phase="work",
+        state_data={"memory_audit": {"used_ids": []}},
     )
+    before_checkpoint = app.agent_tasks.get(task_id)
+    before_checkpoint_events = app.agent_state.events(f"task:{task_id}")
+    with pytest.raises(CompletionGateError, match="not_used_reason"):
+        app.agent_tasks.checkpoint(task_id, checkpoint, actor="agent")
+    assert app.agent_tasks.get(task_id) == before_checkpoint
+    assert app.agent_state.events(f"task:{task_id}") == before_checkpoint_events
+    # Completion must still reject a legacy invalid audit already in storage.
+    with monkeypatch.context() as legacy_fixture:
+        legacy_fixture.setattr(app.agent_tasks, "_validate_memory_audit", lambda _task: None)
+        app.agent_tasks.checkpoint(task_id, checkpoint, actor="agent")
     source_evidence = app.artifacts.put_json(
         {
             "kind": "work_source_review",

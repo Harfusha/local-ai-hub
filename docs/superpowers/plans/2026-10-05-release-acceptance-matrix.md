@@ -2,6 +2,43 @@
 
 ## Current master reconciliation - 2026-10-11
 
+### Complete follow-up suite and bounded repairs — 2026-10-12
+
+- Frozen clean candidate `6b3727325a34602fdbb92ede3fa5ace8dfd22381`:
+  `.venv/Scripts/python.exe -u -B -m pytest -vv --tb=short -r f --durations=10`
+  finished **9 failed, 6965 passed, 104 skipped, 3 errors, 2 warnings,
+  23 subtests passed / 2837.93s**, exit one. Candidate stayed unchanged and clean.
+  Preserved receipt:
+  `state/releases/4.0.0/followup-suite-6b3727325a34-1791781584022046800.json`.
+  This is a failed release gate, not acceptance.
+- Primary owns `agent_tasks.py` internal mutation checkpoint repair and
+  `tests/test_task_store_t08_queue.py`. Public checkpoints still enforce memory
+  audit; server-owned generation updates share private persistence without
+  claiming that an agent consumed memory. Scope, memory, blockers and revision
+  remain preserved. Regression explicitly checks rejected public checkpoint
+  leaves both state and events unchanged before automatic mutation succeeds.
+  Baseline mutation tests: **1 failed / 8 passed**, `req_2197d40533df`.
+- GPT-6 Luna Meitner owns completion fixtures in
+  `tests/test_agent_t08_completion_validation.py` and
+  `tests/test_project_memory_audit_completion.py`: positive audits are explicit;
+  invalid legacy state is seeded only within scoped test monkeypatches, after
+  asserting current checkpoint rejection, to retain completion rejection tests.
+  Owner validation **4 passed / 5.54s**, `req_e84924b881a5`.
+- Integrated command `.venv/Scripts/python.exe -m pytest -q
+  tests/test_task_store_t08_queue.py tests/test_task_memory_checkpoint_audit.py
+  tests/test_agent_t08_completion_validation.py
+  tests/test_project_memory_audit_completion.py --tb=short`:
+  **55 passed / 19.72s**, exit zero, `req_b96d79b4ac92`.
+  An earlier command incorrectly named `test_agent_memory_checkpoint_audit.py`:
+  exit four, no tests ran (`req_564eafc04e6e`). No acceptance inferred from it.
+- Remaining disjoint GPT-6 Luna work: Galileo owns Windows migration backup
+  identity/timeout failures in `agent_events.py`; Popper owns RAG concurrent
+  fixture diagnosis; Goodall owns status executor startup/constructor cleanup
+  in `app.py`. The three setup errors include migration backup timeout,
+  `BrokenBarrierError` and an unclosed socket warning. No timeout inflation or
+  warning suppression is accepted. Whole-suite and installed-live verification
+  remain open; no new branch/worktree or deployment was created for these fixes.
+
 ### Interrupted broad run and relevance fixture repair — 2026-10-12
 
 - Follow-up scoped memory integration command across HTTP identity/root snapshot,

@@ -163,7 +163,7 @@ def test_mutation_generation_does_not_swallow_checkpoint_failures(tasks, monkeyp
     def fail_checkpoint(*args, **kwargs):
         raise failure
 
-    monkeypatch.setattr(tasks, "checkpoint", fail_checkpoint)
+    monkeypatch.setattr(tasks, "_persist_checkpoint", fail_checkpoint)
     with pytest.raises(type(failure), match=str(failure)):
         tasks.advance_mutation_generation(task.task_id)
     assert "mutation_generation" not in tasks.get(task.task_id).checkpoint.state_data
@@ -196,6 +196,11 @@ def test_mutation_generation_preserves_server_owned_scope_and_memory(tasks, tmp_
     finally:
         trace_context.reset_context(token)
     before_scope = dict(created.checkpoint.state_data["_agent_task_scope"])
+    before_events = tasks.state_store.events(f"task:{created.task_id}")
+    with pytest.raises(CompletionGateError, match="memory_audit"):
+        tasks.checkpoint(created.task_id, created.checkpoint, actor="owner")
+    assert tasks.get(created.task_id) == created
+    assert tasks.state_store.events(f"task:{created.task_id}") == before_events
     updated = tasks.advance_mutation_generation(created.task_id, actor="owner")
     assert updated.checkpoint.state_data == {**created.checkpoint.state_data, "mutation_generation": 1}
     assert updated.checkpoint.state_data["memory_context"] == memory_context

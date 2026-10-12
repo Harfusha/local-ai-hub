@@ -2044,6 +2044,23 @@ class TaskStore:
         )
         self._validate_memory_audit(replace(current, checkpoint=checkpoint))
 
+        return self._persist_checkpoint(
+            current, checkpoint, capture_files=capture_files,
+            actor=actor, idempotency_key=idempotency_key,
+        )
+
+    def _persist_checkpoint(
+        self,
+        current: TaskState,
+        checkpoint: TaskCheckpoint,
+        *,
+        capture_files: bool = False,
+        actor: str = "agent",
+        idempotency_key: str = "",
+    ) -> TaskState:
+        """Persist a validated agent checkpoint or server-owned bookkeeping."""
+        task_id = current.task_id
+
         if capture_files or checkpoint.state_data.get("capture_files"):
             snaps = dict(checkpoint.state_data.get("file_snapshots") or {})
             for p_str in checkpoint.affected_paths:
@@ -2122,8 +2139,8 @@ class TaskStore:
         if repository_revision:
             state_data["repository_revision"] = str(repository_revision).strip()
         checkpoint = replace(current.checkpoint, state_data=state_data)
-        return self.checkpoint(
-            task_id,
+        return self._persist_checkpoint(
+            current,
             checkpoint,
             actor=actor,
             idempotency_key=f"mutation_{task_id}_{generation}",
