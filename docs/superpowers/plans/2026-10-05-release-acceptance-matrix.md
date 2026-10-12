@@ -2,6 +2,39 @@
 
 ## Current master reconciliation - 2026-10-11
 
+### Integrated suite and installed candidate — 2026-10-12
+
+- Frozen `master` `c2b6db9f`: `python -B -m pytest -q --tb=short -r f
+  --durations=10` finished exit 0: **6891 passed, 105 skipped, 23 subtests
+  passed, 2 FutureWarnings**, 2332.73s. This supersedes the failed full runs
+  recorded below. The warnings concern deprecated Torch test introspection;
+  no production change was made to silence them.
+- The daemon was stopped, the validated `e67d2c96` 4.0.0 wheel installed into
+  the home `.venv` with `pip install --no-deps --force-reinstall`, and the daemon
+  started in `active`. `pip check` passed. GPT 6 Luna independently compared
+  **120/120 installed package files**, with zero missing, different or extra
+  non-cache files. Current `src`, `pyproject.toml` and `defaults.toml` are
+  identical to that production candidate; subsequent commits change tests/docs.
+- Current wheel: `state/releases/4.0.0/local_ai_hub-4.0.0-py3-none-any.whl`,
+  1,370,079 bytes. The previous wheel is retained beside it as
+  `local_ai_hub-4.0.0-f1f9706c.previous.whl`; no user data was deleted.
+- Post-install checks: selftest **6/6**, exit 0 (`req_4f5f08a07625`);
+  doctor exit 0 (`req_75d2f16945bc`); compileall exit 0
+  (`req_c97d28b928bd`); surface inventory **687 rows, no drift**, exit 0
+  (`req_da67a59b04c5`). Doctor confirms server, Ollama, MCP and Serena available.
+  OpenVINO remains intentionally optional and uninstalled.
+- Installed live smoke is **not accepted yet**: first run
+  `req_aeaf1519ada1` failed only `live-status`; subsequent direct brief status
+  returned `success=true`, `hub_online=true`, `degraded=false` and all dependency
+  probes healthy. Second run with `--expected-version 4.0.0`
+  (`req_5e2b572c027b`) failed only `live-async-job`. Both failures remain evidence;
+  the later healthy status does not prove the earlier failure's cause.
+- No external release/push or broad T01–T21 completion is claimed. Remaining
+  acceptance includes installed live smoke, actual 30-client RSS/CPU/startup
+  measurements, large-cache status scalability, supported POSIX runtime proof,
+  speech quality rather than a silence fixture, and reconnecting already-loaded
+  MCP adapters. The protected old checkout remains preserved, not removed.
+
 ### Concurrent-start fixture correction — 2026-10-12
 
 - Complete `7d7c13e6` run: **1 failed, 6888 passed, 105 skipped,
@@ -246,8 +279,8 @@
 | Agent State memory GET | **Fixed; targeted pass** | Full suite on parent found `test_http_memory_get_is_scope_and_root_isolated` failing HTTP 404 after 440 passed. POST `action=get` ignored caller `repository_id` when project config had no ID; now uses it only as fallback, matching GET behavior. Selector 1 passed; memory/HTTP/state-transport group 56 passed. |
 | Async task integration | **Flake isolated; deterministic test fix** | `submit()` starts background dispatch while this test calls `_execute()` synchronously. The dispatcher can claim the queued job first, making the direct call return `success=false` (“async job is not queued”). Test now disables only its automatic dispatcher. `tests/test_async_jobs_tasks.py tests/test_async_jobs.py` — 31 passed in 6.07s. |
 | Windows daemon lifecycle test | **Race isolated; test fix verified** | Full-suite `--last-failed` showed `test_named_daemon_job_survives_restart_and_stops_descendants` reading the PID file between create/truncate and write (`ValueError` on empty text). Fixture now writes a temporary file and atomically replaces the target. Selector: 1 passed; full file: 58 passed, 4 skipped in 28.50s. |
-| Release gates | In progress; **T20 NO-GO** | Most recent completed full run: **3 failed, 6,851 passed, 105 skipped, 23 subtests passed** in 43:19. All three failures now have focused corrections: closed SQLite test fixture (zero leaks, 25 tests passed), isolated T19 request registries (42 tests passed), bounded telemetry flush wait (5 tests passed). The final committed tree still needs a complete passing suite. `release_check.py --allow-installed`, `compileall`, selftest (6/6) and surface inventory (687 rows) passed during this continuation. Live dashboard/API, worktree disposition and T20 acceptance remain to be verified. |
-| Live Hub | **Server online; MCP health projection inconsistent** | `hubctl status`: v4.0.0, active, Ollama online, 8 models, RTX 4060; `doctor`: server/inference/MCP/Serena marked OK, with Serena MCP call timeout noted. `local_ai_status brief` says `success=false`, `degraded=true`; `detail=full` returns HTTP 500 output-contract failure. Root cause not confirmed. |
+| Release gates | Full suite passed; **installed live gate open** | `c2b6db9f`: 6891 passed, 105 skipped, 23 subtests, two FutureWarnings, exit 0. Post-install compileall, selftest 6/6, doctor, 687-row inventory and `release_check.py --allow-installed --expected-version 4.0.0` pass. Installed live-smoke status/async failures remain recorded above; broad T20 acceptance is not complete. |
+| Live Hub | **Current package installed; server online** | Home `.venv` package matches validated e67 wheel 120/120 files. `hubctl status`: 4.0.0, active; Ollama online, eight models, RTX 4060. Current direct brief status is healthy. Fresh installed MCP full-status output schemas passed earlier; old already-loaded MCP adapters still require reconnect. The intermittent live status failure and async failure are not waived. |
 | Existing task chats | **20 blocked; T12 verified; T20 blocked** | 2026-10-11: resumed only existing T01–T21 chats, no duplicates. T01–T11 and T13–T21 report missing, unregistered, archived, or foreign-owned assigned checkouts; no source changes or current tests from those tasks. T09’s corrected thread ID also confirmed its checkout missing. T12 source acceptance is verified from its clean checkout at `a7d42908` (138 passed + 20 subtests; T02 case 1 passed); no new changes. T20’s `ec50` path is not a Git checkout and its candidate `3eb4341f` is unverified. No substitutes used; recovery needed before these task scopes can resume. |
 
 Details are recorded in the master plan's “Revalidation — 2026-10-11 continuation” section. This matrix does not claim every worktree or release criterion complete.
