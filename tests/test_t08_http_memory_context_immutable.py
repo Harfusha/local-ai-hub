@@ -8,6 +8,7 @@ from local_ai_hub import http_server, trace_context
 from local_ai_hub.agent_identity import AgentScope
 from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStatus
 from local_ai_hub.app import LocalAIApp
+from local_ai_hub.token_accounting import json_tokens
 
 
 def _public_task_client(tmp_path: Path, monkeypatch):
@@ -163,7 +164,10 @@ def test_http_task_checkpoint_cannot_replace_server_memory_context(tmp_path: Pat
                 "checkpoint": {
                     "phase": "work",
                     "next_action": "same server context retained",
-                    "state_data": {"memory_context": authoritative},
+                    "state_data": {
+                        "memory_context": authoritative,
+                        "memory_audit": {"used_ids": [record.record_id]},
+                    },
                 },
             },
             "http-identical-memory-context",
@@ -185,9 +189,11 @@ def test_http_task_checkpoint_cannot_replace_server_memory_context(tmp_path: Pat
             },
             "http-empty-memory-audit",
         )
-        assert status == 200 and response["success"] is True, response
-        status, rejected_completion = post({"action": "complete", "task_id": task_id}, "http-complete-no-memory-reason")
-        assert status == 400 and "used memory IDs or not_used_reason" in rejected_completion["error"]
+        assert status == 400 and "used memory IDs or not_used_reason" in response["error"], response
+        retained = app.agent_tasks.get(task_id)
+        assert retained is not None
+        assert retained.checkpoint.state_data["memory_audit"] == {"used_ids": [record.record_id]}
+        assert retained.checkpoint.state_data["memory_context"] == authoritative
 
         status, response = post(
             {
@@ -289,7 +295,7 @@ def test_public_task_create_resume_and_checkpoint_audit_memory_per_attempt(
                 "task_id": "public-memory-resume",
                 "root": str(root),
                 "repo_root": str(root),
-                "contract": {"goal": "Use scoped memory when useful"},
+                "contract": {"goal": "Use first and later verified task facts"},
                 "context": {"repository_id": str(root), "task_id": "public-memory-resume"},
             },
             "public-memory-create",
@@ -531,7 +537,8 @@ def test_public_task_memory_unavailable_is_bounded_and_redacted(
         assert status == 200 and created["success"] is True, created
         memory_context = created["task"]["checkpoint"]["state_data"]["memory_context"]
         assert memory_context["items"] == []
-        assert memory_context["estimated_tokens"] == 0
+        assert memory_context["estimated_tokens"] == json_tokens(memory_context)
+        assert json_tokens(memory_context) <= 512
         assert memory_context["warnings"] == [{"code": "memory_context_unavailable"}]
         assert len(compiler.requests) == 1
         assert compiler.requests[0].token_budget == 512

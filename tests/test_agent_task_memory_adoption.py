@@ -173,7 +173,7 @@ def test_create_uses_only_matching_root_and_tenant_without_saving_prompt_memory(
     token = with_tenant("tenant-a")
     try:
         task = tasks.create(
-            GoalContract(goal="Private task prompt"),
+            GoalContract(goal="Private task prompt: use matching fact and shared global and tenantless global facts"),
             ScopeContext(branch="main", task_id="task-local"),
             task_id="create-scope",
             repo_root=str(root_a),
@@ -197,7 +197,7 @@ def test_create_uses_only_matching_root_and_tenant_without_saving_prompt_memory(
     token = with_tenant("tenant-b")
     try:
         tenant_b = tasks.create(
-            GoalContract(goal="tenant B task"),
+            GoalContract(goal="tenant B task: use other tenant fact and tenantless global fact"),
             ScopeContext(branch="main", task_id="task-local-b"),
             task_id="create-scope-b",
             repo_root=str(root_a),
@@ -210,7 +210,7 @@ def test_create_uses_only_matching_root_and_tenant_without_saving_prompt_memory(
     assert global_matching.record_id not in tenant_b_ids
 
     no_tenant = tasks.create(
-        GoalContract(goal="anonymous tenantless task"),
+        GoalContract(goal="anonymous tenantless task: use tenantless global fact"),
         ScopeContext(branch="main", task_id="task-no-tenant"),
         task_id="create-scope-no-tenant",
         repo_root=str(root_a),
@@ -306,7 +306,7 @@ def test_task_memory_consumer_filters_foreign_tenant_from_leaky_store_results(
     token = with_tenant("tenant-a")
     try:
         task = tasks.create(
-            GoalContract(goal="filter foreign tenant memory"),
+            GoalContract(goal="Use current fact while filtering foreign tenant memory"),
             context,
             task_id=task_id,
             repo_root=str(root),
@@ -345,7 +345,7 @@ def test_resume_refreshes_memory_and_checkpoint_keeps_audit_bundle(tmp_path: Pat
     token = with_tenant("tenant-a")
     try:
         task = tasks.create(
-            GoalContract(goal="resume task"),
+            GoalContract(goal="Resume task using first fact and second fact"),
             ScopeContext(branch="main", task_id="resume-local"),
             task_id="resume-memory",
             repo_root=str(root),
@@ -361,7 +361,10 @@ def test_resume_refreshes_memory_and_checkpoint_keeps_audit_bundle(tmp_path: Pat
     bundle = resumed.checkpoint.state_data["memory_context"]
     assert {item["id"] for item in bundle["items"]} == {initial.record_id, later.record_id}
     assert resumed.checkpoint.state_data["memory_audit"] is None
-    tasks.checkpoint(task.task_id, TaskCheckpoint(phase="work", state_data={"note": "saved"}), actor="test")
+    tasks.checkpoint(task.task_id, TaskCheckpoint(phase="work", state_data={
+        "note": "saved",
+        "memory_audit": {"used_ids": [initial.record_id, later.record_id]},
+    }), actor="test")
     stored = tasks.get(task.task_id)
     assert stored is not None
     assert stored.checkpoint.state_data["memory_context"] == bundle
@@ -533,11 +536,12 @@ def test_volatile_memory_requires_checkpoint_source_check_and_bundle_survives_ch
     volatile = add_memory(memory, root=root, tenant="tenant-a", text="volatile fact", volatile=True)
     token = with_tenant("tenant-a")
     try:
-        task = tasks.create(GoalContract(goal="audit memory"), task_context(root), task_id="memory-audit")
+        task = tasks.create(GoalContract(goal="Audit volatile fact"), task_context(root), task_id="memory-audit")
     finally:
         trace_context.reset_context(token)
 
-    tasks.checkpoint(task.task_id, TaskCheckpoint(phase="work", state_data={"progress": 1}), actor="test")
+    with pytest.raises(CompletionGateError, match="requires checkpoint memory_audit"):
+        tasks.checkpoint(task.task_id, TaskCheckpoint(phase="work", state_data={"progress": 1}), actor="test")
     stored = tasks.get(task.task_id)
     assert stored is not None
     with pytest.raises(CompletionGateError, match="requires checkpoint memory_audit"):
@@ -561,27 +565,21 @@ def test_volatile_memory_requires_checkpoint_source_check_and_bundle_survives_ch
     tasks.transition(task.task_id, TaskStatus.VERIFYING, reason="verify", actor="test", idempotency_key="verify")
     with pytest.raises(CompletionGateError, match="requires checkpoint memory_audit"):
         tasks.transition(task.task_id, TaskStatus.COMPLETED, reason="complete", actor="test", idempotency_key="complete-no-audit")
-    tasks.checkpoint(
-        task.task_id,
-        TaskCheckpoint(state_data={"memory_audit": {"used_ids": [volatile.record_id]}}),
-        actor="test",
-        idempotency_key="audit-without-source",
-    )
+    missing_source = TaskCheckpoint(state_data={"memory_audit": {"used_ids": [volatile.record_id]}})
     with pytest.raises(CompletionGateError, match="lacks current-source check"):
-        tasks.transition(task.task_id, TaskStatus.COMPLETED, reason="complete", actor="test", idempotency_key="complete-no-source")
-    tasks.checkpoint(
-        task.task_id,
-        TaskCheckpoint(state_data={
+        tasks.checkpoint(task.task_id, missing_source, actor="test", idempotency_key="audit-without-source")
+    with pytest.raises(CompletionGateError, match="lacks current-source check"):
+        tasks.transition(task.task_id, TaskStatus.COMPLETED, reason="complete", actor="test", idempotency_key="complete-no-source", checkpoint=missing_source)
+    invalid_source = TaskCheckpoint(state_data={
             "memory_audit": {
                 "used_ids": [volatile.record_id],
                 "source_checks": {volatile.record_id: {"evidence_ids": "not-an-evidence-list"}},
             },
-        }),
-        actor="test",
-        idempotency_key="audit-invalid-source",
-    )
+        })
     with pytest.raises(CompletionGateError, match="lacks current-source check"):
-        tasks.transition(task.task_id, TaskStatus.COMPLETED, reason="complete", actor="test", idempotency_key="complete-invalid-source")
+        tasks.checkpoint(task.task_id, invalid_source, actor="test", idempotency_key="audit-invalid-source")
+    with pytest.raises(CompletionGateError, match="lacks current-source check"):
+        tasks.transition(task.task_id, TaskStatus.COMPLETED, reason="complete", actor="test", idempotency_key="complete-invalid-source", checkpoint=invalid_source)
     tasks.checkpoint(
         task.task_id,
         TaskCheckpoint(state_data={
@@ -614,7 +612,7 @@ def test_transition_checkpoint_cannot_replace_server_memory_or_reuse_old_audit(
     task_id = "transition-memory-invariant"
     try:
         task = tasks.create(
-            GoalContract(goal="preserve server memory through transition checkpoints"),
+            GoalContract(goal="Preserve authoritative fact through transition checkpoints"),
             task_context(root),
             task_id=task_id,
             repo_root=str(root),
@@ -751,7 +749,7 @@ def test_shared_task_update_preserves_and_rejects_memory_context_changes(tmp_pat
     task_id = "shared-update-memory-invariant"
     try:
         current = tasks.create(
-            GoalContract(goal="shared task updates preserve server memory"),
+            GoalContract(goal="Shared task updates preserve authoritative fact"),
             task_context(root),
             task_id=task_id,
             repo_root=str(root),
@@ -833,7 +831,7 @@ def test_unscoped_blackboard_is_unverified_and_cannot_bypass_task_memory_scope(t
     token = with_tenant("tenant-a")
     try:
         task = tasks.create(
-            GoalContract(goal="scoped context"), context, task_id=task_id, repo_root=str(root_a)
+            GoalContract(goal="Use current repository fact in scoped context"), context, task_id=task_id, repo_root=str(root_a)
         )
         compiled = compiler.compile(
             ContextRequest(task_id=task_id, root=str(root_a), tenant="tenant-a", token_budget=1200)
@@ -932,7 +930,7 @@ def test_create_and_resume_lookup_scoped_memory_without_unscoped_get(
     tenant_token = with_tenant("tenant-a")
     try:
         task = tasks.create(
-            GoalContract(goal="scoped memory task"),
+            GoalContract(goal="Use matching repository fact in scoped memory task"),
             task_context(root),
             task_id="scoped-memory-create-resume",
             repo_root=str(root),

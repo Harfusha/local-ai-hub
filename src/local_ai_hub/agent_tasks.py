@@ -6,12 +6,15 @@ import json
 import sqlite3
 import hashlib
 import inspect
+import contextvars
+import queue
 import math
 import threading
 import time
 import unicodedata
 import uuid
-from contextlib import closing
+import weakref
+from contextlib import closing, nullcontext
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
@@ -20,6 +23,7 @@ from typing import Any, Mapping
 from .agent_events import AgentEvent, AgentStateStore
 from .agent_identity import AgentScope, ScopeContext
 from .sqlite_support import connect_sqlite, retry_busy
+from .token_accounting import json_tokens
 
 MAX_TASK_QUERY_SCAN_ROWS = 10_000
 
@@ -355,6 +359,11 @@ class TaskStore:
         self.memory_store: Any | None = None
         self.memory_context_compiler: Any | None = None
         self.incident_store: Any | None = None
+        self._memory_lookup_slots = threading.BoundedSemaphore(1)
+        self._memory_lookup_queue: queue.Queue[Any] = queue.Queue(maxsize=1)
+        self._memory_lookup_worker: threading.Thread | None = None
+        self._memory_lookup_finalizer = weakref.finalize(self, self._memory_lookup_queue.put_nowait, None)
+        self._memory_lookup_finalizer.atexit = False
         self._lock = threading.RLock()
         self._initialized = False
         self._init_projection_table()
@@ -395,6 +404,95 @@ class TaskStore:
     def _memory_token_count(value: str) -> int:
         return max(1, len(value.strip()) // 4)
 
+    class _MemoryDeadlineExceeded(Exception):
+        pass
+
+    @staticmethod
+    def _memory_warning(code: str, tenant_key: str = "") -> dict[str, Any]:
+        return TaskStore._account_memory_snapshot({
+            "schema_version": 1, "tenant_key": tenant_key, "instruction": "",
+            "items": [], "warnings": [{"code": code}], "estimated_tokens": 0,
+        })
+
+    @staticmethod
+    def _account_memory_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+        for _ in range(16):
+            measured = json_tokens(snapshot)
+            if snapshot.get("estimated_tokens") == measured:
+                return snapshot
+            snapshot["estimated_tokens"] = measured
+        raise ValueError("memory snapshot accounting did not converge")
+
+    def _check_memory_deadline(self, deadline: float, cancelled: threading.Event) -> None:
+        if cancelled.is_set() or time.monotonic() >= deadline:
+            raise self._MemoryDeadlineExceeded()
+
+    @staticmethod
+    def _run_memory_lookup_jobs(jobs: queue.Queue[Any], slots: threading.BoundedSemaphore) -> None:
+        # A stuck backend occupies this single daemon worker/slot, never a
+        # growing executor queue or a non-daemon interpreter shutdown hook.
+        while True:
+            job = jobs.get()
+            if job is None:
+                jobs.task_done()
+                return
+            context, callback, completed, outcome = job
+            try:
+                outcome["value"] = context.run(callback)
+            except BaseException as exc:
+                outcome["error"] = "deadline" if isinstance(exc, TaskStore._MemoryDeadlineExceeded) else "unavailable"
+            finally:
+                jobs.task_done()
+                slots.release()
+                completed.set()
+            del job, context, callback, completed, outcome
+
+    @staticmethod
+    def _fit_memory_snapshot(snapshot: dict[str, Any] | None) -> dict[str, Any] | None:
+        if snapshot is None:
+            return None
+        result = dict(snapshot)
+        source_items = list(result.get("items", ()))
+        result["items"] = []
+        if not source_items:
+            result["instruction"] = ""
+            if not result.get("warnings"):
+                return None
+            result = TaskStore._account_memory_snapshot(result)
+            return result if json_tokens(result) <= 512 else TaskStore._memory_warning("memory_snapshot_budget_exceeded", str(result.get("tenant_key", "")))
+
+        def fits(candidate: dict[str, Any]) -> bool:
+            for _ in range(16):
+                measured = json_tokens(candidate)
+                if candidate.get("estimated_tokens") == measured:
+                    return measured <= 512
+                candidate["estimated_tokens"] = measured
+            return False
+
+        for source_item in source_items[:8]:
+            item = dict(source_item)
+            candidate = {**result, "items": [*result["items"], item]}
+            if not fits(candidate):
+                content = str(item.get("content", ""))
+                low, high = 0, len(content)
+                best = None
+                while low <= high:
+                    size = (low + high) // 2
+                    bounded = {**item, "content": content[:size], "estimated_tokens": json_tokens(content[:size])}
+                    trial = {**result, "items": [*result["items"], bounded]}
+                    if fits(trial):
+                        best = trial
+                        low = size + 1
+                    else:
+                        high = size - 1
+                if best is None or not best["items"][-1]["content"]:
+                    continue  # Never shorten identity/provenance to fit an item.
+                candidate = best
+            result = candidate
+        if not result["items"]:
+            return TaskStore._memory_warning("memory_snapshot_budget_exceeded", str(result.get("tenant_key", "")))
+        return result if fits(result) else TaskStore._memory_warning("memory_snapshot_budget_exceeded", str(result.get("tenant_key", "")))
+
     def _task_memory_context(
         self,
         task_id: str,
@@ -403,6 +501,63 @@ class TaskStore:
         *,
         root_override: str = "",
         previous: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        if self.memory_context_compiler is None or self.memory_store is None:
+            return self._memory_warning("memory_context_unavailable") if previous is not None else None
+        from .trace_context import current as current_trace_context
+
+        deadline = time.monotonic() + 1.0
+        tenant = str(current_trace_context().get("tenant", "") or "").strip()
+        tenant_key = _tenant_scope_key(tenant) if tenant else ""
+        if not self._memory_lookup_slots.acquire(blocking=False):
+            return self._memory_warning("memory_lookup_busy", tenant_key)
+        if time.monotonic() >= deadline:
+            self._memory_lookup_slots.release()
+            return self._memory_warning("memory_lookup_deadline_exceeded", tenant_key)
+        cancelled, completed = threading.Event(), threading.Event()
+        outcome: dict[str, Any] = {}
+        previous = {"tenant_key": previous.get("tenant_key", "")} if previous is not None else None
+
+        def lookup() -> dict[str, Any] | None:
+            self._check_memory_deadline(deadline, cancelled)
+            root = str(root_override or context.repository_id or "").strip()
+            guard = getattr(self.memory_store, "task_retrieval_scope", None)
+            with guard(contract.goal, root=root, tenant=tenant, task_id=task_id) if callable(guard) else nullcontext():
+                self._check_memory_deadline(deadline, cancelled)
+                snapshot = self._collect_task_memory_context(
+                    task_id, contract, context, root_override=root, previous=previous,
+                    deadline=deadline, cancelled=cancelled,
+                )
+                self._check_memory_deadline(deadline, cancelled)
+                snapshot = self._fit_memory_snapshot(snapshot)
+                self._check_memory_deadline(deadline, cancelled)
+                return snapshot
+
+        try:
+            if self._memory_lookup_worker is None:
+                worker = threading.Thread(
+                    target=self._run_memory_lookup_jobs,
+                    args=(self._memory_lookup_queue, self._memory_lookup_slots),
+                    name="agent-task-memory-lookup", daemon=True,
+                )
+                worker.start()
+                self._memory_lookup_worker = worker
+            self._memory_lookup_queue.put_nowait((contextvars.copy_context(), lookup, completed, outcome))
+        except Exception:
+            self._memory_lookup_slots.release()
+            return self._memory_warning("memory_context_unavailable", tenant_key)
+        if not completed.wait(max(0.0, deadline - time.monotonic())):
+            cancelled.set()
+            return self._memory_warning("memory_lookup_deadline_exceeded", tenant_key)
+        if outcome.get("error"):
+            code = "memory_lookup_deadline_exceeded" if outcome["error"] == "deadline" else "memory_context_unavailable"
+            return self._memory_warning(code, tenant_key)
+        return outcome.get("value")
+
+    def _collect_task_memory_context(
+        self, task_id: str, contract: GoalContract, context: ScopeContext, *,
+        root_override: str = "", previous: Mapping[str, Any] | None = None,
+        deadline: float, cancelled: threading.Event,
     ) -> dict[str, Any] | None:
         compiler = self.memory_context_compiler
         memory_store = self.memory_store
@@ -428,6 +583,7 @@ class TaskStore:
                     # Failed or unavailable identity resolution keeps task
                     # adoption scoped to this physical worktree.
                     coordination_id = ""
+            self._check_memory_deadline(deadline, cancelled)
             tenant_key = hashlib.sha256(
                 f"agent-task-memory-tenant\\0{tenant}".encode("utf-8")
             ).hexdigest() if tenant else ""
@@ -455,17 +611,8 @@ class TaskStore:
                 repository_id=context.repository_id,
                 coordination_id=coordination_id,
             )
-            started = time.monotonic()
             compiled = compiler.compile(request)
-            if time.monotonic() - started > 1.0:
-                return {
-                    "schema_version": 1,
-                    "tenant_key": tenant_key,
-                    "instruction": "Memory is advisory. Cite used memory IDs in the next checkpoint; otherwise record not_used_reason. Verify volatile facts against current source before relying on them.",
-                    "items": [],
-                    "warnings": [{"code": "memory_lookup_deadline_exceeded"}],
-                    "estimated_tokens": 0,
-                }
+            self._check_memory_deadline(deadline, cancelled)
 
             items: list[dict[str, Any]] = []
             warnings.extend(
@@ -490,6 +637,7 @@ class TaskStore:
                             warnings.append({"code": f"memory_{str(status)[:32]}_skipped"})
                 except Exception:
                     warnings.append({"code": "memory_diagnostics_unavailable"})
+            self._check_memory_deadline(deadline, cancelled)
             find_records = getattr(memory_store, "find", None)
             if callable(find_records):
                 try:
@@ -505,6 +653,7 @@ class TaskStore:
                     ]
                     for query in queries:
                         for status in ("active", "confirmed"):
+                            self._check_memory_deadline(deadline, cancelled)
                             records = find_records(
                                 **query,
                                 status=status,
@@ -512,6 +661,7 @@ class TaskStore:
                                 semantic=False,
                                 limit=8,
                             )
+                            self._check_memory_deadline(deadline, cancelled)
                             for record in records:
                                 expires_at = getattr(record, "expires_at", None)
                                 provenance = getattr(record, "provenance", {})
@@ -537,6 +687,7 @@ class TaskStore:
                         warnings.append({"code": "memory_expired_skipped"})
                 except Exception:
                     warnings.append({"code": "memory_expiry_check_unavailable"})
+            self._check_memory_deadline(deadline, cancelled)
             instruction = (
                 "Memory is advisory. Cite used memory IDs in the next checkpoint; "
                 "otherwise record not_used_reason. Verify volatile facts against current source before relying on them."
@@ -564,6 +715,7 @@ class TaskStore:
                             branch=context.branch,
                             limit=20,
                         )
+                        self._check_memory_deadline(deadline, cancelled)
                         scoped_records_by_id = {
                             str(getattr(record, "record_id", "") or "").strip(): record
                             for record in scoped_records
@@ -574,8 +726,10 @@ class TaskStore:
                         warnings.append({"code": "memory_scoped_lookup_unavailable"})
                 else:
                     warnings.append({"code": "memory_scoped_lookup_unavailable"})
+            self._check_memory_deadline(deadline, cancelled)
             for element in elements:
-                if getattr(element, "source_kind", "") != "memory_record" or len(items) >= 5:
+                self._check_memory_deadline(deadline, cancelled)
+                if getattr(element, "source_kind", "") != "memory_record":
                     continue
                 record_id = str(getattr(element, "element_id", "") or "").strip()
                 if not record_id:
@@ -632,15 +786,9 @@ class TaskStore:
                     if scope == "repository" and not root:
                         continue
                     content = str(getattr(element, "content", "") or "").strip()
-                    remaining_tokens = token_budget - used_tokens
-                    if not content or remaining_tokens <= 0:
-                        break
-                    max_chars = remaining_tokens * 4
-                    if len(content) > max_chars:
-                        content = content[:max_chars].rstrip()
-                    item_tokens = self._memory_token_count(content)
-                    if item_tokens > remaining_tokens:
+                    if not content:
                         continue
+                    item_tokens = self._memory_token_count(content)
                     evidence_ids = [str(value)[:160] for value in tuple(getattr(record, "evidence_ids", ()) or ())[:8]]
                     safe_provenance: dict[str, Any] = {"evidence_ids": evidence_ids} if evidence_ids else {}
                     revision = provenance.get("repository_revision")
@@ -666,9 +814,34 @@ class TaskStore:
                         "provenance": safe_provenance,
                         "estimated_tokens": item_tokens,
                     })
-                    used_tokens += item_tokens
                 except (AttributeError, TypeError, ValueError, OverflowError):
                     warnings.append({"code": "memory_record_invalid"})
+
+            scorer = getattr(memory_store, "task_relevance_score", None)
+            if callable(scorer):
+                ranked = []
+                for index, item in enumerate(items):
+                    self._check_memory_deadline(deadline, cancelled)
+                    try:
+                        score = float(scorer(scoped_records_by_id[item["id"]], contract.goal, task_id=task_id))
+                        if not math.isfinite(score):
+                            raise ValueError("invalid relevance score")
+                    except Exception:
+                        score = 0.0
+                        warnings.append({"code": "memory_relevance_unavailable"})
+                    self._check_memory_deadline(deadline, cancelled)
+                    ranked.append((score, index, item))
+                items = [item for _, _, item in sorted(ranked, key=lambda entry: (-entry[0], entry[1]))]
+            selected_items = []
+            for item in items:
+                remaining_tokens = token_budget - used_tokens
+                if len(selected_items) >= 5 or remaining_tokens <= 0:
+                    break
+                content = item["content"][:remaining_tokens * 4].rstrip()
+                item_tokens = self._memory_token_count(content)
+                selected_items.append({**item, "content": content, "estimated_tokens": item_tokens})
+                used_tokens += item_tokens
+            items = selected_items
 
             incident_store = self.incident_store
             if root and tenant and incident_store is not None:
@@ -676,7 +849,9 @@ class TaskStore:
                 if callable(finder):
                     try:
                         incidents = finder(contract.goal, limit=3, root=root, tenant=tenant)
+                        self._check_memory_deadline(deadline, cancelled)
                         for incident in incidents[:3]:
+                            self._check_memory_deadline(deadline, cancelled)
                             if not isinstance(incident, Mapping):
                                 continue
                             incident_id = str(incident.get("incident_id", "") or "").strip()
@@ -684,6 +859,24 @@ class TaskStore:
                             if not incident_id or not isinstance(provenance, Mapping):
                                 continue
                             if not provenance.get("repository_key") or not provenance.get("tenant_key"):
+                                continue
+                            expires_at = incident.get("expires_at")
+                            if "expires_at" not in incident:
+                                getter = getattr(incident_store, "get", None)
+                                if not callable(getter):
+                                    warnings.append({"code": "negative_knowledge_invalid"})
+                                    continue
+                                full = getter(incident_id)
+                                self._check_memory_deadline(deadline, cancelled)
+                                if full is None or getattr(full, "repository_key", "") != provenance["repository_key"] or getattr(full, "tenant_key", "") != provenance["tenant_key"]:
+                                    continue
+                                expires_at = getattr(full, "expires_at", None)
+                            try:
+                                expires_at = float(expires_at) if expires_at is not None else None
+                                if expires_at is not None and (not math.isfinite(expires_at) or expires_at <= time.time()):
+                                    continue
+                            except (TypeError, ValueError, OverflowError):
+                                warnings.append({"code": "negative_knowledge_invalid"})
                                 continue
                             detail = str(incident.get("verified_fix") or incident.get("root_cause") or "").strip()
                             if not detail:
@@ -704,7 +897,8 @@ class TaskStore:
                                 "scope": "repository+tenant",
                                 "scope_id": "",
                                 "status": "active",
-                                "validity": {"updated_at": float(incident.get("updated_at", 0.0) or 0.0), "expires_at": None},
+                                "version": str(incident.get("state_revision", "") or "")[:128],
+                                "validity": {"updated_at": float(incident.get("updated_at", 0.0) or 0.0), "expires_at": expires_at},
                                 "confidence": float(incident.get("confidence", 0.0) or 0.0),
                                 "volatile": True,
                                 "provenance": dict(provenance),
@@ -713,6 +907,7 @@ class TaskStore:
                             used_tokens += item_tokens
                     except Exception:
                         warnings.append({"code": "negative_knowledge_unavailable"})
+            self._check_memory_deadline(deadline, cancelled)
             if not items and not warnings:
                 return None
             return {
@@ -723,6 +918,8 @@ class TaskStore:
                 "warnings": warnings[:8],
                 "estimated_tokens": used_tokens if items else 0,
             }
+        except self._MemoryDeadlineExceeded:
+            raise
         except Exception:
             return {
                 "schema_version": 1,
@@ -1845,6 +2042,7 @@ class TaskStore:
         checkpoint = _preserve_checkpoint_memory_state(
             current.checkpoint.state_data, checkpoint
         )
+        self._validate_memory_audit(replace(current, checkpoint=checkpoint))
 
         if capture_files or checkpoint.state_data.get("capture_files"):
             snaps = dict(checkpoint.state_data.get("file_snapshots") or {})
@@ -2031,12 +2229,9 @@ class TaskStore:
         if memory_context is not None:
             state_data["memory_context"] = memory_context
         elif "memory_context" in state_data:
-            state_data["memory_context"] = {
-                "schema_version": 1,
-                "instruction": "Memory is advisory. Cite used memory IDs or record not_used_reason in the next checkpoint.",
-                "items": [],
-                "warnings": [{"code": "memory_context_unavailable"}],
-            }
+            # Explicit server refresh: omission would preserve the old snapshot
+            # through the existing immutable-checkpoint merge.
+            state_data["memory_context"] = None
         state_data["memory_audit"] = None
         resumed_checkpoint = TaskCheckpoint(
             phase=current.checkpoint.phase,

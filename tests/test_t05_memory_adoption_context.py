@@ -10,6 +10,7 @@ from local_ai_hub.agent_identity import AgentScope, ScopeContext
 from local_ai_hub.agent_incidents import IncidentStore
 from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStatus, MemoryStore
 from local_ai_hub.agent_tasks import GoalContract, TaskStatus, TaskStore
+from local_ai_hub.token_accounting import json_tokens
 
 
 def test_task_memory_snapshot_preserves_freshness_provenance_and_evidence(tmp_path: Path):
@@ -85,7 +86,8 @@ def test_task_memory_fallback_is_bounded_and_does_not_echo_error_or_tenant(tmp_p
     assert snapshot["schema_version"] == 1
     assert snapshot["items"] == []
     assert snapshot["warnings"] == [{"code": "memory_context_unavailable"}]
-    assert snapshot["estimated_tokens"] == 0
+    assert snapshot["estimated_tokens"] == json_tokens(snapshot)
+    assert json_tokens(snapshot) <= 512
     assert "tenant-a" not in str(snapshot)
     assert "api_key" not in str(snapshot)
 
