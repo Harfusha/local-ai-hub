@@ -75,6 +75,7 @@ from .scheduler import ModelUnavailableError, QueueFullError
 from .debug_traces import DebugTraceObserver, _normalize_trace_content
 from .trace_context import reset_context, reset_observer, set_context, set_observer
 from .http_route_registry import select_get_handler, select_http_routes, select_post_handler
+from .http_post_repository_analysis import handle_post_repository_analysis
 from .dashboard import DASHBOARD_HTML
 from .config import ConfigError, deep_merge, load_config, save_runtime_overrides, validate_config
 from .delivery import decide_delivery
@@ -3467,6 +3468,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send(200, {"success": True, **page})
 
+    def _handle_post_repository_analysis(
+        self, payload: Any, *, tenant: str = "", route_ids: tuple[str, ...] = ()
+    ) -> None:
+        handle_post_repository_analysis(self, payload, route_ids, APP)
+
     def _async_delivery(self, path: str, payload: dict[str, Any], tenant: str) -> tuple[int, dict[str, Any]] | None:
         """Convert eligible long foreground work into an existing durable job when requested."""
         if APP is None:
@@ -5830,7 +5836,11 @@ class Handler(BaseHTTPRequestHandler):
             post_route_ids = select_http_routes("POST", path)
             post_handler_name = select_post_handler(post_route_ids)
             if post_handler_name is not None:
-                getattr(self, post_handler_name)(payload, tenant=tenant)
+                post_handler = getattr(self, post_handler_name)
+                if post_handler_name == "_handle_post_repository_analysis":
+                    post_handler(payload, tenant=tenant, route_ids=post_route_ids)
+                else:
+                    post_handler(payload, tenant=tenant)
                 return
             if 'post_config_update_1' in post_route_ids:
                 action = str(payload.get("action", "update")).strip().lower()
@@ -7211,56 +7221,6 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
-            if 'post_git_status_1' in post_route_ids:
-                root = str(payload.get("root", "."))
-                if APP.deterministic is not None:
-                    self._send(200, APP.deterministic.git_status(root))
-                else:
-                    self._send(200, {"success": False, "error": "deterministic engine disabled"})
-                return
-            if 'post_repo_state_1' in post_route_ids:
-                root = str(payload.get("root", "."))
-                tracker = getattr(APP, "repo_state", None) or (getattr(APP.services, "repo_state", None) if getattr(APP, "services", None) else None)
-                if tracker is not None:
-                    try:
-                        self._send(200, tracker.fingerprint(root))
-                    except Exception:
-                        self._send(200, {
-                            "success": False,
-                            "error": "repo state unavailable",
-                            "error_code": "repo_state_unavailable",
-                        })
-                else:
-                    self._send(200, {"success": False, "error": "repo_state tracker unavailable"})
-                return
-            if 'post_git_diff_1' in post_route_ids:
-                root = str(payload.get("root", "."))
-                p = payload.get("path")
-                staged = bool(payload.get("staged", False))
-                max_lines = int(payload.get("max_lines", 1000))
-                if APP.deterministic is not None:
-                    self._send(200, APP.services.git_diff(root, path=p, staged=staged, max_lines=max_lines))
-                else:
-                    self._send(200, {"success": False, "error": "deterministic engine disabled"})
-                return
-            if 'post_git_history_search_1' in post_route_ids:
-                root = str(payload.get("root", "."))
-                q = str(payload.get("query", ""))
-                max_c = int(payload.get("max_commits", 20))
-                if APP.deterministic is not None:
-                    self._send(200, APP.services.git_history_search(root, q, max_commits=max_c))
-                else:
-                    self._send(200, {"success": False, "error": "deterministic engine disabled"})
-                return
-            if 'post_hotspots_1' in post_route_ids:
-                root = str(payload.get("root", "."))
-                days = int(payload.get("days", 30))
-                limit = int(payload.get("limit", 20))
-                if APP.deterministic is not None:
-                    self._send(200, APP.services.find_hotspots(root, days=days, limit=limit))
-                else:
-                    self._send(200, {"success": False, "error": "deterministic engine disabled"})
-                return
             if 'post_generate_tests_for_diff_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 diff = payload.get("diff")
@@ -7284,13 +7244,6 @@ class Handler(BaseHTTPRequestHandler):
                 task_id = str(payload.get("task_id", ""))
                 if APP.deterministic is not None:
                     self._send(200, APP.services.synthesize_commit(root, hint, task_id=task_id))
-                else:
-                    self._send(200, {"success": False, "error": "deterministic engine disabled"})
-                return
-            if 'post_test_matrix_1' in post_route_ids:
-                root = str(payload.get("root", "."))
-                if APP.deterministic is not None:
-                    self._send(200, APP.services.test_matrix(root))
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return

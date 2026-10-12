@@ -1547,8 +1547,78 @@ def test_daemon_rejects_implicit_shell_operators(tmp_path: Path) -> None:
             broker.stop_daemon(result["daemon_id"], task_id="daemon-test")
 
 
-def test_daemon_ttl_stops_process_and_records_owner(tmp_path: Path) -> None:
+def test_daemon_ttl_schedules_remaining_deadline(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     broker = _broker(tmp_path, daemon_ttl_seconds=1, allow_unknown=True)
+    timers: list[object] = []
+
+    class RecordingTimer:
+        def __init__(self, interval, function, *, args):
+            self.interval = interval
+            self.function = function
+            self.args = args
+            self.daemon = False
+            self.started = False
+            self.cancelled = False
+            timers.append(self)
+
+        def start(self):
+            self.started = True
+
+        def cancel(self):
+            self.cancelled = True
+
+    monkeypatch.setattr(commands_module, "threading", SimpleNamespace(Timer=RecordingTimer))
+    monkeypatch.setattr(commands_module, "time", SimpleNamespace(time=lambda: 100.0))
+    daemon_id = "dmn_ttl_schedule"
+    expires_at = 100.5
+    info = {"daemon_id": daemon_id, "expires_at": expires_at}
+
+    broker._schedule_daemon_expiry(info)
+
+    timer = timers[0]
+    assert timer.interval == 0.5
+    assert timer.daemon is True
+    assert timer.started is True
+    assert timer.function.__self__ is broker
+    assert timer.function.__func__ is CommandBroker._expire_daemon
+    assert timer.args == (daemon_id,)
+    assert info["ttl_timer"] is timer
+
+    info["expires_at"] = 99.9
+    broker._schedule_daemon_expiry(info)
+    expired_timer = timers[1]
+    assert timer.cancelled is True
+    assert expired_timer.interval == 0.0
+    assert expired_timer.function.__self__ is broker
+    assert expired_timer.function.__func__ is CommandBroker._expire_daemon
+    assert expired_timer.args == (daemon_id,)
+    assert expired_timer.started is True
+    assert info["ttl_timer"] is expired_timer
+
+
+def test_daemon_ttl_stops_owned_process_and_records_owner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker = _broker(tmp_path, daemon_ttl_seconds=1, allow_unknown=True)
+    expiry_calls: list[str] = []
+    timer_expiry_started = threading.Event()
+    timer_expiry_finished = threading.Event()
+    original_expire = CommandBroker._expire_daemon
+
+    def record_expiry(self, daemon_id: str) -> None:
+        expiry_calls.append(daemon_id)
+        is_timer_thread = isinstance(threading.current_thread(), threading.Timer)
+        if is_timer_thread:
+            timer_expiry_started.set()
+        try:
+            original_expire(self, daemon_id)
+        finally:
+            if is_timer_thread:
+                timer_expiry_finished.set()
+
+    monkeypatch.setattr(CommandBroker, "_expire_daemon", record_expiry)
     daemon = broker.spawn_daemon(
         [sys.executable, "-c", "import time; time.sleep(30)"],
         str(tmp_path),
@@ -1556,26 +1626,37 @@ def test_daemon_ttl_stops_process_and_records_owner(tmp_path: Path) -> None:
         task_id="daemon-test",
     )
     assert daemon["success"] is True
+    daemon_id = daemon["daemon_id"]
     try:
-        initial = broker.daemon_status(daemon["daemon_id"])
-        assert initial["owner_id"]
-        assert initial["ttl_remaining_seconds"] > 0, {
-            "initial_status": initial,
-            "elapsed_since_spawn": time.time() - broker._daemons[daemon["daemon_id"]]["started_at"],
-            "configured_ttl_seconds": broker.daemon_ttl_seconds,
-        }
+        initial = broker.daemon_status(daemon_id)
+        info = broker._daemons[daemon_id]
+        assert daemon["owner_id"] == broker._daemon_owner_id
+        assert initial["owner_id"] == broker._daemon_owner_id
+        assert info["owner_id"] == broker._daemon_owner_id
+        assert info["expires_at"] == info["started_at"] + broker.daemon_ttl_seconds
 
         deadline = time.monotonic() + 6
-        status = initial
+        diagnostic = {
+            "initial_status": initial,
+            "elapsed_since_spawn": time.time() - info["started_at"],
+            "configured_ttl_seconds": broker.daemon_ttl_seconds,
+            "timer_expiry_started": timer_expiry_started.is_set(),
+        }
+        assert timer_expiry_started.wait(timeout=max(0.0, deadline - time.monotonic())), diagnostic
+        assert timer_expiry_finished.wait(timeout=max(0.0, deadline - time.monotonic())), diagnostic
+        status = broker.daemon_status(daemon_id)
         while status.get("running") and time.monotonic() < deadline:
             time.sleep(0.05)
-            status = broker.daemon_status(daemon["daemon_id"])
+            status = broker.daemon_status(daemon_id)
 
-        assert status["running"] is False
-        assert status["status"] == "stopped"
+        assert daemon_id in expiry_calls, diagnostic
+        assert status["running"] is False, diagnostic
+        assert status["status"] == "stopped", diagnostic
+        assert status["process_tree_stopped"] is True, diagnostic
+        assert status["owner_id"] == broker._daemon_owner_id
     finally:
-        if broker.daemon_status(daemon["daemon_id"]).get("running"):
-            broker.stop_daemon(daemon["daemon_id"], task_id="daemon-test")
+        if broker.daemon_status(daemon_id).get("running"):
+            broker.stop_daemon(daemon_id, task_id="daemon-test")
 
 
 _DAEMON_CHILD_PID_PUBLICATION = (

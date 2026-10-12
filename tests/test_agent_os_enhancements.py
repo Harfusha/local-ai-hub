@@ -296,14 +296,29 @@ def test_hubctl_agent_state_and_cleanup(monkeypatch, capsys):
     import sys
     from tools import hubctl
 
+    cleanup_calls = []
+    closed = []
+
     class DummyClient:
         def status(self, detail="brief"):
             return {"success": True, "detail": detail, "enabled": True}
 
-        def post(self, path, payload):
+        def post(self, path, payload, *, timeout):
+            cleanup_calls.append((path, payload, timeout))
             return {"success": True, "path": path, "cleaned": 5}
 
+        def close(self):
+            closed.append(True)
+
     monkeypatch.setattr(hubctl, "client", lambda: DummyClient())
+
+    def cleanup_client(*, tenant, config_path, auto_start):
+        assert tenant == "hubctl"
+        assert auto_start is False
+        assert config_path == hubctl._config_arg()
+        return DummyClient()
+
+    monkeypatch.setattr(hubctl, "HubClient", cleanup_client)
 
     # Test agent-state
     monkeypatch.setattr(sys, "argv", ["hubctl.py", "agent-state"])
@@ -318,6 +333,8 @@ def test_hubctl_agent_state_and_cleanup(monkeypatch, capsys):
     assert ret2 == 0
     out2 = capsys.readouterr().out
     assert '"cleaned": 5' in out2
+    assert cleanup_calls == [("/api/agent-state/cleanup", {}, 3.0)]
+    assert closed == [True]
 
 
 def test_task_store_auto_complete_and_fail(tmp_path: Path):
