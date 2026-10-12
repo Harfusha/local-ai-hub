@@ -2,6 +2,54 @@
 
 ## Current master reconciliation - 2026-10-11
 
+### Status submission deadline follow-up — 2026-10-12
+
+- Frozen `129fa3cb6f51cb0e1613ca8188df82fc964d9591` whole-suite run ended
+  **1 failed / 4492 passed / 45 skipped / 20 subtests passed / 1653.27s**, exit one,
+  unchanged clean candidate. Fail-fast stopped at
+  `tests/test_status_snapshot_quality.py::test_slow_agent_state_summary_uses_dependency_deadline`:
+  elapsed `0.2149636999820359`, required `<0.1`. Receipt:
+  `state/releases/4.0.0/followup-suite-129fa3cb6f51-1791785533913508200.json`.
+  Later tests were NOT executed. No deployment or release acceptance.
+- GPT-6 Luna Goodall owns `tests/test_status_executor_startup_cleanup.py`.
+  Deterministic worker-creation injection proved synchronous `submit` blocks:
+  **3 failed / 2 passed**, `req_3ed7aaacb8e7`; complete/cancel/shutdown variants
+  fail while underlying `_adjust_thread_count` is held. The original full-run
+  215ms event is not independently attributed to that mechanism.
+- Primary owns `src/local_ai_hub/status_executor.py` (new), the narrow
+  `app.py` factory/submission-cleanup changes, and
+  `tests/test_status_executor_contract.py` (new). Status submission now enqueues
+  without creating pool workers on the HTTP thread. One daemon dispatcher does
+  worker startup; accepted work and queue are bounded to 32, existing pool limit
+  remains 32. Cancellation, startup failure, GC of unused executor and shutdown
+  preserve Future outcomes and release capacity. Async submission failure also
+  releases the app's inflight entry/slot; callbacks attach outside its lock.
+  No startup barrier or timeout increase. Failed deadline assertions now retain
+  existing dependency diagnostics for investigation, without changing the limit.
+- Owner GREEN startup/status command: **32 passed / 2.71s**, `req_f34ca97d0949`.
+  Primary executor contracts: **4 passed / 0.62s**, `req_eff42085cc50`.
+  Primary integrated command `.venv/Scripts/python.exe -B -m pytest -q
+  tests/test_status_executor_contract.py tests/test_status_executor_startup_cleanup.py
+  tests/test_status_snapshot_quality.py tests/test_http_get_live_status_t18.py
+  tests/test_t04_current_root_acceptance.py tests/test_context_delivery.py
+  --tb=short`: **97 passed / 43.89s**, exit zero, `req_2ab73800636a`.
+  Whole-suite, rebuilt wheel and installed-live gates remain open.
+- Candidate `129fa3cb` wheel isolated build/install, RECORD integrity, package
+  hygiene, `pip check`, CLI help (`req_679ca3bfaa7b`) and stdio eight-tool / sixteen
+  schema checks pass. Exact artifacts:
+  `C:/Users/Adam/AppData/Local/Temp/local-ai-hub-candidate-129fa3cb-c072f70ec0/validation-results.json`
+  and `stdio-schema/results.json` in that directory. No heavy modules; three
+  hardware-probe attempts were denied and attributed, not model launches.
+  This wheel predates the new executor source and cannot substitute for its
+  rebuilt candidate. Luna packaging delegation hit capacity; primary completed
+  it directly, without switching models or changing operator runtime.
+- Read-only Git reconciliation found no local branch outside master's ancestry,
+  no stashes, 67 worktrees: clean root, 65 clean non-root and protected
+  `release-verify-7cb` with only generated `docs/API_COVERAGE.md` dirty. Its 687
+  operation IDs exactly match current master's 687 IDs; this is not proof every
+  generated contract cell is equivalent. Original file remains preserved;
+  archival protection was not bypassed. No worktree/branch was created here.
+
 ### Complete follow-up suite and bounded repairs — 2026-10-12
 
 - Frozen clean candidate `6b3727325a34602fdbb92ede3fa5ace8dfd22381`:

@@ -523,7 +523,7 @@ def test_slow_agent_state_summary_uses_dependency_deadline(monkeypatch):
     result = app.status()
     elapsed = time.monotonic() - started
 
-    assert elapsed < 0.10
+    assert elapsed < 0.10, {"elapsed": elapsed, "dependency_status": result.get("dependency_status")}
     assert result["success"] is False
     assert result["agent_state"] == {"enabled": False}
 

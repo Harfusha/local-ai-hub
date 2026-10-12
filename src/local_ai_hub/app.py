@@ -10,7 +10,7 @@ import threading
 import time
 import zipfile
 from contextlib import ExitStack
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import CancelledError
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Mapping
@@ -66,6 +66,7 @@ from .vram_balancer import VRAMBalancer
 from .swarm import SwarmCoordinator
 from .benchmark import HardwareBenchmarkRunner
 from .work_orchestrator import WorkOrchestrator
+from .status_executor import StatusDependencyExecutor
 
 
 _STATUS_DEPENDENCY_TIMEOUT_SECONDS = 0.25
@@ -73,10 +74,10 @@ _STATUS_MAX_WORKERS = 32
 _STATUS_MAX_INFLIGHT_DEPENDENCIES = 32
 
 
-def _new_status_dependency_executor() -> ThreadPoolExecutor:
-    return ThreadPoolExecutor(
+def _new_status_dependency_executor() -> StatusDependencyExecutor:
+    return StatusDependencyExecutor(
         max_workers=_STATUS_MAX_WORKERS,
-        thread_name_prefix="local-ai-status",
+        capacity=_STATUS_MAX_INFLIGHT_DEPENDENCIES,
     )
 
 
@@ -119,6 +120,7 @@ def _schedule_status_dependency(callback, fallback, *, key, lock, inflight, slot
         if error is not None:
             diagnostic["error_type"] = type(error).__name__
 
+    submitted = None
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         mark_degraded("deadline_exhausted")
@@ -150,7 +152,7 @@ def _schedule_status_dependency(callback, fallback, *, key, lock, inflight, slot
                         entry["completed"].set()
 
             try:
-                executor.submit(run)
+                submitted = executor.submit(run)
             except Exception as exc:
                 del inflight[key]
                 slots.release()
@@ -158,6 +160,22 @@ def _schedule_status_dependency(callback, fallback, *, key, lock, inflight, slot
                 return {"fallback": fallback, "healthy": False}
     finally:
         lock.release()
+    if submitted is not None:
+        def submission_finished(future):
+            error = CancelledError() if future.cancelled() else future.exception()
+            if error is None:
+                return
+            with lock:
+                if inflight.get(key) is not entry:
+                    return
+                del inflight[key]
+            entry["outcome"]["error"] = error
+            try:
+                slots.release()
+            finally:
+                entry["completed"].set()
+
+        submitted.add_done_callback(submission_finished)
     return {"entry": entry, "fallback": fallback}
 
 
