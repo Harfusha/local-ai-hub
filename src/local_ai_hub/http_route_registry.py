@@ -175,6 +175,8 @@ POST_ROUTE_REGISTRY: tuple[RouteRule, ...] = (
 
 
 POST_ROUTE_HANDLER_BOUNDARIES: Mapping[str, str] = MappingProxyType({
+    "post_work_orders_1": "_handle_post_work_orders",
+    "post_async_jobs_1": "_handle_post_async_jobs",
     "post_db_query_1": "_handle_post_db_query",
     "post_telemetry_timeline_1": "_handle_post_telemetry_timeline",
 })

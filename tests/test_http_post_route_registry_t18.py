@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from local_ai_hub.http_route_registry import POST_ROUTE_HANDLER_BOUNDARIES, POST_ROUTE_REGISTRY, select_http_routes, select_post_handler
 
 
@@ -162,6 +164,124 @@ def test_telemetry_timeline_selects_named_handler_boundary() -> None:
     assert route_ids == ("post_telemetry_timeline_1",)
     assert select_post_handler(route_ids) == "_handle_post_telemetry_timeline"
     assert select_post_handler(("unmigrated_route",)) is None
+
+
+@pytest.mark.parametrize("path, expected", [
+    ("/api/async-jobs", "_handle_post_async_jobs"),
+    ("/api/work-orders", "_handle_post_work_orders"),
+])
+def test_job_routes_select_scoped_named_handler(path, expected) -> None:
+    assert select_post_handler(select_http_routes("POST", path)) == expected
+
+
+@pytest.mark.parametrize("action, timeout, expected", [
+    ("status", None, ("status", "tenant-a", " job-1 ")),
+    ("WAIT", "2.5", ("wait", "tenant-a", " job-1 ", 2.5)),
+    ("result", None, ("result", "tenant-a", " job-1 ")),
+    ("cancel", None, ("cancel", "tenant-a", " job-1 ")),
+])
+def test_async_named_handler_preserves_bound_tenant_and_action(monkeypatch, action, timeout, expected):
+    from types import SimpleNamespace
+    from local_ai_hub import http_server
+
+    assert select_post_handler(select_http_routes("POST", "/api/async-jobs")) == "_handle_post_async_jobs"
+    jobs = SimpleNamespace(**{
+        name: (lambda *args, name=name: {"success": True, "observed": (name, *args)})
+        for name in ("status", "wait", "result", "cancel")
+    })
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(async_jobs=jobs))
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler._authorization_tenant = "different-late-tenant"
+    responses = []
+    handler._send = lambda status, payload: responses.append((status, payload))
+    payload = {"action": action, "job_id": " job-1 "}
+    if timeout is not None:
+        payload["timeout_seconds"] = timeout
+    handler._handle_post_async_jobs(payload, tenant="tenant-a")
+    assert responses == [(200, {"success": True, "observed": expected})]
+
+
+def test_async_named_submit_preserves_explicit_request_id_and_conversation_rejection(monkeypatch):
+    from types import SimpleNamespace
+    from local_ai_hub import http_server
+
+    assert select_post_handler(select_http_routes("POST", "/api/async-jobs")) == "_handle_post_async_jobs"
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(async_jobs=SimpleNamespace(
+        submit=lambda tenant, action, payload: {"success": True, "tenant": tenant, "action": action, "payload": payload},
+    )))
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.headers = {"X-LocalAI-Request-ID": "header-id"}
+    responses = []
+    handler._send = lambda status, payload: responses.append((status, payload))
+    original = {"action": "submit", "job_action": "reason", "request_id": "explicit-id"}
+    handler._handle_post_async_jobs(original, tenant="tenant-a")
+    assert responses[-1] == (200, {"success": True, "tenant": "tenant-a", "action": "reason", "payload": original})
+    assert original["request_id"] == "explicit-id"
+    handler._handle_post_async_jobs({"action": "submit"}, tenant="tenant-a")
+    assert responses[-1][1]["payload"]["request_id"] == "header-id"
+    handler._handle_post_async_jobs({"action": "submit", "conversation": True}, tenant="tenant-a")
+    assert responses[-1] == (400, {
+        "success": False, "error": "conversations require delivery=sync", "terminal": True, "retryable": False,
+    })
+
+
+def test_work_order_named_handler_preserves_scoped_get_and_disabled_result(monkeypatch):
+    from types import SimpleNamespace
+    from local_ai_hub import http_server
+
+    assert select_post_handler(select_http_routes("POST", "/api/work-orders")) == "_handle_post_work_orders"
+    work = SimpleNamespace(enabled=True, get=lambda *args, **kwargs: {"success": True, "args": args, "options": kwargs})
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(work_orchestrator=work))
+    handler = http_server.Handler.__new__(http_server.Handler)
+    responses = []
+    handler._send = lambda status, payload: responses.append((status, payload))
+    handler._handle_post_work_orders({"action": "get", "work_id": " work-1 ", "response_profile": "compact", "return_fields": ["summary"], "max_output_tokens": "512"}, tenant="tenant-a")
+    assert responses[-1] == (200, {"success": True, "args": ("tenant-a", "work-1"), "options": {
+        "profile": "compact", "return_fields": ["summary"], "max_output_tokens": 512,
+    }})
+    work.enabled = False
+    handler._handle_post_work_orders({"action": "submit"}, tenant="tenant-a")
+    assert responses[-1] == (403, {"success": False, "unsupported": True, "error": "work orchestrator is disabled", "terminal": True})
+
+
+@pytest.mark.parametrize("payload, method, tail", [
+    ({}, "submit", ({},)),
+    ({"action": "status", "work_id": " work-1 "}, "status", ("work-1",)),
+    ({"action": "WAIT", "work_id": "work-1", "timeout_seconds": "2.5"}, "wait", ("work-1", 2.5)),
+    ({"action": "cancel", "work_id": "work-1"}, "cancel", ("work-1",)),
+    ({"action": "continue", "work_id": "work-1", "answer": "yes"}, "continue_work", ("work-1", "yes")),
+])
+def test_work_order_named_actions_keep_arguments(monkeypatch, payload, method, tail):
+    from types import SimpleNamespace
+    from local_ai_hub import http_server
+
+    work = SimpleNamespace(enabled=True)
+    setattr(work, method, lambda *args: {"success": True, "observed": args})
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(work_orchestrator=work))
+    handler = http_server.Handler.__new__(http_server.Handler)
+    responses = []
+    handler._send = lambda status, value: responses.append((status, value))
+    handler._handle_post_work_orders(payload, tenant="tenant-a")
+    assert responses == [(200, {"success": True, "observed": ("tenant-a", *tail)})]
+
+
+@pytest.mark.parametrize("name, message, retryable", [
+    ("_handle_post_async_jobs", "unknown async job action", False),
+    ("_handle_post_work_orders", "unknown work-order action", None),
+])
+def test_named_job_handlers_keep_unknown_action_error(monkeypatch, name, message, retryable):
+    from types import SimpleNamespace
+    from local_ai_hub import http_server
+
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(work_orchestrator=SimpleNamespace(enabled=True)))
+    handler = http_server.Handler.__new__(http_server.Handler)
+    responses = []
+    handler._send = lambda status, payload: responses.append((status, payload))
+    getattr(handler, name)({"action": "unknown"}, tenant="tenant-a")
+    expected = {"success": False, "error": message, "terminal": True}
+    if retryable is not None:
+        expected["retryable"] = retryable
+    assert responses == [(400, expected)]
 
 
 def test_telemetry_timeline_handler_preserves_success_and_error_contract(monkeypatch) -> None:
