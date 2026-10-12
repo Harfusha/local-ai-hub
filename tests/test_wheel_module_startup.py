@@ -58,6 +58,8 @@ def test_wheel_install_starts_module_supervisor_without_tools_service(
         return FakeProcess()
 
     monkeypatch.setattr(client_module.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(client_module, "popen_managed", fake_popen)
+    monkeypatch.setattr(client_module, "retain_process_job_in_child", lambda process: isinstance(process, FakeProcess))
 
     assert client.ensure_server(timeout=1.0) is True
 
