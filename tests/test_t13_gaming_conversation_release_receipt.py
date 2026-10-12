@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import sys
 import traceback
+import time
 
 import pytest
 
@@ -41,10 +42,25 @@ def production_hub(tmp_path, monkeypatch):
         app.close()
 
 
-def test_gaming_release_receipt_includes_conversation_cancelled_before_snapshot(production_hub):
+@pytest.mark.parametrize("reply_delay", [0.0, 4.0], ids=["normal-reply", "delayed-cancelled-reply"])
+def test_gaming_release_receipt_includes_conversation_cancelled_before_snapshot(production_hub, monkeypatch, reply_delay):
     from local_ai_hub import http_server
 
     app, client = production_hub
+    response_finished = threading.Event()
+    original_send = http_server.Handler._send
+
+    def send(handler, status, data, **kwargs):
+        cancelled_reply = isinstance(data, dict) and data.get("cancelled") is True
+        if cancelled_reply:
+            time.sleep(reply_delay)
+        try:
+            return original_send(handler, status, data, **kwargs)
+        finally:
+            if cancelled_reply:
+                response_finished.set()
+
+    monkeypatch.setattr(http_server.Handler, "_send", send)
     initial = client.post(
         "/api/delegate",
         {"task": "initial prompt", "context": "facts", "conversation": True},
@@ -103,26 +119,26 @@ def test_gaming_release_receipt_includes_conversation_cancelled_before_snapshot(
     assert not unload_observed.is_set()
     allow_worker_exit.set()
     mode_change.join(timeout=4.0)
-    continuation.join(timeout=3.0)
 
     assert not mode_change.is_alive()
+    # The release receipt is checked before waiting for a possibly delayed
+    # response. Inference completion and transport delivery are separate gates.
+    mode_result = mode_results[0]
+    assert mode_result["success"] is True
+    assert mode_result["mode"] == "gaming"
+    assert mode_result["conversation_release"] == {
+        "state": "cancelled", "inference_active": False, "active": 0, "cancelled": True,
+    }
+    assert cancellation_observed.is_set()
+    assert worker_exited.is_set()
+    assert unload_observed.is_set()
+    assert response_finished.wait(6), "cancelled HTTP reply did not finish within its bounded delivery window"
+    continuation.join(timeout=1.0)
     pending_frame = sys._current_frames().get(continuation.ident) if continuation.is_alive() else None
     assert not continuation.is_alive(), {
         "worker_exited": worker_exited.is_set(),
         "mode_completed": not mode_change.is_alive(),
         "continuation_stack": traceback.format_stack(pending_frame)[-8:] if pending_frame else [],
     }
-    mode_result = mode_results[0]
     assert results[0]["success"] is False
     assert results[0]["cancelled"] is True
-    assert mode_result["success"] is True
-    assert mode_result["mode"] == "gaming"
-    assert mode_result["conversation_release"] == {
-        "state": "cancelled",
-        "inference_active": False,
-        "active": 0,
-        "cancelled": True,
-    }
-    assert cancellation_observed.is_set()
-    assert worker_exited.is_set()
-    assert unload_observed.is_set()
