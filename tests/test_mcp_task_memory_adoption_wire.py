@@ -72,18 +72,62 @@ def _memory(root: Path):
     }
 
 
-def _round_trip(tmp_path, requests, monkeypatch):
+def _round_trip(tmp_path, requests, monkeypatch, *, real_store=False):
     repo = tmp_path / "repository"
     repo.mkdir()
     expected = _memory(repo)
     calls = []
     current_audit = None
+    tasks = None
+    if real_store:
+        from dataclasses import replace
+        from local_ai_hub.agent_context import ContextCompiler
+        from local_ai_hub.agent_events import AgentStateStore
+        from local_ai_hub.agent_identity import AgentScope, ScopeContext
+        from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStatus, MemoryStore
+        from local_ai_hub.agent_tasks import GoalContract, TaskCheckpoint, TaskStore
+        from local_ai_hub import trace_context
+
+        state_store = AgentStateStore(tmp_path / "real-agent-state.sqlite3")
+        tasks = TaskStore(state_store)
+        memory_store = MemoryStore(state_store)
+        memory_store.record(replace(MemoryRecord.create(
+            kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY, scope_id=str(repo),
+            key="renderer cache", value="Renderer cache uses the current theme revision",
+            source="user", status=MemoryStatus.CONFIRMED,
+            provenance={"root": str(repo), "tenant": "memory-wire-test", "version": "v1"},
+        ), record_id="mem_store_wire"), actor="user")
+        tasks.set_memory_adoption(memory_store=memory_store,
+            context_compiler=ContextCompiler(state_store, task_store=tasks, memory_store=memory_store))
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
             nonlocal current_audit
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
             calls.append({"path": self.path, "body": body})
+            if tasks is not None:
+                token = trace_context.set_context(tenant="memory-wire-test")
+                try:
+                    action = body["action"]
+                    if action == "create":
+                        task = tasks.create(GoalContract(goal="Verify renderer cache theme revision"),
+                            ScopeContext(repository_id=str(repo), task_id=TASK_ID), task_id=TASK_ID,
+                            repo_root=str(repo), actor="wire-owner")
+                    elif action == "checkpoint":
+                        task = tasks.checkpoint(TASK_ID, TaskCheckpoint.from_dict(body["checkpoint"]), actor="wire-owner")
+                    elif action == "resume":
+                        task = tasks.resume(TASK_ID, actor="wire-owner", idempotency_key="wire-resume")
+                    else:
+                        task = tasks.get(TASK_ID)
+                    encoded = json.dumps({"success": True, "task": task.to_dict()}).encode()
+                finally:
+                    trace_context.reset_context(token)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(encoded)))
+                self.end_headers()
+                self.wfile.write(encoded)
+                return
             if body["action"] == "checkpoint":
                 current_audit = copy.deepcopy(body["checkpoint"]["state_data"]["memory_audit"])
             elif body["action"] == "resume":
@@ -189,6 +233,32 @@ def _round_trip(tmp_path, requests, monkeypatch):
         assert wire_tokens <= requested
         assert payload["response_budget"]["returned_tokens"] == wire_tokens
     return expected, calls, results
+
+
+def test_real_store_create_checkpoint_get_and_resume_deliver_memories_over_stdio(tmp_path, monkeypatch):
+    audit = {"used_ids": ["mem_store_wire"]}
+    requests = [
+        {"action": "task_create", "contract": {"goal": "Verify renderer cache theme revision"}},
+        {"action": "task_checkpoint", "checkpoint": {"phase": "edit", "state_data": {"memory_audit": audit}}},
+        {"action": "task_get"},
+        {"action": "task_resume"},
+    ]
+    _, calls, results = _round_trip(tmp_path, requests, monkeypatch, real_store=True)
+    for result in results:
+        payload = result.structuredContent
+        assert payload["success"] is True, json.dumps(payload)
+        context = payload["task"]["checkpoint"]["state_data"]["memory_context"]
+        assert [item["id"] for item in context["items"]] == ["mem_store_wire"]
+        assert "Cite used memory IDs" in context["instruction"]
+        assert context["items"][0]["origin"] == "memory_store"
+        assert context["items"][0]["scope"] == "repository"
+        assert context["items"][0]["version"] == "v1"
+        assert "expires_at" in context["items"][0]["validity"]
+        assert json_tokens(context) == context["estimated_tokens"] <= 512
+    assert results[1].structuredContent["task"]["checkpoint"]["state_data"]["memory_audit"] == audit
+    assert results[2].structuredContent["task"]["checkpoint"]["state_data"]["memory_audit"] == audit
+    assert results[3].structuredContent["task"]["checkpoint"]["state_data"]["memory_audit"] is None
+    assert [call["body"]["action"] for call in calls] == ["create", "checkpoint", "get", "resume"]
 
 
 @pytest.mark.parametrize("action", ["task_create", "task_resume"])
