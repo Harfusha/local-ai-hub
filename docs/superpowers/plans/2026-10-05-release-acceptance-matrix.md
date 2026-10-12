@@ -29,6 +29,15 @@
   probes healthy. Second run with `--expected-version 4.0.0`
   (`req_5e2b572c027b`) failed only `live-async-job`. Both failures remain evidence;
   the later healthy status does not prove the earlier failure's cause.
+- A single subsequent scoped async-status inspection by GPT 6 Luna found the
+  latest persisted `release-smoke` job `3ba15777c053400b896735a31a897e9d` done,
+  one attempt, no error, admission accepted/capacity_available with nominal
+  pressure at submit. Current GPU usage was 7262/8188 MiB, 695 MiB free.
+  Neither observation identifies the second smoke failure: rejected submits
+  need not create a job row. No submit retry or model unload was performed.
+- Post-documentation release check with `--allow-installed --expected-version
+  4.0.0` passed, exit 0 (`req_cace62cb1797`). This is the static release gate,
+  not a passing live-smoke receipt.
 - No external release/push or broad T01–T21 completion is claimed. Remaining
   acceptance includes installed live smoke, actual 30-client RSS/CPU/startup
   measurements, large-cache status scalability, supported POSIX runtime proof,
