@@ -134,9 +134,14 @@ def test_registered_mcp_context_hints_reach_root_http_route(tmp_path, monkeypatc
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     transport_calls = []
+    accounting_observed = threading.Event()
+    accounting_reporter = mcp_server._ProtocolAccountingReporter()
+    monkeypatch.setattr(mcp_server, "_ACCOUNTING_REPORTER", accounting_reporter)
 
     def post_actual_route(path, payload, timeout=None):
         transport_calls.append((path, dict(payload)))
+        if path == "/api/telemetry/tool-accounting":
+            accounting_observed.set()
         request = urllib.request.Request(
             f"http://127.0.0.1:{server.server_address[1]}{path}",
             data=json.dumps(payload).encode("utf-8"),
@@ -162,6 +167,7 @@ def test_registered_mcp_context_hints_reach_root_http_route(tmp_path, monkeypatc
         negative = json.loads(negative_content.text)
         assert negative["status_code"] == 400 and negative["terminal"] is True
         assert context_pack_calls() == []
+        assert accounting_observed.wait(5), "asynchronous tool accounting was not observed"
         assert any(path == "/api/telemetry/tool-accounting" for path, _payload in transport_calls)
 
         request_arguments = {
@@ -254,6 +260,7 @@ def test_registered_mcp_context_hints_reach_root_http_route(tmp_path, monkeypatc
         assert "UNHINTED_RECALL_MARKER" in degraded["context"]
         assert len(context_pack_calls()) == 4 and len(repo_cache_calls) == 4
     finally:
+        accounting_reporter.close()
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)

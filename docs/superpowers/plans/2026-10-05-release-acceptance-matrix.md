@@ -8,6 +8,30 @@
 
 #### 2026-10-12 implementation-first continuation
 
+The complete frozen `6e832f21` run finished with **10 failed, 7144 passed,
+105 skipped, 23 subtests, 2 warnings / 2403.95s**. Candidate remained clean
+and unchanged; receipt `followup-suite-6e832f214ae5-1791827232287718900.json`.
+It does not establish release acceptance. Repairs retain original safety and
+scope assertions: non-socket/embedded command requests now carry their own
+cancellation event; test transport spies forward the existing cancellation
+keyword; the typed-unknown command stub accepts the private request event;
+the async accounting test owns its reporter and awaits its metadata event;
+both prompt explanations are outside generator-owned policy blocks.
+Targeted affected checks pass **167/167 in 55.39s**, including new embedded
+cancel/deadline cases. Memory adoption and Gaming response-thread assertions
+did not reproduce in that selection; their full-run causes remain unproven.
+Only diagnostic messages were added to those assertions. Future complete runs
+retain a fresh owned pytest base directory outside shared pytest retention.
+
+Transport hardware inventory is additionally deferred for `auto_tune=true`;
+the shared server still performs its unchanged hardware probe and tuning
+overlay. Clients preserve explicit user/runtime settings and do not select
+execution models. The probe/tuning matrix and startup/MCP impact checks pass
+**73 passed, 1 platform skip / 31.92s**. This closes per-client probing in the
+default automatic profile; it does not claim measured savings from a failed
+baseline. Fresh committed packaging/runtime and a final complete green suite
+remain required after the two unreproduced full-run timing findings are resolved.
+
 The frozen whole suite on `9a737504` was intentionally stopped after two
 confirmed HTTP cancellation/deadline regressions in `test_client_tenant_override`.
 The optional transport test exposes `sock=object()`; the new watchdog attempted

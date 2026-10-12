@@ -75,10 +75,10 @@ service_hints = []
 original_open = client._pooled_open
 original_search = app.services.repo_search
 
-def capture_open(method, path, body, headers, timeout):
+def capture_open(method, path, body, headers, timeout, *, cancel_event=None):
     if path == "/api/search" and body is not None:
         wire_payloads.append(json.loads(body.decode("utf-8")))
-    return original_open(method, path, body, headers, timeout)
+    return original_open(method, path, body, headers, timeout, cancel_event=cancel_event)
 
 def capture_search(*args, **kwargs):
     service_hints.append(kwargs.get("path_hints"))

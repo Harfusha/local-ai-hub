@@ -362,6 +362,49 @@ def test_inprocess_timeout_reports_uncertain_result_but_does_not_cancel_service(
     assert finished.wait(1.0)
 
 
+@pytest.mark.parametrize("interruption", ["cancel", "deadline"])
+def test_inprocess_command_lifetime_interrupts_its_dispatched_handler(inprocess_client, interruption):
+    client, _transport, app, state_dir = inprocess_client
+    started = threading.Event()
+    finished = threading.Event()
+    cancel = threading.Event()
+    result = {}
+
+    def command(payload, tenant, *, request_cancel_event=None):
+        assert isinstance(request_cancel_event, threading.Event)
+        started.set()
+        assert request_cancel_event.wait(2), "dispatched command did not receive its lifetime cancellation"
+        finished.set()
+        return {"success": False, "cancelled": True, "terminal": True, "retryable": False}
+
+    app.services.command = command
+
+    def request():
+        result["value"] = client.request(
+            "/api/command", {"action": "run", "command": "python -m unittest", "root": str(state_dir.parent)},
+            timeout=0.3 if interruption == "deadline" else 2,
+            operational_action="command", cancel_event=cancel,
+        )
+
+    caller = threading.Thread(target=request, daemon=True)
+    caller.start()
+    try:
+        assert started.wait(1)
+        if interruption == "cancel":
+            cancel.set()
+        caller.join(1)
+        assert not caller.is_alive()
+        assert finished.wait(1)
+        assert result["value"]["success"] is False
+        if interruption == "cancel":
+            assert result["value"]["cancelled"] is True
+        else:
+            assert result["value"].get("outcome_unknown") or result["value"].get("cancelled")
+    finally:
+        cancel.set()
+        caller.join(2)
+
+
 def test_inprocess_cancel_after_dispatch_reports_unknown_and_stops_waiting(inprocess_client):
     client, _transport, app, _state_dir = inprocess_client
     started = threading.Event()

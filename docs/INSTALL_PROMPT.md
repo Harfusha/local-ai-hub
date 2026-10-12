@@ -259,8 +259,6 @@ Local model policy: Model routing follows the active hardware profile and user o
 - Native fallback requires an explicit `terminal=true` and `retryable=false` result.
 - On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 - Prefer `response_profile="minimal"`/`"compact"`; request only decision-grade fields.
-- Explicit `extra_fields` retains requested empty values (for example `records=[]`); absence of a field does not prove an empty result. Aggregate response budgets still apply.
-- MCP cancellation closes the current request's HTTP connection. For direct command `run`, disconnect cancels that request's execution; a coalesced waiter cannot cancel the execution owner. The shared Hub remains independent. A sent request with no final response remains `outcome_unknown`; do not retry it automatically.
 - Pass a stable `reuse_key` for repeated logical queries. Use `response_profile="delta"` when only changes are needed; unchanged calls return a pointer, not missing data.
 - Use the existing `local_ai_task(action="batch")` for independent local tasks; keep each item bounded and consume compact per-item results.
 - The Hub keeps a bounded metadata-only context ledger; inspect it only with an explicit cache/status request, never by replaying the whole session.
@@ -287,6 +285,12 @@ Local model policy: Model routing follows the active hardware profile and user o
 - On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 - Local model routing follows the active hardware profile and user overrides; use `local_ai_task` for bounded semantic generation, reasoning, review, independent second opinions and compression. Consult `docs/MODEL_CAPABILITIES.md`; configured routes do not prove models are installed. Deterministic/indexed tools remain authoritative for exact facts, symbols, diff and tests.
 <!-- END TOKEN ECONOMY POLICY -->
+
+Explicit `extra_fields` retains requested empty values (for example `records=[]`); absence of a field does not prove an empty result. Aggregate response budgets still apply.
+
+Transport clients defer physical hardware inventory and automatic tuning to the shared server, including when `hardware.auto_tune=true`. Explicit user/runtime overrides remain intact; the server owns hardware-aware model selection and retains its full hardware probe. Client route declarations do not prove detected hardware or installed models.
+
+MCP cancellation closes the current request's HTTP connection. For direct command `run`, disconnect cancels that request's execution; a coalesced waiter cannot cancel the execution owner. Embedded requests follow the same request lifetime rule. The shared Hub remains independent. A sent request with no final response remains `outcome_unknown`; do not retry it automatically.
 ```
 
 ---

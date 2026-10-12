@@ -205,7 +205,7 @@ def test_create_uses_only_matching_root_and_tenant_without_saving_prompt_memory(
     finally:
         trace_context.reset_context(token)
     tenant_b_ids = {item["id"] for item in tenant_b.checkpoint.state_data["memory_context"]["items"]}
-    assert tenant_b_ids == {global_other_tenant.record_id, global_tenantless.record_id}
+    assert tenant_b_ids == {global_other_tenant.record_id, global_tenantless.record_id}, tenant_b.checkpoint.state_data["memory_context"].get("warnings", [])
     assert matching.record_id not in tenant_b_ids
     assert global_matching.record_id not in tenant_b_ids
 

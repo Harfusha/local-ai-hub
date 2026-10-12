@@ -7,8 +7,8 @@ from local_ai_hub.config import ConfigError, load_config
 from local_ai_hub.hardware import PROFILE_OVERRIDES, choose_profile
 
 
-@pytest.mark.parametrize("probe_hardware,auto_tune", [(False, False), (True, False), (False, True)])
-def test_hardware_inventory_is_deferred_only_for_manual_transport_config(
+@pytest.mark.parametrize("probe_hardware,auto_tune", [(False, False), (True, False), (False, True), (True, True)])
+def test_hardware_inventory_is_deferred_for_all_transport_configs(
     tmp_path: Path, monkeypatch, probe_hardware: bool, auto_tune: bool,
 ):
     from local_ai_hub import hardware
@@ -27,13 +27,13 @@ def test_hardware_inventory_is_deferred_only_for_manual_transport_config(
         encoding="utf-8",
     )
     cfg = load_config(path, probe_hardware=probe_hardware)
-    assert calls == (["cpu"] if probe_hardware or auto_tune else [])
+    assert calls == (["cpu"] if probe_hardware else [])
     assert cfg["_hardware"]["profile"] == "cpu"
-    if not probe_hardware and not auto_tune:
+    if not probe_hardware:
         assert cfg["_hardware"]["inventory_deferred"] is True
     else:
         assert cfg["_hardware"]["inventory_marker"] == "detected"
-    assert (cfg["models"]["fast_code"] == "tuned:test") is auto_tune
+    assert (cfg["models"]["fast_code"] == "tuned:test") is (probe_hardware and auto_tune)
 
 
 def _config(tmp_path: Path, extra: str = "", server_bind: str | None = None):

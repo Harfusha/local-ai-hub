@@ -434,9 +434,10 @@ def load_config(path: str | os.PathLike[str] | None = None, *, probe_hardware: b
     # This makes the stock install portable while keeping every knob overridable.
     hardware_cfg = deep_merge(deep_merge(defaults.get("hardware", {}), user.get("hardware", {})), runtime.get("hardware", {}))
     try:
-        if not probe_hardware and not bool(hardware_cfg.get("auto_tune", True)):
-            # Transport clients need no device inventory when tuning is disabled.
-            # Servers retain full probes; automatic tuning keeps its exact overlay.
+        if not probe_hardware:
+            # Transport clients read explicit policy/settings without per-client
+            # device subprocesses. The shared server owns automatic tuning and
+            # model selection; its default full probe/overlay is unchanged.
             detected = {"profile": str(hardware_cfg.get("profile", "auto")), "inventory_deferred": True}
         else:
             from .hardware import detect_hardware, profile_overrides
