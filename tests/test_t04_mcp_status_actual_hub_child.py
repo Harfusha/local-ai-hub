@@ -21,6 +21,7 @@ import subprocess as real_subprocess
 import sys
 import threading
 import time
+import psutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -40,7 +41,10 @@ def cpu_only(_requested="auto"):
 hardware.detect_hardware = cpu_only
 from local_ai_hub import client as client_module
 from local_ai_hub import mcp_server
-from local_ai_hub.process_utils import process_owner_state
+from local_ai_hub.process_utils import (
+    _resume_suspended_process, assign_process_to_job, create_job_object_kill_on_close,
+    close_job_object, pid_alive, process_identity, process_parent_pid, process_owner_state, terminate_tree,
+)
 
 client = mcp_server.CLIENT
 assert client.auto_start is True
@@ -52,7 +56,17 @@ def tracked_popen(argv, **kwargs):
     stderr_log = open(os.environ["T04_CHILD_STDERR_FILE"], "ab")
     kwargs["stdout"] = stdout_log
     kwargs["stderr"] = stderr_log
+    if os.name == "nt":
+        kwargs["creationflags"] = int(kwargs.get("creationflags", 0)) | 0x00000004
     child = real_popen(argv, **kwargs)
+    child._local_ai_process_identity = process_identity(child.pid)
+    if os.name == "nt":
+        child._local_ai_job_handle = create_job_object_kill_on_close()
+        assert child._local_ai_job_handle
+        assert assign_process_to_job(child._local_ai_job_handle, child.pid)
+        assert _resume_suspended_process(child)
+    elif kwargs.get("start_new_session"):
+        child._local_ai_process_group = child.pid
     env = kwargs["env"]
     info = kwargs.get("startupinfo")
     record = {
@@ -66,7 +80,7 @@ def tracked_popen(argv, **kwargs):
     launches.append((child, record))
     record["stdout_log"] = stdout_log
     record["stderr_log"] = stderr_log
-    Path(os.environ["T04_TRACKED_PID_FILE"]).write_text(str(child.pid), encoding="ascii")
+    Path(os.environ["T04_TRACKED_PID_FILE"]).write_text(json.dumps(child._local_ai_process_identity), encoding="ascii")
     return child
 
 client_module.subprocess = SimpleNamespace(
@@ -85,14 +99,17 @@ client.ensure_server = tracked_ensure
 started_ids = {id(item) for item in client_module._DETACHED_CHILDREN}
 children = []
 timer = None
+owned_runtime_identities = []
+owned_runtime_processes = []
 
 def stop_owned_children():
     for process, _record in launches:
         if process.poll() is None:
-            client_module._stop_owned_child(process)
+            assert terminate_tree(process.pid, process_handle=process, grace_seconds=0.25)
 
 try:
     os.environ["T04_EXPECT_PARENT_PID"] = str(os.getpid())
+    os.environ["T04_EXPECT_PARENT_CREATION"] = str(process_identity(os.getpid())["creation_identity"])
     timer = threading.Timer(14.0, stop_owned_children)
     timer.daemon = True
     timer.start()
@@ -124,6 +141,18 @@ try:
     hub_owner = json.loads((state_dir / "hub.owner.json").read_text(encoding="utf-8"))
     assert int(hub_owner["pid"]) == hub_pid
     assert process_owner_state(hub_owner, state_dir, "hub") == "owned"
+    supervisor_owner = json.loads((state_dir / "supervisor.owner.json").read_text(encoding="utf-8"))
+    assert process_owner_state(supervisor_owner, state_dir, "supervisor") == "owned"
+    supervisor_pid = int(supervisor_owner["pid"])
+    assert process_identity(child.pid) == child._local_ai_process_identity
+    if os.name == "nt" and sys.prefix != sys.base_prefix:
+        assert supervisor_pid != child.pid
+    if supervisor_pid != child.pid:
+        assert process_parent_pid(supervisor_pid) == child.pid
+        assert process_identity(supervisor_pid)["creation_identity"] >= child._local_ai_process_identity["creation_identity"]
+    owned_runtime_identities = [process_identity(supervisor_pid), process_identity(hub_pid)]
+    assert all(owned_runtime_identities)
+    owned_runtime_processes = [psutil.Process(identity["pid"]) for identity in owned_runtime_identities]
     argv = launches[0][1]["argv"]
     assert argv[1:] == ["-m", "local_ai_hub.supervisor", "--config", os.environ["LOCAL_AI_CONFIG"]], argv
     expected_executable = Path(sys.executable)
@@ -136,6 +165,8 @@ try:
     package_source = Path(importlib.util.find_spec("local_ai_hub").origin).resolve()
     entrypoint_source = Path(importlib.util.find_spec("local_ai_hub.__main__").origin).resolve()
     child_source = json.loads(Path(os.environ["T04_CHILD_SOURCE_FILE"]).read_text(encoding="utf-8"))
+    assert child_source["runtime_pid"] == supervisor_pid
+    assert child_source["runtime_identity"] == process_identity(supervisor_pid)
     source_root = Path(os.environ["PYTHONPATH"].split(os.pathsep)[0]).resolve()
     assert Path(launches[0][1]["pythonpath"][0]).resolve() == source_root
     assert package_source == source_root / "local_ai_hub" / "__init__.py", package_source
@@ -157,12 +188,19 @@ finally:
     if timer is not None:
         timer.cancel()
     client._drop_connection()
+    cleanup_deadline = time.monotonic() + 2
     stop_owned_children()
     for process, _record in launches:
-        process.wait(timeout=2)
+        process.wait(timeout=max(0.01, cleanup_deadline - time.monotonic()))
         assert process.poll() is not None, f"owned Hub child {process.pid} survived shutdown"
         _record["stdout_log"].close()
         _record["stderr_log"].close()
+    for runtime in owned_runtime_processes:
+        try:
+            runtime.wait(timeout=max(0.01, cleanup_deadline - time.monotonic()))
+        except psutil.NoSuchProcess:
+            pass
+    assert all(not pid_alive(identity["pid"]) for identity in owned_runtime_identities)
 '''
 
 
@@ -210,15 +248,20 @@ def test_first_mcp_status_starts_and_reaps_real_hub_entrypoint(tmp_path: Path) -
     )
     (probe_dir / "sitecustomize.py").write_text(
         "import importlib.util, json, os, site\n"
-        "site.addsitedir(os.environ['T04_TEST_SITE_PACKAGES'])\n"
+        "for directory in os.environ['T04_TEST_SITE_PACKAGES'].split(os.pathsep): site.addsitedir(directory)\n"
+        "import psutil\n"
         "from pathlib import Path\n"
+        "from local_ai_hub.process_utils import process_identity\n"
         "expected = os.environ.get('T04_EXPECT_PARENT_PID')\n"
-        "if expected and os.getppid() == int(expected):\n"
+        "creation = os.environ.get('T04_EXPECT_PARENT_CREATION')\n"
+        "ancestors = psutil.Process().parents()[:2] if expected else []\n"
+        "if expected and creation and any(parent.pid == int(expected) and str(process_identity(parent.pid)['creation_identity']) == creation for parent in ancestors):\n"
         "    import local_ai_hub\n"
         "    spec = importlib.util.find_spec('local_ai_hub.__main__')\n"
         "    Path(os.environ['T04_CHILD_SOURCE_FILE']).write_text(json.dumps({"
         "'package_file': str(Path(local_ai_hub.__file__).resolve()), "
-        "'entrypoint_file': str(Path(spec.origin).resolve())}), encoding='utf-8')\n"
+        "'entrypoint_file': str(Path(spec.origin).resolve()), "
+        "'runtime_pid': os.getpid(), 'runtime_identity': process_identity(os.getpid())}), encoding='utf-8')\n"
         "    import local_ai_hub.hardware as hardware\n"
         "    hardware.detect_hardware = lambda _requested='auto': {"
         "'platform': os.name, 'os': os.name, 'arch': 'fixture', "
@@ -240,7 +283,7 @@ def test_first_mcp_status_starts_and_reaps_real_hub_entrypoint(tmp_path: Path) -
         "PYTHONPATH": os.pathsep.join((str(source_root), str(probe_dir))),
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONUTF8": "1",
-        "T04_TEST_SITE_PACKAGES": site.getusersitepackages(),
+        "T04_TEST_SITE_PACKAGES": os.pathsep.join([*site.getsitepackages(), site.getusersitepackages()]),
         "LOCAL_AI_CONFIG": str(config_path),
         "T04_CHILD_SOURCE_FILE": str(child_source_file),
         "T04_TRACKED_PID_FILE": str(tracked_pid_file),
@@ -251,7 +294,8 @@ def test_first_mcp_status_starts_and_reaps_real_hub_entrypoint(tmp_path: Path) -
         env["SYSTEMROOT"] = os.environ["SYSTEMROOT"]
         env["WINDIR"] = os.environ.get("WINDIR", env["SYSTEMROOT"])
 
-    process = subprocess.Popen(
+    from local_ai_hub.process_utils import popen_managed, process_identity, terminate_tree
+    process = popen_managed(
         [sys.executable, "-B", "-c", _MCP_CHILD_SCRIPT],
         cwd=source_root.parent,
         env=env,
@@ -263,31 +307,20 @@ def test_first_mcp_status_starts_and_reaps_real_hub_entrypoint(tmp_path: Path) -
         errors="replace",
         **_hidden_kwargs(),
     )
+    process._local_ai_process_identity = process_identity(process.pid)
     try:
         stdout, stderr = process.communicate(timeout=18)
     except subprocess.TimeoutExpired:
         if tracked_pid_file.exists():
-            pid = tracked_pid_file.read_text(encoding="ascii").strip()
-            if pid.isdigit():
-                if os.name == "nt":
-                    subprocess.run(
-                        ["taskkill", "/PID", pid, "/T", "/F"],
-                        stdin=subprocess.DEVNULL,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        timeout=5,
-                        **_hidden_kwargs(),
-                    )
-                else:
-                    try:
-                        os.kill(int(pid), 15)
-                    except ProcessLookupError:
-                        pass
-        process.kill()
+            identity = json.loads(tracked_pid_file.read_text(encoding="ascii"))
+            if identity and process_identity(identity["pid"]) == identity:
+                terminate_tree(identity["pid"], expected_identity=identity, grace_seconds=0.25)
+        terminate_tree(process.pid, process_handle=process, grace_seconds=0.25)
         stdout, stderr = process.communicate(timeout=3)
         pytest.fail(f"isolated MCP autostart exceeded 18s; helper={stdout!r}; stderr={stderr!r}")
 
-    assert process.returncode == 0, stdout + stderr
+    assert terminate_tree(process.pid, process_handle=process, grace_seconds=0.25)
+    assert process.returncode == 0, stderr[-1600:]
     result = json.loads(stdout.strip().splitlines()[-1])
     assert result["status"]["success"] is True or (
         result["status"].get("degraded") is True

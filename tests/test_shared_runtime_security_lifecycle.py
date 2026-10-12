@@ -2584,6 +2584,11 @@ def test_process_parent_pid_tracks_direct_parent_across_hidden_process_groups():
     env["PYTHONPATH"] = str(source_root / "src") + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else ""
     )
+    # This fixture tests direct OS parent semantics, not venv launcher behavior.
+    base_executable = Path(sys._base_executable).resolve()
+    assert base_executable.is_file()
+    import sysconfig
+    env["PYTHONPATH"] += os.pathsep + sysconfig.get_path("purelib")
     child_code = (
         "import time; "
         "from local_ai_hub.process_utils import process_parent_pid; "
@@ -2600,14 +2605,19 @@ def test_process_parent_pid_tracks_direct_parent_across_hidden_process_groups():
         "child_parent = int(stdout.strip())",
         "print(f'{os.getpid()}\\t{child.pid}\\t{child_parent}\\t{snapshot_parent}')",
     ))
-    wrapper = subprocess.run(
-        [sys.executable, "-c", wrapper_code], cwd=source_root, env=env,
-        capture_output=True, timeout=10,
+    wrapper = process_utils.popen_managed(
+        [str(base_executable), "-c", wrapper_code], cwd=source_root, env=env,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         **process_utils.hidden_run_kwargs(text=True),
     )
-    assert wrapper.returncode == 0, wrapper.stderr
+    try:
+        wrapper_stdout, wrapper_stderr = wrapper.communicate(timeout=10)
+    finally:
+        assert process_utils.terminate_tree(wrapper.pid, process_handle=wrapper)
+        wrapper.wait(timeout=2)
+    assert wrapper.returncode == 0, wrapper_stderr
     wrapper_pid, child_pid, child_parent_pid, snapshot_parent = (
-        int(value) for value in wrapper.stdout.strip().split("\t")
+        int(value) for value in wrapper_stdout.strip().split("\t")
     )
     assert child_pid != wrapper_pid
     assert snapshot_parent == wrapper_pid
