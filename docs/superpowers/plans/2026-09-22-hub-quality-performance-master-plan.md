@@ -356,6 +356,33 @@ T11 confirmed its assigned `f678` checkout is its own. It briefly tested two T21
 
 # Current master plan — authoritative consolidated plan
 
+## Active resumption — 2026-10-12
+
+Home mode Active revision 39 verified. Primary integrated CLI cleanup safety,
+pre-collection test config/state/port isolation, exact-pristine SQLite schema
+initialization, and stdio/restart fixture corrections directly in master's
+working checkout. Targeted receipts: 22 passed (`req_f395f8f3e76c`), 2 daemon
+selectors passed (`req_dc9f305078f3`), 112 isolation/transport/T09 tests passed
+(`req_2784a6ba0e41`), 38 fresh-init/migration tests passed (`req_53bd0c7684b8`).
+Regression RED receipts and exact selectors are recorded in the acceptance
+matrix's Active-mode subsection. Primary owns the changed source/tests/prompts;
+no context/pack change, no new branches/worktrees, no deployment or release claim.
+Full-suite and release gates remain open; prior 230 failures/2 errors must not
+be reported as cleared solely from targeted success.
+
+**Current release follow-up, 2026-10-12:** Clean frozen `61b38967` full suite
+finished **6776 passed, 230 failed, 2 errors, 104 skipped, 23 subtests passed /
+2860.86s**, exit one; unchanged candidate and clean final checkout. Home mode
+changed to Gaming during the run and contaminated many default-config tests;
+independent Windows Job recovery, secured-backup ACL and cleanup-port timeout
+failures remain to investigate. No new release/deployment acceptance. The current
+owner/status/acceptance table is in `2026-10-05-release-acceptance-matrix.md`,
+section `Current release blocker and remaining requested scope`. It includes all
+reported follow-ups, not only the release subset. Use private test state, preserve
+operator pause and durable data; no weakened tests, duplicate chats/worktrees,
+blanket exception rewrites or old installation evidence. Prepared GPT-6 Luna
+HTTP/vision/command extractions await primary integration and executed parity.
+
 **Latest source follow-up, 2026-10-12:** Frozen clean `b613ce26` completed the
 whole suite: **6999 passed, 1 failed, 104 skipped, 23 subtests / 2750.84s**.
 The command performance acceptance test received `degraded-filesystem` rather

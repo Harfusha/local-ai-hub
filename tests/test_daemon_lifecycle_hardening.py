@@ -1559,7 +1559,11 @@ def test_daemon_ttl_stops_process_and_records_owner(tmp_path: Path) -> None:
     try:
         initial = broker.daemon_status(daemon["daemon_id"])
         assert initial["owner_id"]
-        assert initial["ttl_remaining_seconds"] > 0
+        assert initial["ttl_remaining_seconds"] > 0, {
+            "initial_status": initial,
+            "elapsed_since_spawn": time.time() - broker._daemons[daemon["daemon_id"]]["started_at"],
+            "configured_ttl_seconds": broker.daemon_ttl_seconds,
+        }
 
         deadline = time.monotonic() + 6
         status = initial
@@ -1604,6 +1608,11 @@ def test_daemon_child_pid_is_not_visible_before_payload_is_complete(tmp_path: Pa
 def test_named_daemon_job_survives_restart_and_stops_descendants(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Model a stopped broker: its exit watcher cannot race the replacement
+    # broker and reap descendants before named-Job recovery is exercised.
+    # Live-broker automatic reaping is covered separately by
+    # test_daemon_job_stops_descendants_after_leader_exits.
+    monkeypatch.setattr(CommandBroker, "_watch_daemon_exit", lambda *_args: None)
     launcher = tmp_path / "daemon_parent.py"
     child_pid_path = tmp_path / "daemon-child.pid"
     launcher.write_text(
@@ -1711,7 +1720,7 @@ def test_named_daemon_job_survives_restart_and_stops_descendants(
     third = _broker(tmp_path)
     recovered = third.daemon_status(exited["daemon_id"])
     assert recovered["success"] is True
-    assert recovered["running"] is True
+    assert recovered["running"] is True, recovered
     assert third.stop_daemon(exited["daemon_id"], task_id="daemon-test")["success"] is True
     deadline = time.monotonic() + 5.0
     while commands_module.process_identity(exit_child_pid) is not None and time.monotonic() < deadline:
@@ -1728,9 +1737,9 @@ def test_named_daemon_job_survives_restart_and_stops_descendants(
     last_launcher = tmp_path / "daemon_last_handle.py"
     last_child_path = tmp_path / "daemon-last-child.pid"
     last_launcher.write_text(
-        "import subprocess, sys\n"
+        "import os, subprocess, sys\n"
         "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(12)'])\n"
-        "with open(sys.argv[1], 'w', encoding='ascii') as stream: stream.write(str(child.pid))\n",
+        + _DAEMON_CHILD_PID_PUBLICATION,
         encoding="utf-8",
     )
     last = first.spawn_daemon(

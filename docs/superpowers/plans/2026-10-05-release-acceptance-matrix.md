@@ -2,6 +2,95 @@
 
 ## Current master reconciliation - 2026-10-11
 
+### Current release blocker and remaining requested scope — 2026-10-12
+
+#### Active-mode resumption and integrated targeted verification
+
+User switched the home Hub to Active, revision 39 at
+`2026-10-12T09:47:55.962338+00:00`. The existing goal is active again.
+The earlier full-suite failure below remains authoritative for its frozen
+candidate; it is not a result for these new uncommitted changes.
+
+- CLI cleanup RED: `tests/test_mcp_stdio_catalog_support.py tests/test_mcp_stdio_contract.py tests/test_hubctl_ports.py`, 6 passed / 2 failed, `req_d2c667a38d62`. Both failures expose the bare-PID cleanup attempt.
+- CLI cleanup GREEN plus MCP schema/dispatch: `tests/test_hubctl_ports.py tests/test_mcp_contract_dispatch.py tests/test_mcp_stdio_schema_acceptance.py`, **22 passed / 9.11s**, `req_f395f8f3e76c`. `tools/hubctl.py` preserves bounded online cleanup, disables autostart, closes its client, and reports unowned listeners as skipped. INSTALL/UPDATE prompts synchronized.
+- Named-Job restart and independent automatic-reaper selectors: **2 passed / 2.96s**, `req_dc9f305078f3`. Only the stopped-broker fixture watcher changed; production daemon behavior and assertions remain intact.
+- Default pytest configuration isolation RED: `tests/test_test_environment_isolation.py`, **1 failed**, `req_8ca11b8b210e`; nested collection inherited the operator config. GREEN with `tests/test_t09_http_task_completion_persisted_receipts.py tests/test_mcp_agent_routing.py tests/test_client_transport.py`: **112 passed / 12.33s**, `req_2784a6ba0e41`. `tests/conftest.py` now installs private state/config and a reserved loopback port before collection, restores inherited environment at shutdown, and preserves intentional Gaming gates and operator state bytes.
+- Fresh SQLite initialization RED: `tests/test_agent_events_fresh_init.py -k fresh_lease_database`, **1 failed**, `req_f49639fe64c0`; unnecessary backup invoked. GREEN with `tests/test_t05_agent_state_migrations.py tests/test_agent_state_migrations.py`: **38 passed / 16.38s**, `req_53bd0c7684b8`. `src/local_ai_hub/agent_events.py` skips backups only for the exactly classified empty auxiliary layout, rechecks under BEGIN IMMEDIATE, and retains backup/ACL/schema gates for nonempty databases. Concurrent row/schema changes fail closed.
+
+All commands above used `.venv\\Scripts\\python.exe -B -m pytest -q --tb=short`
+through the Hub broker, with the listed selectors and absolute root
+`C:\Users\Adam\.local-ai-hub`. Primary owns integration and the named files.
+These are targeted receipts, NOT whole-suite, packaging, deployment, or release
+acceptance. Temp refactor candidates remain prepared, not integrated.
+
+Additional verification and unresolved evidence:
+
+- Combined daemon/MCP/CLI/in-process run `req_bea826a27ce4` failed on an empty third PID file in the named-Job fixture. That launcher now reuses the atomically published PID helper; no production process code changed.
+- Combined daemon/HTTP-vision/MCP-compact/in-process run `req_efaaf730539d` failed on `test_daemon_ttl_stops_process_and_records_owner`: first status reported `ttl_remaining_seconds=0.0`. Other outcomes were passing/skipped; this is still a FAILED combined run, not release acceptance. Isolated TTL + named-Job + atomic-publication selectors then passed, **3 passed / 4.09s**, `req_76f21375400d`. TTL remains an unconfirmed timing/production-boundary investigation; its expectation was NOT relaxed and now retains initial status, elapsed spawn time and configured TTL on failure.
+- One attempted HTTP command selected nonexistent `tests/test_http_security.py`, exit 4 / no tests, `req_5d9395b87c47`; the subsequent actual HTTP-vision module ran in the combined receipt above.
+- `python -B -m compileall -q src tools tests`: exit 0, `req_cf3f74298ab7`.
+- `python -B tools/release_check.py --allow-installed`: OK, `req_2a78d29db2e5`.
+- `python -B tools/selftest.py`: all six checks OK, `req_112ef6648298`; HTTP portions probe the already-running runtime, not proof of new installation.
+- `python -B tools/surface_inventory.py --check`: 687 rows, no drift, `req_e3b945fe26d9`. Document regeneration used one native fallback only after broker terminal `mutation_worktree_required`, `req_2b7bebb9bc55`. An earlier check while regeneration was still running failed and is not the final inventory receipt.
+- Hub AST diff review `req_ae64748fef53` succeeded with truncated metadata; its compact summary is inconsistent with its own counts and omits untracked tests. Treat it only as partial metadata, not semantic review or safety acceptance. Primary reviewed the source changes directly.
+
+Next: commit this bounded integration, freeze the candidate, then run the whole
+suite once with the existing 3600-second owned-process wrapper. Do not reinstall
+or publish on targeted receipts, and do not edit the frozen source while it runs.
+
+- Frozen clean `61b38967885a49661d261e9f8427815fbf73a5a6` completed the
+  full suite: **6776 passed, 230 failed, 2 errors, 104 skipped, 23 subtests
+  passed / 2860.86s**, exit one. Candidate unchanged and final checkout clean.
+  Receipt: `state/releases/4.0.0/followup-suite-61b38967885a-1791792826874047900.json`.
+  This is FAILED acceptance; no deployment or publication authorized by this run.
+- Home operational state changed to Gaming at `2026-10-12T08:34:17.142884+00:00`
+  (revision 38) during the suite. Many MCP/client tests consumed that real state
+  and returned `operational_mode_blocked` instead of their fixture responses.
+  This is a test-isolation defect, not permission to disable production mode
+  gates or override an operator pause. Post-suite broker reproduction was also
+  rejected: `terminal=false`, `retryable=true`; no native test bypass followed.
+- Separate failures require investigation: Windows named Job recovery after a
+  dead leader; one-second `icacls` timeout securing migration backups (two fixture
+  errors and one HTTP vision failure); `hubctl cleanup --ports` exceeded ten
+  seconds. Do not attribute these to Gaming without evidence. A diagnostic-only
+  assertion now retains the complete recovered daemon status on failure; no
+  liveness expectation or timeout changed.
+- Static recovery diagnosis: the named-Job restart test leaves its original
+  broker's exit watcher running. That watcher calls `_expire_daemon` after leader
+  exit and can reap the descendants before the replacement broker checks them.
+  The test now models a stopped broker by disabling only that fixture watcher;
+  separate `test_daemon_job_stops_descendants_after_leader_exits` retains real
+  automatic-reaping coverage. Named-Job recovery/stop expectations, process
+  identities and timeouts remain unchanged. **Two targeted selectors now pass**
+  after Active resumption (receipt above). No production recovery fix claimed.
+- Correction to progress updates: tail-only monitoring missed earlier failures.
+  Future progress must count all failed/error outcomes, not infer success from
+  the latest passing line. The final whole-suite receipt is authoritative.
+
+| Existing area | Current owner / state | Next acceptance, not preparation |
+|---|---|---|
+| T20 validation and release | Primary / active | Active revision 39 verified; targeted RED/GREEN receipts above. Finish integrated full suite, packaging, deployment and live acceptance before release. Earlier Gaming refusal was respected, not bypassed. |
+| T20 test isolation | Primary integrated GPT-6 Luna Kierkegaard preparation / review | Private config/state/port and intentional Gaming regression verified; combined 112 passed. Full-suite compatibility remains open. |
+| T08 SQLite initialization | Primary integrated GPT-6 Luna Franklin preparation / review | Exact empty auxiliary layout avoids backup; durable backup, ACL and schema guards retained. 38 fresh-init/concurrent-change/migration tests passed; whole-suite acceptance remains open. |
+| T06 daemon recovery | Primary / active | Reproduce dead-leader named Job failure with retained status; distinguish descendant expiry, ownership uncertainty and production recovery. No relaxed expectation or timeout-only fix. |
+| T06/T19 CLI cleanup safety | Anscombe prepares; primary integrates / active | `hubctl cleanup --ports` attempts bare-PID cleanup and reports cleaned_ports without checking its result. Current terminate_tree already refuses this call without an owned process handle/group, so foreign-process termination is NOT demonstrated; the confirmed defect is misleading cleanup reporting and unsafe caller intent. Preserve unknown processes, report ownership-unverified listeners as skipped, disable cleanup autostart while retaining the online cleanup endpoint, and inject CLI dependencies in tests. Prepared changes require RED/GREEN before acceptance. |
+| T04 MCP stdio schema test | Primary / review, not executed | `test_stdio_tools_list_hides_feature_disabled_tools` exited zero but omitted JSON-RPC id 2. Its fixture sent initialize/initialized/tools-list together and closed stdin before observing responses. Four schema tests now use SDK-owned interactive transport: await explicit 2025-06-18 initialize, send initialized, await full tools/list, then close. All tool/schema assertions and successful child exit are retained; SDK-owned cleanup is bounded. New tests/mcp_stdio_catalog_support.py plus two existing test modules; runtime verification pending Active. No production EOF defect claimed. |
+| T19 package/deploy | Primary / review | New exact-candidate wheel and clean isolated installation, managed restart, fresh live checks, doctor/selftest and dashboard endpoint visibility. Older wheel/runtime smoke is insufficient. |
+| T04/T16 shared runtime | Primary / review | Real cold 1/10/30 clients: process counts, RSS, CPU/startup, owned cleanup; crash/restart/stale lock and positive/negative root/tenant/task isolation. Warm or mocked startup is insufficient. |
+| T02/T15 CPU/latency | Primary / not started | Identity-bound current daemon sample; attribute sustained load before changes and compare identical workload. Historical one-core sample is not cause attribution. |
+| T15 command decomposition | Franklin preparation; primary integrates / review | Two phase extractions and public-run characterization prepared only in Temp. Preserve fences, replay/cache, rollback and receipt binding; baseline/GREEN pending. Not full decomposition done. |
+| T17 vision decomposition | Kierkegaard preparation; primary integrates / review | Per-call domain helper with current dependencies; preserve public signature, cancellation, schema, artifacts and model budgets. Baseline/GREEN pending; context/pack untouched. |
+| T18 HTTP decomposition | Anscombe preparation; primary integrates / review | Six-route repository-analysis family; public HTTP baseline plus extraction tests. Preserve auth/mode/body gates, route order/aliases and central errors. Baseline/GREEN pending. |
+| T05/T08 silent exceptions | Primary / review | Reported context/blackboard catches now log safe metadata, warn or rethrow; rollback catches sqlite3.Error. Their fault-injection tests passed in this run. Remaining modules need per-site handling, not blanket replacement. |
+| T02/T17 model quality | Primary / not started | Real-input retrieval relevance, vision and Whisper quality with corpus/provenance; connectivity smoke is not quality/WER acceptance. |
+| T19/T20 publication/cleanup | Primary / not started | Verified integrated release only; inspect active chats, dirty files, unique commits and stashes before recoverable cleanup. Protected/shared worktrees remain protected. |
+
+No duplicate task/chat/branch/worktree was created for this follow-up. Existing
+hashing equivalence and shell-free preprocessing changes must not be reimplemented.
+Prepared Temp files are not integrated source or successful tests. Prior goal
+wording about hundreds of dirty paths, mandatory owner packets and unavailable
+Hub is historical; current simplified master workflow and live gates apply.
+
 ### Whole-suite follow-up — 2026-10-12
 
 - Clean frozen `b613ce26` completed without fail-fast: **6999 passed, 1 failed,

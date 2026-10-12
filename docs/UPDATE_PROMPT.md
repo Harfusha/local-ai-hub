@@ -119,6 +119,8 @@ Working-checkout release checks ignore disposable Python/pytest caches already c
 
 ### PHASE 3: VERIFY SERVICE, MCP, AND HEALTH
 
+`hubctl cleanup` calls `/api/agent-state/cleanup` with a 3-second timeout and `auto_start=False`; it never starts Hub. Port occupancy alone is not kill authority. Listeners without verified ownership are reported in `skipped_ports` with reason `ownership_unverified`, not terminated or reported as cleaned.
+
 Verify `hubctl.py service-status` and exactly one platform user-service entry: Windows Task Scheduler `LocalAIHubSupervisor`, macOS LaunchAgent `com.localai.hub`, or Linux systemd user unit `local-ai-hub.service`. Reconcile the existing registration; do not register a service per agent, chat, or worktree. A `detached-fallback` result does not prove reboot-persistent service acceptance. Setup exits nonzero if registration fails or is only detached fallback. Preserve the installer output, inspect the same service-manager entry and logs, and recover or rerun using the same clean verified SHA; do not claim update complete until one persistent service is confirmed.
 
 1. **Verify Health Endpoint**:

@@ -213,7 +213,7 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=50, help="Maximum items to return")
     parser.add_argument("--compact", action="store_true", help="Compact older memory records into digest summaries")
     parser.add_argument("--vacuum", action="store_true", help="Run SQLite WAL checkpoint and VACUUM during cleanup")
-    parser.add_argument("--ports", action="store_true", help="Also terminate orphaned background processes on ports 11436, 11437, 11439")
+    parser.add_argument("--ports", action="store_true", help="Report listeners on ports 11436, 11437, 11439; do not signal them")
     parser.add_argument("-f", "--follow", action="store_true", help="Stream log output continuously (like tail -f)")
     parser.add_argument("--json", dest="raw_json", action="store_true", help="Output raw JSON")
     args = parser.parse_args()
@@ -281,23 +281,27 @@ def main() -> int:
         return 0
     if args.action == "cleanup":
         cleaned_ports: list[dict[str, Any]] = []
+        skipped_ports: list[dict[str, Any]] = []
         if args.ports:
-            from local_ai_hub.process_utils import find_listening_pid, terminate_tree
+            from local_ai_hub.process_utils import find_listening_pid
             for port in [11436, 11437, 11439]:
                 pid = find_listening_pid(port)
-                if pid and pid > 0 and pid != os.getpid():
-                    terminate_tree(pid, grace_seconds=2.0)
-                    cleaned_ports.append({"port": port, "pid": pid})
-        c = client()
+                if pid and pid > 0:
+                    skipped_ports.append({
+                        "port": port, "pid": pid, "status": "skipped",
+                        "reason": "ownership_unverified",
+                    })
+        c: HubClient | None = None
         try:
-            try:
-                res = c.post("/api/agent-state/cleanup", {}, timeout=3.0)
-            except TypeError:
-                res = c.post("/api/agent-state/cleanup", {})
+            c = HubClient(tenant="hubctl", config_path=_config_arg(args.config), auto_start=False)
+            res = c.post("/api/agent-state/cleanup", {}, timeout=3.0)
         except Exception as e:
-            res = {"success": bool(cleaned_ports), "server_status": "offline", "detail": str(e)}
-        if cleaned_ports:
-            res["cleaned_ports"] = cleaned_ports
+            res = {"success": False, "server_status": "offline", "detail": str(e)}
+        finally:
+            if c is not None:
+                c.close()
+        res["cleaned_ports"] = cleaned_ports
+        res["skipped_ports"] = skipped_ports
 
         vacuum_results: list[dict[str, Any]] = []
         if args.vacuum:
