@@ -179,6 +179,12 @@ POST_ROUTE_HANDLER_BOUNDARIES: Mapping[str, str] = MappingProxyType({
     "post_async_jobs_1": "_handle_post_async_jobs",
     "post_db_query_1": "_handle_post_db_query",
     "post_telemetry_timeline_1": "_handle_post_telemetry_timeline",
+    "post_git_status_1": "_handle_post_repository_analysis",
+    "post_repo_state_1": "_handle_post_repository_analysis",
+    "post_git_diff_1": "_handle_post_repository_analysis",
+    "post_git_history_search_1": "_handle_post_repository_analysis",
+    "post_hotspots_1": "_handle_post_repository_analysis",
+    "post_test_matrix_1": "_handle_post_repository_analysis",
 })
 
 

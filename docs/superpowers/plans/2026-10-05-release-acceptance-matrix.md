@@ -6,6 +6,65 @@
 
 #### Active-mode resumption and integrated targeted verification
 
+#### 2026-10-12 implementation-first continuation
+
+**Sole owner after explicit user coordination:** chat `01a12fae-925c-7ed2-a351-e41358c4be3f`.
+The duplicate release chat stopped its workers and preserved the shared changes.
+Primary reviewed and adopted the prepared command, vision and six-route HTTP
+extractions. No public schema or context/pack behavior changed. The index's
+removed `is_cancelled` finding refers to a nested vision closure moved into the
+new helper, not a removed public API.
+
+Current targeted receipts on the integrated working tree:
+- HTTP helper/real Handler, vision orchestration/contracts and daemon lifecycle:
+  `.venv\Scripts\python.exe -B -m pytest -q --tb=short tests/test_http_post_repository_analysis.py tests/test_http_post_repository_analysis_baseline.py tests/test_vision_service_orchestration.py tests/test_vision_service.py tests/test_vision_service_phases.py tests/test_vision_contracts.py tests/test_daemon_lifecycle_hardening.py`:
+  **257 passed, 4 platform skips / 82.36s**, `req_b174bba39484`.
+- Command public-run characterization: **8 passed / 2.40s**, execution
+  `5979d8e6ba7b456aa5cf4c050eba0498`. Failed-repair fixture now owns a real
+  registered Git worktree and uses fencing support, without bypassing ownership.
+- Completion receipts and transaction snapshots: **28 passed / 50.34s**,
+  `req_b23fdd86ed79`; remediation **1 passed / 1.23s**, `req_56858eb1b6f5`.
+- Earlier combined nine-module command check exceeded its 180-second total
+  deadline, `req_18e2079d129c`; cleanup confirmed. It is NOT a passing receipt.
+- The remaining bounded command group (project aliases, concurrency,
+  cache/singleflight, revision invalidation, rollback) then completed exit 0,
+  `req_5ac9e2144f49`; the compact summary omitted its final count, so no count
+  is inferred. Together with the separately completed receipt/transaction and
+  remediation modules this closes targeted validation, not full-suite acceptance.
+- HTTP characterization originally omitted the existing normalized
+  `status_code: 500`; the exact central error envelope is now asserted.
+
+Final candidate full suite, packaging, cold-load measurements and deployment
+remain pending. The historical statuses below do not supersede this continuation.
+
+Primary resumed clean master `69c3bcb90d3fb271c7bc5f961d58eb35c823a5fb`.
+The interrupted 69c3bcb9 suite is NOT acceptance; its implementation freeze
+has ended by user instruction. Complete remaining implementation first, use
+targeted regressions, then run the full suite on the final integrated commit.
+
+- T08/T06: prepared Windows backup and hubctl cleanup fixture updates integrated.
+  `.venv\Scripts\python.exe -B -m pytest -q --tb=short tests/test_agent_backup_windows_identity.py tests/test_agent_os_enhancements.py tests/test_agent_events_fresh_init.py tests/test_t05_agent_state_migrations.py tests/test_agent_state_migrations.py`:
+  **59 passed / 26.96s**, `req_c265dbbed867`. Nonempty lease data and real
+  backup ACL checks remain; pristine initialization requires no backup/identity
+  subprocess. CLI checks explicit non-autostart client, timeout and close.
+- T08: `.venv\Scripts\python.exe -B -m pytest -q --tb=short tests/test_agent_state_e2e.py tests/test_agent_state_migrations_root.py`:
+  **9 passed / 35.29s**, `req_c3b78f7d9469`. The three observed failures did
+  not reproduce in the complete targeted modules; suite interaction remains
+  unexplained. No speculative production change or whole-suite PASS claimed.
+- T17/T06: GPT-6 Luna `vision_ttl` integrates prepared per-call vision helper
+  and deterministic/real TTL tests, keeping callback completion and deadline.
+- T15: GPT-6 Luna `command_refactor` integrates two bounded command phases.
+  Initial new characterization: 7 passed / 1 failed; diagnosis remains active.
+- T18: GPT-6 Luna `http_router` integrates six-route analysis extraction,
+  registry boundaries and actual Handler characterization.
+- T20/T19: primary owns review, coherent commit, final full suite, serial cold
+  process measurements, exact-commit packaging, deployment and live provenance.
+  No new user chats/worktrees or duplicate T01-T21 tasks created.
+
+These are implementation/targeted receipts only. Packaging, installed runtime,
+dashboard/API/MCP acceptance, resource measurements and remaining real-model
+quality acceptance are still unverified for the new candidate.
+
 User switched the home Hub to Active, revision 39 at
 `2026-10-12T09:47:55.962338+00:00`. The existing goal is active again.
 The earlier full-suite failure below remains authoritative for its frozen

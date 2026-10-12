@@ -358,6 +358,15 @@ T11 confirmed its assigned `f678` checkout is its own. It briefly tested two T21
 
 ## Active resumption — 2026-10-12
 
+Implementation-first continuation: primary chat `01a12fae-925c-7ed2-a351-e41358c4be3f`
+is sole integrator after explicit user coordination. Prepared command phases,
+per-call vision helper, repository-analysis HTTP router and backup/CLI/TTL
+regressions are integrated in the current working tree. HTTP/vision/daemon
+targeted set: 257 passed, 4 platform skips; command characterization: 8 passed.
+Final full-suite, package, cold process and installed live gates remain open.
+Current receipts and unresolved results are maintained in the existing release
+acceptance matrix; do not restart historical owners or duplicate T01-T21.
+
 Home mode Active revision 39 verified. Primary integrated CLI cleanup safety,
 pre-collection test config/state/port isolation, exact-pristine SQLite schema
 initialization, and stdio/restart fixture corrections directly in master's

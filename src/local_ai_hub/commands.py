@@ -7116,6 +7116,104 @@ class CommandBroker:
         value, healthy = cls._read_cache_entry(failure_cache, key)
         return value if healthy else None
 
+    @staticmethod
+    def _project_command_fingerprints(
+        command: str | CommandInvocation,
+        context: _ResolvedProjectCommand | None,
+    ) -> tuple[str, str, str, str, str]:
+        """Return the project-command identities bound to verification receipts."""
+        if not isinstance(context, _ResolvedProjectCommand) or context.command != command:
+            return "", "", "", "", ""
+
+        project_environment_sha256 = hashlib.sha256(
+            json.dumps(
+                context.environment,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        configured = context.configured_command
+        if isinstance(configured, CommandInvocation):
+            configured_text = json.dumps(
+                {
+                    "argv": configured.argv,
+                    "cwd": configured.cwd,
+                    "shell": configured.shell,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        else:
+            configured_text = configured
+        configured_command_sha256 = hashlib.sha256(
+            configured_text.encode("utf-8")
+        ).hexdigest()
+        caller_arguments_sha256 = hashlib.sha256(
+            json.dumps(
+                list(context.caller_arguments),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        return (
+            context.alias,
+            context.config_digest,
+            project_environment_sha256,
+            configured_command_sha256,
+            caller_arguments_sha256,
+        )
+
+    def _finalize_run_result(
+        self,
+        result: dict[str, Any],
+        *,
+        tenant: str,
+        command: str | CommandInvocation,
+        cwd: str,
+        execution_id: str,
+        task_id: str,
+        auto_fix: bool,
+        max_repair_attempts: int,
+        criterion: str,
+        declared_paths: list[str] | None,
+        effective_timeout: int,
+        fix_generator: Any | None,
+        docker_image: str,
+        work_attempt_fence: WorkAttemptFence | None,
+    ) -> dict[str, Any]:
+        if task_id and self.policy_engine:
+            try:
+                from .agent_policy import BudgetCost
+
+                elapsed_s = float(result.get("duration_ms", 0) or 0) / 1000.0
+                self.policy_engine.consume(
+                    task_id,
+                    BudgetCost(compute_seconds=elapsed_s, external_calls=1),
+                )
+            except Exception:
+                pass
+
+        compacted = self._compact(result, tenant, command)
+        compacted["execution_id"] = execution_id
+        if auto_fix and not compacted.get("success") and not compacted.get("cancelled"):
+            repaired = self.repair_loop(
+                command,
+                cwd,
+                tenant,
+                max_attempts=max_repair_attempts,
+                task_id=task_id,
+                criterion=criterion,
+                paths=declared_paths,
+                timeout=effective_timeout,
+                fix_generator=fix_generator,
+                initial_result=compacted,
+                docker_image=docker_image,
+                _work_attempt_fence=work_attempt_fence,
+            )
+            repaired["execution_id"] = execution_id
+            return repaired
+        return compacted
+
     @_stable_rollback_status
     def run(
         self,
@@ -7146,47 +7244,13 @@ class CommandBroker:
         _work_attempt_fence: WorkAttemptFence | None = None,
         _project_command_context: _ResolvedProjectCommand | None = None,
     ) -> dict[str, Any]:
-        project_alias = ""
-        project_config_digest = ""
-        project_environment_sha256 = ""
-        configured_command_sha256 = ""
-        caller_arguments_sha256 = ""
-        if (
-            isinstance(_project_command_context, _ResolvedProjectCommand)
-            and _project_command_context.command == command
-        ):
-            project_alias = _project_command_context.alias
-            project_config_digest = _project_command_context.config_digest
-            project_environment_sha256 = hashlib.sha256(
-                json.dumps(
-                    _project_command_context.environment,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-            ).hexdigest()
-            configured = _project_command_context.configured_command
-            if isinstance(configured, CommandInvocation):
-                configured_text = json.dumps(
-                    {
-                        "argv": configured.argv,
-                        "cwd": configured.cwd,
-                        "shell": configured.shell,
-                    },
-                    sort_keys=True,
-                    separators=(",", ":"),
-                )
-            else:
-                configured_text = configured
-            configured_command_sha256 = hashlib.sha256(
-                configured_text.encode("utf-8")
-            ).hexdigest()
-            caller_arguments_sha256 = hashlib.sha256(
-                json.dumps(
-                    list(_project_command_context.caller_arguments),
-                    ensure_ascii=False,
-                    separators=(",", ":"),
-                ).encode("utf-8")
-            ).hexdigest()
+        (
+            project_alias,
+            project_config_digest,
+            project_environment_sha256,
+            configured_command_sha256,
+            caller_arguments_sha256,
+        ) = self._project_command_fingerprints(command, _project_command_context)
         if not self.enabled:
             return {"success": False, "error": "command broker disabled"}
         project_alias_required = False
@@ -7872,31 +7936,22 @@ class CommandBroker:
                         event.owner_result = dict(completed_result)
                     event.set()
 
-        if task_id and self.policy_engine:
-            try:
-                from .agent_policy import BudgetCost
-                elapsed_s = float(result.get("duration_ms", 0) or 0) / 1000.0
-                self.policy_engine.consume(task_id, BudgetCost(compute_seconds=elapsed_s, external_calls=1))
-            except Exception:
-                pass
-
-        compacted = self._compact(result, tenant, command)
-        compacted["execution_id"] = execution_id
-        if auto_fix and not compacted.get("success") and not compacted.get("cancelled"):
-            repaired = self.repair_loop(
-                command, cwd, tenant,
-                max_attempts=max_repair_attempts,
-                task_id=task_id, criterion=criterion,
-                paths=declared_paths,
-                timeout=effective_timeout,
-                fix_generator=fix_generator,
-                initial_result=compacted,
-                docker_image=docker_image,
-                _work_attempt_fence=_work_attempt_fence,
-            )
-            repaired["execution_id"] = execution_id
-            return repaired
-        return compacted
+        return self._finalize_run_result(
+            result,
+            tenant=tenant,
+            command=command,
+            cwd=cwd,
+            execution_id=execution_id,
+            task_id=task_id,
+            auto_fix=auto_fix,
+            max_repair_attempts=max_repair_attempts,
+            criterion=criterion,
+            declared_paths=declared_paths,
+            effective_timeout=effective_timeout,
+            fix_generator=fix_generator,
+            docker_image=docker_image,
+            work_attempt_fence=_work_attempt_fence,
+        )
 
     @_stable_rollback_status
     def patch_and_verify(

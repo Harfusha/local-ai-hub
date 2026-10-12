@@ -8,6 +8,7 @@ import pytest
 
 from local_ai_hub import agent_events, process_utils
 from local_ai_hub.agent_events import AgentStateStore
+from local_ai_hub.leases import ScopeLeaseStore
 
 
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows token/ACL contract")
@@ -123,10 +124,13 @@ def test_native_identity_failure_closes_token_and_fails_closed(tmp_path, monkeyp
     assert len(closed) == (0 if operation == "OpenProcessToken" else 1)
 
 
-def test_precreated_empty_database_initializes_without_identity_child(tmp_path, monkeypatch):
+def test_nonempty_leases_database_backs_up_outside_transaction_without_whoami(
+    tmp_path, monkeypatch
+):
     real_run = process_utils.run_hidden
     real_connect = sqlite3.connect
     transaction_states = []
+    commands = []
 
     class TracedConnection(sqlite3.Connection):
         def backup(self, *args, **kwargs):
@@ -140,25 +144,102 @@ def test_precreated_empty_database_initializes_without_identity_child(tmp_path, 
         def connect(self, *args, **kwargs):
             return real_connect(*args, **kwargs, factory=TracedConnection)
 
+    ScopeLeaseStore(tmp_path)
+    path = tmp_path / "agent_state.sqlite"
+    with closing(sqlite3.connect(path)) as source:
+        source.execute(
+            """INSERT INTO leases (
+                   lease_id, tenant, root_id, root_path, path, purpose, created_at, expires_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            ("lease-keep", "tenant-a", "root-a", "repo", "src/keep.py",
+             "repository_search", 1.0, 2.0),
+        )
+        source.commit()
+
     def no_whoami(argv, **kwargs):
+        commands.append(tuple(argv))
         if argv[0] == "whoami":
             raise subprocess.TimeoutExpired(argv, 1.0)
         return real_run(argv, **kwargs)
 
     monkeypatch.setattr(process_utils, "run_hidden", no_whoami)
-    path = tmp_path / "agent_state.sqlite3"
-    with closing(sqlite3.connect(path)):
-        pass
     monkeypatch.setattr(agent_events, "sqlite3", SQLite())
-    AgentStateStore(path)._ensure_schema()
+    store = AgentStateStore(path)
+    store._ensure_schema()
+
     assert transaction_states == [False]
+    assert not any(command[0] == "whoami" for command in commands)
     backups = list(tmp_path.glob("*.bak"))
     assert len(backups) == 1
     with closing(sqlite3.connect(path)) as source, closing(sqlite3.connect(backups[0])) as backup:
-        assert source.execute("PRAGMA user_version").fetchone() == (1,)
+        assert source.execute("PRAGMA user_version").fetchone() == (store._SCHEMA_VERSION,)
         assert source.execute("SELECT COUNT(*) FROM agent_events").fetchone() == (0,)
+        assert source.execute(
+            "SELECT lease_id, path FROM leases WHERE lease_id = ?", ("lease-keep",)
+        ).fetchone() == ("lease-keep", "src/keep.py")
         assert backup.execute("PRAGMA user_version").fetchone() == (0,)
+        assert backup.execute(
+            "SELECT lease_id, path FROM leases WHERE lease_id = ?", ("lease-keep",)
+        ).fetchone() == ("lease-keep", "src/keep.py")
         assert backup.execute("PRAGMA quick_check").fetchone() == ("ok",)
+
+
+def test_precreated_empty_database_initializes_without_identity_child(tmp_path, monkeypatch):
+    real_connect = sqlite3.connect
+    transaction_states = []
+    backup_calls = []
+    commands = []
+
+    class TracedConnection(sqlite3.Connection):
+        def backup(self, *args, **kwargs):
+            transaction_states.append(self.in_transaction)
+            return super().backup(*args, **kwargs)
+
+    class SQLite:
+        def __getattr__(self, name):
+            return getattr(sqlite3, name)
+
+        def connect(self, *args, **kwargs):
+            return real_connect(*args, **kwargs, factory=TracedConnection)
+
+    def unexpected_backup(cls, source, **kwargs):
+        backup_calls.append(source.in_transaction)
+        raise AssertionError("pristine empty database must not be backed up")
+
+    def unexpected_identity():
+        raise AssertionError("pristine empty database must not resolve process identity")
+
+    def unexpected_subprocess(argv, **kwargs):
+        commands.append(tuple(argv))
+        raise AssertionError("pristine empty database must not launch subprocesses")
+
+    path = tmp_path / "agent_state.sqlite3"
+    with closing(sqlite3.connect(path)):
+        pass
+    monkeypatch.setattr(
+        AgentStateStore, "_verified_backup", classmethod(unexpected_backup)
+    )
+    monkeypatch.setattr(agent_events, "_windows_process_user_sid", unexpected_identity)
+    monkeypatch.setattr(process_utils, "run_hidden", unexpected_subprocess)
+    monkeypatch.setattr(agent_events, "sqlite3", SQLite())
+    store = AgentStateStore(path)
+    store._ensure_schema()
+
+    assert backup_calls == []
+    assert transaction_states == []
+    assert commands == []
+    assert not list(tmp_path.glob("*.bak"))
+    with closing(sqlite3.connect(path)) as source:
+        tables = {
+            str(row[0])
+            for row in source.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+            if not str(row[0]).startswith("sqlite_")
+        }
+        assert {"agent_events", "agent_snapshots"} <= tables
+        assert source.execute("PRAGMA user_version").fetchone() == (store._SCHEMA_VERSION,)
+        assert source.execute("SELECT COUNT(*) FROM agent_events").fetchone() == (0,)
 
 
 def test_real_backup_dacl_grants_only_process_user(tmp_path):
