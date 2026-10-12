@@ -240,20 +240,60 @@ def test_unavailable_snapshot_accounts_for_entire_warning_envelope(setup, monkey
     assert "private backend error detail" not in repr(snapshot)
 
 
-def test_task_creation_continues_when_real_backend_is_blocked(setup, monkeypatch):
+@pytest.mark.parametrize("durable_commit_delay_seconds", [0.0, 0.35], ids=["normal-commit", "slow-commit"])
+def test_task_creation_continues_when_real_backend_is_blocked(setup, monkeypatch, durable_commit_delay_seconds):
     tasks, _, compiler, _, root, context = setup
     release = threading.Event()
-    monkeypatch.setattr(compiler, "compile", lambda request: release.wait(3))
+    entered, finished = threading.Event(), threading.Event()
+    timings = {}
+    original_lookup = tasks._task_memory_context
+    original_commit = tasks._commit_create
+
+    def blocked_compile(request):
+        entered.set()
+        try:
+            return release.wait(30)
+        finally:
+            finished.set()
+
+    def measured_lookup(*args, **kwargs):
+        started = time.perf_counter()
+        try:
+            return original_lookup(*args, **kwargs)
+        finally:
+            timings["memory_lookup_seconds"] = time.perf_counter() - started
+            timings["backend_entered_before_lookup_return"] = entered.is_set()
+            timings["backend_finished_before_lookup_return"] = finished.is_set()
+
+    def delayed_commit(*args, **kwargs):
+        started = time.perf_counter()
+        try:
+            time.sleep(durable_commit_delay_seconds)
+            return original_commit(*args, **kwargs)
+        finally:
+            timings["durable_commit_seconds"] = time.perf_counter() - started
+
+    monkeypatch.setattr(compiler, "compile", blocked_compile)
+    monkeypatch.setattr(tasks, "_task_memory_context", measured_lookup)
+    monkeypatch.setattr(tasks, "_commit_create", delayed_commit)
     token = trace_context.set_context(tenant="tenant-a")
     try:
-        started = time.perf_counter()
         task = tasks.create(GoalContract(goal="use verified fact"), context, task_id="snapshot-task", repo_root=str(root))
-        assert time.perf_counter() - started < 1.2
+        # The lookup owns the one-second deadline. Durable SQLite commits run
+        # afterwards and must not be mistaken for a blocked memory backend.
+        assert timings["memory_lookup_seconds"] < 1.2, timings
+        assert timings["backend_entered_before_lookup_return"], timings
+        assert not timings["backend_finished_before_lookup_return"], timings
+        assert timings["durable_commit_seconds"] >= durable_commit_delay_seconds, timings
         assert task.task_id == "snapshot-task"
         assert task.checkpoint.state_data["memory_context"]["warnings"] == [{"code": "memory_lookup_deadline_exceeded"}]
+        stored = tasks.get(task.task_id)
+        assert stored is not None
+        assert stored.checkpoint.state_data["memory_context"] == task.checkpoint.state_data["memory_context"]
     finally:
         release.set()
         trace_context.reset_context(token)
+        assert finished.wait(1)
 
 
 def test_deadline_covers_relevance_guard_entry_without_late_compile(setup, monkeypatch):
