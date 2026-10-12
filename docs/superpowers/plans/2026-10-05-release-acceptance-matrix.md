@@ -25,7 +25,12 @@ artifact availability and cold recovery/worktree scenarios are prepared. Lookup
 now skips malformed/non-object/invalid-UTF8 cached cards without losing valid
 siblings. Budget rejections retain readable diagnostics and original outcome
 flags, including the formerly one-character fallback. Source review is closed;
-the next phase is targeted regression execution. No new PASS is asserted here.
+targeted verification passed after correcting the fixture's intentionally
+rewritten timestamp and preserving short diagnostic messages before optional
+protected payloads. New regressions: **48 passed / 4.88s**, `req_8bbc981b2351`.
+Existing affected contracts (budget/wire/projection/preprocessing/memory/index
+schema): **138 passed / 27.98s**, `req_162fb487f9a0`. These cover the current
+working source, not full-suite, packaging, installed or live acceptance.
 
 **Sole owner after explicit user coordination:** chat `01a12fae-925c-7ed2-a351-e41358c4be3f`.
 The duplicate release chat stopped its workers and preserved the shared changes.

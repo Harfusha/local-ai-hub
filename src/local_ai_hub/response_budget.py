@@ -401,6 +401,8 @@ def _budget_rejection(
         "execution_id" in preserved or preserved.get("exit_code") not in (None, 0)
     )
     for error_limit in error_limits if command_failure else ():
+        if error_limit is not None and error_limit < min(64, len(error)):
+            continue
         for summary_limit in summary_limits:
             core: dict[str, Any] = {"success": False}
             if original_error is not None:
@@ -430,6 +432,8 @@ def _budget_rejection(
     # Preserve the complete diagnostic and citation before compacting the
     # duplicated context pointer or its optional accounting metadata.
     for error_chars in (512, 256, 128, 64, 32, 16):
+        if error_chars < min(64, len(error)):
+            continue
         # Keep complete accounting whenever any compact projection fits.
         for budget_metadata in metadata_variants:
             # Keep at least one exact evidence ID before retaining decisions or
