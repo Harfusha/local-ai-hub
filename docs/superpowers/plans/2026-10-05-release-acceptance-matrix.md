@@ -2,6 +2,38 @@
 
 ## Current master reconciliation - 2026-10-11
 
+### Local functional 4.0.0 release — 2026-10-12
+
+- The installed complete live gate now passes, exit 0, `success=true`, all
+  sixteen checks green, no errors. Reproducible command:
+  `.venv/Scripts/python.exe -B tools/release_check.py --allow-installed
+  --live-smoke --expected-version 4.0.0 --json`.
+  Exact captured result: `state/releases/4.0.0/capture_live_release_once.json`.
+  The one-shot wrapper uses a 600s subprocess bound; no retry is performed.
+- Live coverage: HTTP health/status, real 7b model response, async job/result,
+  CUDA hardware probe/benchmark, real 9b vision, Whisper CLI on silence, and
+  Agent OS memory. Silence acceptance is not speech recognition quality proof.
+- Before that gate, the isolated async diagnosis passed in 14.879s: healthy
+  status, nominal pressure, admission accepted/capacity_available, one job done
+  with a usable result. Exact metadata-only result:
+  `state/releases/4.0.0/diagnose_async_once.json`.
+- Both diagnostic wrapper commands were rejected by the broker's registered
+  worktree rule with terminal/non-retryable results (`req_f6e763377699`,
+  `req_00c5ab27fdad`); each ran once through the permitted native fallback.
+  Their owned side effects are generated local receipts and synthetic smoke
+  jobs, not source edits or user data deletion.
+- The complete source suite passed on production-equivalent `c2b6db9f`;
+  post-install selftest, doctor, compileall, inventory and static release gates
+  passed as recorded below. Documentation-only reconciliation does not change
+  the tested production tree. This is **local functional Windows release GO**,
+  not external publication or blanket T01–T21/broad T20 completion.
+- Earlier installed status/async failures remain recorded, not rewritten as
+  successes. Their exact old causes are not proven; the fresh successful gate
+  proves current behavior, not absence of intermittent failures. Large-cache
+  status scalability, idle-model resource pressure, existing MCP reconnects,
+  corrected 30-client family RSS/CPU proof, POSIX runtime and speech quality
+  remain explicit follow-ups. No new feature refactors were added to this gate.
+
 ### Integrated suite and installed candidate — 2026-10-12
 
 - Frozen `master` `c2b6db9f`: `python -B -m pytest -q --tb=short -r f
@@ -288,8 +320,8 @@
 | Agent State memory GET | **Fixed; targeted pass** | Full suite on parent found `test_http_memory_get_is_scope_and_root_isolated` failing HTTP 404 after 440 passed. POST `action=get` ignored caller `repository_id` when project config had no ID; now uses it only as fallback, matching GET behavior. Selector 1 passed; memory/HTTP/state-transport group 56 passed. |
 | Async task integration | **Flake isolated; deterministic test fix** | `submit()` starts background dispatch while this test calls `_execute()` synchronously. The dispatcher can claim the queued job first, making the direct call return `success=false` (“async job is not queued”). Test now disables only its automatic dispatcher. `tests/test_async_jobs_tasks.py tests/test_async_jobs.py` — 31 passed in 6.07s. |
 | Windows daemon lifecycle test | **Race isolated; test fix verified** | Full-suite `--last-failed` showed `test_named_daemon_job_survives_restart_and_stops_descendants` reading the PID file between create/truncate and write (`ValueError` on empty text). Fixture now writes a temporary file and atomically replaces the target. Selector: 1 passed; full file: 58 passed, 4 skipped in 28.50s. |
-| Release gates | Full suite passed; **installed live gate open** | `c2b6db9f`: 6891 passed, 105 skipped, 23 subtests, two FutureWarnings, exit 0. Post-install compileall, selftest 6/6, doctor, 687-row inventory and `release_check.py --allow-installed --expected-version 4.0.0` pass. Installed live-smoke status/async failures remain recorded above; broad T20 acceptance is not complete. |
-| Live Hub | **Current package installed; server online** | Home `.venv` package matches validated e67 wheel 120/120 files. `hubctl status`: 4.0.0, active; Ollama online, eight models, RTX 4060. Current direct brief status is healthy. Fresh installed MCP full-status output schemas passed earlier; old already-loaded MCP adapters still require reconnect. The intermittent live status failure and async failure are not waived. |
+| Release gates | **Local functional Windows GO**; broad T20 remains partial | `c2b6db9f`: 6891 passed, 105 skipped, 23 subtests, two FutureWarnings, exit 0. Post-install compileall, selftest 6/6, doctor, 687-row inventory and static release gate pass. Latest exact captured installed live gate: all sixteen checks pass, exit 0. Earlier status/async failures remain evidence; broad cross-platform/performance acceptance is not complete. |
+| Live Hub | **Current package installed; complete live smoke passed** | Home `.venv` package matches validated e67 wheel 120/120 files. `hubctl status`: 4.0.0, active; Ollama online, eight models, RTX 4060. HTTP/status/inference/async/CUDA/vision/Whisper silence/memory pass together. Fresh installed MCP full-status output schemas passed earlier; old already-loaded MCP adapters still require reconnect. Earlier intermittent failures are retained for follow-up. |
 | Existing task chats | **20 blocked; T12 verified; T20 blocked** | 2026-10-11: resumed only existing T01–T21 chats, no duplicates. T01–T11 and T13–T21 report missing, unregistered, archived, or foreign-owned assigned checkouts; no source changes or current tests from those tasks. T09’s corrected thread ID also confirmed its checkout missing. T12 source acceptance is verified from its clean checkout at `a7d42908` (138 passed + 20 subtests; T02 case 1 passed); no new changes. T20’s `ec50` path is not a Git checkout and its candidate `3eb4341f` is unverified. No substitutes used; recovery needed before these task scopes can resume. |
 
 Details are recorded in the master plan's “Revalidation — 2026-10-11 continuation” section. This matrix does not claim every worktree or release criterion complete.
