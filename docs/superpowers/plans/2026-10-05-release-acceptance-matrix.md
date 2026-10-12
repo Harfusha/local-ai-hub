@@ -2,6 +2,83 @@
 
 ## Current master reconciliation - 2026-10-11
 
+### Follow-up full-suite result and remaining memory adoption — 2026-10-12
+
+- Frozen `4b176e25`, home `.venv` interpreter:
+  `python -B -m pytest -q --tb=short -r f --durations=10` — **7 failed,
+  6910 passed, 104 skipped, 23 subtests passed, two FutureWarnings**, 2624.64s.
+  Wrapper exit 1; final HEAD unchanged and checkout clean. Exact receipt/log:
+  `state/releases/4.0.0/followup-suite.json` and `followup-suite.stdout.log`.
+  No candidate installation or release acceptance follows this failed run.
+- Failed nodes: startup-lock owner-exit recovery; async client production-route
+  wait; hidden-group direct-parent PID; first MCP status real-child source
+  witness; real-child autostart supervisor PID; T09 completion
+  `[used-memory-requires-source-check]` HTTP timeout; T19 wheel-from-sdist smoke.
+  Their full names and tracebacks remain in the exact log, not hidden by counts.
+- Windows launcher/runtime mismatch is now reproduced in the lock and real
+  autostart fixtures. All four startup/security files retain production
+  identities/fences and existing deadlines; venv tests verify worker ancestry,
+  creation identities, source witness and owned Job tree exit. The direct-OS-
+  parent test uses the verified base interpreter, while real venv autostart
+  remains tested. Primary review caught shared `subprocess.Popen` monkeypatching
+  in the first patch; the final fixture uses a client-local proxy and regression
+  assertion without intercepting unrelated process launches.
+  `.venv/Scripts/python.exe -m pytest -q --tb=short
+  tests/test_client_startup_resilience.py
+  tests/test_shared_runtime_security_lifecycle.py
+  tests/test_t04_mcp_status_actual_hub_child.py
+  tests/test_t04_real_child_startup_acceptance.py`:
+  **158 passed, 1 skipped / 24.46s**, `req_9132a4411579`.
+- A residual intermediate test process was reported with a captured creation
+  identity. A guarded cleanup request stopped at identity validation before
+  any signal; subsequent read-only CIM found that PID absent. Closed as gone,
+  no retry/force-kill. The broker's `allowed=false` is classifier advice under
+  default `policy_blocking=false`, not proof a command was denied: its execution
+  ID/exit code show execution occurred. This agent-facing ambiguity needs
+  clarification; no production authorization bypass is established by the flag
+  alone. Effective dangerous-command guards were not changed.
+- T04/startup fixture owner GPT 6 Luna: investigate Windows `.venv` launcher
+  versus actual worker identities. Do not weaken production PID/lease fences,
+  cleanup assertions or deadlines. Older successful full runs used the global
+  interpreter; that environment difference is evidence, not a blanket cause.
+- T19 fixture owner GPT 6 Luna: `_inputs` rejected legitimate
+  `exclude docs/integration-*.md` in MANIFEST. Production exclusions remain
+  untouched. The helper now uses setuptools' ordered MANIFEST parsing;
+  private/public input, snapshot and built archive behavior are exercised.
+  `tests/test_t19_manifest_inputs.py tests/test_t19_packaged_sdk_smoke.py`:
+  **10 passed, 3 subtests / 11.84s**, `req_f0b9615117e9`. Actual offline
+  sdist/wheel/fresh-venv SDK proof passed, without live installation.
+- Primary HTTP triage: both failed HTTP cases passed isolated before edits
+  (**2 passed / 26.33s**, `req_5ac4f40bee3f`), so old failure causes remain
+  unconfirmed. T09 instantiated apps without any `app.close`; an immediate
+  pytest finalizer now owns cleanup even on setup/assertion failures. Both
+  fixtures disable unrelated model prewarm/preprocessing; fake-generation,
+  real HTTP/receipt/memory contracts and original 1s/5s request timeouts remain.
+  Failure diagnostics now retain the async response or metadata-only thread
+  stacks. Both complete files: **19 passed / 68.60s**, `req_06311ce54f68`.
+  This does not claim the old timeout's exact stack was observed.
+- **T05/T08 memory adoption remains review, primary owner.** A bounded source
+  audit, partly independently checked by primary, found: task-create/resume
+  attachment exists, but goal-specific relevance is not passed to ordinary
+  scoped lookup; negative-knowledge snapshot omits revision/expiry metadata;
+  next-checkpoint usage declaration is not enforced until completion; the
+  nominal 1s deadline is checked only after synchronous compile; 512-token
+  accounting excludes metadata envelope; coord uses status compaction without
+  protecting task/checkpoint memory context under budget pressure. Add real
+  blocking-backend and MCP wire adoption acceptance, not only mocked clocks or
+  HTTP assertions. Do not create a parallel memory system or alter T14 pack.
+- Global tenantless memory is deliberately shared by an existing test; clarify
+  shared global policy versus foreign tenant/repo records before changing it.
+  Manual ACTIVE records lacking receipts alone do not prove unsafe automatic
+  learning; inspect the confirmed post-task producer separately. Existing
+  source tests do not prove actual LLM cognition, only protocol enforcement.
+- Candidate wheel `candidate-4b176e25` was built/installed only in an isolated
+  temporary environment. Primary inspected its receipt: 120 files match the
+  commit archive, no suspect files, 6/12 and 8/16 live MCP schemas pass; full
+  status output contract passes against the existing old Hub. Keep it
+  uninstalled until candidate-wide verification succeeds. Local `v4.0.0`
+  remains the prior validated runtime; broad goal is not complete.
+
 ### Post-release owned implementation batch — 2026-10-12
 
 - `v4.0.0` remains the installed, fully validated local release. The following
