@@ -390,13 +390,15 @@ class AgentProjector:
             data.pop("workspace_cache", None)
 
         if self.strip_empty and task_kind != "artifact":
-            preserve_keys = None
+            # Explicit detail requests must distinguish an empty result from an
+            # omitted field. Earlier filters still decide which keys are safe.
+            preserve_keys = {"results", "files", "symbols", "active_tasks", *extra}
             telemetry_fields = {
                 "success", "window", "summary", "queue", "hotspots", "by_operation",
                 "error_fingerprints", "detail", "decision_grade",
             }
             if task_kind == "status" and telemetry_fields.issubset(data):
-                preserve_keys = {"results", "files", "symbols", *telemetry_fields}
+                preserve_keys = {"results", "files", "symbols", *telemetry_fields, *extra}
             data = self._clean_empty(data, preserve_keys=preserve_keys)
         return data
 

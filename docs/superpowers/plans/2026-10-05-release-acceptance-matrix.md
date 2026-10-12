@@ -8,6 +8,18 @@
 
 #### 2026-10-12 implementation-first continuation
 
+Private installed cold acceptance on `dea42c77` exposed a compact projection
+defect: `memory_find` with `extra_fields=["records"]` omitted an empty result
+for a same-root sibling task. Positive same-task reads had already returned
+their exact records. The harness correctly rejected absence as proof of
+isolation. AgentProjector now preserves explicitly requested empty fields
+through final empty-value cleaning, while existing filtering and response
+budgets remain in place. Both canonical prompts describe the distinction.
+Projector and MCP compact regressions pass with the affected transport file:
+**50 passed / 43.77s**, broker terminal fallback `req_ecdf7914967a`.
+The failed cold attempts establish no resource acceptance; fresh packaging,
+installed lifecycle/resource checks and a final whole suite remain required.
+
 Candidate `dc7a48b91630dd7083bce145e84389a054a6df9c` whole suite was
 intentionally aborted after one observed MCP autostart fixture failure and
 identification of a second fake wheel-startup process reaching the real Windows
