@@ -38,6 +38,16 @@
   `BrokenBarrierError` and an unclosed socket warning. No timeout inflation or
   warning suppression is accepted. Whole-suite and installed-live verification
   remain open; no new branch/worktree or deployment was created for these fixes.
+- RAG coalescing fixture repair reviewed and integrated from Popper: leader
+  setup runs synchronously and embedding waits until the follower actually
+  joins the real singleflight completion event. Both immediate and deferred
+  follower schedules retain shared-result equality, `coalesced=True`, one
+  embedding call, surfaced worker errors and bounded joins. No production
+  changes or longer timeout. Exact original combined-load delay is not proven.
+  Primary command `.venv/Scripts/python.exe -m pytest -q
+  tests/test_rag_fragment_cache.py --tb=short`: **29 passed / 17.83s**, exit zero,
+  `req_500846243b43`. Owner also reports negative controls detect a bypassed
+  follower flight; these are owner evidence, not independently rerun here.
 
 ### Interrupted broad run and relevance fixture repair — 2026-10-12
 
