@@ -21,7 +21,9 @@ def production_hub(tmp_path, monkeypatch):
     config.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = {server.server_address[1]}\n'
         f'state_dir = "{state_dir.as_posix()}"\n'
-        '[security]\napi_token = "t13-test-service-token"\n',
+        '[security]\napi_token = "t13-test-service-token"\n'
+        '[prewarm]\nenabled = false\n'
+        '[preprocessing]\nenabled = false\n',
         encoding="utf-8",
     )
     app = LocalAIApp(str(config))
@@ -99,7 +101,7 @@ def test_hub_client_async_job_methods_share_production_route(production_hub):
 
     assert submitted["job_id"] == "job-1"
     assert current["state"] == "running"
-    assert waited["state"] == "completed"
+    assert waited.get("state") == "completed", waited
     assert fetched["state"] == "completed"
     assert cancelled["state"] == "cancelled"
     assert [call[0] for call in calls] == ["submit", "status", "wait", "result", "cancel"]
