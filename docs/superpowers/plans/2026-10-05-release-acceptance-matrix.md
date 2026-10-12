@@ -8,7 +8,22 @@
 
 #### 2026-10-12 implementation-first continuation
 
-Latest terminal whole-suite receipt: `followup-suite-d2873fabde4b-1791805422985718700.json`,
+Subsequent frozen candidate `e6375b22162e563b215ed366bb89d8031166f9c3`
+finished **7108 passed, 1 failed, 105 skipped, 23 subtests / 2612.24s**;
+receipt `followup-suite-e6375b22162e-1791808756004776400.json`, unchanged clean
+candidate. All seven previous failures passed. The remaining task-memory test
+measured the entire task creation against a memory-only deadline. Phase timing
+showed lookup returning at 1.01s with its backend still blocked, followed by
+1.64s of durable work. A private profile attributed 0.589s of a separate 0.647s
+durable phase to SQLite execute calls; this does not justify weakening durability.
+The regression now checks the original 1.2s lookup bound, blocked-backend state,
+and persisted task memory, including a controlled slow commit. The complete
+affected module passed **19 tests / 15.27s**, `req_be0e81a6a6d4`, execution
+`7a0665487c874aa7b578d8dec974d0d0`; impact `req_c723bd22c6fa`.
+Final candidate full-suite acceptance, installed/live provenance and resource
+and model-quality measurements remain pending.
+
+Preceding terminal whole-suite receipt: `followup-suite-d2873fabde4b-1791805422985718700.json`,
 **7102 passed, 7 failed, 105 skipped, 23 subtests / 2765.46s**, exit one; exact
 candidate unchanged and clean throughout. Source/fixture repairs now synchronize
 the canonical policy generator and AGENTS with both prompts, assert truthful
