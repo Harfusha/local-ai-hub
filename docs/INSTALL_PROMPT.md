@@ -259,6 +259,7 @@ Local model policy: Model routing follows the active hardware profile and user o
 - Native fallback requires an explicit `terminal=true` and `retryable=false` result.
 - On `outcome_unknown` or `in_progress`, do independent work; never poll or repeat the identical operation.
 - Prefer `response_profile="minimal"`/`"compact"`; request only decision-grade fields.
+- Explicit `extra_fields` retains requested empty values (for example `records=[]`); absence of a field does not prove an empty result. Aggregate response budgets still apply.
 - Pass a stable `reuse_key` for repeated logical queries. Use `response_profile="delta"` when only changes are needed; unchanged calls return a pointer, not missing data.
 - Use the existing `local_ai_task(action="batch")` for independent local tasks; keep each item bounded and consume compact per-item results.
 - The Hub keeps a bounded metadata-only context ledger; inspect it only with an explicit cache/status request, never by replaying the whole session.

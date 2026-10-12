@@ -3,6 +3,46 @@ from __future__ import annotations
 from local_ai_hub.projection import AgentProjector
 
 
+def test_requested_empty_fields_survive_projection_without_restoring_other_noise():
+    projector = AgentProjector({})
+    for empty in ([], {}, "", None):
+        payload = {"success": True, "records": empty, "noise": [], "engine": "internal"}
+        projected = projector.project(payload, task_kind="status", extra_fields=["records"])
+        assert "records" in projected
+        assert projected["records"] == empty
+        assert "noise" not in projected
+        assert "records" not in projector.project(payload, task_kind="status")
+    assert "engine" not in projector.project(payload, task_kind="search", extra_fields=["records"])
+
+
+def test_requested_nested_empty_fields_survive_recursive_cleaning():
+    projected = AgentProjector({}).project(
+        {"results": [{"task_id": "sibling", "records": [], "noise": []}]},
+        task_kind="status", extra_fields=["records"],
+    )
+    assert projected["results"] == [{"task_id": "sibling", "records": []}]
+
+
+def test_mcp_compact_preserves_explicitly_requested_empty_memory_records():
+    import json
+    from local_ai_hub import mcp_server
+
+    token = mcp_server._CURRENT_RESPONSE_OPTIONS.set({
+        "tool": "local_ai_coord", "max_response_tokens": 2500,
+        "response_profile": "compact",
+    })
+    try:
+        result = mcp_server._compact(
+            {"success": True, "records": []}, "status", extra_fields=["records"],
+        )
+    finally:
+        mcp_server._CURRENT_RESPONSE_OPTIONS.reset(token)
+    wire = json.loads(json.dumps(result))
+    assert wire["success"] is True
+    assert wire["records"] == []
+    assert wire["response_budget"]["returned_tokens"] <= 2500
+
+
 def test_default_projection_strips_hashes_and_telemetry():
     projector = AgentProjector({})
     payload = {
