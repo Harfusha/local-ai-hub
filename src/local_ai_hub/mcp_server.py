@@ -1003,6 +1003,90 @@ def _reuse_state(key: str, value: Any) -> tuple[bool, Any]:
     return previous == digest, previous_value
 
 
+def _task_memory_audit_projection(value: Any) -> Any:
+    """Current usage receipt only; never expose history, prompts or source bodies."""
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        return {"invalid": True}
+    out: dict[str, Any] = {}
+    truncated = False
+    used = value.get("used_ids")
+    if isinstance(used, (list, tuple)):
+        out["used_ids"] = [item for item in used[:8] if isinstance(item, str)]
+        truncated = len(used) > 8
+    reason = value.get("not_used_reason")
+    if isinstance(reason, str):
+        out["not_used_reason"] = reason[:512]
+        truncated |= len(reason) > 512
+    if isinstance(value.get("source_checked"), bool):
+        out["source_checked"] = value["source_checked"]
+    checks = value.get("source_checks")
+    if isinstance(checks, dict):
+        out["source_checks"] = {}
+        for memory_id, check in list(checks.items())[:8]:
+            if not isinstance(memory_id, str):
+                continue
+            if isinstance(check, bool):
+                out["source_checks"][memory_id] = check
+            elif isinstance(check, dict):
+                projected = {key: check[key] for key in ("checked", "source_checked")
+                             if isinstance(check.get(key), bool)}
+                if isinstance(check.get("evidence_id"), str):
+                    projected["evidence_id"] = check["evidence_id"]
+                if isinstance(check.get("evidence_ids"), (list, tuple)):
+                    projected["evidence_ids"] = [item for item in check["evidence_ids"][:8]
+                                                 if isinstance(item, str)]
+                    truncated |= len(check["evidence_ids"]) > 8
+                out["source_checks"][memory_id] = projected
+        truncated |= len(checks) > 8
+    if truncated:
+        out["truncated"] = True
+    return out
+
+
+def _task_memory_projection(value: Any) -> dict[str, Any] | None:
+    """Carry the server-selected adoption bundle, not the whole task checkpoint."""
+    if not isinstance(value, dict):
+        return None
+    task = value.get("task")
+    checkpoint = task.get("checkpoint") if isinstance(task, dict) else None
+    state = checkpoint.get("state_data") if isinstance(checkpoint, dict) else None
+    memory = state.get("memory_context") if isinstance(state, dict) else None
+    if not isinstance(memory, dict):
+        return None
+    bundle = {key: copy.deepcopy(memory[key]) for key in (
+        "schema_version", "tenant_key", "instruction", "items", "warnings", "estimated_tokens",
+    ) if key in memory}
+    # The producer owns relevance and bounded content. Preserve its item
+    # wrappers and metadata exactly; do not rerank or truncate advice here.
+    projected_task = {key: copy.deepcopy(task[key]) for key in (
+        "task_id", "status", "owner", "lease_id", "created_at", "updated_at",
+        "heartbeat_expires_at", "stale",
+    ) if key in task}
+    if isinstance(task.get("context"), dict):
+        projected_task["context"] = {
+            key: task["context"][key] for key in (
+                "repository_id", "clone_id", "worktree_id", "branch", "task_id", "session_id",
+            ) if isinstance(task["context"].get(key), str)
+        }
+    projected_task["checkpoint"] = {"state_data": {"memory_context": bundle}}
+    if "memory_audit" in state:
+        projected_task["checkpoint"]["state_data"]["memory_audit"] = _task_memory_audit_projection(state["memory_audit"])
+    if "phase" in checkpoint:
+        projected_task["checkpoint"]["phase"] = checkpoint["phase"]
+    projected = {key: copy.deepcopy(value[key]) for key in (
+        "success", "status", "status_code", "error", "terminal", "retryable",
+        "context_id", "task_id", "request_id", "artifact_id", "evidence_ids",
+        "stale", "degraded", "partial", "supported", "unsupported", "outcome_unknown",
+        "request_not_sent", "in_progress", "cancelled", "timed_out", "fallback_used",
+    ) if key in value}
+    projected["task"] = projected_task
+    if "task_id" in projected_task:
+        projected["task_id"] = projected_task["task_id"]
+    return projected
+
+
 def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | None = None) -> Any:
     # Capture measured savings before the projector intentionally removes internal
     # token_saving/runtime fields. Private accounting metadata is stripped by the
@@ -1013,6 +1097,28 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
     rejection = _subminimum_budget_rejection(options)
     if rejection is not None:
         return rejection
+    memory_projection = (
+        _task_memory_projection(value) if task_kind == "task_memory" else None
+    )
+    if memory_projection is not None:
+        # The MCP boundary below owns the *wire* budget, including both text
+        # and structuredContent. Generic status/pointer clipping loses memory.
+        _requested, profile, reuse_key, enabled = _response_budget(task_kind, options)
+        if enabled:
+            repeated, previous = _reuse_state(reuse_key, memory_projection)
+            if profile == "delta" and previous is not None and not repeated:
+                current = memory_projection
+                memory_projection = delta_response(previous, current, result_id=result_id(current))
+                for key in ("task", "task_id", "context_id"):
+                    if key in current:
+                        memory_projection[key] = current[key]
+                # Carry the authoritative task once, also when memory did not
+                # change; a delta must not require a separate memory_find.
+                for section in ("changed", "added"):
+                    memory_projection["delta"][section].pop("task", None)
+            elif repeated:
+                memory_projection["reused"] = True
+        return _normalize_deterministic(account_projection(value, memory_projection))
     if options.get("tool") == "local_ai_command":
         value = _agent_output(value, "local_ai_command", {
             **options, "extra_fields": extra_fields,
@@ -3548,6 +3654,10 @@ def local_ai_coord(
         )
     requested_root = str(root or "").strip()
     root = _client_root(root)
+    if action.startswith("task_"):
+        rejection = _subminimum_budget_rejection({"max_response_tokens": max_response_tokens})
+        if rejection is not None:
+            return rejection
     if action == "task_sync":
         requested_sync_action = str(status or "").strip().lower()
         sync_act = requested_sync_action if requested_sync_action in {"export", "import"} else "export"
@@ -3581,9 +3691,10 @@ def local_ai_coord(
             task_kwargs["query"] = query
         if action == "task_create" and task:
             task_kwargs["task"] = task
-        return _compact(CLIENT.coord(
+        task_result = CLIENT.coord(
             **task_kwargs,
-        ), "status")
+        )
+        return _compact(task_result, "task_memory" if _task_memory_projection(task_result) is not None else "status")
     if action.startswith("memory_"):
         memory_kwargs = dict(
             action=action, record=record, record_id=record_id,
@@ -3895,6 +4006,92 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
             wire["isError"] = False
         return wire
 
+    def _mcp_task_memory_wire(value: dict[str, Any], requested: int) -> Any:
+        """Fit complete adoption advice or explicitly reject its delivery."""
+        original = json_tokens(_mcp_wire_view(value, structured=True))
+
+        def emit(payload: dict[str, Any], *, compact_error_text: bool = False,
+                 minimal_error_text: bool = False) -> Any:
+            payload = copy.deepcopy(payload)
+
+            def text_payload() -> dict[str, Any]:
+                if minimal_error_text:
+                    return {"success": False, "error": payload["error"]}
+                return ({key: item for key, item in payload.items() if key != "response_budget"}
+                        if compact_error_text else payload)
+
+            for _ in range(16):
+                text = json_dumps(text_payload())
+                wire = {"content": [{"type": "text", "text": text}],
+                        "structuredContent": payload, "isError": False}
+                returned = json_tokens(wire)
+                payload["response_budget"]["returned_tokens"] = returned
+                text = json_dumps(text_payload())
+                measured = json_tokens({"content": [{"type": "text", "text": text}],
+                                        "structuredContent": payload, "isError": False})
+                if measured == returned and measured <= requested:
+                    return [mcp_types.TextContent(type="text", text=text)], payload
+            return None
+
+        essential = {key: copy.deepcopy(value[key]) for key in (
+            "success", "status", "status_code", "error", "terminal", "retryable",
+            "context_id", "task_id", "stale", "degraded", "partial", "task",
+            "supported", "unsupported", "outcome_unknown", "request_not_sent",
+            "in_progress", "cancelled", "timed_out", "fallback_used",
+        ) if key in value}
+        task = essential["task"]
+        essential["task"] = {key: task[key] for key in ("task_id", "status", "checkpoint") if key in task}
+        # Strip only optional task metadata. The complete memory bundle remains
+        # byte-for-byte equivalent JSON in every successful candidate.
+        for source in (value, essential):
+            candidate = copy.deepcopy(source)
+            candidate["response_budget"] = {
+                "requested_tokens": requested, "original_tokens": original,
+                "returned_tokens": 0, "unit": "estimated_tokens",
+            }
+            fitted = emit(candidate)
+            if fitted is not None:
+                return fitted
+        rejection = {"success": False, "error": "budget_too_small", "terminal": True, "retryable": False}
+        if "task_id" in value:
+            rejection["task_id"] = value["task_id"]
+        elif "context_id" in value:
+            rejection["context_id"] = value["context_id"]
+        else:
+            rejection["result_id"] = result_id(value)
+        if value.get("success") is False:
+            if "status_code" in value:
+                rejection["status_code"] = value["status_code"]
+            if "error" in value:
+                rejection["source_error"] = str(value["error"])
+        # Unbounded external identifiers may themselves exceed the wire quota.
+        # In that case carry the existing content-addressed result identity,
+        # never a shortened task ID or a successful memory-free pointer.
+        compact_identity = {key: item for key, item in rejection.items() if key not in {"task_id", "context_id"}}
+        compact_identity["result_id"] = result_id(value)
+        identities = [rejection, compact_identity]
+        for identity in identities:
+            for source_error_chars in (500, 128, 64, 32, 8):
+                bounded_identity = dict(identity)
+                if "source_error" in bounded_identity:
+                    bounded_identity["source_error"] = bounded_identity["source_error"][:source_error_chars]
+                for metadata in (
+                    {"requested_tokens": requested, "returned_tokens": 0, "rejected": True, "unit": "estimated_tokens"},
+                    {"requested_tokens": requested, "returned_tokens": 0},
+                    {"returned_tokens": 0},
+                ):
+                    candidate = {**bounded_identity, "response_budget": metadata}
+                    fitted = emit(candidate, compact_error_text=True)
+                    if fitted is not None:
+                        return fitted
+                    # Structured error retains status, original failure and full
+                    # identity. A compact text error avoids duplicating these
+                    # fields when only 128 protocol tokens are available.
+                    fitted = emit(candidate, minimal_error_text=True)
+                    if fitted is not None:
+                        return fitted
+        raise ValueError("Task-memory budget cannot represent the rejection envelope")
+
     def _mcp_bounded_error(value: dict[str, Any], requested: int) -> Any:
         command_failure = value.get("success") is False and (
             "execution_id" in value or value.get("exit_code") not in (None, 0)
@@ -4000,6 +4197,12 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                 requested = explicit_limit
         if not enabled:
             return ([mcp_types.TextContent(type="text", text=json_dumps(value))], value)
+
+        if (name == "local_ai_coord" and str(arguments.get("action") or "").startswith("task_")
+                and _task_memory_projection(value) is not None):
+            memory_wire = _mcp_task_memory_wire(value, requested)
+            if memory_wire is not None:
+                return memory_wire
 
         if (
             isinstance(value, dict)
@@ -4200,7 +4403,13 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                 emitted_response = {"content": [{"type": "text", "text": text_value}]}
             else:
                 candidate_value = structured_value
-                emitted_response = _mcp_wire_view(candidate_value, structured=True)
+                if name == "local_ai_coord" and str(arguments.get("action") or "").startswith("task_"):
+                    emitted_response = {
+                        "content": [{"type": "text", "text": item.text} for item in contents],
+                        "structuredContent": candidate_value, "isError": False,
+                    }
+                else:
+                    emitted_response = _mcp_wire_view(candidate_value, structured=True)
             emitted_tokens = json_tokens(emitted_response)
             for item in pending_accounting:
                 measured = dict(item["measured"])
