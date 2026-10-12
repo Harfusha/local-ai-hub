@@ -315,12 +315,22 @@ class HubClient:
                 # Connect before marking the request as potentially written. Once sendall
                 # starts, an OSError may follow a partial write, so outcome is uncertain.
                 if conn.sock is None:
+                    # An absent loopback listener must not spend the response
+                    # budget on Windows' delayed connection refusal before
+                    # autostart can run. Reads retain the caller's deadline.
+                    response_timeout = conn.timeout
+                    conn.timeout = min(self.health_timeout, max(0.001, deadline - time.monotonic()))
                     try:
                         conn.connect()
                     except ConnectionRefusedError:
                         raise
                     except (OSError, http.client.HTTPException):
                         raise
+                    finally:
+                        conn.timeout = response_timeout
+                    settimeout = getattr(conn.sock, "settimeout", None)
+                    if callable(settimeout):
+                        settimeout(max(0.001, deadline - time.monotonic()))
                 request_send_started = True
                 return original_send(data)
 

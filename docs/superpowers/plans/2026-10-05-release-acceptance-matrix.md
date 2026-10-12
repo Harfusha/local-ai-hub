@@ -4383,3 +4383,24 @@ or lacks Git metadata. No agent used a substitute checkout.
 - The full run on `9fa78ae3` was stopped at 14% after this concrete cause was
   confirmed, before editing the fixture. It is not counted as acceptance.
   Final full-suite verification must run on the corrected committed tree.
+
+## 2026-10-13 cold-start connection budget
+
+- Frozen `6b85bdbecb6868c5285295870c73da50c678ddcb` whole suite completed:
+  **7165 passed, 1 failed, 105 skipped, 23 subtests passed**, 2962.63 seconds.
+  The only failure was the real T04 MCP cold-start fixture: status 503 after
+  14.0308 seconds. Candidate and clean working tree remained unchanged.
+- Retained supervisor metadata proves the owned daemon reached readiness;
+  this is not a source-provenance or cleanup failure. A bounded diagnostic of
+  the unchanged fixture passed in 9.1459 seconds and recorded 2.0158 seconds
+  spent before `ensure_server`, on the first absent-loopback connection.
+- Connection establishment now uses the smaller configured health timeout
+  and remaining request deadline; successful sockets regain the remaining
+  response deadline. Request-not-sent, cancellation and replay contracts stay
+  intact. The existing T04 startup/request/elapsed limits are unchanged.
+- Transport, startup, real cold-start and new real delayed-response tests:
+  **60 passed in 10.14 seconds**, broker receipt `req_f5046f01470a`.
+  This does not establish final whole-suite or installed-runtime acceptance.
+- A further complete suite is deferred while the observed adaptive-context
+  budget failure is investigated. Home still runs the previously verified
+  installed revision; no operator configuration or durable data was replaced.
