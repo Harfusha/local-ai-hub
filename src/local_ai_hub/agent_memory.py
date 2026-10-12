@@ -1677,6 +1677,7 @@ class MemoryStore:
             "quarantine_reason, provenance, created_at, updated_at, expires_at "
                 "FROM agent_memory_records WHERE sensitivity = 'normal' "
                 "AND status IN (?, ?) AND (expires_at IS NULL OR expires_at > ?) "
+                "AND (source != ? OR status = ?) "
             f"AND {scope_sql} "
             "AND (value IS NULL OR value = '' OR json_valid(value)) "
             "AND (evidence_ids IS NULL OR evidence_ids = '' OR "
@@ -1693,6 +1694,8 @@ class MemoryStore:
             MemoryStatus.ACTIVE.value,
             MemoryStatus.CONFIRMED.value,
             time.time(),
+            "consistency_guard",
+            MemoryStatus.CONFIRMED.value,
             *scope_params,
             *(kind.value for kind in MemoryKind),
         ]

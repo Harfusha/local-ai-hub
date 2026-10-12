@@ -41,6 +41,29 @@ def is_root_archive_path(relative: str | Path) -> bool:
         return True
     if len(parts) > 1 and parts[0] == "artifacts" and "-overlay-" in parts[1]:
         return True
+    if len(parts) > 1 and parts[0] == "artifacts":
+        artifact_name = parts[1]
+        if re.fullmatch(r"t\d+-.+", artifact_name) and (
+            parts[2:4] == ("src", "local_ai_hub")
+            or parts[2:3] in {("tests",), ("tools",)}
+        ):
+            return True
+        if re.match(r"t\d+-ast-check-", artifact_name):
+            return True
+        if re.fullmatch(
+            r"t\d+-root-current-.+(?:-preimage(?:\.[^/]*)?|-replay\.py|-memory-transition\.py)",
+            artifact_name,
+        ):
+            return True
+    if (
+        len(parts) >= 6
+        and parts[0] == ".validation"
+        and re.fullmatch(r"t\d+-.+", parts[1]) is not None
+        and parts[2] == "package-pytest"
+        and parts[3].startswith("test_")
+        and "generated" in parts[4:]
+    ):
+        return True
     root_name = parts[0].lstrip(".")
     return (
         "-root-overlay-" in parts[0]

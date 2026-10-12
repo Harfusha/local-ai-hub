@@ -90,26 +90,9 @@ def _code_index_initialization_lock(db_path: Path) -> Iterator[None]:
 
 
 def _root_archive_path_sql(path_expression: str = "path") -> str:
-    normalized_path_sql = f"lower(replace({path_expression}, char(92), '/'))"
-    root_path = f"substr({normalized_path_sql}, 1, instr({normalized_path_sql}, '/') - 1)"
-    return (
-        f"NOT ({normalized_path_sql} LIKE 'handoff/%' "
-        f"OR {normalized_path_sql} LIKE '.handoff/%' "
-        f"OR {normalized_path_sql} LIKE 'artifacts/handoff/%' "
-        f"OR {normalized_path_sql} GLOB 'artifacts/t[0-9]*-*overlay-*/*' "
-        f"OR {normalized_path_sql} LIKE '.merge-checks/%' "
-        f"OR {normalized_path_sql} LIKE '.sync-checks/%' "
-        f"OR (instr({normalized_path_sql}, '/') > 0 AND "
-        f"({root_path} GLOB '*-root-overlay-*' OR "
-        f"{root_path} GLOB '*-root-current-check-*' OR "
-        f"{root_path} GLOB 't[0-9]*-review-artifacts-*' OR "
-        f"{root_path} GLOB '.t[0-9]*-review-artifacts-*' OR "
-        f"{root_path} GLOB '*-root-current-overlay*' OR "
-        f"{root_path} GLOB 't[0-9]*-sync-checks' OR "
-        f"{root_path} GLOB '.t[0-9]*-sync-checks' OR "
-        f"{root_path} GLOB 't[0-9]*-main-preflight-overlay*' OR "
-        f"{root_path} GLOB '.t[0-9]*-main-preflight-overlay*')))"
-    )
+    # Apply the inventory policy to legacy rows before SQL LIMIT as well.
+    # One predicate keeps scanning and persisted-index retrieval in agreement.
+    return f"NOT hub_root_archive_path({path_expression})"
 
 
 MAX_IMPACT_DEPENDENTS = 100_000
@@ -1019,6 +1002,11 @@ class CodeIndex:
 
     def _connect(self) -> sqlite3.Connection:
         con = connect_sqlite(self.db_path, timeout_seconds=5.0, row_factory=sqlite3.Row)
+        try:
+            con.create_function("hub_root_archive_path", 1, is_root_archive_path, deterministic=True)
+        except Exception:
+            con.close()
+            raise
         try:
             con.execute("PRAGMA cache_size=-16000")
             con.execute("PRAGMA mmap_size=134217728")
@@ -2277,7 +2265,7 @@ class CodeIndex:
         if not pat:
             return {"success": False, "error": "name_path_pattern required"}
 
-        where = ["root = ?"]
+        where = ["root = ?", _root_archive_path_sql("path")]
         args: list[Any] = [resolved_root]
 
         if relative_path:
@@ -2353,7 +2341,7 @@ class CodeIndex:
             if depth > 0 and kind in {"class", "interface", "struct"}:
                 with self._lock, closing(self._connect()) as con:
                     child_rows = con.execute(
-                        "SELECT path, name, kind, line, end_line, name_path, signature FROM symbols WHERE root=? AND path=? AND container=? LIMIT 50",
+                        f"SELECT path, name, kind, line, end_line, name_path, signature FROM symbols WHERE root=? AND path=? AND container=? AND {_root_archive_path_sql('path')} LIMIT 50",
                         (resolved_root, p, name),
                     ).fetchall()
                     item["children"] = [
@@ -2387,7 +2375,7 @@ class CodeIndex:
 
     def find_implementations(self, root: str, symbol_name: str, path: str | None = None) -> dict[str, Any]:
         resolved_root = canonical_root(root)
-        where = "root=? AND (lower(dst)=lower(?) OR dst LIKE ?) AND kind IN ('inherits', 'implements')"
+        where = f"root=? AND {_root_archive_path_sql('path')} AND (lower(dst)=lower(?) OR dst LIKE ?) AND kind IN ('inherits', 'implements')"
         args: list[Any] = [resolved_root, symbol_name, f"%{symbol_name}%"]
         if path:
             where += " AND path=?"
@@ -2420,7 +2408,7 @@ class CodeIndex:
 
     def find_referencing_symbols(self, root: str, symbol_name: str, path: str | None = None) -> dict[str, Any]:
         resolved_root = canonical_root(root)
-        where = "root=? AND (lower(name)=lower(?) OR name LIKE ?)"
+        where = f"root=? AND {_root_archive_path_sql('path')} AND (lower(name)=lower(?) OR name LIKE ?)"
         args: list[Any] = [resolved_root, symbol_name, f"%{symbol_name}%"]
         if path:
             where += " AND path=?"
@@ -2449,7 +2437,7 @@ class CodeIndex:
 
         with self._lock, closing(self._connect()) as con:
             rows = con.execute(
-                "SELECT name, kind, line, end_line, container, name_path, signature, access FROM symbols WHERE root=? AND path=? ORDER BY line",
+                f"SELECT name, kind, line, end_line, container, name_path, signature, access FROM symbols WHERE root=? AND path=? AND {_root_archive_path_sql('path')} ORDER BY line",
                 (resolved_root, norm_path),
             ).fetchall()
 
@@ -2541,20 +2529,20 @@ class CodeIndex:
         try:
             with self._lock, closing(self._connect()) as con:
                 file_row = con.execute(
-                    "SELECT content_hash,language,updated_at FROM files WHERE root=? AND path=?",
+                    f"SELECT content_hash,language,updated_at FROM files WHERE root=? AND path=? AND {_root_archive_path_sql('path')}",
                     (resolved_root, norm_path),
                 ).fetchone()
                 symbols = [dict(r) for r in con.execute(
-                    "SELECT name,kind,line,end_line,container,name_path,signature,access,docstring "
-                    "FROM symbols WHERE root=? AND path=? ORDER BY line LIMIT ?",
+                    f"SELECT name,kind,line,end_line,container,name_path,signature,access,docstring "
+                    f"FROM symbols WHERE root=? AND path=? AND {_root_archive_path_sql('path')} ORDER BY line LIMIT ?",
                     (resolved_root, norm_path, limit),
                 ).fetchall()]
                 refs = [dict(r) for r in con.execute(
-                    "SELECT name,line,kind FROM refs WHERE root=? AND path=? ORDER BY line LIMIT ?",
+                    f"SELECT name,line,kind FROM refs WHERE root=? AND path=? AND {_root_archive_path_sql('path')} ORDER BY line LIMIT ?",
                     (resolved_root, norm_path, limit),
                 ).fetchall()]
                 edges = [dict(r) for r in con.execute(
-                    "SELECT src,dst,kind,line FROM edges WHERE root=? AND path=? ORDER BY line LIMIT ?",
+                    f"SELECT src,dst,kind,line FROM edges WHERE root=? AND path=? AND {_root_archive_path_sql('path')} ORDER BY line LIMIT ?",
                     (resolved_root, norm_path, limit),
                 ).fetchall()]
         except sqlite3.DatabaseError as exc:
@@ -2608,19 +2596,19 @@ class CodeIndex:
         try:
             with self._lock, closing(self._connect()) as con:
                 for row in con.execute(
-                    f"SELECT path,name,kind FROM refs WHERE root=? AND ({clauses}) LIMIT ?",
+                    f"SELECT path,name,kind FROM refs WHERE root=? AND {_root_archive_path_sql('path')} AND ({clauses}) LIMIT ?",
                     (*ref_args, row_cap),
                 ).fetchall():
                     path = self._norm_rel(str(row["path"]))
                     scores[path] = scores.get(path, 0.0) + (4.0 if str(row["name"]).lower() in terms else 2.0)
                 for row in con.execute(
-                    f"SELECT path,src,dst,kind FROM edges WHERE root=? AND ({edge_clauses}) LIMIT ?",
+                    f"SELECT path,src,dst,kind FROM edges WHERE root=? AND {_root_archive_path_sql('path')} AND ({edge_clauses}) LIMIT ?",
                     (*edge_args, row_cap),
                 ).fetchall():
                     path = self._norm_rel(str(row["path"]))
                     scores[path] = scores.get(path, 0.0) + (3.0 if str(row["kind"]) in {"imports", "inherits"} else 1.5)
                 for row in con.execute(
-                    f"SELECT path FROM files WHERE root=? AND ({file_clauses}) LIMIT ?",
+                    f"SELECT path FROM files WHERE root=? AND {_root_archive_path_sql('path')} AND ({file_clauses}) LIMIT ?",
                     (*file_args, row_cap),
                 ).fetchall():
                     path = self._norm_rel(str(row["path"]))
@@ -2697,25 +2685,25 @@ class CodeIndex:
                     chunk = changed[offset:offset + 400]
                     placeholders = ",".join("?" for _ in chunk)
                     indexed_rows.extend(con.execute(
-                        f"SELECT path FROM files WHERE root=? AND path IN ({placeholders})",
+                        f"SELECT path FROM files WHERE root=? AND {_root_archive_path_sql('path')} AND path IN ({placeholders})",
                         (resolved_root, *chunk),
                     ).fetchall())
                     if len(symbol_rows) < max_symbols:
                         remaining = max_symbols - len(symbol_rows)
                         fetched_symbols = con.execute(
-                            f"SELECT path,name,kind,line,name_path FROM symbols WHERE root=? AND path IN ({placeholders}) ORDER BY path,line LIMIT ?",
+                            f"SELECT path,name,kind,line,name_path FROM symbols WHERE root=? AND {_root_archive_path_sql('path')} AND path IN ({placeholders}) ORDER BY path,line LIMIT ?",
                             (resolved_root, *chunk, remaining),
                         ).fetchall()
                         if len(fetched_symbols) == remaining:
                             has_more_symbols = con.execute(
-                                f"SELECT 1 FROM symbols WHERE root=? AND path IN ({placeholders}) ORDER BY path,line LIMIT 1 OFFSET ?",
+                                f"SELECT 1 FROM symbols WHERE root=? AND {_root_archive_path_sql('path')} AND path IN ({placeholders}) ORDER BY path,line LIMIT 1 OFFSET ?",
                                 (resolved_root, *chunk, remaining),
                             ).fetchone()
                             symbols_truncated = has_more_symbols is not None
                         symbol_rows.extend(fetched_symbols)
                     elif not symbols_truncated:
                         later_symbol = con.execute(
-                            f"SELECT 1 FROM symbols WHERE root=? AND path IN ({placeholders}) LIMIT 1",
+                            f"SELECT 1 FROM symbols WHERE root=? AND {_root_archive_path_sql('path')} AND path IN ({placeholders}) LIMIT 1",
                             (resolved_root, *chunk),
                         ).fetchone()
                         if later_symbol is not None:
@@ -2733,7 +2721,7 @@ class CodeIndex:
                 if names:
                     name_placeholders = ",".join("?" for _ in names)
                     ref_rows = con.execute(
-                        f"SELECT path,name,COUNT(*) AS mentions FROM refs WHERE root=? AND name IN ({name_placeholders}) GROUP BY path,name LIMIT ?",
+                        f"SELECT path,name,COUNT(*) AS mentions FROM refs WHERE root=? AND {_root_archive_path_sql('path')} AND name IN ({name_placeholders}) GROUP BY path,name LIMIT ?",
                         (resolved_root, *names, dependent_scan_limit + 1),
                     ).fetchall()
                     if len(ref_rows) > dependent_scan_limit:
@@ -2748,12 +2736,12 @@ class CodeIndex:
                             item["symbols"].append(name)
                         item["mentions"] += int(r["mentions"] or 0)
                     edge_rows = con.execute(
-                        f"SELECT path,dst,kind FROM edges WHERE root=? AND dst IN ({name_placeholders}) LIMIT ?",
+                        f"SELECT path,dst,kind FROM edges WHERE root=? AND {_root_archive_path_sql('path')} AND dst IN ({name_placeholders}) LIMIT ?",
                         (resolved_root, *names, dependent_scan_limit),
                     ).fetchall()
                     if len(edge_rows) == dependent_scan_limit:
                         has_more_edges = con.execute(
-                            f"SELECT 1 FROM edges WHERE root=? AND dst IN ({name_placeholders}) LIMIT 1 OFFSET ?",
+                            f"SELECT 1 FROM edges WHERE root=? AND {_root_archive_path_sql('path')} AND dst IN ({name_placeholders}) LIMIT 1 OFFSET ?",
                             (resolved_root, *names, dependent_scan_limit),
                         ).fetchone()
                         dependent_source_truncated = has_more_edges is not None
@@ -2771,7 +2759,7 @@ class CodeIndex:
                 # references alone miss tests of intermediate modules when a
                 # shared module changes (shared -> core -> app -> tests).
                 import_rows = con.execute(
-                    "SELECT path,dst FROM edges WHERE root=? AND kind='imports' LIMIT ?",
+                    f"SELECT path,dst FROM edges WHERE root=? AND {_root_archive_path_sql('path')} AND kind='imports' LIMIT ?",
                     (resolved_root, dependent_scan_limit + 1),
                 ).fetchall()
                 if len(import_rows) > dependent_scan_limit:
@@ -2858,10 +2846,10 @@ class CodeIndex:
                                    END) AS has_noncanonical_path
                             FROM (
                                 SELECT path FROM refs
-                                WHERE root=? AND name IN ({name_placeholders})
+                                WHERE root=? AND {_root_archive_path_sql('path')} AND name IN ({name_placeholders})
                                 UNION
                                 SELECT path FROM edges
-                                WHERE root=? AND dst IN ({name_placeholders})
+                                WHERE root=? AND {_root_archive_path_sql('path')} AND dst IN ({name_placeholders})
                             ) AS candidate_paths
                             WHERE path NOT IN ({changed_placeholders})
                             """,
@@ -2880,9 +2868,9 @@ class CodeIndex:
                             raw_candidate_row = con.execute(
                                 f"""
                                 SELECT COUNT(*) FROM (
-                                    SELECT path FROM refs WHERE root=? AND name IN ({name_placeholders})
+                                    SELECT path FROM refs WHERE root=? AND {_root_archive_path_sql('path')} AND name IN ({name_placeholders})
                                     UNION
-                                    SELECT path FROM edges WHERE root=? AND dst IN ({name_placeholders})
+                                    SELECT path FROM edges WHERE root=? AND {_root_archive_path_sql('path')} AND dst IN ({name_placeholders})
                                 ) AS candidate_paths
                                 WHERE path NOT IN ({changed_placeholders})
                                 """,
@@ -2902,10 +2890,10 @@ class CodeIndex:
                             f"""
                             SELECT COUNT(*) FROM (
                                 SELECT trim(replace(path, char(92), '/'), '/') AS normalized_path
-                                FROM refs WHERE root=? AND name IN ({name_placeholders})
+                                FROM refs WHERE root=? AND {_root_archive_path_sql('path')} AND name IN ({name_placeholders})
                                 UNION
                                 SELECT trim(replace(path, char(92), '/'), '/') AS normalized_path
-                                FROM edges WHERE root=? AND dst IN ({name_placeholders})
+                                FROM edges WHERE root=? AND {_root_archive_path_sql('path')} AND dst IN ({name_placeholders})
                             )
                             WHERE normalized_path NOT IN ({changed_placeholders})
                             """,
@@ -2923,7 +2911,7 @@ class CodeIndex:
 
                 likely_dependents = sorted(dependent_scores.values(), key=lambda x: (-int(x["mentions"]), str(x["path"])))[:max_dependents]
                 indexed_test_rows = con.execute(
-                    "SELECT path FROM files WHERE root=? AND (lower(path) LIKE '%test%' OR lower(path) LIKE '%spec%') LIMIT 501",
+                    f"SELECT path FROM files WHERE root=? AND {_root_archive_path_sql('path')} AND (lower(path) LIKE '%test%' OR lower(path) LIKE '%spec%') LIMIT 501",
                     (resolved_root,),
                 ).fetchall()
                 indexed_tests_truncated = len(indexed_test_rows) > 500
@@ -3041,6 +3029,7 @@ class CodeIndex:
                 SELECT s.path, s.name, s.kind, s.line, s.end_line, s.container, s.name_path, s.access
                 FROM symbols s
                 LEFT JOIN refs r ON s.root = r.root AND s.name = r.name
+                    AND {_root_archive_path_sql("r.path")}
                 WHERE s.root = ?
                   AND {_root_archive_path_sql("s.path")}
                   AND r.name IS NULL
@@ -3113,8 +3102,9 @@ class CodeIndex:
         try:
             with closing(self._connect()) as con:
                 rows = con.execute(
-                    """SELECT src, dst, kind, path, line FROM edges
+                    f"""SELECT src, dst, kind, path, line FROM edges
                        WHERE root=? AND kind='calls'
+                         AND {_root_archive_path_sql("path")}
                          AND (dst=? OR dst LIKE ? ESCAPE '!' OR dst LIKE ? ESCAPE '!')
                        ORDER BY path, line LIMIT ?""",
                     (resolved, sym, f"%/{escaped_sym}", f"%::{escaped_sym}", result_limit + 1),
@@ -3161,8 +3151,9 @@ class CodeIndex:
         try:
             with closing(self._connect()) as con:
                 rows = con.execute(
-                    """SELECT src, dst, kind, path, line FROM edges
+                    f"""SELECT src, dst, kind, path, line FROM edges
                        WHERE root=? AND kind='calls'
+                         AND {_root_archive_path_sql("path")}
                          AND (src=? OR src LIKE ? ESCAPE '!' OR src LIKE ? ESCAPE '!')
                        ORDER BY path, line LIMIT ?""",
                     (resolved, sym, f"%/{escaped_sym}", f"%::{escaped_sym}", result_limit + 1),

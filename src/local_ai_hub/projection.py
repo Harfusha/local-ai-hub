@@ -290,15 +290,29 @@ class AgentProjector:
         if isinstance(data.get("text"), str):
             data["text"] = _dense_text(data["text"], max_text)
         if isinstance(data.get("summary"), str):
-            data["summary"] = _dense_text(data["summary"], min(max_text, 1000))
+            summary_has_artifact = task_kind != "command" or bool(data.get("output_artifact_id"))
+            data["summary"] = _dense_text(
+                data["summary"], min(max_text, 1000), artifact_backed=summary_has_artifact,
+            )
 
-        # Raw command streams are intentionally tiny. Full content is artifact-backed.
-        has_artifact = bool(data.get("artifact_id"))
+        # Raw command streams are intentionally tiny. A full-log artifact is optional.
+        has_output_artifact = bool(data.get("output_artifact_id"))
         stream_limit = max(160, min(650, max_text // 3))
         if isinstance(data.get("stdout"), str):
-            data["stdout"] = _dense_text(data["stdout"], stream_limit, artifact_backed=has_artifact)
+            normalized_stdout = re.sub(r"\n{3,}", "\n\n", data["stdout"].strip())
+            if len(normalized_stdout) > stream_limit:
+                data["stdout"] = _dense_text(normalized_stdout, stream_limit, artifact_backed=has_output_artifact)
+                data["output_truncated"] = True
+            else:
+                data["stdout"] = normalized_stdout
         if isinstance(data.get("stderr"), str) and len(data["stderr"]) > stream_limit:
-            data["stderr"] = "[…head omitted…]\n" + data["stderr"][-stream_limit:]
+            normalized_stderr = re.sub(r"\n{3,}", "\n\n", data["stderr"].strip())
+            if len(normalized_stderr) > stream_limit:
+                marker = "[…head omitted; use artifact…]" if has_output_artifact else "[…head omitted…]"
+                data["stderr"] = marker + "\n" + normalized_stderr[-stream_limit:]
+                data["output_truncated"] = True
+            else:
+                data["stderr"] = normalized_stderr
 
         max_ev = max(1, int(p.get("max_evidence", 8)))
         for container in (data, data.get("repo_context") if isinstance(data.get("repo_context"), dict) else None):

@@ -2788,6 +2788,41 @@ Read-only owner audits completed for T01–T21. Clean master checkouts are alrea
 
 ## Current master reconciliation — 2026-10-11
 
+### Current continuation — 2026-10-12, implementation before validation
+
+Primary chat `01a12fae-925c-7ed2-a351-e41358c4be3f` is the sole integrator by
+explicit user choice; the duplicate release chat stopped its edits and tests.
+The user requested an active goal for complete delivery and explicitly deferred
+all tests until the remaining implementation and improvements are finished.
+The suite on `6cd9422e` was interrupted around 14%; it is not acceptance.
+Earlier receipts below remain historical and cannot close this candidate.
+
+- Integrated command, vision and repository-analysis HTTP extractions are
+  committed at `6cd9422e`; targeted receipts are in the release matrix.
+- Current implementation adds context eligibility filtering for unconfirmed
+  legacy `consistency_guard` memories without deleting stored records, and
+  excludes concrete validation/source snapshots from both inventory and legacy
+  indexed rows before candidate limits using one shared archive predicate.
+- T26 now requires explicit opt-in for repository-derived idle diagnostic
+  commands, rejects Windows batch executables, reuses bounded process cleanup,
+  and preserves an incomplete phase when cleanup cannot be verified. Both
+  bootstrap prompts describe the changed default and trust boundary.
+- Command output must describe full-log artifact availability truthfully;
+  diagnostic-only preview artifacts cannot stand in for retained stdout/stderr.
+- Invalid cached JSON cards and invalid UTF-8 now degrade independently;
+  readable budget rejection errors preserve original outcome flags.
+- Source review is closed. All new regressions remain unexecuted at this
+  checkpoint; targeted verification follows. Cold acceptance preparation covers
+  owned crash/restart/stale records and actual worktree scope for serial execution.
+
+Remaining acceptance follows the existing release matrix: finish source review
+and integration first; then targeted regressions and the exact final-candidate
+whole suite, release/package checks, isolated installation, real cold client and
+resource measurements, managed deployment and live dashboard/API/MCP provenance.
+Real-model quality and any unexecuted isolation/recovery criteria remain open;
+configuration, source inspection or historical passes cannot substitute for them.
+Do not publish or clean unrelated worktrees on partial evidence.
+
 ### Revalidation — 2026-10-11 continuation
 
 - Current root is `master` at `85c172ce`; tracked and untracked root changes before this plan-only update: **0 / 0**. Current inventory: **65 registered worktrees, 153 local branches, 0 stashes**. This root summary does **not** prove each worktree is clean or synchronized; do not infer that from the counts.
