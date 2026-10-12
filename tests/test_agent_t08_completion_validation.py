@@ -17,7 +17,7 @@ from local_ai_hub.agent_tasks import (
 from local_ai_hub.agent_verification import VerificationReceipt, VerificationStore
 
 
-def _task_with_memory(tmp_path, task_id: str, monkeypatch):
+def _task_with_memory(tmp_path, task_id: str, monkeypatch, *, audited: bool = True):
     state = AgentStateStore(tmp_path / "agent_state.sqlite3")
     tasks = TaskStore(state)
     artifacts = ArtifactStore(tmp_path / "artifacts")
@@ -38,12 +38,29 @@ def _task_with_memory(tmp_path, task_id: str, monkeypatch):
         task_id=task_id,
         actor="test",
     )
-    tasks.checkpoint(
-        task.task_id,
-        TaskCheckpoint(state_data={"repository_revision": "rev-1", "mutation_generation": 0}),
-        actor="test",
-        idempotency_key=f"{task_id}-receipt-context",
-    )
+    state_data = {"repository_revision": "rev-1", "mutation_generation": 0}
+    if audited:
+        state_data["memory_audit"] = {"used_ids": ["mem-1"]}
+    checkpoint = TaskCheckpoint(state_data=state_data)
+    if audited:
+        tasks.checkpoint(
+            task.task_id, checkpoint, actor="test",
+            idempotency_key=f"{task_id}-receipt-context",
+        )
+    else:
+        before = tasks.get(task.task_id)
+        before_events = state.events(f"task:{task.task_id}")
+        with pytest.raises(CompletionGateError, match="requires checkpoint memory_audit"):
+            tasks.checkpoint(task.task_id, checkpoint, actor="test")
+        assert tasks.get(task.task_id) == before
+        assert state.events(f"task:{task.task_id}") == before_events
+        # Seed pre-gate stored state only; restore enforcement before completion.
+        with monkeypatch.context() as legacy_fixture:
+            legacy_fixture.setattr(tasks, "_validate_memory_audit", lambda _task: None)
+            tasks.checkpoint(
+                task.task_id, checkpoint, actor="test",
+                idempotency_key=f"{task_id}-receipt-context",
+            )
     command_id = f"cmd-{task_id}"
     receipt_owner = task.owner
     evidence_id = "tests-evidence"
@@ -87,7 +104,7 @@ def test_validate_completion_rejects_missing_memory_audit_without_transition(
     tmp_path, monkeypatch
 ):
     state, tasks, task = _task_with_memory(
-        tmp_path, "validate-memory-audit", monkeypatch
+        tmp_path, "validate-memory-audit", monkeypatch, audited=False
     )
     before = tasks.get(task.task_id)
     before_events = state.events(f"task:{task.task_id}")
