@@ -8,6 +8,26 @@
 
 #### 2026-10-12 implementation-first continuation
 
+Frozen `73b828a6` completed **2 failed, 7160 passed, 105 skipped,
+23 subtests, 2 warnings / 3004.74s**, with clean unchanged source. Both
+failures were the synthetic T03 eight-client fixture's ready assertions;
+prepared clients, no-start-before-gate, one start request, one supervisor
+authority, successful child exits and stale ownership cleanup all passed.
+Retained file timestamps prove readiness was published 2.786s and 2.628s
+after the start barrier, beyond the fixture's configured two-second client
+budget. Followers correctly returned not-ready; this was not duplicate startup.
+
+The fixture now declares a ten-second readiness budget and consistent bounded
+preparation, owner/follower and outer process windows, and adds an explicit
+2.5-second authority-preparation delay for both eight and thirty clients.
+Every original singleton, pre-barrier, readiness, marker cleanup and OS identity
+assertion remains. Production startup deadlines and defaults are unchanged.
+Affected authority/startup/tenant/current-root checks pass **41 passed,
+1 platform skip / 27.11s** (`req_3be95e57f6c5`). Real installed 1/10/30
+auto-tuned clients and crash/restart previously passed on this exact unchanged
+production payload. A fresh committed complete green run remains required;
+the failed whole receipt is not acceptance.
+
 Frozen `4c0e9667` completed **7159 passed, 105 skipped, 23 subtests,
 2 Torch deprecation warnings / 2612.98s** with clean unchanged source.
 Release checks for the installed working checkout, compileall, exact wheel
