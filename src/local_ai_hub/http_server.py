@@ -1273,9 +1273,15 @@ def _response_phase_latency(data: Any) -> dict[str, float]:
 
 
 @contextmanager
-def _command_peer_cancellation(connection: socket.socket):
+def _command_peer_cancellation(
+    connection: socket.socket | None, request_cancel_event: threading.Event | None = None,
+):
     """Observe EOF without consuming bytes or changing the request socket."""
-    cancelled = threading.Event()
+    cancelled = request_cancel_event if request_cancel_event is not None else threading.Event()
+    if not isinstance(connection, socket.socket):
+        # Embedded requests have their own lifetime event, not a TCP peer.
+        yield cancelled
+        return
     stopped = threading.Event()
 
     def watch() -> None:
@@ -7889,7 +7895,9 @@ class Handler(BaseHTTPRequestHandler):
                 )); return
             if path == "/api/command":
                 if payload.get("action", "run") == "run":
-                    with _command_peer_cancellation(self.connection) as request_cancel_event:
+                    with _command_peer_cancellation(
+                        getattr(self, "connection", None), getattr(self, "_request_cancel_event", None),
+                    ) as request_cancel_event:
                         result = APP.services.command(payload, tenant, request_cancel_event=request_cancel_event)
                 else:
                     result = APP.services.command(payload, tenant)

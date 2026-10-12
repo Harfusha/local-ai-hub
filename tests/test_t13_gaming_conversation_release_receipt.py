@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import threading
+import sys
+import traceback
 
 import pytest
 
@@ -104,7 +106,12 @@ def test_gaming_release_receipt_includes_conversation_cancelled_before_snapshot(
     continuation.join(timeout=3.0)
 
     assert not mode_change.is_alive()
-    assert not continuation.is_alive()
+    pending_frame = sys._current_frames().get(continuation.ident) if continuation.is_alive() else None
+    assert not continuation.is_alive(), {
+        "worker_exited": worker_exited.is_set(),
+        "mode_completed": not mode_change.is_alive(),
+        "continuation_stack": traceback.format_stack(pending_frame)[-8:] if pending_frame else [],
+    }
     mode_result = mode_results[0]
     assert results[0]["success"] is False
     assert results[0]["cancelled"] is True

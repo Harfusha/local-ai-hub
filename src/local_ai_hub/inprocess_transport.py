@@ -191,6 +191,7 @@ class InProcessTransport:
         handler.server = self._admission
         handler.request = conn
         handler.connection = conn
+        handler._request_cancel_event = cancel_before_dispatch
         host_value = f"127.0.0.1:{int(server_cfg.get('port', 11435))}"
         handler.client_address = ("127.0.0.1", 0)
         handler.headers = Message()
@@ -290,8 +291,9 @@ class InProcessTransport:
             if cancel_event is not None and cancel_event.is_set():
                 with dispatch_lock:
                     was_dispatched = dispatched.is_set()
-                    if not was_dispatched:
-                        cancel_before_dispatch.set()
+                    # The same private event rejects undispatched work and
+                    # cancels this request's owning command after dispatch.
+                    cancel_before_dispatch.set()
                 raise InProcessTransportFailure(
                     "in-process request cancelled",
                     request_not_sent=not was_dispatched,
@@ -301,8 +303,7 @@ class InProcessTransport:
             if remaining <= 0:
                 with dispatch_lock:
                     was_dispatched = dispatched.is_set()
-                    if not was_dispatched:
-                        cancel_before_dispatch.set()
+                    cancel_before_dispatch.set()
                 if was_dispatched:
                     raise socket.timeout("in-process request timed out after dispatch")
                 raise InProcessTransportFailure("in-process request timed out before dispatch")

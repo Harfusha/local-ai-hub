@@ -1715,7 +1715,8 @@ def test_live_client_does_not_journal_typed_unknown_command_as_success(tmp_path,
     }
     dispatches: list[dict[str, Any]] = []
 
-    def command(value: dict[str, Any], _tenant: str) -> dict[str, Any]:
+    def command(value: dict[str, Any], _tenant: str, *, request_cancel_event=None) -> dict[str, Any]:
+        assert isinstance(request_cancel_event, threading.Event)
         dispatches.append(dict(value))
         return dict(uncertain)
 

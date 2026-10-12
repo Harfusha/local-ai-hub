@@ -162,10 +162,10 @@ def test_registered_search_path_hints_use_candidate_worktree_config(
     original_open = client._pooled_open
     original_validate = project_config.validate_path_hint
 
-    def capture_open(method, path, body, headers, timeout):
+    def capture_open(method, path, body, headers, timeout, *, cancel_event=None):
         if path == "/api/search" and body is not None:
             wire_payloads.append(json.loads(body.decode("utf-8")))
-        return original_open(method, path, body, headers, timeout)
+        return original_open(method, path, body, headers, timeout, cancel_event=cancel_event)
 
     def capture_validate(root, hint, **kwargs):
         resolved = original_validate(root, hint, **kwargs)
