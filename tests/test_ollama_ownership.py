@@ -6,40 +6,18 @@ import pytest
 
 
 @pytest.mark.parametrize("initial_online", [True, False])
-def test_ensure_running_takes_over_local_external_ollama(tmp_path: Path, monkeypatch, initial_online: bool):
-    import local_ai_hub.ollama as ollama_module
+def test_ensure_running_borrows_online_or_starts_owned_ollama(tmp_path: Path, monkeypatch, initial_online: bool):
+    import local_ai_hub.ollama as module
     from local_ai_hub.ollama import OllamaRuntime
 
-    runtime = OllamaRuntime(
-        {
-            "server": {
-                "state_dir": str(tmp_path),
-                "ollama_url": "http://127.0.0.1:11434",
-                "request_timeout_seconds": 0.1,
-            },
-            "headless": {"autostart_ollama": True, "manage_ollama": True},
-            "llama_cpp": {"fallback_to_ollama": True},
-            "ollama": {"enabled": True, "startup_timeout_seconds": 0.2},
-        }
-    )
-    state = {"online": initial_online, "external_terminated": False, "spawns": 0}
-
-    monkeypatch.setattr(runtime, "is_online", lambda: bool(state["online"]))
-    monkeypatch.setattr(
-        ollama_module,
-        "find_listening_pid",
-        lambda _port: 9001 if not state["external_terminated"] else None,
-        raising=False,
-    )
-    monkeypatch.setattr(ollama_module, "process_executable", lambda _pid: r"C:\Ollama\ollama.exe")
-
-    def terminate(pid: int, grace_seconds: float = 5.0) -> bool:
-        assert pid == 9001
-        state["external_terminated"] = True
-        state["online"] = False
-        return True
-
-    monkeypatch.setattr(ollama_module, "terminate_tree", terminate)
+    runtime = OllamaRuntime({
+        "server": {"state_dir": str(tmp_path), "ollama_url": "http://127.0.0.1:11434"},
+        "headless": {"autostart_ollama": True, "manage_ollama": True},
+        "ollama": {"enabled": True},
+    })
+    state = {"online": initial_online, "spawns": 0}
+    monkeypatch.setattr(runtime, "is_online", lambda: state["online"])
+    monkeypatch.setattr(module, "terminate_tree", lambda *_a, **_k: pytest.fail("foreign endpoint cannot authorize takeover"))
 
     class Proc:
         pid = 9002
@@ -47,18 +25,20 @@ def test_ensure_running_takes_over_local_external_ollama(tmp_path: Path, monkeyp
         def poll(self):
             return None
 
-    def popen(*_args, **_kwargs):
+    def popen(*_args, **kwargs):
         state["spawns"] += 1
         state["online"] = True
         return Proc()
 
-    monkeypatch.setattr(ollama_module, "popen_managed", popen)
-    monkeypatch.setattr(ollama_module, "pid_alive", lambda pid: pid == 9002)
-
+    owner = {"pid": 9002, "executable": "ollama", "creation_identity": 123,
+             "creation_identity_type": "test", "state_dir": str(tmp_path), "role": "ollama"}
+    monkeypatch.setattr(module, "popen_managed", popen)
+    monkeypatch.setattr(module, "process_owner_record", lambda *_a: dict(owner))
+    monkeypatch.setattr(module, "set_process_priority", lambda *_a: True)
     assert runtime.ensure_running() is True
-    assert state["external_terminated"] is True
-    assert state["spawns"] == 1
-    assert runtime.managed_pid_path.read_text(encoding="utf-8") == "9002"
+    assert state["spawns"] == (0 if initial_online else 1)
+    assert runtime.managed_owner_path.exists() is (not initial_online)
+    assert runtime.managed_pid_path.exists() is (not initial_online)
 
 
 def test_ensure_running_preserves_external_ollama_when_management_disabled(tmp_path: Path, monkeypatch):
@@ -75,7 +55,7 @@ def test_ensure_running_preserves_external_ollama_when_management_disabled(tmp_p
     )
     monkeypatch.setattr(runtime, "is_online", lambda: True)
     monkeypatch.setattr(ollama_module, "find_listening_pid", lambda _port: 9001, raising=False)
-    monkeypatch.setattr(ollama_module, "process_executable", lambda _pid: r"C:\Ollama\ollama.exe")
+    monkeypatch.setattr(ollama_module, "process_executable", lambda _pid: r"C:\Ollama\ollama.exe", raising=False)
     monkeypatch.setattr(
         ollama_module,
         "terminate_tree",

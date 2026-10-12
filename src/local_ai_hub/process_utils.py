@@ -16,6 +16,7 @@ import tempfile
 import time
 import uuid
 import weakref
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Mapping, Sequence
 
@@ -928,7 +929,7 @@ def _release_process_job(process: subprocess.Popen[Any]) -> bool:
     return False
 
 
-def popen_managed(argv: Sequence[str], **kwargs: Any) -> subprocess.Popen[Any]:
+def popen_managed(argv: Sequence[str], *, job_name: str | None = None, **kwargs: Any) -> subprocess.Popen[Any]:
     """Start a hidden child with owned process-tree cleanup on Windows."""
     opts = dict(kwargs)
     text = bool(opts.get("text", False))
@@ -938,7 +939,10 @@ def popen_managed(argv: Sequence[str], **kwargs: Any) -> subprocess.Popen[Any]:
     job_handle = None
     if os.name == "nt":
         required_flags = windows_creationflags(new_group=True)
-        job_handle = create_job_object_kill_on_close()
+        job_handle = (
+            create_sandboxed_job_object(job_name=job_name)
+            if job_name else create_job_object_kill_on_close()
+        )
         if not job_handle:
             raise OSError("Unable to create a kill-on-close Windows Job Object")
         # Keep the child suspended until Job Object ownership is established.
@@ -1399,6 +1403,8 @@ def create_sandboxed_job_object(
     memory_limit_mb: int | None = None,
     kill_on_close: bool = True,
     cpu_rate_percent: int | None = None,
+    *,
+    job_name: str | None = None,
 ) -> Any | None:
     """Create a Windows Job Object with kill-on-close and optional memory limits.
 
@@ -1411,8 +1417,13 @@ def create_sandboxed_job_object(
         from ctypes import wintypes
 
         kernel32 = _job_kernel32()
-        job = kernel32.CreateJobObjectW(None, None)
+        if job_name:
+            kernel32.SetLastError(0)
+        job = kernel32.CreateJobObjectW(None, job_name)
         if not job:
+            return None
+        if job_name and kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+            kernel32.CloseHandle(job)
             return None
 
         class IO_COUNTERS(ctypes.Structure):
@@ -1949,6 +1960,113 @@ def atomic_write_file(
             except OSError:
                 pass
         raise
+
+
+@contextmanager
+def managed_process_lock(path: Path):
+    """Try one kernel lock; never steal a lock based on a timestamp or PID."""
+    handle = path.open("a+b")
+    acquired = False
+    try:
+        try:
+            if os.name == "nt":
+                import msvcrt
+
+                handle.seek(0, os.SEEK_END)
+                if handle.tell() == 0:
+                    handle.write(b"\0")
+                    handle.flush()
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = True
+        except OSError as exc:
+            import errno
+
+            if exc.errno not in {errno.EACCES, errno.EAGAIN, errno.EDEADLK}:
+                raise
+        yield acquired
+    finally:
+        handle.close()
+
+
+def open_named_job_object(name: str) -> Any | None:
+    """Open an existing job; distinguish absence from denied/unknown ownership."""
+    if os.name != "nt":
+        raise OSError("Named Windows jobs are unavailable")
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenJobObjectW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
+    kernel32.OpenJobObjectW.restype = wintypes.HANDLE
+    handle = kernel32.OpenJobObjectW(0x0008 | 0x0004 | 0x00100000, False, name)
+    if handle:
+        return int(handle)
+    error = ctypes.get_last_error()
+    if error == 2:  # ERROR_FILE_NOT_FOUND
+        return None
+    raise OSError(error, "Cannot establish named Job Object ownership")
+
+
+def windows_job_contains_process(job_handle: Any, pid: int, owner: dict[str, Any]) -> bool:
+    """Verify image, creation identity and job membership on one retained handle."""
+    if os.name != "nt" or not job_handle:
+        return False
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.IsProcessInJob.argtypes = [wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)]
+    kernel32.IsProcessInJob.restype = wintypes.BOOL
+    handle = kernel32.OpenProcess(0x1000 | 0x00100000, False, pid)
+    if not handle:
+        return False
+    try:
+        identity = _windows_process_identity_from_handle(pid, handle, kernel32)
+        if not isinstance(identity, dict) or not _owner_identity_matches(owner, identity):
+            return False
+        in_job = wintypes.BOOL()
+        return bool(kernel32.IsProcessInJob(handle, job_handle, ctypes.byref(in_job)) and in_job.value)
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def wait_job_object_empty(job_handle: Any, timeout_ms: int = 2500) -> bool:
+    """Boundedly verify zero active processes, including runner descendants."""
+    if os.name != "nt" or not job_handle:
+        return False
+    from ctypes import wintypes
+
+    class Accounting(ctypes.Structure):
+        _fields_ = [
+            ("total_user", ctypes.c_int64), ("total_kernel", ctypes.c_int64),
+            ("period_user", ctypes.c_int64), ("period_kernel", ctypes.c_int64),
+            ("page_faults", wintypes.DWORD), ("total", wintypes.DWORD),
+            ("active", wintypes.DWORD), ("terminated", wintypes.DWORD),
+        ]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.QueryInformationJobObject.argtypes = [
+        wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, ctypes.c_void_p,
+    ]
+    kernel32.QueryInformationJobObject.restype = wintypes.BOOL
+    deadline = time.monotonic() + max(0, int(timeout_ms)) / 1000
+    while True:
+        accounting = Accounting()
+        if not kernel32.QueryInformationJobObject(job_handle, 1, ctypes.byref(accounting), ctypes.sizeof(accounting), None):
+            return False
+        if accounting.active == 0:
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(0.05, remaining))
 
 
 def create_job_object_kill_on_close() -> Any:

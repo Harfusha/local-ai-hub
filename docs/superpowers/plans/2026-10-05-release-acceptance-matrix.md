@@ -8,6 +8,32 @@
 
 #### 2026-10-12 implementation-first continuation
 
+Frozen candidate `e26bfe1aa03a66ae6b17356a22c157d5b9d1ca64` completed the
+whole suite: **7110 passed, 105 skipped, 23 subtests / 2494.90s**, exit zero,
+clean unchanged candidate; receipt
+`followup-suite-e26bfe1aa03a-1791812109753435000.json`. Post-test installed-tree
+release checks and compileall passed. Packaging passed for this exact candidate.
+Deployment then stopped the Hub and supervisor, but reported
+`managed_ollama_stop_unverified`: an old live PID-only backend marker provides
+no verified ownership. That process was not signalled. Eleven durable SQLite
+databases were backed up and passed quick_check; configuration and mode were
+preserved. The launcher-only CPU sample is excluded from resource claims.
+
+The ownership follow-up binds newly started Ollama to executable/creation
+identity, state directory, role, and a unique Windows Job Object. Start/stop
+share a nonblocking kernel lock. Separate CLI processes verify job membership
+before terminating the whole tree and confirm zero active processes before
+removing markers. Unknown ownership or uncertain cleanup retains the records.
+Already-running external endpoints are borrowed without takeover, and their
+profile is not claimed as verified. Generated instructions and both prompts
+match this behavior. Targeted ownership/process/backend/generator tests passed
+**166 tests / 7.19s**. A private real-Ollama harness verified separate-process
+managed stop and both borrowed-server cases, with identity-owned cleanup and no
+model pulls or inference (`ollama-owner-20261012T145242Z-d2b23984/result.json`).
+That runtime receipt precedes the final profile/lock error-handling edits;
+fresh committed-candidate whole-suite, packaging, installed/live, resource,
+and model-quality acceptance remain required.
+
 Subsequent frozen candidate `e6375b22162e563b215ed366bb89d8031166f9c3`
 finished **7108 passed, 1 failed, 105 skipped, 23 subtests / 2612.24s**;
 receipt `followup-suite-e6375b22162e-1791808756004776400.json`, unchanged clean
