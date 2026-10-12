@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import subprocess
+import sys
 from pathlib import Path
 import threading
 import urllib.error
@@ -207,6 +208,7 @@ def test_task_completion_http_receipt_and_memory_matrix(
     case: str,
     changes: dict[str, object],
     expected_success: bool,
+    request: pytest.FixtureRequest,
 ) -> None:
     tenant = "agent-t09"
     task_id = f"task-t09-{case}"
@@ -224,13 +226,16 @@ def test_task_completion_http_receipt_and_memory_matrix(
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = 11498\nstate_dir = "{state_dir.as_posix()}"\n'
-        "\n[agent_state]\nenabled = true\n",
+        "\n[agent_state]\nenabled = true\n"
+        "[prewarm]\nenabled = false\n"
+        "[preprocessing]\nenabled = false\n",
         encoding="utf-8",
     )
     project_context = resolve_project_context(project_root, state_dir)
     project_config_digest = project_context.config_digest
 
     app = LocalAIApp(str(config_path))
+    request.addfinalizer(app.close)
     memory_context = changes.get("memory_context")
     if memory_context is not None:
         # Model the memory bundle injected by the server at task creation.
@@ -382,6 +387,17 @@ def test_task_completion_http_receipt_and_memory_matrix(
         except urllib.error.HTTPError as error:
             status = error.code
             payload = json.loads(error.read().decode("utf-8"))
+        except TimeoutError as error:
+            frames = sys._current_frames()
+            stacks = {}
+            for worker in threading.enumerate():
+                frame = frames.get(worker.ident)
+                stack = []
+                while frame is not None and len(stack) < 16:
+                    stack.append(f"{Path(frame.f_code.co_filename).name}:{frame.f_lineno}:{frame.f_code.co_name}")
+                    frame = frame.f_back
+                stacks[worker.name] = stack
+            raise AssertionError(f"completion HTTP timeout: {json.dumps(stacks, sort_keys=True)}") from error
     finally:
         server.shutdown()
         server.server_close()
