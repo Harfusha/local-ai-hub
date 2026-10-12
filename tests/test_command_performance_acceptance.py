@@ -52,7 +52,7 @@ def _timed_run(
 def _assert_git_revision(result: dict) -> None:
     state = result["repo_state"]
     assert state["success"] is True
-    assert state["kind"] == "git"
+    assert state["kind"] == "git", state
     assert state["degraded"] is False
     assert state["stale"] is False
     assert result["repository_revision"] == state["fingerprint"]

@@ -2,6 +2,62 @@
 
 ## Current master reconciliation - 2026-10-11
 
+### Whole-suite follow-up — 2026-10-12
+
+- Clean frozen `b613ce26` completed without fail-fast: **6999 passed, 1 failed,
+  104 skipped, 23 subtests passed / 2750.84s**, exit one; candidate unchanged.
+  Receipt: `state/releases/4.0.0/followup-suite-b613ce2661ad-1791789556512964100.json`.
+- Failure: `test_command_broker_reports_latency_throughput_and_failure_behavior`
+  at line 259. Structured warm command reported `repo_state.kind` as
+  `degraded-filesystem`, not `git`. The assertion did not retain the degradation
+  reason; no cause or production fix is claimed. Primary owns diagnostic/test
+  changes in `tests/test_command_performance_acceptance.py` and subsequent
+  bounded investigation. Expectations remain unchanged.
+- Daemon atomic-PID publication, status dependency deadline, T08 repeated
+  completion validation and work-orchestrator no-change evidence/cancel receipts
+  passed in this complete run. Overall release gate remains FAILED.
+- GPT-6 Luna Wegener owns the narrow wheel autostart check in `client.py` plus
+  `tests/test_wheel_module_startup.py`; Boole owns status protected keys in
+  `mcp_server.py` plus `tests/test_status_telemetry_wire.py`. Both must provide
+  actual RED/GREEN results before integration acceptance. No overlapping source
+  edits, installation, model workloads or new full suite during these fixes.
+- Wegener delivered the narrow wheel check and two regression tests. Owner
+  command `python -m pytest -q --tb=short tests/test_wheel_module_startup.py`:
+  **1 failed, 1 passed** before the change. Combined with
+  `tests/test_client_operational_mode_autostart.py`,
+  `tests/test_client_autostart_timeout.py`, and
+  `tests/test_client_start_lock_owner.py`: **14 passed / 2.18s** after it.
+  Primary source review confirms only the script existence check moved inside
+  the branch that uses that script. Real cold installed-wheel acceptance remains
+  open; a mocked `Popen` regression is not that acceptance.
+- Telemetry preparation hypothesis was NOT reproduced on current source.
+  Owner's first RED used invalid empty `response_profile` (two schema failures,
+  `req_e05cbb5863b1`), not a compaction regression. Correctly omitting that optional
+  value passed all six wire cases before any production change
+  (`req_ff907412d56c`). Primary removed the speculative protected-key change and
+  retained the six regression cases. The earlier installed MCP telemetry 500
+  remains a runtime/provenance investigation, not a proven current-source defect.
+- Primary combined command `.venv/Scripts/python.exe -B -m pytest -q --tb=short
+  tests/test_command_performance_acceptance.py tests/test_status_telemetry_wire.py
+  tests/test_wheel_module_startup.py tests/test_client_operational_mode_autostart.py
+  tests/test_client_autostart_timeout.py tests/test_client_start_lock_owner.py`:
+  **23 passed / 33.73s**, `req_0d59101f0096`, exit zero. No parallel source writes
+  or other test workloads during that run. The earlier full-suite Git degradation
+  is intermittent and NOT diagnosed or fixed; retain the precise diagnostic
+  assertion for the next complete candidate run.
+- Source gates on the integrated code: compileall exit zero
+  (`req_0f692409beaa`), `release_check.py --allow-installed` OK
+  (`req_cabccada81c1`), selftest all six checks OK (`req_a5c4230cb899`; HTTP
+  checks still target the older installed runtime). Inventory initially found
+  one generated coverage-row drift (`req_bfb6d6c12c3b`). Broker refused the
+  write as `mutation_worktree_required`, terminal/non-retryable
+  (`req_a30567659006`); primary ran one native generator fallback, exit zero.
+  Regenerated inventory check: 687 rows, no drift, exit zero
+  (`req_a66d284c52d5`). Generated documentation changed one row only.
+  Indexed review returned degraded/truncated metadata, not actionable findings;
+  primary reviewed the actual narrow source diff. `git diff --check` passes.
+  New full-suite, updated wheel and home deployment remain pending.
+
 ### Daemon fixture publication race — 2026-10-12
 
 - Frozen clean `4488d38c` whole suite stopped at 26%: **1 failed, 1849 passed,

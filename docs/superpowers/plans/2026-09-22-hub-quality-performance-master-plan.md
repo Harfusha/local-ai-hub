@@ -356,13 +356,15 @@ T11 confirmed its assigned `f678` checkout is its own. It briefly tested two T21
 
 # Current master plan — authoritative consolidated plan
 
-**Latest source follow-up, 2026-10-12:** The newer status-executor candidate
-`4488d38c` is NOT release-accepted: its frozen suite stopped at one fixture
-publication race (1849 passed, 27 skipped). Primary repaired only the test PID
-publication; the full daemon lifecycle module now passes 64 tests with four
-platform skips. Production package bytes are unchanged from the independently
-built/installed candidate wheel, but a complete new suite and home deployment
-remain pending. The older installed release checkpoint below is historical,
+**Latest source follow-up, 2026-10-12:** Frozen clean `b613ce26` completed the
+whole suite: **6999 passed, 1 failed, 104 skipped, 23 subtests / 2750.84s**.
+The command performance acceptance test received `degraded-filesystem` rather
+than `git`; its degradation reason was not retained by the assertion. Primary
+is investigating without weakening expectations. Daemon PID publication,
+status deadline and T08/work receipt regressions passed in this complete run.
+Two GPT-6 Luna workers own disjoint wheel-autostart and MCP telemetry-contract
+fixes with required RED/GREEN results. No new deployment or release GO.
+The older installed release checkpoint below is historical,
 not evidence for this newer source. Current receipts and owners are in the
 release acceptance matrix; do not restart already integrated historical tasks.
 

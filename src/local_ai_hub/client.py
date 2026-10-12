@@ -639,13 +639,13 @@ class HubClient:
             src_dir = str(Path(__file__).resolve().parents[1])
             env["PYTHONPATH"] = src_dir + (os.pathsep + env["PYTHONPATH"] if "PYTHONPATH" in env else "")
             service_script = Path(__file__).resolve().parents[2] / "tools" / "service.py"
-            if not service_script.is_file():
-                return False
             launch_timeout = remaining()
             if launch_timeout <= 0:
                 return False
             process: subprocess.Popen[Any] | None = None
             if hasattr(subprocess, "run") and subprocess.run is not _ORIGINAL_SUBPROCESS_RUN:
+                if not service_script.is_file():
+                    return False
                 try:
                     from .process_utils import hidden_run_kwargs
                     kwargs = hidden_run_kwargs()
