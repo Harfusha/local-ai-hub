@@ -3305,8 +3305,10 @@ def _local_ai_repo_impl(
 @_instrumented_tool()
 def local_ai_repo(
     action: RepoAction,
-    root: str = ".",
-    query: str = "",
+    root: str | None = None,
+    cwd: str | None = None,
+    query: str | None = None,
+    symbol: str | None = None,
     diff: str = "",
     task: str = "",
     workspace: str = "",
@@ -3337,6 +3339,8 @@ def local_ai_repo(
     session_id: str = "",
     repository_revision: str = "",
     changed_paths: list[str] | None = None,
+    paths: list[str] | None = None,
+    files: list[str] | None = None,
     phase: RepoPhase = "",
     focus: list[str] | None = None,
     preload_profile: str = "",
@@ -3354,6 +3358,12 @@ def local_ai_repo(
     force_include_paths: list[str] | None = None,
 ) -> dict[str, Any]:
     """Primary bounded repository worker. Use when: indexed repository evidence is needed. Skip when: fresh evidence already answers it."""
+    root = root if root is not None else cwd if cwd is not None else "."
+    query = query if query is not None else symbol if symbol is not None else ""
+    changed_paths = (
+        changed_paths if changed_paths is not None else
+        paths if paths is not None else files
+    )
     forward: dict[str, Any] = {}
     context_controls = {
         "path_hints": path_hints,
@@ -3525,7 +3535,8 @@ def local_ai_rag(
 def local_ai_command(
     action: CommandAction,
     command: str = "",
-    cwd: str = ".",
+    cwd: str | None = None,
+    root: str | None = None,
     timeout: int = 0,
     force: bool = False,
     task_id: str = "",
@@ -3540,6 +3551,8 @@ def local_ai_command(
     patch: str = "",
     auto_rollback: bool = True,
     paths: list[str] | None = None,
+    changed_paths: list[str] | None = None,
+    files: list[str] | None = None,
     job_id: str = "",
     lint_action: str = "submit",
     extra_fields: list[str] | None = None,
@@ -3548,6 +3561,8 @@ def local_ai_command(
     reuse_key: str = "",
 ) -> dict[str, Any]:
     """Bounded command broker. Set snapshot=true to record a best-effort Git snapshot. For action=run only, rollback_on_failure=true requires paths to list the flat, relative files directly under cwd that may be restored or removed; missing/unsafe paths reject execution. It cannot be combined with auto_fix. Rollback preserves all files outside that explicit scope. Other command and streaming behavior remains bounded and tenant-scoped. Use when: a repeatable test, lint, typecheck, build, analysis, or safe read-only command is needed. Skip when: no command is needed or a fresh cached result already answers it."""
+    cwd = cwd if cwd is not None else root if root is not None else "."
+    paths = paths if paths is not None else changed_paths if changed_paths is not None else files
     action = _resolve_action("command", action)
     _, requires_heavy_work = _classify_mcp_operation(
         "local_ai_command", {"action": action},
@@ -3594,6 +3609,7 @@ def local_ai_command(
         }, timeout=host_timeout), "command")
     paths_payload = (
         paths if rollback_on_failure else
+        paths if paths is not None and action == "format" else
         ([command] if (action == "format" and command and not command.startswith("-")) else None)
     )
     return _compact(CLIENT.post("/api/command", {
