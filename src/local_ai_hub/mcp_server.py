@@ -3770,7 +3770,7 @@ def local_ai_coord(
             "query": query or key or value, "root": root,
             "root_cause": reason, "verified_fix": status,
             "incident_id": record_id,
-        }, timeout=_timeout("quick")), "status")
+        }, timeout=_timeout("quick")), "task_memory")
     if action == "incident_decision":
         return _compact(CLIENT.coord(
             action="incident_decision", fingerprint=fingerprint or {},

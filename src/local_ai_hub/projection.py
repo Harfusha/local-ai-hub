@@ -393,6 +393,8 @@ class AgentProjector:
             # Explicit detail requests must distinguish an empty result from an
             # omitted field. Earlier filters still decide which keys are safe.
             preserve_keys = {"results", "files", "symbols", "active_tasks", *extra}
+            if task_kind == "task_memory":
+                preserve_keys.update({"matches", "incidents"})
             telemetry_fields = {
                 "success", "window", "summary", "queue", "hotspots", "by_operation",
                 "error_fingerprints", "detail", "decision_grade",
