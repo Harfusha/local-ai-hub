@@ -318,7 +318,7 @@ class DebugTraceStore:
         except sqlite3.Error:
             return False
 
-    def start(self, *, kind: str, tenant: str, agent: str = "", action: str = "", source: str = "", model: str = "", request_id: str = "", trace_id: str | None = None) -> str:
+    def start(self, *, kind: str, tenant: str, agent: str = "", action: str = "", source: str = "", model: str = "", request_id: str = "", trace_id: str | None = None, initial_event: tuple[str, Any] | None = None) -> str:
         if not self.enabled:
             return ""
         trace_id = trace_id or uuid.uuid4().hex
@@ -334,8 +334,11 @@ class DebugTraceStore:
                     ("response", "json"),
                 ):
                     self._replace_content(con, trace_id, content_field, "", encoding=encoding)
+                retained = True
+                if initial_event is not None:
+                    retained = self._append_event(con, trace_id, *initial_event) is not None
                 con.commit()
-            return trace_id
+            return trace_id if retained else ""
         try:
             return retry_busy(_do_start, retries=3)
         except sqlite3.Error:

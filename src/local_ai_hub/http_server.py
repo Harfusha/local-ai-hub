@@ -1837,9 +1837,13 @@ class Handler(BaseHTTPRequestHandler):
                     APP.telemetry.record_live(kind="request", event_type="request_start", tenant=self._tenant(), agent=self._agent(), request_id=request_id, trace_id=trace_id, action=path, success=True)
                     trace_store = getattr(APP, "debug_traces", None)
                     if trace_store is not None and bool(getattr(trace_store, "enabled", True)):
-                        self._debug_trace_id = trace_store.start(kind="api_request", tenant=self._tenant(), agent=self._agent(), action=path, source="http", request_id=request_id)
-                        if self._debug_trace_id:
-                            trace_store.event(self._debug_trace_id, "request_received", {"method": self.command, "path": path, "request_id": request_id})
+                        self._debug_trace_id = trace_store.start(
+                            kind="api_request", tenant=self._tenant(), agent=self._agent(),
+                            action=path, source="http", request_id=request_id,
+                            initial_event=("request_received", {
+                                "method": self.command, "path": path, "request_id": request_id,
+                            }),
+                        )
         except Exception:
             pass
 

@@ -358,15 +358,15 @@ def _free_port() -> int:
         sock.bind(("127.0.0.1", 0)); return sock.getsockname()[1]
 
 
-def _request(url: str, *, method="GET", body: bytes | None=None, headers=None):
+def _request(url: str, *, method="GET", body: bytes | None=None, headers=None, timeout=10):
     req=urllib.request.Request(url, data=body, method=method, headers=headers or {})
     try:
-        with urllib.request.urlopen(req, timeout=10) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.status, dict(r.headers), r.read()
     except urllib.error.HTTPError as e:
         return e.code, dict(e.headers), e.read()
-    except (urllib.error.URLError, TimeoutError, OSError):
-        return 0, {}, b""
+    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        return 0, {"X-Test-Transport-Error": f"{type(exc).__name__}: {exc}"}, b""
 
 
 
@@ -400,7 +400,34 @@ enabled=false
 def test_http_auth_json_limits_security_headers_and_binary_bundle(tmp_path: Path):
     port = _free_port(); state = tmp_path / "state"; repo = tmp_path / "repo"; repo.mkdir()
     cfg = tmp_path / "server.toml"
-    cfg.write_text(f'''[server]\nbind="127.0.0.1"\nport={port}\nstate_dir="{state.as_posix()}"\nauto_start_ollama=false\nmax_request_body_bytes=1024\n[security]\napi_token="0123456789abcdef"\n[hardware]\nprofile="cpu"\nauto_tune=false\n[prewarm]\nenabled=false\n[preprocessing]\nenabled=false\n[resilience]\nwatchdog_enabled=false\n[code_intelligence]\nenabled=false\n[background_gpu]\nenabled=false\n[observability]\nenabled=true\n[debug_traces]\nenabled=true\n''', encoding="utf-8")
+    cfg.write_text(f'''[server]
+bind="127.0.0.1"
+port={port}
+state_dir="{state.as_posix()}"
+auto_start_ollama=false
+max_request_body_bytes=1024
+[security]
+api_token="0123456789abcdef"
+api_token_principal="http-test"
+allowed_roots=["{repo.as_posix()}"]
+[hardware]
+profile="cpu"
+auto_tune=false
+[prewarm]
+enabled=false
+[preprocessing]
+enabled=false
+[resilience]
+watchdog_enabled=false
+[code_intelligence]
+enabled=false
+[background_gpu]
+enabled=false
+[observability]
+enabled=true
+[debug_traces]
+enabled=true
+''', encoding="utf-8")
     from local_ai_hub.process_utils import process_owner_record
     state.mkdir(parents=True, exist_ok=True)
     owner = process_owner_record(os.getpid(), state, "supervisor")
@@ -421,11 +448,24 @@ def test_http_auth_json_limits_security_headers_and_binary_bundle(tmp_path: Path
         assert headers.get("X-Content-Type-Options") == "nosniff"
         assert _request(base+"/api/status")[0] == 401
         assert _request(base+"/api/status", headers=auth)[0] == 200
-        status, _, live_body = _request(base+"/api/live/status", headers=auth)
-        live_status = json.loads(live_body)
-        assert status == 200 and isinstance(live_status.get("observability"), dict)
-        assert "active_requests" in live_status["observability"]
-        assert "recent_http" in live_status["observability"]
+        # The HTML listener can be ready while the first bounded telemetry
+        # snapshot is still warming. Wait for the asserted API contract itself.
+        deadline = time.monotonic() + 12
+        live_status = {}
+        while time.monotonic() < deadline and proc.poll() is None:
+            status, live_headers, live_body = _request(
+                base+"/api/live/status", headers=auth,
+                timeout=min(2, max(0.01, deadline-time.monotonic())),
+            )
+            if status == 200:
+                live_status = json.loads(live_body)
+                observability = live_status.get("observability", {})
+                if "active_requests" in observability and "recent_http" in observability:
+                    break
+            time.sleep(min(0.1, max(0, deadline-time.monotonic())))
+        assert status == 200 and isinstance(live_status.get("observability"), dict), (status, live_status)
+        assert "active_requests" in live_status["observability"], live_status
+        assert "recent_http" in live_status["observability"], live_status
         status, _, _ = _request(base+"/api/command", method="POST", body=json.dumps({"action":"classify","command":"pytest -q"}).encode(), headers={**auth,"Content-Type":"application/json"})
         assert status == 200
         status, _, body = _request(base+"/api/debug-traces?limit=10", headers=auth)
@@ -476,9 +516,13 @@ def test_http_auth_json_limits_security_headers_and_binary_bundle(tmp_path: Path
             ("/api/preprocess", {"action":"status","root":str(repo)}),
         ]
         for path,payload in calls:
-            st,_,response=jpost(path,payload)
-            assert st < 500, (path, st, response[:500])
-            assert response, path
+            st,response_headers,response=jpost(path,payload)
+            assert st == 200, (path, st, response_headers, response[:500])
+            assert response, (path, st, response_headers)
+        foreign_root = tmp_path / "foreign"
+        foreign_root.mkdir()
+        st, _, response = jpost("/api/security_audit", {"root": str(foreign_root)})
+        assert st == 403 and response
         for path in ("/api/capabilities", "/api/hardware/system", "/api/config", "/api/logs/tail?lines=5"):
             st,_,response=_request(base+path,headers=auth)
             assert st < 500 and response, (path,st,response[:500])

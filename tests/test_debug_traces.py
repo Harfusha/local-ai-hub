@@ -4,6 +4,7 @@ import json
 import sqlite3
 import time
 from contextlib import closing
+from types import SimpleNamespace
 
 import pytest
 
@@ -38,6 +39,70 @@ def test_detailed_traces_default_to_off_without_explicit_opt_in(tmp_path):
     store = DebugTraceStore({"server": {"state_dir": str(tmp_path)}})
     assert store.enabled is False
     assert store.start(kind="api_request", tenant="test", action="/api/test") == ""
+
+
+def test_initial_trace_event_commits_with_session_and_retains_complete_payload(tmp_path, monkeypatch):
+    store = DebugTraceStore(_config(tmp_path, max_event_bytes=8192))
+    connect = store._connect
+    connections = []
+
+    def counted_connect():
+        connection = connect()
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(store, "_connect", counted_connect)
+    payload = {"method": "POST", "path": "/" + "x" * 5000, "request_id": "request-1"}
+    trace_id = store.start(kind="api_request", tenant="tenant", initial_event=("request_received", payload))
+    assert trace_id
+    assert len(connections) == 1
+    detail = store.detail(trace_id, full_payload=True)
+    assert detail["events"][0]["event_type"] == "request_received"
+    assert detail["events"][0]["payload"] == payload
+
+
+def test_initial_trace_event_failure_does_not_leave_partial_session(tmp_path, monkeypatch):
+    store = DebugTraceStore(_config(tmp_path))
+
+    def failed_event(*_args):
+        raise sqlite3.OperationalError("injected event write failure")
+
+    monkeypatch.setattr(store, "_append_event", failed_event)
+    assert store.start(kind="api_request", tenant="tenant", initial_event=("request_received", {})) == ""
+    with closing(store._connect()) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM traces").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM trace_events").fetchone()[0] == 0
+
+
+def test_http_trace_start_uses_one_transaction_for_initial_event(tmp_path, monkeypatch):
+    store = DebugTraceStore(_config(tmp_path))
+    connect = store._connect
+    connections = []
+
+    def counted_connect():
+        connection = connect()
+        connections.append(connection)
+        return connection
+
+    monkeypatch.setattr(store, "_connect", counted_connect)
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(
+        config={}, debug_traces=store,
+        telemetry=SimpleNamespace(record_live=lambda **_kwargs: None),
+    ))
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.headers = {}
+    handler.command = "POST"
+    handler._agent = lambda: "agent"
+    handler._tenant = lambda: "tenant"
+    try:
+        handler._begin_trace("/api/security_audit")
+        assert handler._debug_trace_id
+        assert len(connections) == 1
+    finally:
+        http_server.reset_context(handler._trace_context_token)
+    detail = store.detail(handler._debug_trace_id, full_payload=True)
+    assert detail["events"][0]["payload"]["method"] == "POST"
+    assert detail["events"][0]["payload"]["path"] == "/api/security_audit"
 
 
 def test_trace_defaults_allow_large_retained_payloads(tmp_path):

@@ -4445,3 +4445,31 @@ or lacks Git metadata. No agent used a substitute checkout.
 - Updated install/update prompts and model capability guidance. Operator
   `config.toml` and durable databases remain unchanged. No model was downloaded
   or inferred during these checks. Real quality and final runtime gates remain.
+
+## 2026-10-13 installed acceptance and final receipt follow-up
+
+`8bccad5a` is installed and passed the whole suite (7193 passed, 105 skipped,
+23 subtests), exact packaging/install verification, all 16 live checks,
+1/10/30-client shared-daemon and scoped probes, crash restart and in-flight EOF
+cleanup. Its live status no longer has the preprocessing aggregate timeout.
+The rendered dashboard is live; its retained silent-input transcription error
+is the expected `empty_transcript` smoke result, not a successful speech sample.
+Actual Hub sampling during preprocessing: 433 MiB RSS and 28.6% of one CPU core;
+this is not an idle baseline or causal savings measurement.
+
+Newer source needs its own final acceptance. `1d5ed8bb` corrects the authenticated
+tenant/agent-owner distinction in completion receipts (121 targeted tests pass).
+Its full suite stopped on one HTTP transport failure after 4129 passes. The
+retained trace shows a slow synchronous initial trace write; output-pipe
+backpressure was not reproduced. The current optimization combines the session
+and initial event in one transaction. Its tests preserve the complete payload
+and reject partial sessions. The HTTP fixture now exercises actual authorized
+repository operations instead of accepting HTTP 403 as a positive result, and
+waits for the asserted initial telemetry contract. Combined targeted result:
+64 passed in 32.33s (`req_e3498163a53d`). The original transport failure is not
+claimed universally resolved until integrated and installed checks finish.
+
+Release remains pending the new integrated candidate's whole suite, exact
+package/update, live API/dashboard/MCP checks and original task completion.
+Preserve foreign worktrees, operator configuration and durable state. Remote
+publication is not authorized or included in the local release claim.
