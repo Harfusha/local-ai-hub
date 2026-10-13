@@ -7238,6 +7238,7 @@ class CommandBroker:
         paths: list[str] | None = None,
         rollback_paths: list[str] | None = None,
         project_context: ProjectContextLike | None = None,
+        env: Mapping[str, str] | None = None,
         _environment_overrides: Mapping[str, str] | None = None,
         _cache_context: str = "",
         _transaction_context: str = "",
@@ -7245,6 +7246,8 @@ class CommandBroker:
         _project_command_context: _ResolvedProjectCommand | None = None,
         request_cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
+        if env is not None and _environment_overrides is None:
+            _environment_overrides = env
         if request_cancel_event is not None and request_cancel_event.is_set():
             return {"success": False, "cancelled": True, "request_not_sent": True, "terminal": True, "retryable": False}
         (
