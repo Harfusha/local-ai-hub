@@ -4518,3 +4518,19 @@ Real dispatch, artifact/result assertions, wait-timeout/clamp and cancellation
 contracts remain intact. Both async modules passed: 36 tests in 12.43s
 (`req_327cb9e3b5fb`). No production timeout changed. Whole-suite acceptance and
 deployment of the resulting committed candidate remain pending.
+
+`0b12d765` completed with 7218 passed, three failed, 105 skipped and 23 subtests
+passed in 3190.68s (execution `b4c0368d04d246879c7d1ecd417e9840`; cleanup confirmed).
+The failures were the unsupported-version backup fixture's five-second budget,
+the HTTP completion matrix waiting in SQLite `con.close()`, and timeline fixture
+`flush(1)`. Their content/receipt assertions remain; semantic fixture budgets now
+allow bounded host I/O, while production limits and explicit short deadline tests
+remain unchanged. Timeline setup now registers cleanup before its first flush.
+A shared test finalizer closes successfully constructed test-owned Apps and
+preprocessors, without forcing imports or signalling unrelated threads. The
+timeout fake now produces EOF/reaps its fake process and verifies reader exit.
+Nine affected modules: **155 passed in 106.76s**, with no surviving controlled Hub
+loops, preprocessors, watchdog observers or git-grep reader (targeted lifecycle
+report `targeted-lifecycle-1791898983076794900.result.json`). MCP and core lifecycle
+compatibility: **44 passed in 32.22s** (`req_7823c027594a`). These are targeted
+results; complete current-candidate acceptance and deployment remain pending.

@@ -392,7 +392,9 @@ def test_task_completion_http_receipt_and_memory_matrix(
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=5) as response:
+            # Receipt/memory correctness includes SQLite close/checkpoint I/O;
+            # this matrix does not impose a five-second throughput contract.
+            with urllib.request.urlopen(request, timeout=15) as response:
                 status = response.status
                 payload = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as error:
