@@ -3294,7 +3294,7 @@ def _local_ai_repo_impl(
         }, timeout=_timeout("quick")), "code")
     if action == "skeletonize":
         return _compact(CLIENT.post("/api/repo/skeletonize", {
-            "code": query or diff, "targets": [path] if path else None,
+            "root": root, "code": task or query or diff, "targets": [path] if path else None,
         }, timeout=_timeout("quick")), "code")
     return _invalid_action("local_ai_repo", action, tuple(FEATURES.supported_repo_actions()), "Keep work bounded in Local AI Hub; use Codex-owned orchestration for peer subagents.")
 
