@@ -10,6 +10,7 @@ import contextvars
 import queue
 import math
 import threading
+import tempfile
 import time
 import unicodedata
 import uuid
@@ -365,6 +366,7 @@ class TaskStore:
         self._memory_lookup_finalizer = weakref.finalize(self, self._memory_lookup_queue.put_nowait, None)
         self._memory_lookup_finalizer.atexit = False
         self._lock = threading.RLock()
+        self._idle_worktree_cursor: tuple[float, str] = (0.0, "")
         self._initialized = False
         self._init_projection_table()
 
@@ -1936,13 +1938,14 @@ class TaskStore:
         if not current:
             raise KeyError(f"Task {task_id} not found")
         if current.status == TaskStatus.COMPLETED:
-            return self.transition(
+            completed = self.transition(
                 task_id,
                 TaskStatus.COMPLETED,
                 reason=reason,
                 actor=actor,
                 idempotency_key=idempotency_key,
             )
+            return self._cleanup_completed_worktree(completed, actor=actor)
         if current.status == TaskStatus.PLANNED:
             current = self.transition(
                 task_id,
@@ -1971,13 +1974,136 @@ class TaskStore:
             raise InvalidTransitionError(
                 f"Cannot complete task {task_id} from {current.status.value}"
             )
-        return self.transition(
+        completed = self.transition(
             task_id,
             TaskStatus.COMPLETED,
             reason=reason,
             actor=actor,
             idempotency_key=idempotency_key,
         )
+        return self._cleanup_completed_worktree(completed, actor=actor)
+
+    def _cleanup_completed_worktree(self, task: TaskState, *, actor: str) -> TaskState:
+        """Best-effort cleanup after verified completion; never undo task status."""
+        wt = task.checkpoint.state_data.get("worktree")
+        if not isinstance(wt, dict) or wt.get("cleanup_success"):
+            return task
+        reason = "worktree cleanup requires verified creation metadata"
+        try:
+            from .worktrees import is_hub_temporary_worktree, worktree_is_clean_ancestor
+
+            base = str(wt.get("base_commit", ""))
+            if not base or not all(wt.get(key) for key in (
+                "creator_pid", "creator_creation_identity", "creator_creation_identity_type", "creator_executable"
+            )):
+                return self._mark_cleanup_pending(task, reason, actor=actor)
+            path = Path(str(wt.get("worktree_path", "")))
+            if not is_hub_temporary_worktree(path):
+                return self._mark_cleanup_pending(task, "worktree is outside the managed temporary root", actor=actor)
+            safe, reason = worktree_is_clean_ancestor(
+                wt.get("repo_root", ""), path, base
+            )
+            if not safe:
+                return self._mark_cleanup_pending(task, reason, actor=actor)
+            result = self.cleanup_worktree(task.task_id, actor=actor, _required_base_commit=base)
+            if result.get("success"):
+                return self.get(task.task_id) or task
+            return self._mark_cleanup_pending(task, str(result.get("error") or "worktree cleanup failed"), actor=actor)
+        except Exception as exc:
+            return self._mark_cleanup_pending(task, f"worktree cleanup failed: {type(exc).__name__}", actor=actor)
+
+    def _mark_cleanup_pending(self, task: TaskState, reason: str, *, actor: str) -> TaskState:
+        wt = task.checkpoint.state_data.get("worktree")
+        if not isinstance(wt, dict):
+            return task
+        state_data = dict(task.checkpoint.state_data)
+        state_data["worktree"] = {**wt, "cleanup_pending": True, "cleanup_warning": reason[:240]}
+        cp = TaskCheckpoint(
+            phase=task.checkpoint.phase, next_action=task.checkpoint.next_action,
+            affected_paths=task.checkpoint.affected_paths, evidence_ids=task.checkpoint.evidence_ids,
+            blockers=task.checkpoint.blockers, state_data=state_data,
+        )
+        try:
+            return self.checkpoint(task.task_id, cp, actor=actor,
+                                   idempotency_key=f"cleanup_pending_{task.task_id}_{wt.get('worktree_id', '')}")
+        except Exception:
+            return self.get(task.task_id) or task
+
+    def cleanup_idle_worktrees(self, *, limit: int = 32, deadline_seconds: float = 8.0) -> dict[str, int]:
+        """Reap only expired, terminal, Hub-owned temporary worktrees with dead creator identity."""
+        from .process_utils import process_owner_state
+        from .worktrees import is_hub_temporary_worktree, worktree_is_clean_ancestor
+
+        started = time.monotonic()
+        counts = {"cleaned": 0, "preserved": 0, "scanned": 0}
+        terminal = (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.ABANDONED)
+        cap = max(1, min(int(limit), 32))
+        with closing(connect_sqlite(self.state_store.db_path)) as con:
+            statuses = tuple(status.value for status in terminal)
+            placeholders = ",".join("?" for _ in statuses)
+            cursor_time, cursor_id = self._idle_worktree_cursor
+            rows = con.execute(
+                f"SELECT task_id, updated_at FROM agent_tasks_projection "
+                f"WHERE status IN ({placeholders}) AND checkpoint LIKE '%worktree_path%' "
+                "AND (updated_at > ? OR (updated_at = ? AND task_id > ?)) "
+                "ORDER BY updated_at, task_id LIMIT ?",
+                (*statuses, cursor_time, cursor_time, cursor_id, cap),
+            ).fetchall()
+            if not rows:
+                rows = con.execute(
+                    f"SELECT task_id, updated_at FROM agent_tasks_projection "
+                    f"WHERE status IN ({placeholders}) AND checkpoint LIKE '%worktree_path%' "
+                    "ORDER BY updated_at, task_id LIMIT ?",
+                    (*statuses, cap),
+                ).fetchall()
+            if rows:
+                self._idle_worktree_cursor = (float(rows[-1][1]), str(rows[-1][0]))
+        for task_id, _updated_at in rows:
+            if time.monotonic() - started > max(0.5, min(float(deadline_seconds), 8.0)):
+                return counts
+            candidate = self.get(str(task_id))
+            if candidate is None:
+                continue
+            counts["scanned"] += 1
+            wt = candidate.checkpoint.state_data.get("worktree")
+            if not isinstance(wt, dict) or wt.get("cleanup_success"):
+                counts["preserved"] += 1
+                continue
+            try:
+                expires_at = float(wt["expires_at"])
+                creator = {
+                    "pid": int(wt["creator_pid"]), "creation_identity": wt["creator_creation_identity"],
+                    "creation_identity_type": wt["creator_creation_identity_type"],
+                    "executable": wt["creator_executable"], "state_dir": str(Path(tempfile.gettempdir()).resolve()),
+                    "role": "worktree",
+                }
+                repo = Path(str(wt["repo_root"])).resolve(strict=True)
+                path = Path(str(wt["worktree_path"]))
+                if expires_at >= time.time() or process_owner_state(creator, tempfile.gettempdir(), "worktree") != "stale":
+                    counts["preserved"] += 1
+                    continue
+                if not is_hub_temporary_worktree(path):
+                    counts["preserved"] += 1
+                    continue
+                remaining = max(0.5, min(float(deadline_seconds) - (time.monotonic() - started), 8.0))
+                safe, _reason = worktree_is_clean_ancestor(
+                    repo, path, str(wt["base_commit"]), timeout_seconds=min(remaining / 4, 0.5)
+                )
+                if not safe:
+                    counts["preserved"] += 1
+                    continue
+                result = self.cleanup_worktree(
+                    candidate.task_id, actor=candidate.owner, _timeout_seconds=min(remaining, 0.5),
+                    _required_base_commit=str(wt["base_commit"]),
+                )
+                if result.get("success"):
+                    counts["cleaned"] += 1
+                else:
+                    self._mark_cleanup_pending(candidate, str(result.get("error") or "idle cleanup failed"), actor=candidate.owner)
+                    counts["preserved"] += 1
+            except Exception:
+                counts["preserved"] += 1
+        return counts
 
     def fail(
         self,
@@ -2313,6 +2439,8 @@ class TaskStore:
         delete_branch: bool = True,
         *,
         actor: str = "http-default",
+        _timeout_seconds: float = 30.0,
+        _required_base_commit: str = "",
     ) -> dict[str, Any]:
         task = self.get(task_id)
         if not task:
@@ -2372,6 +2500,11 @@ class TaskStore:
                 "created_at",
                 "ttl_seconds",
                 "expires_at",
+                "base_commit",
+                "creator_pid",
+                "creator_creation_identity",
+                "creator_creation_identity_type",
+                "creator_executable",
             )
             if any(ownership.get(field) != wt.get(field) for field in expected_fields):
                 return {"success": False, "error": "worktree ownership metadata was tampered"}
@@ -2387,12 +2520,16 @@ class TaskStore:
                 expected_created_at=created_at,
                 expected_ttl_seconds=ttl_seconds,
                 expected_expires_at=expires_at,
+                timeout_seconds=_timeout_seconds,
+                required_base_commit=_required_base_commit,
             )
             if not rm_res.get("success"):
                 return {"success": False, "had_worktree": True, "cleanup": rm_res, "error": rm_res.get("error", "cleanup failed")}
 
             cleaned_at = time.time()
             cleaned_wt = {**wt, "cleanup_success": True, "cleaned_at": cleaned_at}
+            cleaned_wt.pop("cleanup_pending", None)
+            cleaned_wt.pop("cleanup_warning", None)
             state_data = {**task.checkpoint.state_data, "worktree": cleaned_wt}
             updated_checkpoint = TaskCheckpoint(
                 phase=task.checkpoint.phase,

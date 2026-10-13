@@ -1699,6 +1699,13 @@ def create_git_worktree(
         metadata_path = _worktree_ownership_path(target_dir)
         if metadata_path is None:
             raise RuntimeError("could not locate worktree administrative directory")
+        base_result = run_hidden(
+            ["git", "-C", str(repo), "rev-parse", "--verify", f"{base_commit}^{{commit}}"],
+            capture_output=True, text=True, check=False, timeout=5,
+            **hidden_run_kwargs(),
+        )
+        creator = process_identity(os.getpid())
+        base_sha = base_result.stdout.strip() if base_result.returncode == 0 else ""
         metadata = {
             "schema_version": 1,
             "worktree_id": worktree_id,
@@ -1710,6 +1717,11 @@ def create_git_worktree(
             "created_at": created_at_value,
             "ttl_seconds": ttl_value,
             "expires_at": expires_at_value,
+            "base_commit": base_sha,
+            "creator_pid": creator.get("pid") if creator else None,
+            "creator_creation_identity": creator.get("creation_identity") if creator else None,
+            "creator_creation_identity_type": creator.get("creation_identity_type") if creator else None,
+            "creator_executable": creator.get("executable") if creator else None,
         }
         metadata_tmp = metadata_path.with_name(f".{metadata_path.name}.{uuid.uuid4().hex}.tmp")
         metadata_tmp.write_text(json.dumps(metadata, sort_keys=True, separators=(",", ":")), encoding="utf-8")
@@ -1727,6 +1739,11 @@ def create_git_worktree(
             "created_at": created_at_value,
             "ttl_seconds": ttl_value,
             "expires_at": expires_at_value,
+            "base_commit": base_sha,
+            "creator_pid": creator.get("pid") if creator else None,
+            "creator_creation_identity": creator.get("creation_identity") if creator else None,
+            "creator_creation_identity_type": creator.get("creation_identity_type") if creator else None,
+            "creator_executable": creator.get("executable") if creator else None,
         }
     except Exception as exc:
         if created_checkout:
@@ -1776,6 +1793,8 @@ def remove_git_worktree(
     expected_created_at: float | None = None,
     expected_ttl_seconds: float | None = None,
     expected_expires_at: float | None = None,
+    timeout_seconds: float = 30.0,
+    required_base_commit: str = "",
 ) -> dict[str, Any]:
     """Remove only clean worktree whose persisted owner metadata matches caller."""
     if len(args) >= 2:
@@ -1795,6 +1814,7 @@ def remove_git_worktree(
     if resolved_repo is None or resolved_target is None:
         return {"success": False, "error": "repository or worktree path is unavailable"}
     repo = Path(resolved_repo).expanduser().resolve(strict=False)
+    timeout = max(0.5, min(float(timeout_seconds), 30.0))
     raw_target = Path(resolved_target).expanduser()
     if raw_target.is_symlink():
         return {"success": False, "error": "worktree path must not be a symlink"}
@@ -1812,8 +1832,8 @@ def remove_git_worktree(
         if not target.is_dir() or not (repo / ".git").exists():
             return {"success": False, "error": "repository or worktree path is unavailable"}
 
-        repo_common_raw = _git_value(repo, "rev-parse", "--git-common-dir")
-        target_common_raw = _git_value(target, "rev-parse", "--git-common-dir")
+        repo_common_raw = _git_value(repo, "rev-parse", "--git-common-dir", timeout=timeout)
+        target_common_raw = _git_value(target, "rev-parse", "--git-common-dir", timeout=timeout)
         if not repo_common_raw or not target_common_raw:
             return {"success": False, "error": "repository worktree identity is unavailable"}
         repo_common = Path(repo_common_raw)
@@ -1825,10 +1845,10 @@ def remove_git_worktree(
         if repo_common.resolve(strict=False) != target_common.resolve(strict=False):
             return {"success": False, "error": "worktree belongs to another repository"}
 
-        top_level = _git_value(target, "rev-parse", "--show-toplevel")
+        top_level = _git_value(target, "rev-parse", "--show-toplevel", timeout=timeout)
         if not top_level or Path(top_level).resolve(strict=False) != target:
             return {"success": False, "error": "worktree path does not match checkout root"}
-        listed = _git_value(repo, "worktree", "list", "--porcelain", timeout=20)
+        listed = _git_value(repo, "worktree", "list", "--porcelain", timeout=timeout)
         listed_paths = {
             Path(line.removeprefix("worktree ")).resolve(strict=False)
             for line in listed.splitlines()
@@ -1844,7 +1864,7 @@ def remove_git_worktree(
         if not isinstance(metadata, dict):
             return {"success": False, "error": "worktree ownership metadata is invalid"}
         recorded_branch = str(metadata.get("branch", ""))
-        current_branch = _git_value(target, "symbolic-ref", "--short", "HEAD")
+        current_branch = _git_value(target, "symbolic-ref", "--short", "HEAD", timeout=timeout)
         if (
             metadata.get("schema_version") != 1
             or str(metadata.get("worktree_id", "")) != worktree_id
@@ -1890,11 +1910,35 @@ def remove_git_worktree(
                 capture_output=True,
                 text=True,
                 check=False,
-                timeout=30,
+                timeout=timeout,
                 **hidden_run_kwargs(),
             )
             if status.returncode != 0 or status.stdout.strip():
                 return {"success": False, "error": "worktree contains uncommitted or ignored changes"}
+
+        if required_base_commit:
+            status_now = run_hidden(
+                ["git", "-C", str(target), "status", "--porcelain", "--untracked-files=all", "--ignored"],
+                capture_output=True, text=True, check=False, timeout=timeout, **hidden_run_kwargs(),
+            )
+            root_head = _git_value(repo, "rev-parse", "--verify", "HEAD^{commit}", timeout=timeout)
+            worktree_head = _git_value(target, "rev-parse", "--verify", "HEAD^{commit}", timeout=timeout)
+            if status_now.returncode != 0 or status_now.stdout.strip() or not root_head or not worktree_head:
+                return {"success": False, "error": "worktree changed during automatic cleanup"}
+            for ancestor in (required_base_commit, worktree_head):
+                proof = run_hidden(
+                    ["git", "-C", str(repo), "merge-base", "--is-ancestor", ancestor, root_head],
+                    capture_output=True, text=True, check=False, timeout=timeout, **hidden_run_kwargs(),
+                )
+                if proof.returncode != 0:
+                    return {"success": False, "error": "worktree changed outside approved repository history"}
+            latest_head = _git_value(target, "rev-parse", "--verify", "HEAD^{commit}", timeout=timeout)
+            latest_status = run_hidden(
+                ["git", "-C", str(target), "status", "--porcelain", "--untracked-files=all", "--ignored"],
+                capture_output=True, text=True, check=False, timeout=timeout, **hidden_run_kwargs(),
+            )
+            if latest_head != worktree_head or latest_status.returncode != 0 or latest_status.stdout.strip():
+                return {"success": False, "error": "worktree changed during automatic cleanup"}
 
         remove_cmd = ["git", "-C", str(repo), "worktree", "remove"]
         if force:
@@ -1905,16 +1949,22 @@ def remove_git_worktree(
             capture_output=True,
             text=True,
             check=False,
-            timeout=30,
+            timeout=timeout,
             **hidden_run_kwargs(),
         )
         if removed.returncode != 0:
-            if not force:
-                return {"success": False, "error": removed.stderr.strip() or "Git refused to remove worktree"}
-            if target.exists():
-                shutil.rmtree(target, ignore_errors=True)
+            return {"success": False, "error": removed.stderr.strip() or "Git refused to remove worktree"}
 
-        prune_git_worktrees(repo, expire="now")
+        pruned = prune_git_worktrees(repo, expire="now", timeout_seconds=timeout)
+        if not pruned.get("success"):
+            return {
+                "success": False,
+                "error": pruned.get("error") or "Git worktree prune failed",
+                "worktree_removed": not target.exists(),
+                "repo_root": str(repo),
+                "worktree_path": str(target),
+                "worktree_id": worktree_id,
+            }
 
         branch_deleted = False
         if delete_branch:
@@ -1976,7 +2026,9 @@ def list_git_worktrees(repo_root: str | Path) -> dict[str, Any]:
         return {"success": False, "error": str(exc)}
 
 
-def prune_git_worktrees(repo_root: str | Path, expire: str | None = None) -> dict[str, Any]:
+def prune_git_worktrees(
+    repo_root: str | Path, expire: str | None = None, timeout_seconds: float = 15.0
+) -> dict[str, Any]:
     """Prune stale Git worktrees."""
     repo = Path(repo_root).expanduser().resolve(strict=False)
     if not shutil.which("git"):
@@ -1987,7 +2039,8 @@ def prune_git_worktrees(repo_root: str | Path, expire: str | None = None) -> dic
             cmd.extend(["--expire", expire])
         proc = run_hidden(
             cmd,
-            capture_output=True, text=True, check=False, timeout=15, **hidden_run_kwargs()
+            capture_output=True, text=True, check=False,
+            timeout=max(0.5, min(float(timeout_seconds), 30.0)), **hidden_run_kwargs()
         )
         if proc.returncode != 0:
             err_msg = proc.stderr.strip()

@@ -532,6 +532,14 @@ class LocalAIApp:
                 if now - last_maintenance >= maintenance_interval:
                     if getattr(self, "agent_state", None) is not None and getattr(self.agent_state, "enabled", False):
                         try:
+                            from .operational_mode import load_operational_mode
+                            mode = load_operational_mode(self.config.get("server", {}).get("state_dir", "state"))
+                            if (
+                                mode.mode == "active" and not mode.degraded
+                                and not int(sched.get("queued", 0) or 0)
+                                and not int(sched.get("inflight", 0) or 0)
+                            ):
+                                self.agent_state.tasks.cleanup_idle_worktrees()
                             self.agent_state.cleanup(retention_days=30)
                             if hasattr(self.agent_state, "memory") and hasattr(self.agent_state.memory, "reap_expired"):
                                 self.agent_state.memory.reap_expired()
