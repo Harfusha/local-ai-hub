@@ -1001,11 +1001,12 @@ class CodeIndex:
         # The registry is shared by CodeIndex instances that use this database.
         _advance_query_cache_generation(self._query_cache_generation_key)
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self, *, register_archive_function: bool = True) -> sqlite3.Connection:
         con = connect_sqlite(self.db_path, timeout_seconds=5.0, row_factory=sqlite3.Row)
         try:
             con.execute("PRAGMA recursive_triggers=ON")
-            con.create_function("hub_root_archive_path", 1, is_root_archive_path, deterministic=True)
+            if register_archive_function:
+                con.create_function("hub_root_archive_path", 1, is_root_archive_path, deterministic=True)
         except Exception:
             con.close()
             raise
@@ -3027,14 +3028,31 @@ class CodeIndex:
         """Detect unreferenced symbols using the precomputed symbols and refs tables."""
         resolved_root = canonical_root(root)
         try:
-            with self._lock, closing(self._connect()) as con:
+            with self._lock, closing(self._connect(register_archive_function=False)) as con:
+                archive_paths = {
+                    str(row[0])
+                    for row in con.execute(
+                        "SELECT path FROM symbols WHERE root=? UNION SELECT path FROM refs WHERE root=?",
+                        (resolved_root, resolved_root),
+                    ).fetchall()
+                    if is_root_archive_path(str(row[0]))
+                }
+                con.execute("CREATE TEMP TABLE dead_code_archive_paths(path TEXT PRIMARY KEY)")
+                con.executemany(
+                    "INSERT INTO dead_code_archive_paths(path) VALUES(?)",
+                    ((path,) for path in archive_paths),
+                )
                 sql = f"""
                 SELECT s.path, s.name, s.kind, s.line, s.end_line, s.container, s.name_path, s.access
                 FROM symbols s
                 LEFT JOIN refs r ON s.root = r.root AND s.name = r.name
-                    AND {_root_archive_path_sql("r.path")}
+                    AND NOT EXISTS (
+                        SELECT 1 FROM dead_code_archive_paths archived WHERE archived.path = r.path
+                    )
                 WHERE s.root = ?
-                  AND {_root_archive_path_sql("s.path")}
+                  AND NOT EXISTS (
+                      SELECT 1 FROM dead_code_archive_paths archived WHERE archived.path = s.path
+                  )
                   AND r.name IS NULL
                   AND s.name NOT IN (
                       'main', 'run', 'cli', 'app', 'handler', '__init__', '__str__', '__repr__',
