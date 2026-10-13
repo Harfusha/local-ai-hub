@@ -3032,7 +3032,7 @@ class CodeIndex:
                 SELECT s.path, s.name, s.kind, s.line, s.end_line, s.container, s.name_path, s.access
                 FROM symbols s
                 LEFT JOIN refs r ON s.root = r.root AND s.name = r.name
-                    AND {_root_archive_path_sql("r.path")}
+                    AND (r.path NOT LIKE '%archive%' AND r.path NOT LIKE '%.trash%' AND r.path NOT LIKE 'handoff/%' AND r.path NOT LIKE 'handoff\\%' AND r.path NOT LIKE '.handoff/%' AND r.path NOT LIKE '.handoff\\%' AND r.path NOT LIKE 'artifacts/%' AND r.path NOT LIKE '.validation/%')
                 WHERE s.root = ?
                   AND {_root_archive_path_sql("s.path")}
                   AND r.name IS NULL
