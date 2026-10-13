@@ -65,6 +65,7 @@ class EvidenceStore:
                     text TEXT NOT NULL, created_at REAL NOT NULL, accessed_at REAL NOT NULL, hits INTEGER NOT NULL DEFAULT 0
                 );
                 CREATE INDEX IF NOT EXISTS idx_evidence_root_path ON evidence(root,path);
+                CREATE INDEX IF NOT EXISTS idx_evidence_hits ON evidence(hits);
                 """)
                 con.commit()
         except sqlite3.DatabaseError as exc:
@@ -81,6 +82,7 @@ class EvidenceStore:
                 con.executescript("""
                 CREATE TABLE IF NOT EXISTS evidence(id TEXT PRIMARY KEY,root TEXT NOT NULL,path TEXT NOT NULL,file_hash TEXT NOT NULL,start_line INTEGER NOT NULL,end_line INTEGER NOT NULL,text TEXT NOT NULL,created_at REAL NOT NULL,accessed_at REAL NOT NULL,hits INTEGER NOT NULL DEFAULT 0);
                 CREATE INDEX IF NOT EXISTS idx_evidence_root_path ON evidence(root,path);
+                CREATE INDEX IF NOT EXISTS idx_evidence_hits ON evidence(hits);
                 """)
 
     @staticmethod
@@ -210,7 +212,7 @@ class EvidenceStore:
 
     def stats(self) -> dict[str, Any]:
         try:
-            with self._lock, closing(self._connect()) as con:
+            with closing(self._connect()) as con:
                 row = con.execute("SELECT COUNT(*),COALESCE(SUM(hits),0) FROM evidence").fetchone()
             return {"entries": int(row[0]), "hits": int(row[1]), "healthy": True}
         except sqlite3.DatabaseError:

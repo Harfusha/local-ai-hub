@@ -188,6 +188,7 @@ class RecoveryJournal:
                 status_code INTEGER NOT NULL DEFAULT 0, response_json TEXT NOT NULL DEFAULT ''
             )""")
             con.execute("CREATE INDEX IF NOT EXISTS idx_recovery_state ON requests(state, updated_at)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_recovery_updated ON requests(updated_at DESC)")
             con.commit()
         return True
 

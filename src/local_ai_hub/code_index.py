@@ -24,6 +24,7 @@ from .normalizer import tokenize_query_terms
 from .process_utils import canonical_root
 from .repo_tools import is_root_archive_path
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, quick_sanity_check
+from .sqlite_counts import global_row_counts, initialize_row_counts
 
 _CODE_INDEX_INIT_LOCKS: weakref.WeakValueDictionary[str, threading.RLock] = weakref.WeakValueDictionary()
 _CODE_INDEX_INIT_LOCKS_GUARD = threading.Lock()
@@ -1003,6 +1004,7 @@ class CodeIndex:
     def _connect(self) -> sqlite3.Connection:
         con = connect_sqlite(self.db_path, timeout_seconds=5.0, row_factory=sqlite3.Row)
         try:
+            con.execute("PRAGMA recursive_triggers=ON")
             con.create_function("hub_root_archive_path", 1, is_root_archive_path, deterministic=True)
         except Exception:
             con.close()
@@ -1086,6 +1088,7 @@ class CodeIndex:
             raise sqlite3.DatabaseError(
                 "stale derived code-index schema; rebuild this cache"
             )
+        initialize_row_counts(con, ("files", "symbols", "refs", "edges"))
 
     def _init_db(self) -> None:
         with _code_index_initialization_lock(self.db_path):
@@ -3071,22 +3074,23 @@ class CodeIndex:
     def status(self, root: str | None = None) -> dict[str, Any]:
         now = time.monotonic()
         key = str(root or "__all__")
-        with self._lock:
-            cached = self._status_cache.get(key)
-            if cached and now - cached["time"] < 5.0:
-                return dict(cached["data"])
+        cached = self._status_cache.get(key)
+        if cached and now - cached["time"] < 5.0:
+            return dict(cached["data"])
         try:
             # Table names are compile-time constants; validate against explicit whitelist
             # before f-string interpolation as defence-in-depth.
             _ALLOWED_TABLES = {"files", "symbols", "refs", "edges"}
-            with self._lock, closing(self._connect()) as con:
+            # A fresh WAL reader sees committed counts without waiting for the
+            # Python lock held by a large indexing transaction.
+            with closing(self._connect()) as con:
                 where = " WHERE root=?" if root else ""
                 args = (canonical_root(root),) if root else ()
-                vals = {t: int(con.execute(f"SELECT COUNT(*) FROM {t}{where}", args).fetchone()[0])  # noqa: S608
-                        for t in _ALLOWED_TABLES}
+                vals = ({t: int(con.execute(f"SELECT COUNT(*) FROM {t}{where}", args).fetchone()[0])  # noqa: S608
+                         for t in _ALLOWED_TABLES} if root else
+                        global_row_counts(con, ("files", "symbols", "refs", "edges")))
             res = {"success": True, "healthy": True, **vals}
-            with self._lock:
-                self._status_cache[key] = {"time": now, "data": res}
+            self._status_cache[key] = {"time": now, "data": res}
             return res
         except sqlite3.DatabaseError as exc:
             return {"success": False, "healthy": False, "error": str(exc)}

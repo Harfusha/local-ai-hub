@@ -397,6 +397,9 @@ class SQLiteCache:
     def __init__(self, path: Path, namespace: str, ttl_seconds: int = 86400, max_entries: int = 5000, *, busy_timeout_seconds: float = 0.75, busy_retries: int = 3):
         self.path = path
         self.namespace = f"{__version__}:{namespace}"
+        # Every namespace sharing this SQLite file must serialize schema recovery
+        # before opening a corrupt file (Windows forbids renaming open handles).
+        self._schema_coordinator = _CommandCacheCoordinator(path, "sqlite-derived-schema")
         self._command_cache_coordinator = (
             _CommandCacheCoordinator(path, self.namespace) if namespace.startswith("command:") else None
         )
@@ -441,41 +444,41 @@ class SQLiteCache:
                 )"""
             )
             con.execute("CREATE INDEX IF NOT EXISTS idx_cache_access ON cache_entries(namespace, accessed_at)")
+            con.execute("CREATE INDEX IF NOT EXISTS idx_cache_stats ON cache_entries(namespace, hits, created_at, accessed_at)")
             con.commit()
 
     def _recover(self) -> None:
-        # LIMITATION: _SQLITE_RECOVERY_LOCK is process-local. If two hub processes
-        # concurrently detect a corrupted DB, both may rename it and recreate the schema.
-        # This is safe because SQLiteCache stores only derived, disposable data (command
-        # results, query results) that can be rebuilt on the next cache miss. No
-        # cross-process file lock is needed — worst case is two fresh empty caches.
-        with _SQLITE_RECOVERY_LOCK:
-            # Another cache instance may already have recovered the shared DB.
-            try:
-                if self.path.exists():
-                    with closing(connect_sqlite(self.path, timeout_seconds=5.0)) as con:
-                        if quick_sanity_check(con):
-                            self._create_schema()
-                            return
-            except Exception as exc:
-                if is_busy_error(exc):
-                    # Busy database is healthy; do not quarantine due to transient lock contention
+        with _SQLITE_RECOVERY_LOCK, self._schema_coordinator.locked():
+            self._recover_locked()
+
+    def _recover_locked(self) -> None:
+        """Recover with both locks held; never acquire a nested OS file lock."""
+        # Another process may have recovered while this one waited for the lock.
+        try:
+            if self.path.exists():
+                with closing(connect_sqlite(self.path, timeout_seconds=5.0)) as con:
+                    healthy = quick_sanity_check(con)
+                if healthy:
                     self._create_schema()
                     return
+        except Exception as exc:
+            if is_busy_error(exc):
+                self._create_schema()
+                return
 
-            stamp = f"{int(time.time())}-{threading.get_ident()}"
-            try:
-                if self.path.exists():
-                    self.path.replace(self.path.with_name(self.path.name + f".corrupt-{stamp}"))
-                for suffix in ("-wal", "-shm"):
-                    side = Path(str(self.path) + suffix)
-                    if side.exists():
-                        side.unlink()
-            except OSError:
-                # Best effort: if rename/delete races, schema creation below is
-                # still attempted. Foreground callers will degrade to a miss.
-                pass
-            self._create_schema()
+        stamp = f"{int(time.time())}-{os.getpid()}-{threading.get_ident()}"
+        try:
+            if self.path.exists():
+                self.path.replace(self.path.with_name(self.path.name + f".corrupt-{stamp}"))
+            for suffix in ("-wal", "-shm"):
+                side = Path(str(self.path) + suffix)
+                if side.exists():
+                    side.unlink()
+        except OSError:
+            # Foreground callers degrade if an unrelated file owner prevents
+            # recovery; no durable database participates in this operation.
+            pass
+        self._create_schema()
 
     def _init_db(self) -> None:
         # Several cache namespaces share one derived-data database. Schema creation +
@@ -486,15 +489,16 @@ class SQLiteCache:
         with _SQLITE_RECOVERY_LOCK:
             if identity in _SQLITE_INITIALIZED_PATHS:
                 return
-            try:
-                self._create_schema()
-                with closing(self._connect()) as con:
-                    if not quick_sanity_check(con):
-                        raise sqlite3.DatabaseError("quick_check failed")
-            except sqlite3.DatabaseError as exc:
-                if is_busy_error(exc):
-                    return
-                self._recover()
+            with self._schema_coordinator.locked():
+                try:
+                    self._create_schema()
+                    with closing(self._connect()) as con:
+                        if not quick_sanity_check(con):
+                            raise sqlite3.DatabaseError("quick_check failed")
+                except sqlite3.DatabaseError as exc:
+                    if is_busy_error(exc):
+                        return
+                    self._recover_locked()
             _SQLITE_INITIALIZED_PATHS.add(identity)
 
     def _safe(self, operation: Callable[[], Any], fallback: Any) -> Any:
@@ -623,7 +627,7 @@ class SQLiteCache:
 
     def stats(self) -> dict[str, Any]:
         def op() -> dict[str, Any]:
-            with self._lock, closing(self._connect()) as con:
+            with closing(self._connect()) as con:
                 row = con.execute(
                     "SELECT COUNT(*), COALESCE(SUM(hits),0), COALESCE(MIN(created_at),0), COALESCE(MAX(accessed_at),0) FROM cache_entries WHERE namespace=?",
                     (self.namespace,),
