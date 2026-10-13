@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from urllib.error import HTTPError
 from urllib.request import Request
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
@@ -311,8 +311,10 @@ class LlamaCppRoutingTests(unittest.TestCase):
     def test_model_readiness_consumes_request_deadline(self):
         router = LlamaCppRouter(self._config())
         lines = [b'data: {"choices":[{"delta":{"content":"too late"}}]}\n']
+        clock = Mock(wraps=time)
+        clock.monotonic.side_effect = [100.0, 100.0, 101.0]
         with patch.object(router, "ensure_model", return_value=True) as ensure_model, \
-             patch("local_ai_hub.llama_cpp.time.monotonic", side_effect=[100.0, 100.0, 101.0]), \
+             patch("local_ai_hub.llama_cpp.time", clock), \
              patch("local_ai_hub.llama_cpp._open_interruptible_response", return_value=_Response(lines=lines)) as open_request:
             result = router.request_stream(
                 "/api/generate", {"model": "qwen2.5-coder:3b", "prompt": "hi"}, lambda _text: None, timeout=1,
@@ -324,8 +326,13 @@ class LlamaCppRoutingTests(unittest.TestCase):
 
     def test_caller_absolute_deadline_is_preserved_for_model_readiness(self):
         router = LlamaCppRouter(self._config())
+        shared_monotonic = time.monotonic
+        clock = Mock(wraps=time)
+        clock.monotonic.side_effect = [100.0, 100.0, 100.1, 100.2]
         with patch.object(router, "ensure_model", return_value=False) as ensure_model, \
-             patch("local_ai_hub.llama_cpp.time.monotonic", side_effect=[100.0, 100.0, 100.1, 100.2]):
+             patch("local_ai_hub.llama_cpp.time", clock):
+            # Other Hub workers must retain their real shared deadline clock.
+            self.assertIs(time.monotonic, shared_monotonic)
             result = router.request_stream(
                 "/api/generate", {"model": "qwen2.5-coder:3b", "prompt": "hi"}, lambda _text: None,
                 timeout=10, deadline=100.5,
