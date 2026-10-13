@@ -3029,19 +3029,22 @@ class CodeIndex:
         resolved_root = canonical_root(root)
         try:
             with self._lock, closing(self._connect(register_archive_function=False)) as con:
-                archive_paths = {
-                    str(row[0])
-                    for row in con.execute(
+                con.execute("CREATE TEMP TABLE dead_code_archive_paths(path TEXT PRIMARY KEY)")
+                with closing(
+                    con.execute(
                         "SELECT path FROM symbols WHERE root=? UNION SELECT path FROM refs WHERE root=?",
                         (resolved_root, resolved_root),
-                    ).fetchall()
-                    if is_root_archive_path(str(row[0]))
-                }
-                con.execute("CREATE TEMP TABLE dead_code_archive_paths(path TEXT PRIMARY KEY)")
-                con.executemany(
-                    "INSERT INTO dead_code_archive_paths(path) VALUES(?)",
-                    ((path,) for path in archive_paths),
-                )
+                    )
+                ) as path_rows:
+                    while path_batch := path_rows.fetchmany(250):
+                        con.executemany(
+                            "INSERT INTO dead_code_archive_paths(path) VALUES(?)",
+                            (
+                                (path,)
+                                for row in path_batch
+                                if is_root_archive_path(path := str(row[0]))
+                            ),
+                        )
                 sql = f"""
                 SELECT s.path, s.name, s.kind, s.line, s.end_line, s.container, s.name_path, s.access
                 FROM symbols s
