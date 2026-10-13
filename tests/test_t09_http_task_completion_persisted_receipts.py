@@ -40,6 +40,9 @@ def test_http_task_complete_uses_persisted_tenant_scoped_receipts(
     )
 
     app = LocalAIApp(str(config_path))
+    scoped_tenant = http_server._derive_root_tenant(
+        tenant_id, str(project_root.resolve()), "t09-test-token"
+    )
     app.agent_tasks.create(
         GoalContract(
             goal="complete task through production HTTP route",
@@ -48,9 +51,7 @@ def test_http_task_complete_uses_persisted_tenant_scoped_receipts(
         ScopeContext(
             repository_id=str(project_root),
             task_id=task_id,
-            session_id=http_server._derive_root_tenant(
-                tenant_id, str(project_root.resolve()), "t09-test-token"
-            ),
+            session_id=scoped_tenant,
         ),
         task_id=task_id,
         actor=tenant_id,
@@ -59,7 +60,7 @@ def test_http_task_complete_uses_persisted_tenant_scoped_receipts(
     command_result = app.commands.run_project_command(
         "test",
         str(project_root),
-        tenant=tenant_id,
+        tenant=scoped_tenant,
         task_id=task_id,
         criterion="test",
         timeout=60,
@@ -72,6 +73,17 @@ def test_http_task_complete_uses_persisted_tenant_scoped_receipts(
     assert command_evidence
     repository_revision = str(receipt.get("repository_revision") or "")
     assert repository_revision
+    # The direct broker fixture must use the same root-bound tenant as HTTP,
+    # while receipt/artifact ownership remains the human-readable agent name.
+    command_id = str(receipt["command_id"])
+    assert app.commands.get_command_execution_record(
+        command_id, tenant=tenant_id, task_id=task_id,
+        repository_root=str(project_root),
+    ) is None
+    assert app.commands.get_command_execution_record(
+        command_id, tenant=scoped_tenant, task_id=task_id,
+        repository_root=str(project_root),
+    ) is not None
     task_state = app.agent_tasks.get(task_id)
     assert task_state is not None
     state_data = dict(task_state.checkpoint.state_data)
