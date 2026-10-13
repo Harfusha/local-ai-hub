@@ -572,7 +572,7 @@ ignore_dirs = [
   ".serena", ".local-ai-hub", "tool-envs", "site-packages", "__pycache__",
   ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".nox", ".eggs", "htmlcov",
   "target", "out", ".terraform", ".turbo", ".parcel-cache",
-  "Library", "Temp", "Logs", "UserSettings"
+  "Library", "Temp", "Logs", "UserSettings", ".system_generated"
 ]
 
 
