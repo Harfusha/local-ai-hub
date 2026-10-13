@@ -4498,3 +4498,11 @@ have their own bounded budget and diagnostics. Cancellation still uses the
 original two-second wait, with all running/cancelled/terminal assertions intact.
 No production timer changed. Async mode and job tests: 36 passed in 7.44s
 (`req_824a4ff478f3`). This is not a passing whole-suite receipt.
+
+`08e68224` stopped after 5931 passes, 47 skips and 20 subtests on the persisted
+HTTP receipt fixture. It had created a root-derived task tenant but invoked the
+broker directly under the agent name. The fixture now uses the authenticated
+root tenant consistently and separately verifies that the owner name cannot
+retrieve its execution record. Production scope checks and all unauthorized,
+cross-tenant, event-preservation and replay assertions remain. Real HTTP and
+project receipt regressions: 15 passed in 11.80s (`req_dad0af0f580d`).
