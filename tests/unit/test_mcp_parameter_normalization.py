@@ -48,6 +48,46 @@ def test_repo_preserves_legacy_positional_root_and_query(monkeypatch, tmp_path):
     assert captured == {"action": "search", "root": str(tmp_path), "query": "needle"}
 
 
+def test_repo_preserves_legacy_positional_diff(monkeypatch, tmp_path):
+    captured = {}
+
+    class DummyClient:
+        def post(self, url, payload, **kwargs):
+            if url == "/api/repo/diagnose":
+                captured.update(url=url, payload=payload)
+            return {"success": True}
+
+    monkeypatch.setattr(mcp_server, "CLIENT", DummyClient())
+
+    mcp_server.local_ai_repo("diagnose", str(tmp_path), "", "inspect this diff")
+
+    assert captured["url"] == "/api/repo/diagnose"
+    assert captured["payload"]["text"] == "inspect this diff"
+
+
+def test_repo_preserves_late_positional_changed_paths_and_phase(monkeypatch, tmp_path):
+    captured = {}
+
+    class DummyClient:
+        def post(self, url, payload, **kwargs):
+            if url == "/api/context/pack":
+                captured.update(url=url, payload=payload)
+            return {"success": True, "context": "ok"}
+
+    monkeypatch.setattr(mcp_server, "CLIENT", DummyClient())
+
+    result = mcp_server.local_ai_repo(
+        "context", str(tmp_path), "find changes", "", "", "", "", "HEAD",
+        False, False, 0, None, "adaptive", "", "auto", "", None, "",
+        False, False, None, None, 0, "", "", False, "", "", "", "", "", "",
+        ["src/changed.py"], "review", ["src/focus.py"], "", guarded=True,
+    )
+
+    assert captured.get("url") == "/api/context/pack", repr(result)
+    assert captured["payload"]["changed_paths"] == ["src/changed.py"]
+    assert captured["payload"]["phase"] == "review"
+
+
 def test_command_preserves_legacy_positional_timeout(monkeypatch, tmp_path):
     captured = {}
 
