@@ -94,7 +94,7 @@ def test_telemetry_timeline(tmp_path: Path) -> None:
             duration_ms=12.5,
             success=True,
         )
-        telemetry.flush(timeout=0.5)
+        assert telemetry.flush(), "telemetry writer did not acknowledge the recorded events"
 
         timeline = telemetry.get_timeline(limit=10)
         assert len(timeline) >= 2
