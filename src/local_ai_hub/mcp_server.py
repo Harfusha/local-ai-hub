@@ -3306,7 +3306,6 @@ def _local_ai_repo_impl(
 def local_ai_repo(
     action: RepoAction,
     root: str | None = None,
-    cwd: str | None = None,
     query: str | None = None,
     symbol: str | None = None,
     diff: str = "",
@@ -3338,9 +3337,6 @@ def local_ai_repo(
     repository_id: str = "",
     session_id: str = "",
     repository_revision: str = "",
-    changed_paths: list[str] | None = None,
-    paths: list[str] | None = None,
-    files: list[str] | None = None,
     phase: RepoPhase = "",
     focus: list[str] | None = None,
     preload_profile: str = "",
@@ -3356,6 +3352,10 @@ def local_ai_repo(
     directory_hints: list[str] | None = None,
     exclude_paths: list[str] | None = None,
     force_include_paths: list[str] | None = None,
+    cwd: str | None = None,
+    changed_paths: list[str] | None = None,
+    paths: list[str] | None = None,
+    files: list[str] | None = None,
 ) -> dict[str, Any]:
     """Primary bounded repository worker. Use when: indexed repository evidence is needed. Skip when: fresh evidence already answers it."""
     root = root if root is not None else cwd if cwd is not None else "."
@@ -3536,7 +3536,6 @@ def local_ai_command(
     action: CommandAction,
     command: str = "",
     cwd: str | None = None,
-    root: str | None = None,
     timeout: int = 0,
     force: bool = False,
     task_id: str = "",
@@ -3551,14 +3550,15 @@ def local_ai_command(
     patch: str = "",
     auto_rollback: bool = True,
     paths: list[str] | None = None,
-    changed_paths: list[str] | None = None,
-    files: list[str] | None = None,
     job_id: str = "",
     lint_action: str = "submit",
     extra_fields: list[str] | None = None,
     max_response_tokens: int = 0,
     response_profile: str = "",
     reuse_key: str = "",
+    root: str | None = None,
+    changed_paths: list[str] | None = None,
+    files: list[str] | None = None,
 ) -> dict[str, Any]:
     """Bounded command broker. Set snapshot=true to record a best-effort Git snapshot. For action=run only, rollback_on_failure=true requires paths to list the flat, relative files directly under cwd that may be restored or removed; missing/unsafe paths reject execution. It cannot be combined with auto_fix. Rollback preserves all files outside that explicit scope. Other command and streaming behavior remains bounded and tenant-scoped. Use when: a repeatable test, lint, typecheck, build, analysis, or safe read-only command is needed. Skip when: no command is needed or a fresh cached result already answers it."""
     cwd = cwd if cwd is not None else root if root is not None else "."
