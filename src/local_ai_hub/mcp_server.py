@@ -480,16 +480,18 @@ def _specialized_note(tool_name: str) -> str:
 
 
 def _desc_status() -> str:
+    details = "brief, cache, telemetry, full" + (", agent_state" if FEATURES.agent_os else "")
     if LEAN_SCHEMAS:
         return (
-            "Health, cache, telemetry, and agent_state inspector. Aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Actions: brief, cache, telemetry, full, agent_state."
+            "Health, cache, telemetry, and enabled Agent OS state inspector. Aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key."
+            f" Actions: {details}."
             " Use when: make one bounded health, cache, or telemetry check."
             " Skip when: repository evidence or task work is needed."
         )
     ollama_note = " ollama_online," if FEATURES.ollama else ""
     agent_state_note = " With Agent OS enabled, `detail=agent_state` summarizes durable task state." if FEATURES.agent_os else ""
     return (
-        "Health/queue/token-saving status. detail: brief, cache, telemetry, full, agent_state. scope: process (default) or window."
+        f"Health/queue/token-saving status. detail: {details}. scope: process (default) or window."
         f" Telemetry is metadata-only.{ollama_note}"
         f"{agent_state_note}"
         f"{_specialized_note('local_ai_status')}"
@@ -612,7 +614,7 @@ def _desc_repo() -> str:
         )
     if LEAN_SCHEMAS:
         return (
-            "Primary repository worker for repository navigation, symbols, and impact with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. CALL `context` first for every non-trivial repository task: its adaptive orchestrator fuses deterministic/indexed evidence, Serena, bounded lexical search, and RAG, then returns grounded diverse context. Send the task/context rather than handmade grep terms. It accepts guarded task/phase/focus fields, requires evidence IDs and reuse candidates first, treats deterministic/indexed evidence as authoritative, limits local models to ranking/compression of structured evidence, and requires `override_reason` plus approval when requested. Raw model/debug fields stay omitted unless requested through extra_fields. Omit guarded fields to preserve legacy fast/full behavior. Use deterministic/indexed actions for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong. Native fallback requires terminal=true and retryable=false. Actions: search, code_index, context, solve, review_diff, symbols, callers, dead_code."
+            "Primary repository worker for repository navigation, symbols, and impact with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. CALL `context` first for every non-trivial repository task: its adaptive orchestrator fuses deterministic/indexed evidence, Serena, bounded lexical search, and RAG, then returns grounded diverse context. Send the task/context rather than handmade grep terms. It accepts guarded task/phase/focus fields, requires evidence IDs and reuse candidates first, treats deterministic/indexed evidence as authoritative, limits local models to ranking/compression of structured evidence, and requires `override_reason` plus approval when requested. Raw model/debug fields stay omitted unless requested through extra_fields. Omit guarded fields to preserve legacy fast/full behavior. Use deterministic/indexed actions for exact facts, symbols, diff and tests; use `local_ai_task` for semantic generation, reasoning, review, independent second opinions and compression. `solve` preserves one bounded local pass for explicit semantic requests even when exact evidence is strong. Native fallback requires terminal=true and retryable=false. Use `code_index` for indexed symbol lookup. Actions: search, code_index, context, solve, review_diff, callers, dead_code."
             " Use when: every non-trivial repository task needs indexed evidence or a bounded Hub operation."
             " Skip when: the task is not repository-scoped or fresh evidence already answers it and no independent Hub scope exists."
         )
@@ -687,7 +689,8 @@ def _desc_rag() -> str:
 def _desc_command() -> str:
     if LEAN_SCHEMAS:
         return (
-            "Safe CLI command broker for test, lint, typecheck, or build commands with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Native fallback requires terminal=true and retryable=false. Mutations never cache or single-flight. Speculative lint is opt-in, read-only, debounced, changed-path scoped, and cancellable. Actions: run, auto_fix, format, patch_and_verify, repair_loop, speculative_lint."
+            "Safe CLI command broker for test, lint, typecheck, or build commands with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Native fallback requires terminal=true and retryable=false. Mutations never cache or single-flight. Speculative lint is opt-in, read-only, debounced, changed-path scoped, and cancellable."
+            f" Actions: run, auto_fix, format, patch_and_verify, repair_loop{', speculative_lint' if FEATURES.speculative_lint else ''}."
             " Use when: a repeatable test, lint, typecheck, build, analysis, or safe read-only command is needed."
             " Skip when: no command is needed or a fresh cached result already answers it."
         )
@@ -710,8 +713,14 @@ def _desc_command() -> str:
 
 def _desc_coord() -> str:
     if LEAN_SCHEMAS:
+        supported = set(FEATURES.supported_coord_actions())
+        actions = [name for name in (
+            "claim", "release", "memo_put", "memo_search", "memory_record",
+            "memory_find", "context_compile", "task_create", "task_checkpoint",
+        ) if name in supported]
         return (
-            "Agent OS coordination for task contracts, ownership, checkpoints, and verification receipts with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key. Actions: claim, release, memory_record, memory_find, context_compile, task_create, task_checkpoint."
+            "Coordination for leases, memos, and enabled Agent OS task contracts, ownership, checkpoints, and verification receipts with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key."
+            f"{_actions_note(actions)}"
             " Use when: any non-trivial task benefits from durable state/verification, or Hub workers share edit paths or reusable findings."
             " Skip when: task is a trivial one-step lookup with no shared state to preserve."
         )

@@ -2931,3 +2931,12 @@ real HTTP fixture to require authorized-root HTTP 200, reject a foreign root,
 and await the bounded initial observability snapshot. These 64 targeted tests
 passed. The final integrated suite and installed acceptance remain pending;
 do not promote the installed candidate's evidence to these newer source bytes.
+
+The `7c66c9f9` whole run was deliberately cancelled through its owning broker
+before completion to correct a confirmed MCP description/schema mismatch.
+It has no passing whole-suite receipt. The lean repository description had
+advertised unsupported `symbols`; indexed symbol lookup uses `code_index`.
+Status/coordination Agent OS examples and speculative lint now follow enabled
+schema projections. Both install/update prompts match. Registered stdio catalog
+and description/schema parity across enabled/disabled projections: 91 passed
+in 4.76s (`req_fcb00efe1e98`). Final integrated and installed gates remain.
