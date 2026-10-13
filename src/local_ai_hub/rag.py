@@ -2033,6 +2033,8 @@ class RAGStore:
         return result
 
     def search(self, query: str, tenant: str, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None) -> dict[str, Any]:
+        if "/" in workspace or "\\" in workspace or ":" in workspace:
+            workspace = self.workspace_id(workspace)
         clean_query = normalize_query(query)
         revision = self.revision(tenant, workspace)
         scope_key = self._scope_key(tenant)
