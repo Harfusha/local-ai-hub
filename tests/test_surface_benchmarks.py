@@ -178,7 +178,7 @@ def _async_jobs_lifecycle_snapshot(scratch_root: Path) -> dict[str, object]:
     target_dir = scratch_root.resolve()
     observed: list[dict[str, object]] = []
     for manager in gc.get_objects():
-        if not isinstance(manager, AsyncJobManager):
+        if not issubclass(type(manager), AsyncJobManager):
             continue
         try:
             delayed = list(getattr(manager, "_delayed_dispatch", {}).values())
