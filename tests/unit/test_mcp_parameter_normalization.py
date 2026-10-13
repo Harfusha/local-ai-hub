@@ -34,6 +34,40 @@ def test_command_root_alias_maps_to_cwd(monkeypatch, tmp_path):
     assert captured["payload"]["root"] == str(tmp_path)
 
 
+def test_repo_preserves_legacy_positional_root_and_query(monkeypatch, tmp_path):
+    captured = {}
+
+    def capture(action, root, query, *args, **kwargs):
+        captured.update(action=action, root=root, query=query)
+        return {"success": True}
+
+    monkeypatch.setattr(mcp_server, "_local_ai_repo_impl", capture)
+
+    mcp_server.local_ai_repo("search", str(tmp_path), "needle")
+
+    assert captured == {"action": "search", "root": str(tmp_path), "query": "needle"}
+
+
+def test_command_preserves_legacy_positional_timeout(monkeypatch, tmp_path):
+    captured = {}
+
+    class DummyClient:
+        def post(self, url, payload, **kwargs):
+            captured.update(url=url, payload=payload)
+            return {"success": True}
+
+    monkeypatch.setattr(mcp_server, "CLIENT", DummyClient())
+    monkeypatch.setattr(mcp_server.FEATURES, "commands", True)
+    monkeypatch.setattr(mcp_server, "_client_root", lambda value: value)
+    monkeypatch.setattr(mcp_server, "_timeout", lambda _name: 300)
+
+    mcp_server.local_ai_command("run", "pytest -q", str(tmp_path), 27)
+
+    assert captured["url"] == "/api/command"
+    assert captured["payload"]["cwd"] == str(tmp_path)
+    assert captured["payload"]["timeout"] == 27
+
+
 def test_repo_paths_alias_maps_to_changed_paths(monkeypatch, tmp_path):
     captured = {}
 
