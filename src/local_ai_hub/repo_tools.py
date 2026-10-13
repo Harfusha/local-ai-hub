@@ -35,7 +35,7 @@ def is_root_archive_path(relative: str | Path) -> bool:
     )
     if not parts:
         return False
-    if parts[0] in {"handoff", ".handoff", ".merge-checks", ".sync-checks"}:
+    if parts[0] in {"handoff", ".handoff", ".merge-checks", ".sync-checks", ".system_generated"}:
         return True
     if len(parts) > 1 and parts[:2] == ("artifacts", "handoff"):
         return True
@@ -177,7 +177,8 @@ class RepositoryTools:
             "vendor", "dist", "build", "bin", "obj", "coverage", ".next", ".cache",
             "library", "temp", "logs", "usersettings", "packagestore", "memorycaptures", "builds",
             ".serena", ".local-ai-hub", ".codegraphcontext", ".handoff",
-            ".t03-main-preflight-overlay",
+            ".t03-main-preflight-overlay", ".system_generated",
+            ".pytest_cache", ".mypy_cache", ".ruff_cache",
         }
         self.ignore_dirs = {str(name).lower() for name in rag.get("ignore_dirs", [])} | default_ignore_dirs
         self.ignore_extensions = {str(x).lower() for x in rag.get("ignore_extensions", [
