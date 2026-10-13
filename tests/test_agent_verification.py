@@ -619,6 +619,9 @@ def test_verification_evidence_classification_is_conservative():
     assert criterion_evidence_type("tests") == "test"
     assert criterion_evidence_type("tests_pass") == "test"
     assert criterion_evidence_type("unit_test") == "test"
+    assert criterion_evidence_type("integrated targeted regressions pass") == "test"
+    assert criterion_evidence_type("benchmark regressions") == "benchmark"
+    assert criterion_evidence_type("document regressionsummary") == "source_review"
     assert criterion_evidence_type("document testing instructions") == "source_review"
     receipt = VerificationReceipt.create(
         "task-classifier",
