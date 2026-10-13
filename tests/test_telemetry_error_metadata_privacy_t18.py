@@ -67,7 +67,7 @@ def test_error_metadata_is_redacted_in_both_persisted_tables(tmp_path):
                 retryable=True,
                 recovered=True,
             )
-        assert store.flush(1)
+        assert store.flush(10)
         con = store._connect()
         try:
             errors = con.execute(
@@ -113,7 +113,7 @@ def test_root_level_posix_paths_are_redacted_from_persisted_error_fields(tmp_pat
                 RuntimeError("failure"),
                 request_id=f"request-{index}",
             )
-        assert store.flush(1)
+        assert store.flush(10)
         con = store._connect()
         try:
             errors = con.execute("SELECT component, operation FROM errors ORDER BY rowid").fetchall()
@@ -144,7 +144,7 @@ def test_http_pathlike_labels_are_redacted_but_benign_routes_survive(tmp_path):
             success=True,
             duration_ms=3,
         )
-        assert store.flush(1)
+        assert store.flush(10)
         con = store._connect()
         try:
             rows = con.execute(

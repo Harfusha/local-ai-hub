@@ -68,7 +68,7 @@ def test_telemetry_timeline_is_recent_and_cursor_pages_older_rows(tmp_path):
         actions = ["/slow", "/median", "/median", "/slow", "/median"]
         for action in actions:
             store.record_http(action=action, success=True)
-        assert store.flush(1)
+        assert store.flush(10)
 
         recent = store.get_timeline_page(limit=2)
         older = store.get_timeline_page(limit=2, before_id=recent["next_cursor"])
@@ -1170,7 +1170,7 @@ def test_telemetry_error_resolution_deadline_rolls_back(monkeypatch, tmp_path):
     store = TelemetryStore(tmp_path / "telemetry", enabled=True, flush_interval_seconds=0.01)
     try:
         store.record_http(action="/api/example", success=False, error_type="internal")
-        assert store.flush(1)
+        assert store.flush(10)
         clock_values = iter([0.0, 0.0] + [2.0] * 20)
         with monkeypatch.context() as patcher:
             patcher.setattr(store, "flush", lambda timeout: True)

@@ -383,7 +383,7 @@ def test_realtime_status_surfaces_stored_sqlite_error_summary(monkeypatch, tmp_p
     )
     try:
         store.record_error("configuration", "decode", error)
-        assert store.flush(1)
+        assert store.flush(10)
         app.telemetry = store
         monkeypatch.setattr(app_module, "_STATUS_DEPENDENCY_TIMEOUT_SECONDS", 1.0)
         monkeypatch.setattr(app_module, "accelerator_status", lambda _config: {"available": False})

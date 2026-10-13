@@ -4562,3 +4562,19 @@ locks. A deterministic process regression holds that lock and verifies a second
 constructor cannot open the corrupt SQLite file until released. Recovery,
 durable-isolation, counters and cache regressions passed **55 tests, one skip**
 (`req_4c595c862b55`). Complete resulting-candidate acceptance remains pending.
+
+`e503b467` completed the whole suite with **7232 passed, two failed, 105 skipped,
+23 subtests passed in 2509.92s** (execution `39395b8a92da48d89f4fd9ed55121fd3`;
+cleanup confirmed, no timeout or cancellation). Both failures preceded the
+behavior under test: functional `flush(1)` setup in the operational telemetry
+timeline and error-resolution rollback tests. Their existing `finally` blocks
+already closed the stores. A bounded sibling search found the same positive
+completion waits in 14 test modules; these now use ten seconds. Privacy,
+pagination, accounting, retry ordering and rollback assertions are unchanged,
+including the explicit 0.03/0.05-second error-resolution deadlines. No runtime
+limit changed. The e503 runtime fixes passed this whole run; complete acceptance
+of the resulting test-only follow-up remains pending.
+
+All 14 affected modules passed after the functional-wait changes: **127 passed
+in 31.53s** (`req_1c4dda984229`, execution `7438335f846845ebb06696d0423a91ef`).
+The source tree has no new runtime change in this follow-up.

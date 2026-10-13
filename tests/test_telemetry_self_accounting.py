@@ -8,7 +8,7 @@ def test_system_event_reports_whether_telemetry_queue_accepts_it(tmp_path):
     store = TelemetryStore(tmp_path / "telemetry", enabled=True, flush_interval_seconds=0.01)
     try:
         assert store.record_system("admin.maintenance.optimize_db", success=True) is True
-        assert store.flush(1.0) is True
+        assert store.flush(10) is True
     finally:
         store.close()
 

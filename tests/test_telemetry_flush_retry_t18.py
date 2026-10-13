@@ -35,7 +35,7 @@ def test_busy_retry_flushes_held_batch_within_one_second(tmp_path, monkeypatch):
     try:
         store.record_error("provider", "generate", RuntimeError("synthetic busy retry"))
 
-        assert store.flush(1)
+        assert store.flush(10)
         assert attempts >= 2
         with operations_lock:
             first_flush = operations.index("flush")

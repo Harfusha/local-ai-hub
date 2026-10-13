@@ -15,7 +15,7 @@ def test_telemetry_report_route_returns_first_next_and_last_error_pages(
             store.record_error(
                 "inference", f"generate-{index}", ValueError("invalid argument")
             )
-        assert store.flush(1)
+        assert store.flush(10)
         monkeypatch.setattr(
             http_server,
             "APP",

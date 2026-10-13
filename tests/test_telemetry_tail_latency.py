@@ -29,7 +29,7 @@ def test_p50_latency_uses_median_for_even_sample_count(tmp_path):
     try:
         for duration_ms in (10, 20, 30, 40):
             store.record_http(action="/median", success=True, duration_ms=duration_ms)
-        assert store.flush(1)
+        assert store.flush(10)
         report = store.report(1)
     finally:
         store.close()

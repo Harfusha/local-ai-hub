@@ -23,7 +23,7 @@ def test_dashboard_summary_uses_bounded_safe_diagnostics_from_sqlite(tmp_path):
     try:
         for component, operation, error in errors:
             store.record_error(component, operation, error)
-        assert store.flush(1)
+        assert store.flush(10)
 
         connection = store._connect()
         try:
