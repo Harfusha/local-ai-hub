@@ -718,8 +718,12 @@ def _desc_coord() -> str:
             "claim", "release", "memo_put", "memo_search", "memory_record",
             "memory_find", "context_compile", "task_create", "task_checkpoint",
         ) if name in supported]
+        purpose = (
+            "Agent OS coordination for task contracts, ownership, checkpoints, and verification receipts"
+            if FEATURES.agent_os else "Coordination for leases and memos"
+        )
         return (
-            "Coordination for leases, memos, and enabled Agent OS task contracts, ownership, checkpoints, and verification receipts with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key."
+            f"{purpose} with aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key."
             f"{_actions_note(actions)}"
             " Use when: any non-trivial task benefits from durable state/verification, or Hub workers share edit paths or reusable findings."
             " Skip when: task is a trivial one-step lookup with no shared state to preserve."

@@ -2940,3 +2940,9 @@ Status/coordination Agent OS examples and speculative lint now follow enabled
 schema projections. Both install/update prompts match. Registered stdio catalog
 and description/schema parity across enabled/disabled projections: 91 passed
 in 4.76s (`req_fcb00efe1e98`). Final integrated and installed gates remain.
+
+The `19913ddc` integrated suite stopped immediately on its existing exact
+description-wording contract (two passed, one failed). The enabled Agent OS
+description now preserves the original phrase; disabled Agent OS still exposes
+only supported coordination actions. Expanded targeted result: 94 passed in
+9.82s (`req_1f82a60e858b`). No passing whole-suite claim for `19913ddc`.
