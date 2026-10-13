@@ -318,8 +318,10 @@ class HubClient:
                     # An absent loopback listener must not spend the response
                     # budget on Windows' delayed connection refusal before
                     # autostart can run. Reads retain the caller's deadline.
-                    response_timeout = conn.timeout
-                    conn.timeout = min(self.health_timeout, max(0.001, deadline - time.monotonic()))
+                    has_connect_timeout = hasattr(conn, "timeout")
+                    response_timeout = getattr(conn, "timeout", None)
+                    if has_connect_timeout:
+                        conn.timeout = min(self.health_timeout, max(0.001, deadline - time.monotonic()))
                     try:
                         conn.connect()
                     except ConnectionRefusedError:
@@ -327,7 +329,8 @@ class HubClient:
                     except (OSError, http.client.HTTPException):
                         raise
                     finally:
-                        conn.timeout = response_timeout
+                        if has_connect_timeout:
+                            conn.timeout = response_timeout
                     settimeout = getattr(conn.sock, "settimeout", None)
                     if callable(settimeout):
                         settimeout(max(0.001, deadline - time.monotonic()))
