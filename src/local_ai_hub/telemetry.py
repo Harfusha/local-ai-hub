@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .trace_context import current as current_trace_context
+from .operation_contracts import operation_actions
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, quick_sanity_check
 from .http_route_registry import (
     GET_ROUTE_HANDLER_BOUNDARIES,
@@ -299,21 +300,21 @@ def _safe_metadata(value: Any, limit: int = _MAX_METADATA_LENGTH, *, preserve_ro
             text = canonical_route
         elif canonical_route in _SAFE_TOOL_ACTIONS:
             return canonical_route[:limit]
-        elif ":" in canonical_route and all(
-            p in _SAFE_TOOL_ACTIONS or bool(re.fullmatch(r"[a-zA-Z0-9_\-\.]+", p))
-            for p in canonical_route.split(":", 1)
-        ):
-            return canonical_route[:limit]
-        elif "/" in canonical_route and all(
-            p in _SAFE_TOOL_ACTIONS or bool(re.fullmatch(r"[a-zA-Z0-9_\-\.]+", p))
-            for p in canonical_route.split("/", 1)
-        ):
-            return canonical_route[:limit]
-        else:
+        elif ":" in canonical_route:
+            tool, action = canonical_route.split(":", 1)
+            if action in operation_actions(tool):
+                return canonical_route[:limit]
+            text = "<path>"
+        elif "/" in canonical_route:
+            tool, action = canonical_route.split("/", 1)
+            if action in operation_actions(tool):
+                return canonical_route[:limit]
             trace_prefix = "/api/debug-traces/"
             trace_id = canonical_route[len(trace_prefix):] if canonical_route.startswith(trace_prefix) else ""
             if trace_id and "/" not in trace_id:
                 text = "/api/debug-traces/{trace_id}"
+            else:
+                text = "<path>"
     text = _WINDOWS_PATH_RE.sub("<path>", text)
     text = _UNC_PATH_RE.sub("<path>", text)
 
@@ -366,6 +367,21 @@ def _bounded_number(value: Any, *, integer: bool = False, maximum: float = _MAX_
     except (TypeError, ValueError, OverflowError):
         number = 0.0
     return int(number) if integer else number
+
+
+def _phase_timing(event: dict[str, Any], name: str) -> tuple[float, int]:
+    value = event.get(name)
+    measured = (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value >= 0
+    )
+    measured_key = name.removesuffix("_ms") + "_measured"
+    if measured_key in event:
+        flag = event[measured_key]
+        measured = measured and (flag is True or type(flag) is int and flag == 1)
+    return _bounded_number(value), int(measured)
 
 
 def _outcome_flag(event: dict[str, Any], name: str) -> int:
@@ -421,6 +437,7 @@ class TelemetryStore:
         "net_after_schema_token_delta", "schema_adjusted_overhead",
         "savings_source", "input_savings_source", "output_savings_source", "savings_breakdown_json",
         "preprocessed_hit", "root", "db_wait_ms", "exec_ms", "serialization_ms",
+        "db_wait_measured", "exec_measured", "serialization_measured",
     )
 
     def __init__(
@@ -503,6 +520,9 @@ class TelemetryStore:
             "terminal": "INTEGER NOT NULL DEFAULT -1",
             "retryable": "INTEGER NOT NULL DEFAULT -1",
             "receipt_count": "INTEGER NOT NULL DEFAULT 0",
+            "db_wait_measured": "INTEGER NOT NULL DEFAULT 0",
+            "exec_measured": "INTEGER NOT NULL DEFAULT 0",
+            "serialization_measured": "INTEGER NOT NULL DEFAULT 0",
         }
         with closing(self._connect()) as con:
             initialize_wal(con)
@@ -628,7 +648,10 @@ class TelemetryStore:
                     root TEXT NOT NULL DEFAULT '',
                     db_wait_ms REAL NOT NULL DEFAULT 0,
                     exec_ms REAL NOT NULL DEFAULT 0,
-                    serialization_ms REAL NOT NULL DEFAULT 0
+                    serialization_ms REAL NOT NULL DEFAULT 0,
+                    db_wait_measured INTEGER NOT NULL DEFAULT 0,
+                    exec_measured INTEGER NOT NULL DEFAULT 0,
+                    serialization_measured INTEGER NOT NULL DEFAULT 0
                 )"""
             )
             con.executescript(
@@ -712,6 +735,9 @@ class TelemetryStore:
         created = float(event.get("created_at", time.time()))
         queue_wait_ms = _bounded_number(event.get("queue_wait_ms", 0))
         event_type = _safe_metadata(event.get("event_type", "inference"), 40)
+        db_wait_ms, db_wait_measured = _phase_timing(event, "db_wait_ms")
+        exec_ms, exec_measured = _phase_timing(event, "exec_ms")
+        serialization_ms, serialization_measured = _phase_timing(event, "serialization_ms")
         # Route labels are safe only when exact-listed, regardless of event kind.
         # This keeps useful action labels in tool-result events without exposing IDs.
         preserve_route = True
@@ -778,9 +804,12 @@ class TelemetryStore:
             "savings_breakdown_json": _clean_savings_breakdown(event.get("savings_breakdown_json", ""))[:2000],
             "preprocessed_hit": 1 if event.get("preprocessed_hit") else 0,
             "root": _safe_metadata(safe_root, 64) if safe_root else "",
-            "db_wait_ms": _bounded_number(event.get("db_wait_ms", 0)),
-            "exec_ms": _bounded_number(event.get("exec_ms", 0)),
-            "serialization_ms": _bounded_number(event.get("serialization_ms", 0)),
+            "db_wait_ms": db_wait_ms,
+            "exec_ms": exec_ms,
+            "serialization_ms": serialization_ms,
+            "db_wait_measured": db_wait_measured,
+            "exec_measured": exec_measured,
+            "serialization_measured": serialization_measured,
         }
 
     def _publish_live(self, kind: str, payload: dict[str, Any]) -> None:
@@ -794,6 +823,7 @@ class TelemetryStore:
             "tool_calls", "evidence_count", "response_bytes", "component", "operation",
             "fingerprint", "retryable", "recovered", "name", "metrics_json",
             "preprocessed_hit", "root", "db_wait_ms", "exec_ms", "serialization_ms",
+            "db_wait_measured", "exec_measured", "serialization_measured",
         }
         event = {k: v for k, v in payload.items() if k in allowed}
         event["kind"] = kind

@@ -1261,15 +1261,30 @@ def _journal_outcome_success(status: int, data: Any) -> bool:
 
 
 def _response_phase_latency(data: Any) -> dict[str, float]:
-    """Extract bounded phase timings from a local-generation response."""
+    """Extract only upstream phase timings that were actually measured."""
     latency = data.get("latency", {}) if isinstance(data, dict) else {}
     latency = latency if isinstance(latency, dict) else {}
-    def value(name: str) -> float:
+    def value(name: str) -> float | None:
+        if name not in latency:
+            return None
+        raw = latency[name]
+        if isinstance(raw, bool):
+            return None
         try:
-            return max(0.0, float(latency.get(name, 0) or 0))
+            measured = float(raw)
+            return measured if math.isfinite(measured) and measured >= 0 else None
         except (TypeError, ValueError):
-            return 0.0
-    return {"queue_wait_ms": value("queue_wait_ms"), "service_ms": value("service_ms")}
+            return None
+    result = {
+        name: value(name) or 0.0
+        for name in ("queue_wait_ms", "service_ms")
+    }
+    result.update({
+        name: measured
+        for name in ("db_wait_ms", "exec_ms", "serialization_ms")
+        if (measured := value(name)) is not None
+    })
+    return result
 
 
 @contextmanager
@@ -3612,6 +3627,7 @@ class Handler(BaseHTTPRequestHandler):
         return 200, result
 
     def _send(self, status: int, data: Any, *, headers: Mapping[str, str] | None = None) -> None:
+        execution_started = getattr(self, "_handler_execution_started", None)
         operation = str(getattr(self, "_admin_operation", ""))
         if operation:
             audit_recorded = self._audit_admin_action(status, data)
@@ -3652,7 +3668,14 @@ class Handler(BaseHTTPRequestHandler):
                 self._journal_finished = True
             except Exception:
                 pass
+        serialization_started = time.perf_counter()
+        exec_ms = (
+            max(0.0, (serialization_started - execution_started) * 1000.0)
+            if isinstance(execution_started, (int, float))
+            else None
+        )
         body = _json_bytes(data)
+        serialization_ms = max(0.0, (time.perf_counter() - serialization_started) * 1000.0)
         self._finish_debug_trace(status, data)
         if APP is not None and not getattr(self, "_telemetry_finished", False):
             try:
@@ -3687,7 +3710,9 @@ class Handler(BaseHTTPRequestHandler):
                         task_type=str(canonical_route.get("task_type", ""))[:80], complexity=str(canonical_route.get("complexity", ""))[:40],
                         evidence_count=(len(repo_evidence) if repo_evidence else (len(evidence) if isinstance(evidence, list) else 0)),
                         error_type=outcome_error_type,
-                        queue_wait_ms=phase_latency["queue_wait_ms"], service_ms=phase_latency["service_ms"],
+                        queue_wait_ms=phase_latency.get("queue_wait_ms"), service_ms=phase_latency.get("service_ms"),
+                        db_wait_ms=phase_latency.get("db_wait_ms"), exec_ms=exec_ms,
+                        serialization_ms=serialization_ms,
                     )
                     request_evaluation = getattr(self, "_request_evaluation", None)
                     if reliability_success and request_evaluation is not None:
@@ -4241,6 +4266,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise
 
     def do_GET(self) -> None:
+        self._handler_execution_started = time.perf_counter()
         parsed = urlparse(self.path)
         path = parsed.path
         if path == "/health":
@@ -5324,6 +5350,7 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def do_POST(self) -> None:
+        self._handler_execution_started = time.perf_counter()
         if APP is None:
             self._send(503, {"success": False, "error": "hub starting up; please retry", "status_code": 503, "retryable": True})
             return
