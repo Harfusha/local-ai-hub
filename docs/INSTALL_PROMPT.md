@@ -490,6 +490,12 @@ For non-trivial multi-step work, create a durable Agent OS task with `local_ai_c
 - either path can use background LLM synthesis when deterministic output is unavailable or below its confidence threshold.
 - Check active configuration and backend state before claiming synthesis is disabled.
 
+## Repository symbol navigation
+
+For indexed symbol lookup, use `local_ai_repo(action="code_index", root=ABS_ROOT, query="symbol")`. For managed Serena navigation when available, use `action="semantic", relation="find_symbol"` with the same tool.
+
+Follow the published typed action/detail enums. Optional `speculative_lint` and Agent OS actions are exposed only when their modules are enabled.
+
 ## Local telemetry
 
 Basic aggregate telemetry remains enabled locally. Detailed request traces are disabled by default and can be toggled live in the dashboard. When enabled, they retain complete endpoint input/output locally, including sensitive values, within configured size and retention limits. Local telemetry and trace details stay on this device; only normal agent responses requested by cloud agents leave it.

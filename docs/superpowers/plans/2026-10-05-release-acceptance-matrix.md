@@ -4473,3 +4473,14 @@ Release remains pending the new integrated candidate's whole suite, exact
 package/update, live API/dashboard/MCP checks and original task completion.
 Preserve foreign worktrees, operator configuration and durable state. Remote
 publication is not authorized or included in the local release claim.
+
+### MCP advertised-action correction
+
+The `7c66c9f9` suite was owner-cancelled before completion, with broker cleanup
+confirmed, to correct current advertised actions before final validation.
+No whole-suite pass is claimed for it. Repository `symbols` was not a supported
+top-level action; the description now points to `code_index`. Disabled Agent OS
+and speculative-lint actions/details are no longer advertised. Install/update
+prompts are synchronized. Actual stdio catalog plus lean/full, local-model,
+Agent OS, vision and speculative-lint description projections: 91 passed in
+4.76s (`req_fcb00efe1e98`). This changes descriptions, not action enums or aliases.
