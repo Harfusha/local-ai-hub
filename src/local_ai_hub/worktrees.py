@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import time
 from pathlib import Path
 
 from .process_utils import hidden_run_kwargs
@@ -67,6 +68,7 @@ def worktree_is_clean_ancestor(
     worktree_path: str | Path,
     base_commit: str,
     timeout_seconds: float = 5.0,
+    deadline_monotonic: float | None = None,
 ) -> tuple[bool, str]:
     """Prove a clean checkout and its creation base are already in repo HEAD."""
     repo = Path(repo_root).resolve(strict=False)
@@ -74,10 +76,16 @@ def worktree_is_clean_ancestor(
 
     def git(path: Path, *args: str) -> subprocess.CompletedProcess[str] | None:
         try:
+            timeout = max(0.5, min(float(timeout_seconds), 8.0))
+            if deadline_monotonic is not None:
+                remaining = deadline_monotonic - time.monotonic()
+                if remaining <= 0:
+                    return None
+                timeout = min(timeout, remaining)
             return subprocess.run(
                 ["git", "-C", str(path), *args], stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                timeout=max(0.5, min(float(timeout_seconds), 8.0)), check=False,
+                timeout=timeout, check=False,
                 **hidden_run_kwargs(),
             )
         except (OSError, subprocess.SubprocessError, ValueError):

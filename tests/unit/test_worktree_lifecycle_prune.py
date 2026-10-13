@@ -331,6 +331,82 @@ def test_idle_sweep_retries_pending_after_owner_resolves_dirty_checkout(monkeypa
     assert {key: value for key, value in retried.checkpoint.state_data.items() if key != "worktree"} == preserved_state
 
 
+def test_idle_sweep_does_not_start_cleanup_after_shared_budget_expires(monkeypatch, tmp_path):
+    import local_ai_hub.agent_tasks as agent_tasks_module
+    import local_ai_hub.worktrees as worktrees_module
+
+    repo, tasks, task = _create_owned_task(tmp_path)
+    task = tasks.fail(task.task_id, actor="agent-1")
+    wt = dict(task.checkpoint.state_data["worktree"])
+    wt["created_at"] -= 7200
+    wt["expires_at"] -= 7200
+    from local_ai_hub.agent_tasks import TaskCheckpoint
+    cp = TaskCheckpoint(
+        phase=task.checkpoint.phase, next_action=task.checkpoint.next_action,
+        affected_paths=task.checkpoint.affected_paths, evidence_ids=task.checkpoint.evidence_ids,
+        blockers=task.checkpoint.blockers, state_data={**task.checkpoint.state_data, "worktree": wt},
+    )
+    tasks.checkpoint(task.task_id, cp, actor="agent-1")
+    marker = process_utils._worktree_ownership_path(Path(wt["worktree_path"]))
+    metadata = process_utils.get_git_worktree_ownership(repo, wt["worktree_path"])
+    metadata.update(created_at=wt["created_at"], expires_at=wt["expires_at"])
+    marker.write_text(json.dumps(metadata), encoding="utf-8")
+
+    clock = [100.0]
+    fake_time = SimpleNamespace(monotonic=lambda: clock[0], time=time.time)
+    monkeypatch.setattr(agent_tasks_module, "time", fake_time)
+    monkeypatch.setattr(process_utils, "process_owner_state", lambda *_args: "stale")
+    def exhaust_budget(*_args, **_kwargs):
+        clock[0] = 108.0
+        return True, ""
+    monkeypatch.setattr(worktrees_module, "worktree_is_clean_ancestor", exhaust_budget)
+    cleanup_calls = []
+    monkeypatch.setattr(tasks, "cleanup_worktree", lambda *_args, **_kwargs: cleanup_calls.append("called") or {"success": True})
+
+    result = tasks.cleanup_idle_worktrees(deadline_seconds=8.0)
+
+    assert result["cleaned"] == 0
+    assert cleanup_calls == []
+    assert tasks.get(task.task_id).status is TaskStatus.FAILED
+
+
+def test_removal_and_prune_share_one_fake_clock_deadline(monkeypatch, tmp_path):
+    repo, worktree, worktree_id = _create_repo_and_worktree(tmp_path)
+    metadata = process_utils.get_git_worktree_ownership(repo, worktree)
+    base_commit = metadata["base_commit"]
+    clock = [0.0]
+    deadline = 8.0
+    original_run_hidden = process_utils.run_hidden
+    started_at = []
+    commands_started = []
+
+    def advancing_runner(command, *args, **kwargs):
+        started_at.append(clock[0])
+        commands_started.append(tuple(command))
+        result = original_run_hidden(command, *args, **kwargs)
+        clock[0] += 3.0
+        return result
+
+    monkeypatch.setattr(process_utils, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(process_utils, "run_hidden", advancing_runner)
+    try:
+        result = remove_git_worktree(
+            repo, worktree, worktree_id=worktree_id, required_base_commit=base_commit,
+            timeout_seconds=8.0, deadline_monotonic=deadline,
+        )
+
+        assert all(start < deadline for start in started_at)
+        assert not any("remove" in command and "worktree" in command for command in commands_started)
+        assert not any("prune" in command for command in commands_started)
+        assert result["success"] is False
+        assert worktree.is_dir()
+    finally:
+        monkeypatch.setattr(process_utils, "run_hidden", original_run_hidden)
+        monkeypatch.setattr(process_utils, "time", time)
+        if worktree.exists():
+            remove_git_worktree(repo, worktree, worktree_id=worktree_id, force=True)
+
+
 def test_watchdog_runs_idle_worktree_sweep_only_when_scheduler_idle_and_active_mode(monkeypatch, tmp_path):
     class OneIteration:
         def __init__(self):
