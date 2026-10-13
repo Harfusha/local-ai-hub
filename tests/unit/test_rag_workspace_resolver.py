@@ -1,27 +1,181 @@
+from __future__ import annotations
+
+import asyncio
+import json
+import re
+import sys
 from pathlib import Path
-from local_ai_hub.rag import RAGStore
 
-def test_rag_auto_resolves_workspace_from_root(tmp_path):
-    store = RAGStore({"server": {"state_dir": str(tmp_path)}}, services=None)
-    ws_id = store.workspace_id(str(tmp_path))
-    assert ws_id.startswith(f"{tmp_path.name}-")
-    assert len(ws_id.split("-")[-1]) == 12
+import pytest
 
-def test_mcp_rag_resolves_workspace_when_empty_or_path(monkeypatch, tmp_path):
-    captured = {}
-    class DummyClient:
-        def post(self, url, payload, **kwargs):
-            captured.update(payload)
-            return {"success": True, "results": []}
-    monkeypatch.setattr("local_ai_hub.mcp_server.CLIENT", DummyClient())
-    from local_ai_hub.mcp_server import local_ai_rag
-    
-    # Empty workspace with root
-    local_ai_rag(action="search", root=str(tmp_path), query="test query")
-    expected_ws = RAGStore.workspace_id(str(tmp_path))
-    assert captured.get("workspace") == expected_ws
+from local_ai_hub import mcp_server
+from local_ai_hub.process_utils import canonical_workspace_id
 
-    # Workspace passed as a root path instead of hash ID
-    captured.clear()
-    local_ai_rag(action="search", root=str(tmp_path), workspace=str(tmp_path), query="test query")
-    assert captured.get("workspace") == expected_ws
+
+class CaptureClient:
+    def __init__(self):
+        self.posts = []
+
+    def post(self, path, payload, **kwargs):
+        self.posts.append((path, dict(payload)))
+        return {"success": True, "results": []}
+
+
+def _call_rag(arguments):
+    result = asyncio.run(mcp_server.mcp.call_tool("local_ai_rag", arguments))
+    contents = result[0] if isinstance(result, tuple) else result
+    return json.loads(next(item.text for item in contents if item.type == "text"))
+
+
+def _enable_rag(monkeypatch):
+    monkeypatch.setattr(mcp_server, "FEATURES", type("Features", (), {"rag": True})())
+    monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_: None)
+    client = CaptureClient()
+    monkeypatch.setattr(mcp_server, "CLIENT", client)
+    return client
+
+
+def test_mcp_dispatch_uses_assigned_checkout_source():
+    checkout = Path(__file__).resolve().parents[2]
+    assert Path(mcp_server.__file__).resolve().is_relative_to(checkout / "src")
+
+
+def test_workspace_id_uses_canonical_existing_format(tmp_path):
+    from local_ai_hub.rag import RAGStore
+
+    workspace_id = RAGStore.workspace_id(str(tmp_path))
+
+    assert re.fullmatch(rf"{re.escape(tmp_path.name)}-[0-9a-f]{{12}}", workspace_id)
+    assert workspace_id == canonical_workspace_id(tmp_path)
+
+
+@pytest.mark.parametrize("workspace_kind", ["empty", "path"])
+def test_public_rag_search_resolves_workspace_from_explicit_root(
+    monkeypatch, tmp_path, workspace_kind
+):
+    monkeypatch.setitem(sys.modules, "local_ai_hub.rag", None)
+    client = _enable_rag(monkeypatch)
+    workspace = "" if workspace_kind == "empty" else str(tmp_path)
+
+    response = _call_rag({
+        "action": "search",
+        "root": str(tmp_path),
+        "workspace": workspace,
+        "query": "needle",
+    })
+
+    assert len(client.posts) == 1
+    endpoint, payload = client.posts[0]
+    assert endpoint == "/api/rag/search"
+    assert payload["root"] == mcp_server._client_root(str(tmp_path))
+    assert payload["workspace"] == canonical_workspace_id(tmp_path)
+    assert payload["query"] == "needle"
+    assert response["success"] is True
+
+
+def test_public_rag_search_preserves_explicit_workspace_id(monkeypatch, tmp_path):
+    monkeypatch.setitem(sys.modules, "local_ai_hub.rag", None)
+    client = _enable_rag(monkeypatch)
+    workspace_id = canonical_workspace_id(tmp_path)
+
+    _call_rag({
+        "action": "search",
+        "root": str(tmp_path),
+        "workspace": workspace_id,
+        "query": "needle",
+    })
+
+    assert client.posts == [(
+        "/api/rag/search",
+        {
+            "root": mcp_server._client_root(str(tmp_path)),
+            "query": "needle",
+            "workspace": workspace_id,
+            "top_k": 6,
+            "use_reranker": True,
+        },
+    )]
+
+
+def test_public_rag_search_preserves_explicit_opaque_workspace_id(monkeypatch, tmp_path):
+    monkeypatch.setitem(sys.modules, "local_ai_hub.rag", None)
+    client = _enable_rag(monkeypatch)
+    workspace_id = "curated:handbook/v1"
+
+    _call_rag({
+        "action": "search",
+        "root": str(tmp_path),
+        "workspace": workspace_id,
+        "query": "needle",
+    })
+
+    assert client.posts == [(
+        "/api/rag/search",
+        {
+            "root": mcp_server._client_root(str(tmp_path)),
+            "query": "needle",
+            "workspace": workspace_id,
+            "top_k": 6,
+            "use_reranker": True,
+        },
+    )]
+
+
+def test_public_rag_search_rejects_missing_root_before_transport(monkeypatch):
+    client = _enable_rag(monkeypatch)
+
+    response = _call_rag({"action": "search", "query": "needle"})
+
+    assert response["success"] is False
+    assert "explicit absolute project root" in response["error"]
+    assert client.posts == []
+
+
+@pytest.mark.parametrize("workspace_kind", ["empty", "root_path"])
+def test_public_rag_index_then_search_share_workspace_for_root_aliases(
+    monkeypatch, tmp_path, workspace_kind
+):
+    monkeypatch.setitem(sys.modules, "local_ai_hub.rag", None)
+    client = _enable_rag(monkeypatch)
+    workspace = "" if workspace_kind == "empty" else str(tmp_path)
+    root = mcp_server._client_root(str(tmp_path))
+    expected_workspace = canonical_workspace_id(root)
+
+    for action in ("index", "search"):
+        _call_rag({
+            "action": action,
+            "root": str(tmp_path),
+            "workspace": workspace,
+            "query": "needle",
+        })
+
+    assert [path for path, _payload in client.posts] == [
+        "/api/rag/index",
+        "/api/rag/search",
+    ]
+    index_payload, search_payload = [payload for _path, payload in client.posts]
+    assert index_payload["root"] == root
+    assert index_payload["workspace"] == expected_workspace
+    assert search_payload["root"] == root
+    assert search_payload["workspace"] == expected_workspace
+
+
+def test_public_rag_index_then_search_preserve_opaque_workspace_id(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setitem(sys.modules, "local_ai_hub.rag", None)
+    client = _enable_rag(monkeypatch)
+    workspace = "curated:handbook/v1"
+
+    for action in ("index", "search"):
+        _call_rag({
+            "action": action,
+            "root": str(tmp_path),
+            "workspace": workspace,
+            "query": "needle",
+        })
+
+    assert [payload["workspace"] for _path, payload in client.posts] == [
+        workspace,
+        workspace,
+    ]

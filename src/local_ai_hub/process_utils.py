@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import hashlib
 import json
 import ntpath
 import os
@@ -1425,6 +1426,13 @@ def canonical_root(path: str | Path) -> str:
     except Exception:
         resolved = Path(path).expanduser().absolute()
     return str(resolved)
+
+
+def canonical_workspace_id(root: str | Path) -> str:
+    """Return the stable RAG workspace ID for a canonical project root."""
+    resolved = canonical_root(root)
+    digest = hashlib.sha1(resolved.encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
+    return f"{Path(resolved).name}-{digest}"
 
 
 def is_rooted_path(path: str | Path) -> bool:

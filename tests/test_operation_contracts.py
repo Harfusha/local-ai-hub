@@ -1003,7 +1003,21 @@ def _stub_registered_mcp_tool(monkeypatch, tool_name: str, value: Any):
     import local_ai_hub.mcp_server as mcp_server
 
     calls: list[dict[str, Any]] = []
-    registered_tool = mcp_server.mcp._tool_manager._tools[tool_name]
+    manager = mcp_server.mcp._tool_manager
+    registered_tool = manager._tools.get(tool_name)
+    if registered_tool is None:
+        # Model-dependent public tools are pruned from this worktree's registry.
+        # Register the real handler only within this test's monkeypatch scope.
+        monkeypatch.setattr(manager, "_tools", dict(manager._tools))
+        public_tools = getattr(mcp_server.mcp, "tools", None)
+        if isinstance(public_tools, list):
+            monkeypatch.setattr(mcp_server.mcp, "tools", list(public_tools))
+        if tool_name == "local_ai_task":
+            monkeypatch.setattr(mcp_server.FEATURES, "tasks", True)
+            monkeypatch.setattr(mcp_server.FEATURES, "has_any_model", lambda: True)
+        mcp_server.mcp.tool()(getattr(mcp_server, tool_name))
+        registered_tool = manager._tools[tool_name]
+        monkeypatch.setattr(registered_tool, "is_async", True)
 
     async def fake_handler(**arguments: Any):
         calls.append(arguments)
@@ -1011,6 +1025,36 @@ def _stub_registered_mcp_tool(monkeypatch, tool_name: str, value: Any):
 
     monkeypatch.setattr(registered_tool, "fn", fake_handler)
     return calls
+
+
+def test_disabled_tool_dispatch_registration_is_scoped(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+    import local_ai_hub.mcp_server as mcp_server
+
+    manager = mcp_server.mcp._tool_manager
+    original_registry = manager._tools
+    original_public_tools = getattr(mcp_server.mcp, "tools", None)
+    with monkeypatch.context() as scoped:
+        scoped.setattr(manager, "_tools", dict(original_registry))
+        if isinstance(original_public_tools, list):
+            scoped.setattr(mcp_server.mcp, "tools", list(original_public_tools))
+        manager._tools.pop("local_ai_task", None)
+
+        calls = _stub_registered_mcp_tool(
+            scoped, "local_ai_task", {"success": True}
+        )
+        response = asyncio.run(mcp_server.mcp.call_tool(
+            "local_ai_task", {"action": "cancel", "job_id": "job-1"}
+        ))
+
+        assert response[1]["success"] is True
+        assert calls[0]["action"] == "cancel"
+        assert calls[0]["job_id"] == "job-1"
+        assert "local_ai_task" in manager._tools
+
+    assert manager._tools is original_registry
+    if isinstance(original_public_tools, list):
+        assert mcp_server.mcp.tools is original_public_tools
 
 
 @pytest.mark.parametrize(
