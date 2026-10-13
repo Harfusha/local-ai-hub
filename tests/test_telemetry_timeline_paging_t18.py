@@ -16,7 +16,8 @@ from local_ai_hub.telemetry import TelemetryStore
 def _record_operations(store: TelemetryStore) -> None:
     for index in range(5):
         store.record_http(action=f"operation_{index}", success=True)
-    assert store.flush(1)
+    # Wait for persistence, independent of host scheduling and checkpoint latency.
+    assert store.flush(10)
 
 
 def test_telemetry_timeline_page_returns_recent_rows_before_cursor(tmp_path):
@@ -48,8 +49,9 @@ def test_telemetry_timeline_page_clamps_before_id(tmp_path, before_id):
         store.close()
 
 
-def test_http_timeline_get_and_post_page_before_cursor(tmp_path, monkeypatch):
+def test_http_timeline_get_and_post_page_before_cursor(tmp_path, monkeypatch, request):
     store = TelemetryStore(tmp_path / "telemetry", enabled=True, flush_interval_seconds=0.01)
+    request.addfinalizer(store.close)
     _record_operations(store)
     monkeypatch.setattr(
         http_server,
@@ -76,7 +78,7 @@ def test_http_timeline_get_and_post_page_before_cursor(tmp_path, monkeypatch):
     base_url = f"http://127.0.0.1:{server.server_address[1]}/api/telemetry/timeline"
 
     def get_page(query: str) -> dict:
-        with urllib.request.urlopen(f"{base_url}?{query}", timeout=3) as response:
+        with urllib.request.urlopen(f"{base_url}?{query}", timeout=10) as response:
             assert response.status == 200
             return json.loads(response.read().decode("utf-8"))
 
@@ -88,7 +90,7 @@ def test_http_timeline_get_and_post_page_before_cursor(tmp_path, monkeypatch):
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=3) as response:
+            with urllib.request.urlopen(request, timeout=10) as response:
                 assert response.status == 200
                 return json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
@@ -105,7 +107,6 @@ def test_http_timeline_get_and_post_page_before_cursor(tmp_path, monkeypatch):
         server.shutdown()
         server.server_close()
         thread.join(timeout=3)
-        store.close()
 
     assert get_recent["success"] is True
     assert get_recent["has_more"] is True

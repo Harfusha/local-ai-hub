@@ -157,35 +157,49 @@ def test_git_grep_timeout_enters_cooldown(tmp_path: Path, monkeypatch: pytest.Mo
     repo = tmp_path / "repo"; repo.mkdir(); (repo / ".git").mkdir()
     tools = RepositoryTools(config); tools._rg = None
     calls = {"n": 0, "killed": 0}
+    reader_release = threading.Event()
+    reader_stopped = threading.Event()
     class BlockingStdout:
         def __iter__(self):
-            while True:
-                time.sleep(0.05)
-                yield ""
+            try:
+                while not reader_release.wait(0.05):
+                    yield ""
+            finally:
+                reader_stopped.set()
         def close(self):
-            return None
+            reader_release.set()
     class FakeProcess:
         pid = 123456
         stdout = BlockingStdout()
         returncode = None
         def poll(self):
-            return None
+            return self.returncode
         def kill(self):
             self.returncode = -9
+            reader_release.set()
         def wait(self, timeout=None):
+            if self.returncode is not None:
+                return self.returncode
             raise subprocess.TimeoutExpired(["git"], timeout or 0.1)
+    process = FakeProcess()
     def fake_popen(*args, **kwargs):
         calls["n"] += 1
-        return FakeProcess()
+        return process
     def fake_terminate(*args, **kwargs):
         calls["killed"] += 1
+        process.kill()
         return True
     monkeypatch.setattr("local_ai_hub.repo_tools.popen_managed", fake_popen)
     monkeypatch.setattr("local_ai_hub.repo_tools.terminate_tree", fake_terminate)
-    assert tools._git_grep_candidates(repo, ["needle"], 10) == (None, True)
-    assert tools._git_grep_candidates(repo, ["needle"], 10) == (None, False)
-    assert calls["n"] == 1
-    assert calls["killed"] == 1
-    stats = tools.snapshot_stats()["git_files"]
-    assert stats["grep_timeouts"] == 1
-    assert stats["grep_cooldown_skips"] == 1
+    try:
+        assert tools._git_grep_candidates(repo, ["needle"], 10) == (None, True)
+        assert tools._git_grep_candidates(repo, ["needle"], 10) == (None, False)
+        assert calls["n"] == 1
+        assert calls["killed"] == 1
+        stats = tools.snapshot_stats()["git_files"]
+        assert stats["grep_timeouts"] == 1
+        assert stats["grep_cooldown_skips"] == 1
+    finally:
+        reader_release.set()
+        if calls["n"]:
+            assert reader_stopped.wait(5), "fake git-grep reader did not stop"

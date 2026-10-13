@@ -334,7 +334,7 @@ def test_migration_ddl_failure_rolls_back_after_backup_and_retry_succeeds(tmp_pa
 
 
 @pytest.mark.parametrize("unsupported_version", [2, 99])
-def test_unsupported_newer_schema_version_fails_closed_byte_for_byte(tmp_path, unsupported_version):
+def test_unsupported_newer_schema_version_fails_closed_byte_for_byte(tmp_path, unsupported_version, monkeypatch):
     db_path = tmp_path / "agent_state.sqlite3"
     _, event, _ = _seed_state(db_path)
     with closing(sqlite3.connect(db_path)) as connection:
@@ -342,6 +342,9 @@ def test_unsupported_newer_schema_version_fails_closed_byte_for_byte(tmp_path, u
         connection.commit()
     before = _sqlite_file_snapshot(db_path)
 
+    # This checks backup contents and untouched source bytes, not backup latency.
+    # Separate ACL/lock deadline tests retain their explicit short budgets.
+    monkeypatch.setattr(AgentStateStore, "_MIGRATION_BACKUP_TIMEOUT_SECONDS", 15.0)
     with pytest.raises(RuntimeError, match="schema version") as caught:
         AgentStateStore(db_path)._preflight_schema_read_only()
 

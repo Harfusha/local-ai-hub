@@ -5,6 +5,8 @@ import os
 import socket
 import tempfile
 import sys
+from contextlib import ExitStack
+from functools import wraps
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,6 +16,33 @@ if str(SRC) not in sys.path:
 
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _close_test_owned_background_services():
+    """Do not carry test-created observers, pools or Hub loops into later tests."""
+    with ExitStack() as resources, pytest.MonkeyPatch.context() as patcher:
+        def track(service_type):
+            original_init = service_type.__init__
+            original_close = service_type.close
+
+            @wraps(original_init)
+            def initialize(self, *args, **kwargs):
+                original_init(self, *args, **kwargs)
+                resources.callback(original_close, self)
+
+            patcher.setattr(service_type, "__init__", initialize)
+
+        # Preserve lightweight/import-isolation tests: do not import services here.
+        for module_name, type_name in (
+            ("local_ai_hub.preprocess", "ProjectPreprocessor"),
+            ("local_ai_hub.app", "LocalAIApp"),
+        ):
+            module = sys.modules.get(module_name)
+            service_type = getattr(module, type_name, None)
+            if isinstance(service_type, type):
+                track(service_type)
+        yield
 
 _TEST_PORT_GUARD: socket.socket | None = None
 _ORIGINAL_CONFIG_CAPTURED = False
