@@ -4484,3 +4484,9 @@ and speculative-lint actions/details are no longer advertised. Install/update
 prompts are synchronized. Actual stdio catalog plus lean/full, local-model,
 Agent OS, vision and speculative-lint description projections: 91 passed in
 4.76s (`req_fcb00efe1e98`). This changes descriptions, not action enums or aliases.
+
+`19913ddc` then stopped at the existing enabled Agent OS wording assertion
+(two passed, one failed, 16.18s). Restoring its original enabled description
+while preserving disabled-module projection passed the expanded 94-test set in
+9.82s (`req_1f82a60e858b`). The new integrated candidate still needs its final
+whole-suite and installed-runtime gates.
