@@ -52,7 +52,7 @@ from local_ai_hub.operation_contracts import (
     validate_repo_pipeline_step,
 )
 from local_ai_hub.ollama_subagents import OllamaSubagentCatalog
-from local_ai_hub.process_utils import canonical_root, is_rooted_path
+from local_ai_hub.process_utils import canonical_root, canonical_workspace_id, is_rooted_path
 from local_ai_hub.token_accounting import account_projection, attach_accounting, context_digest, finalize_tool_accounting, json_tokens, pop_accounting, tool_request_tokens
 from local_ai_hub.trace_context import efficiency_metadata, reset_metadata, set_metadata
 from local_ai_hub.adoption_metrics import AdoptionMetricsStore
@@ -2731,10 +2731,6 @@ def _local_ai_repo_impl(
     directory_hints: list[str] | None = None,
     exclude_paths: list[str] | None = None,
     force_include_paths: list[str] | None = None,
-    paths: list[str] | None = None,
-    files: list[str] | None = None,
-    cwd: str = "",
-    symbol: str = "",
 ) -> dict[str, Any]:
     """Primary bounded repository worker for the main agent.
 
@@ -2751,14 +2747,6 @@ def _local_ai_repo_impl(
     in_progress, retryable and degraded states. Use when a non-trivial
     repository task needs indexed evidence or bounded Hub support; skip when
     the task is not repository-scoped and no independent Hub scope exists."""
-    if paths and not changed_paths:
-        changed_paths = paths
-    if files and not changed_paths:
-        changed_paths = files
-    if cwd and (not root or root == "."):
-        root = cwd
-    if symbol and not query:
-        query = symbol
     if not FEATURES.repo:
         return {**contract_error("local_ai_repo is disabled in configuration", status_code=403), "unsupported": True}
     if not isinstance(phase, str) or phase not in REPO_PHASES:
@@ -3308,7 +3296,9 @@ def _local_ai_repo_impl(
         }, timeout=_timeout("quick")), "code")
     if action == "skeletonize":
         return _compact(CLIENT.post("/api/repo/skeletonize", {
-            "root": root, "code": task or query or diff, "targets": [path] if path else None,
+            "root": root,
+            "code": query or diff or task,
+            "targets": [path] if path else None,
         }, timeout=_timeout("quick")), "code")
     return _invalid_action("local_ai_repo", action, tuple(FEATURES.supported_repo_actions()), "Keep work bounded in Local AI Hub; use Codex-owned orchestration for peer subagents.")
 
@@ -3317,8 +3307,8 @@ def _local_ai_repo_impl(
 @_instrumented_tool()
 def local_ai_repo(
     action: RepoAction,
-    root: str = ".",
-    query: str = "",
+    root: str | None = None,
+    query: str | None = None,
     diff: str = "",
     task: str = "",
     workspace: str = "",
@@ -3366,10 +3356,16 @@ def local_ai_repo(
     force_include_paths: list[str] | None = None,
     paths: list[str] | None = None,
     files: list[str] | None = None,
-    cwd: str = "",
-    symbol: str = "",
+    cwd: str | None = None,
+    symbol: str | None = None,
 ) -> dict[str, Any]:
     """Primary bounded repository worker. Use when: indexed repository evidence is needed. Skip when: fresh evidence already answers it."""
+    root = root if root is not None else cwd if cwd is not None else "."
+    query = query if query is not None else symbol if symbol is not None else ""
+    changed_paths = (
+        changed_paths if changed_paths is not None else
+        paths if paths is not None else files
+    )
     forward: dict[str, Any] = {}
     context_controls = {
         "path_hints": path_hints,
@@ -3410,7 +3406,7 @@ def local_ai_repo(
         include_code, include_tests, edits, extra_fields, max_response_tokens, response_profile, reuse_key,
         include_diagnostics, clone_id, worktree_id, branch, repository_id, session_id, repository_revision,
         changed_paths, phase, focus, preload_profile, guarded, since_hash, approval, override_reason,
-        token_budget, is_worktree, parent_root, steps, paths=paths, files=files, cwd=cwd, symbol=symbol, **forward,
+        token_budget, is_worktree, parent_root, steps, **forward,
     )
 
 
@@ -3482,21 +3478,17 @@ def local_ai_rag(
         root = _client_root(explicit_root)
     else:
         root = _client_root(root)
-    ws = workspace.strip()
-    if not ws or "/" in ws or "\\" in ws or ":" in ws:
-        target_root = ws or root
-        if target_root:
-            from .rag import RAGStore
-            effective_workspace = RAGStore.workspace_id(target_root)
-        else:
-            effective_workspace = ws or root
-    else:
-        effective_workspace = ws
+    effective_workspace = workspace.strip() or root
+    if action in {"index", "search"} and (
+        not workspace.strip() or is_rooted_path(workspace.strip())
+    ):
+        effective_workspace = canonical_workspace_id(root)
     if action == "index":
         return _compact(CLIENT.post("/api/rag/index", {"root": root, "workspace": effective_workspace}, timeout=_timeout("long")))
     if action == "search":
         return _compact(CLIENT.post("/api/rag/search", {
-            "query": query, "workspace": effective_workspace, "top_k": max(1, min(top_k, 12)), "use_reranker": True,
+            "root": root, "query": query, "workspace": effective_workspace,
+            "top_k": max(1, min(top_k, 12)), "use_reranker": True,
         }))
     if action == "list":
         return _compact(CLIENT.get("/api/rag/workspaces"))
@@ -3545,7 +3537,7 @@ def local_ai_rag(
 def local_ai_command(
     action: CommandAction,
     command: str = "",
-    cwd: str = ".",
+    cwd: str | None = None,
     timeout: int = 0,
     force: bool = False,
     task_id: str = "",
@@ -3566,13 +3558,15 @@ def local_ai_command(
     max_response_tokens: int = 0,
     response_profile: str = "",
     reuse_key: str = "",
-    root: str = "",
+    root: str | None = None,
     changed_paths: list[str] | None = None,
     files: list[str] | None = None,
     runs: int = 5,
     env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Bounded command broker. Set snapshot=true to record a best-effort Git snapshot. For action=run only, rollback_on_failure=true requires paths to list the flat, relative files directly under cwd that may be restored or removed; missing/unsafe paths reject execution. It cannot be combined with auto_fix. Rollback preserves all files outside that explicit scope. Other command and streaming behavior remains bounded and tenant-scoped. Use when: a repeatable test, lint, typecheck, build, analysis, or safe read-only command is needed. Skip when: no command is needed or a fresh cached result already answers it."""
+    cwd = cwd if cwd is not None else root if root is not None else "."
+    paths = paths if paths is not None else changed_paths if changed_paths is not None else files
     action = _resolve_action("command", action)
     _, requires_heavy_work = _classify_mcp_operation(
         "local_ai_command", {"action": action},
@@ -3584,12 +3578,6 @@ def local_ai_command(
         return mode_rejection
     if not FEATURES.commands:
         return {"success": False, "unsupported": True, "error": "local_ai_command is disabled in configuration"}
-    if root and (not cwd or cwd == "."):
-        cwd = root
-    if changed_paths and not paths:
-        paths = changed_paths
-    if files and not paths:
-        paths = files
     eff_cwd = _client_root(cwd)
     host_timeout = _timeout("long")
     configured_command_timeout = int(CFG.get("commands", {}).get("timeout_seconds", 1800))
@@ -3625,6 +3613,7 @@ def local_ai_command(
         }, timeout=host_timeout), "command")
     paths_payload = (
         paths if rollback_on_failure else
+        paths if paths is not None and action == "format" else
         ([command] if (action == "format" and command and not command.startswith("-")) else None)
     )
     return _compact(CLIENT.post("/api/command", {

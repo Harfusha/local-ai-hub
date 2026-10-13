@@ -1,38 +1,240 @@
-def test_mcp_command_accepts_root_and_normalizes_to_cwd(monkeypatch):
+import asyncio
+
+import pytest
+from pathlib import Path
+
+from local_ai_hub import mcp_server
+from local_ai_hub.mcp_server import mcp
+
+
+def _call_tool(name, arguments):
+    return asyncio.run(mcp.call_tool(name, arguments))
+
+
+def test_mcp_module_comes_from_current_checkout():
+    expected = Path(__file__).resolve().parents[2] / "src" / "local_ai_hub" / "mcp_server.py"
+    assert Path(mcp_server.__file__).resolve() == expected.resolve()
+
+
+def test_command_root_alias_maps_to_cwd(monkeypatch, tmp_path):
     captured = {}
+
     class DummyClient:
         def post(self, url, payload, **kwargs):
-            captured.update(payload)
-            return {"success": True, "exit_code": 0, "stdout": "1\n"}
+            if url == "/api/command":
+                captured.update(url=url, payload=payload)
+            return {"success": True}
+
     monkeypatch.setattr("local_ai_hub.mcp_server.CLIENT", DummyClient())
-    from local_ai_hub.mcp_server import local_ai_command
 
-    res = local_ai_command(action="run", root="C:/test/root", command="echo 1")
-    assert res.get("success") is True
-    assert captured.get("cwd") == "C:/test/root" or captured.get("cwd").startswith("C:")
+    result = _call_tool("local_ai_command", {
+        "action": "run", "root": str(tmp_path), "command": "echo 1",
+    })
 
-def test_mcp_repo_accepts_paths_and_normalizes_to_changed_paths(monkeypatch):
+    assert captured.get("url") == "/api/command", repr(result)
+    assert captured["payload"]["cwd"] == str(tmp_path)
+    assert captured["payload"]["root"] == str(tmp_path)
+
+
+def test_repo_preserves_legacy_positional_root_and_query(monkeypatch, tmp_path):
     captured = {}
+
+    def capture(action, root, query, *args, **kwargs):
+        captured.update(action=action, root=root, query=query)
+        return {"success": True}
+
+    monkeypatch.setattr(mcp_server, "_local_ai_repo_impl", capture)
+
+    mcp_server.local_ai_repo("search", str(tmp_path), "needle")
+
+    assert captured == {"action": "search", "root": str(tmp_path), "query": "needle"}
+
+
+def test_repo_preserves_legacy_positional_diff(monkeypatch, tmp_path):
+    captured = {}
+
     class DummyClient:
         def post(self, url, payload, **kwargs):
-            captured.update(payload)
-            return {"success": True, "results": []}
-    monkeypatch.setattr("local_ai_hub.mcp_server.CLIENT", DummyClient())
-    from local_ai_hub.mcp_server import local_ai_repo
+            if url == "/api/repo/diagnose":
+                captured.update(url=url, payload=payload)
+            return {"success": True}
 
-    res = local_ai_repo(action="context", root="C:/test/root", query="find test", paths=["foo.py", "bar.py"])
-    assert res.get("success") is True
-    assert captured.get("changed_paths") == ["foo.py", "bar.py"]
+    monkeypatch.setattr(mcp_server, "CLIENT", DummyClient())
 
-def test_mcp_repo_accepts_symbol_and_normalizes_to_query(monkeypatch):
+    mcp_server.local_ai_repo("diagnose", str(tmp_path), "", "inspect this diff")
+
+    assert captured["url"] == "/api/repo/diagnose"
+    assert captured["payload"]["text"] == "inspect this diff"
+
+
+def test_repo_preserves_late_positional_changed_paths_and_phase(monkeypatch, tmp_path):
     captured = {}
+
     class DummyClient:
         def post(self, url, payload, **kwargs):
-            captured.update(payload)
-            return {"success": True, "results": []}
-    monkeypatch.setattr("local_ai_hub.mcp_server.CLIENT", DummyClient())
-    from local_ai_hub.mcp_server import local_ai_repo
+            if url == "/api/context/pack":
+                captured.update(url=url, payload=payload)
+            return {"success": True, "context": "ok"}
 
-    res = local_ai_repo(action="callers", root="C:/test/root", symbol="my_func")
-    assert res.get("success") is True
-    assert captured.get("symbol") == "my_func" or captured.get("query") == "my_func"
+    monkeypatch.setattr(mcp_server, "CLIENT", DummyClient())
+
+    result = mcp_server.local_ai_repo(
+        "context", str(tmp_path), "find changes", "", "", "", "", "HEAD",
+        False, False, 0, None, "adaptive", "", "auto", "", None, "",
+        False, False, None, None, 0, "", "", False, "", "", "", "", "", "",
+        ["src/changed.py"], "review", ["src/focus.py"], "", guarded=True,
+    )
+
+    assert captured.get("url") == "/api/context/pack", repr(result)
+    assert captured["payload"]["changed_paths"] == ["src/changed.py"]
+    assert captured["payload"]["phase"] == "review"
+
+
+def test_command_preserves_legacy_positional_timeout(monkeypatch, tmp_path):
+    captured = {}
+
+    class DummyClient:
+        def post(self, url, payload, **kwargs):
+            captured.update(url=url, payload=payload)
+            return {"success": True}
+
+    monkeypatch.setattr(mcp_server, "CLIENT", DummyClient())
+    monkeypatch.setattr(mcp_server.FEATURES, "commands", True)
+    monkeypatch.setattr(mcp_server, "_client_root", lambda value: value)
+    monkeypatch.setattr(mcp_server, "_timeout", lambda _name: 300)
+
+    mcp_server.local_ai_command("run", "pytest -q", str(tmp_path), 27)
+
+    assert captured["url"] == "/api/command"
+    assert captured["payload"]["cwd"] == str(tmp_path)
+    assert captured["payload"]["timeout"] == 27
+
+
+def test_repo_paths_alias_maps_to_changed_paths(monkeypatch, tmp_path):
+    captured = {}
+
+    class DummyClient:
+        def post(self, url, payload, **kwargs):
+            if url == "/api/context/pack":
+                captured.update(url=url, payload=payload)
+            return {"success": True, "context": "ok"}
+
+    monkeypatch.setattr("local_ai_hub.mcp_server.CLIENT", DummyClient())
+
+    result = _call_tool("local_ai_repo", {
+        "action": "context", "root": str(tmp_path), "query": "find foo.py",
+        "paths": ["foo.py"],
+        "guarded": True,
+    })
+
+    assert captured.get("url") == "/api/context/pack", repr(result)
+    assert captured["payload"]["changed_paths"] == ["foo.py"]
+
+
+def test_repo_canonical_empty_changed_paths_precedes_aliases(monkeypatch, tmp_path):
+    captured = {}
+
+    class DummyClient:
+        def post(self, url, payload, **kwargs):
+            if url == "/api/context/pack":
+                captured.update(payload=payload)
+            return {"success": True, "context": "ok"}
+
+    monkeypatch.setattr("local_ai_hub.mcp_server.CLIENT", DummyClient())
+
+    _call_tool("local_ai_repo", {
+        "action": "context", "root": str(tmp_path),
+        "query": "find files",
+        "changed_paths": [], "paths": ["alias.py"], "files": ["other.py"],
+        "guarded": True,
+    })
+
+    assert captured["payload"]["changed_paths"] == []
+
+
+def test_repo_cwd_files_and_symbol_aliases(monkeypatch, tmp_path):
+    captured = {}
+
+    class DummyClient:
+        def post(self, url, payload, **kwargs):
+            if url == "/api/repo/dependency_slice":
+                captured.update(url=url, payload=payload)
+            return {"success": True}
+
+    monkeypatch.setattr("local_ai_hub.mcp_server.CLIENT", DummyClient())
+
+    _call_tool("local_ai_repo", {
+        "action": "dependency_slice", "cwd": str(tmp_path),
+        "files": ["module.py"], "symbol": "Widget.run",
+    })
+
+    assert captured["url"] == "/api/repo/dependency_slice"
+    assert captured["payload"]["root"] == str(tmp_path)
+    assert captured["payload"]["symbol"] == "Widget.run"
+
+
+def test_repo_preserves_full_legacy_positional_alias_tail(monkeypatch, tmp_path):
+    captured = {}
+
+    class DummyClient:
+        def post(self, url, payload, **kwargs):
+            if url == "/api/context/pack":
+                captured.update(url=url, payload=payload)
+            return {"success": True, "context": "ok"}
+
+    monkeypatch.setattr(mcp_server, "CLIENT", DummyClient())
+
+    result = mcp_server.local_ai_repo(
+        "context", None, None, "", "", "", "", "HEAD", False, False, 0,
+        None, "adaptive", "", "auto", "", None, "", False, False, None,
+        None, 0, "", "", False, "", "", "", "", "", "", None, "",
+        None, "", False, "", "", "", 0, False, "", None, None, None, None,
+        None, ["changed.py"], ["fallback.py"], str(tmp_path), "Widget.run",
+    )
+
+    assert result.get("success") is True, repr(result)
+    assert captured["url"] == "/api/context/pack"
+    assert captured["payload"]["root"] == str(tmp_path)
+    assert captured["payload"]["query"] == "Widget.run"
+    assert captured["payload"]["changed_paths"] == ["changed.py"]
+
+
+def test_command_changed_paths_alias_maps_to_format_paths(monkeypatch, tmp_path):
+    captured = {}
+
+    class DummyClient:
+        def post(self, url, payload, **kwargs):
+            if url == "/api/command":
+                captured.update(payload=payload)
+            return {"success": True}
+
+    monkeypatch.setattr("local_ai_hub.mcp_server.CLIENT", DummyClient())
+
+    _call_tool("local_ai_command", {
+        "action": "format", "cwd": str(tmp_path),
+        "command": "fallback.py", "changed_paths": ["selected.py"],
+    })
+
+    assert captured["payload"]["paths"] == ["selected.py"]
+
+@pytest.mark.parametrize("alias", ["changed_paths", "files"])
+def test_command_canonical_empty_paths_excludes_alias_files(monkeypatch, tmp_path, alias):
+    captured = {}
+
+    class DummyClient:
+        def post(self, url, payload, **kwargs):
+            if url == "/api/command":
+                captured.update(url=url, payload=payload)
+            return {"success": True}
+
+    monkeypatch.setattr(mcp_server, "CLIENT", DummyClient())
+    assert Path(mcp_server.__file__).resolve().is_relative_to(
+        Path(__file__).resolve().parents[2] / "src"
+    )
+    result = _call_tool("local_ai_command", {
+        "action": "format", "cwd": str(tmp_path), "paths": [],
+        alias: ["excluded.py"],
+    })
+
+    assert captured.get("url") == "/api/command", repr(result)
+    assert captured["payload"]["paths"] == []
