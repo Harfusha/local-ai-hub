@@ -5015,9 +5015,15 @@ class LocalAIServices:
             requested_backends.append("rag")
         if rag_ready and request_optional and remaining_budget > 0.0:
             rag_pool = _CONTEXT_BACKEND_POOLS["rag"]
+            reranker_obj = getattr(self, "reranker", None) or getattr(getattr(self, "rag", None), "reranker", None)
+            active_device = str(getattr(reranker_obj, "active_device", "") or getattr(reranker_obj, "device", "") or "").strip().lower()
+            rag_use_reranker = (
+                bool(self.config.get("rag", {}).get("use_reranker", True))
+                and not (reranker_obj and active_device == "cpu")
+            )
             rag_future = rag_pool.submit(
                 self.rag.search, query, tenant, target_workspace,
-                top_k=10, use_reranker=True,
+                top_k=10, use_reranker=rag_use_reranker,
             )
         elif rag_ready and request_optional:
             backend_states["rag"] = "skipped"
