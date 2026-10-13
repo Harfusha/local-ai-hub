@@ -6574,6 +6574,8 @@ class LocalAIServices:
             )
             if request_cancel_event is not None:
                 fence_kwargs["request_cancel_event"] = request_cancel_event
+            if args.get("env"):
+                fence_kwargs["env"] = args["env"]
             return self.commands.run(
                 str(args.get("command", "")), str(args.get("cwd", args.get("root", "."))), tenant,
                 timeout=int(args.get("timeout", 0) or 0) or None, force=bool(args.get("force", False)),
