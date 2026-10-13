@@ -177,7 +177,7 @@ class RepositoryTools:
             "vendor", "dist", "build", "bin", "obj", "coverage", ".next", ".cache",
             "library", "temp", "logs", "usersettings", "packagestore", "memorycaptures", "builds",
             ".serena", ".local-ai-hub", ".codegraphcontext", ".handoff",
-            ".t03-main-preflight-overlay", ".system_generated",
+            ".t03-main-preflight-overlay", ".system_generated", "artifacts", ".validation",
             ".pytest_cache", ".mypy_cache", ".ruff_cache",
         }
         self.ignore_dirs = {str(name).lower() for name in rag.get("ignore_dirs", [])} | default_ignore_dirs
