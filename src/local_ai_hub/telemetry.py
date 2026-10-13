@@ -41,6 +41,30 @@ _SAFE_HTTP_ROUTE_LABELS = frozenset(
     | set(GET_ROUTE_HANDLER_BOUNDARIES)
     | {path for rule in POST_ROUTE_REGISTRY for path in rule.paths}
 )
+_SAFE_TOOL_ACTIONS = frozenset({
+    "local_ai_status", "local_ai_task", "local_ai_repo", "local_ai_rag",
+    "local_ai_command", "local_ai_coord", "local_ai_work", "local_ai_artifact",
+    # repo actions
+    "context", "outline", "symbols", "references", "skeletonize", "ast_grep",
+    "code_index", "review_diff", "security_audit", "solve", "preprocess",
+    # command actions
+    "run", "test", "lint", "typecheck", "build", "flaky_detect", "repair", "format",
+    # task actions
+    "delegate", "explore", "reason", "review", "second_opinion", "compress",
+    "vision", "transcribe", "batch", "submit", "status", "wait", "result", "cancel",
+    # coord actions
+    "task_create", "task_get", "task_checkpoint", "task_complete", "task_fail",
+    "task_list", "memory_record", "memory_get", "memory_find", "context_compile",
+    "verify_receipt", "verify_completion", "negative_knowledge_record",
+    "negative_knowledge_find", "lease_acquire", "lease_renew", "lease_release",
+    "memo_record", "memo_search",
+    # rag actions
+    "search", "ingest", "docset",
+    # artifact actions
+    "slice", "get", "read", "list",
+    # system actions
+    "hub_start", "hub_stop", "heartbeat", "cleanup",
+})
 _MAX_QUERY_WINDOW_DAYS = 3650
 _SENSITIVE_METADATA_VALUE_RE = re.compile(
     r"(?i)[\"']?(prompt|source(?:_text)?|input(?:_text)?|completion|output(?:_text)?|"
@@ -273,6 +297,18 @@ def _safe_metadata(value: Any, limit: int = _MAX_METADATA_LENGTH, *, preserve_ro
         canonical_route = text.split("?", 1)[0].split("#", 1)[0]
         if canonical_route in _SAFE_HTTP_ROUTE_LABELS:
             text = canonical_route
+        elif canonical_route in _SAFE_TOOL_ACTIONS:
+            return canonical_route[:limit]
+        elif ":" in canonical_route and all(
+            p in _SAFE_TOOL_ACTIONS or bool(re.fullmatch(r"[a-zA-Z0-9_\-\.]+", p))
+            for p in canonical_route.split(":", 1)
+        ):
+            return canonical_route[:limit]
+        elif "/" in canonical_route and all(
+            p in _SAFE_TOOL_ACTIONS or bool(re.fullmatch(r"[a-zA-Z0-9_\-\.]+", p))
+            for p in canonical_route.split("/", 1)
+        ):
+            return canonical_route[:limit]
         else:
             trace_prefix = "/api/debug-traces/"
             trace_id = canonical_route[len(trace_prefix):] if canonical_route.startswith(trace_prefix) else ""
@@ -310,7 +346,7 @@ def _safe_error_metadata(value: Any, limit: int = _MAX_METADATA_LENGTH) -> str:
 def _safe_operation_metadata(value: Any) -> str:
     """Preserve registered endpoint identities, never arbitrary path-like labels."""
     route = _safe_metadata(value, preserve_route=True)
-    if route in _SAFE_HTTP_ROUTE_LABELS:
+    if route in _SAFE_HTTP_ROUTE_LABELS or route in _SAFE_TOOL_ACTIONS or (":" in route and all(p in _SAFE_TOOL_ACTIONS or bool(re.fullmatch(r"[a-zA-Z0-9_\-\.]+", p)) for p in route.split(":", 1))):
         return route
     return _safe_error_metadata(value)
 
@@ -384,7 +420,7 @@ class TelemetryStore:
         "net_cloud_token_delta", "cloud_token_overhead",
         "net_after_schema_token_delta", "schema_adjusted_overhead",
         "savings_source", "input_savings_source", "output_savings_source", "savings_breakdown_json",
-        "preprocessed_hit",
+        "preprocessed_hit", "root", "db_wait_ms", "exec_ms", "serialization_ms",
     )
 
     def __init__(
@@ -588,7 +624,11 @@ class TelemetryStore:
                     input_savings_source TEXT NOT NULL DEFAULT '',
                     output_savings_source TEXT NOT NULL DEFAULT '',
                     savings_breakdown_json TEXT NOT NULL DEFAULT '',
-                    preprocessed_hit INTEGER NOT NULL DEFAULT 0
+                    preprocessed_hit INTEGER NOT NULL DEFAULT 0,
+                    root TEXT NOT NULL DEFAULT '',
+                    db_wait_ms REAL NOT NULL DEFAULT 0,
+                    exec_ms REAL NOT NULL DEFAULT 0,
+                    serialization_ms REAL NOT NULL DEFAULT 0
                 )"""
             )
             con.executescript(
@@ -675,6 +715,10 @@ class TelemetryStore:
         # Route labels are safe only when exact-listed, regardless of event kind.
         # This keeps useful action labels in tool-result events without exposing IDs.
         preserve_route = True
+        safe_root = ""
+        if event.get("root"):
+            raw_root = str(event["root"]).replace("\\", "/").rstrip("/")
+            safe_root = Path(raw_root).name if raw_root else ""
         return {
             "created_at": created,
             "event_type": event_type,
@@ -733,6 +777,10 @@ class TelemetryStore:
             "output_savings_source": _clean_savings_source(event.get("output_savings_source", "")),
             "savings_breakdown_json": _clean_savings_breakdown(event.get("savings_breakdown_json", ""))[:2000],
             "preprocessed_hit": 1 if event.get("preprocessed_hit") else 0,
+            "root": _safe_metadata(safe_root, 64) if safe_root else "",
+            "db_wait_ms": _bounded_number(event.get("db_wait_ms", 0)),
+            "exec_ms": _bounded_number(event.get("exec_ms", 0)),
+            "serialization_ms": _bounded_number(event.get("serialization_ms", 0)),
         }
 
     def _publish_live(self, kind: str, payload: dict[str, Any]) -> None:
@@ -745,7 +793,7 @@ class TelemetryStore:
             "error_type", "error_fingerprint",
             "tool_calls", "evidence_count", "response_bytes", "component", "operation",
             "fingerprint", "retryable", "recovered", "name", "metrics_json",
-            "preprocessed_hit",
+            "preprocessed_hit", "root", "db_wait_ms", "exec_ms", "serialization_ms",
         }
         event = {k: v for k, v in payload.items() if k in allowed}
         event["kind"] = kind
