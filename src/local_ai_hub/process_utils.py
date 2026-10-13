@@ -1756,11 +1756,12 @@ def _worktree_ownership_path(worktree_path: str | Path) -> Path | None:
 
 
 def remove_git_worktree(
-    repo_root: str | Path,
-    worktree_path: str | Path,
+    *args: Any,
+    repo_root: str | Path | None = None,
+    worktree_path: str | Path | None = None,
     delete_branch: bool = True,
     branch_name: str | None = None,
-    *,
+    force: bool = False,
     worktree_id: str = "",
     expected_task_id: str = "",
     expected_owner: str = "",
@@ -1769,8 +1770,24 @@ def remove_git_worktree(
     expected_expires_at: float | None = None,
 ) -> dict[str, Any]:
     """Remove only clean worktree whose persisted owner metadata matches caller."""
-    repo = Path(repo_root).expanduser().resolve(strict=False)
-    raw_target = Path(worktree_path).expanduser()
+    if len(args) >= 2:
+        resolved_repo = args[0]
+        resolved_target = args[1]
+    elif len(args) == 1:
+        if repo_root is not None:
+            resolved_repo = repo_root
+            resolved_target = args[0]
+        else:
+            resolved_repo = args[0]
+            resolved_target = worktree_path
+    else:
+        resolved_repo = repo_root
+        resolved_target = worktree_path
+
+    if resolved_repo is None or resolved_target is None:
+        return {"success": False, "error": "repository or worktree path is unavailable"}
+    repo = Path(resolved_repo).expanduser().resolve(strict=False)
+    raw_target = Path(resolved_target).expanduser()
     if raw_target.is_symlink():
         return {"success": False, "error": "worktree path must not be a symlink"}
     target = raw_target.resolve(strict=False)
@@ -1859,19 +1876,24 @@ def remove_git_worktree(
             if expected is not None and (actual is None or abs(float(expected) - float(actual)) > max(1e-6, ttl_seconds * 1e-9)):
                 return {"success": False, "error": "worktree time metadata does not match task ownership"}
 
-        status = run_hidden(
-            ["git", "-C", str(target), "status", "--porcelain", "--untracked-files=all", "--ignored"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=30,
-            **hidden_run_kwargs(),
-        )
-        if status.returncode != 0 or status.stdout.strip():
-            return {"success": False, "error": "worktree contains uncommitted or ignored changes"}
+        if not force:
+            status = run_hidden(
+                ["git", "-C", str(target), "status", "--porcelain", "--untracked-files=all", "--ignored"],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+                **hidden_run_kwargs(),
+            )
+            if status.returncode != 0 or status.stdout.strip():
+                return {"success": False, "error": "worktree contains uncommitted or ignored changes"}
 
+        remove_cmd = ["git", "-C", str(repo), "worktree", "remove"]
+        if force:
+            remove_cmd.append("--force")
+        remove_cmd.append(str(target))
         removed = run_hidden(
-            ["git", "-C", str(repo), "worktree", "remove", str(target)],
+            remove_cmd,
             capture_output=True,
             text=True,
             check=False,
@@ -1879,10 +1901,17 @@ def remove_git_worktree(
             **hidden_run_kwargs(),
         )
         if removed.returncode != 0:
-            return {"success": False, "error": removed.stderr.strip() or "Git refused to remove worktree"}
+            if not force:
+                return {"success": False, "error": removed.stderr.strip() or "Git refused to remove worktree"}
+            if target.exists():
+                shutil.rmtree(target, ignore_errors=True)
+
+        prune_git_worktrees(repo, expire="now")
+
         branch_deleted = False
         if delete_branch:
-            cmd_branch = ["git", "-C", str(repo), "branch", "-d", recorded_branch]
+            flag = "-D" if force else "-d"
+            cmd_branch = ["git", "-C", str(repo), "branch", flag, recorded_branch]
             proc_b = run_hidden(cmd_branch, capture_output=True, text=True, check=False, timeout=10, **hidden_run_kwargs())
             branch_deleted = (proc_b.returncode == 0)
         return {
@@ -1939,14 +1968,17 @@ def list_git_worktrees(repo_root: str | Path) -> dict[str, Any]:
         return {"success": False, "error": str(exc)}
 
 
-def prune_git_worktrees(repo_root: str | Path) -> dict[str, Any]:
+def prune_git_worktrees(repo_root: str | Path, expire: str | None = None) -> dict[str, Any]:
     """Prune stale Git worktrees."""
     repo = Path(repo_root).expanduser().resolve(strict=False)
     if not shutil.which("git"):
         return {"success": False, "error": "git executable not found"}
     try:
+        cmd = ["git", "-C", str(repo), "worktree", "prune", "-v"]
+        if expire:
+            cmd.extend(["--expire", expire])
         proc = run_hidden(
-            ["git", "-C", str(repo), "worktree", "prune", "-v"],
+            cmd,
             capture_output=True, text=True, check=False, timeout=15, **hidden_run_kwargs()
         )
         if proc.returncode != 0:
