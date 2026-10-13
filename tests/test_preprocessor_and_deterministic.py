@@ -74,6 +74,30 @@ class _IdleScheduler:
         return False
 
 
+def test_status_aggregate_uses_covering_index_with_exact_counts(tmp_path):
+    cfg = _cfg(tmp_path)
+    pre = ProjectPreprocessor(cfg, _Noop(), _Rag(), _IdleScheduler(), _Noop(), RepositoryTools(cfg))
+    try:
+        with closing(pre._connect()) as con:
+            con.executemany(
+                "INSERT INTO file_refs(root,path,content_hash,size,needs_hash,rag_hash,generation,card_key,updated_at) VALUES(?,?,?,?,?,?,?,?,?)",
+                [("repo", "a", "hash-a", 1, 0, "hash-a", 1, "card", 1),
+                 ("repo", "b", "hash-b", 1, 1, None, 1, None, 1),
+                 ("repo", "c", "", 1, 0, "", 1, "card", 1)],
+            )
+            con.commit()
+            query = """SELECT root,COUNT(*),
+                SUM(CASE WHEN card_key IS NOT NULL THEN 1 ELSE 0 END),
+                SUM(CASE WHEN needs_hash=0 AND content_hash<>'' THEN 1 ELSE 0 END),
+                SUM(CASE WHEN COALESCE(rag_hash,'')=content_hash AND content_hash<>'' THEN 1 ELSE 0 END)
+                FROM file_refs WHERE root IN (?) GROUP BY root"""
+            assert tuple(con.execute(query, ("repo",)).fetchone()) == ("repo", 3, 2, 1, 1)
+            plan = con.execute("EXPLAIN QUERY PLAN " + query, ("repo",)).fetchall()
+            assert any("COVERING INDEX idx_file_refs_status" in str(row[3]) for row in plan)
+    finally:
+        pre.close()
+
+
 class _FailingExternalTools:
     def index(self, backend, root):
         raise RuntimeError(f"{backend} unavailable")

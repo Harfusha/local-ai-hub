@@ -366,6 +366,7 @@ class ProjectPreprocessor:
                     PRIMARY KEY(root,path)
                 );
                 CREATE INDEX IF NOT EXISTS idx_file_refs_root_card ON file_refs(root,card_key);
+                CREATE INDEX IF NOT EXISTS idx_file_refs_status ON file_refs(root,card_key,needs_hash,content_hash,rag_hash);
                 CREATE TABLE IF NOT EXISTS source_index (
                     root TEXT NOT NULL,
                     path TEXT NOT NULL,
