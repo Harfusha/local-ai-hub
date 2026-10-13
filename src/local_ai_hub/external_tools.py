@@ -1199,7 +1199,9 @@ class ExternalCodeIntelligence:
                 state = "disabled"
             elif command_available and state in {"unknown", "missing"}:
                 state = "available"
-            reason = str(health.get("repair_error") or health.get("repair_blocked") or health.get("last_failure") or "")
+            reason = str(health.get("repair_error") or health.get("repair_blocked") or "")
+            if not reason and (state not in {"healthy", "available"} or health.get("failure_active")):
+                reason = str(health.get("last_failure") or "")
             if not configured_enabled or not self.enabled:
                 reason = "disabled by configuration"
             elif not command_available and not reason:

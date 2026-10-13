@@ -28,6 +28,7 @@ from .cache import MemoryLRUCache, SQLiteCache, stable_hash
 from .code_index import _mask_non_code
 from .normalizer import tokenize_query_terms
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, quick_sanity_check
+from .sqlite_counts import global_row_counts, initialize_row_counts
 from .diff_parsers import (
     extract_cs_diff_defs,
     extract_go_diff_defs,
@@ -168,6 +169,11 @@ class DeterministicEngine:
     def _connect(self) -> sqlite3.Connection:
         con = connect_sqlite(self.db_path, timeout_seconds=5.0, row_factory=sqlite3.Row)
         try:
+            con.execute("PRAGMA recursive_triggers=ON")
+        except Exception:
+            con.close()
+            raise
+        try:
             con.execute("PRAGMA cache_size=-16000")
             con.execute("PRAGMA mmap_size=134217728")
         except sqlite3.OperationalError:
@@ -225,7 +231,8 @@ class DeterministicEngine:
             con.execute("CREATE VIRTUAL TABLE IF NOT EXISTS fact_fts USING fts5(root UNINDEXED,path UNINDEXED,kind UNINDEXED,name,value)")
         except sqlite3.OperationalError:
             pass
-        
+        initialize_row_counts(con, ("files", "facts", "dependencies", "scripts"))
+
     def record_test_source_links(self, root: str, links: list[tuple[str, str, float]]) -> None:
         if not links:
             return
@@ -5857,7 +5864,9 @@ def test_{sym}_regression_edge_cases():
         if cached and now - cached["time"] < 5.0:
             return dict(cached["data"])
         try:
-            with self._lock, closing(self._connect()) as con:
+            # SQLite's WAL snapshot, rather than the index writer's Python lock,
+            # isolates this read of committed metadata.
+            with closing(self._connect()) as con:
                 if root:
                     r = self._root(root); where = " WHERE root=?"; args = (r,)
                 else:
@@ -5867,7 +5876,7 @@ def test_{sym}_regression_edge_cases():
                     "facts": int(con.execute(f"SELECT COUNT(*) FROM facts{where}", args).fetchone()[0]),
                     "dependencies": int(con.execute(f"SELECT COUNT(*) FROM dependencies{where}", args).fetchone()[0]),
                     "scripts": int(con.execute(f"SELECT COUNT(*) FROM scripts{where}", args).fetchone()[0]),
-                }
+                } if root else global_row_counts(con, ("files", "facts", "dependencies", "scripts"))
             res = {"success": True, "healthy": True, **counts, "stats": dict(self._stats)}
             if len(self._status_cache) > 64:
                 oldest = sorted(self._status_cache.items(), key=lambda x: x[1].get("time", 0))[:32]

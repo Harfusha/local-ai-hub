@@ -4534,3 +4534,31 @@ loops, preprocessors, watchdog observers or git-grep reader (targeted lifecycle
 report `targeted-lifecycle-1791898983076794900.result.json`). MCP and core lifecycle
 compatibility: **44 passed in 32.22s** (`req_7823c027594a`). These are targeted
 results; complete current-candidate acceptance and deployment remain pending.
+
+`1cdf17bf` subsequently passed the complete suite: **7221 passed, 105 skipped,
+23 subtests passed in 2533.22s** (execution `1f0d4e25697c42ec83a02d33ecf08b34`,
+trusted evidence `art_a158040faa53f6e0b1c05e4b`). The exact wheel was installed;
+123 runtime payloads matched source/Git/wheel, live release checks passed 16/16,
+and selftest passed 6/6. This is evidence for that revision, not acceptance of
+subsequent changes.
+
+Installed detailed status exposed expensive global metadata scans: code-index
+refs/edges took 27.37/38.90s, deterministic facts 13.22s, recovery recent rows
+1.13s, evidence aggregate 224.58ms. Private telemetry process summary was 23.64ms
+median; status probes already run in parallel. The resulting fixes maintain
+exact global derived row counts within SQLite writer transactions, isolate WAL
+metadata readers from Python writer locks, and add narrow metadata indexes.
+Count backfill scans existing derived indexes once during schema initialization;
+subsequent requests read the counters. REPLACE deletion triggers are enabled on
+every connection of the two affected derived stores. Root-scoped counts retain
+their exact queries. A recovered Serena keeps historical failures while clearing
+its current unavailability reason. Initial targeted validation passed 136 tests
+(two skips, `req_037b3aa769a5`). A broader integration selection found one cache
+recovery failure among 431 passes and 21 skips (`req_97ef5947c58d`): a concurrent
+worker reopened the still-corrupt file after Windows refused its rename while
+the peer held a handle. Cache initialization and recovery now share a bounded
+cross-process schema lock across namespaces; the recovery core avoids nested OS
+locks. A deterministic process regression holds that lock and verifies a second
+constructor cannot open the corrupt SQLite file until released. Recovery,
+durable-isolation, counters and cache regressions passed **55 tests, one skip**
+(`req_4c595c862b55`). Complete resulting-candidate acceptance remains pending.

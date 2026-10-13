@@ -10,6 +10,59 @@ import pytest
 from local_ai_hub.external_tools import ExternalCodeIntelligence, MCPStdioClient
 
 
+@pytest.mark.parametrize("state", ["healthy", "available"])
+def test_backend_status_preserves_failure_history_after_recovery(tmp_path: Path, monkeypatch, state: str):
+    monkeypatch.setattr(ExternalCodeIntelligence, "_startup_preflight", lambda self: None)
+    ext = ExternalCodeIntelligence({
+        "server": {"state_dir": str(tmp_path / "state")},
+        "code_intelligence": {"enabled": True, "serena_enabled": True},
+    })
+    try:
+        ext._serena = sys.executable
+        ext._record_failure("serena", RuntimeError("serena indexing exceeded 120s"),
+                            operation="index", root="repo", emit_telemetry=False)
+        assert ext.status()["serena"]["unavailable_reason"] == "serena indexing exceeded 120s"
+        ext._record_success("serena", root="repo")
+        ext._backend_health["serena"]["state"] = state
+        status = ext.status()["serena"]
+        assert status["unavailable_reason"] == ""
+        assert status["last_failure"] == "serena indexing exceeded 120s"
+        assert status["failure_active"] is False
+        assert status["last_successful_operation"]
+    finally:
+        ext.close()
+
+
+@pytest.mark.parametrize("condition, expected", [
+    ("active_failure", "index failed"),
+    ("repair_error", "repair failed"),
+    ("repair_blocked", "operator approval needed"),
+    ("missing", "managed executable is missing"),
+    ("disabled", "disabled by configuration"),
+])
+def test_backend_status_keeps_current_unavailability(tmp_path: Path, monkeypatch, condition: str, expected: str):
+    monkeypatch.setattr(ExternalCodeIntelligence, "_startup_preflight", lambda self: None)
+    ext = ExternalCodeIntelligence({
+        "server": {"state_dir": str(tmp_path / "state")},
+        "code_intelligence": {"enabled": True, "serena_enabled": True},
+    })
+    try:
+        ext._serena = sys.executable
+        health = ext._backend_health["serena"]
+        health.update(state="healthy", last_failure="index failed", failure_active=False)
+        if condition == "active_failure":
+            health["failure_active"] = True
+        elif condition in {"repair_error", "repair_blocked"}:
+            health[condition] = expected
+        elif condition == "missing":
+            ext._serena = None
+        else:
+            ext.cfg["serena_enabled"] = False
+        assert ext.status()["serena"]["unavailable_reason"] == expected
+    finally:
+        ext.close()
+
+
 def test_external_code_intelligence_does_not_manage_codegraph(tmp_path: Path):
     ext = ExternalCodeIntelligence(
         {
