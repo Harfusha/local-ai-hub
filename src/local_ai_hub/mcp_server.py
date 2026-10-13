@@ -2480,6 +2480,7 @@ def _validate_context_pack_inputs(
         guarded or bool(task_id.strip()) or bool(phase.strip()) or bool(session_id.strip())
         or bool(str(clone_id).strip()) or bool(str(worktree_id).strip()) or bool(str(branch).strip())
         or bool(str(repository_id).strip()) or bool(str(repository_revision).strip()) or include_diagnostics
+        or changed_paths is not None or focus is not None
     )
     guarded_only_values = (
         focus is not None or bool(preload_profile) or changed_paths is not None or base != "HEAD"
@@ -2730,6 +2731,10 @@ def _local_ai_repo_impl(
     directory_hints: list[str] | None = None,
     exclude_paths: list[str] | None = None,
     force_include_paths: list[str] | None = None,
+    paths: list[str] | None = None,
+    files: list[str] | None = None,
+    cwd: str = "",
+    symbol: str = "",
 ) -> dict[str, Any]:
     """Primary bounded repository worker for the main agent.
 
@@ -2746,6 +2751,14 @@ def _local_ai_repo_impl(
     in_progress, retryable and degraded states. Use when a non-trivial
     repository task needs indexed evidence or bounded Hub support; skip when
     the task is not repository-scoped and no independent Hub scope exists."""
+    if paths and not changed_paths:
+        changed_paths = paths
+    if files and not changed_paths:
+        changed_paths = files
+    if cwd and (not root or root == "."):
+        root = cwd
+    if symbol and not query:
+        query = symbol
     if not FEATURES.repo:
         return {**contract_error("local_ai_repo is disabled in configuration", status_code=403), "unsupported": True}
     if not isinstance(phase, str) or phase not in REPO_PHASES:
@@ -2898,6 +2911,7 @@ def _local_ai_repo_impl(
             or bool(str(worktree_id).strip()) or bool(str(branch).strip())
             or bool(str(repository_id).strip()) or bool(str(repository_revision).strip())
             or bool(include_diagnostics)
+            or bool(changed_paths) or bool(focus)
         )
         configured_tokens = CFG.get("token_saving", {}).get("default_repo_context_tokens", 8000)
         effective_tokens = token_budget or max_tokens or configured_tokens
@@ -2910,7 +2924,7 @@ def _local_ai_repo_impl(
         }
         if guarded_requested:
             payload.update({
-                "guarded": bool(guarded),
+                "guarded": True if (changed_paths or focus) else bool(guarded),
                 "task_id": task_id,
                 "phase": phase,
                 "focus": list(focus or []),
@@ -3350,6 +3364,10 @@ def local_ai_repo(
     directory_hints: list[str] | None = None,
     exclude_paths: list[str] | None = None,
     force_include_paths: list[str] | None = None,
+    paths: list[str] | None = None,
+    files: list[str] | None = None,
+    cwd: str = "",
+    symbol: str = "",
 ) -> dict[str, Any]:
     """Primary bounded repository worker. Use when: indexed repository evidence is needed. Skip when: fresh evidence already answers it."""
     forward: dict[str, Any] = {}
@@ -3392,7 +3410,7 @@ def local_ai_repo(
         include_code, include_tests, edits, extra_fields, max_response_tokens, response_profile, reuse_key,
         include_diagnostics, clone_id, worktree_id, branch, repository_id, session_id, repository_revision,
         changed_paths, phase, focus, preload_profile, guarded, since_hash, approval, override_reason,
-        token_budget, is_worktree, parent_root, steps, **forward,
+        token_budget, is_worktree, parent_root, steps, paths=paths, files=files, cwd=cwd, symbol=symbol, **forward,
     )
 
 
@@ -3548,6 +3566,11 @@ def local_ai_command(
     max_response_tokens: int = 0,
     response_profile: str = "",
     reuse_key: str = "",
+    root: str = "",
+    changed_paths: list[str] | None = None,
+    files: list[str] | None = None,
+    runs: int = 5,
+    env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Bounded command broker. Set snapshot=true to record a best-effort Git snapshot. For action=run only, rollback_on_failure=true requires paths to list the flat, relative files directly under cwd that may be restored or removed; missing/unsafe paths reject execution. It cannot be combined with auto_fix. Rollback preserves all files outside that explicit scope. Other command and streaming behavior remains bounded and tenant-scoped. Use when: a repeatable test, lint, typecheck, build, analysis, or safe read-only command is needed. Skip when: no command is needed or a fresh cached result already answers it."""
     action = _resolve_action("command", action)
@@ -3561,6 +3584,12 @@ def local_ai_command(
         return mode_rejection
     if not FEATURES.commands:
         return {"success": False, "unsupported": True, "error": "local_ai_command is disabled in configuration"}
+    if root and (not cwd or cwd == "."):
+        cwd = root
+    if changed_paths and not paths:
+        paths = changed_paths
+    if files and not paths:
+        paths = files
     eff_cwd = _client_root(cwd)
     host_timeout = _timeout("long")
     configured_command_timeout = int(CFG.get("commands", {}).get("timeout_seconds", 1800))
@@ -3608,6 +3637,8 @@ def local_ai_command(
         "paths": paths_payload,
         "patch": patch,
         "auto_rollback": auto_rollback,
+        "runs": runs,
+        "env": env or {},
     }, timeout=host_timeout), "command")
 
 
