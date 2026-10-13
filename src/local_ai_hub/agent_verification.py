@@ -33,7 +33,7 @@ def criterion_evidence_type(criterion: str) -> str:
         return "benchmark"
     if any(
         re.search(rf"(?<![a-z0-9]){re.escape(marker)}(?![a-z0-9])", text)
-        for marker in ("test", "tests", "pytest", "suite", "unit", "unittest", "integration", "regression")
+        for marker in ("test", "tests", "pytest", "suite", "unit", "unittest", "integration", "regression", "regressions")
     ):
         return "test"
     return "source_review"
