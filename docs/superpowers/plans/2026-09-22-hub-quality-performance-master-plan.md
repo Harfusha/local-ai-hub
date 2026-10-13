@@ -2946,3 +2946,11 @@ description-wording contract (two passed, one failed). The enabled Agent OS
 description now preserves the original phrase; disabled Agent OS still exposes
 only supported coordination actions. Expanded targeted result: 94 passed in
 9.82s (`req_1f82a60e858b`). No passing whole-suite claim for `19913ddc`.
+
+The `b689604f` suite stopped after 907 passes and one skip at the Maintenance
+fixture's two-second executor-start gate, before it changed operational mode.
+The actual-dispatch Gaming/Maintenance pair passed separately. Its fixture now
+has a distinct bounded startup/release handshake and reports admission/state
+on failure; the real dispatcher, running-state assertions and two-second
+cancellation wait are retained. Production timing is unchanged. Async mode/job
+regressions: 36 passed in 7.44s (`req_824a4ff478f3`). Final gates remain pending.

@@ -4490,3 +4490,11 @@ Agent OS, vision and speculative-lint description projections: 91 passed in
 while preserving disabled-module projection passed the expanded 94-test set in
 9.82s (`req_1f82a60e858b`). The new integrated candidate still needs its final
 whole-suite and installed-runtime gates.
+
+`b689604f` stopped at executor startup in the Maintenance cancellation fixture:
+907 passed, one failed, one skipped in 489.65s. The mode change had not yet run.
+The isolated real-dispatch pair passed; fixture startup/release handshakes now
+have their own bounded budget and diagnostics. Cancellation still uses the
+original two-second wait, with all running/cancelled/terminal assertions intact.
+No production timer changed. Async mode and job tests: 36 passed in 7.44s
+(`req_824a4ff478f3`). This is not a passing whole-suite receipt.

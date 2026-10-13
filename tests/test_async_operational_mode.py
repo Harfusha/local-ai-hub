@@ -75,17 +75,21 @@ def test_gaming_cancels_queued_inference_and_preserves_speculative_lint(tmp_path
 def test_mode_change_cancels_running_job_cooperatively(tmp_path, monkeypatch, mode_name):
     started = threading.Event()
     release = threading.Event()
+    # Startup includes real background dispatch and SQLite admission/claiming.
+    # This handshake is separate from the two-second cancellation check below.
+    handshake_seconds = 10
 
     def executor(_action, _payload, _tenant):
         started.set()
-        assert release.wait(3)
+        assert release.wait(handshake_seconds)
         return {"success": True, "artifact_id": "artifact-1"}
 
     manager = _manager(tmp_path, executor)
     monkeypatch.setattr(async_jobs, "load_operational_mode", lambda _path: _mode("active"), raising=False)
     try:
         submitted = manager.submit("tenant-a", "reason", {"task": "running"})
-        assert started.wait(2)
+        assert submitted["success"], submitted
+        assert started.wait(handshake_seconds), manager.status("tenant-a", submitted["job_id"])
 
         manager.on_operational_mode_changed(_mode(mode_name))
         row = _states(manager)[submitted["job_id"]]
