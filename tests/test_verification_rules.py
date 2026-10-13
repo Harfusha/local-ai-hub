@@ -56,7 +56,10 @@ def _project(tmp_path: Path) -> tuple[Path, Path]:
     return root, tmp_path / "state"
 
 
-def _bind_execution_record(verification: VerificationStore, receipt, proof: dict, root: Path) -> None:
+def _bind_execution_record(
+    verification: VerificationStore, receipt, proof: dict, root: Path,
+    *, tenant: str | None = None,
+) -> None:
     canonical_root = str(root.resolve())
     record = {
         "schema": "command_execution_record.v1",
@@ -91,6 +94,7 @@ def _bind_execution_record(verification: VerificationStore, receipt, proof: dict
         if command_id == receipt.command_id
         and kwargs.get("task_id") == receipt.task_id
         and kwargs.get("repository_root") == canonical_root
+        and kwargs.get("tenant") == (receipt.owner if tenant is None else tenant)
         else None
     )
 
@@ -241,8 +245,9 @@ def test_http_task_completion_uses_project_verification_rules(monkeypatch, tmp_p
     assert verification.calls[0]["configured_criteria"] == ("check",)
 
 
+@pytest.mark.parametrize("tenant", ["default", "codex:e498067d"])
 def test_mcp_task_completion_enforces_project_verification_rules(
-    monkeypatch, tmp_path: Path
+    monkeypatch, tmp_path: Path, tenant: str,
 ) -> None:
     root, state_dir = _project(tmp_path)
     (root / ".local-ai.toml").write_text(
@@ -258,7 +263,7 @@ def test_mcp_task_completion_enforces_project_verification_rules(
     )
     task_store.create(
         GoalContract(goal="verify configured rule", acceptance_criteria=("required_commands",)),
-        ScopeContext(task_id="task-mcp", repository_id=str(root), session_id="default"),
+        ScopeContext(task_id="task-mcp", repository_id=str(root), session_id=tenant),
         task_id="task-mcp",
         repo_root=str(root),
     )
@@ -301,7 +306,7 @@ def test_mcp_task_completion_enforces_project_verification_rules(
             handler._require_authorized = lambda: True
             handler._read_json = lambda: payload
             handler._validate_payload = lambda _path, _payload: None
-            handler._tenant = lambda: "default"
+            handler._tenant = lambda: tenant
             handler._agent = lambda: "agent"
             handler._send = lambda status, data: responses.append((status, data))
             handler.do_POST()
@@ -393,6 +398,19 @@ def test_mcp_task_completion_enforces_project_verification_rules(
         command_receipt,
         command_proof,
         root,
+        tenant="other-session",
+    )
+    wrong_tenant = mcp_server.local_ai_coord(
+        action="task_complete", task_id="task-mcp", root=str(root), reason="done"
+    )
+    assert wrong_tenant["success"] is False
+    assert task_store.get("task-mcp").status.value == "planned"
+    _bind_execution_record(
+        verification_store,
+        command_receipt,
+        command_proof,
+        root,
+        tenant=tenant,
     )
 
     completed = mcp_server.local_ai_coord(

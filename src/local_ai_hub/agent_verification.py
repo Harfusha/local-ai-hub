@@ -1564,6 +1564,11 @@ class VerificationStore:
             else current_mutation_generation
         )
         expected_owner = str(task_state.owner or "").strip() if task_state else ""
+        # HTTP task creation binds session_id to the authenticated tenant. Broker
+        # provenance uses that identity; artifact ownership remains the agent.
+        trusted_tenant = (
+            str(task_state.context.session_id or "").strip() if task_state else ""
+        ) or expected_owner
         trusted_repository_root: str | Path = ""
         if isinstance(state_data, Mapping):
             trusted_repository_root = str(state_data.get("repo_root", "") or "").strip()
@@ -1651,7 +1656,7 @@ class VerificationStore:
             project_config_digest=project_config_digest,
             project_root=project_root,
             command_execution_record_lookup=self.command_execution_record_lookup,
-            trusted_tenant=expected_owner,
+            trusted_tenant=trusted_tenant,
             trusted_repository_root=trusted_repository_root,
             require_execution_provenance=self.require_execution_provenance,
             now=current_time,
