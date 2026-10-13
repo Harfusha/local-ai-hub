@@ -3718,7 +3718,7 @@ def local_ai_coord(
         )
         if ttl_seconds is not None and ttl_seconds > 0:
             memory_kwargs["ttl_seconds"] = ttl_seconds
-        return _compact(CLIENT.coord(**memory_kwargs), "status")
+        return _compact(CLIENT.coord(**memory_kwargs), "task_memory")
     if action == "context_compile":
         since_hash = str(since_hash or fingerprint or record_id or status or "")
         return _compact(CLIENT.post("/api/agent-state/context", {
@@ -3770,7 +3770,7 @@ def local_ai_coord(
             "query": query or key or value, "root": root,
             "root_cause": reason, "verified_fix": status,
             "incident_id": record_id,
-        }, timeout=_timeout("quick")), "status")
+        }, timeout=_timeout("quick")), "task_memory")
     if action == "incident_decision":
         return _compact(CLIENT.coord(
             action="incident_decision", fingerprint=fingerprint or {},
