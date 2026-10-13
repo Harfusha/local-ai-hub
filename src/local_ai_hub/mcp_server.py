@@ -52,7 +52,7 @@ from local_ai_hub.operation_contracts import (
     validate_repo_pipeline_step,
 )
 from local_ai_hub.ollama_subagents import OllamaSubagentCatalog
-from local_ai_hub.process_utils import canonical_root, is_rooted_path
+from local_ai_hub.process_utils import canonical_root, canonical_workspace_id, is_rooted_path
 from local_ai_hub.token_accounting import account_projection, attach_accounting, context_digest, finalize_tool_accounting, json_tokens, pop_accounting, tool_request_tokens
 from local_ai_hub.trace_context import efficiency_metadata, reset_metadata, set_metadata
 from local_ai_hub.adoption_metrics import AdoptionMetricsStore
@@ -3467,11 +3467,14 @@ def local_ai_rag(
     else:
         root = _client_root(root)
     effective_workspace = workspace.strip() or root
+    if action == "search" and (not workspace.strip() or is_rooted_path(workspace.strip())):
+        effective_workspace = canonical_workspace_id(root)
     if action == "index":
         return _compact(CLIENT.post("/api/rag/index", {"root": root, "workspace": effective_workspace}, timeout=_timeout("long")))
     if action == "search":
         return _compact(CLIENT.post("/api/rag/search", {
-            "query": query, "workspace": effective_workspace, "top_k": max(1, min(top_k, 12)), "use_reranker": True,
+            "root": root, "query": query, "workspace": effective_workspace,
+            "top_k": max(1, min(top_k, 12)), "use_reranker": True,
         }))
     if action == "list":
         return _compact(CLIENT.get("/api/rag/workspaces"))

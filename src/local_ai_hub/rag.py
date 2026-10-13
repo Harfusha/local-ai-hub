@@ -22,7 +22,7 @@ from .cache import SQLiteCache, TieredCache, SingleFlightCache, stable_hash
 from .normalizer import normalize_query
 from .scheduler import QueueFullError
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy, quick_sanity_check
-from .process_utils import canonical_root
+from .process_utils import canonical_root, canonical_workspace_id
 
 
 import re
@@ -314,9 +314,7 @@ class RAGStore:
 
     @staticmethod
     def workspace_id(root: str) -> str:
-        resolved = canonical_root(root)
-        digest = hashlib.sha1(resolved.encode("utf-8"), usedforsecurity=False).hexdigest()[:12]
-        return f"{Path(resolved).name}-{digest}"
+        return canonical_workspace_id(root)
 
     def project_config_api(self) -> Any | None:
         """Load project policy lazily so shared revisions without the API still work."""
