@@ -4506,3 +4506,15 @@ root tenant consistently and separately verifies that the owner name cannot
 retrieve its execution record. Production scope checks and all unauthorized,
 cross-tenant, event-preservation and replay assertions remain. Real HTTP and
 project receipt regressions: 15 passed in 11.80s (`req_dad0af0f580d`).
+
+`ba0af3f4` completed the whole suite with 7220 passed, one failed, 105 skipped
+and 23 subtests passed in 3287.60s (execution `02fd7f64959f44669a72aedcda317577`;
+no cancellation, timeout or unconfirmed cleanup). The sole failure expected an
+artifact result within three seconds. Its private SQLite row proves one attempt,
+`done`, `artifact-1`, the expected result and no error after 5.3698 seconds.
+Functional completion checks in that module now share one bounded ten-second
+wait with state diagnostics; failure paths close their managers in `finally`.
+Real dispatch, artifact/result assertions, wait-timeout/clamp and cancellation
+contracts remain intact. Both async modules passed: 36 tests in 12.43s
+(`req_327cb9e3b5fb`). No production timeout changed. Whole-suite acceptance and
+deployment of the resulting committed candidate remain pending.

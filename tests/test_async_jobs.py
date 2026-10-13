@@ -47,6 +47,13 @@ def _manager(tmp_path):
     return manager, scheduler
 
 
+def _wait_for_terminal(manager, job_id, expected_state="done"):
+    # These tests check persisted results, not a loaded Windows host's throughput.
+    # Keep the real dispatch and one bounded wait; timeout semantics are tested below.
+    waited = manager.wait("tenant-a", job_id, 10)
+    assert waited["state"] == expected_state, waited
+    return waited
+
 
 def test_async_jobs_rejects_non_current_schema_without_deleting_rows(tmp_path):
     state_dir = tmp_path / "state"
@@ -110,13 +117,13 @@ def test_submit_coalesces_active_job_without_outer_scheduler_enqueue(tmp_path):
 
 def test_async_execution_does_not_consume_model_scheduler_slot(tmp_path):
     manager, scheduler = _manager(tmp_path)
-
-    submitted = manager.submit("tenant-a", "reason", {"task": "run outside model slot"})
-    result = manager.wait("tenant-a", submitted["job_id"], 1)
-
-    assert result["state"] == "done"
-    assert scheduler.calls == []
-    manager.close()
+    try:
+        submitted = manager.submit("tenant-a", "reason", {"task": "run outside model slot"})
+        result = _wait_for_terminal(manager, submitted["job_id"])
+        assert result["state"] == "done"
+        assert scheduler.calls == []
+    finally:
+        manager.close()
 
 
 def test_submit_returns_before_slow_async_execution(tmp_path):
@@ -184,11 +191,13 @@ def test_recovery_requeues_persisted_job_once(tmp_path):
         )
         con.commit()
 
-    assert manager.recover() == 1
-    assert manager.wait("tenant-a", "persisted", 1)["state"] == "done"
-    assert seen_request_ids == ["persisted-recovery-1"]
-    assert scheduler.calls == []
-    manager.close()
+    try:
+        assert manager.recover() == 1
+        _wait_for_terminal(manager, "persisted")
+        assert seen_request_ids == ["persisted-recovery-1"]
+        assert scheduler.calls == []
+    finally:
+        manager.close()
 
 
 def test_recovery_keeps_unkeyed_running_job_outcome_unknown(tmp_path):
@@ -215,14 +224,16 @@ def test_recovery_keeps_unkeyed_running_job_outcome_unknown(tmp_path):
 
 def test_completed_job_returns_artifact_backed_result(tmp_path):
     manager, _scheduler = _manager(tmp_path)
-    submitted = manager.submit("tenant-a", "reason", {"task": "finish"})
-    assert manager.wait("tenant-a", submitted["job_id"], 3)["state"] == "done"
-    result = manager.result("tenant-a", submitted["job_id"])
+    try:
+        submitted = manager.submit("tenant-a", "reason", {"task": "finish"})
+        _wait_for_terminal(manager, submitted["job_id"])
+        result = manager.result("tenant-a", submitted["job_id"])
 
-    assert result["success"] is True
-    assert result["artifact_id"] == "artifact-1"
-    assert result["result"]["task"] == "finish"
-    manager.close()
+        assert result["success"] is True
+        assert result["artifact_id"] == "artifact-1"
+        assert result["result"]["task"] == "finish"
+    finally:
+        manager.close()
 
 
 def test_malformed_executor_result_fails_job_without_retry(tmp_path):
@@ -236,7 +247,7 @@ def test_malformed_executor_result_fails_job_without_retry(tmp_path):
     try:
         submitted = manager.submit("tenant-a", "reason", {"task": "bad result"})
 
-        assert manager.wait("tenant-a", submitted["job_id"], 1)["state"] == "failed"
+        _wait_for_terminal(manager, submitted["job_id"], "failed")
         result = manager.result("tenant-a", submitted["job_id"])
 
         assert result["success"] is False
@@ -252,17 +263,19 @@ def test_async_job_trace_links_metadata_scheduler_and_terminal_state(tmp_path):
     scheduler = _Scheduler()
     manager = AsyncJobManager(config, scheduler, _Artifacts(), lambda action, payload, tenant: {"success": True, "action": action, "task": payload.get("task"), "tenant": tenant}, debug_traces=store)
 
-    submitted = manager.submit("tenant-a", "reason", {"task": "trace me", "context": "full context"})
-    assert manager.wait("tenant-a", submitted["job_id"], 3)["state"] == "done"
-    detail = store.detail(submitted["trace_id"])
-    assert detail["session"]["request"]["task"] == "trace me"
-    assert detail["session"]["request"]["context"] == "full context"
-    assert "task" in detail["session"]["output"]
-    assert detail["session"]["async_job_id"] == submitted["job_id"]
-    assert detail["session"]["scheduler_job_id"] == ""
-    assert detail["session"]["state"] == "done"
-    assert [event["event_type"] for event in detail["events"]][-2:] == ["running", "done"]
-    manager.close()
+    try:
+        submitted = manager.submit("tenant-a", "reason", {"task": "trace me", "context": "full context"})
+        _wait_for_terminal(manager, submitted["job_id"])
+        detail = store.detail(submitted["trace_id"])
+        assert detail["session"]["request"]["task"] == "trace me"
+        assert detail["session"]["request"]["context"] == "full context"
+        assert "task" in detail["session"]["output"]
+        assert detail["session"]["async_job_id"] == submitted["job_id"]
+        assert detail["session"]["scheduler_job_id"] == ""
+        assert detail["session"]["state"] == "done"
+        assert [event["event_type"] for event in detail["events"]][-2:] == ["running", "done"]
+    finally:
+        manager.close()
 
 
 def test_recovered_async_job_reopens_terminal_trace(tmp_path, monkeypatch):
@@ -404,7 +417,7 @@ def test_terminal_status_and_result_flags_are_consistent(tmp_path):
     manager, _scheduler = _manager(tmp_path)
     try:
         submitted = manager.submit("tenant-a", "reason", {"task": "terminal flags"})
-        assert manager.wait("tenant-a", submitted["job_id"], 3)["state"] == "done"
+        _wait_for_terminal(manager, submitted["job_id"])
 
         status = manager.status("tenant-a", submitted["job_id"])
         result = manager.result("tenant-a", submitted["job_id"])
@@ -554,7 +567,7 @@ def test_expired_result_matches_expired_status(tmp_path):
     manager, _scheduler = _manager(tmp_path)
     try:
         submitted = manager.submit("tenant-a", "reason", {"task": "expiry parity"})
-        assert manager.wait("tenant-a", submitted["job_id"], 3)["state"] == "done"
+        _wait_for_terminal(manager, submitted["job_id"])
         with closing(manager._connect()) as con:
             con.execute("UPDATE async_jobs SET expires_at=? WHERE job_id=?", (time.time() - 1, submitted["job_id"]))
             con.commit()
