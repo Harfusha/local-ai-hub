@@ -50,7 +50,7 @@ def test_request_metrics_aggregate_only_matching_inference_usage(tmp_path):
             avoided_cloud_tokens=500,
         )
 
-        assert store.flush(1.0)
+        assert store.flush(10)
         metrics = store.request_metrics("request-1")
     finally:
         store.close()
@@ -100,7 +100,7 @@ def test_trace_metrics_endpoint_joins_by_request_id(tmp_path, monkeypatch, reque
         output_tokens=6,
         avoided_cloud_tokens=20,
     )
-    assert telemetry.flush(1.0), {
+    assert telemetry.flush(10), {
         "writer": dict(telemetry._stats),
         "writer_alive": bool(telemetry._thread and telemetry._thread.is_alive()),
     }

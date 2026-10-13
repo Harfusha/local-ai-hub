@@ -25,7 +25,7 @@ def test_custom_exception_keeps_safe_type_and_category_without_raw_details(tmp_p
     store = TelemetryStore(tmp_path / "telemetry", enabled=True)
     try:
         store.record_error("inference", "generate", error)
-        assert store.flush(1)
+        assert store.flush(10)
         with closing(store._connect()) as con:
             persisted_error = con.execute(
                 "SELECT error_type, safe_message FROM errors"

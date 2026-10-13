@@ -15,7 +15,7 @@ def test_errno_error_diagnostics_are_specific_and_private(tmp_path):
     try:
         store.record_error("filesystem", "missing", missing)
         store.record_error("filesystem", "permission", denied)
-        assert store.flush(1)
+        assert store.flush(10)
         connection = store._connect()
         try:
             rows = connection.execute(

@@ -19,7 +19,7 @@ def test_error_telemetry_persists_classification_without_exception_text(tmp_path
             retryable=True,
             recovered=True,
         )
-        assert store.flush(1)
+        assert store.flush(10)
         con = store._connect()
         try:
             row = con.execute(

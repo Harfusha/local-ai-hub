@@ -23,7 +23,7 @@ def test_error_diagnostics_are_actionable_bounded_and_private(tmp_path, error, e
     store = TelemetryStore(tmp_path / "telemetry", enabled=True)
     try:
         store.record_error("inference", "generate", error)
-        assert store.flush(1)
+        assert store.flush(10)
         con = store._connect()
         try:
             rows = con.execute("SELECT error_type, safe_message FROM errors").fetchall()

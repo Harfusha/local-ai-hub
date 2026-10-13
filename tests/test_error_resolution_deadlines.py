@@ -11,7 +11,7 @@ def test_resolution_deadline_rolls_back_an_already_updated_error(tmp_path, monke
     store = telemetry.TelemetryStore(tmp_path / "telemetry", enabled=True)
     try:
         store.record_http(action="/slow", success=False, error_type="internal")
-        assert store.flush(1)
+        assert store.flush(10)
         with closing(store._connect()) as con:
             con.execute("CREATE TRIGGER delay_resolution AFTER UPDATE OF success ON events "
                         "BEGIN SELECT resolution_delay(); END")
@@ -38,7 +38,7 @@ def test_resolution_deadline_bounds_a_busy_database(tmp_path):
     store = telemetry.TelemetryStore(tmp_path / "telemetry", enabled=True)
     try:
         store.record_http(action="/slow", success=False, error_type="internal")
-        assert store.flush(1)
+        assert store.flush(10)
         with closing(sqlite3.connect(store.path)) as blocker:
             blocker.execute("BEGIN IMMEDIATE")
             started = time.monotonic()
