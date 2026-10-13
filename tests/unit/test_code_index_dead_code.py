@@ -38,10 +38,22 @@ def test_find_dead_code_uses_indexed_archive_filter_without_sqlite_callback(
             "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
             (resolved_root, "handoff/legacy.py", "Archived", "function", 1, 1, "", "Archived", "def Archived()", "public", ""),
         )
+        con.executemany(
+            "INSERT INTO refs(root,path,name,line,kind) VALUES(?,?,?,?,?)",
+            (
+                (resolved_root, f"src/reference-{number}.py", f"unused_{number}", 1, "read")
+                for number in range(600)
+            ),
+        )
+        con.commit()
 
     archive_registrations: list[str] = []
     archive_calls: list[str] = []
+    path_scan_fetchall: list[bool] = []
+    path_scan_batch_rows: list[int] = []
+    path_scan_cursor_closed: list[bool] = []
     connect_sqlite = code_index_module.connect_sqlite
+    path_scan_sql = "SELECT path FROM symbols WHERE root=? UNION SELECT path FROM refs WHERE root=?"
 
     class ObservedConnection:
         def __init__(self, connection):
@@ -59,8 +71,34 @@ def test_find_dead_code_uses_indexed_archive_filter_without_sqlite_callback(
                 function = tracked
             return self.connection.create_function(name, argument_count, function, **kwargs)
 
+        def execute(self, sql, parameters=()):
+            cursor = self.connection.execute(sql, parameters)
+            if path_scan_sql in sql:
+                return ObservedCursor(cursor)
+            return cursor
+
         def __getattr__(self, name):
             return getattr(self.connection, name)
+
+    class ObservedCursor:
+        def __init__(self, cursor):
+            self.cursor = cursor
+
+        def fetchall(self):
+            path_scan_fetchall.append(True)
+            return self.cursor.fetchall()
+
+        def fetchmany(self, size=None):
+            rows = self.cursor.fetchmany(size)
+            path_scan_batch_rows.append(len(rows))
+            return rows
+
+        def close(self):
+            path_scan_cursor_closed.append(True)
+            return self.cursor.close()
+
+        def __getattr__(self, name):
+            return getattr(self.cursor, name)
 
     monkeypatch.setattr(
         code_index_module,
@@ -77,3 +115,7 @@ def test_find_dead_code_uses_indexed_archive_filter_without_sqlite_callback(
     assert "Archived" not in names
     assert archive_calls == []
     assert archive_registrations == []
+    assert path_scan_fetchall == []
+    assert len(path_scan_batch_rows) >= 3
+    assert max(path_scan_batch_rows) <= 250
+    assert path_scan_cursor_closed == [True]
