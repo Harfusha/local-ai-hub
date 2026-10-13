@@ -1577,21 +1577,45 @@ def create_sandboxed_job_object(
 
 
 
-def _git_worktree_admin_dir(repo: Path, target: Path) -> Path | None:
+def _deadline_timeout(timeout: float, deadline_monotonic: float | None) -> float | None:
+    bounded = max(0.5, min(float(timeout), 30.0))
+    if deadline_monotonic is None:
+        return bounded
+    remaining = deadline_monotonic - time.monotonic()
+    return min(bounded, remaining) if remaining > 0 else None
+
+
+def _run_hidden_with_deadline(*args: Any, deadline_monotonic: float | None = None, **kwargs: Any) -> Any:
+    timeout = _deadline_timeout(float(kwargs.get("timeout", 15.0)), deadline_monotonic)
+    if timeout is None:
+        return subprocess.CompletedProcess(args[0] if args else [], 124, "", "idle cleanup deadline expired")
+    kwargs["timeout"] = timeout
+    return run_hidden(*args, **kwargs)
+
+
+def _git_worktree_admin_dir(
+    repo: Path, target: Path, *, deadline_monotonic: float | None = None
+) -> Path | None:
+    common_timeout = _deadline_timeout(10, deadline_monotonic)
+    if common_timeout is None:
+        return None
     common_proc = run_hidden(
         ["git", "-C", str(repo), "rev-parse", "--git-common-dir"],
         capture_output=True,
         text=True,
         check=False,
-        timeout=10,
+        timeout=common_timeout,
         **hidden_run_kwargs(),
     )
+    admin_timeout = _deadline_timeout(10, deadline_monotonic)
+    if admin_timeout is None:
+        return None
     admin_proc = run_hidden(
         ["git", "-C", str(target), "rev-parse", "--git-dir"],
         capture_output=True,
         text=True,
         check=False,
-        timeout=10,
+        timeout=admin_timeout,
         **hidden_run_kwargs(),
     )
     if common_proc.returncode != 0 or admin_proc.returncode != 0:
@@ -1611,11 +1635,13 @@ def _git_worktree_admin_dir(repo: Path, target: Path) -> Path | None:
     return admin
 
 
-def get_git_worktree_ownership(repo_root: str | Path, worktree_path: str | Path) -> dict[str, Any] | None:
+def get_git_worktree_ownership(
+    repo_root: str | Path, worktree_path: str | Path, *, deadline_monotonic: float | None = None
+) -> dict[str, Any] | None:
     """Read ownership metadata stored outside a linked worktree's working files."""
     repo = Path(repo_root).expanduser().resolve(strict=False)
     target = Path(worktree_path).expanduser().resolve(strict=False)
-    admin = _git_worktree_admin_dir(repo, target)
+    admin = _git_worktree_admin_dir(repo, target, deadline_monotonic=deadline_monotonic)
     if admin is None:
         return None
     marker = admin / _WORKTREE_OWNERSHIP_FILE
@@ -1758,14 +1784,19 @@ def create_git_worktree(
         return {"success": False, "error": str(exc)}
 
 
-def _git_value(root: Path, *arguments: str, timeout: float = 15.0) -> str:
+def _git_value(
+    root: Path, *arguments: str, timeout: float = 15.0, deadline_monotonic: float | None = None
+) -> str:
+    bounded_timeout = _deadline_timeout(timeout, deadline_monotonic)
+    if bounded_timeout is None:
+        return ""
     try:
         result = run_hidden(
             ["git", "-C", str(root), *arguments],
             capture_output=True,
             text=True,
             check=False,
-            timeout=timeout,
+            timeout=bounded_timeout,
             **hidden_run_kwargs(),
         )
     except Exception:
@@ -1773,8 +1804,12 @@ def _git_value(root: Path, *arguments: str, timeout: float = 15.0) -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
-def _worktree_ownership_path(worktree_path: str | Path) -> Path | None:
-    git_dir = _git_value(Path(worktree_path), "rev-parse", "--absolute-git-dir")
+def _worktree_ownership_path(
+    worktree_path: str | Path, *, deadline_monotonic: float | None = None
+) -> Path | None:
+    git_dir = _git_value(
+        Path(worktree_path), "rev-parse", "--absolute-git-dir", deadline_monotonic=deadline_monotonic
+    )
     if not git_dir:
         return None
     return Path(git_dir).expanduser().resolve(strict=False) / _WORKTREE_OWNERSHIP_FILE
@@ -1795,6 +1830,7 @@ def remove_git_worktree(
     expected_expires_at: float | None = None,
     timeout_seconds: float = 30.0,
     required_base_commit: str = "",
+    deadline_monotonic: float | None = None,
 ) -> dict[str, Any]:
     """Remove only clean worktree whose persisted owner metadata matches caller."""
     if len(args) >= 2:
@@ -1832,8 +1868,8 @@ def remove_git_worktree(
         if not target.is_dir() or not (repo / ".git").exists():
             return {"success": False, "error": "repository or worktree path is unavailable"}
 
-        repo_common_raw = _git_value(repo, "rev-parse", "--git-common-dir", timeout=timeout)
-        target_common_raw = _git_value(target, "rev-parse", "--git-common-dir", timeout=timeout)
+        repo_common_raw = _git_value(repo, "rev-parse", "--git-common-dir", timeout=timeout, deadline_monotonic=deadline_monotonic)
+        target_common_raw = _git_value(target, "rev-parse", "--git-common-dir", timeout=timeout, deadline_monotonic=deadline_monotonic)
         if not repo_common_raw or not target_common_raw:
             return {"success": False, "error": "repository worktree identity is unavailable"}
         repo_common = Path(repo_common_raw)
@@ -1845,10 +1881,10 @@ def remove_git_worktree(
         if repo_common.resolve(strict=False) != target_common.resolve(strict=False):
             return {"success": False, "error": "worktree belongs to another repository"}
 
-        top_level = _git_value(target, "rev-parse", "--show-toplevel", timeout=timeout)
+        top_level = _git_value(target, "rev-parse", "--show-toplevel", timeout=timeout, deadline_monotonic=deadline_monotonic)
         if not top_level or Path(top_level).resolve(strict=False) != target:
             return {"success": False, "error": "worktree path does not match checkout root"}
-        listed = _git_value(repo, "worktree", "list", "--porcelain", timeout=timeout)
+        listed = _git_value(repo, "worktree", "list", "--porcelain", timeout=timeout, deadline_monotonic=deadline_monotonic)
         listed_paths = {
             Path(line.removeprefix("worktree ")).resolve(strict=False)
             for line in listed.splitlines()
@@ -1857,14 +1893,14 @@ def remove_git_worktree(
         if target not in listed_paths:
             return {"success": False, "error": "checkout is not registered to this repository"}
 
-        metadata_path = _worktree_ownership_path(target)
+        metadata_path = _worktree_ownership_path(target, deadline_monotonic=deadline_monotonic)
         if metadata_path is None or not metadata_path.is_file():
             return {"success": False, "error": "worktree ownership metadata is unavailable"}
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
         if not isinstance(metadata, dict):
             return {"success": False, "error": "worktree ownership metadata is invalid"}
         recorded_branch = str(metadata.get("branch", ""))
-        current_branch = _git_value(target, "symbolic-ref", "--short", "HEAD", timeout=timeout)
+        current_branch = _git_value(target, "symbolic-ref", "--short", "HEAD", timeout=timeout, deadline_monotonic=deadline_monotonic)
         if (
             metadata.get("schema_version") != 1
             or str(metadata.get("worktree_id", "")) != worktree_id
@@ -1905,37 +1941,37 @@ def remove_git_worktree(
                 return {"success": False, "error": "worktree time metadata does not match task ownership"}
 
         if not force:
-            status = run_hidden(
+            status = _run_hidden_with_deadline(
                 ["git", "-C", str(target), "status", "--porcelain", "--untracked-files=all", "--ignored"],
                 capture_output=True,
                 text=True,
                 check=False,
-                timeout=timeout,
+                timeout=timeout, deadline_monotonic=deadline_monotonic,
                 **hidden_run_kwargs(),
             )
             if status.returncode != 0 or status.stdout.strip():
                 return {"success": False, "error": "worktree contains uncommitted or ignored changes"}
 
         if required_base_commit:
-            status_now = run_hidden(
+            status_now = _run_hidden_with_deadline(
                 ["git", "-C", str(target), "status", "--porcelain", "--untracked-files=all", "--ignored"],
-                capture_output=True, text=True, check=False, timeout=timeout, **hidden_run_kwargs(),
+                capture_output=True, text=True, check=False, timeout=timeout, deadline_monotonic=deadline_monotonic, **hidden_run_kwargs(),
             )
-            root_head = _git_value(repo, "rev-parse", "--verify", "HEAD^{commit}", timeout=timeout)
-            worktree_head = _git_value(target, "rev-parse", "--verify", "HEAD^{commit}", timeout=timeout)
+            root_head = _git_value(repo, "rev-parse", "--verify", "HEAD^{commit}", timeout=timeout, deadline_monotonic=deadline_monotonic)
+            worktree_head = _git_value(target, "rev-parse", "--verify", "HEAD^{commit}", timeout=timeout, deadline_monotonic=deadline_monotonic)
             if status_now.returncode != 0 or status_now.stdout.strip() or not root_head or not worktree_head:
                 return {"success": False, "error": "worktree changed during automatic cleanup"}
             for ancestor in (required_base_commit, worktree_head):
-                proof = run_hidden(
+                proof = _run_hidden_with_deadline(
                     ["git", "-C", str(repo), "merge-base", "--is-ancestor", ancestor, root_head],
-                    capture_output=True, text=True, check=False, timeout=timeout, **hidden_run_kwargs(),
+                    capture_output=True, text=True, check=False, timeout=timeout, deadline_monotonic=deadline_monotonic, **hidden_run_kwargs(),
                 )
                 if proof.returncode != 0:
                     return {"success": False, "error": "worktree changed outside approved repository history"}
-            latest_head = _git_value(target, "rev-parse", "--verify", "HEAD^{commit}", timeout=timeout)
-            latest_status = run_hidden(
+            latest_head = _git_value(target, "rev-parse", "--verify", "HEAD^{commit}", timeout=timeout, deadline_monotonic=deadline_monotonic)
+            latest_status = _run_hidden_with_deadline(
                 ["git", "-C", str(target), "status", "--porcelain", "--untracked-files=all", "--ignored"],
-                capture_output=True, text=True, check=False, timeout=timeout, **hidden_run_kwargs(),
+                capture_output=True, text=True, check=False, timeout=timeout, deadline_monotonic=deadline_monotonic, **hidden_run_kwargs(),
             )
             if latest_head != worktree_head or latest_status.returncode != 0 or latest_status.stdout.strip():
                 return {"success": False, "error": "worktree changed during automatic cleanup"}
@@ -1944,18 +1980,18 @@ def remove_git_worktree(
         if force:
             remove_cmd.append("--force")
         remove_cmd.append(str(target))
-        removed = run_hidden(
+        removed = _run_hidden_with_deadline(
             remove_cmd,
             capture_output=True,
             text=True,
             check=False,
-            timeout=timeout,
+            timeout=timeout, deadline_monotonic=deadline_monotonic,
             **hidden_run_kwargs(),
         )
         if removed.returncode != 0:
             return {"success": False, "error": removed.stderr.strip() or "Git refused to remove worktree"}
 
-        pruned = prune_git_worktrees(repo, expire="now", timeout_seconds=timeout)
+        pruned = prune_git_worktrees(repo, expire="now", timeout_seconds=timeout, deadline_monotonic=deadline_monotonic)
         if not pruned.get("success"):
             return {
                 "success": False,
@@ -1970,7 +2006,7 @@ def remove_git_worktree(
         if delete_branch:
             flag = "-D" if force else "-d"
             cmd_branch = ["git", "-C", str(repo), "branch", flag, recorded_branch]
-            proc_b = run_hidden(cmd_branch, capture_output=True, text=True, check=False, timeout=10, **hidden_run_kwargs())
+            proc_b = _run_hidden_with_deadline(cmd_branch, capture_output=True, text=True, check=False, timeout=10, deadline_monotonic=deadline_monotonic, **hidden_run_kwargs())
             branch_deleted = (proc_b.returncode == 0)
         return {
             "success": True,
@@ -2027,7 +2063,7 @@ def list_git_worktrees(repo_root: str | Path) -> dict[str, Any]:
 
 
 def prune_git_worktrees(
-    repo_root: str | Path, expire: str | None = None, timeout_seconds: float = 15.0
+    repo_root: str | Path, expire: str | None = None, timeout_seconds: float = 15.0, *, deadline_monotonic: float | None = None
 ) -> dict[str, Any]:
     """Prune stale Git worktrees."""
     repo = Path(repo_root).expanduser().resolve(strict=False)
@@ -2037,10 +2073,10 @@ def prune_git_worktrees(
         cmd = ["git", "-C", str(repo), "worktree", "prune", "-v"]
         if expire:
             cmd.extend(["--expire", expire])
-        proc = run_hidden(
+        proc = _run_hidden_with_deadline(
             cmd,
             capture_output=True, text=True, check=False,
-            timeout=max(0.5, min(float(timeout_seconds), 30.0)), **hidden_run_kwargs()
+            timeout=max(0.5, min(float(timeout_seconds), 30.0)), deadline_monotonic=deadline_monotonic, **hidden_run_kwargs()
         )
         if proc.returncode != 0:
             err_msg = proc.stderr.strip()

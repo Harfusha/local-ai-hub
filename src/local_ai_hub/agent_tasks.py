@@ -2034,7 +2034,8 @@ class TaskStore:
         from .process_utils import process_owner_state
         from .worktrees import is_hub_temporary_worktree, worktree_is_clean_ancestor
 
-        started = time.monotonic()
+        budget = max(0.0, min(float(deadline_seconds), 8.0))
+        deadline = time.monotonic() + budget
         counts = {"cleaned": 0, "preserved": 0, "scanned": 0}
         terminal = (TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.ABANDONED)
         cap = max(1, min(int(limit), 32))
@@ -2059,7 +2060,7 @@ class TaskStore:
             if rows:
                 self._idle_worktree_cursor = (float(rows[-1][1]), str(rows[-1][0]))
         for task_id, _updated_at in rows:
-            if time.monotonic() - started > max(0.5, min(float(deadline_seconds), 8.0)):
+            if time.monotonic() >= deadline:
                 return counts
             candidate = self.get(str(task_id))
             if candidate is None:
@@ -2085,16 +2086,23 @@ class TaskStore:
                 if not is_hub_temporary_worktree(path):
                     counts["preserved"] += 1
                     continue
-                remaining = max(0.5, min(float(deadline_seconds) - (time.monotonic() - started), 8.0))
+                if time.monotonic() >= deadline:
+                    counts["preserved"] += 1
+                    return counts
                 safe, _reason = worktree_is_clean_ancestor(
-                    repo, path, str(wt["base_commit"]), timeout_seconds=min(remaining / 4, 0.5)
+                    repo, path, str(wt["base_commit"]), timeout_seconds=0.5,
+                    deadline_monotonic=deadline,
                 )
                 if not safe:
                     counts["preserved"] += 1
                     continue
+                if time.monotonic() >= deadline:
+                    counts["preserved"] += 1
+                    return counts
                 result = self.cleanup_worktree(
-                    candidate.task_id, actor=candidate.owner, _timeout_seconds=min(remaining, 0.5),
+                    candidate.task_id, actor=candidate.owner, _timeout_seconds=0.5,
                     _required_base_commit=str(wt["base_commit"]),
+                    _deadline_monotonic=deadline,
                 )
                 if result.get("success"):
                     counts["cleaned"] += 1
@@ -2441,6 +2449,7 @@ class TaskStore:
         actor: str = "http-default",
         _timeout_seconds: float = 30.0,
         _required_base_commit: str = "",
+        _deadline_monotonic: float | None = None,
     ) -> dict[str, Any]:
         task = self.get(task_id)
         if not task:
@@ -2487,7 +2496,9 @@ class TaskStore:
 
             if wt.get("cleanup_success") and not worktree_path.exists():
                 return {"success": True, "had_worktree": True, "already_cleaned": True}
-            ownership = get_git_worktree_ownership(repo_value, worktree_path)
+            ownership = get_git_worktree_ownership(
+                repo_value, worktree_path, deadline_monotonic=_deadline_monotonic
+            )
             if ownership is None:
                 return {"success": False, "error": "live worktree ownership marker is missing"}
             expected_fields = (
@@ -2522,6 +2533,7 @@ class TaskStore:
                 expected_expires_at=expires_at,
                 timeout_seconds=_timeout_seconds,
                 required_base_commit=_required_base_commit,
+                deadline_monotonic=_deadline_monotonic,
             )
             if not rm_res.get("success"):
                 return {"success": False, "had_worktree": True, "cleanup": rm_res, "error": rm_res.get("error", "cleanup failed")}
