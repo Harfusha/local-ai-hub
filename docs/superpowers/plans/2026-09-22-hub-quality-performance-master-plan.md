@@ -2912,3 +2912,22 @@ Do not publish or clean unrelated worktrees on partial evidence.
 - Full pytest remains **unknown/no receipt** after the 900s MCP wait ceiling. The specific process started by the attempt was confirmed and stopped. No retry of the identical full-suite operation; split/triage before any new release-wide run.
 - `release-strict-check` archive request was rejected because the worktree is protected by the pinned workspace. Keep it as the T20 clean validation checkout; do not remove it manually.
 - T20 stays **NO-GO**: complete current-candidate pytest, reconciliation of open task acceptance, live degraded-status cause, clean-install/runtime checks, and remote publication remain outstanding. No product source changed; `/api/context/pack` ownership stays with T14.
+
+### Integrated release follow-up — 2026-10-13
+
+Primary agent owns current master and integration. Earlier inventories and owner
+blockers above are historical; no foreign checkout is adopted or removed.
+Installed `8bccad5a` passed 7193 tests, 105 skips and 23 subtests, all 16 live
+checks, exact packaging/install checks, cold 1/10/30 shared-daemon probes,
+owner-crash restart and in-flight MCP disconnect cleanup. Configuration and 11
+durable databases were preserved before its managed update.
+
+Subsequent `1d5ed8bb` fixes completion provenance to use the task's authenticated
+session while retaining the agent's artifact ownership. Its 121 targeted tests
+passed, but its full suite stopped on a local HTTP request with no response:
+4129 passed, one failed, 42 skipped, 20 subtests. It is not release acceptance.
+Pending changes atomically store the first HTTP trace event and strengthen the
+real HTTP fixture to require authorized-root HTTP 200, reject a foreign root,
+and await the bounded initial observability snapshot. These 64 targeted tests
+passed. The final integrated suite and installed acceptance remain pending;
+do not promote the installed candidate's evidence to these newer source bytes.
