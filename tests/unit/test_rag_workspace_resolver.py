@@ -129,3 +129,53 @@ def test_public_rag_search_rejects_missing_root_before_transport(monkeypatch):
     assert response["success"] is False
     assert "explicit absolute project root" in response["error"]
     assert client.posts == []
+
+
+@pytest.mark.parametrize("workspace_kind", ["empty", "root_path"])
+def test_public_rag_index_then_search_share_workspace_for_root_aliases(
+    monkeypatch, tmp_path, workspace_kind
+):
+    monkeypatch.setitem(sys.modules, "local_ai_hub.rag", None)
+    client = _enable_rag(monkeypatch)
+    workspace = "" if workspace_kind == "empty" else str(tmp_path)
+    root = mcp_server._client_root(str(tmp_path))
+    expected_workspace = canonical_workspace_id(root)
+
+    for action in ("index", "search"):
+        _call_rag({
+            "action": action,
+            "root": str(tmp_path),
+            "workspace": workspace,
+            "query": "needle",
+        })
+
+    assert [path for path, _payload in client.posts] == [
+        "/api/rag/index",
+        "/api/rag/search",
+    ]
+    index_payload, search_payload = [payload for _path, payload in client.posts]
+    assert index_payload["root"] == root
+    assert index_payload["workspace"] == expected_workspace
+    assert search_payload["root"] == root
+    assert search_payload["workspace"] == expected_workspace
+
+
+def test_public_rag_index_then_search_preserve_opaque_workspace_id(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setitem(sys.modules, "local_ai_hub.rag", None)
+    client = _enable_rag(monkeypatch)
+    workspace = "curated:handbook/v1"
+
+    for action in ("index", "search"):
+        _call_rag({
+            "action": action,
+            "root": str(tmp_path),
+            "workspace": workspace,
+            "query": "needle",
+        })
+
+    assert [payload["workspace"] for _path, payload in client.posts] == [
+        workspace,
+        workspace,
+    ]

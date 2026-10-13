@@ -3467,7 +3467,9 @@ def local_ai_rag(
     else:
         root = _client_root(root)
     effective_workspace = workspace.strip() or root
-    if action == "search" and (not workspace.strip() or is_rooted_path(workspace.strip())):
+    if action in {"index", "search"} and (
+        not workspace.strip() or is_rooted_path(workspace.strip())
+    ):
         effective_workspace = canonical_workspace_id(root)
     if action == "index":
         return _compact(CLIENT.post("/api/rag/index", {"root": root, "workspace": effective_workspace}, timeout=_timeout("long")))
