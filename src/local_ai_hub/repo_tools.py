@@ -312,8 +312,8 @@ class RepositoryTools:
                 if process is not None and process.poll() is None:
                     timed_out.set()
                     try:
-                            terminate_tree(process.pid, grace_seconds=0.1, process_handle=process)
-                        except (OSError, ValueError):
+                        terminate_tree(process.pid, grace_seconds=0.1, process_handle=process)
+                    except (OSError, ValueError):
                         pass
 
             timer = threading.Timer(self.git_files_timeout, kill_on_timeout)
