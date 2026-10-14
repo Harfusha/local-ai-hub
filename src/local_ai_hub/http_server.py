@@ -5367,6 +5367,26 @@ class Handler(BaseHTTPRequestHandler):
         self._send(409, {"success": False, "error": "request journal returned an invalid state", "terminal": True})
         return False
 
+    def _handle_post_artifact_get(self, payload: dict[str, Any], tenant: str) -> None:
+        artifact_id = str(payload.get("artifact_id", ""))
+        slices = payload.get("slices")
+        if slices is not None:
+            if bool(payload.get("binary", False)) or str(payload.get("section", "")):
+                self._send(400, {"success": False, "error": "multi-slice retrieval does not support section or binary mode"})
+                return
+            self._send(200, APP.artifacts.get_slices(artifact_id, slices, tenant=tenant))
+            return
+        if bool(payload.get("binary", False)):
+            self._send(200, APP.artifacts.get_binary(artifact_id, tenant=tenant))
+            return
+        self._send(200, APP.artifacts.get(
+            artifact_id,
+            int(payload.get("offset", 0)),
+            int(payload.get("max_chars", 6000)),
+            str(payload.get("section", "")),
+            tenant=tenant,
+        ))
+
     def do_POST(self) -> None:
         self._handler_execution_started = time.perf_counter()
         if APP is None:
@@ -7909,10 +7929,8 @@ class Handler(BaseHTTPRequestHandler):
                     result["delivery_mode"] = mode
                 self._send(200, result); return
             if 'post_artifact_get_1' in post_route_ids:
-                artifact_id = str(payload.get("artifact_id", ""))
-                if bool(payload.get("binary", False)):
-                    self._send(200, APP.artifacts.get_binary(artifact_id, tenant=tenant)); return
-                self._send(200, APP.artifacts.get(artifact_id, int(payload.get("offset", 0)), int(payload.get("max_chars", 6000)), str(payload.get("section", "")), tenant=tenant)); return
+                self._handle_post_artifact_get(payload, tenant)
+                return
             if 'post_artifact_list_1' in post_route_ids:
                 self._send(200, {"success": True, "artifacts": APP.artifacts.list(tenant=tenant, limit=int(payload.get("limit", 20)))}); return
             if 'post_evidence_verify_1' in post_route_ids:

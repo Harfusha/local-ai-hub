@@ -1138,6 +1138,7 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
         })
     raw_value = value
     exact_artifact_text = None
+    exact_artifact_slices = None
     oversized_artifact_page = False
     artifact_page = (
         task_kind == "artifact"
@@ -1152,6 +1153,8 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
             exact_artifact_text = raw_value["text"]
         else:
             oversized_artifact_page = True
+    if task_kind == "artifact" and isinstance(raw_value, dict) and isinstance(raw_value.get("slices"), list):
+        exact_artifact_slices = raw_value["slices"]
     projected_value = value
     if oversized_artifact_page:
         projected_value = dict(value)
@@ -1167,6 +1170,9 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
     if exact_artifact_text is not None and isinstance(projected, dict):
         projected = dict(projected)
         projected["text"] = exact_artifact_text
+    if exact_artifact_slices is not None and isinstance(projected, dict):
+        projected = dict(projected)
+        projected["slices"] = exact_artifact_slices
     compact_extra_fields = extra_fields
     if task_kind == "status":
         compact_extra_fields = list(dict.fromkeys([*(extra_fields or ()), "job_id"]))
@@ -1177,6 +1183,11 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
         extra_fields=compact_extra_fields,
     )
     compacted = _preserve_contract_state(raw_value, compacted)
+    if exact_artifact_slices is not None and isinstance(compacted, dict):
+        compacted["slices"] = exact_artifact_slices
+        for field in ("truncated", "budget_limited"):
+            if field in raw_value:
+                compacted[field] = raw_value[field]
     requested, profile, reuse_key, enabled = _response_budget(task_kind, options)
     if enabled:
         repeated, previous = _reuse_state(reuse_key, compacted)
@@ -1184,6 +1195,7 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
             compacted = delta_response(previous, compacted, result_id=result_id(compacted))
         protected_keys = tuple(dict.fromkeys((
             *_RELIABILITY_PROTECTED_KEYS,
+            *(('slices', 'truncated', 'budget_limited') if task_kind == "artifact" else ()),
             *(_CONTEXT_PROTECTED_KEYS if task_kind in {"context", "context_compile"} else ()),
             *(_STATUS_PROTECTED_KEYS if task_kind == "status" else ()),
             *(_COMMAND_PROTECTED_KEYS if task_kind == "command" else ()),
@@ -3945,10 +3957,28 @@ def local_ai_work(
 
 @mcp.tool()
 @_instrumented_tool()
-def local_ai_artifact(action: ArtifactAction = "get", artifact_id: str = "", offset: int = 0, max_chars: int = 4000, section: str = "", extra_fields: list[str] | None = None, max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "", binary: bool = False) -> dict[str, Any]:
+def local_ai_artifact(action: ArtifactAction = "get", artifact_id: str = "", offset: int = 0, max_chars: int = 4000, section: str = "", extra_fields: list[str] | None = None, max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "", binary: bool = False, slices: list[dict[str, int]] | None = None) -> dict[str, Any]:
     """Fetch an artifact operation defined by the shared contract. Evidence IDs start with E."""
     if not operation_enabled(FEATURES, "local_ai_artifact"):
         return {"success": False, "unsupported": True, "error": "local_ai_artifact is disabled in configuration"}
+    if slices is not None:
+        if action not in {"get", "slice"}:
+            return {"success": False, "error": "slices are only valid for get or slice actions"}
+        if not isinstance(slices, list) or not slices or len(slices) > 16:
+            return {"success": False, "error": "slices must contain 1 to 16 ranges"}
+        aggregate_max_chars = min(MAX_TEXT, 50_000)
+        total_requested = 0
+        for item in slices:
+            if not isinstance(item, dict) or set(item) != {"offset", "max_chars"}:
+                return {"success": False, "error": "each slice must contain only offset and max_chars"}
+            item_offset, item_max_chars = item["offset"], item["max_chars"]
+            if isinstance(item_offset, bool) or not isinstance(item_offset, int) or item_offset < 0:
+                return {"success": False, "error": "slice offset must be a non-negative integer"}
+            if isinstance(item_max_chars, bool) or not isinstance(item_max_chars, int) or not 1 <= item_max_chars <= 50_000:
+                return {"success": False, "error": "slice max_chars must be between 1 and 50000"}
+            total_requested += item_max_chars
+            if total_requested > aggregate_max_chars:
+                return {"success": False, "error": f"combined slice max_chars cannot exceed {aggregate_max_chars}"}
     validation_arguments: dict[str, Any] = {}
     if action in {"get", "slice"}:
         validation_arguments.update({
@@ -3958,15 +3988,28 @@ def local_ai_artifact(action: ArtifactAction = "get", artifact_id: str = "", off
             "section": section,
             "binary": binary,
         })
+        if slices is not None:
+            validation_arguments["slices"] = slices
     if extra_fields is not None:
         validation_arguments["extra_fields"] = extra_fields
     validation_error = validate_operation_arguments("local_ai_artifact", action, validation_arguments)
     if validation_error is not None:
         return {"success": False, "error": validation_error}
+    if slices is not None:
+        if section or binary:
+            return {"success": False, "error": "multi-slice retrieval does not support section or binary mode"}
     if action == "list":
         return _compact(CLIENT.post("/api/artifact/list", {"limit": 20}), "artifact")
     if artifact_id.startswith("E"):
+        if slices is not None:
+            return {"success": False, "error": "multi-slice retrieval does not support evidence IDs"}
         return _compact(CLIENT.post("/api/evidence/get", {"evidence_id": artifact_id, "verify": True}), "artifact")
+    if slices is not None:
+        return _compact(CLIENT.post("/api/artifact/get", {
+            "artifact_id": artifact_id,
+            "slices": slices,
+            "binary": False,
+        }), "artifact")
     result = CLIENT.post("/api/artifact/get", {
         "artifact_id": artifact_id,
         "offset": offset,

@@ -534,8 +534,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             required={"get": ("artifact_id",), "slice": ("artifact_id",)},
             non_empty={"get": ("artifact_id",), "slice": ("artifact_id",)},
             allowed={
-                "get": ("artifact_id", "offset", "max_chars", "section", "binary"),
-                "slice": ("artifact_id", "offset", "max_chars", "section", "binary"),
+                "get": ("artifact_id", "offset", "max_chars", "section", "binary", "slices"),
+                "slice": ("artifact_id", "offset", "max_chars", "section", "binary", "slices"),
                 "list": (),
             },
             selector_required=False,
@@ -547,6 +547,17 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
                 "max_chars": {"type": "integer", "minimum": 512, "maximum": 12000, "default": 4000},
                 "extra_fields": {"type": "array", "items": {"type": "string"}},
                 "binary": {"type": "boolean", "default": False},
+                "slices": {
+                    "type": "array", "minItems": 1, "maxItems": 16,
+                    "items": {
+                        "type": "object", "required": ["offset", "max_chars"],
+                        "properties": {
+                            "offset": {"type": "integer", "minimum": 0},
+                            "max_chars": {"type": "integer", "minimum": 1, "maximum": 50000},
+                        },
+                        "additionalProperties": False,
+                    },
+                },
             },
         ),
         "default_action": "get",
@@ -941,7 +952,23 @@ def _artifact_output_variants(action: str) -> list[dict[str, Any]]:
         },
         "additionalProperties": True,
     }
-    return [text_result, evidence_result, binary_result, failure]
+    multi_slice_result = {
+        "type": "object",
+        "required": ["success", "artifact_id", "kind", "slices", "total_chars", "sections", "truncated", "budget_limited"],
+        "properties": {
+            "success": {"const": True}, "artifact_id": {"type": "string"},
+            "kind": {"type": "string"}, "total_chars": {"type": "integer"},
+            "sections": {"type": "array", "items": {"type": "string"}},
+            "truncated": {"type": "boolean"}, "budget_limited": {"type": "boolean"},
+            "slices": {"type": "array", "maxItems": 16, "items": {
+                "type": "object", "required": ["offset", "text"],
+                "properties": {"offset": {"type": "integer"}, "text": {"type": "string"}},
+                "additionalProperties": True,
+            }},
+        },
+        "additionalProperties": True,
+    }
+    return [text_result, multi_slice_result, evidence_result, binary_result, failure]
 
 
 _OPEN_OUTPUT_OBJECT = {"type": "object", "additionalProperties": True}
@@ -982,6 +1009,7 @@ _OUTPUT_ENVELOPE_PROPERTIES: dict[str, dict[str, Any]] = {
     "complete": {"type": "boolean"},
     "partial": {"type": "boolean"},
     "truncated": {"type": "boolean"},
+    "budget_limited": {"type": "boolean"},
     "estimated_tokens": {"type": "integer"},
     "reuse_key": {"type": "string"},
     "reused": {"type": "boolean"},
