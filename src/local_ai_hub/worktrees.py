@@ -123,6 +123,27 @@ def is_worktree_locked(
             capture_output=True,
             text=True,
             timeout=timeout,
+            check=False,
+            **hidden_run_kwargs(),
+        )
+        if proc.returncode != 0:
+            return False, ""
+
+        current_wt: Path | None = None
+        for line in proc.stdout.splitlines():
+            line_str = line.strip()
+            if line_str.startswith("worktree "):
+                raw_wt = line_str.removeprefix("worktree ").strip()
+                try:
+                    current_wt = Path(raw_wt).resolve(strict=False)
+                except (OSError, RuntimeError, ValueError):
+                    current_wt = None
+            elif current_wt == target and line_str.startswith("locked"):
+                reason = line_str.removeprefix("locked").strip()
+                return True, reason
+        return False, ""
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+        return False, ""
 
 def check_worktree_uncommitted_changes(
     worktree_path: str | Path,
