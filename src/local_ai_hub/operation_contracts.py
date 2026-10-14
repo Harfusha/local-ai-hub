@@ -98,7 +98,7 @@ _REPO_ACTIONS = (
     "validate_patch", "audit_dependencies", "ast_outline", "test_matrix", "security_audit",
     "git_status", "repo_state", "synthesize_commit", "verify", "affected_tests", "topology",
     "ast_refactor", "generate_mocks", "split_changes", "synthesize_rules", "code_invariants",
-    "generate_dataset", "profile_digest", "callers", "dead_code", "secret_scan", "schema_inspect",
+    "generate_dataset", "profile_digest", "callers", "callees", "implementations", "declaration", "dead_code", "secret_scan", "schema_inspect",
     "explain_query", "env_compat", "circular_dependencies", "generate_types", "complexity", "api_spec",
     "dependency_slice", "migration_drift", "package_audit", "structural_search", "context_budget",
     "git_diff", "git_history_search", "hotspots", "generate_tests_for_diff", "cross_repo_contract",

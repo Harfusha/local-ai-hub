@@ -3778,6 +3778,13 @@ class LocalAIServices:
                 return ci_res
         return self.deterministic_operation("callers", root, {"symbol": symbol, "limit": limit}, lambda: self.deterministic.find_callers(root, symbol, limit))
 
+    def callees(self, root: str, symbol: str, limit: int = 50) -> dict[str, Any]:
+        if self.code_index is not None:
+            ci_res = self.code_index.find_callees(root, symbol, limit)
+            if ci_res.get("success") and ci_res.get("count", 0) > 0:
+                return ci_res
+        return self.deterministic_operation("callees", root, {"symbol": symbol, "limit": limit}, lambda: getattr(self.deterministic, "find_callees", lambda r, s, l: {"success": True, "callees": [], "count": 0})(root, symbol, limit))
+
     def dead_code(self, root: str, limit: int = 200) -> dict[str, Any]:
         return self.deterministic_operation("dead-code", root, {"limit": int(limit)}, lambda: getattr(self.deterministic, "find_dead_code", getattr(self.deterministic, "detect_dead_code", None))(root, int(limit)))
 
