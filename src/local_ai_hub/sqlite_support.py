@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 import random
+import re
 import shutil
 import sqlite3
 import time
@@ -107,6 +108,105 @@ class DurableSchemaMismatchError(RuntimeError):
         )
 
 
+_BACKUP_PATTERNS = (
+    re.compile(r"^(?P<base>.+?\.(?:sqlite3|sqlite|db))\.(?P<suffix>.+)$", re.IGNORECASE),
+    re.compile(r"^(?P<base>migrated_.+?)(?:\.[^.]+)?$", re.IGNORECASE),
+    re.compile(r"^(?P<base>.+?)\.bak(?:\..+)?$", re.IGNORECASE),
+)
+
+
+def rotate_database_backups(
+    directory: Path | str,
+    *,
+    prefix: str | None = None,
+    max_copies: int = 3,
+    max_age_seconds: float = 7 * 86400,
+) -> list[Path]:
+    """Prune excess or stale database backup files to prevent disk accumulation.
+
+    Keeps at most ``max_copies`` newest snapshots per database series and removes
+    snapshots older than ``max_age_seconds`` (default 7 days).
+    """
+    root = Path(directory)
+    if not root.is_dir():
+        return []
+
+    groups: dict[str, list[Path]] = {}
+    now = time.time()
+
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        return []
+
+    for entry in entries:
+        if not entry.is_file():
+            continue
+
+        name = entry.name
+        # Skip sidecars like -wal and -shm from directly forming backup keys
+        if name.endswith("-wal") or name.endswith("-shm"):
+            continue
+
+        group_key: str | None = None
+        if prefix is not None:
+            if name == prefix:
+                continue
+            if (
+                name.startswith(f"{prefix}.")
+                or name.startswith(f"{prefix}-")
+                or name.startswith(f"{prefix}_")
+            ):
+                group_key = prefix
+        else:
+            for pat in _BACKUP_PATTERNS:
+                m = pat.match(name)
+                if m:
+                    group_key = m.group("base")
+                    break
+
+        if group_key is not None:
+            groups.setdefault(group_key, []).append(entry)
+
+    pruned: list[Path] = []
+    for key, candidates in groups.items():
+        try:
+            candidates.sort(key=lambda p: (p.stat().st_mtime, p.name))
+        except OSError:
+            continue
+
+        to_prune: set[Path] = set()
+
+        if max_copies is not None and max_copies >= 0 and len(candidates) > max_copies:
+            excess_count = len(candidates) - max_copies
+            for p in candidates[:excess_count]:
+                to_prune.add(p)
+
+        if max_age_seconds is not None and max_age_seconds > 0:
+            for p in candidates:
+                try:
+                    if (now - p.stat().st_mtime) > max_age_seconds:
+                        to_prune.add(p)
+                except OSError:
+                    pass
+
+        for p in sorted(to_prune, key=lambda x: x.name):
+            try:
+                p.unlink(missing_ok=True)
+                for ext in ("-wal", "-shm"):
+                    sidecar = p.with_name(f"{p.name}{ext}")
+                    if sidecar.exists():
+                        try:
+                            sidecar.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                pruned.append(p)
+            except OSError:
+                pass
+
+    return pruned
+
+
 def backup_durable_database(path: Path | str, *, purpose: str = "schema-mismatch") -> Path:
     """Create a consistent SQLite backup without changing the durable source."""
     source_path = Path(path)
@@ -128,6 +228,10 @@ def backup_durable_database(path: Path | str, *, purpose: str = "schema-mismatch
         raise
     destination.close()
     source.close()
+    try:
+        rotate_database_backups(source_path.parent, prefix=source_path.name, max_copies=3)
+    except Exception:
+        pass
     return backup_path
 
 
