@@ -19,6 +19,7 @@ Accounting rules:
 
 import hashlib
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping
@@ -51,7 +52,7 @@ def context_digest(value: Any) -> str:
 def _safe_metadata_text(value: Any, *, limit: int = 160) -> str:
     if value is None or isinstance(value, (dict, list, tuple, set)):
         return ""
-    text = str(value).replace("\r", " ").replace("\n", " ")
+    text = str(value).replace("\x00", "").replace("\r", " ").replace("\n", " ")
     text = re.sub(r"(?i)\bbearer\s+[^\s,;]+", "Bearer [redacted]", text)
     text = re.sub(r"(?i)\b(api[_-]?key|token|password|secret|authorization)\s*([=:])\s*[^&\s,;]+", r"\1\2[redacted]", text)
     text = re.sub(r"\b[A-Za-z]:[\\/][^\s<>|\"']+", "<path>", text)
@@ -61,7 +62,10 @@ def _safe_metadata_text(value: Any, *, limit: int = 160) -> str:
 
 def _safe_metadata_float(value: Any) -> float:
     try:
-        return round(max(0.0, float(value or 0)), 1)
+        val = float(value or 0)
+        if not math.isfinite(val) or val < 0.0:
+            return 0.0
+        return round(val, 1)
     except (TypeError, ValueError, OverflowError):
         return 0.0
 
@@ -77,7 +81,7 @@ def _safe_context_digest(value: Any) -> str:
 
 def token_efficiency_metadata(metadata: Mapping[str, Any] | None = None, **fields: Any) -> dict[str, Any]:
     """Normalize future token metadata while excluding payload-bearing fields."""
-    source = dict(metadata or {})
+    source = dict(metadata) if isinstance(metadata, Mapping) else {}
     source.update(fields)
     for alias, canonical in _METADATA_ALIASES.items():
         if canonical not in source and alias in source:
@@ -163,7 +167,8 @@ def json_tokens(value: Any) -> int:
 
 def tool_request_tokens(tool_name: str, arguments: Mapping[str, Any]) -> int:
     # This mirrors the semantic payload a tool-capable model emits: tool name + args.
-    return json_tokens({"name": str(tool_name), "arguments": dict(arguments)})
+    clean_args = dict(arguments) if isinstance(arguments, Mapping) else {}
+    return json_tokens({"name": str(tool_name), "arguments": clean_args})
 
 
 def tool_response_tokens(value: Any) -> int:
@@ -225,6 +230,14 @@ class SavingsSignals:
         tokens = _nonneg_int(tokens)
         if tokens:
             self.local_compute_candidates[source] = max(tokens, self.local_compute_candidates.get(source, 0))
+
+    def has_signals(self) -> bool:
+        return bool(self.input_candidates or self.output_candidates or self.local_compute_candidates)
+
+    def clear(self) -> None:
+        self.input_candidates.clear()
+        self.output_candidates.clear()
+        self.local_compute_candidates.clear()
 
     def summary(self) -> dict[str, Any]:
         input_source, input_saved = max(self.input_candidates.items(), key=lambda kv: kv[1], default=("", 0))
@@ -401,7 +414,8 @@ def finalize_tool_accounting(
     metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     measured = dict(measured or {})
-    request_tokens = tool_request_tokens(tool_name, arguments)
+    clean_args = dict(arguments) if isinstance(arguments, Mapping) else {}
+    request_tokens = tool_request_tokens(tool_name, clean_args)
     response_tokens = tool_response_tokens(response)
     gross = _nonneg_int(measured.get("gross_cloud_tokens_avoided_est"))
     protocol = request_tokens + response_tokens
@@ -419,7 +433,7 @@ def finalize_tool_accounting(
     protocol_usd = round(((request_tokens / 1_000_000.0) * 3.0) + ((response_tokens / 1_000_000.0) * 15.0), 4)
     net_usd = round(gross_usd - protocol_usd, 4)
 
-    action = str(arguments.get("action", "")).strip().lower()
+    action = str(clean_args.get("action", "")).strip().lower()
     if tool_name == "local_ai_repo":
         category = "search" if action in {"search", "code_index", "deterministic", "map", "symbols", "callers", "dead_code"} else "edit" if action in {"ast_refactor", "batch_replace", "validate_patch"} else "validation" if action in {"verify", "affected_tests", "review_diff", "security_audit", "impact"} else "repo"
     elif tool_name == "local_ai_command":
