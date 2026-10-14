@@ -535,6 +535,23 @@ class ScopeLeaseStore:
                 return count
         return {"success": True, "released_rows": retry_busy(write, retries=4)}
 
+    def reap_expired(self, now: float | None = None) -> dict[str, Any]:
+        """Prune all expired leases and stale wait dependencies, returning reaped metrics."""
+        current_time = time.time() if now is None else float(now)
+
+        def write() -> dict[str, int]:
+            with closing(self._connect()) as con:
+                con.execute("BEGIN IMMEDIATE")
+                cur1 = con.execute("DELETE FROM leases WHERE expires_at <= ?", (current_time,))
+                reaped_leases = int(cur1.rowcount or 0)
+                cur2 = con.execute("DELETE FROM lease_waits WHERE updated_at <= ?", (current_time - 7200,))
+                reaped_waits = int(cur2.rowcount or 0)
+                con.execute("COMMIT")
+                return {"reaped_leases": reaped_leases, "reaped_waits": reaped_waits}
+
+        result = retry_busy(write, retries=4)
+        return {"success": True, **result}
+
     def renew(self, tenant: str, lease_id: str, ttl_seconds: int = 900) -> dict[str, Any]:
         """Atomically extend the expiration TTL of an existing held lease."""
         if not lease_id:
