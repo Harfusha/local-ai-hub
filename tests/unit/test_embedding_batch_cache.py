@@ -41,3 +41,70 @@ def test_tiered_cache_get_many(tmp_path: Path):
     assert cache.l1_hits >= 1
     assert cache.l2_hits >= 2
     assert cache.misses >= 1
+
+
+def test_embedding_encode_cold_batch_uses_one_sqlite_batch_read(tmp_path: Path, monkeypatch):
+    from local_ai_hub.embeddings import EmbeddingModel
+
+    class DeterministicBackend:
+        prompts = {}
+
+    model = EmbeddingModel(
+        {
+            "server": {"state_dir": str(tmp_path)},
+            "models": {"embedding": "test-model", "embedding_backend": "sentence-transformers"},
+            "cache": {"embeddings": True},
+        }
+    )
+    model._model = DeterministicBackend()
+    model._active_cache_identity = "sentence-transformers:cpu:test-model"
+    model.active_backend = "sentence-transformers"
+    model.active_device = "cpu"
+    model._loaded_model_name = "test-model"
+    model._encode_st_batch = lambda texts, **_kwargs: (
+        [[float(len(text)), 1.0] for text in texts],
+        "sentence-transformers",
+    )
+
+    statements: list[str] = []
+    sqlite_cache = model.cache.l2
+    original_connect = sqlite_cache._connect
+
+    def traced_connect():
+        connection = original_connect()
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(sqlite_cache, "_connect", traced_connect)
+    texts = ["cold alpha", "cold beta", "cold gamma"]
+    cache_keys = [model._embedding_cache_key(model._active_cache_identity, False, text) for text in texts]
+
+    result = model.encode(texts)
+
+    assert result["success"] is True
+    assert result["computed"] == len(texts)
+    batch_reads = [
+        sql for sql in statements
+        if "SELECT cache_key, value_json, created_at FROM cache_entries" in sql
+        and "cache_key IN (" in sql
+    ]
+    per_key_reads = [
+        sql for sql in statements
+        if "SELECT value_json, created_at FROM cache_entries" in sql
+        and "cache_key=" in sql
+        and any(key in sql for key in cache_keys)
+    ]
+    assert len(batch_reads) == 1
+    assert per_key_reads == []
+
+
+def test_tiered_get_many_invalidates_l1_after_cross_instance_clear(tmp_path: Path):
+    db_path = tmp_path / "coordinated.sqlite3"
+    writer = TieredCache(SQLiteCache(db_path, "command:task24"))
+    reader = TieredCache(SQLiteCache(db_path, "command:task24"))
+    writer.set("shared-key", {"value": "before-clear"})
+
+    assert reader.get_many(["shared-key"]) == {"shared-key": {"value": "before-clear"}}
+    assert writer.clear() == 1
+
+    assert reader.get_many(["shared-key"]) == {}
