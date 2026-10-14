@@ -1,9 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Any
 
 from .agent_verification import ChangeIntent
+
+
+VALID_ROUTING_KINDS: frozenset[str] = frozenset(
+    {"cache", "index", "semantic", "local_model", "peer_agent", "deterministic"}
+)
 
 
 @dataclass(frozen=True)
@@ -16,6 +22,34 @@ class RouteRequest:
     needs_model: bool = False
     cost_limit: float = 1.0
 
+    def __post_init__(self) -> None:
+        q = str(self.query or "").replace("\x00", "").strip()
+        tt = str(self.task_type or "").replace("\x00", "").strip()
+        try:
+            cl = float(self.cost_limit)
+            cl = max(0.0, cl) if math.isfinite(cl) else 0.0
+        except (ValueError, TypeError):
+            cl = 0.0
+        object.__setattr__(self, "query", q)
+        object.__setattr__(self, "task_type", tt)
+        object.__setattr__(self, "has_fresh_cache", self.has_fresh_cache is True)
+        object.__setattr__(self, "has_indexed_evidence", self.has_indexed_evidence is True)
+        object.__setattr__(self, "needs_semantic", self.needs_semantic is True)
+        object.__setattr__(self, "needs_model", self.needs_model is True)
+        object.__setattr__(self, "cost_limit", cl)
+
+    def is_cached(self) -> bool:
+        return self.has_fresh_cache
+
+    def is_indexed(self) -> bool:
+        return self.has_indexed_evidence
+
+    def requires_semantic(self) -> bool:
+        return self.needs_semantic
+
+    def requires_model(self) -> bool:
+        return self.needs_model
+
 
 @dataclass(frozen=True)
 class RoutingDecision:
@@ -23,6 +57,43 @@ class RoutingDecision:
     target: str
     reason: str
     confidence: float = 1.0
+
+    def __post_init__(self) -> None:
+        k = str(self.kind or "").replace("\x00", "").strip().lower()
+        if k not in VALID_ROUTING_KINDS:
+            k = "deterministic"
+        t = str(self.target or "").replace("\x00", "").strip()
+        r = str(self.reason or "").replace("\x00", "").strip()
+        try:
+            conf = float(self.confidence)
+            if not math.isfinite(conf):
+                conf = 0.0
+            else:
+                conf = max(0.0, min(1.0, conf))
+        except (ValueError, TypeError):
+            conf = 0.0
+        object.__setattr__(self, "kind", k)
+        object.__setattr__(self, "target", t)
+        object.__setattr__(self, "reason", r)
+        object.__setattr__(self, "confidence", conf)
+
+    def is_cache(self) -> bool:
+        return self.kind == "cache"
+
+    def is_index(self) -> bool:
+        return self.kind == "index"
+
+    def is_semantic(self) -> bool:
+        return self.kind == "semantic"
+
+    def is_model(self) -> bool:
+        return self.kind == "local_model"
+
+    def is_deterministic(self) -> bool:
+        return self.kind == "deterministic"
+
+    def is_high_confidence(self, threshold: float = 0.9) -> bool:
+        return self.confidence >= threshold
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -40,6 +111,33 @@ class TestSelection:
     flaky_candidates: tuple[str, ...] = ()
     synthetic_passes: tuple[str, ...] = ()  # Invariant: NEVER manufacture a pass; always ()
 
+    def __post_init__(self) -> None:
+        def _clean_tuple(items: Any) -> tuple[str, ...]:
+            if not items:
+                return ()
+            cleaned: list[str] = []
+            for item in items:
+                s = str(item or "").replace("\x00", "").strip()
+                if s:
+                    cleaned.append(s)
+            return tuple(cleaned)
+
+        object.__setattr__(self, "selected_tests", _clean_tuple(self.selected_tests))
+        object.__setattr__(self, "flaky_candidates", _clean_tuple(self.flaky_candidates))
+        object.__setattr__(self, "synthetic_passes", ())  # Invariant: NEVER manufacture a pass
+
+    def has_tests(self) -> bool:
+        return bool(self.selected_tests)
+
+    def test_count(self) -> int:
+        return len(self.selected_tests)
+
+    def has_flakes(self) -> bool:
+        return bool(self.flaky_candidates)
+
+    def flake_count(self) -> int:
+        return len(self.flaky_candidates)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "selected_tests": list(self.selected_tests),
@@ -56,6 +154,31 @@ class ToolObservation:
     cache_hit: bool = False
     coalesced: bool = False
     cost_estimate: float = 0.0
+
+    def __post_init__(self) -> None:
+        tn = str(self.tool_name or "").replace("\x00", "").strip()
+        try:
+            d = float(self.duration_ms)
+            d = max(0.0, d) if math.isfinite(d) else 0.0
+        except (ValueError, TypeError):
+            d = 0.0
+        try:
+            c = float(self.cost_estimate)
+            c = max(0.0, c) if math.isfinite(c) else 0.0
+        except (ValueError, TypeError):
+            c = 0.0
+        object.__setattr__(self, "tool_name", tn)
+        object.__setattr__(self, "duration_ms", d)
+        object.__setattr__(self, "success", self.success is True)
+        object.__setattr__(self, "cache_hit", self.cache_hit is True)
+        object.__setattr__(self, "coalesced", self.coalesced is True)
+        object.__setattr__(self, "cost_estimate", c)
+
+    def is_cached(self) -> bool:
+        return self.cache_hit or self.coalesced
+
+    def is_successful(self) -> bool:
+        return self.success
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -78,7 +201,32 @@ class RoutingEngine:
         self._observations: list[ToolObservation] = []
 
     def mark_flake(self, test_id: str) -> None:
-        self._known_flakes.add(test_id.strip())
+        clean = str(test_id or "").replace("\x00", "").strip()
+        if clean:
+            self._known_flakes.add(clean)
+
+    def unmark_flake(self, test_id: str) -> bool:
+        clean = str(test_id or "").replace("\x00", "").strip()
+        if clean in self._known_flakes:
+            self._known_flakes.remove(clean)
+            return True
+        return False
+
+    def is_flake(self, test_id: str) -> bool:
+        clean = str(test_id or "").replace("\x00", "").strip()
+        return clean in self._known_flakes
+
+    def flake_count(self) -> int:
+        return len(self._known_flakes)
+
+    def known_flakes(self) -> tuple[str, ...]:
+        return tuple(sorted(self._known_flakes))
+
+    def clear_flakes(self) -> None:
+        self._known_flakes.clear()
+
+    def observations_count(self) -> int:
+        return len(self._observations)
 
     def record_observation(self, obs: ToolObservation) -> None:
         self._observations.append(obs)
@@ -130,13 +278,22 @@ class RoutingEngine:
     def select_tests(self, change: ChangeIntent) -> TestSelection:
         selected: list[str] = []
         flaky: list[str] = []
+        affected = getattr(change, "affected_paths", ()) or ()
 
-        for path in change.affected_paths:
-            # Map source paths to test paths (e.g. src/network.py -> tests/test_network.py)
+        for raw_path in affected:
+            path = str(raw_path or "").replace("\x00", "").strip()
+            if not path:
+                continue
             normalized = path.replace("\\", "/")
             base = normalized.split("/")[-1]
             name = base.rsplit(".", 1)[0]
-            test_target = f"tests/test_{name}.py"
+
+            # If the affected path itself is already a test file, select it directly
+            if normalized.startswith("tests/") or base.startswith("test_"):
+                test_target = normalized
+            else:
+                test_target = f"tests/test_{name}.py"
+
             if test_target not in selected:
                 selected.append(test_target)
 
