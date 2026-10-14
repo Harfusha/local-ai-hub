@@ -8105,6 +8105,12 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, APP.services.http_probe(str(payload.get("url", "")), expected_status=int(payload.get("expected_status", 200)), json_path=payload.get("json_path"), timeout=float(payload.get("timeout", 5.0)), headers=payload.get("headers"))); return
             if 'post_callers_1' in post_route_ids:
                 self._send(200, APP.services.callers(str(payload.get("root", ".")), str(payload.get("symbol", "")), limit=int(payload.get("limit", 50)))); return
+            if 'post_callees_1' in post_route_ids:
+                self._send(200, APP.services.callees(str(payload.get("root", ".")), str(payload.get("symbol", "")), limit=int(payload.get("limit", 50)))); return
+            if 'post_implementations_1' in post_route_ids:
+                self._send(200, APP.services.code_find_implementations(str(payload.get("root", ".")), str(payload.get("symbol", "")), path=payload.get("path"))); return
+            if 'post_declaration_1' in post_route_ids:
+                self._send(200, APP.services.code_find_declaration(str(payload.get("root", ".")), str(payload.get("symbol", "")), path=payload.get("path"))); return
             if 'post_repo_secret_scan_1' in post_route_ids:
                 self._send(200, APP.services.secret_scan(str(payload.get("root", ".")), payload.get("path"), scan_git_history=bool(payload.get("scan_git_history", payload.get("git_history", False))), commit_depth=int(payload.get("commit_depth", 20)))); return
             if 'post_repo_schema_inspect_1' in post_route_ids:

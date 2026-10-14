@@ -799,7 +799,7 @@ _REPO_ACTIONS = (
     "affected_tests", "topology", "ast_refactor",
     "generate_mocks", "split_changes", "synthesize_rules",
     "code_invariants", "generate_dataset", "profile_digest",
-    "callers", "dead_code", "secret_scan", "schema_inspect", "explain_query", "env_compat",
+    "callers", "callees", "implementations", "declaration", "dead_code", "secret_scan", "schema_inspect", "explain_query", "env_compat",
     "circular_dependencies", "generate_types", "complexity", "api_spec", "dependency_slice", "migration_drift", "package_audit",
     "structural_search", "context_budget",
     "git_diff", "git_history_search", "hotspots", "generate_tests_for_diff", "cross_repo_contract",
@@ -3215,6 +3215,18 @@ def _local_ai_repo_impl(
         return _compact(CLIENT.post("/api/repo/callers", {
             "root": root, "symbol": query or task or path, "limit": max_tokens or 50,
         }, timeout=_timeout("quick")), "architecture")
+    if action == "callees":
+        return _compact(CLIENT.post("/api/code/callees", {
+            "root": root, "symbol": query or task or path, "limit": max_tokens or 50,
+        }, timeout=_timeout("quick")), "architecture")
+    if action == "implementations":
+        return _compact(CLIENT.post("/api/code/implementations", {
+            "root": root, "symbol": query or task or path, "path": path or None,
+        }, timeout=_timeout("quick")), "architecture")
+    if action == "declaration":
+        return _compact(CLIENT.post("/api/code/declaration", {
+            "root": root, "symbol": query or task or path, "path": path or None,
+        }, timeout=_timeout("quick")), "architecture")
     if action == "dead_code":
         return _compact(CLIENT.post("/api/repo/dead_code", {
             "root": root, "limit": max_tokens or 50,
@@ -3307,11 +3319,13 @@ def _local_ai_repo_impl(
             "root": root, "file": path or query,
         }, timeout=_timeout("quick")), "code")
     if action == "skeletonize":
-        return _compact(CLIENT.post("/api/repo/skeletonize", {
-            "root": root,
+        skeleton_payload: dict[str, Any] = {
             "code": query or diff or task,
             "targets": [path] if path else None,
-        }, timeout=_timeout("quick")), "code")
+        }
+        if root and is_rooted_path(str(root).strip()):
+            skeleton_payload["root"] = _client_root(str(root).strip())
+        return _compact(CLIENT.post("/api/repo/skeletonize", skeleton_payload, timeout=_timeout("quick")), "code")
     return _invalid_action("local_ai_repo", action, tuple(FEATURES.supported_repo_actions()), "Keep work bounded in Local AI Hub; use Codex-owned orchestration for peer subagents.")
 
 
