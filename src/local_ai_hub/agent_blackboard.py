@@ -5,6 +5,7 @@ from .json_utils import dumps as json_dumps
 import hashlib
 import json
 import logging
+import math
 import sqlite3
 import threading
 import time
@@ -17,6 +18,26 @@ from .agent_events import AgentEvent, AgentStateStore
 from .sqlite_support import connect_sqlite, initialize_wal, retry_busy, validate_durable_schema
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _safe_json_loads(raw: Any, default: Any = None, raw_string_fallback: bool = False) -> Any:
+    """Safely decode JSON from database rows, falling back to default or raw string."""
+    if raw is None:
+        return default
+    try:
+        return json.loads(str(raw))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return str(raw) if raw_string_fallback else default
+
+
+def _validate_blackboard_identifier(value: object, field_name: str = "identifier") -> str | None:
+    """Validate board_id or section string. Returns clean string or None if invalid."""
+    if not isinstance(value, str):
+        return None
+    clean = value.strip()
+    if not clean or "\x00" in clean:
+        return None
+    return clean
 
 
 @dataclass(frozen=True)
@@ -40,14 +61,49 @@ class BlackboardSection:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any], default_section: str = "") -> BlackboardSection:
+    def from_dict(cls, data: dict[str, Any] | None, default_section: str = "") -> BlackboardSection:
+        if not isinstance(data, dict):
+            return cls(
+                section=str(default_section or ""),
+                content=None,
+                author="agent",
+                clock={},
+                timestamp=time.time(),
+                version=1,
+            )
+        clean_clock: dict[str, int] = {}
+        raw_clock = data.get("clock")
+        if isinstance(raw_clock, dict):
+            for k, v in raw_clock.items():
+                try:
+                    if isinstance(v, bool):
+                        continue
+                    iv = int(v)
+                    if iv >= 0:
+                        clean_clock[str(k)] = iv
+                except (TypeError, ValueError, OverflowError):
+                    continue
+        raw_ts = data.get("timestamp")
+        try:
+            ts = float(raw_ts) if raw_ts is not None else time.time()
+            if not math.isfinite(ts):
+                ts = time.time()
+        except (TypeError, ValueError):
+            ts = time.time()
+        raw_ver = data.get("version")
+        try:
+            ver = int(raw_ver) if raw_ver is not None else 1
+            if ver <= 0:
+                ver = 1
+        except (TypeError, ValueError, OverflowError):
+            ver = 1
         return cls(
             section=str(data.get("section") or default_section),
             content=data.get("content"),
             author=str(data.get("author") or "agent"),
-            clock={str(k): int(v) for k, v in (data.get("clock") or {}).items()},
-            timestamp=float(data.get("timestamp") or time.time()),
-            version=int(data.get("version") or 1),
+            clock=clean_clock,
+            timestamp=ts,
+            version=ver,
         )
 
 
@@ -57,6 +113,9 @@ def merge_sections(s1: BlackboardSection, s2: BlackboardSection) -> BlackboardSe
     Uses vector clock domination with deterministic Last-Write-Wins (LWW) tie-breaking.
     The resulting vector clock is the element-wise supremum of both clocks.
     """
+    if s1.section != s2.section:
+        raise ValueError(f"Cannot merge sections with different names: '{s1.section}' != '{s2.section}'")
+
     all_keys = set(s1.clock) | set(s2.clock)
     merged_clock = {k: max(s1.clock.get(k, 0), s2.clock.get(k, 0)) for k in all_keys}
 
@@ -71,9 +130,11 @@ def merge_sections(s1: BlackboardSection, s2: BlackboardSection) -> BlackboardSe
         version = s2.version
     else:
         # Concurrent or identical clocks: LWW on timestamp, author, then canonical content.
-        if s1.timestamp > s2.timestamp:
+        s1_ts = s1.timestamp if math.isfinite(s1.timestamp) else -1.0
+        s2_ts = s2.timestamp if math.isfinite(s2.timestamp) else -1.0
+        if s1_ts > s2_ts:
             winner = s1
-        elif s2.timestamp > s1.timestamp:
+        elif s2_ts > s1_ts:
             winner = s2
         else:
             winner = max(
@@ -83,12 +144,13 @@ def merge_sections(s1: BlackboardSection, s2: BlackboardSection) -> BlackboardSe
         is_concurrent_conflict = s1.clock != s2.clock
         version = max(s1.version, s2.version) + (1 if is_concurrent_conflict else 0)
 
+    max_ts = max(s1.timestamp if math.isfinite(s1.timestamp) else 0.0, s2.timestamp if math.isfinite(s2.timestamp) else 0.0)
     return BlackboardSection(
         section=s1.section,
         content=winner.content,
         author=winner.author,
         clock=merged_clock,
-        timestamp=max(s1.timestamp, s2.timestamp),
+        timestamp=max_ts if max_ts > 0.0 else time.time(),
         version=version,
     )
 
@@ -169,8 +231,15 @@ class BlackboardStore:
     ) -> dict[str, Any]:
         """CAS-update section; append change event in same transaction when stores share DB."""
         self._ensure_schema()
-        clean_board = str(board_id).strip()
-        clean_section = str(section).strip()
+        clean_board = _validate_blackboard_identifier(board_id, "board_id")
+        clean_section = _validate_blackboard_identifier(section, "section")
+        if clean_board is None or clean_section is None:
+            return {
+                "success": False,
+                "error": "board_id and section must be non-empty strings without null bytes",
+                "board_id": str(board_id or ""),
+                "section": str(section or ""),
+            }
         clean_author = str(author).strip() or "agent"
         if expected_version is None and expected_etag is not None:
             clean_etag = str(expected_etag).strip().lstrip("v\"").rstrip("\"")
@@ -231,7 +300,8 @@ class BlackboardStore:
             (board_id, section),
         ).fetchone()
         if row:
-            existing_clock = json.loads(str(row[2])) if row[2] else {}
+            raw_clk = _safe_json_loads(row[2], default={})
+            existing_clock = raw_clk if isinstance(raw_clk, dict) else {}
             existing_version = int(row[4] or 1)
         else:
             existing_clock = {}
@@ -402,21 +472,28 @@ class BlackboardStore:
     def get(self, board_id: str, section: str | None = None) -> dict[str, Any]:
         """Fetch full board state or a specific section."""
         self._ensure_schema()
-        clean_board = str(board_id).strip()
+        clean_board = _validate_blackboard_identifier(board_id, "board_id")
+        if clean_board is None:
+            return {"success": False, "error": "board_id must be a non-empty string without null bytes"}
+        clean_sec: str | None = None
+        if section is not None:
+            clean_sec = _validate_blackboard_identifier(section, "section")
+            if clean_sec is None:
+                return {"success": False, "error": "section must be a non-empty string without null bytes"}
 
         def _do_get() -> dict[str, Any]:
             with self._lock, closing(self._connect()) as con:
                 cur = con.cursor()
-                if section:
-                    clean_sec = str(section).strip()
+                if clean_sec:
                     row = cur.execute(
                         "SELECT content, author, vector_clock, timestamp, version FROM agent_blackboard WHERE board_id=? AND section=?",
                         (clean_board, clean_sec),
                     ).fetchone()
                     if not row:
                         return {"success": False, "error": f"section '{clean_sec}' not found on board '{clean_board}'"}
-                    content = json.loads(str(row[0])) if row[0] else None
-                    clock = json.loads(str(row[2])) if row[2] else {}
+                    content = _safe_json_loads(row[0], default=None, raw_string_fallback=True) if row[0] is not None else None
+                    raw_clk = _safe_json_loads(row[2], default={})
+                    clock = raw_clk if isinstance(raw_clk, dict) else {}
                     sec = BlackboardSection(
                         section=clean_sec, content=content, author=str(row[1]),
                         clock=clock, timestamp=float(row[3]), version=int(row[4]),
@@ -431,8 +508,9 @@ class BlackboardStore:
                 sections: dict[str, Any] = {}
                 for r in rows:
                     s_name = str(r[0])
-                    cnt = json.loads(str(r[1])) if r[1] else None
-                    clk = json.loads(str(r[3])) if r[3] else {}
+                    cnt = _safe_json_loads(r[1], default=None, raw_string_fallback=True) if r[1] is not None else None
+                    raw_clk = _safe_json_loads(r[3], default={})
+                    clk = raw_clk if isinstance(raw_clk, dict) else {}
                     sections[s_name] = BlackboardSection(
                         section=s_name, content=cnt, author=str(r[2]),
                         clock=clk, timestamp=float(r[4]), version=int(r[5]),
@@ -456,7 +534,9 @@ class BlackboardStore:
     def merge(self, board_id: str, remote_sections: dict[str, Any] | list[dict[str, Any]]) -> dict[str, Any]:
         """Merge external/remote sections into this blackboard using CRDT rules."""
         self._ensure_schema()
-        clean_board = str(board_id).strip()
+        clean_board = _validate_blackboard_identifier(board_id, "board_id")
+        if clean_board is None:
+            return {"success": False, "error": "board_id must be a non-empty string without null bytes"}
 
         if isinstance(remote_sections, list):
             items = {str(item.get("section", "")): item for item in remote_sections if isinstance(item, dict)}
@@ -484,8 +564,9 @@ class BlackboardStore:
                     ).fetchone()
 
                     if row:
-                        cnt = json.loads(str(row[0])) if row[0] else None
-                        clk = json.loads(str(row[2])) if row[2] else {}
+                        cnt = _safe_json_loads(row[0], default=None, raw_string_fallback=True) if row[0] is not None else None
+                        raw_clk = _safe_json_loads(row[2], default={})
+                        clk = raw_clk if isinstance(raw_clk, dict) else {}
                         local_sec = BlackboardSection(
                             section=sec_name, content=cnt, author=str(row[1]),
                             clock=clk, timestamp=float(row[3]), version=int(row[4]),
@@ -561,8 +642,14 @@ class BlackboardStore:
     def delete(self, board_id: str, section: str | None = None) -> dict[str, Any]:
         """Delete an entire blackboard or a specific section from it."""
         self._ensure_schema()
-        clean_board = str(board_id).strip()
-        clean_section = str(section).strip() if section is not None else None
+        clean_board = _validate_blackboard_identifier(board_id, "board_id")
+        if clean_board is None:
+            return {"success": False, "error": "board_id must be a non-empty string without null bytes"}
+        clean_section: str | None = None
+        if section is not None:
+            clean_section = _validate_blackboard_identifier(section, "section")
+            if clean_section is None:
+                return {"success": False, "error": "section must be a non-empty string without null bytes"}
 
         def _do_delete() -> dict[str, Any]:
             published: list[AgentEvent] = []
@@ -587,15 +674,17 @@ class BlackboardStore:
                         cur = con.execute("DELETE FROM agent_blackboard WHERE board_id = ?", (clean_board,))
                     deleted_count = max(0, cur.rowcount)
                     if self.state_store is not None and self.state_store.enabled:
-                        for deleted_section, version, vector_clock in rows:
+                        for deleted_sec_name, version, vector_clock in rows:
+                            raw_clk = _safe_json_loads(vector_clock, default={})
+                            clk = raw_clk if isinstance(raw_clk, dict) else {}
                             event = AgentEvent.create(
-                                stream_id=f"blackboard:{clean_board}:{deleted_section}",
+                                stream_id=f"blackboard:{clean_board}:{deleted_sec_name}",
                                 kind="blackboard.deleted",
                                 payload={
                                     "board_id": clean_board,
-                                    "section": str(deleted_section),
+                                    "section": str(deleted_sec_name),
                                     "deleted_version": int(version),
-                                    "clock": json.loads(str(vector_clock)) if vector_clock else {},
+                                    "clock": clk,
                                 },
                                 actor="system",
                             )
@@ -633,3 +722,77 @@ class BlackboardStore:
                 if self.state_store is not None:
                     self.state_store._publish(event)
         return result
+
+    def has_board(self, board_id: str) -> bool:
+        """Return True if the specified board_id exists and has at least one section."""
+        clean_board = _validate_blackboard_identifier(board_id, "board_id")
+        if clean_board is None:
+            return False
+        self._ensure_schema()
+        with self._lock, closing(self._connect()) as con:
+            row = con.execute("SELECT 1 FROM agent_blackboard WHERE board_id = ? LIMIT 1", (clean_board,)).fetchone()
+            return row is not None
+
+    def has_section(self, board_id: str, section: str) -> bool:
+        """Return True if the specified section exists on the board."""
+        clean_board = _validate_blackboard_identifier(board_id, "board_id")
+        clean_section = _validate_blackboard_identifier(section, "section")
+        if clean_board is None or clean_section is None:
+            return False
+        self._ensure_schema()
+        with self._lock, closing(self._connect()) as con:
+            row = con.execute(
+                "SELECT 1 FROM agent_blackboard WHERE board_id = ? AND section = ? LIMIT 1",
+                (clean_board, clean_section),
+            ).fetchone()
+            return row is not None
+
+    def get_section_version(self, board_id: str, section: str) -> int | None:
+        """Return current version of the section, or None if not found."""
+        clean_board = _validate_blackboard_identifier(board_id, "board_id")
+        clean_section = _validate_blackboard_identifier(section, "section")
+        if clean_board is None or clean_section is None:
+            return None
+        self._ensure_schema()
+        with self._lock, closing(self._connect()) as con:
+            row = con.execute(
+                "SELECT version FROM agent_blackboard WHERE board_id = ? AND section = ?",
+                (clean_board, clean_section),
+            ).fetchone()
+            return int(row[0]) if row and row[0] is not None else None
+
+    def get_board_stats(self, board_id: str) -> dict[str, Any]:
+        """Return summary stats for a blackboard (section count, max version, latest timestamp)."""
+        clean_board = _validate_blackboard_identifier(board_id, "board_id")
+        if clean_board is None:
+            return {
+                "board_id": str(board_id or ""),
+                "exists": False,
+                "section_count": 0,
+                "max_version": 0,
+                "latest_timestamp": None,
+            }
+        self._ensure_schema()
+        with self._lock, closing(self._connect()) as con:
+            row = con.execute(
+                "SELECT COUNT(*), MAX(version), MAX(timestamp) FROM agent_blackboard WHERE board_id = ?",
+                (clean_board,),
+            ).fetchone()
+            count = int(row[0] or 0) if row else 0
+            if count == 0:
+                return {
+                    "board_id": clean_board,
+                    "exists": False,
+                    "section_count": 0,
+                    "max_version": 0,
+                    "latest_timestamp": None,
+                }
+            max_ver = int(row[1] or 0) if row and row[1] is not None else 0
+            latest_ts = float(row[2]) if row and row[2] is not None else None
+            return {
+                "board_id": clean_board,
+                "exists": True,
+                "section_count": count,
+                "max_version": max_ver,
+                "latest_timestamp": latest_ts,
+            }
