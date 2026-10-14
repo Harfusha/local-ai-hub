@@ -1172,6 +1172,65 @@ class ArtifactStore:
                 return {"success": False, "error": str(error), "error_code": error.code, "artifact_id": artifact_id}
             raise
 
+    def get_lines(
+        self,
+        artifact_id: str,
+        start_line: int = 1,
+        end_line: int | None = None,
+        tenant: str | None = None,
+    ) -> dict[str, Any]:
+        """Fetch a specific 1-indexed range of lines from a stored text artifact."""
+        start = max(1, int(start_line))
+        if end_line is not None:
+            end = int(end_line)
+            if end < start:
+                return {
+                    "success": False,
+                    "error": "end_line must be greater than or equal to start_line",
+                    "artifact_id": artifact_id,
+                }
+        else:
+            end = None
+
+        cutoff = time.time() - self.ttl_seconds
+
+        def _do_get() -> tuple[Any, ...] | None:
+            with closing(self._connect()) as con:
+                query = f"SELECT kind, text, mime_type, created_at, char_count FROM {self._table} WHERE artifact_id=? AND created_at>=?"
+                params: list[Any] = [artifact_id, cutoff]
+                if tenant is not None:
+                    query += " AND tenant_identity=?"
+                    params.append(self._tenant_identity(tenant))
+                return con.execute(query, params).fetchone()
+
+        row = retry_busy(_do_get, retries=3)
+        if not row:
+            return {"success": False, "error": "artifact not found or expired", "artifact_id": artifact_id}
+        if row[2]:
+            return {"success": False, "error": "binary artifact cannot be sliced by lines", "artifact_id": artifact_id}
+
+        text = row[1] or ""
+        all_lines = text.splitlines()
+        total_lines = len(all_lines)
+
+        if start > total_lines or total_lines == 0:
+            sliced_lines: list[str] = []
+            actual_end = start
+        else:
+            actual_end = min(end, total_lines) if end is not None else total_lines
+            sliced_lines = all_lines[start - 1 : actual_end]
+
+        return {
+            "success": True,
+            "artifact_id": artifact_id,
+            "kind": row[0],
+            "start_line": start,
+            "end_line": actual_end,
+            "total_lines": total_lines,
+            "lines": sliced_lines,
+            "text": "\n".join(sliced_lines),
+        }
+
     def list(self, tenant: str = "", limit: int = 20) -> list[dict[str, Any]]:
         if not isinstance(tenant, str):
             raise ValueError("tenant label must be a string")
