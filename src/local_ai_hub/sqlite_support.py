@@ -901,5 +901,3 @@ def clean_quarantined_files(
         "files": pruned_files,
     }
 
-
-
