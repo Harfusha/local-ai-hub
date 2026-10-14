@@ -19,6 +19,7 @@ import tomllib
 import urllib.request
 import xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
 from typing import Any
@@ -4299,7 +4300,9 @@ def test_{sym}_regression_edge_cases():
                     if len(db_test_paths) >= 50:
                         break
 
-        for rel in [rel for rel in db_test_paths if is_test_source(rel)][:40]:
+        target_rels = [rel for rel in db_test_paths if is_test_source(rel)][:40]
+
+        def _extract_file_info(rel: str) -> dict[str, Any]:
             f = resolved_root / rel
             cases: list[str] = []
             if f.is_file():
@@ -4317,12 +4320,17 @@ def test_{sym}_regression_edge_cases():
                     pass
 
             run_file_cmd = f"pytest {rel}" if framework == "pytest" else (f"dotnet test --filter FullyQualifiedName~{f.stem}" if framework == "dotnet" else f"npm test {rel}")
-            test_files.append({
+            return {
                 "path": rel,
                 "cases_count": len(cases),
                 "cases": cases[:15],
                 "run_command": run_file_cmd,
-            })
+            }
+
+        if target_rels:
+            max_workers = min(8, len(target_rels))
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                test_files = list(pool.map(_extract_file_info, target_rels))
 
         return {
             "success": True,
