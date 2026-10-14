@@ -10,6 +10,8 @@ import os
 import re
 import sys
 import threading
+from concurrent.futures import ProcessPoolExecutor, TimeoutError
+from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +22,33 @@ _LANGUAGES: dict[str, Any] = {}
 _INIT_ATTEMPTED = False
 _PARSER_LOCK = threading.RLock()
 _LAZY_LANGUAGE_PACKS = {"java": "java", "cpp": "cpp"}
+
+_IN_WORKER = False
+_WORKER_POOL: ProcessPoolExecutor | None = None
+_WORKER_POOL_LOCK = threading.Lock()
+
+
+def _get_worker_pool() -> ProcessPoolExecutor:
+    global _WORKER_POOL
+    with _WORKER_POOL_LOCK:
+        if _WORKER_POOL is None:
+            _WORKER_POOL = ProcessPoolExecutor(max_workers=1)
+        return _WORKER_POOL
+
+
+def _reset_worker_pool() -> None:
+    global _WORKER_POOL
+    with _WORKER_POOL_LOCK:
+        if _WORKER_POOL is not None:
+            try:
+                _WORKER_POOL.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
+            _WORKER_POOL = None
+
+
+def _use_isolated_worker() -> bool:
+    return os.name == "nt" and sys.version_info >= (3, 13)
 
 
 def _init_treesitter() -> bool:
@@ -36,10 +65,10 @@ def _init_treesitter_once() -> bool:
     # A supervised Windows/Python 3.13 process crashed in native Node.children
     # traversal even with language-pack parsing serialized by _PARSER_LOCK.
     # The language pack is not a safe escape from the native binding guard.
-    # Fall back before importing either backend; Python exceptions cannot catch
-    # an access violation in the extension.
-    if os.name == "nt" and sys.version_info >= (3, 13):
-        logger.warning("Tree-sitter disabled on Windows Python 3.13+; using safe fallbacks")
+    # When running outside of an isolated worker on Windows Python 3.13+, fall back
+    # so access violations in native code cannot take down the Hub daemon.
+    if not _IN_WORKER and _use_isolated_worker():
+        logger.warning("Tree-sitter disabled in main process on Windows Python 3.13+; isolated worker pool will be used")
         return False
 
     try:
@@ -201,8 +230,8 @@ def parse_treesitter(
     return parse_treesitter_with_status(text, language)["result"]
 
 
-def parse_treesitter_with_status(text: str, language: str) -> dict[str, Any]:
-    """Return extracted syntax data and an explicit, bounded parser outcome."""
+def _parse_treesitter_internal(text: str, language: str) -> dict[str, Any]:
+    """Internal synchronous parser execution."""
     if not text or not text.strip():
         return {"result": ([], [], []), "status": "empty", "parser": "tree_sitter", "syntax_error_count": 0}
 
@@ -296,6 +325,67 @@ def parse_treesitter_with_status(text: str, language: str) -> dict[str, Any]:
             "syntax_error_count": error_count,
             "syntax_error_count_truncated": error_count_truncated,
         }
+
+
+def _worker_parse(text: str, language: str) -> dict[str, Any]:
+    """Entrypoint executed in isolated worker subprocess."""
+    global _IN_WORKER, _INIT_ATTEMPTED
+    _IN_WORKER = True
+    _INIT_ATTEMPTED = False
+    _init_treesitter()
+    try:
+        return _parse_treesitter_internal(text, language)
+    except Exception as exc:
+        return {
+            "result": None,
+            "status": "failed",
+            "fallback_reason": "worker_error",
+            "error_type": type(exc).__name__,
+            "syntax_error_count": 0,
+        }
+
+
+def parse_treesitter_with_status(text: str, language: str) -> dict[str, Any]:
+    """Return extracted syntax data and an explicit, bounded parser outcome."""
+    if not text or not text.strip():
+        return {"result": ([], [], []), "status": "empty", "parser": "tree_sitter", "syntax_error_count": 0}
+
+    if _use_isolated_worker():
+        try:
+            pool = _get_worker_pool()
+            future = pool.submit(_worker_parse, text, language)
+            return future.result(timeout=10.0)
+        except BrokenProcessPool as exc:
+            logger.warning("Tree-sitter worker process crashed (access violation): %s", exc)
+            _reset_worker_pool()
+            return {
+                "result": None,
+                "status": "failed",
+                "fallback_reason": "worker_crash",
+                "error_type": type(exc).__name__,
+                "syntax_error_count": 0,
+            }
+        except TimeoutError as exc:
+            logger.warning("Tree-sitter worker timed out: %s", exc)
+            _reset_worker_pool()
+            return {
+                "result": None,
+                "status": "failed",
+                "fallback_reason": "worker_timeout",
+                "error_type": type(exc).__name__,
+                "syntax_error_count": 0,
+            }
+        except Exception as exc:
+            logger.warning("Tree-sitter worker execution failed: %s", exc)
+            return {
+                "result": None,
+                "status": "failed",
+                "fallback_reason": "worker_error",
+                "error_type": type(exc).__name__,
+                "syntax_error_count": 0,
+            }
+
+    return _parse_treesitter_internal(text, language)
 
 
 def _node_text(node: Any, source_bytes: bytes) -> str:
