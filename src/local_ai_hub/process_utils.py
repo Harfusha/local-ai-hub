@@ -63,6 +63,8 @@ def safe_unlink(path: Path, max_attempts: int = 5, delay: float = 0.05) -> None:
             if (current.st_dev, current.st_ino, current.st_mode) != identity:
                 assert last_error is not None
                 raise last_error
+            if last_error is not None and time.monotonic() >= retry_deadline:
+                raise last_error
         try:
             path.unlink()
             return

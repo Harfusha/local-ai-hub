@@ -158,6 +158,46 @@ def test_safe_unlink_rejects_invalid_delays(tmp_path, delay):
         process_utils.safe_unlink(tmp_path / "missing", delay=delay)
 
 
+def test_safe_unlink_rechecks_deadline_after_identity_stat(tmp_path, monkeypatch):
+    path = tmp_path / "locked.txt"
+    path.write_text("original", encoding="utf-8")
+    now = [0.0]
+    stat_calls = []
+    unlink_calls = []
+    sleeps = []
+    original_stat = process_utils.Path.stat
+
+    def delayed_retry_stat(candidate, *args, **kwargs):
+        result = original_stat(candidate, *args, **kwargs)
+        if candidate == path:
+            stat_calls.append(candidate)
+            if len(stat_calls) == 3:
+                now[0] += 0.2
+        return result
+
+    def locked(candidate):
+        unlink_calls.append(candidate)
+        raise _winerror5(candidate)
+
+    def fake_sleep(seconds):
+        sleeps.append(seconds)
+        now[0] += seconds
+
+    monkeypatch.setattr(process_utils.Path, "stat", delayed_retry_stat)
+    monkeypatch.setattr(type(path), "unlink", locked)
+    monkeypatch.setattr(process_utils.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(process_utils.time, "sleep", fake_sleep)
+
+    with pytest.raises(PermissionError) as caught:
+        process_utils.safe_unlink(path, max_attempts=3, delay=4.9)
+
+    assert caught.value.winerror == 5
+    assert unlink_calls == [path]
+    assert sleeps == [4.9]
+    assert len(stat_calls) == 3
+    assert path.read_text(encoding="utf-8") == "original"
+
+
 def test_safe_unlink_bounds_worst_case_aggregate_backoff(tmp_path, monkeypatch):
     path = tmp_path / "locked.txt"
     path.write_text("original", encoding="utf-8")
