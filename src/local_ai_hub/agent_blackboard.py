@@ -36,6 +36,7 @@ class BlackboardSection:
             "clock": dict(self.clock),
             "timestamp": self.timestamp,
             "version": self.version,
+            "etag": f"v{self.version}",
         }
 
     @classmethod
@@ -163,6 +164,7 @@ class BlackboardStore:
         expected_version: int | None = None,
         idempotency_key: str = "",
         *,
+        expected_etag: str | None = None,
         connection: sqlite3.Connection | None = None,
     ) -> dict[str, Any]:
         """CAS-update section; append change event in same transaction when stores share DB."""
@@ -170,6 +172,12 @@ class BlackboardStore:
         clean_board = str(board_id).strip()
         clean_section = str(section).strip()
         clean_author = str(author).strip() or "agent"
+        if expected_version is None and expected_etag is not None:
+            clean_etag = str(expected_etag).strip().lstrip("v\"").rstrip("\"")
+            try:
+                expected_version = int(clean_etag)
+            except ValueError:
+                pass
         if connection is not None:
             return self._update_in_transaction(
                 connection, clean_board, clean_section, content, clean_author,
@@ -296,6 +304,7 @@ class BlackboardStore:
                 "success": False,
                 "error": f"Version conflict: current version {existing_version} does not match expected {expected_version}",
                 "version_conflict": True,
+                "conflict": True,
                 "current_version": existing_version,
                 "expected_version": int(expected_version),
             }
@@ -358,6 +367,7 @@ class BlackboardStore:
                 "success": False,
                 "error": "Blackboard section changed during update",
                 "version_conflict": True,
+                "conflict": True,
                 "current_version": current_version,
                 "expected_version": existing_version,
             }
