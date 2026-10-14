@@ -128,7 +128,7 @@ _COORD_ACTIONS = (
     "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list",
     "task_complete", "task_fail", "task_heartbeat", "memory_record", "memory_get", "memory_find",
     "memory_promote", "context_compile",
-    "verify_receipt", "verify_completion", "negative_knowledge_record", "negative_knowledge_find", "incident_decision",
+    "verify_receipt", "verify_completion", "verify_export", "negative_knowledge_record", "negative_knowledge_find", "incident_decision",
     "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_merge", "blackboard_delete",
     "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel", "worktree_lease",
     "worktree_release", "pubsub_publish", "pubsub_poll", "simulate_merge", "curate_dataset", "task_sync",
@@ -499,12 +499,12 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
         "local_ai_coord", "coord", "action", _COORD_ACTIONS, timeout="action-specific coordination budget; HubClient cap applies",
         projection="coordination result", default_effect="coordination_state", read_only=(
             "leases", "memo_get", "memo_search", "task_get", "task_list", "memory_get", "memory_find",
-            "blackboard_get", "blackboard_list", "swarm_status", "swarm_list", "pubsub_poll",
+            "blackboard_get", "blackboard_list", "swarm_status", "swarm_list", "pubsub_poll", "verify_export",
         ),
         action_requirements={name: ("agent_os",) for name in _COORD_ACTIONS[8:]},
         action_effects={name: "coordination_state" for name in _COORD_ACTIONS if name not in {
             "leases", "memo_get", "memo_search", "task_get", "task_list", "memory_get", "memory_find",
-            "blackboard_get", "blackboard_list", "swarm_status", "swarm_list", "pubsub_poll",
+            "blackboard_get", "blackboard_list", "swarm_status", "swarm_list", "pubsub_poll", "verify_export",
         }},
         properties={
             "action": {"type": "string"},
@@ -514,7 +514,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
                 "lease_id", "task_id", "key", "value", "query", "command", "task", "status", "reason",
                 "record_id", "target_scope", "approver", "criterion", "board_id", "section", "scope",
                 "scope_id", "clone_id", "worktree_id", "branch", "repository_id", "session_id", "tenant",
-                "repository_revision", "phase", "preload_profile", "since_hash",
+                "repository_revision", "phase", "preload_profile", "since_hash", "format",
             )},
             "ttl_seconds": {"type": "integer", "default": 0},
             "max_tokens": {"type": "integer", "default": 0},

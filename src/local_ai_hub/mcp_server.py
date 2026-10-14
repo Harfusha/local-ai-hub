@@ -3758,6 +3758,7 @@ def local_ai_coord(
     since_hash: str = "",
     expected_version: int | None = None,
     after_seq: int | None = None,
+    format: str = "markdown",
 ) -> dict[str, Any]:
     """Cross-agent coordination for the main agent and bounded Hub workers. Public actions are limited to the contract enum; unscoped memory relation/reaping storage remains private. Claim overlapping edit paths before concurrent Hub work. Search/get memos before repeating expensive investigation and store concise reusable findings after discovery. Native peer subagents are coordinated by Codex rather than by this Hub tool. Use when: Hub workers share edit paths, leases, or reusable findings. Skip when: work is isolated and no shared Hub state or memo is involved."""
     if not FEATURES.coord:
@@ -3869,6 +3870,11 @@ def local_ai_coord(
         return _compact(CLIENT.post("/api/agent-state/verification", {
             "action": "completion", "task_id": task_id or query or value or key, "root": root,
             "repository_revision": repository_revision,
+        }, timeout=_timeout("quick")), "verify")
+    if action == "verify_export":
+        return _compact(CLIENT.post("/api/agent-state/verification", {
+            "action": "export", "task_id": task_id or query or value or key, "root": root,
+            "format": format or section or status or "markdown",
         }, timeout=_timeout("quick")), "verify")
     if action.startswith("negative_knowledge_"):
         sub_act = "record" if action == "negative_knowledge_record" else "find"

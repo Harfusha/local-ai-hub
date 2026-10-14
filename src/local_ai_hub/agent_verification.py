@@ -1713,3 +1713,123 @@ class VerificationStore:
             receipts=visible_receipts,
             consistency=audit,
         )
+
+    def export_receipts(
+        self,
+        task_id: str,
+        *,
+        format: str = "markdown",
+    ) -> dict[str, Any]:
+        task_key = str(task_id or "").strip()
+        fmt = str(format or "markdown").strip().lower()
+        if not task_key:
+            return {
+                "success": False,
+                "error": "task_id required",
+                "task_id": "",
+                "count": 0,
+                "output": "",
+                "format": fmt,
+            }
+        if not self.state_store.enabled or not self.state_store.db_path.exists():
+            return {
+                "success": False,
+                "error": "state store not available",
+                "task_id": task_key,
+                "count": 0,
+                "output": "",
+                "format": fmt,
+            }
+        self._init_tables()
+
+        def _fetch() -> list[Any]:
+            with closing(connect_sqlite(self.state_store.db_path)) as con:
+                cur = con.execute(
+                    """
+                    SELECT receipt_id, task_id, criterion, change_intent_id, evidence_id,
+                           command_id, repository_revision, observed_at, expires_at,
+                           passed, details
+                    FROM agent_verification_receipts
+                    WHERE task_id = ?
+                    ORDER BY observed_at ASC
+                    """,
+                    (task_key,),
+                )
+                return cur.fetchall()
+
+        rows = retry_busy(_fetch, retries=5, base_delay_seconds=0.02)
+        receipts: list[VerificationReceipt] = []
+        for row in rows:
+            stored_details = json.loads(row[10]) if row[10] else {}
+            stored_details = dict(stored_details) if isinstance(stored_details, Mapping) else {}
+            receipt_metadata = stored_details.pop("_verification_receipt", {})
+            receipt_metadata = dict(receipt_metadata) if isinstance(receipt_metadata, Mapping) else {}
+            metadata_schema = str(receipt_metadata.get("schema", "") or "")
+            if metadata_schema not in {"", VERIFICATION_RECEIPT_METADATA_SCHEMA}:
+                receipt_metadata = {}
+            r = VerificationReceipt(
+                receipt_id=row[0],
+                task_id=row[1],
+                criterion=row[2],
+                owner=str(receipt_metadata.get("owner", "")),
+                change_intent_id=row[3],
+                evidence_id=row[4],
+                command_id=row[5],
+                repository_revision=row[6],
+                mutation_generation=int(receipt_metadata.get("mutation_generation", 0) or 0),
+                evidence_type=str(receipt_metadata.get("evidence_type", "source_review")),
+                observed_at=row[7],
+                expires_at=row[8],
+                passed=bool(row[9]),
+                details=stored_details,
+            )
+            receipts.append(r)
+
+        if fmt == "trailers":
+            lines = [f"Verified-by: {r.criterion} ({r.receipt_id})" for r in receipts]
+            output = "\n".join(lines)
+        elif fmt == "markdown":
+            header = [
+                f"### Verification Receipts for Task `{task_key}`",
+                "",
+                "| Criterion | Status | Evidence | Revision | Command | Receipt ID |",
+                "|---|---|---|---|---|---|",
+            ]
+            rows_md = []
+            for r in receipts:
+                status = "PASSED" if r.passed else "FAILED"
+                ev_str = f"`{r.evidence_id}`" if r.evidence_id else "-"
+                rev_str = f"`{r.repository_revision[:12]}`" if r.repository_revision else "-"
+                cmd_str = f"`{r.command_id}`" if r.command_id else "-"
+                rcpt_str = f"`{r.receipt_id}`" if r.receipt_id else "-"
+                rows_md.append(f"| {r.criterion} | {status} | {ev_str} | {rev_str} | {cmd_str} | {rcpt_str} |")
+            output = "\n".join(header + rows_md)
+        elif fmt == "json":
+            output = json_dumps([r.to_dict() for r in receipts])
+        else:
+            return {
+                "success": False,
+                "error": f"unsupported format: {fmt}",
+                "task_id": task_key,
+                "count": len(receipts),
+                "output": "",
+                "format": fmt,
+            }
+
+        return {
+            "success": True,
+            "task_id": task_key,
+            "format": fmt,
+            "count": len(receipts),
+            "output": output,
+            "receipts": [r.to_dict() for r in receipts],
+        }
+
+
+def export_verification_receipts(
+    store: VerificationStore,
+    task_id: str,
+    *,
+    format: str = "markdown",
+) -> dict[str, Any]:
+    return store.export_receipts(task_id, format=format)
