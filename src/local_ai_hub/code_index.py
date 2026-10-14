@@ -22,7 +22,7 @@ _PARSER_ANALYZER_VERSION = f"{__version__}:call-edges-v13-scoped-fallback"
 from .cache import MemoryLRUCache, stable_hash
 from .normalizer import tokenize_query_terms
 from .process_utils import canonical_root
-from .repo_tools import is_root_archive_path
+from .repo_tools import FileTooLargeError, is_root_archive_path
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, quick_sanity_check
 from .sqlite_counts import global_row_counts, initialize_row_counts
 
@@ -1179,6 +1179,8 @@ class CodeIndex:
         self._advance_query_cache_generation()
 
     def _parse_python(self, text: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        if len(text) > self.repo_tools.max_file_bytes or len(text.encode("utf-8")) > self.repo_tools.max_file_bytes:
+            return [], [], []
         syms: list[dict[str, Any]] = []
         refs: list[dict[str, Any]] = []
         edges: list[dict[str, Any]] = []
@@ -1730,6 +1732,23 @@ class CodeIndex:
                 pending.append((path, str(content_hash)))
         return pending
 
+    def _mark_file_unindexable(self, root: str, path: str, language: str) -> None:
+        """Retain authorized path metadata while removing stale parsed data."""
+        updated_at = time.time()
+        with self._lock, closing(self._connect()) as con:
+            for table in ("symbols", "refs", "edges"):
+                con.execute(f"DELETE FROM {table} WHERE root=? AND path=?", (root, path))
+            con.execute(
+                "INSERT INTO files(root,path,content_hash,analyzer_version,language,updated_at) "
+                "VALUES(?,?,NULL,NULL,?,?) "
+                "ON CONFLICT(root,path) DO UPDATE SET content_hash=NULL, "
+                "analyzer_version=NULL, language=excluded.language, updated_at=excluded.updated_at",
+                (root, path, language, updated_at),
+            )
+            con.commit()
+        self._advance_query_cache_generation()
+        self._status_cache.pop(root, None)
+
     def update_file(self, root: str, path: str, content_hash: str | None = None) -> dict[str, Any]:
         base = Path(canonical_root(root))
         target = (base / path).resolve(strict=False)
@@ -1761,9 +1780,23 @@ class CodeIndex:
             self._status_cache.pop(str(base), None)
             return {"success": True, "deleted": True}
 
-        digest, lines = self.repo_tools._read_snapshot(target, force=True)
-        content_hash = content_hash or digest
+        try:
+            target_stat = target.stat()
+        except OSError:
+            return {"success": False, "error": "file unavailable"}
         lang = self._language_for_path(path, settings)
+        if target_stat.st_size > self.repo_tools.max_file_bytes:
+            self._mark_file_unindexable(str(base), path, lang)
+            return {"success": True, "skipped": True, "path": path, "reason": "file exceeds max indexable size"}
+
+        try:
+            digest, lines = self.repo_tools._read_snapshot(
+                target, stat=target_stat, force=True, max_bytes=self.repo_tools.max_file_bytes,
+            )
+        except FileTooLargeError:
+            self._mark_file_unindexable(str(base), path, lang)
+            return {"success": True, "skipped": True, "path": path, "reason": "file exceeds max indexable size"}
+        content_hash = content_hash or digest
         with self._lock, closing(self._connect()) as con:
             row = con.execute("SELECT content_hash,analyzer_version,language FROM files WHERE root=? AND path=?", (str(base), path)).fetchone()
             if row and row[0] == content_hash and str(row[1] or "") == _PARSER_ANALYZER_VERSION and str(row[2] or "") == lang:
@@ -1853,15 +1886,20 @@ class CodeIndex:
             if not file_path.is_file():
                 deleted_paths.append((c_root, path))
                 continue
+            try:
+                file_stat = file_path.stat()
+            except OSError:
+                continue
             if api is not None and settings is not None:
-                try:
-                    size_bytes = file_path.stat().st_size
-                except OSError:
-                    continue
-                if not api.path_is_allowed(c_root, file_path, settings, phase="call_graph", size_bytes=size_bytes):
+                if not api.path_is_allowed(
+                    c_root, file_path, settings, phase="call_graph", size_bytes=file_stat.st_size,
+                ):
                     denied_paths.append(path)
                     continue
             lang = self._language_for_path(path, settings)
+            if file_stat.st_size > self.repo_tools.max_file_bytes:
+                self._mark_file_unindexable(c_root, path, lang)
+                continue
             if supplied_hash:
                 if existing.get(path) == (supplied_hash, _PARSER_ANALYZER_VERSION, lang):
                     cached += 1
@@ -1870,7 +1908,12 @@ class CodeIndex:
                 candidates.append((path, supplied_hash, lang, None))
                 continue
             try:
-                digest, lines = self.repo_tools._read_snapshot(file_path, force=True)
+                digest, lines = self.repo_tools._read_snapshot(
+                    file_path, stat=file_stat, force=True, max_bytes=self.repo_tools.max_file_bytes,
+                )
+            except FileTooLargeError:
+                self._mark_file_unindexable(c_root, path, lang)
+                continue
             except OSError:
                 continue
             content_hash = supplied_hash or digest
@@ -1923,7 +1966,12 @@ class CodeIndex:
                     lines = []
                 else:
                     try:
-                        _digest, lines = self.repo_tools._read_snapshot((base / path).resolve(strict=False))
+                        _digest, lines = self.repo_tools._read_snapshot(
+                            (base / path).resolve(strict=False), max_bytes=self.repo_tools.max_file_bytes,
+                        )
+                    except FileTooLargeError:
+                        self._mark_file_unindexable(c_root, path, lang)
+                        continue
                     except OSError:
                         continue
             hydrated_candidates.append((path, content_hash, lang, lines))
@@ -2337,7 +2385,9 @@ class CodeIndex:
                 file_full = base_path / p
                 if file_full.is_file():
                     try:
-                        flines = file_full.read_text(encoding="utf-8", errors="replace").splitlines()
+                        _digest, flines = self.repo_tools._read_snapshot(
+                            file_full, max_bytes=self.repo_tools.max_file_bytes,
+                        )
                         item["body"] = "\n".join(flines[max(0, line - 1):min(len(flines), end_line)])
                     except Exception:
                         item["body"] = ""
@@ -2480,8 +2530,19 @@ class CodeIndex:
 
         if lang == "python":
             try:
-                txt = target.read_text(encoding="utf-8", errors="replace")
+                _digest, lines = self.repo_tools._read_snapshot(
+                    target, max_bytes=self.repo_tools.max_file_bytes,
+                )
+                txt = "\n".join(lines)
                 ast.parse(txt, filename=str(target))
+            except FileTooLargeError:
+                return {
+                    "success": True,
+                    "path": path,
+                    "errors": [],
+                    "skipped": True,
+                    "reason": "file exceeds max indexable size",
+                }
             except (SyntaxError, OSError) as e:
                 errors.append({
                     "line": getattr(e, "lineno", 1) or 1,
