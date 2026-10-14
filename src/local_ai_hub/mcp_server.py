@@ -3575,6 +3575,8 @@ def local_ai_command(
     files: list[str] | None = None,
     runs: int = 5,
     env: dict[str, str] | None = None,
+    stdin: str = "",
+    input: str = "",
 ) -> dict[str, Any]:
     """Bounded command broker. Set snapshot=true to record a best-effort Git snapshot. For action=run only, rollback_on_failure=true requires paths to list the flat, relative files directly under cwd that may be restored or removed; missing/unsafe paths reject execution. It cannot be combined with auto_fix. Rollback preserves all files outside that explicit scope. Other command and streaming behavior remains bounded and tenant-scoped. Use when: a repeatable test, lint, typecheck, build, analysis, or safe read-only command is needed. Skip when: no command is needed or a fresh cached result already answers it."""
     cwd = cwd if cwd is not None else root if root is not None else "."
@@ -3628,7 +3630,8 @@ def local_ai_command(
         paths if paths is not None and action == "format" else
         ([command] if (action == "format" and command and not command.startswith("-")) else None)
     )
-    return _compact(CLIENT.post("/api/command", {
+    input_text = stdin or input or ""
+    payload = {
         "action": action, "command": command, "cwd": eff_cwd, "root": eff_cwd,
         "timeout": effective_command_timeout, "force": force,
         "task_id": task_id, "criterion": criterion,
@@ -3640,7 +3643,10 @@ def local_ai_command(
         "auto_rollback": auto_rollback,
         "runs": runs,
         "env": env or {},
-    }, timeout=host_timeout), "command")
+    }
+    if input_text:
+        payload["stdin"] = input_text
+    return _compact(CLIENT.post("/api/command", payload, timeout=host_timeout), "command")
 
 
 @mcp.tool()
