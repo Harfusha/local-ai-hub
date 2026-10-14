@@ -655,10 +655,20 @@ class EmbeddingModel:
         used_backend = cache_identity.split(":", 1)[0] if cache_identity else (self.active_backend or self.backend)
         backend_fallback = False
         cache_identity_usable = self.cache_enabled and self._identity_cacheable(cache_identity)
+
+        batch_keys: list[str] = []
+        if cache_identity_usable:
+            for text in texts:
+                clean_text = str(text).replace("\r\n", "\n")
+                batch_keys.append(self._embedding_cache_key(cache_identity, query, clean_text))
+            cached_map = self.cache.get_many(batch_keys) if hasattr(self.cache, "get_many") else {}
+        else:
+            cached_map = {}
+
         for i, text in enumerate(texts):
             clean_text = str(text).replace("\r\n", "\n")
-            key = self._embedding_cache_key(cache_identity, query, clean_text) if cache_identity_usable else ""
-            cached = self.cache.get(key) if cache_identity_usable and key else None
+            key = batch_keys[i] if cache_identity_usable and i < len(batch_keys) else (self._embedding_cache_key(cache_identity, query, clean_text) if cache_identity_usable else "")
+            cached = cached_map.get(key) if key in cached_map else (self.cache.get(key) if cache_identity_usable and key else None)
             # Runtime dimension is shared mutable state. Concurrent requests may
             # finish on different backends, so use dimensions learned for this
             # exact cache identity rather than a process-wide last result.
