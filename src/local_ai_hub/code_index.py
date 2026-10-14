@@ -1040,6 +1040,8 @@ class CodeIndex:
             analyzer_version TEXT,
             language TEXT,
             updated_at REAL,
+            mtime_ns INTEGER,
+            size_bytes INTEGER,
             PRIMARY KEY(root, path)
         );
         CREATE TABLE IF NOT EXISTS symbols(
@@ -1124,6 +1126,10 @@ class CodeIndex:
             raise sqlite3.DatabaseError(
                 "stale derived code-index schema; rebuild this cache"
             )
+        if "mtime_ns" not in file_columns:
+            con.execute("ALTER TABLE files ADD COLUMN mtime_ns INTEGER")
+        if "size_bytes" not in file_columns:
+            con.execute("ALTER TABLE files ADD COLUMN size_bytes INTEGER")
         initialize_row_counts(con, ("files", "symbols", "refs", "edges"))
 
     def _init_db(self) -> None:
@@ -1745,26 +1751,50 @@ class CodeIndex:
                     str(row["content_hash"] or ""),
                     str(row["analyzer_version"] or ""),
                     str(row["language"] or ""),
+                    row["mtime_ns"],
+                    row["size_bytes"],
                 )
                 for row in con.execute(
-                    "SELECT path,content_hash,analyzer_version,language FROM files WHERE root=?",
+                    "SELECT path,content_hash,analyzer_version,language,mtime_ns,size_bytes FROM files WHERE root=?",
                     (c_root,),
                 ).fetchall()
             }
         pending = []
         for path, content_hash in items:
             path = str(path)
+            target = Path(c_root) / path
+            target_stat = None
             if api is not None and settings is not None:
-                target = Path(c_root) / path
                 try:
-                    size_bytes = target.stat().st_size
+                    target_stat = target.stat()
+                    size_bytes = target_stat.st_size
                 except OSError:
                     continue
                 if not api.path_is_allowed(c_root, target, settings, phase="call_graph", size_bytes=size_bytes):
                     continue
             language = self._language_for_path(path, settings)
-            if existing.get(path) != (str(content_hash), _PARSER_ANALYZER_VERSION, language):
-                pending.append((path, str(content_hash)))
+            ex = existing.get(path)
+            if ex is not None:
+                if target_stat is None:
+                    try:
+                        target_stat = target.stat()
+                    except OSError:
+                        target_stat = None
+                if target_stat is not None:
+                    cur_mtime_ns = getattr(target_stat, "st_mtime_ns", int(target_stat.st_mtime * 1e9))
+                    cur_size = target_stat.st_size
+                    if (
+                        ex[3] is not None
+                        and ex[3] == cur_mtime_ns
+                        and ex[4] is not None
+                        and ex[4] == cur_size
+                        and ex[1] == _PARSER_ANALYZER_VERSION
+                        and ex[2] == language
+                    ):
+                        continue
+                if content_hash and (ex[0], ex[1], ex[2]) == (str(content_hash), _PARSER_ANALYZER_VERSION, language):
+                    continue
+            pending.append((path, str(content_hash)))
         return pending
 
     def _mark_file_unindexable(self, root: str, path: str, language: str) -> None:
@@ -1824,6 +1854,26 @@ class CodeIndex:
             self._mark_file_unindexable(str(base), path, lang)
             return {"success": True, "skipped": True, "path": path, "reason": "file exceeds max indexable size"}
 
+        target_mtime_ns = getattr(target_stat, "st_mtime_ns", int(target_stat.st_mtime * 1e9))
+        target_size = target_stat.st_size
+        if not content_hash:
+            with self._lock, closing(self._connect()) as con:
+                row = con.execute("SELECT content_hash,analyzer_version,language,mtime_ns,size_bytes FROM files WHERE root=? AND path=?", (str(base), path)).fetchone()
+                if (
+                    row
+                    and row["mtime_ns"] is not None
+                    and row["mtime_ns"] == target_mtime_ns
+                    and row["size_bytes"] is not None
+                    and row["size_bytes"] == target_size
+                    and str(row["analyzer_version"] or "") == _PARSER_ANALYZER_VERSION
+                    and str(row["language"] or "") == lang
+                ):
+                    cached_hit = self._parse_blob_get_with_report(str(row["content_hash"] or ""), lang)
+                    return {
+                        "success": True, "cached": True, "path": path,
+                        "parse_outcome": dict(cached_hit[1]) if cached_hit is not None else {"status": "unknown", "parser": "unknown"},
+                    }
+
         try:
             digest, lines = self.repo_tools._read_snapshot(
                 target, stat=target_stat, force=True, max_bytes=self.repo_tools.max_file_bytes,
@@ -1856,7 +1906,7 @@ class CodeIndex:
             con.execute("BEGIN IMMEDIATE")
             for t in ("symbols", "refs", "edges"):
                 con.execute(f"DELETE FROM {t} WHERE root=? AND path=?", (str(base), path))
-            con.execute("INSERT OR REPLACE INTO files(root, path, content_hash, analyzer_version, language, updated_at) VALUES(?,?,?,?,?,?)", (str(base), path, content_hash, _PARSER_ANALYZER_VERSION, lang, time.time()))
+            con.execute("INSERT OR REPLACE INTO files(root, path, content_hash, analyzer_version, language, updated_at, mtime_ns, size_bytes) VALUES(?,?,?,?,?,?,?,?)", (str(base), path, content_hash, _PARSER_ANALYZER_VERSION, lang, time.time(), target_mtime_ns, target_size))
             con.executemany(
                 "INSERT OR REPLACE INTO symbols(root, path, name, kind, line, end_line, container, name_path, signature, access, docstring) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 [(str(base), path, s["name"], s["kind"], s["line"], s["end_line"], s.get("container", ""), s.get("name_path", s["name"]), s.get("signature", ""), s.get("access", "public"), s.get("docstring", "")) for s in syms],
@@ -1907,14 +1957,16 @@ class CodeIndex:
                     str(row["content_hash"] or ""),
                     str(row["analyzer_version"] or ""),
                     str(row["language"] or ""),
+                    row["mtime_ns"],
+                    row["size_bytes"],
                 )
                 for row in con.execute(
-                    "SELECT path,content_hash,analyzer_version,language FROM files WHERE root=?",
+                    "SELECT path,content_hash,analyzer_version,language,mtime_ns,size_bytes FROM files WHERE root=?",
                     (c_root,),
                 ).fetchall()
             }
 
-        candidates: list[tuple[str, str, str, list[str] | None]] = []
+        candidates: list[tuple[str, str, str, list[str] | None, int, int]] = []
         cached = 0
         denied_paths: list[str] = []
         deleted_paths: list[tuple[str, str]] = []
@@ -1944,12 +1996,26 @@ class CodeIndex:
             if file_stat.st_size > self.repo_tools.max_file_bytes:
                 self._mark_file_unindexable(c_root, path, lang)
                 continue
+            file_mtime_ns = getattr(file_stat, "st_mtime_ns", int(file_stat.st_mtime * 1e9))
+            file_size = file_stat.st_size
+            ex_info = existing.get(path)
+            if not supplied_hash and ex_info is not None:
+                if (
+                    ex_info[3] is not None
+                    and ex_info[3] == file_mtime_ns
+                    and ex_info[4] is not None
+                    and ex_info[4] == file_size
+                    and ex_info[1] == _PARSER_ANALYZER_VERSION
+                    and ex_info[2] == lang
+                ):
+                    cached += 1
+                    continue
             if supplied_hash:
-                if existing.get(path) == (supplied_hash, _PARSER_ANALYZER_VERSION, lang):
+                if ex_info is not None and (ex_info[0], ex_info[1], ex_info[2]) == (supplied_hash, _PARSER_ANALYZER_VERSION, lang):
                     cached += 1
                     continue
                 # Resolve content-addressed hits with one later bulk query.
-                candidates.append((path, supplied_hash, lang, None))
+                candidates.append((path, supplied_hash, lang, None, file_mtime_ns, file_size))
                 continue
             try:
                 digest, lines = self.repo_tools._read_snapshot(
@@ -1961,16 +2027,16 @@ class CodeIndex:
             except OSError:
                 continue
             content_hash = supplied_hash or digest
-            if existing.get(path) == (content_hash, _PARSER_ANALYZER_VERSION, lang):
+            if ex_info is not None and (ex_info[0], ex_info[1], ex_info[2]) == (content_hash, _PARSER_ANALYZER_VERSION, lang):
                 cached += 1
                 continue
-            candidates.append((path, content_hash, lang, lines))
+            candidates.append((path, content_hash, lang, lines, file_mtime_ns, file_size))
 
         self._remove_indexed_paths(c_root, denied_paths)
 
         blob_map: dict[tuple[str, str], tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]] = {}
         if candidates:
-            pairs = list(dict.fromkeys((h, lang) for _, h, lang, _ in candidates))
+            pairs = list(dict.fromkeys((c[1], c[2]) for c in candidates))
             for content_hash, language in pairs:
                 cached = self._parse_blob_l1.get(
                     f"{content_hash}:{_PARSER_ANALYZER_VERSION}:{language}"
@@ -2003,8 +2069,8 @@ class CodeIndex:
             except Exception:
                 pass
 
-        hydrated_candidates: list[tuple[str, str, str, list[str]]] = []
-        for path, content_hash, lang, lines in candidates:
+        hydrated_candidates: list[tuple[str, str, str, list[str], int, int]] = []
+        for path, content_hash, lang, lines, mtime_ns, size_bytes in candidates:
             if lines is None:
                 if (content_hash, lang) in blob_map:
                     lines = []
@@ -2018,7 +2084,7 @@ class CodeIndex:
                         continue
                     except OSError:
                         continue
-            hydrated_candidates.append((path, content_hash, lang, lines))
+            hydrated_candidates.append((path, content_hash, lang, lines, mtime_ns, size_bytes))
         candidates = hydrated_candidates
 
         files_to_insert: list[tuple[Any, ...]] = []
@@ -2028,8 +2094,8 @@ class CodeIndex:
         parse_blob_rows: list[tuple[Any, ...]] = []
         paths_to_clean: list[tuple[str, str]] = []
         now = time.time()
-        def _parse_candidate(cand: tuple[str, str, str, list[str]]):
-            path, content_hash, lang, lines = cand
+        def _parse_candidate(cand: tuple[str, str, str, list[str], int, int]):
+            path, content_hash, lang, lines, mtime_ns, size_bytes = cand
             parsed = blob_map.get((content_hash, lang))
             if parsed is None:
                 syms, refs, edges = self._parse_file_content("\n".join(lines), lang)
@@ -2038,18 +2104,18 @@ class CodeIndex:
             else:
                 syms, refs, edges, diagnostic = parsed
                 row_blob = None
-            return path, content_hash, lang, syms, refs, edges, row_blob
+            return path, content_hash, lang, syms, refs, edges, row_blob, mtime_ns, size_bytes
 
         # Tree-sitter parsers are shared per language and guarded by one lock.
         # Threading here queues parses behind that lock and adds scheduler cost;
         # the bounded batch SQL write is where this path gains throughput.
         parsed_candidates = [_parse_candidate(c) for c in candidates]
 
-        for path, content_hash, lang, syms, refs, edges, row_blob in parsed_candidates:
+        for path, content_hash, lang, syms, refs, edges, row_blob, mtime_ns, size_bytes in parsed_candidates:
             if row_blob is not None:
                 parse_blob_rows.append(row_blob)
             paths_to_clean.append((c_root, path))
-            files_to_insert.append((c_root, path, content_hash, _PARSER_ANALYZER_VERSION, lang, now))
+            files_to_insert.append((c_root, path, content_hash, _PARSER_ANALYZER_VERSION, lang, now, mtime_ns, size_bytes))
             syms_to_insert.extend((c_root, path, x["name"], x["kind"], x["line"], x["end_line"], x.get("container", ""), x.get("name_path", x["name"]), x.get("signature", ""), x.get("access", "public"), x.get("docstring", "")) for x in syms)
             refs_to_insert.extend((c_root, path, x["name"], x["line"], x.get("kind", "call")) for x in refs)
             edges_to_insert.extend(
@@ -2074,7 +2140,7 @@ class CodeIndex:
                 for table in ("symbols", "refs", "edges"):
                     assert table in _IDX_TABLES  # defence-in-depth whitelist
                     con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", paths_to_clean)  # noqa: S608
-                con.executemany("INSERT OR REPLACE INTO files(root,path,content_hash,analyzer_version,language,updated_at) VALUES(?,?,?,?,?,?)", files_to_insert)
+                con.executemany("INSERT OR REPLACE INTO files(root,path,content_hash,analyzer_version,language,updated_at,mtime_ns,size_bytes) VALUES(?,?,?,?,?,?,?,?)", files_to_insert)
                 con.executemany("INSERT OR REPLACE INTO symbols(root,path,name,kind,line,end_line,container,name_path,signature,access,docstring) VALUES(?,?,?,?,?,?,?,?,?,?,?)", syms_to_insert)
                 con.executemany("INSERT INTO refs(root,path,name,line,kind) VALUES(?,?,?,?,?)", refs_to_insert)
                 con.executemany(
