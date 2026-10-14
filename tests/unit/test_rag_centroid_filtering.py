@@ -204,6 +204,58 @@ def test_candidate_filter_keeps_embedding_space_and_scope_path_filters(tmp_path,
     assert "space-b" not in result["results"][0]["path"]
 
 
+def test_large_scoped_query_keeps_nearest_outside_global_probe_buckets(tmp_path, monkeypatch):
+    monkeypatch.setattr(rag_module, "_CENTROID_FILTER_MIN_CHUNKS", 1000)
+    store = _store(tmp_path)
+    _seed_direction_clusters(
+        store, cluster_count=200, rows_per_cluster=60,
+        path_prefix="a-outside",
+    )
+    tenant = store._scope_key("tenant-a")
+    with closing(store._connect()) as con:
+        con.execute(
+            "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            (tenant, "workspace-a", "z-allowed/nearest.txt", 0, "allowed-nearest", "scoped nearest", "[-1.0,0.0]", _Embeddings.space_id),
+        )
+        con.commit()
+
+    result = store.search(
+        "nearest vector", "tenant-a", "workspace-a", top_k=1,
+        use_reranker=False, scope_path="z-allowed",
+    )
+    assert result["success"] is True
+    assert result["results"][0]["path"] == "z-allowed/nearest.txt"
+
+
+def test_read_uncertainty_uses_exact_search_without_cold_centroid_build(tmp_path, monkeypatch):
+    monkeypatch.setattr(rag_module, "_CENTROID_FILTER_MIN_CHUNKS", 1000)
+    store = _store(tmp_path)
+    _seed_direction_clusters(store, cluster_count=20, rows_per_cluster=60)
+    tenant = store._scope_key("tenant-a")
+    with closing(store._connect()) as con:
+        store._update_workspace_read_uncertainty(
+            con, tenant, "workspace-a", uncertain_paths={"unrelated/missing.txt"},
+        )
+        con.commit()
+
+    build_count = []
+    original_build = store._build_centroid_index
+
+    def count_build(*args, **kwargs):
+        build_count.append(True)
+        return original_build(*args, **kwargs)
+
+    monkeypatch.setattr(store, "_build_centroid_index", count_build)
+    result = store.search(
+        "nearest vector", "tenant-a", "workspace-a", top_k=1,
+        use_reranker=False,
+    )
+    assert result["success"] is True
+    assert result["results"][0]["path"] == "cluster/cluster-000/chunk-000.txt"
+    assert build_count == []
+
+
 def test_corrupt_vectors_fall_back_to_exact_search(tmp_path, monkeypatch):
     monkeypatch.setattr(rag_module, "_CENTROID_FILTER_MIN_CHUNKS", 100)
     store = _store(tmp_path)
