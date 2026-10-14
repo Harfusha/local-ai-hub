@@ -223,6 +223,265 @@ def test_deleted_project_cleanup_prunes_only_its_rag_paths(
         assert int(con.execute("PRAGMA freelist_count").fetchone()[0]) < code_freelist_before
 
 
+def test_startup_repair_keeps_failed_cleanup_discoverable_after_restart(
+    tmp_path: Path, monkeypatch
+) -> None:
+    state_dir = tmp_path / "state"
+    config = {
+        "server": {"state_dir": str(state_dir)},
+        "preprocessing": {"enabled": False, "startup_delay_seconds": 0},
+        "rag": {"scope": "shared"},
+    }
+    rag = RAGStore(config, _StubEmbeddings())
+    code_index = CodeIndex(config, None)
+    deterministic = DeterministicEngine(config, code_index=code_index)
+    preprocessor = ProjectPreprocessor(
+        config, None, rag, None, None, None,
+        code_index=code_index, deterministic=deterministic,
+    )
+    dead_root = tmp_path / "restart-removed-project"
+    dead_root.mkdir()
+    (dead_root / "owned.md").write_text("restart-owned content", encoding="utf-8")
+    workspace = "restart-shared-workspace"
+    now = time.time()
+    with closing(sqlite3.connect(preprocessor.db_path)) as con:
+        con.execute(
+            "INSERT INTO projects(root,workspace,status,phase,registered_at,updated_at) VALUES(?,?,?,?,?,?)",
+            (str(dead_root), workspace, "complete", "complete", now, now),
+        )
+        con.execute(
+            "INSERT INTO file_refs(root,path,content_hash,size,generation,updated_at) VALUES(?,?,?,?,?,?)",
+            (str(dead_root), "owned.md", "owned-hash", 1, 1, now),
+        )
+        con.commit()
+    indexed = rag.index_paths_step(
+        str(dead_root), "__preprocess__", workspace, ["owned.md"]
+    )
+    assert indexed["success"], indexed
+    with closing(sqlite3.connect(code_index.db_path)) as con:
+        con.execute(
+            "INSERT INTO files(root,path,content_hash,analyzer_version,language,updated_at) VALUES(?,?,?,?,?,?)",
+            (str(dead_root), "owned.md", "owned-hash", "test", "markdown", now),
+        )
+        con.execute(
+            "INSERT INTO symbols(root,path,name,kind,line,end_line) VALUES(?,?,?,?,?,?)",
+            (str(dead_root), "owned.md", "owned", "class", 1, 1),
+        )
+        con.commit()
+    with closing(deterministic._connect()) as con:
+        con.execute(
+            "INSERT INTO files(root,path,content_hash,language,is_test,updated_at) VALUES(?,?,?,?,?,?)",
+            (str(dead_root), "owned.md", "owned-hash", "markdown", 0, now),
+        )
+        con.execute(
+            "INSERT INTO facts(root,path,kind,name,value,line,extra_json) VALUES(?,?,?,?,?,?,?)",
+            (str(dead_root), "owned.md", "symbol", "owned", "class", 1, "{}"),
+        )
+        con.commit()
+    shutil.rmtree(dead_root)
+
+    original_prune = code_index.prune
+    prune_attempts = 0
+
+    def fail_first_prune(root: str, paths: list[str]) -> dict[str, object]:
+        nonlocal prune_attempts
+        prune_attempts += 1
+        if prune_attempts == 1:
+            raise sqlite3.OperationalError("injected restart cleanup lock failure")
+        return original_prune(root, paths)
+
+    monkeypatch.setattr(code_index, "prune", fail_first_prune)
+    failed = preprocessor.cleanup_deleted_projects()
+    assert failed["success"] is False
+    assert failed["pruned_count"] == 0
+    with closing(sqlite3.connect(preprocessor.db_path)) as con:
+        assert con.execute(
+            "SELECT 1 FROM projects WHERE root=?", (str(dead_root),)
+        ).fetchone() is not None
+        assert con.execute(
+            "SELECT 1 FROM file_refs WHERE root=? AND path='owned.md'", (str(dead_root),)
+        ).fetchone() is not None
+    with closing(sqlite3.connect(code_index.db_path)) as con:
+        assert con.execute(
+            "SELECT 1 FROM symbols WHERE root=? AND path='owned.md'", (str(dead_root),)
+        ).fetchone() is not None
+
+    monkeypatch.undo()
+    restarted = ProjectPreprocessor(
+        config, None, rag, None, None, None,
+        code_index=code_index, deterministic=deterministic,
+    )
+    with closing(sqlite3.connect(restarted.db_path)) as con:
+        pending = con.execute(
+            "SELECT status,paused FROM projects WHERE root=?", (str(dead_root),)
+        ).fetchone()
+        assert pending is not None
+        assert pending == ("error", 1)
+        assert con.execute(
+            "SELECT 1 FROM file_refs WHERE root=? AND path='owned.md'", (str(dead_root),)
+        ).fetchone() is not None
+
+    restarted._last_db_maintenance = 0
+    assert restarted._next_cpu_project() is None
+    monkeypatch.setattr(restarted, "_background_work_allowed", lambda: True)
+
+    def stop_after_idle_pass(_timeout: float) -> None:
+        restarted._stop.set()
+
+    monkeypatch.setattr(restarted._cpu_wakeup, "wait", stop_after_idle_pass)
+    restarted._cpu_loop()
+    with closing(sqlite3.connect(restarted.db_path)) as con:
+        assert con.execute(
+            "SELECT 1 FROM projects WHERE root=?", (str(dead_root),)
+        ).fetchone() is None
+        assert con.execute(
+            "SELECT 1 FROM file_refs WHERE root=?", (str(dead_root),)
+        ).fetchone() is None
+    with closing(sqlite3.connect(code_index.db_path)) as con:
+        assert con.execute(
+            "SELECT 1 FROM files WHERE root=?", (str(dead_root),)
+        ).fetchone() is None
+        assert con.execute(
+            "SELECT 1 FROM symbols WHERE root=?", (str(dead_root),)
+        ).fetchone() is None
+    with closing(sqlite3.connect(deterministic.db_path)) as con:
+        assert con.execute(
+            "SELECT 1 FROM files WHERE root=?", (str(dead_root),)
+        ).fetchone() is None
+        assert con.execute(
+            "SELECT 1 FROM facts WHERE root=?", (str(dead_root),)
+        ).fetchone() is None
+
+
+def test_unregister_purge_failure_retains_retry_marker_and_retries(tmp_path: Path, monkeypatch) -> None:
+    state_dir = tmp_path / "state"
+    config = {
+        "server": {"state_dir": str(state_dir)},
+        "preprocessing": {"enabled": False},
+        "rag": {"scope": "shared"},
+    }
+    rag = RAGStore(config, _StubEmbeddings())
+    code_index = CodeIndex(config, None)
+    deterministic = DeterministicEngine(config, code_index=code_index)
+    preprocessor = ProjectPreprocessor(
+        config, None, rag, None, None, None,
+        code_index=code_index, deterministic=deterministic,
+    )
+    root = tmp_path / "unregister-project"
+    root.mkdir()
+    (root / "owned.md").write_text("owned unregister data", encoding="utf-8")
+    (root / "shared.md").write_text("same path, separate live owner", encoding="utf-8")
+    live_root = tmp_path / "unregister-live-alias"
+    live_root.mkdir()
+    (live_root / "shared.md").write_text("live alias", encoding="utf-8")
+    workspace = "unregister-shared-workspace"
+    now = time.time()
+    with closing(sqlite3.connect(preprocessor.db_path)) as con:
+        for project_root in (root, live_root):
+            con.execute(
+                "INSERT INTO projects(root,workspace,status,phase,registered_at,updated_at) VALUES(?,?,?,?,?,?)",
+                (str(project_root), workspace, "complete", "complete", now, now),
+            )
+        for project_root, path in ((root, "owned.md"), (live_root, "shared.md")):
+            con.execute(
+                "INSERT INTO file_refs(root,path,content_hash,size,generation,updated_at) VALUES(?,?,?,?,?,?)",
+                (str(project_root), path, "hash", 1, 1, now),
+            )
+        con.commit()
+    indexed = rag.index_paths_step(str(root), "__preprocess__", workspace, ["owned.md"])
+    assert indexed["success"], indexed
+    rag.index_paths_step(str(root), "__preprocess__", workspace, ["shared.md"])
+    with closing(sqlite3.connect(code_index.db_path)) as con:
+        con.execute(
+            "INSERT INTO files(root,path,content_hash,analyzer_version,language,updated_at) VALUES(?,?,?,?,?,?)",
+            (str(root), "owned.md", "hash", "test", "markdown", now),
+        )
+        con.commit()
+    with closing(deterministic._connect()) as con:
+        con.execute(
+            "INSERT INTO files(root,path,content_hash,language,is_test,updated_at) VALUES(?,?,?,?,?,?)",
+            (str(root), "owned.md", "hash", "markdown", 0, now),
+        )
+        con.commit()
+
+    original_prune = code_index.prune
+    attempts = 0
+
+    def fail_first_prune(project_root: str, paths: list[str]) -> dict[str, object]:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise sqlite3.OperationalError("injected unregister purge lock failure")
+        return original_prune(project_root, paths)
+
+    monkeypatch.setattr(code_index, "prune", fail_first_prune)
+    first = preprocessor.unregister(str(root), purge_data=True)
+    assert first["success"] is False
+    assert first["removed"] == 0
+    with closing(sqlite3.connect(preprocessor.db_path)) as con:
+        assert con.execute(
+            "SELECT 1 FROM projects WHERE root=?", (str(root),)
+        ).fetchone() is not None
+        assert con.execute(
+            "SELECT 1 FROM file_refs WHERE root=? AND path='owned.md'", (str(root),)
+        ).fetchone() is not None
+    monkeypatch.undo()
+
+    retried = preprocessor.unregister(str(root), purge_data=True)
+    assert retried["success"] is True
+    assert retried["removed"] == 1
+    with closing(sqlite3.connect(preprocessor.db_path)) as con:
+        assert con.execute(
+            "SELECT 1 FROM projects WHERE root=?", (str(root),)
+        ).fetchone() is None
+        assert con.execute(
+            "SELECT 1 FROM file_refs WHERE root=?", (str(root),)
+        ).fetchone() is None
+    with closing(sqlite3.connect(rag.db_path)) as con:
+        scope = rag._scope_key("__preprocess__")
+        assert con.execute(
+            "SELECT 1 FROM files WHERE tenant=? AND workspace=? AND path='owned.md'",
+            (scope, workspace),
+        ).fetchone() is None
+        assert con.execute(
+            "SELECT 1 FROM files WHERE tenant=? AND workspace=? AND path='shared.md'",
+            (scope, workspace),
+        ).fetchone() is not None
+
+    # Unregister without purge remains scheduler-only and preserves reusable data.
+    retained_root = tmp_path / "unregister-retained"
+    retained_root.mkdir()
+    with closing(sqlite3.connect(preprocessor.db_path)) as con:
+        con.execute(
+            "INSERT INTO projects(root,workspace,status,phase,registered_at,updated_at) VALUES(?,?,?,?,?,?)",
+            (str(retained_root), workspace, "complete", "complete", now, now),
+        )
+        con.execute(
+            "INSERT INTO file_refs(root,path,content_hash,size,generation,updated_at) VALUES(?,?,?,?,?,?)",
+            (str(retained_root), "kept.md", "hash", 1, 1, now),
+        )
+        con.commit()
+    retained = preprocessor.unregister(str(retained_root), purge_data=False)
+    assert retained["success"] is True
+    assert retained["purged"] is False
+    with closing(sqlite3.connect(preprocessor.db_path)) as con:
+        assert con.execute(
+            "SELECT 1 FROM file_refs WHERE root=? AND path='kept.md'", (str(retained_root),)
+        ).fetchone() is not None
+
+
+def test_watcher_ignores_paths_under_missing_cleanup_root(tmp_path: Path) -> None:
+    config = {
+        "server": {"state_dir": str(tmp_path / "state")},
+        "preprocessing": {"enabled": False},
+    }
+    repo_tools = type("RepoToolsStub", (), {"ignore_dirs": set()})()
+    preprocessor = ProjectPreprocessor(config, None, None, None, None, repo_tools)
+    missing_root = tmp_path / "already-removed"
+
+    assert preprocessor._watch_relevant(missing_root, missing_root / "file.py") is None
+
+
 def test_tenant_cleanup_removes_orphan_rag_paths_from_existing_database(tmp_path: Path) -> None:
     state_dir = tmp_path / "state"
     config = {"server": {"state_dir": str(state_dir)}, "rag": {"scope": "tenant"}}

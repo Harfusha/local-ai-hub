@@ -496,7 +496,7 @@ class ProjectPreprocessor:
                 rows = con.execute("SELECT root FROM projects").fetchall()
                 for row in rows:
                     root = str(row["root"])
-                    if self._is_internal_root(root) or self._is_ephemeral_root(root) or not Path(root).is_dir():
+                    if self._is_internal_root(root) or self._is_ephemeral_root(root):
                         con.execute("DELETE FROM projects WHERE root=?", (root,))
                         con.execute("DELETE FROM file_refs WHERE root=?", (root,))
                         con.execute("DELETE FROM source_index WHERE root=?", (root,))
@@ -507,6 +507,14 @@ class ProjectPreprocessor:
                         con.execute("DELETE FROM task_capsules WHERE root=?", (root,))
                         con.execute("DELETE FROM external_index_state WHERE root=?", (root,))
                         self._forget_project_runtime(root)
+                    elif not Path(root).is_dir():
+                        # Keep the durable root and file refs as the retry marker for
+                        # cleanup_deleted_projects once the secondary indexes are ready.
+                        con.execute(
+                            "UPDATE projects SET status='error',paused=1,retry_after=0,"
+                            "next_check_at=0,updated_at=? WHERE root=?",
+                            (time.time(), root),
+                        )
                 con.execute("UPDATE projects SET status='queued' WHERE status='running'")
                 self._rebalance_processing_slots(con)
                 con.commit()
@@ -699,6 +707,8 @@ class ProjectPreprocessor:
             return False
 
     def _watch_relevant(self, root: Path, changed: Path) -> str | None:
+        if not root.is_dir():
+            return None
         try:
             rel_path = changed.relative_to(root)
         except ValueError:
@@ -1243,42 +1253,123 @@ class ProjectPreprocessor:
         # Cancel means stop scheduling this project but keep all reusable derived cache.
         return self.pause(root)
 
+    def _live_workspace_paths(self, workspace: str, excluding_root: str) -> set[str]:
+        with self._db_lock, closing(self._connect()) as con:
+            aliases = con.execute(
+                "SELECT projects.root,file_refs.path FROM file_refs "
+                "JOIN projects ON projects.root=file_refs.root "
+                "WHERE projects.workspace=? AND projects.root<>?",
+                (workspace, excluding_root),
+            ).fetchall()
+        return {
+            str(alias["path"]).replace("\\", "/")
+            for alias in aliases
+            if Path(str(alias["root"])).is_dir()
+        }
+
+    def _purge_project_secondary_indexes(self, root: str, workspace: str | None) -> bool:
+        """Purge only project-owned rows; callers retain registry ownership on failure."""
+        cascade_ok = True
+        if self.code_index is not None:
+            try:
+                result = self.code_index.prune(root, [])
+                if not isinstance(result, dict) or not result.get("success"):
+                    cascade_ok = False
+                    logger.warning(
+                        "deleted-project code-index purge incomplete (%s)",
+                        result.get("error", "unknown") if isinstance(result, dict) else "invalid result",
+                    )
+            except Exception as exc:
+                cascade_ok = False
+                logger.warning("deleted-project code-index purge incomplete (%s)", type(exc).__name__)
+        if self.deterministic is not None:
+            try:
+                with closing(self.deterministic._connect()) as det_con:
+                    det_con.execute("DELETE FROM files WHERE root=?", (root,))
+                    det_con.execute("DELETE FROM facts WHERE root=?", (root,))
+                    det_con.commit()
+            except Exception as exc:
+                cascade_ok = False
+                logger.warning(
+                    "deleted-project deterministic purge incomplete (%s: %s)",
+                    type(exc).__name__, exc,
+                )
+        if self.rag is not None:
+            try:
+                rag_workspace = workspace
+                if rag_workspace is None:
+                    rag_workspace = str(self.rag.workspace_id(root))
+                live_paths = self._live_workspace_paths(rag_workspace, root)
+                self.rag.remove_project(
+                    root, "__preprocess__", rag_workspace, preserve_paths=live_paths
+                )
+            except Exception as exc:
+                cascade_ok = False
+                logger.warning("deleted-project RAG purge incomplete (%s)", type(exc).__name__)
+        return cascade_ok
+
+    def _mark_project_cleanup_pending(self, root: str) -> None:
+        with self._db_lock, closing(self._connect()) as con:
+            con.execute(
+                "UPDATE projects SET status='error',paused=1,retry_after=0,"
+                "next_check_at=0,updated_at=? WHERE root=?",
+                (time.time(), root),
+            )
+            con.commit()
+
     def unregister(self, root: str, purge_data: bool = False) -> dict[str, Any]:
         """Remove scheduler registration; optionally purge workspace derived data."""
         resolved = self._root(root)
+        if purge_data:
+            with self._db_lock, closing(self._connect()) as con:
+                row = con.execute(
+                    "SELECT workspace FROM projects WHERE root=?", (resolved,)
+                ).fetchone()
+            workspace = str(row["workspace"]) if row is not None else None
+            if not self._purge_project_secondary_indexes(resolved, workspace):
+                self._mark_project_cleanup_pending(resolved)
+                self._wake_all()
+                return {
+                    "success": False,
+                    "removed": 0,
+                    "project": Path(resolved).name,
+                    "purged": False,
+                }
+            try:
+                with self._db_lock, closing(self._connect()) as con:
+                    cur = con.execute("DELETE FROM projects WHERE root=?", (resolved,))
+                    con.execute("DELETE FROM file_refs WHERE root=?", (resolved,))
+                    con.execute("DELETE FROM source_index WHERE root=?", (resolved,))
+                    con.execute("DELETE FROM source_fts WHERE root=?", (resolved,))
+                    con.execute("DELETE FROM module_cards WHERE root=?", (resolved,))
+                    con.execute("DELETE FROM project_cards WHERE root=?", (resolved,))
+                    con.execute("DELETE FROM hot_query_state WHERE root=?", (resolved,))
+                    con.commit()
+            except Exception as exc:
+                self._mark_project_cleanup_pending(resolved)
+                logger.warning("worktree registry purge incomplete (%s)", type(exc).__name__)
+                self._wake_all()
+                return {
+                    "success": False,
+                    "removed": 0,
+                    "project": Path(resolved).name,
+                    "purged": False,
+                }
+            self._forget_project_runtime(resolved)
+            self._wake_all()
+            return {
+                "success": True,
+                "removed": int(cur.rowcount or 0),
+                "project": Path(resolved).name,
+                "purged": True,
+            }
+
         with self._db_lock, closing(self._connect()) as con:
             cur = con.execute("DELETE FROM projects WHERE root=?", (resolved,))
-            if purge_data:
-                con.execute("DELETE FROM file_refs WHERE root=?", (resolved,))
-                con.execute("DELETE FROM source_index WHERE root=?", (resolved,))
-                con.execute("DELETE FROM source_fts WHERE root=?", (resolved,))
-                con.execute("DELETE FROM module_cards WHERE root=?", (resolved,))
-                con.execute("DELETE FROM project_cards WHERE root=?", (resolved,))
-                con.execute("DELETE FROM hot_query_state WHERE root=?", (resolved,))
             con.commit()
         self._forget_project_runtime(resolved)
-        if purge_data:
-            if self.code_index is not None:
-                try:
-                    with closing(self.code_index._connect()) as ci_con:
-                        ci_con.execute("DELETE FROM files WHERE root=?", (resolved,))
-                        ci_con.execute("DELETE FROM symbols WHERE root=?", (resolved,))
-                        ci_con.execute("DELETE FROM refs WHERE root=?", (resolved,))
-                        ci_con.execute("DELETE FROM edges WHERE root=?", (resolved,))
-                        ci_con.commit()
-                except sqlite3.Error as exc:
-                    logger.warning("worktree code-index purge incomplete (%s)", type(exc).__name__)
-            if self.deterministic is not None:
-                try:
-                    with closing(self.deterministic._connect()) as det_con:
-                        det_con.execute("DELETE FROM files WHERE root=?", (resolved,))
-                        det_con.execute("DELETE FROM facts WHERE root=?", (resolved,))
-                        det_con.execute("DELETE FROM manifests WHERE root=?", (resolved,))
-                        det_con.commit()
-                except sqlite3.Error as exc:
-                    logger.warning("worktree deterministic purge incomplete (%s)", type(exc).__name__)
         self._wake_all()
-        return {"success": True, "removed": int(cur.rowcount or 0), "project": Path(resolved).name, "purged": purge_data}
+        return {"success": True, "removed": int(cur.rowcount or 0), "project": Path(resolved).name, "purged": False}
 
     def cleanup_deleted_projects(self) -> dict[str, Any]:
         """Scan all registered projects and remove projects whose root directory no longer exists on disk."""
@@ -1292,54 +1383,9 @@ class ProjectPreprocessor:
             if Path(root).exists():
                 continue
 
-            cascade_ok = True
-            if self.code_index is not None:
-                try:
-                    result = self.code_index.prune(root, [])
-                    if not isinstance(result, dict) or not result.get("success"):
-                        cascade_ok = False
-                        logger.warning(
-                            "deleted-project code-index purge incomplete (%s)",
-                            result.get("error", "unknown") if isinstance(result, dict) else "invalid result",
-                        )
-                except Exception as exc:
-                    cascade_ok = False
-                    logger.warning("deleted-project code-index purge incomplete (%s)", type(exc).__name__)
-            if self.deterministic is not None:
-                try:
-                    with closing(self.deterministic._connect()) as det_con:
-                        det_con.execute("DELETE FROM files WHERE root=?", (root,))
-                        det_con.execute("DELETE FROM facts WHERE root=?", (root,))
-                        det_con.commit()
-                except Exception as exc:
-                    cascade_ok = False
-                    logger.warning(
-                        "deleted-project deterministic purge incomplete (%s: %s)",
-                        type(exc).__name__, exc,
-                    )
-
-            if self.rag is not None:
-                try:
-                    with self._db_lock, closing(self._connect()) as con:
-                        aliases = con.execute(
-                            "SELECT projects.root,file_refs.path FROM file_refs "
-                            "JOIN projects ON projects.root=file_refs.root "
-                            "WHERE projects.workspace=? AND projects.root<>?",
-                            (workspace, root),
-                        ).fetchall()
-                    live_paths = {
-                        str(alias["path"]).replace("\\", "/")
-                        for alias in aliases
-                        if Path(str(alias["root"])).exists()
-                    }
-                    self.rag.remove_project(
-                        root, "__preprocess__", workspace, preserve_paths=live_paths
-                    )
-                except Exception as exc:
-                    cascade_ok = False
-                    logger.warning("deleted-project RAG purge incomplete (%s)", type(exc).__name__)
-
+            cascade_ok = self._purge_project_secondary_indexes(root, workspace)
             if not cascade_ok:
+                self._mark_project_cleanup_pending(root)
                 failed.append(root)
                 continue
 
@@ -1356,6 +1402,7 @@ class ProjectPreprocessor:
                 self._forget_project_runtime(root)
                 pruned.append(root)
             except Exception as exc:
+                self._mark_project_cleanup_pending(root)
                 failed.append(root)
                 logger.warning("deleted-project registry purge incomplete (%s)", type(exc).__name__)
 
@@ -2002,6 +2049,7 @@ class ProjectPreprocessor:
                 continue
             row = self._next_cpu_project()
             if row is None:
+                self._run_idle_database_maintenance()
                 self._cpu_wakeup.wait(poll)
                 self._cpu_wakeup.clear()
                 continue
@@ -3909,42 +3957,46 @@ class ProjectPreprocessor:
         self._set_project(root, phase="complete", status="complete", last_complete_at=completed_at, next_check_at=completed_at + interval, force_refresh=0)
         return True
 
+    def _run_idle_database_maintenance(self) -> bool:
+        """Run coarse derived-index maintenance from an existing idle worker turn."""
+        now = time.time()
+        maintenance_interval = max(300, int(self.cfg.get("db_maintenance_interval_seconds", 1800)))
+        if now - self._last_db_maintenance < maintenance_interval or self._yield():
+            return False
+        try:
+            with self._db_lock, closing(self._connect()) as con:
+                # Prune orphan content cards not referenced by any active file and older than 30 days
+                cutoff_30d = now - (30 * 86400)
+                con.execute(
+                    """DELETE FROM content_cards
+                       WHERE accessed_at < ?
+                         AND card_key NOT IN (SELECT DISTINCT card_key FROM file_refs WHERE card_key IS NOT NULL)""",
+                    (cutoff_30d,),
+                )
+                con.execute("PRAGMA optimize")
+                con.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                con.commit()
+        except sqlite3.DatabaseError as maintenance_exc:
+            logger.warning("Preprocessing database maintenance skipped (%s)", type(maintenance_exc).__name__)
+        for component in (self.code_index, self.deterministic):
+            try:
+                if component is not None and hasattr(component, "optimize"):
+                    component.optimize()
+            except Exception as maintenance_exc:
+                logger.debug("Derived-index optimization skipped (%s)", type(maintenance_exc).__name__)
+        # cleanup_deleted_projects also performs the same bounded incremental vacuum.
+        self.cleanup_deleted_projects()
+        self.cleanup_orphaned_indexes()
+        self._last_db_maintenance = now
+        with self._stats_lock:
+            self._stats["db_maintenance_runs"] = self._stats.get("db_maintenance_runs", 0) + 1
+        return True
+
     def _step_complete(self, row: dict[str, Any]) -> bool:
         root = str(row["root"])
         max(30, int(self.cfg.get("auto_recheck_seconds", 1800)))
         now = time.time()
-        # Derived SQLite stores are maintained only while idle and at a coarse
-        # interval. This keeps WAL files/query plans healthy without adding latency
-        # to foreground requests or every preprocessing cycle.
-        maintenance_interval = max(300, int(self.cfg.get("db_maintenance_interval_seconds", 1800)))
-        if now - self._last_db_maintenance >= maintenance_interval and not self._yield():
-            try:
-                with self._db_lock, closing(self._connect()) as con:
-                    # Prune orphan content cards not referenced by any active file and older than 30 days
-                    cutoff_30d = now - (30 * 86400)
-                    con.execute(
-                        """DELETE FROM content_cards
-                           WHERE accessed_at < ?
-                             AND card_key NOT IN (SELECT DISTINCT card_key FROM file_refs WHERE card_key IS NOT NULL)""",
-                        (cutoff_30d,),
-                    )
-                    con.execute("PRAGMA optimize")
-                    con.execute("PRAGMA wal_checkpoint(PASSIVE)")
-                    con.commit()
-            except sqlite3.DatabaseError as maintenance_exc:
-                logger.warning("Preprocessing database maintenance skipped (%s)", type(maintenance_exc).__name__)
-                pass
-            for component in (self.code_index, self.deterministic):
-                try:
-                    if component is not None and hasattr(component, "optimize"):
-                        component.optimize()
-                except Exception as maintenance_exc:
-                    logger.debug("Derived-index optimization skipped (%s)", type(maintenance_exc).__name__)
-            self._vacuum_derived_databases()
-            self.cleanup_orphaned_indexes()
-            self._last_db_maintenance = now
-            with self._stats_lock:
-                self._stats["db_maintenance_runs"] = self._stats.get("db_maintenance_runs", 0) + 1
+        self._run_idle_database_maintenance()
         self._set_project(
             root, status="queued", phase="inventory", next_check_at=now,
             last_error=None, retry_after=0,
