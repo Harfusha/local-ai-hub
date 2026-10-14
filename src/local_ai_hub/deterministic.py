@@ -22,7 +22,7 @@ from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from . import __version__
 from .cache import MemoryLRUCache, SQLiteCache, stable_hash
@@ -42,6 +42,79 @@ from .state_paths import configured_state_dir
 
 
 logger = logging.getLogger(__name__)
+
+_MAX_SCHEMA_SCAN_DIRS = 10_000
+_MAX_SCHEMA_SCAN_FILES = 512
+_MAX_SCHEMA_SCAN_ENTRIES = 50_000
+_MAX_SCHEMA_DB_TABLES = 4_096
+_MAX_SCHEMA_DB_COLUMNS = 65_536
+_MAX_SCHEMA_DB_BYTES = 268_435_456
+_MAX_SCHEMA_FILE_BYTES = 1_048_576
+_MAX_SCHEMA_TOTAL_BYTES = 16_777_216
+_MAX_SCHEMA_SCAN_SECONDS = 3.0
+_SCHEMA_DB_TIMEOUT_SECONDS = 1.0
+
+
+def _bounded_schema_files(
+    root: Path,
+    *,
+    suffix: str,
+    deadline: float,
+    migrations_only: bool = False,
+) -> list[Path]:
+    """Collect schema candidates without materializing unbounded directory listings."""
+    skip_dirs = {".git", ".venv", "venv", "node_modules", "__pycache__", "state", "artifacts"}
+    canonical_root = root.resolve(strict=True)
+    pending = [canonical_root]
+    candidates: list[Path] = []
+    visited_dirs = 0
+    visited_entries = 0
+    visited_canonical_dirs: set[Path] = set()
+    while pending:
+        current = pending.pop().resolve(strict=True)
+        try:
+            current.relative_to(canonical_root)
+        except ValueError as exc:
+            raise PermissionError("schema scan directory resolves outside the requested root") from exc
+        if current in visited_canonical_dirs:
+            continue
+        visited_canonical_dirs.add(current)
+        visited_dirs += 1
+        if visited_dirs > _MAX_SCHEMA_SCAN_DIRS or time.monotonic() >= deadline:
+            raise TimeoutError("schema scan exceeded its directory or time budget")
+        with os.scandir(current) as entries:
+            for entry in entries:
+                visited_entries += 1
+                if visited_entries > _MAX_SCHEMA_SCAN_ENTRIES or time.monotonic() >= deadline:
+                    raise TimeoutError("schema scan exceeded its entry or time budget")
+                if entry.is_symlink():
+                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    if getattr(os.path, "isjunction", lambda _path: False)(entry.path):
+                        resolved_child = Path(entry.path).resolve(strict=True)
+                        try:
+                            resolved_child.relative_to(canonical_root)
+                        except ValueError as exc:
+                            raise PermissionError(
+                                "schema scan junction resolves outside the requested root"
+                            ) from exc
+                    if entry.name.lower() not in skip_dirs and not entry.name.startswith("."):
+                        pending.append(Path(entry.path))
+                        if len(pending) + visited_dirs > _MAX_SCHEMA_SCAN_DIRS:
+                            raise TimeoutError("schema scan exceeded its directory budget")
+                    continue
+                if not entry.is_file(follow_symlinks=False) or not entry.name.lower().endswith(suffix):
+                    continue
+                candidate = current / entry.name
+                if migrations_only and not any(
+                    part.lower() in {"migration", "migrations"}
+                    for part in candidate.parent.relative_to(root).parts
+                ):
+                    continue
+                candidates.append(candidate)
+                if len(candidates) > _MAX_SCHEMA_SCAN_FILES:
+                    raise TimeoutError(f"schema scan exceeded {_MAX_SCHEMA_SCAN_FILES} files")
+    return sorted(candidates)
 
 
 _WORD = re.compile(r"[A-Za-z_$][A-Za-z0-9_.$:/-]{1,100}")
@@ -6576,11 +6649,11 @@ def test_{sym}_regression_edge_cases():
         }
 
     def migration_drift(self, root: str, db_path: str | None = None) -> dict[str, Any]:
-        """Detect drift between SQLite physical schema and declared models in source code."""
+        """Detect drift between a live SQLite schema and SQL migrations or declared models."""
         p_root = Path(root).expanduser().resolve(strict=False)
         db_file: Path | None = None
         if db_path:
-            p = Path(db_path)
+            p = Path(db_path).expanduser()
             db_file = p if p.is_absolute() else (p_root / p)
         else:
             for cand in [p_root / "app.db", p_root / "data.db", p_root / ".local-ai-hub" / "agent_state.db"]:
@@ -6591,57 +6664,361 @@ def test_{sym}_regression_edge_cases():
         if not db_file or not db_file.is_file():
             if not db_path:
                 return {
-                    "success": True,
+                    "success": False,
                     "db_path": None,
                     "db_tables": [],
                     "code_models_found": [],
-                    "drift_detected": False,
-                    "in_sync": True,
+                    "drift_detected": None,
+                    "in_sync": None,
                     "missing_tables_in_db": [],
                     "extra_tables_in_db": [],
                     "column_drifts": [],
                     "drift": {},
-                    "status": "in_sync",
+                    "status": "database_missing",
                     "message": "No SQLite database found at default paths",
+                    "error": "Cannot determine migration drift without a live SQLite database",
                 }
-            return {"success": False, "error": f"SQLite database not found at {db_path}"}
+            return {
+                "success": False,
+                "db_path": str(db_file or db_path),
+                "drift_detected": None,
+                "in_sync": None,
+                "status": "database_missing",
+                "error": f"SQLite database not found at {db_path}",
+            }
+
+        try:
+            db_file = db_file.expanduser().resolve(strict=True)
+            db_file.relative_to(p_root)
+            if db_file.stat().st_size > _MAX_SCHEMA_DB_BYTES:
+                return {
+                    "success": False,
+                    "db_path": str(db_file),
+                    "drift_detected": None,
+                    "in_sync": None,
+                    "status": "database_size_limit_exceeded",
+                    "error": f"SQLite database exceeds {_MAX_SCHEMA_DB_BYTES} bytes",
+                }
+        except ValueError:
+            return {
+                "success": False,
+                "db_path": str(db_path or db_file),
+                "drift_detected": None,
+                "in_sync": None,
+                "status": "database_path_outside_root",
+                "error": "SQLite database path must resolve inside the requested root",
+            }
+        except OSError as exc:
+            return {
+                "success": False,
+                "db_path": str(db_path or db_file),
+                "drift_detected": None,
+                "in_sync": None,
+                "status": "database_missing",
+                "error": f"SQLite database not found: {exc}",
+            }
 
         db_tables: dict[str, set[str]] = {}
         try:
-            with closing(sqlite3.connect(db_file)) as con:
-                tables = [r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall()]
-                for tbl in tables:
+            with closing(
+                sqlite3.connect(
+                    f"{db_file.as_uri()}?mode=ro",
+                    uri=True,
+                    timeout=_SCHEMA_DB_TIMEOUT_SECONDS,
+                )
+            ) as con:
+                db_deadline = time.monotonic() + _MAX_SCHEMA_SCAN_SECONDS
+                con.set_progress_handler(
+                    lambda: int(time.monotonic() >= db_deadline), 1000
+                )
+                table_cursor = con.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                )
+                total_db_columns = 0
+                for table_row in table_cursor:
+                    if time.monotonic() >= db_deadline:
+                        raise TimeoutError("SQLite schema inspection exceeded its time budget")
+                    tbl = table_row[0]
+                    if len(db_tables) >= _MAX_SCHEMA_DB_TABLES:
+                        raise ValueError(
+                            f"SQLite schema exceeds {_MAX_SCHEMA_DB_TABLES} tables"
+                        )
                     safe_tbl = tbl.replace('"', '""')
-                    cols = {r[1] for r in con.execute(f'PRAGMA table_info("{safe_tbl}")').fetchall()}
+                    cols: set[str] = set()
+                    for column_row in con.execute(f'PRAGMA table_info("{safe_tbl}")'):
+                        if time.monotonic() >= db_deadline:
+                            raise TimeoutError(
+                                "SQLite schema inspection exceeded its time budget"
+                            )
+                        total_db_columns += 1
+                        if total_db_columns > _MAX_SCHEMA_DB_COLUMNS:
+                            raise ValueError(
+                                f"SQLite schema exceeds {_MAX_SCHEMA_DB_COLUMNS} columns"
+                            )
+                        cols.add(column_row[1])
                     db_tables[tbl] = cols
         except Exception as exc:
-            return {"success": False, "error": f"failed to inspect SQLite schema: {exc}"}
+            return {
+                "success": False,
+                "db_path": str(db_file),
+                "drift_detected": None,
+                "in_sync": None,
+                "status": "database_inspection_failed",
+                "error": f"failed to inspect SQLite schema: {exc}",
+            }
 
         code_tables: dict[str, set[str]] = {}
-        skip_dirs = {".git", ".venv", "venv", "node_modules", "__pycache__"}
-        for p in p_root.rglob("*.py"):
-            if any(part in skip_dirs for part in p.parts):
-                continue
+        schema_source = "python_models"
+        migration_files: list[Path] = []
+        schema_scan_deadline = time.monotonic() + _MAX_SCHEMA_SCAN_SECONDS
+        try:
+            migration_files = _bounded_schema_files(
+                p_root, suffix=".sql", deadline=schema_scan_deadline, migrations_only=True
+            )
+        except TimeoutError as exc:
+            return {
+                "success": False,
+                "db_path": str(db_file),
+                "drift_detected": None,
+                "in_sync": None,
+                "status": "schema_scan_budget_exceeded",
+                "error": str(exc),
+            }
+        except OSError as exc:
+            return {
+                "success": False,
+                "db_path": str(db_file),
+                "drift_detected": None,
+                "in_sync": None,
+                "status": "schema_scan_failed",
+                "error": f"migration directory scan failed: {exc}",
+            }
+        if migration_files:
+            schema_source = "sql_migrations"
+            migration_db = sqlite3.connect(":memory:")
+
+            def split_sql_statements(source: str) -> Iterator[str]:
+                pending: list[str] = []
+                quote: str | None = None
+                line_comment = False
+                block_comment = False
+                index = 0
+                while index < len(source):
+                    char = source[index]
+                    next_char = source[index + 1] if index + 1 < len(source) else ""
+                    pending.append(char)
+                    if line_comment:
+                        if char in "\r\n":
+                            line_comment = False
+                    elif block_comment:
+                        if char == "*" and next_char == "/":
+                            pending.append(next_char)
+                            index += 1
+                            block_comment = False
+                    elif quote is not None:
+                        closing = "]" if quote == "[" else quote
+                        if char == closing:
+                            if next_char == closing and quote != "[":
+                                pending.append(next_char)
+                                index += 1
+                            else:
+                                quote = None
+                    elif char in {"'", '"', "`", "["}:
+                        quote = char
+                    elif char == "-" and next_char == "-":
+                        pending.append(next_char)
+                        index += 1
+                        line_comment = True
+                    elif char == "/" and next_char == "*":
+                        pending.append(next_char)
+                        index += 1
+                        block_comment = True
+                    elif char == ";":
+                        yield "".join(pending)
+                        pending.clear()
+                    index += 1
+                if pending:
+                    yield "".join(pending)
+
             try:
-                tree = ast.parse(p.read_text(encoding="utf-8", errors="replace"), filename=str(p))
-                for node in ast.walk(tree):
-                    if isinstance(node, ast.ClassDef):
-                        tbl_name = None
-                        cols: set[str] = set()
-                        for item in node.body:
-                            if isinstance(item, ast.Assign):
-                                for target in item.targets:
-                                    if isinstance(target, ast.Name) and target.id == "__tablename__" and isinstance(item.value, ast.Constant):
-                                        tbl_name = str(item.value.value)
-                            elif isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
-                                cols.add(item.target.id)
-                        if tbl_name:
-                            code_tables[tbl_name] = cols
-            except Exception:
-                continue
+                migration_db.execute("PRAGMA max_page_count=4096")
+                migration_deadline = time.monotonic() + _MAX_SCHEMA_SCAN_SECONDS
+                migration_db.set_progress_handler(
+                    lambda: int(time.monotonic() >= migration_deadline), 1000
+                )
+                total_migration_bytes = 0
+                migration_ddl_count = 0
+                for migration_path in migration_files:
+                    if time.monotonic() >= schema_scan_deadline:
+                        return {
+                            "success": False,
+                            "db_path": str(db_file),
+                            "drift_detected": None,
+                            "in_sync": None,
+                            "status": "schema_scan_budget_exceeded",
+                            "error": "migration scan exceeded its time budget",
+                        }
+                    with migration_path.open("rb") as migration_stream:
+                        raw_source = migration_stream.read(_MAX_SCHEMA_FILE_BYTES + 1)
+                    total_migration_bytes += len(raw_source)
+                    if (
+                        len(raw_source) > _MAX_SCHEMA_FILE_BYTES
+                        or total_migration_bytes > _MAX_SCHEMA_TOTAL_BYTES
+                    ):
+                        return {
+                            "success": False,
+                            "db_path": str(db_file),
+                            "drift_detected": None,
+                            "in_sync": None,
+                            "status": "schema_scan_budget_exceeded",
+                            "error": "migration SQL exceeds the bounded scan budget",
+                        }
+                    source = raw_source.decode("utf-8", errors="replace")
+
+                    for statement in split_sql_statements(source):
+                        normalized = re.sub(r"(?m)^\s*--[^\n]*", "", statement)
+                        normalized = re.sub(r"/\*.*?\*/", "", normalized, flags=re.DOTALL).strip()
+                        if not re.match(r"^(?:CREATE\s+TABLE|ALTER\s+TABLE|DROP\s+TABLE)\b", normalized, re.IGNORECASE):
+                            continue
+                        try:
+                            migration_db.execute(statement)
+                            migration_ddl_count += 1
+                        except sqlite3.Error as exc:
+                            rel_path = migration_path.relative_to(p_root).as_posix()
+                            return {"success": False, "error": f"failed to apply schema DDL in {rel_path}: {exc}"}
+                if migration_ddl_count == 0:
+                    return {"success": False, "error": "no supported table schema DDL found in SQL migrations"}
+                tables = migration_db.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                ).fetchall()
+                for (table_name,) in tables:
+                    safe_table = str(table_name).replace('"', '""')
+                    code_tables[str(table_name)] = {
+                        row[1] for row in migration_db.execute(f'PRAGMA table_info("{safe_table}")').fetchall()
+                    }
+            except (OSError, sqlite3.Error) as exc:
+                return {"success": False, "error": f"failed to read schema migrations: {exc}"}
+            finally:
+                migration_db.close()
+        else:
+            python_scan_deadline = time.monotonic() + _MAX_SCHEMA_SCAN_SECONDS
+            try:
+                python_files = _bounded_schema_files(
+                    p_root, suffix=".py", deadline=python_scan_deadline
+                )
+            except TimeoutError as exc:
+                return {
+                    "success": False,
+                    "db_path": str(db_file),
+                    "drift_detected": None,
+                    "in_sync": None,
+                    "status": "schema_scan_budget_exceeded",
+                    "error": str(exc),
+                }
+            except OSError as exc:
+                return {
+                    "success": False,
+                    "db_path": str(db_file),
+                    "drift_detected": None,
+                    "in_sync": None,
+                    "status": "schema_scan_failed",
+                    "error": f"Python model directory scan failed: {exc}",
+                }
+            total_python_bytes = 0
+            for p in python_files:
+                if time.monotonic() >= python_scan_deadline:
+                    return {
+                        "success": False,
+                        "db_path": str(db_file),
+                        "drift_detected": None,
+                        "in_sync": None,
+                        "status": "schema_scan_budget_exceeded",
+                        "error": "Python model scan exceeded its time budget",
+                    }
+                try:
+                    with p.open("rb") as source_stream:
+                        raw_source = source_stream.read(_MAX_SCHEMA_FILE_BYTES + 1)
+                    total_python_bytes += len(raw_source)
+                    if (
+                        len(raw_source) > _MAX_SCHEMA_FILE_BYTES
+                        or total_python_bytes > _MAX_SCHEMA_TOTAL_BYTES
+                    ):
+                        return {
+                            "success": False,
+                            "db_path": str(db_file),
+                            "drift_detected": None,
+                            "in_sync": None,
+                            "status": "schema_scan_budget_exceeded",
+                            "error": "Python model sources exceed the bounded scan budget",
+                        }
+                    tree = ast.parse(
+                        raw_source.decode("utf-8", errors="replace"), filename=str(p)
+                    )
+                    for node_index, node in enumerate(ast.walk(tree)):
+                        if node_index % 256 == 0 and time.monotonic() >= python_scan_deadline:
+                            return {
+                                "success": False,
+                                "db_path": str(db_file),
+                                "drift_detected": None,
+                                "in_sync": None,
+                                "status": "schema_scan_budget_exceeded",
+                                "error": "Python model scan exceeded its time budget",
+                            }
+                        if isinstance(node, ast.ClassDef):
+                            tbl_name = None
+                            cols: set[str] = set()
+                            for item in node.body:
+                                if isinstance(item, ast.Assign):
+                                    for target in item.targets:
+                                        if isinstance(target, ast.Name) and target.id == "__tablename__" and isinstance(item.value, ast.Constant):
+                                            tbl_name = str(item.value.value)
+                                elif isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name):
+                                    cols.add(item.target.id)
+                            if tbl_name:
+                                code_tables[tbl_name] = cols
+                except Exception as exc:
+                    rel_path = p.relative_to(p_root).as_posix()
+                    return {
+                        "success": False,
+                        "db_path": str(db_file),
+                        "drift_detected": None,
+                        "in_sync": None,
+                        "status": "schema_scan_failed",
+                        "error": f"failed to inspect Python model source {rel_path}: {exc}",
+                    }
+                if time.monotonic() >= python_scan_deadline:
+                    return {
+                        "success": False,
+                        "db_path": str(db_file),
+                        "drift_detected": None,
+                        "in_sync": None,
+                        "status": "schema_scan_budget_exceeded",
+                        "error": "Python model scan exceeded its time budget",
+                    }
+
+        if not code_tables:
+            return {
+                "success": False,
+                "db_path": str(db_file),
+                "schema_source": schema_source,
+                "migration_files_found": [p.relative_to(p_root).as_posix() for p in migration_files],
+                "db_tables": list(db_tables.keys()),
+                "code_models_found": [],
+                "drift_detected": None,
+                "in_sync": None,
+                "missing_tables_in_db": [],
+                "extra_tables_in_db": [],
+                "column_drifts": [],
+                "drift": {},
+                "status": "schema_source_unavailable",
+                "error": "No SQL migration schema or declared Python model tables were found",
+            }
 
         missing_in_db = [t for t in code_tables if t not in db_tables]
-        extra_in_db = [t for t in db_tables if t not in code_tables and code_tables]
+        if schema_source == "sql_migrations":
+            extra_in_db = [t for t in db_tables if t not in code_tables]
+        else:
+            extra_in_db = [t for t in db_tables if t not in code_tables and code_tables]
         column_drifts: list[dict[str, Any]] = []
         for t in code_tables:
             if t in db_tables:
@@ -6667,11 +7044,20 @@ def test_{sym}_regression_edge_cases():
                 "missing_in_code": [],
                 "type_mismatches": {},
             }
+        if schema_source == "sql_migrations":
+            for t in extra_in_db:
+                drift_map[t] = {
+                    "missing_in_db": [],
+                    "missing_in_code": list(db_tables.get(t, [])),
+                    "type_mismatches": {},
+                }
 
-        drift_detected = bool(missing_in_db or column_drifts)
+        drift_detected = bool(missing_in_db or column_drifts or (schema_source == "sql_migrations" and extra_in_db))
         return {
             "success": True,
             "db_path": str(db_file),
+            "schema_source": schema_source,
+            "migration_files_found": [p.relative_to(p_root).as_posix() for p in migration_files],
             "db_tables": list(db_tables.keys()),
             "code_models_found": list(code_tables.keys()),
             "drift_detected": drift_detected,
