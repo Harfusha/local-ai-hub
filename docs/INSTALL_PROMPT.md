@@ -18,6 +18,8 @@ Local AI Hub has no remote-access or remote-control mode. HTTP binds only to `12
 
 MCP aliases normalize before endpoint dispatch: `local_ai_command` accepts `root` for `cwd` and `changed_paths` or `files` for `paths`; `local_ai_repo` accepts `cwd` for `root`, `paths` or `files` for `changed_paths`, and `symbol` for `query`. Explicit canonical parameters take precedence, including empty lists. On `/api/context/pack`, presence of `changed_paths` or `focus` requests guarded handling, including an empty list; explicit `guarded` values must be boolean.
 
+`local_ai_command` accepts optional `env` as a mapping from variable names to string values. MCP publishes string-valued entries, and the command broker applies overrides to the child process while preserving its existing name, count, and value validation. Keep values short and task-specific; do not put credentials in prompts or repository files.
+
 For `local_ai_command(action="flaky_detect")`, `runs` is an integer execution count with minimum `1` and default `5`; MCP clients validate the published schema, and the command endpoint receives the selected count.
 
 ## Development workflow (binding)
