@@ -589,8 +589,12 @@ class FencingLeaseStore:
         requested = normalize_paths(actual_paths) if actual_paths else ()
         requested_keys = {os.path.normcase(path).replace("\\", "/") for path in requested}
         lease_keys = {os.path.normcase(path).replace("\\", "/") for path in lease.paths}
-        if not requested_keys.issubset(lease_keys):
-            outside = sorted(requested_keys.difference(lease_keys))
+        outside = [
+            req
+            for req in sorted(requested_keys)
+            if not any(req == lk or req.startswith(lk + "/") for lk in lease_keys)
+        ]
+        if outside:
             raise LeaseScopeError(f"write escaped fenced lease scope: {outside[0]}")
         now = float(self._clock())
         row = con.execute(
