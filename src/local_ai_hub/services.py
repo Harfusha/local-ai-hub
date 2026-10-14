@@ -393,6 +393,137 @@ def _active_sqlite_databases(state_dir: Path) -> list[Path]:
     )
 
 
+def merge_overlapping_line_ranges(
+    ranges: list[tuple[int, int]], *, max_gap: int = 1
+) -> list[tuple[int, int]]:
+    """Merge overlapping or adjacent line intervals [start, end]."""
+    valid = []
+    for r in ranges:
+        if isinstance(r, (tuple, list)) and len(r) >= 2:
+            try:
+                s, e = int(r[0]), int(r[1])
+                if s > e:
+                    s, e = e, s
+                valid.append((s, e))
+            except (TypeError, ValueError):
+                continue
+    if not valid:
+        return []
+    sorted_ranges = sorted(valid, key=lambda item: (item[0], item[1]))
+    merged = [sorted_ranges[0]]
+    for start, end in sorted_ranges[1:]:
+        prev_start, prev_end = merged[-1]
+        if start <= prev_end + max_gap:
+            merged[-1] = (prev_start, max(prev_end, end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def merge_overlapping_evidence(
+    evidence: list[dict[str, Any]], root: str | Path | None = None
+) -> list[dict[str, Any]]:
+    """Group evidence by file path and merge overlapping or adjacent line ranges."""
+    if not evidence:
+        return []
+
+    by_path: dict[str, list[dict[str, Any]]] = {}
+    path_keys: list[str] = []
+
+    for item in evidence:
+        if not isinstance(item, dict):
+            continue
+        p = str(item.get("path") or "").strip().replace("\\", "/")
+        if not p:
+            continue
+        if p not in by_path:
+            by_path[p] = []
+            path_keys.append(p)
+        by_path[p].append(dict(item))
+
+    resolved_root = Path(root).expanduser().resolve(strict=False) if root else None
+    result: list[dict[str, Any]] = []
+
+    for p in path_keys:
+        items = by_path[p]
+        if len(items) == 1:
+            result.append(items[0])
+            continue
+
+        def get_range(it: dict[str, Any]) -> tuple[int, int]:
+            s = int(it.get("start_line", 1) or 1)
+            e = int(it.get("end_line", s) or s)
+            return (min(s, e), max(s, e))
+
+        sorted_items = sorted(items, key=lambda it: get_range(it))
+
+        clusters: list[list[dict[str, Any]]] = []
+        for it in sorted_items:
+            it_range = get_range(it)
+            if not clusters:
+                clusters.append([it])
+            else:
+                cluster = clusters[-1]
+                cluster_end = max(get_range(x)[1] for x in cluster)
+                if it_range[0] <= cluster_end + 1:
+                    cluster.append(it)
+                else:
+                    clusters.append([it])
+
+        for cluster in clusters:
+            if len(cluster) == 1:
+                result.append(cluster[0])
+                continue
+
+            cluster_start = min(get_range(x)[0] for x in cluster)
+            cluster_end = max(get_range(x)[1] for x in cluster)
+            max_score = max(float(x.get("score", 0.0) or 0.0) for x in cluster)
+
+            symbols = []
+            for x in cluster:
+                sym = str(x.get("symbol", "") or "").strip()
+                if sym and sym not in symbols:
+                    symbols.append(sym)
+
+            merged_symbol = ", ".join(symbols) if symbols else ""
+
+            merged_text = ""
+            file_on_disk = (resolved_root / p) if resolved_root else None
+            if file_on_disk and file_on_disk.is_file():
+                try:
+                    all_lines = file_on_disk.read_text(encoding="utf-8", errors="replace").splitlines()
+                    slice_lines = all_lines[max(0, cluster_start - 1):cluster_end]
+                    merged_text = "\n".join(slice_lines)
+                except Exception:
+                    merged_text = ""
+
+            if not merged_text:
+                line_map: dict[int, str] = {}
+                for x in cluster:
+                    x_start = get_range(x)[0]
+                    x_text = str(x.get("text", x.get("content", "")) or "")
+                    x_lines = x_text.splitlines()
+                    for idx, line in enumerate(x_lines):
+                        line_num = x_start + idx
+                        if line_num not in line_map:
+                            line_map[line_num] = line
+                merged_text = "\n".join(line_map.get(i, "") for i in range(cluster_start, cluster_end + 1))
+
+            best_item = max(cluster, key=lambda x: float(x.get("score", 0.0) or 0.0))
+            merged_item = dict(best_item)
+            merged_item["start_line"] = cluster_start
+            merged_item["end_line"] = cluster_end
+            merged_item["score"] = max_score
+            merged_item["text"] = merged_text
+            if "content" in merged_item:
+                merged_item["content"] = merged_text
+            if merged_symbol:
+                merged_item["symbol"] = merged_symbol
+            result.append(merged_item)
+
+    return result
+
+
 class LocalAIServices:
     commands: Any = None
     task_store: Any = None
@@ -408,6 +539,10 @@ class LocalAIServices:
     agent_state: Any = None
     _VISION_MAX_OUTPUT_TOKENS = 4096
     consistency_guard: Any = None
+
+    @staticmethod
+    def merge_overlapping_evidence(evidence: list[dict[str, Any]], root: str | Path | None = None) -> list[dict[str, Any]]:
+        return merge_overlapping_evidence(evidence, root=root)
 
     def __init__(
         self,
@@ -4420,7 +4555,7 @@ class LocalAIServices:
                         "revision": evidence_item.get("repository_revision", evidence_item.get("revision", "")),
                     })[:24]
                 normalized_evidence.append(evidence_item)
-            base["evidence"] = normalized_evidence
+            base["evidence"] = merge_overlapping_evidence(normalized_evidence, root=request.root)
         base, preload_warnings = self._apply_context_preloads(request, base)
         guard = self.consistency_guard
         if guard is None:
