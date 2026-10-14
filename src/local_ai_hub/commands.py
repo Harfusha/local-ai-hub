@@ -5799,6 +5799,105 @@ class CommandBroker:
         }
 
     @staticmethod
+    def _extract_failed_tests(result: dict[str, Any]) -> list[dict[str, Any]]:
+        stdout = str(result.get("stdout") or "")
+        stderr = str(result.get("stderr") or "")
+        combined = f"{stdout}\n{stderr}"
+        lines = [line.strip() for line in combined.splitlines()]
+
+        failed_tests: list[dict[str, Any]] = []
+        seen: set[Any] = set()
+
+        # 1. Pytest
+        pytest_trace_re = re.compile(r"^(?P<file>[^\s:]+):(?P<line>\d+):\s+in\s+(?P<name>\S+)")
+        pytest_trace_map: dict[Any, int] = {}
+        for line in lines:
+            m = pytest_trace_re.match(line)
+            if m:
+                pytest_trace_map[(m.group("file"), m.group("name"))] = int(m.group("line"))
+                pytest_trace_map[m.group("name")] = int(m.group("line"))
+
+        pytest_failed_re = re.compile(r"^FAILED\s+(?P<file>[^\s:]+)::(?P<name>\S+?)(?:\s+-\s+(?P<msg>.*))?$")
+        for line in lines:
+            m = pytest_failed_re.match(line)
+            if m:
+                f = m.group("file")
+                n = m.group("name")
+                key = (f, n)
+                if key not in seen:
+                    seen.add(key)
+                    item: dict[str, Any] = {
+                        "name": n,
+                        "file": f,
+                        "error_message": (m.group("msg") or "").strip(),
+                    }
+                    line_no = pytest_trace_map.get((f, n)) or pytest_trace_map.get(n)
+                    if line_no is not None:
+                        item["line"] = line_no
+                    failed_tests.append(item)
+
+        # 2. Cargo
+        cargo_panic_re = re.compile(
+            r"^thread\s+'(?P<name>[^']+)'\s+panicked\s+at\s+(?:'(?P<msg>[^']*)'|(?P<msg2>[^,]+)),\s+(?P<file>[^:\s]+):(?P<line>\d+)"
+        )
+        cargo_panics: dict[str, dict[str, Any]] = {}
+        for line in lines:
+            m = cargo_panic_re.match(line)
+            if m:
+                cargo_panics[m.group("name")] = {
+                    "name": m.group("name"),
+                    "file": m.group("file"),
+                    "line": int(m.group("line")),
+                    "error_message": (m.group("msg") or m.group("msg2") or "").strip(),
+                }
+
+        cargo_failed_re = re.compile(r"^test\s+(?P<name>\S+)\s+\.\.\.\s+FAILED")
+        for line in lines:
+            m = cargo_failed_re.match(line)
+            if m:
+                n = m.group("name")
+                if n not in seen:
+                    seen.add(n)
+                    if n in cargo_panics:
+                        failed_tests.append(cargo_panics[n])
+                    else:
+                        failed_tests.append({
+                            "name": n,
+                            "file": "",
+                            "error_message": "FAILED",
+                        })
+
+        for n, item in cargo_panics.items():
+            if n not in seen:
+                seen.add(n)
+                failed_tests.append(item)
+
+        # 3. Jest / Vitest
+        jest_fail_re = re.compile(r"^[✕●]\s+(?P<name>.+?)(?:\s+\(\d+.*\))?$")
+        jest_stack_re = re.compile(r"^\s*at\s+.*\(?(?P<file>[^:\s()]+\.[a-zA-Z0-9]+):(?P<line>\d+):\d+\)?")
+        current_jest: dict[str, Any] | None = None
+        for line in lines:
+            m = jest_fail_re.match(line)
+            if m:
+                n = m.group("name").strip()
+                if n not in seen and not n.startswith("FAIL "):
+                    current_jest = {
+                        "name": n,
+                        "file": "",
+                        "error_message": "",
+                    }
+            elif current_jest and not current_jest.get("file"):
+                sm = jest_stack_re.match(line)
+                if sm:
+                    current_jest["file"] = sm.group("file")
+                    current_jest["line"] = int(sm.group("line"))
+                    seen.add(current_jest["name"])
+                    failed_tests.append(current_jest)
+                    current_jest = None
+
+        return failed_tests
+
+    @staticmethod
     def _failure_preview(summary: dict[str, Any]) -> str:
         """Expose only the narrow first-failure slice in command results."""
         path = str(summary.get("path") or "")
@@ -7841,6 +7940,7 @@ class CommandBroker:
                 result["snapshot_taken"] = True
             result["diagnostics"] = self._extract_diagnostics(result)
             if not result.get("success") and not result.get("cancelled"):
+                result["failed_tests"] = self._extract_failed_tests(result)
                 result["error_distillation"] = self._distill_error(result)
                 result["error_distillation_source"] = "deterministic"
                 if self._needs_model_error_distillation(result):
@@ -10729,6 +10829,8 @@ class CommandBroker:
                 })
         result["diagnostics"] = diagnostics
         if not result.get("success") and not result.get("cancelled"):
+            if "failed_tests" not in result:
+                result["failed_tests"] = self._extract_failed_tests(result)
             result["failure_summary"] = failure_summary
             result["preview"] = self._failure_preview(failure_summary)
             # Low-confidence short failures do not get the full-log artifact below.
