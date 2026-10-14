@@ -44,7 +44,9 @@ def dumps(value: Any, **kwargs: Any) -> str:
     compact = kwargs.get("separators") == (",", ":") and not kwargs.get("ensure_ascii", False)
     if compact and not (set(kwargs) - supported):
         if _orjson is not None:
-            options = _orjson.OPT_SORT_KEYS if kwargs.get("sort_keys") else 0
+            options = _orjson.OPT_NON_STR_KEYS
+            if kwargs.get("sort_keys"):
+                options |= _orjson.OPT_SORT_KEYS
             default = kwargs.get("default")
             if default is None:
                 encoded = _orjson.dumps(value, option=options)
@@ -65,7 +67,9 @@ def dumps_bytes(value: Any, **kwargs: Any) -> bytes:
     compact = kwargs.get("separators") == (",", ":") and not kwargs.get("ensure_ascii", False)
     if compact and not (set(kwargs) - supported):
         if _orjson is not None:
-            options = _orjson.OPT_SORT_KEYS if kwargs.get("sort_keys") else 0
+            options = _orjson.OPT_NON_STR_KEYS
+            if kwargs.get("sort_keys"):
+                options |= _orjson.OPT_SORT_KEYS
             default = kwargs.get("default")
             if default is None:
                 return _orjson.dumps(value, option=options)
