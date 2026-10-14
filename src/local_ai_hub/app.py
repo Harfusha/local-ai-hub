@@ -2078,6 +2078,10 @@ class LocalAIApp:
             if thread is not None and thread is not current and thread.is_alive():
                 thread.join(timeout=1.5)
         try:
+            self.recovery.close()
+        except Exception:
+            pass
+        try:
             self.preprocessor.close()
         except Exception:
             pass
