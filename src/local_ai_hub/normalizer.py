@@ -235,4 +235,3 @@ def postprocess_patch(diff_text: str) -> str:
     if not cleaned_lines:
         return ""
     return "\n".join(cleaned_lines).rstrip() + "\n"
-
