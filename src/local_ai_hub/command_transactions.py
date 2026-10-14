@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 
-from .process_utils import hidden_run_kwargs
+from .process_utils import clean_git_env, hidden_run_kwargs
 
 
 @dataclass(frozen=True)
@@ -140,8 +140,7 @@ def verify_transaction_source_unchanged(
             raise OSError(f"transaction source path changed while command was running: {relative}")
 
 
-def _clean_git_env() -> dict[str, str]:
-    return {key: value for key, value in os.environ.items() if not key.upper().startswith("GIT_")}
+_clean_git_env = clean_git_env
 
 
 def _git_output(root: Path, *args: str) -> str:
