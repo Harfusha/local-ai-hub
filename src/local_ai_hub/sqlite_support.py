@@ -34,7 +34,7 @@ def is_busy_error(exc: BaseException) -> bool:
 
 
 def connect_sqlite(
-    path: Path,
+    path: Path | str,
     *,
     timeout_seconds: float = 5.0,
     isolation_level: str | None = "DEFERRED",
@@ -46,8 +46,10 @@ def connect_sqlite(
     require an exclusive lock, so schemas enable WAL once during initialization and
     hot-path connections only apply non-exclusive pragmas.
     """
+    p = Path(path)
     timeout = max(0.01, float(timeout_seconds))
-    con = sqlite3.connect(path, timeout=timeout, isolation_level=isolation_level)
+    con = sqlite3.connect(p, timeout=timeout, isolation_level=isolation_level)
+
     try:
         if row_factory is not None:
             con.row_factory = row_factory
@@ -671,13 +673,14 @@ def with_degraded_fallback(
     )
 
 
-def ensure_incremental_vacuum(path: Path, *, timeout_seconds: float = 5.0) -> dict[str, Any]:
+def ensure_incremental_vacuum(path: Path | str, *, timeout_seconds: float = 5.0) -> dict[str, Any]:
     """Enable incremental auto-vacuum, converting an existing database once if needed."""
+    p = Path(path)
     timeout = max(0.1, float(timeout_seconds))
     deadline = time.monotonic() + timeout
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        con = sqlite3.connect(path, timeout=timeout)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        con = sqlite3.connect(p, timeout=timeout)
         try:
             con.execute(f"PRAGMA busy_timeout={int(timeout * 1000)}")
             current = con.execute("PRAGMA auto_vacuum").fetchone()
@@ -697,18 +700,19 @@ def ensure_incremental_vacuum(path: Path, *, timeout_seconds: float = 5.0) -> di
 
 
 def incremental_vacuum(
-    path: Path,
+    path: Path | str,
     *,
     pages: int = 100,
     freelist_threshold: int = 50,
     timeout_seconds: float = 5.0,
 ) -> dict[str, Any]:
     """Perform bounded incremental vacuum and freelist reclamation if freelist pages exceed threshold."""
-    if not path.exists():
-        return {"success": False, "error": "file_not_found", "path": str(path)}
+    p = Path(path)
+    if not p.exists():
+        return {"success": False, "error": "file_not_found", "path": str(p)}
     timeout = max(0.1, float(timeout_seconds))
     try:
-        con = sqlite3.connect(path, timeout=timeout)
+        con = sqlite3.connect(p, timeout=timeout)
         try:
             con.execute(f"PRAGMA busy_timeout={int(timeout * 1000)}")
             freelist_row = con.execute("PRAGMA freelist_count").fetchone()
@@ -726,7 +730,7 @@ def incremental_vacuum(
                     con.execute("PRAGMA optimize")
             return {
                 "success": True,
-                "path": str(path),
+                "path": str(p),
                 "freelist_count": freelist_count,
                 "auto_vacuum": auto_vac,
                 "pages_freed": pages_freed,
@@ -735,11 +739,11 @@ def incremental_vacuum(
         finally:
             con.close()
     except Exception as exc:
-        return {"success": False, "error": str(exc), "path": str(path)}
+        return {"success": False, "error": str(exc), "path": str(p)}
 
 
 def optimize_db(
-    path: Path,
+    path: Path | str,
     *,
     wal_checkpoint: bool = True,
     vacuum: bool = False,
@@ -748,18 +752,19 @@ def optimize_db(
     timeout_seconds: float = 5.0,
 ) -> dict[str, Any]:
     """Perform bounded maintenance on an SQLite database (WAL checkpoint truncate, pragma optimize, vacuum, freelist)."""
-    if not path.exists():
-        return {"success": False, "error": "file_not_found", "path": str(path)}
+    p = Path(path)
+    if not p.exists():
+        return {"success": False, "error": "file_not_found", "path": str(p)}
 
     timeout = max(0.1, float(timeout_seconds))
     result: dict[str, Any] = {
         "success": True,
-        "path": str(path),
-        "initial_size": path.stat().st_size if path.exists() else 0,
+        "path": str(p),
+        "initial_size": p.stat().st_size if p.exists() else 0,
     }
 
     try:
-        con = sqlite3.connect(path, timeout=timeout)
+        con = sqlite3.connect(p, timeout=timeout)
         try:
             con.execute(f"PRAGMA busy_timeout={int(timeout * 1000)}")
             if wal_checkpoint:
@@ -782,26 +787,27 @@ def optimize_db(
                 con.execute("VACUUM")
         finally:
             con.close()
-        result["final_size"] = path.stat().st_size if path.exists() else 0
+        result["final_size"] = p.stat().st_size if p.exists() else 0
         result["freed_bytes"] = max(0, result["initial_size"] - result["final_size"])
         return result
     except Exception as exc:
-        return {"success": False, "error": str(exc), "path": str(path)}
+        return {"success": False, "error": str(exc), "path": str(p)}
 
 
 def wal_checkpoint_truncate(
-    path: Path,
+    path: Path | str,
     *,
     timeout_seconds: float = 5.0,
 ) -> dict[str, Any]:
     """Explicitly checkpoint and truncate the WAL file for an SQLite database."""
-    if not path.exists():
-        return {"success": False, "error": "file_not_found", "path": str(path)}
-    wal_path = path.parent / f"{path.name}-wal"
+    p = Path(path)
+    if not p.exists():
+        return {"success": False, "error": "file_not_found", "path": str(p)}
+    wal_path = p.parent / f"{p.name}-wal"
     wal_size_before = wal_path.stat().st_size if wal_path.exists() else 0
     timeout = max(0.1, float(timeout_seconds))
     try:
-        con = sqlite3.connect(path, timeout=timeout)
+        con = sqlite3.connect(p, timeout=timeout)
         try:
             con.execute(f"PRAGMA busy_timeout={int(timeout * 1000)}")
             row = con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
@@ -813,38 +819,41 @@ def wal_checkpoint_truncate(
         wal_size_after = wal_path.stat().st_size if wal_path.exists() else 0
         return {
             "success": True,
-            "path": str(path),
+            "path": str(p),
             "busy": busy,
             "log_pages": log_pages,
             "checkpointed_pages": checkpointed_pages,
             "wal_size_before": wal_size_before,
             "wal_size_after": wal_size_after,
             "bytes_reclaimed": max(0, wal_size_before - wal_size_after),
-            "truncated": wal_size_after < wal_size_before or wal_size_after == 0,
+            "truncated": bool(wal_size_before > 0 and (wal_size_after < wal_size_before or wal_size_after == 0)),
         }
     except Exception as exc:
-        return {"success": False, "error": str(exc), "path": str(path)}
+        return {"success": False, "error": str(exc), "path": str(p)}
 
 
 def auto_checkpoint_wal(
-    path: Path,
+    path: Path | str,
     *,
     max_wal_bytes: int = 10 * 1024 * 1024,
     timeout_seconds: float = 3.0,
 ) -> dict[str, Any]:
     """Conditionally checkpoint and truncate WAL only if WAL file size exceeds max_wal_bytes."""
-    wal_path = path.parent / f"{path.name}-wal"
+    p = Path(path)
+    if not p.exists():
+        return {"success": False, "error": "file_not_found", "path": str(p)}
+    wal_path = p.parent / f"{p.name}-wal"
     if not wal_path.exists():
-        return {"success": True, "path": str(path), "triggered": False, "wal_size": 0}
+        return {"success": True, "path": str(p), "triggered": False, "wal_size": 0}
     try:
         sz = wal_path.stat().st_size
         if sz >= max_wal_bytes:
-            res = wal_checkpoint_truncate(path, timeout_seconds=timeout_seconds)
+            res = wal_checkpoint_truncate(p, timeout_seconds=timeout_seconds)
             res["triggered"] = True
             return res
-        return {"success": True, "path": str(path), "triggered": False, "wal_size": sz}
+        return {"success": True, "path": str(p), "triggered": False, "wal_size": sz}
     except Exception as exc:
-        return {"success": False, "error": str(exc), "path": str(path)}
+        return {"success": False, "error": str(exc), "path": str(p)}
 
 
 def clean_quarantined_files(
@@ -874,6 +883,9 @@ def clean_quarantined_files(
                 if (remove_empty and is_empty) or age >= max_age_seconds:
                     size = st.st_size
                     p.unlink(missing_ok=True)
+                    # Also unlink any associated WAL and SHM sidecars
+                    for ext in ("-wal", "-shm"):
+                        p.with_name(f"{p.name}{ext}").unlink(missing_ok=True)
                     pruned_count += 1
                     pruned_bytes += size
                     pruned_files.append(p.name)
@@ -888,5 +900,6 @@ def clean_quarantined_files(
         "pruned_bytes": pruned_bytes,
         "files": pruned_files,
     }
+
 
 
