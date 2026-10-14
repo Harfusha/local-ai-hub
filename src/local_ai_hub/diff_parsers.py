@@ -1,44 +1,85 @@
 from __future__ import annotations
 
 import ast
+from collections.abc import Sequence
 import re
 from typing import Any
 
 
-def extract_py_diff_defs(lines: list[str]) -> dict[str, dict[str, Any]]:
+def _clean_diff_line(raw: Any) -> str:
+    if not isinstance(raw, str):
+        return ""
+    s = raw.strip()
+    if s.startswith(("+", "-")) and not s.startswith(("+++", "---")):
+        s = s[1:].strip()
+    return s
+
+
+def _split_bracket_aware(text: str) -> list[str]:
+    parts: list[str] = []
+    depth = 0
+    cur = ""
+    for ch in text:
+        if ch in "<([{":
+            depth += 1
+            cur += ch
+        elif ch in ">)]}":
+            depth = max(0, depth - 1)
+            cur += ch
+        elif ch == "," and depth == 0:
+            if cur.strip():
+                parts.append(cur.strip())
+            cur = ""
+        else:
+            cur += ch
+    if cur.strip():
+        parts.append(cur.strip())
+    return parts
+
+
+def extract_py_diff_defs(lines: list[str] | Sequence[str] | None) -> dict[str, dict[str, Any]]:
     """Extract Python function/class definitions from diff lines."""
+    if not lines:
+        return {}
     defs: dict[str, dict[str, Any]] = {}
     i = 0
     n = len(lines)
     while i < n:
         raw = lines[i]
-        s = raw.strip()
+        s = _clean_diff_line(raw)
         if s.startswith(("def ", "async def ", "class ")):
             stmt = s
             paren_count = stmt.count("(") - stmt.count(")")
-            while paren_count > 0 and i + 1 < n:
+            lookahead = 0
+            while paren_count > 0 and i + 1 < n and lookahead < 50:
                 i += 1
-                stmt += " " + lines[i].strip()
+                lookahead += 1
+                stmt += " " + _clean_diff_line(lines[i])
                 paren_count = stmt.count("(") - stmt.count(")")
             try:
-                to_parse = stmt
+                to_parse = stmt.strip()
                 if not to_parse.endswith(":"):
-                    to_parse += ":"
-                to_parse += "\n    pass"
+                    if ":" not in to_parse:
+                        to_parse += ":\n    pass"
+                else:
+                    to_parse += "\n    pass"
                 tree = ast.parse(to_parse)
                 for node in tree.body:
                     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                         if node.name.startswith("_") and node.name not in ("__init__", "__call__", "__getitem__", "__enter__", "__exit__"):
                             continue
-                        pos_args = [a.arg for a in node.args.args]
-                        clean_args = [a for a in pos_args if a not in ("self", "cls")]
+                        posonly = [a.arg for a in getattr(node.args, "posonlyargs", [])]
+                        regular = [a.arg for a in node.args.args]
+                        all_pos = posonly + regular
+                        clean_args = [a for a in all_pos if a not in ("self", "cls")]
                         defaults_count = len(node.args.defaults)
-                        req_total = len(pos_args) - defaults_count
-                        clean_req = max(0, req_total - (1 if pos_args and pos_args[0] in ("self", "cls") else 0))
+                        req_total = len(all_pos) - defaults_count
+                        clean_req = max(0, req_total - (1 if all_pos and all_pos[0] in ("self", "cls") else 0))
                         defs[node.name] = {
                             "name": node.name,
                             "kind": "function",
                             "pos_args": clean_args,
+                            "params": clean_args,
                             "required_count": clean_req,
                             "sig": stmt,
                         }
@@ -56,14 +97,16 @@ def extract_py_diff_defs(lines: list[str]) -> dict[str, dict[str, Any]]:
     return defs
 
 
-def extract_ts_diff_defs(lines: list[str]) -> dict[str, dict[str, Any]]:
+def extract_ts_diff_defs(lines: list[str] | Sequence[str] | None) -> dict[str, dict[str, Any]]:
     """Extract TypeScript/JavaScript definitions from diff lines."""
+    if not lines:
+        return {}
     defs: dict[str, dict[str, Any]] = {}
     ts_pattern = re.compile(
         r"^\s*export\s+(?:default\s+)?(?:async\s+)?(function|class|interface|type|const|let|var)\s+([A-Za-z0-9_$]+)(?:\s*<.*?>)?(?:\s*\((.*?)\))?",
     )
     for raw in lines:
-        line = raw.strip()
+        line = _clean_diff_line(raw)
         m = ts_pattern.search(line)
         if m:
             kind = m.group(1)
@@ -73,17 +116,7 @@ def extract_ts_diff_defs(lines: list[str]) -> dict[str, dict[str, Any]]:
                 continue
             d: dict[str, Any] = {"name": name, "kind": kind, "sig": line}
             if params_raw is not None and kind == "function":
-                parts = []
-                depth = 0
-                cur = ""
-                for ch in params_raw:
-                    if ch in "({[<": depth += 1; cur += ch
-                    elif ch in ")}]>": depth -= 1; cur += ch
-                    elif ch == "," and depth == 0:
-                        if cur.strip(): parts.append(cur.strip())
-                        cur = ""
-                    else: cur += ch
-                if cur.strip(): parts.append(cur.strip())
+                parts = _split_bracket_aware(params_raw)
                 req_count = 0
                 param_names = []
                 for p in parts:
@@ -99,13 +132,15 @@ def extract_ts_diff_defs(lines: list[str]) -> dict[str, dict[str, Any]]:
     return defs
 
 
-def extract_cs_diff_defs(lines: list[str]) -> dict[str, dict[str, Any]]:
+def extract_cs_diff_defs(lines: list[str] | Sequence[str] | None) -> dict[str, dict[str, Any]]:
     """Extract C# class and method definitions from diff lines."""
+    if not lines:
+        return {}
     defs: dict[str, dict[str, Any]] = {}
     class_re = re.compile(r"^\s*public\s+(?:static\s+|sealed\s+|abstract\s+|partial\s+)*(class|interface|struct|record|enum)\s+([A-Za-z0-9_]+)")
     method_re = re.compile(r"^\s*public\s+(?:static\s+|virtual\s+|override\s+|async\s+|sealed\s+|abstract\s+)*([\w<>\[\],\s\?]+?)\s+([A-Za-z0-9_]+)\s*\((.*?)\)")
     for raw in lines:
-        line = raw.strip()
+        line = _clean_diff_line(raw)
         cm = class_re.search(line)
         if cm:
             defs[cm.group(2)] = {"name": cm.group(2), "kind": cm.group(1), "sig": line}
@@ -113,19 +148,21 @@ def extract_cs_diff_defs(lines: list[str]) -> dict[str, dict[str, Any]]:
         mm = method_re.search(line)
         if mm:
             name, params_raw = mm.group(2), mm.group(3)
-            parts = [p.strip() for p in params_raw.split(",") if p.strip()]
+            parts = _split_bracket_aware(params_raw)
             req_count = sum(1 for p in parts if "=" not in p)
             defs[name] = {"name": name, "kind": "method", "required_count": req_count, "sig": line}
     return defs
 
 
-def extract_go_diff_defs(lines: list[str]) -> dict[str, dict[str, Any]]:
+def extract_go_diff_defs(lines: list[str] | Sequence[str] | None) -> dict[str, dict[str, Any]]:
     """Extract Go exported functions and types from diff lines."""
+    if not lines:
+        return {}
     defs: dict[str, dict[str, Any]] = {}
     func_re = re.compile(r"^\s*func\s+(?:\([^)]+\)\s+)?([A-Z][A-Za-z0-9_]*)\s*\((.*?)\)")
     type_re = re.compile(r"^\s*type\s+([A-Z][A-Za-z0-9_]*)\s+(struct|interface)")
     for raw in lines:
-        line = raw.strip()
+        line = _clean_diff_line(raw)
         fm = func_re.search(line)
         if fm:
             name = fm.group(1)
@@ -138,12 +175,14 @@ def extract_go_diff_defs(lines: list[str]) -> dict[str, dict[str, Any]]:
     return defs
 
 
-def extract_rust_diff_defs(lines: list[str]) -> dict[str, dict[str, Any]]:
+def extract_rust_diff_defs(lines: list[str] | Sequence[str] | None) -> dict[str, dict[str, Any]]:
     """Extract Rust pub items from diff lines."""
+    if not lines:
+        return {}
     defs: dict[str, dict[str, Any]] = {}
     rust_re = re.compile(r"^\s*pub(?:\(.*?\))?\s+(fn|struct|enum|trait|type)\s+([A-Za-z0-9_]+)")
     for raw in lines:
-        line = raw.strip()
+        line = _clean_diff_line(raw)
         rm = rust_re.search(line)
         if rm:
             kind, name = rm.group(1), rm.group(2)
