@@ -250,6 +250,3 @@ class SemanticGenerationCache:
             "runtime_hits": self.hits, "runtime_misses": self.misses, "comparisons": self.comparisons,
             "busy_fallbacks": self.busy_fallbacks, "threshold": self.threshold, "l1": self._recent.stats(),
         }
-
-
-
