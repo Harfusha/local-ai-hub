@@ -185,7 +185,7 @@ class AgentProjector:
                 "diff_sha256", "inventory_sha256", "file_sha256", "content_hash",
                 "search_cache", "targeted", "preprocessed_hit",
             ):
-                if key not in extra:
+                if key not in extra and not (task_kind == "artifact" and key == "file_sha256"):
                     data.pop(key, None)
 
         # Strip task/model execution plumbing unless requested
