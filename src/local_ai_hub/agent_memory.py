@@ -2952,34 +2952,112 @@ class MemoryStore:
         max_nodes: int = 50,
     ) -> dict[str, Any]:
         self._init_table()
-        visited_nodes: set[str] = {start_entity.strip()}
-        collected_edges: list[dict[str, Any]] = []
-        seen_edges: set[Any] = set()
-        queue = [(start_entity.strip(), 0)]
-        while queue and len(visited_nodes) < max_nodes:
-            curr_node, depth = queue.pop(0)
-            if depth >= max_depth:
-                continue
-            rels = self.find_relations(curr_node, direction="both", limit=20)
-            for r in rels:
-                edge_key = str(r.get("relation_id") or "") or (
-                    str(r.get("source_entity", "")),
-                    str(r.get("relation", "")),
-                    str(r.get("target_entity", "")),
-                )
-                if edge_key in seen_edges:
-                    continue
-                seen_edges.add(edge_key)
-                collected_edges.append(r)
-                neighbor = r["target_entity"] if r["source_entity"] == curr_node else r["source_entity"]
-                if neighbor not in visited_nodes and len(visited_nodes) < max_nodes:
-                    visited_nodes.add(neighbor)
-                    queue.append((neighbor, depth + 1))
-        return {
-            "success": True,
-            "start_entity": start_entity,
-            "nodes": sorted(list(visited_nodes)),
-            "edges": collected_edges,
-            "total_nodes": len(visited_nodes),
-            "total_edges": len(collected_edges),
-        }
+        start = start_entity.strip()
+        if not start:
+            return {
+                "success": True,
+                "start_entity": start_entity,
+                "nodes": [],
+                "edges": [],
+                "total_nodes": 0,
+                "total_edges": 0,
+            }
+
+        limit_nodes = max(1, int(max_nodes))
+        limit_depth = max(0, int(max_depth))
+
+        sql = """
+        WITH RECURSIVE
+          node_cte(entity, depth) AS (
+            SELECT ? AS entity, 0 AS depth
+            UNION
+            SELECT
+              CASE WHEN r.source_entity = n.entity THEN r.target_entity ELSE r.source_entity END,
+              n.depth + 1
+            FROM node_cte n
+            JOIN agent_entity_relations r ON (r.source_entity = n.entity OR r.target_entity = n.entity)
+            WHERE n.depth < ?
+          ),
+          bounded_nodes AS (
+            SELECT entity, MIN(depth) AS min_depth
+            FROM node_cte
+            GROUP BY entity
+            ORDER BY min_depth ASC
+            LIMIT ?
+          )
+        SELECT
+          'node' AS record_type,
+          b.entity AS node_name,
+          NULL AS relation_id,
+          NULL AS source_entity,
+          NULL AS relation,
+          NULL AS target_entity,
+          NULL AS weight,
+          NULL AS metadata,
+          NULL AS updated_at
+        FROM bounded_nodes b
+        UNION ALL
+        SELECT DISTINCT
+          'edge' AS record_type,
+          NULL AS node_name,
+          r.relation_id,
+          r.source_entity,
+          r.relation,
+          r.target_entity,
+          r.weight,
+          r.metadata,
+          r.updated_at
+        FROM agent_entity_relations r
+        JOIN bounded_nodes b1 ON (r.source_entity = b1.entity OR r.target_entity = b1.entity)
+        WHERE b1.min_depth < ?
+        ORDER BY record_type DESC, weight DESC, updated_at DESC
+        """
+
+        params = [start, limit_depth, limit_nodes, limit_depth]
+
+        def _fetch():
+            con = connect_sqlite(self.state_store.db_path)
+            try:
+                cur = con.execute(sql, params)
+                visited_nodes: set[str] = set()
+                collected_edges: list[dict[str, Any]] = []
+                seen_edges: set[Any] = set()
+                for row in cur.fetchall():
+                    if row[0] == "node":
+                        if row[1]:
+                            visited_nodes.add(str(row[1]))
+                    else:
+                        rel_id = str(row[2] or "")
+                        edge_key = rel_id or (str(row[3]), str(row[4]), str(row[5]))
+                        if edge_key in seen_edges:
+                            continue
+                        seen_edges.add(edge_key)
+                        meta_raw = row[7]
+                        if meta_raw:
+                            try:
+                                meta_dict = json.loads(meta_raw)
+                            except Exception:
+                                meta_dict = {}
+                        else:
+                            meta_dict = {}
+                        collected_edges.append({
+                            "relation_id": rel_id,
+                            "source_entity": str(row[3] or ""),
+                            "relation": str(row[4] or ""),
+                            "target_entity": str(row[5] or ""),
+                            "weight": float(row[6]) if row[6] is not None else 1.0,
+                            "metadata": meta_dict,
+                            "updated_at": float(row[8]) if row[8] is not None else 0.0,
+                        })
+                return {
+                    "success": True,
+                    "start_entity": start_entity,
+                    "nodes": sorted(list(visited_nodes)),
+                    "edges": collected_edges,
+                    "total_nodes": len(visited_nodes),
+                    "total_edges": len(collected_edges),
+                }
+            finally:
+                con.close()
+
+        return retry_busy(_fetch, retries=5, base_delay_seconds=0.02)
