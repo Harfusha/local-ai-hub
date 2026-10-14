@@ -2876,7 +2876,13 @@ class RAGStore:
                 ).strip().lower()
                 if reranker_device and reranker_device not in {"unknown", "none", "auto"} and not reranker_device.startswith("cpu"):
                     try:
-                        rr = self.reranker.rerank(query, [c["text"] for c in candidates], top_k=top_k, priority=priority)
+                        rr = self.reranker.rerank(
+                            query,
+                            [c["text"] for c in candidates],
+                            top_k=top_k,
+                            priority=priority,
+                            allow_cpu_fallback=False,
+                        )
                         if rr.get("success"):
                             ordered: list[dict[str, Any]] = []
                             for item in rr["results"]:
