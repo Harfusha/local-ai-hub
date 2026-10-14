@@ -42,6 +42,23 @@ class _DeadlinePool:
         return future
 
 
+def _wait_for_completed_futures(futures, timeout=None):
+    futures = set(futures)
+    done = {future for future in futures if future.done()}
+    return done, futures - done
+
+
+def test_deadline_wait_keeps_unresolved_future_pending():
+    unresolved = Future()
+    resolved = Future()
+    resolved.set_result("ready")
+
+    done, pending = _wait_for_completed_futures({unresolved, resolved}, timeout=0.01)
+
+    assert done == {resolved}
+    assert pending == {unresolved}
+
+
 def test_adaptive_context_retains_rag_when_cpu_reranking_would_miss_deadline(
     tmp_path, monkeypatch
 ):
@@ -66,11 +83,7 @@ def test_adaptive_context_retains_rag_when_cpu_reranking_would_miss_deadline(
         "rag",
         _DeadlinePool(services.rag),
     )
-    monkeypatch.setattr(
-        services_module,
-        "wait",
-        lambda futures, timeout=None: (set(futures), set()),
-    )
+    monkeypatch.setattr(services_module, "wait", _wait_for_completed_futures)
 
     result = services._hybrid_context_uncached(
         str(tmp_path), "deadline query", "tenant", "workspace", 512,
@@ -107,11 +120,7 @@ def test_adaptive_context_keeps_gpu_reranking_and_explicit_disable(
             "rag",
             _DeadlinePool(services.rag),
         )
-        monkeypatch.setattr(
-            services_module,
-            "wait",
-            lambda futures, timeout=None: (set(futures), set()),
-        )
+        monkeypatch.setattr(services_module, "wait", _wait_for_completed_futures)
 
         result = services._hybrid_context_uncached(
             str(tmp_path), "deadline query", "tenant", "workspace", 512,
