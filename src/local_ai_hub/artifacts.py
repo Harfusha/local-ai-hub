@@ -847,7 +847,7 @@ class ArtifactStore:
         slices: list[dict[str, int]],
         tenant: str | None = None,
     ) -> dict[str, Any]:
-        """Fetch several bounded, disjoint text spans with one SQLite read."""
+        """Fetch several bounded text spans in caller order with one SQLite read."""
         if not isinstance(slices, list) or not slices or len(slices) > MAX_ARTIFACT_SLICES:
             return {"success": False, "error": f"slices must contain 1 to {MAX_ARTIFACT_SLICES} ranges", "artifact_id": artifact_id}
 
