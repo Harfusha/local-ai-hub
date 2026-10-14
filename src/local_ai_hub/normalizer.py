@@ -15,10 +15,20 @@ def _trim_boundary_punctuation(text: str) -> str:
     return text[start:end]
 
 # Universal tag extractor for <think>, <thought>, <reasoning>, <scratchpad>, <plan>, <reflection>, etc.
+GENERIC_TAG_NAMES = "think|thought|reasoning|scratchpad|plan|reflection|inner_monologue"
 GENERIC_TAG_RE = re.compile(
-    r"<(?P<tag>think|thought|reasoning|scratchpad|plan|reflection|inner_monologue)>(?P<content>.*?)</(?P=tag)>",
+    rf"<(?P<tag>{GENERIC_TAG_NAMES})>(?P<content>.*?)</(?P=tag)>",
     re.DOTALL | re.IGNORECASE,
 )
+UNCLOSED_TAG_RE = re.compile(
+    rf"<(?P<tag>{GENERIC_TAG_NAMES})>(?P<content>.*?)\Z",
+    re.DOTALL | re.IGNORECASE,
+)
+ORPHANED_CLOSE_TAG_RE = re.compile(
+    rf"</(?:{GENERIC_TAG_NAMES})>",
+    re.IGNORECASE,
+)
+
 
 # Chat stop tokens emitted by raw LLM runtimes
 STOP_TOKENS_RE = re.compile(
@@ -156,8 +166,20 @@ def postprocess_model_output(
         if content:
             thinking_parts.append(content)
     
-    thinking: str | None = "\n\n".join(thinking_parts) if thinking_parts else None
     cleaned = GENERIC_TAG_RE.sub("", raw).strip()
+
+    # Handle unclosed thinking tags (e.g. truncated output / stream interruption)
+    unclosed_match = UNCLOSED_TAG_RE.search(cleaned)
+    if unclosed_match:
+        content = unclosed_match.group("content").strip()
+        if content:
+            thinking_parts.append(content)
+        cleaned = cleaned[:unclosed_match.start()].strip()
+
+    # Strip orphaned closing tags
+    cleaned = ORPHANED_CLOSE_TAG_RE.sub("", cleaned).strip()
+
+    thinking: str | None = "\n\n".join(thinking_parts) if thinking_parts else None
 
     # Some runtimes prepend BOM/zero-width format characters. They are invisible
     # in the dashboard but can break strict response-header validators.
@@ -181,9 +203,10 @@ def postprocess_model_output(
 
     # 4. Universal Markdown fence balance repair
     if repair_fences:
-        code_fence_count = cleaned.count("```")
-        if code_fence_count % 2 != 0:
-            cleaned = cleaned + "\n```"
+        for fence in ("```", "~~~"):
+            fence_count = cleaned.count(fence)
+            if fence_count % 2 != 0:
+                cleaned = cleaned + f"\n{fence}"
 
     # 5. Deduplicate excessive consecutive newlines
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
@@ -196,10 +219,20 @@ def postprocess_patch(diff_text: str) -> str:
     if not diff_text:
         return ""
     lines = str(diff_text).replace("\r\n", "\n").replace("\r", "\n").splitlines()
-    start_idx = 0
+    start_idx = -1
     for i, line in enumerate(lines):
-        if line.startswith("diff --git") or line.startswith("--- ") or line.startswith("+++ "):
+        if line.startswith(("diff --git", "--- ", "+++ ", "@@ ")):
             start_idx = i
             break
+    if start_idx == -1:
+        start_idx = 0
     cleaned_lines = lines[start_idx:]
+    while cleaned_lines:
+        last = cleaned_lines[-1]
+        if last.startswith(("diff ", "index ", "--- ", "+++ ", "@@", " ", "+", "-", "\\")) or last == "":
+            break
+        cleaned_lines.pop()
+    if not cleaned_lines:
+        return ""
     return "\n".join(cleaned_lines).rstrip() + "\n"
+
