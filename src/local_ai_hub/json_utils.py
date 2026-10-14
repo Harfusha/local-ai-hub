@@ -66,6 +66,9 @@ def dumps(value: Any, **kwargs: Any) -> str:
     supported = {"ensure_ascii", "separators", "sort_keys", "default"}
     compact = kwargs.get("separators") == (",", ":") and not kwargs.get("ensure_ascii", False)
     if compact and not (set(kwargs) - supported):
+        # A custom default may produce mapping keys not visible to the graph walk.
+        if kwargs.get("sort_keys") and kwargs.get("default") is not None:
+            return json.dumps(value, **kwargs)
         # orjson sorts coerced key strings, while the stdlib sorts original
         # key types before coercion. Keep canonical ordering for non-string keys.
         if kwargs.get("sort_keys") and _has_non_string_mapping_key(value):
@@ -93,6 +96,8 @@ def dumps_bytes(value: Any, **kwargs: Any) -> bytes:
     supported = {"ensure_ascii", "separators", "sort_keys", "default"}
     compact = kwargs.get("separators") == (",", ":") and not kwargs.get("ensure_ascii", False)
     if compact and not (set(kwargs) - supported):
+        if kwargs.get("sort_keys") and kwargs.get("default") is not None:
+            return json.dumps(value, **kwargs).encode("utf-8")
         if kwargs.get("sort_keys") and _has_non_string_mapping_key(value):
             return json.dumps(value, **kwargs).encode("utf-8")
         if _orjson is not None:

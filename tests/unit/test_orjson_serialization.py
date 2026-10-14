@@ -1,4 +1,5 @@
 import json
+import pytest
 
 from local_ai_hub import json_utils
 from local_ai_hub import http_server
@@ -67,6 +68,28 @@ def test_sorted_non_string_keys_keep_stdlib_ordering():
     assert json_utils.dumps_bytes({2: "two", 10: "ten"}, sort_keys=True) == b'{"2":"two","10":"ten"}'
 
 
+def test_sorted_nested_non_string_keys_keep_stdlib_ordering():
+    value = {"items": [{2: "two", 10: "ten"}]}
+
+    assert json_utils.dumps(value, sort_keys=True) == '{"items":[{"2":"two","10":"ten"}]}'
+    assert json_utils.dumps_bytes(value, sort_keys=True) == b'{"items":[{"2":"two","10":"ten"}]}'
+
+
+def test_sorted_default_result_with_nested_non_string_keys_keeps_stdlib_ordering():
+    class CustomValue:
+        pass
+
+    def default(_value):
+        return {"items": [{2: "two", 10: "ten"}]}
+
+    value = CustomValue()
+    expected = '{"items":[{"2":"two","10":"ten"}]}'
+    actual_text = json_utils.dumps(value, sort_keys=True, default=default)
+    actual_bytes = json_utils.dumps_bytes(value, sort_keys=True, default=default)
+
+    assert (actual_text, actual_bytes) == (expected, expected.encode("utf-8"))
+
+
 def test_non_string_key_coercion_preserves_duplicate_key_order():
     value = {1: "integer", "1": "string"}
 
@@ -78,4 +101,21 @@ def test_mcp_wire_view_keeps_json_text_as_string():
 
     assert wire["content"][0]["type"] == "text"
     assert wire["content"][0]["text"] == '{"ok":true}'
+    assert isinstance(wire["content"][0]["text"], str)
+
+
+@pytest.mark.skipif(
+    json_utils._orjson is None or not hasattr(mcp_server, "_mcp_wire_view"),
+    reason="orjson and FastMCP are optional dependencies",
+)
+def test_installed_orjson_non_string_keys_work_across_http_and_mcp_boundaries():
+    value = {2: "two", "nested": [{3: "three"}]}
+    expected = b'{"2":"two","nested":[{"3":"three"}]}'
+
+    assert json_utils.dumps(value).encode("utf-8") == expected
+    assert json_utils.dumps_bytes(value) == expected
+    assert http_server._json_bytes(value) == expected
+
+    wire = mcp_server._mcp_wire_view(value, structured=False)
+    assert wire["content"][0]["text"] == expected.decode("utf-8")
     assert isinstance(wire["content"][0]["text"], str)
