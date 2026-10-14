@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import math
+import os
 import re
 from dataclasses import dataclass, field
 from enum import Enum
@@ -73,22 +75,43 @@ class ScopeContext:
     task_id: str = ""
     session_id: str = ""
 
-    def matches(self, scope: AgentScope, scope_id: str = "") -> bool:
-        if scope == AgentScope.GLOBAL:
+    def matches(self, scope: AgentScope | str, scope_id: str = "") -> bool:
+        parsed_scope = AgentScope.parse(scope)
+        if parsed_scope == AgentScope.GLOBAL:
             return True
-        if scope == AgentScope.REPOSITORY:
+        if parsed_scope == AgentScope.REPOSITORY:
             return bool(self.repository_id) and (not scope_id or scope_id == self.repository_id)
-        if scope == AgentScope.CLONE:
+        if parsed_scope == AgentScope.CLONE:
             return bool(self.clone_id) and (not scope_id or scope_id == self.clone_id)
-        if scope == AgentScope.WORKTREE:
+        if parsed_scope == AgentScope.WORKTREE:
             return bool(self.worktree_id) and (not scope_id or scope_id == self.worktree_id)
-        if scope == AgentScope.BRANCH:
+        if parsed_scope == AgentScope.BRANCH:
             return bool(self.branch) and (not scope_id or scope_id == self.branch)
-        if scope == AgentScope.TASK:
+        if parsed_scope == AgentScope.TASK:
             return bool(self.task_id) and (not scope_id or scope_id == self.task_id)
-        if scope == AgentScope.SESSION:
+        if parsed_scope == AgentScope.SESSION:
             return bool(self.session_id) and (not scope_id or scope_id == self.session_id)
         return False
+
+    def is_empty(self) -> bool:
+        return not any((
+            self.repository_id,
+            self.clone_id,
+            self.worktree_id,
+            self.branch,
+            self.task_id,
+            self.session_id,
+        ))
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "repository_id": self.repository_id,
+            "clone_id": self.clone_id,
+            "worktree_id": self.worktree_id,
+            "branch": self.branch,
+            "task_id": self.task_id,
+            "session_id": self.session_id,
+        }
 
 
 @dataclass(frozen=True)
@@ -109,12 +132,15 @@ class ScopedRecord:
 class ScopeResolver:
     def resolve(
         self,
-        records: Iterable[ScopedRecord],
-        context: ScopeContext,
+        records: Iterable[ScopedRecord] | None,
+        context: ScopeContext | None,
     ) -> list[ScopedRecord]:
+        if records is None:
+            return []
+        ctx = context or ScopeContext()
         applicable: list[ScopedRecord] = []
         for r in records:
-            if r.status in ("active", "confirmed") and context.matches(r.scope, r.scope_id):
+            if r.status in ("active", "confirmed") and ctx.matches(r.scope, r.scope_id):
                 applicable.append(r)
 
         groups: dict[str, list[ScopedRecord]] = {}
@@ -128,6 +154,13 @@ class ScopeResolver:
                 results.append(recs[0])
                 continue
 
+            def _safe_float(val: Any) -> float:
+                try:
+                    f = float(val or 0.0)
+                    return f if math.isfinite(f) else 0.0
+                except (TypeError, ValueError, OverflowError):
+                    return 0.0
+
             # Deterministic resolution:
             # 1. Higher scope specificity rank wins (more specific scope)
             # 2. Evidence quality: count of verified evidence IDs
@@ -138,8 +171,8 @@ class ScopeResolver:
                 key=lambda r: (
                     r.scope.rank,
                     len(r.evidence_ids),
-                    float(r.confidence),
-                    float(r.created_at),
+                    _safe_float(r.confidence),
+                    _safe_float(r.created_at),
                 ),
             )
             results.append(best)
@@ -161,10 +194,12 @@ class RepositoryIdentity:
     ) -> RepositoryIdentity:
         if remote_url:
             cleaned = remote_url.strip().lower()
-            cleaned = re.sub(r"^git@[^:]+:", "", cleaned)
+            cleaned = re.sub(r"^(?:ssh://)?git@[^:/]+[:/](?:\d+/)?", "", cleaned)
             cleaned = re.sub(r"^https?://[^/]+/", "", cleaned)
+            cleaned = re.sub(r"^ssh://[^/]+/", "", cleaned)
             cleaned = re.sub(r"\.git$", "", cleaned)
-            name = cleaned.strip("/").split("/")[-1] if "/" in cleaned else cleaned
+            cleaned = cleaned.rstrip("/")
+            name = cleaned.split("/")[-1] if "/" in cleaned else cleaned
             h = hashlib.sha256(cleaned.encode("utf-8")).hexdigest()[:16]
             return cls(
                 family_id=f"repofam_{h}",
@@ -173,9 +208,13 @@ class RepositoryIdentity:
             )
 
         # No remote available: local stable opaque ID
-        seed = str(root or "local_repo")
-        # Ensure no user personal paths are exposed
-        base_name = Path(seed).name or "local_repo"
+        if root:
+            canonical_path = os.path.normcase(str(Path(root).resolve(strict=False)))
+            base_name = Path(canonical_path).name or "local_repo"
+            seed = canonical_path
+        else:
+            seed = "local_repo"
+            base_name = "local_repo"
         h = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
         return cls(
             family_id=f"repofam_local_{h}",
@@ -202,16 +241,24 @@ class EnvironmentCapsule:
     values: dict[str, Any]
 
     @classmethod
-    def from_mapping(cls, env: Mapping[str, Any]) -> EnvironmentCapsule:
+    def from_mapping(cls, env: Mapping[str, Any] | None) -> EnvironmentCapsule:
+        if env is None or not isinstance(env, Mapping):
+            return cls(values={})
         sanitized: dict[str, Any] = {}
         for k, v in env.items():
             key_str = str(k).strip()
+            if not key_str:
+                continue
             if _SECRET_KEY_PATTERNS.search(key_str):
                 continue
             if _PATH_KEY_PATTERNS.search(key_str):
                 continue
 
-            if isinstance(v, (int, float, bool)):
+            if isinstance(v, bool):
+                sanitized[key_str] = v
+            elif isinstance(v, (int, float)):
+                if isinstance(v, float) and not math.isfinite(v):
+                    continue
                 sanitized[key_str] = v
             elif isinstance(v, str):
                 val_str = v.strip()
@@ -221,7 +268,12 @@ class EnvironmentCapsule:
                     continue
                 sanitized[key_str] = val_str
             elif isinstance(v, (list, tuple)):
-                if all(isinstance(item, (int, float, bool, str)) and not _PATH_VALUE_PATTERNS.search(str(item)) for item in v):
+                if all(
+                    (isinstance(item, bool))
+                    or (isinstance(item, (int, float)) and math.isfinite(item))
+                    or (isinstance(item, str) and not _PATH_VALUE_PATTERNS.search(item))
+                    for item in v
+                ):
                     sanitized[key_str] = list(v)
         return cls(values=sanitized)
 
