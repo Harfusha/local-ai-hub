@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import hashlib
 import json
+import locale
 import ntpath
 import os
 import posixpath
@@ -1059,11 +1060,109 @@ def retain_process_job_in_child(process: subprocess.Popen[Any]) -> bool:
         return False
 
 
+class _BoundedPipeCapture:
+    """Thread-safe rolling capture that keeps returned output within a byte cap."""
+
+    def __init__(self, max_bytes: int, text_mode: bool, encoding: str, errors: str):
+        self.max_bytes = max(1024, int(max_bytes))
+        self.text_mode = text_mode
+        self.encoding = encoding
+        self.errors = errors
+        self._data: bytearray | list[str] = [] if text_mode else bytearray()
+        self._size = 0
+        self.discarded_bytes = 0
+        self.lock = threading.Lock()
+
+    def _encode(self, value: str) -> bytes:
+        return value.encode(self.encoding, errors=self.errors)
+
+    def append(self, chunk: Any) -> None:
+        if self.text_mode:
+            text = chunk if isinstance(chunk, str) else chunk.decode(self.encoding, errors=self.errors)
+            encoded = self._encode(text)
+            if len(encoded) > self.max_bytes:
+                low, high = 0, len(text)
+                while low < high:
+                    middle = (low + high) // 2
+                    if len(self._encode(text[middle:])) <= self.max_bytes:
+                        high = middle
+                    else:
+                        low = middle + 1
+                removed = self._encode(text[:low])
+                text = text[low:]
+                encoded = self._encode(text)
+            else:
+                removed = b""
+            with self.lock:
+                data = self._data
+                assert isinstance(data, list)
+                data.append(text)
+                self._size += len(encoded)
+                self.discarded_bytes += len(removed)
+                while data and self._size > self.max_bytes:
+                    first = data[0]
+                    first_bytes = len(self._encode(first))
+                    excess = self._size - self.max_bytes
+                    if first_bytes <= excess:
+                        data.pop(0)
+                        self._size -= first_bytes
+                        self.discarded_bytes += first_bytes
+                    else:
+                        low, high = 0, len(first)
+                        target = first_bytes - excess
+                        while low < high:
+                            middle = (low + high) // 2
+                            if len(self._encode(first[middle:])) <= target:
+                                high = middle
+                            else:
+                                low = middle + 1
+                        removed_text = first[:low]
+                        data[0] = first[low:]
+                        removed_bytes = len(self._encode(removed_text))
+                        self._size -= removed_bytes
+                        self.discarded_bytes += removed_bytes
+            return
+
+        raw = chunk if isinstance(chunk, bytes) else str(chunk).encode(self.encoding, errors=self.errors)
+        with self.lock:
+            data = self._data
+            assert isinstance(data, bytearray)
+            if len(raw) >= self.max_bytes:
+                self.discarded_bytes += self._size + len(raw) - self.max_bytes
+                data[:] = raw[-self.max_bytes:]
+                self._size = len(data)
+            else:
+                data.extend(raw)
+                self._size += len(raw)
+                excess = self._size - self.max_bytes
+                if excess > 0:
+                    del data[:excess]
+                    self._size -= excess
+                    self.discarded_bytes += excess
+
+    def getvalue(self) -> Any:
+        with self.lock:
+            if self.text_mode:
+                data = self._data
+                assert isinstance(data, list)
+                return "".join(data)
+            data = self._data
+            assert isinstance(data, bytearray)
+            return bytes(data)
+
+
+def _attach_capture_limits(target: Any, stdout: _BoundedPipeCapture, stderr: _BoundedPipeCapture) -> None:
+    target.stdout_truncated = bool(stdout.discarded_bytes)
+    target.stderr_truncated = bool(stderr.discarded_bytes)
+    target.discarded_output_bytes = stdout.discarded_bytes + stderr.discarded_bytes
+
+
 def run_hidden(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
     opts = dict(kwargs)
     timeout = opts.pop("timeout", 60.0)
     cancel_event = opts.pop("cancel_event", None)
     cancel_grace_seconds = float(opts.pop("cancel_grace_seconds", _CANCEL_GRACE_SECONDS))
+    max_output_bytes = max(1024, int(opts.pop("max_output_bytes", 8_000_000)))
     check = bool(opts.pop("check", False))
     input_data = opts.pop("input", None)
     capture_output = bool(opts.pop("capture_output", False))
@@ -1088,79 +1187,182 @@ def run_hidden(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProces
     if cancel_event is not None and cancel_event.is_set():
         raise ProcessCancelledError(command)
     process = popen_managed(command, **opts)
-    try:
-        if cancel_event is None:
-            stdout, stderr = process.communicate(input=input_data, timeout=timeout)
-        else:
-            deadline = None if timeout is None else time.monotonic() + float(timeout)
-            first_communicate = True
+    text_mode = bool(opts.get("text") or opts.get("universal_newlines") or opts.get("encoding") or opts.get("errors"))
+    output_encoding = opts.get("encoding") or locale.getpreferredencoding(False)
+    output_errors = opts.get("errors") or "strict"
+    stdout_pipe = getattr(process, "stdout", None)
+    stderr_pipe = getattr(process, "stderr", None)
+    stdin_pipe = getattr(process, "stdin", None)
+    stdout_capture = _BoundedPipeCapture(max_output_bytes, text_mode, output_encoding, output_errors)
+    stderr_capture = _BoundedPipeCapture(max_output_bytes, text_mode, output_encoding, output_errors)
+    reader_errors: list[BaseException] = []
+    writer_errors: list[BaseException] = []
+
+    def drain(stream: Any, capture: _BoundedPipeCapture) -> None:
+        try:
+            read_chunk = getattr(stream, "read1", None) or stream.read
             while True:
-                if cancel_event.is_set():
-                    process_group = None
-                    if os.name != "nt":
-                        requested_group = opts.get("process_group")
-                        if requested_group is not None:
-                            process_group = process.pid if int(requested_group) == 0 else int(requested_group)
-                        elif opts.get("start_new_session"):
-                            process_group = process.pid
-                    cleanup = _terminate_and_drain(
-                        process,
-                        process_group=process_group,
-                        grace_seconds=cancel_grace_seconds,
-                        require_tree_termination=True,
-                    )
-                    error = ProcessCancelledError(command, cleanup.stdout, cleanup.stderr)
-                    _attach_cleanup_outcome(error, cleanup)
-                    raise error
-                remaining = None if deadline is None else deadline - time.monotonic()
-                if remaining is not None and remaining <= 0:
-                    raise subprocess.TimeoutExpired(command, timeout)
-                wait_for = _CANCEL_POLL_SECONDS if remaining is None else min(_CANCEL_POLL_SECONDS, remaining)
-                try:
-                    stdout, stderr = process.communicate(
-                        input=input_data if first_communicate else None,
-                        timeout=wait_for,
-                    )
+                chunk = read_chunk(65536)
+                if not chunk:
                     break
-                except subprocess.TimeoutExpired:
-                    first_communicate = False
-                    continue
-    except ProcessCancelledError:
-        raise
-    except ProcessCleanupUnverifiedError:
-        raise
-    except subprocess.TimeoutExpired as timeout_error:
+                capture.append(chunk)
+        except BaseException as exc:
+            reader_errors.append(exc)
+        finally:
+            try:
+                stream.close()
+            except Exception:
+                pass
+
+    readers: list[threading.Thread] = []
+    for stream, capture, name in (
+        (stdout_pipe, stdout_capture, "run-hidden-stdout"),
+        (stderr_pipe, stderr_capture, "run-hidden-stderr"),
+    ):
+        if stream is not None:
+            thread = threading.Thread(target=drain, args=(stream, capture), name=name, daemon=True)
+            thread.start()
+            readers.append(thread)
+
+    def write_input() -> None:
+        try:
+            if input_data is not None and stdin_pipe is not None:
+                stdin_pipe.write(input_data)
+                stdin_pipe.flush()
+        except BrokenPipeError:
+            pass
+        except BaseException as exc:
+            writer_errors.append(exc)
+        finally:
+            if stdin_pipe is not None:
+                try:
+                    stdin_pipe.close()
+                except BrokenPipeError:
+                    pass
+                except Exception as exc:
+                    writer_errors.append(exc)
+
+    writer: threading.Thread | None = None
+    if stdin_pipe is not None:
+        if input_data is not None:
+            writer = threading.Thread(target=write_input, name="run-hidden-stdin", daemon=True)
+            writer.start()
+        else:
+            stdin_pipe.close()
+
+    def captured() -> tuple[Any, Any]:
+        return stdout_capture.getvalue(), stderr_capture.getvalue()
+
+    def terminate_and_join(*, require_tree_termination: bool) -> _CleanupOutcome:
         process_group = None
+        cleanup_kwargs: dict[str, Any] = {}
         if os.name != "nt":
             requested_group = opts.get("process_group")
             if requested_group is not None:
                 process_group = process.pid if int(requested_group) == 0 else int(requested_group)
             elif opts.get("start_new_session"):
                 process_group = process.pid
-        cleanup = _terminate_and_drain(process, process_group=process_group)
-        error = subprocess.TimeoutExpired(
-            command,
-            timeout,
-            output=cleanup.stdout if cleanup.stdout is not None else timeout_error.output,
-            stderr=cleanup.stderr if cleanup.stderr is not None else timeout_error.stderr,
-        )
-        _attach_cleanup_outcome(error, cleanup)
-        raise error from None
+        if process_group is not None:
+            cleanup_kwargs["process_group"] = process_group
+            expected_identity = getattr(process, "_local_ai_process_identity", None)
+            if expected_identity is not None:
+                cleanup_kwargs["expected_identity"] = expected_identity
+        if require_tree_termination:
+            cleanup_kwargs["grace_seconds"] = cancel_grace_seconds
+        confirmed = _request_tree_cleanup(process, cleanup_kwargs)
+        if os.name == "nt" and not confirmed:
+            try:
+                if process.poll() is None:
+                    process.kill()
+            except OSError:
+                pass
+        try:
+            process.wait(timeout=max(0.1, cancel_grace_seconds if require_tree_termination else _POST_TERMINATION_DRAIN_SECONDS))
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        join_deadline = time.monotonic() + _POST_TERMINATION_DRAIN_SECONDS
+        for thread in readers + ([writer] if writer is not None else []):
+            thread.join(timeout=max(0.0, join_deadline - time.monotonic()))
+        if any(thread.is_alive() for thread in readers + ([writer] if writer is not None else [])):
+            for stream in (stdout_pipe, stderr_pipe, stdin_pipe):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
+            for thread in readers + ([writer] if writer is not None else []):
+                thread.join(timeout=_POST_TERMINATION_DRAIN_SECONDS)
+        confirmed = confirmed and process.poll() is not None
+        stdout, stderr = captured()
+        cleanup = _CleanupOutcome(stdout, stderr, confirmed, process, process_group)
+        if require_tree_termination and (
+            not confirmed or any(thread.is_alive() for thread in readers + ([writer] if writer is not None else []))
+        ):
+            error = ProcessCleanupUnverifiedError(
+                command, process=process, tree_termination_confirmed=confirmed,
+                output=stdout, stderr=stderr,
+            )
+            _attach_cleanup_outcome(error, cleanup)
+            _attach_capture_limits(error, stdout_capture, stderr_capture)
+            raise error
+        return cleanup
+
+    deadline = None if timeout is None else time.monotonic() + float(timeout)
+    try:
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                cleanup = terminate_and_join(require_tree_termination=True)
+                error = ProcessCancelledError(command, cleanup.stdout, cleanup.stderr)
+                _attach_cleanup_outcome(error, cleanup)
+                _attach_capture_limits(error, stdout_capture, stderr_capture)
+                raise error
+            process_done = process.poll() is not None
+            streams_done = all(not thread.is_alive() for thread in readers)
+            writer_done = writer is None or not writer.is_alive()
+            if streams_done and reader_errors:
+                raise reader_errors[0]
+            if writer_done and writer_errors:
+                raise writer_errors[0]
+            if process_done and streams_done and writer_done:
+                break
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                cleanup = terminate_and_join(require_tree_termination=False)
+                error = subprocess.TimeoutExpired(command, timeout, output=cleanup.stdout, stderr=cleanup.stderr)
+                _attach_cleanup_outcome(error, cleanup)
+                _attach_capture_limits(error, stdout_capture, stderr_capture)
+                raise error
+            time.sleep(_CANCEL_POLL_SECONDS if remaining is None else min(_CANCEL_POLL_SECONDS, remaining))
+        if reader_errors:
+            raise reader_errors[0]
+        if writer_errors:
+            raise writer_errors[0]
+    except (ProcessCancelledError, ProcessCleanupUnverifiedError, subprocess.TimeoutExpired):
+        raise
     except BaseException as error:
-        cleanup = _terminate_and_drain(process)
+        cleanup = terminate_and_join(require_tree_termination=False)
         _attach_cleanup_outcome(error, cleanup)
+        _attach_capture_limits(error, stdout_capture, stderr_capture)
         raise
 
+    stdout, stderr = captured()
+    if stdout_pipe is None:
+        stdout = None
+    if stderr_pipe is None:
+        stderr = None
     returncode = process.wait()
     if getattr(process, "_local_ai_job_handle", None) and not _release_process_job(process):
-        cleanup = _terminate_and_drain(process)
+        cleanup = terminate_and_join(require_tree_termination=False)
         if getattr(process, "_local_ai_job_handle", None):
             error = OSError("Unable to close Windows Job Object after process completion")
             _attach_cleanup_outcome(error, cleanup)
             raise error
     completed = subprocess.CompletedProcess(command, returncode, stdout, stderr)
+    _attach_capture_limits(completed, stdout_capture, stderr_capture)
     if check and returncode:
-        raise subprocess.CalledProcessError(returncode, command, stdout, stderr)
+        error = subprocess.CalledProcessError(returncode, command, stdout, stderr)
+        _attach_capture_limits(error, stdout_capture, stderr_capture)
+        raise error
     return completed
 
 

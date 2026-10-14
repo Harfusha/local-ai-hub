@@ -236,6 +236,7 @@ def validate_config(data: dict[str, Any]) -> None:
     _number(commands, "terminate_grace_seconds", minimum=0.1, maximum=30)
     _number(commands, "post_kill_drain_seconds", minimum=0.1, maximum=30)
     _number(commands, "max_output_chars", minimum=1024, maximum=100_000_000)
+    _number(commands, "max_output_bytes", minimum=1024, maximum=400_000_000)
 
     mcp = data.get("mcp", {})
     for key in ("quick_timeout_seconds", "context_timeout_seconds", "model_timeout_seconds", "long_timeout_seconds", "host_tool_timeout_seconds"):
