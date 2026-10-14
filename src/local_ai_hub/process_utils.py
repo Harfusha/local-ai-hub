@@ -21,7 +21,7 @@ import uuid
 import weakref
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 
 _LOW_PRIORITY_VALUES = {"idle", "below_normal", "normal"}
@@ -479,6 +479,77 @@ def _wait_pidfd(pidfd: int, timeout: float) -> bool:
         return bool(poller.poll(max(0, int(float(timeout) * 1000))))
     except (OSError, ValueError, TypeError):
         return False
+
+
+def terminate_subprocess_grace_window(
+    process: subprocess.Popen[Any],
+    *,
+    grace_seconds: float = 5.0,
+    kill_timeout: float = 1.0,
+    time_fn: Callable[[], float] = time.monotonic,
+) -> bool:
+    """Terminate a subprocess gracefully with SIGTERM/terminate, then escalate to SIGKILL/kill after grace_seconds wall-clock window."""
+    if process.poll() is not None:
+        return True
+
+    # 1. Initiate graceful termination
+    try:
+        process.terminate()
+    except (ProcessLookupError, OSError):
+        return process.poll() is not None
+
+    if process.poll() is not None:
+        return True
+
+    # 2. Wait within the wall-clock grace window
+    grace = max(0.0, float(grace_seconds))
+    if grace > 0:
+        deadline = time_fn() + grace
+        while True:
+            remaining = deadline - time_fn()
+            if remaining <= 0:
+                break
+            try:
+                process.wait(timeout=min(0.05, remaining))
+                if process.poll() is not None:
+                    return True
+            except (subprocess.TimeoutExpired, TimeoutError):
+                pass
+            except (ProcessLookupError, OSError):
+                return process.poll() is not None
+
+    if process.poll() is not None:
+        return True
+
+    # 3. Escalate to kill (SIGKILL)
+    try:
+        process.kill()
+    except (ProcessLookupError, OSError):
+        return process.poll() is not None
+
+    # 4. Wait for post-kill exit within kill_timeout
+    kill_wait = max(0.0, float(kill_timeout))
+    if kill_wait > 0:
+        kill_deadline = time_fn() + kill_wait
+        while True:
+            remaining = kill_deadline - time_fn()
+            if remaining <= 0:
+                break
+            try:
+                process.wait(timeout=min(0.05, remaining))
+                if process.poll() is not None:
+                    return True
+            except (subprocess.TimeoutExpired, TimeoutError):
+                pass
+            except (ProcessLookupError, OSError):
+                return process.poll() is not None
+    else:
+        try:
+            process.wait(timeout=0)
+        except (subprocess.TimeoutExpired, TimeoutError, OSError):
+            pass
+
+    return process.poll() is not None
 
 
 def terminate_process_handle(
