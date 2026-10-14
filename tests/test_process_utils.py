@@ -148,13 +148,27 @@ def test_process_identity_returns_current_process_identity():
 
 class _FakeProcess:
     pid = 4321
-    returncode = 0
 
     def __init__(self, communicate_results):
         self.args = ["tool"]
-        self.communicate_results = iter(communicate_results)
-        self.stdout = io.BytesIO()
-        self.stderr = io.BytesIO()
+        results = list(communicate_results)
+        self.communicate_results = iter(results)
+        first = results[0] if results else (None, None)
+        if isinstance(first, subprocess.TimeoutExpired):
+            stdout, stderr = first.output, first.stderr
+            self.returncode = None
+        elif isinstance(first, BaseException):
+            stdout = stderr = b""
+            self.returncode = None
+            if isinstance(first, KeyboardInterrupt):
+                self.stdout = _RaisingPipe(first)
+        else:
+            stdout, stderr = first
+            self.returncode = 0
+        if not hasattr(self, "stdout"):
+            self.stdout = io.BytesIO(stdout or b"")
+        self.stderr = io.BytesIO(stderr or b"")
+        self.stdin = None
         self.wait_timeouts = []
 
     def communicate(self, input=None, timeout=None):
@@ -178,6 +192,18 @@ class _FakeProcess:
     def wait(self, timeout=None):
         self.wait_timeouts.append(timeout)
         return self.returncode
+
+
+class _RaisingPipe:
+    def __init__(self, error):
+        self.error = error
+        self.closed = False
+
+    def read1(self, _size):
+        raise self.error
+
+    def close(self):
+        self.closed = True
 
 
 def test_run_hidden_timeout_terminates_tree_before_reporting_timeout(monkeypatch):
@@ -213,17 +239,7 @@ def test_run_hidden_cancellation_terminates_tree_and_drains_output(monkeypatch):
         ]
     )
     process.returncode = None
-    original_communicate = process.communicate
-    first_call = True
-
-    def communicate(input=None, timeout=None):
-        nonlocal first_call
-        if first_call:
-            first_call = False
-            cancel_event.set()
-        return original_communicate(input=input, timeout=timeout)
-
-    process.communicate = communicate
+    threading.Timer(0.02, cancel_event.set).start()
     calls = []
     monkeypatch.setattr(process_utils.os, "name", "posix")
     monkeypatch.setattr(process_utils.subprocess, "Popen", lambda *a, **k: process)
@@ -538,17 +554,7 @@ def test_run_hidden_cancellation_terminates_tree_and_drains_output(monkeypatch):
         ]
     )
     process.returncode = None
-    original_communicate = process.communicate
-    first_call = True
-
-    def communicate(input=None, timeout=None):
-        nonlocal first_call
-        if first_call:
-            first_call = False
-            cancel_event.set()
-        return original_communicate(input=input, timeout=timeout)
-
-    process.communicate = communicate
+    threading.Timer(0.02, cancel_event.set).start()
     calls = []
     monkeypatch.setattr(process_utils.os, "name", "posix")
     monkeypatch.setattr(process_utils.subprocess, "Popen", lambda *a, **k: process)

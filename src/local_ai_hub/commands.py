@@ -2804,41 +2804,84 @@ def _redact_secrets(text: str) -> str:
 
 
 class _BoundedStreamBuffer:
-    """Bounded rolling buffer that retains the most recent output characters without OOM."""
+    """Bounded rolling buffer that retains recent output within character and byte limits."""
 
-    def __init__(self, max_chars: int, redact: bool = True):
+    def __init__(self, max_chars: int, max_bytes: int = 8_000_000, redact: bool = True):
         self.max_chars = max(1024, int(max_chars))
+        self.max_bytes = max(1024, int(max_bytes))
         self.chunks: deque[str] = deque()
         self.total_chars = 0
+        self.total_bytes = 0
         self.total_lines = 0
         self.discarded_chars = 0
+        self.discarded_bytes = 0
         self.lock = threading.Lock()
         self.redact = redact
+
+    @staticmethod
+    def _encoded_size(text: str) -> int:
+        return len(text.encode("utf-8", errors="replace"))
+
+    @classmethod
+    def _drop_prefix_bytes(cls, text: str, byte_limit: int) -> tuple[str, int, int]:
+        """Return suffix fitting byte_limit, plus removed chars and bytes."""
+        size = cls._encoded_size(text)
+        if size <= byte_limit:
+            return text, 0, 0
+        low, high = 0, len(text)
+        while low < high:
+            middle = (low + high) // 2
+            if cls._encoded_size(text[middle:]) <= byte_limit:
+                high = middle
+            else:
+                low = middle + 1
+        removed = text[:low]
+        return text[low:], low, cls._encoded_size(removed)
 
     def append(self, chunk: str) -> None:
         if not chunk:
             return
         cleaned = _redact_secrets(chunk) if self.redact else chunk
         discarded_chars = 0
+        discarded_bytes = 0
         if len(cleaned) > self.max_chars:
             discarded_chars += len(cleaned) - self.max_chars
+            discarded_bytes += self._encoded_size(cleaned[: len(cleaned) - self.max_chars])
             cleaned = cleaned[-self.max_chars:]
+        cleaned, removed_chars, removed_bytes = self._drop_prefix_bytes(cleaned, self.max_bytes)
+        discarded_chars += removed_chars
+        discarded_bytes += removed_bytes
         with self.lock:
             self.total_lines += 1
             self.total_chars += len(cleaned)
+            self.total_bytes += self._encoded_size(cleaned)
             self.chunks.append(cleaned)
-            while self.chunks and self.total_chars > self.max_chars:
-                excess = self.total_chars - self.max_chars
+            while self.chunks and (self.total_chars > self.max_chars or self.total_bytes > self.max_bytes):
                 first = self.chunks[0]
-                if len(first) <= excess:
+                char_excess = max(0, self.total_chars - self.max_chars)
+                byte_excess = max(0, self.total_bytes - self.max_bytes)
+                first_bytes = self._encoded_size(first)
+                if len(first) <= char_excess or first_bytes <= byte_excess:
                     self.chunks.popleft()
                     self.total_chars -= len(first)
+                    self.total_bytes -= first_bytes
                     discarded_chars += len(first)
+                    discarded_bytes += first_bytes
                 else:
-                    self.chunks[0] = first[excess:]
-                    self.total_chars -= excess
-                    discarded_chars += excess
+                    if char_excess:
+                        removed = first[:char_excess]
+                        kept = first[char_excess:]
+                        removed_bytes = self._encoded_size(removed)
+                    else:
+                        kept, removed_chars, removed_bytes = self._drop_prefix_bytes(first, max(0, first_bytes - byte_excess))
+                        removed = first[:removed_chars]
+                    self.chunks[0] = kept
+                    self.total_chars -= len(removed)
+                    self.total_bytes -= removed_bytes
+                    discarded_chars += len(removed)
+                    discarded_bytes += removed_bytes
             self.discarded_chars += discarded_chars
+            self.discarded_bytes += discarded_bytes
 
     def getvalue(self) -> str:
         with self.lock:
@@ -2952,6 +2995,7 @@ class CommandBroker:
         self.policy_blocking = bool(cfg.get("policy_blocking", False))
         self.timeout = int(cfg.get("timeout_seconds", 1800))
         self.max_output_chars = int(cfg.get("max_output_chars", 2_000_000))
+        self.max_output_bytes = int(cfg.get("max_output_bytes", 8_000_000))
         self.inline_chars = int(cfg.get("inline_output_chars", 5000))
         self.daemon_log_max_bytes = min(2 * 1024 * 1024, max(1024, int(cfg.get("daemon_log_max_bytes", 512 * 1024))))
         self.daemon_ttl_seconds = min(7 * 24 * 60 * 60, max(1, int(cfg.get("daemon_ttl_seconds", 24 * 60 * 60))))
@@ -5248,8 +5292,8 @@ class CommandBroker:
                 return False
             return _terminate_and_confirm_windows_job_empty(job_handle)
 
-        out_buf = _BoundedStreamBuffer(self.max_output_chars)
-        err_buf = _BoundedStreamBuffer(self.max_output_chars)
+        out_buf = _BoundedStreamBuffer(self.max_output_chars, self.max_output_bytes)
+        err_buf = _BoundedStreamBuffer(self.max_output_chars, self.max_output_bytes)
         callback_queue: queue.Queue[tuple[str, str] | None] | None = None
         callback_thread: threading.Thread | None = None
         callback_dropped_chars = 0
