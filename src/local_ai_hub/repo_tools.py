@@ -160,6 +160,10 @@ class GitSnapshot:
         return tuple(sorted(path for path in paths if path))
 
 
+class FileTooLargeError(OSError):
+    """Raised when a bounded snapshot exceeds its configured byte limit."""
+
+
 class RepositoryTools:
     def __init__(self, config: dict[str, Any]):
         self.config = config
@@ -454,8 +458,22 @@ class RepositoryTools:
             count += 1
             yield path, stat
 
-    def _read_snapshot(self, path: Path, *, stat: os.stat_result | None = None, force: bool = False) -> tuple[str, list[str]]:
+    def _read_snapshot(
+        self,
+        path: Path,
+        *,
+        stat: os.stat_result | None = None,
+        force: bool = False,
+        max_bytes: int | None = None,
+    ) -> tuple[str, list[str]]:
         """Cache decoded file content/hash by stat identity across different repo queries."""
+        if max_bytes is not None:
+            # Re-stat even when the caller supplied a snapshot. The bounded read
+            # below also catches growth after this check without allocating it all.
+            stat = path.stat()
+            if stat.st_size > max_bytes:
+                raise FileTooLargeError(f"{path} exceeds {max_bytes} bytes")
+            force = True
         stat_was_supplied = stat is not None
         if stat is None:
             stat = path.stat()
@@ -478,7 +496,13 @@ class RepositoryTools:
                     self.snapshot_hits += 1
                     return item[4], item[5]
                 cached = item
-        raw = path.read_bytes()
+        if max_bytes is None:
+            raw = path.read_bytes()
+        else:
+            with path.open("rb") as source:
+                raw = source.read(max_bytes + 1)
+            if len(raw) > max_bytes:
+                raise FileTooLargeError(f"{path} exceeds {max_bytes} bytes")
         digest = hashlib.sha256(raw).hexdigest()
         if cached is not None and cached[4] == digest:
             with self._snapshot_lock:
