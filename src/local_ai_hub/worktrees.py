@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 import time
 from pathlib import Path
+from typing import Any
 
 from .process_utils import hidden_run_kwargs
 
@@ -105,3 +106,117 @@ def worktree_is_clean_ancestor(
         if proof is None or proof.returncode != 0:
             return False, "worktree contains commits outside the approved repository history"
     return True, ""
+
+
+def check_worktree_uncommitted_changes(
+    worktree_path: str | Path,
+    *,
+    force: bool = False,
+    timeout_seconds: float = 5.0,
+) -> tuple[bool, str]:
+    """Check if worktree has uncommitted changes before branch switch or removal.
+
+    Returns (is_allowed, error_code).
+    """
+    if force:
+        return True, ""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(worktree_path), "status", "--porcelain", "--untracked-files=all"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=max(0.5, float(timeout_seconds)),
+            check=False,
+            **hidden_run_kwargs(),
+        )
+        if proc.returncode != 0:
+            return False, "git_status_failed"
+        if proc.stdout.strip():
+            return False, "uncommitted_changes_in_worktree"
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)
+
+
+def switch_worktree_branch(
+    worktree_path: str | Path,
+    target_branch: str,
+    *,
+    force: bool = False,
+    timeout_seconds: float = 10.0,
+) -> dict[str, Any]:
+    """Switch worktree branch, aborting if uncommitted changes exist unless force=True."""
+    allowed, error = check_worktree_uncommitted_changes(worktree_path, force=force, timeout_seconds=timeout_seconds)
+    if not allowed:
+        return {"success": False, "error": error}
+    try:
+        cmd = ["git", "-C", str(worktree_path), "switch"]
+        if force:
+            cmd.append("--discard-changes")
+        cmd.append(str(target_branch))
+        proc = subprocess.run(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=max(0.5, float(timeout_seconds)),
+            check=False,
+            **hidden_run_kwargs(),
+        )
+        if proc.returncode != 0:
+            checkout_cmd = ["git", "-C", str(worktree_path), "checkout"]
+            if force:
+                checkout_cmd.append("-f")
+            checkout_cmd.append(str(target_branch))
+            proc = subprocess.run(
+                checkout_cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=max(0.5, float(timeout_seconds)),
+                check=False,
+                **hidden_run_kwargs(),
+            )
+        if proc.returncode != 0:
+            return {"success": False, "error": proc.stderr.strip() or "git switch failed"}
+        return {"success": True, "branch": target_branch}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+def remove_worktree_safe(
+    repo_root: str | Path,
+    worktree_path: str | Path,
+    *,
+    force: bool = False,
+    timeout_seconds: float = 10.0,
+) -> dict[str, Any]:
+    """Remove worktree, aborting if uncommitted changes exist unless force=True."""
+    allowed, error = check_worktree_uncommitted_changes(worktree_path, force=force, timeout_seconds=timeout_seconds)
+    if not allowed:
+        return {"success": False, "error": error}
+    try:
+        cmd = ["git", "-C", str(repo_root), "worktree", "remove"]
+        if force:
+            cmd.append("--force")
+        cmd.append(str(worktree_path))
+        proc = subprocess.run(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=max(0.5, float(timeout_seconds)),
+            check=False,
+            **hidden_run_kwargs(),
+        )
+        if proc.returncode != 0:
+            return {"success": False, "error": proc.stderr.strip() or "git worktree remove failed"}
+        return {"success": True, "removed": str(worktree_path)}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+

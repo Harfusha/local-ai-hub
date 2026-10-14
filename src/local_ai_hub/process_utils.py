@@ -2213,7 +2213,7 @@ def remove_git_worktree(
                 **hidden_run_kwargs(),
             )
             if status.returncode != 0 or status.stdout.strip():
-                return {"success": False, "error": "worktree contains uncommitted or ignored changes"}
+                return {"success": False, "error": "uncommitted_changes_in_worktree"}
 
         if required_base_commit:
             status_now = _run_hidden_with_deadline(
@@ -2281,6 +2281,19 @@ def remove_git_worktree(
         }
     except Exception as exc:
         return {"success": False, "error": str(exc)}
+
+
+def switch_git_worktree_branch(
+    worktree_path: str | Path,
+    target_branch: str,
+    *,
+    force: bool = False,
+    timeout_seconds: float = 10.0,
+) -> dict[str, Any]:
+    """Switch worktree branch, aborting if uncommitted changes exist unless force=True."""
+    from .worktrees import switch_worktree_branch
+    return switch_worktree_branch(worktree_path, target_branch, force=force, timeout_seconds=timeout_seconds)
+
 
 def list_git_worktrees(repo_root: str | Path) -> dict[str, Any]:
     """Enumerate active Git worktrees and metadata."""
