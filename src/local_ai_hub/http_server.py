@@ -7026,6 +7026,13 @@ class Handler(BaseHTTPRequestHandler):
                             "error": "completion requires a repository snapshot with a non-empty revision",
                         }); return
                     self._send(200, {"success": True, "completion": res.to_dict()}); return
+                if action in {"export", "verify_export"}:
+                    task_id = str(payload.get("task_id", "")).strip()
+                    if not self._require_scoped_task(task_id):
+                        return
+                    format_val = str(payload.get("format", "markdown")).strip().lower()
+                    res = APP.agent_verification.export_receipts(task_id, format=format_val)
+                    self._send(200, res); return
                 self._send(400, {"success": False, "error": f"unknown verification action '{action}'", "terminal": True, "retryable": False}); return
             if 'post_agent_state_context_1' in post_route_ids:
                 if not getattr(APP, "agent_context", None) or not APP.agent_context.state_store.enabled:
