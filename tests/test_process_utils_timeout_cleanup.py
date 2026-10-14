@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import subprocess
+import sys
+import threading
+import time
 
 import pytest
 
@@ -93,9 +96,15 @@ def test_run_hidden_timeout_preserves_unconfirmed_posix_process_without_pid_kill
         class Pipe:
             def __init__(self) -> None:
                 self.closed = False
+                self._closed = threading.Event()
+
+            def read1(self, _size: int) -> bytes:
+                self._closed.wait()
+                return b""
 
             def close(self) -> None:
                 self.closed = True
+                self._closed.set()
 
         def __init__(self) -> None:
             self.stdout = self.Pipe()
@@ -133,18 +142,111 @@ def test_run_hidden_timeout_preserves_unconfirmed_posix_process_without_pid_kill
     )
     monkeypatch.setattr(process_utils_module, "terminate_tree", refuse_numeric_group)
 
-    with pytest.raises(subprocess.TimeoutExpired) as raised:
-        process_utils_module.run_hidden(["fake"], timeout=0.01, capture_output=True)
+    try:
+        with pytest.raises(subprocess.TimeoutExpired) as raised:
+            process_utils_module.run_hidden(["fake"], timeout=0.01, capture_output=True)
 
-    error = raised.value
-    assert process.kill_calls == 0
-    assert process.wait_calls == 0
-    assert process.stdout.closed is False
-    assert process.stderr.closed is False
-    assert len(termination_calls) == 2
-    assert error.cleanup_unconfirmed is True
-    assert error.cleanup_process is process
-    assert error.cleanup_process_group == process.pid
+        error = raised.value
+        assert process.kill_calls == 0
+        assert process.wait_calls == 0
+        assert process.stdout.closed is False
+        assert process.stderr.closed is False
+        assert len(termination_calls) == 1
+        assert error.cleanup_unconfirmed is True
+        assert error.cleanup_process is process
+        assert error.cleanup_process_group == process.pid
+    finally:
+        process.stdout.close()
+        process.stderr.close()
+
+
+def test_run_hidden_unconfirmed_owned_child_preserves_live_streams(tmp_path, monkeypatch) -> None:
+    ready = tmp_path / "child-ready"
+    child = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import pathlib, sys, time; pathlib.Path(sys.argv[1]).write_text('ready'); "
+            "print('ready', flush=True); time.sleep(30)",
+            str(ready),
+        ],
+        cwd=tmp_path,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        bufsize=0,
+    )
+
+    def stop_child() -> None:
+        if child.poll() is None:
+            child.kill()
+        try:
+            child.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.wait(timeout=2)
+
+    try:
+        ready_deadline = time.monotonic() + 3.0
+        while not ready.exists() and child.poll() is None and time.monotonic() < ready_deadline:
+            time.sleep(0.01)
+        assert ready.read_text(encoding="ascii") == "ready"
+        assert child.poll() is None
+    except BaseException:
+        stop_child()
+        raise
+
+    class OwnedProcess:
+        def __init__(self, process) -> None:
+            self.process = process
+            self.wait_calls = 0
+            self.kill_calls = 0
+
+        @property
+        def pid(self):
+            return self.process.pid
+
+        @property
+        def stdout(self):
+            return self.process.stdout
+
+        @property
+        def stderr(self):
+            return self.process.stderr
+
+        def poll(self):
+            return self.process.poll()
+
+        def wait(self, timeout=None):
+            self.wait_calls += 1
+            return self.process.wait(timeout=timeout)
+
+        def kill(self):
+            self.kill_calls += 1
+            return self.process.kill()
+
+    owned = OwnedProcess(child)
+    monkeypatch.setattr(process_utils_module, "popen_managed", lambda *_args, **_kwargs: owned)
+    monkeypatch.setattr(process_utils_module, "_request_tree_cleanup", lambda *_args, **_kwargs: False)
+    started = time.perf_counter()
+
+    try:
+        with pytest.raises(subprocess.TimeoutExpired) as raised:
+            process_utils_module.run_hidden([sys.executable, "fake"], timeout=0.1, capture_output=True)
+
+        error = raised.value
+        assert time.perf_counter() - started < 1.25
+        assert owned.poll() is None
+        assert owned.wait_calls == 0
+        assert owned.kill_calls == 0
+        assert owned.stdout.closed is False
+        assert owned.stderr.closed is False
+        assert error.cleanup_unconfirmed is True
+        assert error.cleanup_process is owned
+        assert error.cleanup_process_group is None or error.cleanup_process_group == owned.pid
+        assert error.output_capture_unconfirmed is True
+    finally:
+        stop_child()
 
 def test_posix_terminate_tree_refuses_unowned_numeric_pid_and_group(monkeypatch) -> None:
     calls: list[tuple[object, ...]] = []
