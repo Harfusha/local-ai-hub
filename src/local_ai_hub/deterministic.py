@@ -120,6 +120,87 @@ def _is_test_file(rel_path: str) -> bool:
     return any(fname.endswith(s) for s in test_suffixes)
 
 
+_INFRA_RESOURCE = re.compile('^\\s*resource\\s+[\\"\\\']([^\\"\\\']+)[\\"\\\']\\s+[\\"\\\']([^\\"\\\']+)[\\"\\\']')
+_INFRA_MODULE = re.compile('^\\s*module\\s+[\\"\\\']([^\\"\\\']+)[\\"\\\']')
+_INFRA_PROVIDER = re.compile('^\\s*provider\\s+[\\"\\\']([^\\"\\\']+)[\\"\\\']')
+_INFRA_VARIABLE = re.compile('^\\s*variable\\s+[\\"\\\']([^\\"\\\']+)[\\"\\\']')
+_INFRA_STAGE_I = re.compile('^-?\\s*stage\\s*:\\s*([^#]+)', re.I)
+_INFRA_JOB_I = re.compile('^-?\\s*job\\s*:\\s*([^#]+)', re.I)
+_INFRA_TASK_I = re.compile('^-?\\s*task\\s*:\\s*([^#]+)', re.I)
+_INFRA_SCRIPT_I = re.compile('^(?:script|bash|pwsh|powershell)\\s*:\\s*(.+)', re.I)
+_INFRA_SERVICE = re.compile('^\\s*service\\s+([A-Za-z_]\\w*)')
+_INFRA_RPC = re.compile('^\\s*rpc\\s+([A-Za-z_]\\w*)\\s*\\(')
+_INFRA_MESSAGE = re.compile('^\\s*message\\s+([A-Za-z_]\\w*)')
+_SOURCE_SECRET_RE = re.compile('(?i)(?:api[-_]?key|secret[-_]?key|access[-_]?token|password|passwd|auth[-_]?token|bearer)\\s*[=:]\\s*["\\\']([A-Za-z0-9+/\\-_]{12,})["\\\']')
+_SOURCE_HARDCODED_IP = re.compile('\\b(?:https?://)\\d{1,3}(?:\\.\\d{1,3}){3}(?::\\d+)?\\b')
+_SOURCE_UNITY_LIFECYCLES = re.compile('\\b(Awake|Start|Update|FixedUpdate|LateUpdate|OnEnable|OnDisable|OnDestroy|OnTriggerEnter|OnCollisionEnter|OnTriggerExit|OnCollisionExit|OnApplicationPause|OnApplicationQuit)\\s*\\(', re.M)
+_SOURCE_REACT_COMPONENT = re.compile('(?:export\\s+(?:default\\s+)?)?(?:function|const|class)\\s+([A-Z][A-Za-z0-9_]+)', re.M)
+_SOURCE_REACT_HOOK = re.compile('\\bconst\\s+(use[A-Z][A-Za-z0-9_]*)\\s*=', re.M)
+_SOURCE_REACT_ROUTE = re.compile('(?:path|to)\\s*[:=]\\s*[\\\'"`]([/][^\\\'"`]*)[\\\'"`]', re.M)
+_SOURCE_TS_DECLARATION = re.compile('^\\s*(?:export\\s+)?(?:default\\s+)?(interface|type|enum|class)\\s+([A-Za-z_$][A-Za-z0-9_$]*)', re.M)
+_SOURCE_NEXT_ROUTE_HANDLER = re.compile('^\\s*export\\s+(?:async\\s+)?function\\s+(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\\s*\\(', re.M)
+_SOURCE_NEST_DECORATOR = re.compile('^\\s*@(Controller|Injectable|Get|Post|Put|Patch|Delete)\\s*(?:\\(\\s*[\'\\"]?([^\'\\")\\s]*)[\'\\"]?\\s*\\))?', re.M)
+_SOURCE_TEST_SUITE_BLOCK = re.compile('^\\s*(describe|it|test)\\s*\\(\\s*[\'\\"` ]([^\'\\"`]+)[\'\\"` ]', re.M)
+_SOURCE_FORM_TAG = re.compile('<form\\b([^>]*)>', re.I)
+_SOURCE_ACTION_ATTR = re.compile('\\baction=["\\\']([^"\\\']+)["\\\']', re.I)
+_SOURCE_METHOD_ATTR = re.compile('\\bmethod=["\\\']([^"\\\']+)["\\\']', re.I)
+_SOURCE_SCRIPT_SRC = re.compile('<script\\b[^>]*\\bsrc=["\\\']([^"\\\']+)["\\\']', re.I)
+_SOURCE_LINK_CSS = re.compile('<link\\b[^>]*\\bhref=["\\\']([^"\\\']+)["\\\']', re.I)
+_SOURCE_ELEM_ID = re.compile('\\bid=["\\\']([A-Za-z0-9_-]+)["\\\']', re.I)
+_SOURCE_WEB_COMPONENT = re.compile('<([a-z0-9]+-[a-z0-9-]+)\\b', re.I)
+_SOURCE_BLADE_DIRECTIVE = re.compile('@(extends|include|section|yield|livewire|component)\\s*\\(\\s*["\\\']([^"\\\']+)["\\\']', re.I)
+_SOURCE_CSS_VAR = re.compile('--([A-Za-z0-9_-]+)\\s*:\\s*([^;]+);')
+_SOURCE_KEYFRAMES = re.compile('@keyframes\\s+([A-Za-z0-9_-]+)')
+_SOURCE_MEDIA_QUERY = re.compile('@media\\s+([^{]+)')
+_SOURCE_CSS_CLASS = re.compile('^\\s*(\\.[A-Za-z0-9_-]+)\\s*\\{')
+_SOURCE_PHP_DEF = re.compile('^\\s*(?:(?:final|abstract|readonly)\\s+)*(class|trait|interface|enum)\\s+([A-Za-z_][A-Za-z0-9_]*)', re.M)
+_SOURCE_PHP_FUNC = re.compile('^\\s*(?:(?:public|protected|private|static|final|abstract)\\s+)*function\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\(', re.M)
+_SOURCE_PHP_NS = re.compile('^\\s*namespace\\s+([A-Za-z_][A-Za-z0-9_\\\\]*)', re.M)
+_SOURCE_PHP_ROUTE_ATTR = re.compile('#\\[(?:Route|Get|Post|Put|Patch|Delete)\\s*(?:\\(\\s*[\'\\"]([^\'\\"]+)[\'\\"](?:[^)]*methods:\\s*\\[([^\\]]+)\\])?\\s*\\))?\\]', re.M)
+_SOURCE_PHP_ATTR = re.compile('#\\[([A-Za-z_][A-Za-z0-9_\\\\]*(?:\\([^)]*\\))?)\\]', re.M)
+_SOURCE_WP_HOOK = re.compile('\\b(add_action|add_filter|do_action|apply_filters)\\s*\\(\\s*[\'\\"]([^\'\\"]+)[\'\\"]', re.M)
+_SOURCE_LARAVEL_RESOURCE = re.compile('\\bRoute::(?:apiResource|resource)\\s*\\(\\s*[\'\\"]([^\'\\"]+)[\'\\"]\\s*,\\s*([A-Za-z0-9_\\\\]+)', re.M)
+_SOURCE_ELOQUENT_TABLE = re.compile('protected\\s+\\$table\\s*=\\s*[\\\'"]([^\\\'"]+)[\\\'"]')
+_SOURCE_ELOQUENT_FILLABLE = re.compile('protected\\s+\\$fillable\\s*=\\s*\\[([^\\]]+)\\]')
+_SOURCE_ELOQUENT_REL = re.compile('return\\s+\\$this->(belongsTo|hasMany|hasOne|belongsToMany|morphTo|morphMany)\\s*\\(\\s*([A-Za-z0-9_:\\\\]+)', re.I)
+_SOURCE_SCHEMA_CREATE = re.compile('Schema::create\\s*\\(\\s*[\\\'"]([^\\\'"]+)[\\\'"]')
+_SOURCE_MIGRATION_COL = re.compile('\\$table->(string|integer|bigInteger|unsignedBigInteger|id|foreignId|boolean|text|longText|json|timestamp|date)\\s*\\(\\s*(?:[\\\'"]([^\\\'"]+)[\\\'"])?')
+_SOURCE_ARTISAN_CMD = re.compile('protected\\s+\\$signature\\s*=\\s*[\\\'"]([^\\\'"]+)[\\\'"]')
+_SOURCE_FORM_REQ = re.compile('class\\s+([A-Za-z0-9_]+)\\s+extends\\s+FormRequest\\b')
+_SOURCE_CAKE_ROUTE = re.compile('\\$(?:builder|routes)->connect\\s*\\(\\s*[\\\'"]([^\\\'"]+)[\\\'"]')
+_SOURCE_CAKE_RESOURCES = re.compile('\\$(?:builder|routes)->resources\\s*\\(\\s*[\\\'"]([^\\\'"]+)[\\\'"]')
+_SOURCE_CAKE_TABLE = re.compile('class\\s+([A-Za-z0-9_]+Table)\\s+extends\\s+Table\\b')
+_SOURCE_CAKE_ENTITY = re.compile('class\\s+([A-Za-z0-9_]+)\\s+extends\\s+Entity\\b')
+_SOURCE_CAKE_ASSOC = re.compile('\\$this->(hasMany|belongsTo|belongsToMany|hasOne)\\s*\\(\\s*[\\\'"]([^\\\'"]+)[\\\'"]')
+_SOURCE_CAKE_MIGRATION = re.compile('\\$this->table\\s*\\(\\s*[\\\'"]([^\\\'"]+)[\\\'"]')
+_SOURCE_DECORATOR_RE = re.compile('^@([\\w.]+)', re.M)
+_SOURCE_ASYNC_DEF_RE = re.compile('\\basync\\s+def\\s+(\\w+)', re.M)
+_SOURCE_DATACLASS_RE = re.compile('@dataclass', re.M)
+_SOURCE_IMPORT_FROM = re.compile('^(?:from\\s+([\\w.]+)\\s+import\\s+([\\w, ]+)|import\\s+([\\w.]+))', re.M)
+_SOURCE_TESTED_CLASS = re.compile('class\\s+Test(\\w+)', re.M)
+_SOURCE_PHP_TESTED_CLASS = re.compile('class\\s+(\\w+)Test\\b', re.M)
+_SOURCE_PHP_USE = re.compile('^\\s*use\\s+([A-Za-z_][A-Za-z0-9_\\\\]+);', re.M)
+_SOURCE_JS_IMPORT = re.compile('import\\s+(?:\\{([^}]+)\\}|(\\w+))\\s+from\\s+[\'\\"]([^\'\\"]+)[\'\\"]', re.M)
+_SOURCE_TABLE_INSERT_I = re.compile('\\b(?:CREATE\\s+TABLE|ALTER\\s+TABLE|INSERT\\s+INTO|UPDATE|DELETE\\s+FROM|FROM|JOIN)\\s+(?:IF\\s+(?:NOT\\s+)?EXISTS\\s+)?[`\\"\\[]?([A-Za-z_][A-Za-z0-9_.$:-]*)', re.I)
+_MANIFEST_IMPLEMENTATION = re.compile('^\\s*(implementation|api|compileOnly|runtimeOnly|testImplementation|testRuntimeOnly|kapt)\\s*\\(?[\\"\']([^\\"\']+)[\\"\']')
+_MANIFEST_IDENTIFIER = re.compile('^\\s*gem\\s+[\'\\"]([^\'\\"]+)[\'\\"](?:\\s*,\\s*[\'\\"]([^\'\\"]+)[\'\\"])?')
+_MANIFEST_IDENTIFIER_REGEX = re.compile('^([A-Za-z0-9_.-]+)\\s*:(?:[^=]|$)')
+_MANIFEST_IDENTIFIER_REGEX_PATTERN = re.compile('^([A-Za-z0-9_.-]+)\\s*(?:[^:=]*)?:\\s*$')
+_DIFF_SHELL_I = re.compile('\\b(exec|system|shell_exec|subprocess|Process\\.Start|Runtime\\.getRuntime)\\b', re.I)
+_DIFF_EVAL_I = re.compile('\\b(eval|exec)\\s*\\(', re.I)
+_DIFF_SECRET_PASSWORD_I = re.compile('\\b(password|secret|api[_-]?key|private[_-]?key|token)\\b', re.I)
+_BRACE_FUNCTION_EXPORT = re.compile('^\\s*(?:(?:pub(?:lic)?|priv(?:ate)?|prot(?:ected)?|internal|static|async|export|default|override|virtual|final)\\s+)*(?:(?:func|fn|function|def)\\b|(?:[A-Za-z_$][\\w.<>,\\[\\]]*\\s+)+[A-Za-z_$][\\w$]*\\s*\\()|^\\s*(?:func\\s*\\([^)]*\\)\\s*)?[A-Za-z_$][\\w$]*\\s*\\([^)]*\\)\\s*(?:[^{;]*\\{|=>)')
+_BRACE_CLASS_INTERFACE = re.compile('^\\s*(?:(?:pub(?:lic)?|export)\\s+)*(?:struct|interface|enum|type|trait|class)\\b')
+_API_EXPRESS_ROUTER_METHOD = re.compile('\\b(?:app|router)\\.(get|post|put|patch|delete|options|head)\\s*\\(', re.I)
+_API_NEXT_ROUTE_HANDLER = re.compile('^\\s*export\\s+(?:async\\s+)?function\\s+(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\\s*\\(', re.M)
+_API_LARAVEL_ROUTE_METHOD = re.compile('\\bRoute::(get|post|put|patch|delete|options|any)\\s*\\(\\s*[\'\\"]([^\'\\"]+)[\'\\"]', re.I)
+_API_LARAVEL_RESOURCE_ROUTE = re.compile('\\bRoute::(?:apiResource|resource)\\s*\\(\\s*[\'\\"]([^\'\\"]+)[\'\\"]', re.I)
+_API_ATTRIBUTE_ROUTE_DECLARATION = re.compile('#\\[(?:Route|Get|Post|Put|Patch|Delete)\\s*(?:\\(\\s*[\'\\"]([^\'\\"]+)[\'\\"](?:[^)]*methods:\\s*\\[([^\\]]+)\\])?\\s*\\))?\\]', re.I)
+_API_PHP_CONNECT_ROUTE = re.compile('\\$(?:builder|routes)->connect\\s*\\(\\s*[\'\\"]([^\'\\"]+)[\'\\"]', re.I)
+_API_PHP_RESOURCE_ROUTE = re.compile('\\$(?:builder|routes)->resources\\s*\\(\\s*[\'\\"]([^\'\\"]+)[\'\\"]', re.I)
+_API_HTML_FORM_ENDPOINT = re.compile('<form\\b(?=[^>]*\\baction=[\'\\"]([^\'\\"]+)[\'\\"])(?:[^>]*\\bmethod=[\'\\"]([A-Za-z]+)[\'\\"])?', re.I)
+
+
 class DeterministicEngine:
     """Persistent deterministic project intelligence before any LLM inference.
 
@@ -632,10 +713,10 @@ class DeterministicEngine:
             for line_no, line in enumerate(lines, 1):
                 stripped = line.strip()
                 for kind, pattern in (
-                    ("ci_stage", re.compile(r"^-?\s*stage\s*:\s*([^#]+)", re.I)),
-                    ("ci_job", re.compile(r"^-?\s*job\s*:\s*([^#]+)", re.I)),
-                    ("ci_action", re.compile(r"^-?\s*task\s*:\s*([^#]+)", re.I)),
-                    ("ci_command", re.compile(r"^(?:script|bash|pwsh|powershell)\s*:\s*(.+)", re.I)),
+                    ("ci_stage", _INFRA_STAGE_I),
+                    ("ci_job", _INFRA_JOB_I),
+                    ("ci_action", _INFRA_TASK_I),
+                    ("ci_command", _INFRA_SCRIPT_I),
                 ):
                     m = pattern.search(stripped)
                     if m:
@@ -662,10 +743,10 @@ class DeterministicEngine:
 
         if Path(rel).suffix.lower() in {".tf", ".tfvars"}:
             patterns = {
-                "terraform_resource": re.compile(r'^\s*resource\s+[\"\']([^\"\']+)[\"\']\s+[\"\']([^\"\']+)[\"\']'),
-                "terraform_module": re.compile(r'^\s*module\s+[\"\']([^\"\']+)[\"\']'),
-                "terraform_provider": re.compile(r'^\s*provider\s+[\"\']([^\"\']+)[\"\']'),
-                "config_key": re.compile(r'^\s*variable\s+[\"\']([^\"\']+)[\"\']'),
+                "terraform_resource": _INFRA_RESOURCE,
+                "terraform_module": _INFRA_MODULE,
+                "terraform_provider": _INFRA_PROVIDER,
+                "config_key": _INFRA_VARIABLE,
             }
             for line_no, line in enumerate(lines, 1):
                 for kind, pattern in patterns.items():
@@ -677,9 +758,9 @@ class DeterministicEngine:
         if Path(rel).suffix.lower() == ".proto":
             for line_no, line in enumerate(lines, 1):
                 for kind, pattern in (
-                    ("proto_service", re.compile(r"^\s*service\s+([A-Za-z_]\w*)")),
-                    ("proto_rpc", re.compile(r"^\s*rpc\s+([A-Za-z_]\w*)\s*\(")),
-                    ("proto_message", re.compile(r"^\s*message\s+([A-Za-z_]\w*)")),
+                    ("proto_service", _INFRA_SERVICE),
+                    ("proto_rpc", _INFRA_RPC),
+                    ("proto_message", _INFRA_MESSAGE),
                 ):
                     m = pattern.search(line)
                     if m:
@@ -798,11 +879,7 @@ class DeterministicEngine:
 
         # Unity / C# analyzer
         if ext == ".cs":
-            UNITY_LIFECYCLES = re.compile(
-                r"\b(Awake|Start|Update|FixedUpdate|LateUpdate|OnEnable|OnDisable|OnDestroy"
-                r"|OnTriggerEnter|OnCollisionEnter|OnTriggerExit|OnCollisionExit"
-                r"|OnApplicationPause|OnApplicationQuit)\s*\(", re.M
-            )
+            UNITY_LIFECYCLES = _SOURCE_UNITY_LIFECYCLES
             for line_no, line in enumerate(text.splitlines(), 1):
                 m = UNITY_LIFECYCLES.search(line)
                 if m:
@@ -818,13 +895,13 @@ class DeterministicEngine:
 
         # JavaScript / TypeScript / Vue / Svelte analyzer
         if ext in (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue", ".svelte"):
-            REACT_COMPONENT = re.compile(r"(?:export\s+(?:default\s+)?)?(?:function|const|class)\s+([A-Z][A-Za-z0-9_]+)", re.M)
-            REACT_HOOK = re.compile(r"\bconst\s+(use[A-Z][A-Za-z0-9_]*)\s*=", re.M)
-            REACT_ROUTE = re.compile(r'(?:path|to)\s*[:=]\s*[\'"`]([/][^\'"`]*)[\'"`]', re.M)
-            TS_DECLARATION = re.compile(r"^\s*(?:export\s+)?(?:default\s+)?(interface|type|enum|class)\s+([A-Za-z_$][A-Za-z0-9_$]*)", re.M)
-            NEXT_ROUTE_HANDLER = re.compile(r"^\s*export\s+(?:async\s+)?function\s+(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s*\(", re.M)
-            NEST_DECORATOR = re.compile(r"^\s*@(Controller|Injectable|Get|Post|Put|Patch|Delete)\s*(?:\(\s*['\"]?([^'\")\s]*)['\"]?\s*\))?", re.M)
-            TEST_SUITE_BLOCK = re.compile(r"^\s*(describe|it|test)\s*\(\s*['\"` ]([^'\"`]+)['\"` ]", re.M)
+            REACT_COMPONENT = _SOURCE_REACT_COMPONENT
+            REACT_HOOK = _SOURCE_REACT_HOOK
+            REACT_ROUTE = _SOURCE_REACT_ROUTE
+            TS_DECLARATION = _SOURCE_TS_DECLARATION
+            NEXT_ROUTE_HANDLER = _SOURCE_NEXT_ROUTE_HANDLER
+            NEST_DECORATOR = _SOURCE_NEST_DECORATOR
+            TEST_SUITE_BLOCK = _SOURCE_TEST_SUITE_BLOCK
             for line_no, line in enumerate(text.splitlines(), 1):
                 cm = REACT_COMPONENT.search(line)
                 if cm and ("React" in text or "jsx" in path or "tsx" in path or "useState" in text or "useEffect" in text):
@@ -861,14 +938,14 @@ class DeterministicEngine:
 
         # HTML & template analyzer
         if ext in (".html", ".htm") or path.lower().endswith(".blade.php") or ext == ".ctp":
-            FORM_TAG = re.compile(r"<form\b([^>]*)>", re.I)
-            ACTION_ATTR = re.compile(r'\baction=["\']([^"\']+)["\']', re.I)
-            METHOD_ATTR = re.compile(r'\bmethod=["\']([^"\']+)["\']', re.I)
-            SCRIPT_SRC = re.compile(r'<script\b[^>]*\bsrc=["\']([^"\']+)["\']', re.I)
-            LINK_CSS = re.compile(r'<link\b[^>]*\bhref=["\']([^"\']+)["\']', re.I)
-            ELEM_ID = re.compile(r'\bid=["\']([A-Za-z0-9_-]+)["\']', re.I)
-            WEB_COMPONENT = re.compile(r'<([a-z0-9]+-[a-z0-9-]+)\b', re.I)
-            BLADE_DIRECTIVE = re.compile(r'@(extends|include|section|yield|livewire|component)\s*\(\s*["\']([^"\']+)["\']', re.I)
+            FORM_TAG = _SOURCE_FORM_TAG
+            ACTION_ATTR = _SOURCE_ACTION_ATTR
+            METHOD_ATTR = _SOURCE_METHOD_ATTR
+            SCRIPT_SRC = _SOURCE_SCRIPT_SRC
+            LINK_CSS = _SOURCE_LINK_CSS
+            ELEM_ID = _SOURCE_ELEM_ID
+            WEB_COMPONENT = _SOURCE_WEB_COMPONENT
+            BLADE_DIRECTIVE = _SOURCE_BLADE_DIRECTIVE
 
             for line_no, line in enumerate(text.splitlines(), 1):
                 for fm in FORM_TAG.finditer(line):
@@ -895,10 +972,10 @@ class DeterministicEngine:
 
         # CSS / SCSS / LESS analyzer
         if ext in (".css", ".scss", ".sass", ".less"):
-            CSS_VAR = re.compile(r'--([A-Za-z0-9_-]+)\s*:\s*([^;]+);')
-            KEYFRAMES = re.compile(r'@keyframes\s+([A-Za-z0-9_-]+)')
-            MEDIA_QUERY = re.compile(r'@media\s+([^{]+)')
-            CSS_CLASS = re.compile(r'^\s*(\.[A-Za-z0-9_-]+)\s*\{')
+            CSS_VAR = _SOURCE_CSS_VAR
+            KEYFRAMES = _SOURCE_KEYFRAMES
+            MEDIA_QUERY = _SOURCE_MEDIA_QUERY
+            CSS_CLASS = _SOURCE_CSS_CLASS
 
             for line_no, line in enumerate(text.splitlines(), 1):
                 vm = CSS_VAR.search(line)
@@ -916,44 +993,29 @@ class DeterministicEngine:
 
         # PHP & CakePHP analyzer
         if ext in (".php", ".ctp"):
-            PHP_DEF = re.compile(
-                r"^\s*(?:(?:final|abstract|readonly)\s+)*(class|trait|interface|enum)\s+([A-Za-z_][A-Za-z0-9_]*)",
-                re.M,
-            )
-            PHP_FUNC = re.compile(
-                r"^\s*(?:(?:public|protected|private|static|final|abstract)\s+)*function\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
-                re.M,
-            )
-            PHP_NS = re.compile(r"^\s*namespace\s+([A-Za-z_][A-Za-z0-9_\\]*)", re.M)
-            PHP_ROUTE_ATTR = re.compile(
-                r"#\[(?:Route|Get|Post|Put|Patch|Delete)\s*(?:\(\s*['\"]([^'\"]+)['\"](?:[^)]*methods:\s*\[([^\]]+)\])?\s*\))?\]",
-                re.M,
-            )
-            PHP_ATTR = re.compile(r"#\[([A-Za-z_][A-Za-z0-9_\\]*(?:\([^)]*\))?)\]", re.M)
-            WP_HOOK = re.compile(
-                r"\b(add_action|add_filter|do_action|apply_filters)\s*\(\s*['\"]([^'\"]+)['\"]",
-                re.M,
-            )
-            LARAVEL_RESOURCE = re.compile(
-                r"\bRoute::(?:apiResource|resource)\s*\(\s*['\"]([^'\"]+)['\"]\s*,\s*([A-Za-z0-9_\\]+)",
-                re.M,
-            )
+            PHP_DEF = _SOURCE_PHP_DEF
+            PHP_FUNC = _SOURCE_PHP_FUNC
+            PHP_NS = _SOURCE_PHP_NS
+            PHP_ROUTE_ATTR = _SOURCE_PHP_ROUTE_ATTR
+            PHP_ATTR = _SOURCE_PHP_ATTR
+            WP_HOOK = _SOURCE_WP_HOOK
+            LARAVEL_RESOURCE = _SOURCE_LARAVEL_RESOURCE
             # Laravel specifics
-            ELOQUENT_TABLE = re.compile(r'protected\s+\$table\s*=\s*[\'"]([^\'"]+)[\'"]')
-            ELOQUENT_FILLABLE = re.compile(r'protected\s+\$fillable\s*=\s*\[([^\]]+)\]')
-            ELOQUENT_REL = re.compile(r'return\s+\$this->(belongsTo|hasMany|hasOne|belongsToMany|morphTo|morphMany)\s*\(\s*([A-Za-z0-9_:\\]+)', re.I)
-            SCHEMA_CREATE = re.compile(r'Schema::create\s*\(\s*[\'"]([^\'"]+)[\'"]')
-            MIGRATION_COL = re.compile(r'\$table->(string|integer|bigInteger|unsignedBigInteger|id|foreignId|boolean|text|longText|json|timestamp|date)\s*\(\s*(?:[\'"]([^\'"]+)[\'"])?')
-            ARTISAN_CMD = re.compile(r'protected\s+\$signature\s*=\s*[\'"]([^\'"]+)[\'"]')
-            FORM_REQ = re.compile(r'class\s+([A-Za-z0-9_]+)\s+extends\s+FormRequest\b')
+            ELOQUENT_TABLE = _SOURCE_ELOQUENT_TABLE
+            ELOQUENT_FILLABLE = _SOURCE_ELOQUENT_FILLABLE
+            ELOQUENT_REL = _SOURCE_ELOQUENT_REL
+            SCHEMA_CREATE = _SOURCE_SCHEMA_CREATE
+            MIGRATION_COL = _SOURCE_MIGRATION_COL
+            ARTISAN_CMD = _SOURCE_ARTISAN_CMD
+            FORM_REQ = _SOURCE_FORM_REQ
 
             # CakePHP specifics
-            CAKE_ROUTE = re.compile(r'\$(?:builder|routes)->connect\s*\(\s*[\'"]([^\'"]+)[\'"]')
-            CAKE_RESOURCES = re.compile(r'\$(?:builder|routes)->resources\s*\(\s*[\'"]([^\'"]+)[\'"]')
-            CAKE_TABLE = re.compile(r'class\s+([A-Za-z0-9_]+Table)\s+extends\s+Table\b')
-            CAKE_ENTITY = re.compile(r'class\s+([A-Za-z0-9_]+)\s+extends\s+Entity\b')
-            CAKE_ASSOC = re.compile(r'\$this->(hasMany|belongsTo|belongsToMany|hasOne)\s*\(\s*[\'"]([^\'"]+)[\'"]')
-            CAKE_MIGRATION = re.compile(r'\$this->table\s*\(\s*[\'"]([^\'"]+)[\'"]')
+            CAKE_ROUTE = _SOURCE_CAKE_ROUTE
+            CAKE_RESOURCES = _SOURCE_CAKE_RESOURCES
+            CAKE_TABLE = _SOURCE_CAKE_TABLE
+            CAKE_ENTITY = _SOURCE_CAKE_ENTITY
+            CAKE_ASSOC = _SOURCE_CAKE_ASSOC
+            CAKE_MIGRATION = _SOURCE_CAKE_MIGRATION
 
             current_ns = ""
             for line_no, line in enumerate(text.splitlines(), 1):
@@ -1051,9 +1113,9 @@ class DeterministicEngine:
 
         # Python: decorators, dataclasses, async flows
         if ext == ".py":
-            DECORATOR_RE = re.compile(r"^@([\w.]+)", re.M)
-            ASYNC_DEF_RE = re.compile(r"\basync\s+def\s+(\w+)", re.M)
-            DATACLASS_RE = re.compile(r"@dataclass", re.M)
+            DECORATOR_RE = _SOURCE_DECORATOR_RE
+            ASYNC_DEF_RE = _SOURCE_ASYNC_DEF_RE
+            DATACLASS_RE = _SOURCE_DATACLASS_RE
             for m in DECORATOR_RE.finditer(text):
                 line_no = text[:m.start()].count("\n") + 1
                 facts.append(self._fact("python_decorator", m.group(1), m.group(0), line_no))
@@ -1064,10 +1126,8 @@ class DeterministicEngine:
                 facts.append(self._fact("python_dataclass", "dataclass", path, 1))
 
         # ── Security / secret scanner ─────────────────────────────────────────────
-        SECRET_RE = re.compile(
-            r'(?i)(?:api[-_]?key|secret[-_]?key|access[-_]?token|password|passwd|auth[-_]?token|bearer)\s*[=:]\s*["\']([A-Za-z0-9+/\-_]{12,})["\']'
-        )
-        HARDCODED_IP = re.compile(r'\b(?:https?://)\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b')
+        SECRET_RE = _SOURCE_SECRET_RE
+        HARDCODED_IP = _SOURCE_HARDCODED_IP
         for line_no, line in enumerate(text.splitlines(), 1):
             sm = SECRET_RE.search(line)
             if sm:
@@ -1082,11 +1142,11 @@ class DeterministicEngine:
         # ── Test-to-production mapping ────────────────────────────────────────────
         if self._is_test(path):
             # Extract names of classes/functions being tested from import statements and class names
-            IMPORT_FROM = re.compile(r"^(?:from\s+([\w.]+)\s+import\s+([\w, ]+)|import\s+([\w.]+))", re.M)
-            TESTED_CLASS = re.compile(r"class\s+Test(\w+)", re.M)
-            PHP_TESTED_CLASS = re.compile(r"class\s+(\w+)Test\b", re.M)
-            PHP_USE = re.compile(r"^\s*use\s+([A-Za-z_][A-Za-z0-9_\\]+);", re.M)
-            JS_IMPORT = re.compile(r"import\s+(?:\{([^}]+)\}|(\w+))\s+from\s+['\"]([^'\"]+)['\"]", re.M)
+            IMPORT_FROM = _SOURCE_IMPORT_FROM
+            TESTED_CLASS = _SOURCE_TESTED_CLASS
+            PHP_TESTED_CLASS = _SOURCE_PHP_TESTED_CLASS
+            PHP_USE = _SOURCE_PHP_USE
+            JS_IMPORT = _SOURCE_JS_IMPORT
             for m in IMPORT_FROM.finditer(text):
                 module = m.group(1) or m.group(3) or ""
                 if module and not module.startswith("test") and "mock" not in module.lower():
@@ -1146,7 +1206,7 @@ class DeterministicEngine:
             if SQL_RE.search(line):
                 facts.append(self._fact("database", "sql", line.strip()[:300], line_no))
                 for pattern in (
-                    re.compile(r"\b(?:CREATE\s+TABLE|ALTER\s+TABLE|INSERT\s+INTO|UPDATE|DELETE\s+FROM|FROM|JOIN)\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?[`\"\[]?([A-Za-z_][A-Za-z0-9_.$:-]*)", re.I),
+                    _SOURCE_TABLE_INSERT_I,
                 ):
                     for sm in pattern.finditer(line):
                         facts.append(self._fact("db_table", sm.group(1), sm.group(1), line_no, source="sql"))
@@ -1598,7 +1658,7 @@ class DeterministicEngine:
                             if m: deps.append((m.group(1), m.group(2), "lock"))
             elif name in {"build.gradle", "build.gradle.kts"}:
                 text = raw.decode("utf-8", errors="replace")
-                dep_re = re.compile(r"^\s*(implementation|api|compileOnly|runtimeOnly|testImplementation|testRuntimeOnly|kapt)\s*\(?[\"']([^\"']+)[\"']")
+                dep_re = _MANIFEST_IMPLEMENTATION
                 for line in text.splitlines():
                     m = dep_re.match(line)
                     if m:
@@ -1643,14 +1703,14 @@ class DeterministicEngine:
                     scripts.extend((str(k), str(v), self._purpose(str(k))) for k, v in obj.items())
             elif name == "gemfile":
                 text = raw.decode("utf-8", errors="replace")
-                gem_re = re.compile(r"^\s*gem\s+['\"]([^'\"]+)['\"](?:\s*,\s*['\"]([^'\"]+)['\"])?")
+                gem_re = _MANIFEST_IDENTIFIER
                 for line in text.splitlines():
                     m = gem_re.match(line)
                     if m:
                         deps.append((m.group(1), m.group(2) or "", "gem"))
             elif name in {"makefile", "gnumakefile", "justfile"}:
                 text = raw.decode("utf-8", errors="replace")
-                target_re = re.compile(r"^([A-Za-z0-9_.-]+)\s*:(?:[^=]|$)") if name != "justfile" else re.compile(r"^([A-Za-z0-9_.-]+)\s*(?:[^:=]*)?:\s*$")
+                target_re = _MANIFEST_IDENTIFIER_REGEX if name != "justfile" else _MANIFEST_IDENTIFIER_REGEX_PATTERN
                 runner = "just" if name == "justfile" else "make"
                 for line in text.splitlines():
                     m = target_re.match(line)
@@ -2592,9 +2652,9 @@ class DeterministicEngine:
         signals: Counter[str] = Counter()
         signal_patterns = {
             "security": SECURITY_RE, "database": SQL_RE, "concurrency": CONCURRENCY_RE,
-            "shell-exec": re.compile(r"\b(exec|system|shell_exec|subprocess|Process\.Start|Runtime\.getRuntime)\b", re.I),
-            "dynamic-eval": re.compile(r"\b(eval|exec)\s*\(", re.I),
-            "secret-like": re.compile(r"\b(password|secret|api[_-]?key|private[_-]?key|token)\b", re.I),
+            "shell-exec": _DIFF_SHELL_I,
+            "dynamic-eval": _DIFF_EVAL_I,
+            "secret-like": _DIFF_SECRET_PASSWORD_I,
         }
         for _path, text in added_lines:
             for name, pattern in signal_patterns.items():
@@ -5424,12 +5484,8 @@ def test_{sym}_regression_edge_cases():
         func_brace_depth = 0
         current_brace_depth = 0
 
-        FUNC_PAT = re.compile(
-            r"^\s*(?:(?:pub(?:lic)?|priv(?:ate)?|prot(?:ected)?|internal|static|async|export|default|override|virtual|final)\s+)*"
-            r"(?:(?:func|fn|function|def)\b|(?:[A-Za-z_$][\w.<>,\[\]]*\s+)+[A-Za-z_$][\w$]*\s*\()|"
-            r"^\s*(?:func\s*\([^)]*\)\s*)?[A-Za-z_$][\w$]*\s*\([^)]*\)\s*(?:[^{;]*\{|=>)"
-        )
-        STRUCT_PAT = re.compile(r"^\s*(?:(?:pub(?:lic)?|export)\s+)*(?:struct|interface|enum|type|trait|class)\b")
+        FUNC_PAT = _BRACE_FUNCTION_EXPORT
+        STRUCT_PAT = _BRACE_CLASS_INTERFACE
 
         for line in lines:
             stripped = line.strip()
@@ -6216,8 +6272,8 @@ def test_{sym}_regression_edge_cases():
                                 "line": node.lineno,
                             })
 
-        express_call_pat = re.compile(r"\b(?:app|router)\.(get|post|put|patch|delete|options|head)\s*\(", re.I)
-        next_route_pat = re.compile(r"^\s*export\s+(?:async\s+)?function\s+(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)\s*\(", re.M)
+        express_call_pat = _API_EXPRESS_ROUTER_METHOD
+        next_route_pat = _API_NEXT_ROUTE_HANDLER
         for p in list(p_root.rglob("*.js")) + list(p_root.rglob("*.ts")) + list(p_root.rglob("*.mjs")):
             if any(part in skip_dirs for part in p.parts):
                 continue
@@ -6258,11 +6314,11 @@ def test_{sym}_regression_edge_cases():
             except Exception:
                 continue
 
-        php_route_pat = re.compile(r"\bRoute::(get|post|put|patch|delete|options|any)\s*\(\s*['\"]([^'\"]+)['\"]", re.I)
-        php_resource_pat = re.compile(r"\bRoute::(?:apiResource|resource)\s*\(\s*['\"]([^'\"]+)['\"]", re.I)
-        php_attr_route_pat = re.compile(r"#\[(?:Route|Get|Post|Put|Patch|Delete)\s*(?:\(\s*['\"]([^'\"]+)['\"](?:[^)]*methods:\s*\[([^\]]+)\])?\s*\))?\]", re.I)
-        cake_route_pat = re.compile(r"\$(?:builder|routes)->connect\s*\(\s*['\"]([^'\"]+)['\"]", re.I)
-        cake_resource_pat = re.compile(r"\$(?:builder|routes)->resources\s*\(\s*['\"]([^'\"]+)['\"]", re.I)
+        php_route_pat = _API_LARAVEL_ROUTE_METHOD
+        php_resource_pat = _API_LARAVEL_RESOURCE_ROUTE
+        php_attr_route_pat = _API_ATTRIBUTE_ROUTE_DECLARATION
+        cake_route_pat = _API_PHP_CONNECT_ROUTE
+        cake_resource_pat = _API_PHP_RESOURCE_ROUTE
 
         for p in list(p_root.rglob("*.php")) + list(p_root.rglob("*.ctp")):
             if any(part in skip_dirs for part in p.parts):
@@ -6349,7 +6405,7 @@ def test_{sym}_regression_edge_cases():
             except Exception:
                 continue
 
-        form_pat = re.compile(r"<form\b(?=[^>]*\baction=['\"]([^'\"]+)['\"])(?:[^>]*\bmethod=['\"]([A-Za-z]+)['\"])?", re.I)
+        form_pat = _API_HTML_FORM_ENDPOINT
         for p in list(p_root.rglob("*.html")) + list(p_root.rglob("*.htm")):
             if any(part in skip_dirs for part in p.parts):
                 continue
