@@ -479,21 +479,54 @@ def retry_busy(
     base_delay_seconds: float = 0.015,
     max_delay_seconds: float = 2.0,
     jitter: bool = True,
+    fallback_degraded: bool = False,
+    degraded_value: Any = None,
 ) -> T:
-    """Retry only transient lock/busy errors with an exponential backoff and jitter."""
+    """Retry only transient lock/busy errors with an exponential backoff and jitter.
+
+    If fallback_degraded is True and retries are exhausted due to lock/busy error,
+    returns degraded_value if provided, or {"success": False, "degraded": True, "error": "database_locked"}.
+    """
     attempts = max(1, int(retries))
     delay = max(0.0, float(base_delay_seconds))
     for attempt in range(attempts):
         try:
             return operation()
         except Exception as exc:
-            if not is_busy_error(exc) or attempt + 1 >= attempts:
+            if not is_busy_error(exc):
+                raise
+            if attempt + 1 >= attempts:
+                if fallback_degraded:
+                    if degraded_value is not None:
+                        return degraded_value
+                    return {"success": False, "degraded": True, "error": "database_locked", "error_code": "database_locked"}  # type: ignore[return-value]
                 raise
             if delay:
                 backoff = min(max_delay_seconds, delay * (2 ** attempt))
                 sleep_time = random.uniform(0.5 * backoff, backoff) if jitter else backoff
                 time.sleep(sleep_time)
     raise AssertionError("unreachable")
+
+
+def with_degraded_fallback(
+    operation: Callable[[], T],
+    *,
+    retries: int = 5,
+    base_delay_seconds: float = 0.015,
+    max_delay_seconds: float = 2.0,
+    jitter: bool = True,
+    degraded_value: Any = None,
+) -> T | dict[str, Any]:
+    """Execute operation with retry_busy and return a graceful degraded response on persistent locks."""
+    return retry_busy(
+        operation,
+        retries=retries,
+        base_delay_seconds=base_delay_seconds,
+        max_delay_seconds=max_delay_seconds,
+        jitter=jitter,
+        fallback_degraded=True,
+        degraded_value=degraded_value,
+    )
 
 
 def ensure_incremental_vacuum(path: Path, *, timeout_seconds: float = 5.0) -> dict[str, Any]:
