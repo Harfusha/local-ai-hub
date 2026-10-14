@@ -77,8 +77,12 @@ class StatusDependencyExecutor(Executor):
     """At most capacity accepted probes; submission never starts pool workers."""
 
     def __init__(self, *, max_workers: int, capacity: int):
+        if max_workers < 1:
+            raise ValueError("status executor max_workers must be positive")
         if capacity < 1:
             raise ValueError("status executor capacity must be positive")
+        self._max_workers = int(max_workers)
+        self._capacity = int(capacity)
         self._pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="local-ai-status")
         self._work = queue.Queue(maxsize=capacity)
         self._slots = threading.BoundedSemaphore(capacity)
@@ -96,7 +100,26 @@ class StatusDependencyExecutor(Executor):
             self, _stop, self._lock, self._closed, self._pending, self._cancel, True,
         )
 
+    @property
+    def capacity(self) -> int:
+        return self._capacity
+
+    @property
+    def max_workers(self) -> int:
+        return self._max_workers
+
+    @property
+    def is_shutdown(self) -> bool:
+        return self._closed.is_set()
+
+    @property
+    def pending_count(self) -> int:
+        with self._lock:
+            return len(self._pending)
+
     def submit(self, fn, /, *args, **kwargs):
+        if not callable(fn):
+            raise TypeError("fn must be callable")
         with self._lock:
             if self._closed.is_set():
                 raise RuntimeError("status executor is shut down")
@@ -118,5 +141,7 @@ class StatusDependencyExecutor(Executor):
         _stop(self._lock, self._closed, self._pending, self._cancel, cancel_futures)
         self._finalizer.detach()
         if wait:
-            self._thread.join()
+            if self._thread.is_alive():
+                self._thread.join()
             self._pool.shutdown(wait=True, cancel_futures=cancel_futures)
+

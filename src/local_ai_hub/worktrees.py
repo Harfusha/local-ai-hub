@@ -184,23 +184,13 @@ def check_worktree_uncommitted_changes(
             **hidden_run_kwargs(),
         )
         if proc.returncode != 0:
-            return False, ""
+            return False, "git_status_failed"
+        if proc.stdout.strip():
+            return False, "uncommitted_changes_in_worktree"
+        return True, ""
+    except Exception as exc:
+        return False, str(exc)
 
-        current_wt: Path | None = None
-        for line in proc.stdout.splitlines():
-            line_str = line.strip()
-            if line_str.startswith("worktree "):
-                raw_wt = line_str.removeprefix("worktree ").strip()
-                try:
-                    current_wt = Path(raw_wt).resolve(strict=False)
-                except Exception:
-                    current_wt = None
-            elif current_wt == target and line_str.startswith("locked"):
-                reason = line_str.removeprefix("locked").strip()
-                return True, reason
-        return False, ""
-    except Exception:
-        return False, ""
 
 
 def lock_worktree(
@@ -327,13 +317,6 @@ def unlock_zombie_worktrees(
     except Exception:
         pass
     return unlocked_list
-
-            return False, "git_status_failed"
-        if proc.stdout.strip():
-            return False, "uncommitted_changes_in_worktree"
-        return True, ""
-    except Exception as exc:
-        return False, str(exc)
 
 
 def switch_worktree_branch(
