@@ -715,8 +715,8 @@ def set_current_thread_priority(priority: str | None) -> bool:
 def set_process_priority(pid: int, priority: str | None) -> bool:
     """Best-effort priority for a background child process, never raises."""
     value = _normalise_priority(priority)
-    if value in {None, "normal"}:
-        return True
+    if value is None:
+        value = "normal"
     try:
         if os.name == "nt":
             import ctypes
@@ -724,18 +724,65 @@ def set_process_priority(pid: int, priority: str | None) -> bool:
             if not handle:
                 return False
             try:
-                process_class = 0x40 if value == "idle" else 0x4000
+                if value == "idle":
+                    process_class = 0x40
+                elif value == "below_normal":
+                    process_class = 0x4000
+                else:
+                    process_class = 0x20
                 return bool(ctypes.windll.kernel32.SetPriorityClass(handle, process_class))
             finally:
                 ctypes.windll.kernel32.CloseHandle(handle)
-        nice = 19 if value == "idle" else 10
+        nice = 19 if value == "idle" else (10 if value == "below_normal" else 0)
         os.setpriority(os.PRIO_PROCESS, int(pid), nice)
         return True
     except (AttributeError, OSError, TypeError, ValueError):
         return False
 
 
-def windows_creationflags(*, detached: bool = False, new_group: bool = False) -> int:
+def get_process_priority(pid: int) -> str | None:
+    """Query current priority class of a process, returning 'idle', 'below_normal', 'normal', etc."""
+    try:
+        if os.name == "nt":
+            import ctypes
+            handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, int(pid))
+            if not handle:
+                handle = ctypes.windll.kernel32.OpenProcess(0x0400, False, int(pid))
+            if not handle:
+                return None
+            try:
+                cls = int(ctypes.windll.kernel32.GetPriorityClass(handle))
+                if cls == 0x40:
+                    return "idle"
+                if cls == 0x4000:
+                    return "below_normal"
+                if cls == 0x20:
+                    return "normal"
+                if cls == 0x8000:
+                    return "above_normal"
+                if cls == 0x80:
+                    return "high"
+                if cls == 0x100:
+                    return "realtime"
+                return "normal"
+            finally:
+                ctypes.windll.kernel32.CloseHandle(handle)
+        nice = os.getpriority(os.PRIO_PROCESS, int(pid))
+        if nice >= 19:
+            return "idle"
+        if nice >= 10:
+            return "below_normal"
+        return "normal"
+    except (AttributeError, OSError, TypeError, ValueError):
+        return None
+
+
+def windows_creationflags(
+    *,
+    detached: bool = False,
+    new_group: bool = False,
+    priority: str | None = None,
+) -> int:
     if os.name != "nt":
         return 0
     # Always enforce CREATE_NO_WINDOW on Windows.
@@ -746,13 +793,28 @@ def windows_creationflags(*, detached: bool = False, new_group: bool = False) ->
     flags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
     if detached or new_group:
         flags |= int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200))
+    norm_prio = _normalise_priority(priority)
+    if norm_prio == "idle":
+        flags |= 0x00000040
+    elif norm_prio == "below_normal":
+        flags |= 0x00004000
+    elif norm_prio == "normal":
+        flags |= 0x00000020
     return flags
 
 
-def hidden_run_kwargs(*, text: bool = False, detached: bool = False, new_group: bool = False) -> dict[str, Any]:
+def hidden_run_kwargs(
+    *,
+    text: bool = False,
+    detached: bool = False,
+    new_group: bool = False,
+    priority: str | None = None,
+) -> dict[str, Any]:
     kwargs: dict[str, Any] = {}
     if os.name == "nt":
-        kwargs["creationflags"] = windows_creationflags(detached=detached, new_group=new_group)
+        kwargs["creationflags"] = windows_creationflags(
+            detached=detached, new_group=new_group, priority=priority
+        )
         startupinfo = subprocess.STARTUPINFO()
         startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         startupinfo.wShowWindow = 0  # SW_HIDE
