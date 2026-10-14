@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from .json_utils import dumps as json_dumps
 
+import concurrent.futures
 import hashlib
 import json
 import sqlite3
+import subprocess
 import time
 from contextlib import closing
 from enum import Enum
@@ -17,6 +19,7 @@ from .agent_blackboard import BlackboardStore
 from .agent_events import AgentEvent, AgentStateStore
 from .agent_verification import VerificationStore
 from .leases import ScopeLeaseStore
+from .process_utils import hidden_run_kwargs
 from .sqlite_support import connect_sqlite, initialize_wal, validate_durable_schema
 
 
@@ -856,3 +859,138 @@ class SwarmCoordinator:
         if lease_pending:
             result["lease_release_pending"] = True
         return result
+
+    def execute_dag(
+        self,
+        steps: list[dict[str, Any]],
+        *,
+        worktree_path: str | Path | None = None,
+        max_workers: int = 4,
+    ) -> dict[str, Any]:
+        """Execute steps following declared depends_on DAG constraints in parallel."""
+        return execute_swarm_dag(
+            steps,
+            worktree_path=worktree_path,
+            max_workers=max_workers,
+            coordinator=self,
+        )
+
+    run_dag = execute_dag
+
+
+def execute_swarm_dag(
+    steps: list[dict[str, Any]],
+    *,
+    worktree_path: str | Path | None = None,
+    max_workers: int = 4,
+    coordinator: Any | None = None,
+) -> dict[str, Any]:
+    """Execute steps following declared depends_on DAG constraints in parallel.
+
+    If any required step fails, automatically trigger git checkout -f rollback
+    of worktree_path to the pre-swarm snapshot commit.
+    """
+    pre_snapshot = ""
+    if worktree_path:
+        wt = Path(worktree_path).resolve()
+        try:
+            cp = subprocess.run(
+                ["git", "-C", str(wt), "rev-parse", "HEAD"],
+                capture_output=True,
+                text=True,
+                check=False,
+                **hidden_run_kwargs(),
+            )
+            if cp.returncode == 0:
+                pre_snapshot = cp.stdout.strip()
+        except Exception:
+            pass
+
+    step_map = {step["id"]: step for step in steps}
+    completed_steps: set[str] = set()
+    failed_steps: set[str] = set()
+    step_results: dict[str, Any] = {}
+    remaining_steps = set(step_map.keys())
+
+    aborted = False
+
+    while remaining_steps and not aborted:
+        ready = [
+            sid for sid in remaining_steps
+            if all(dep in completed_steps for dep in step_map[sid].get("depends_on", []))
+        ]
+        if not ready:
+            for sid in remaining_steps:
+                failed_steps.add(sid)
+                step_results[sid] = {"success": False, "error": "unmet_dependencies"}
+            break
+
+        def _run_single_step(step_id: str) -> tuple[str, bool, Any]:
+            step_data = step_map[step_id]
+            fn = step_data.get("fn")
+            cmd = step_data.get("command")
+            try:
+                if callable(fn):
+                    out = fn()
+                    success = True
+                    if isinstance(out, dict):
+                        success = bool(out.get("success", True))
+                    elif isinstance(out, bool):
+                        success = out
+                    return step_id, success, out
+                elif cmd and worktree_path:
+                    proc = subprocess.run(
+                        cmd,
+                        cwd=str(worktree_path),
+                        shell=True,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                        **hidden_run_kwargs(),
+                    )
+                    return step_id, (proc.returncode == 0), {"stdout": proc.stdout, "stderr": proc.stderr, "exit_code": proc.returncode}
+                else:
+                    return step_id, True, {"status": "noop"}
+            except Exception as exc:
+                return step_id, False, {"error": str(exc)}
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, min(max_workers, len(ready)))) as executor:
+            future_to_step = {executor.submit(_run_single_step, sid): sid for sid in ready}
+            for future in concurrent.futures.as_completed(future_to_step):
+                sid, success, out = future.result()
+                step_results[sid] = out
+                remaining_steps.remove(sid)
+                if success:
+                    completed_steps.add(sid)
+                else:
+                    failed_steps.add(sid)
+                    if step_map[sid].get("required", True):
+                        aborted = True
+
+    rolled_back = False
+    if failed_steps and worktree_path and pre_snapshot:
+        try:
+            subprocess.run(
+                ["git", "-C", str(worktree_path), "checkout", "-f", pre_snapshot],
+                capture_output=True,
+                check=False,
+                **hidden_run_kwargs(),
+            )
+            subprocess.run(
+                ["git", "-C", str(worktree_path), "clean", "-fd"],
+                capture_output=True,
+                check=False,
+                **hidden_run_kwargs(),
+            )
+            rolled_back = True
+        except Exception:
+            pass
+
+    overall_success = len(failed_steps) == 0
+    return {
+        "success": overall_success,
+        "completed_steps": list(completed_steps),
+        "failed_steps": list(failed_steps),
+        "step_results": step_results,
+        "rolled_back": rolled_back,
+    }
