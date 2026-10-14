@@ -2869,20 +2869,26 @@ class RAGStore:
         heuristic_fallback = False
         if use_reranker and candidates:
             if self.config.get("features", {}).get("reranker", True) and hasattr(self, "reranker") and self.reranker:
-                try:
-                    rr = self.reranker.rerank(query, [c["text"] for c in candidates], top_k=top_k, priority=priority)
-                    if rr.get("success"):
-                        ordered: list[dict[str, Any]] = []
-                        for item in rr["results"]:
-                            base = dict(candidates[item["index"]])
-                            base["rerank_score"] = item["score"]
-                            ordered.append(base)
-                        candidates = ordered
-                        reranked = True
-                    else:
+                reranker_device = str(
+                    getattr(self.reranker, "active_device", None)
+                    or getattr(self.reranker, "device", None)
+                    or ""
+                ).strip().lower()
+                if reranker_device and reranker_device not in {"unknown", "none", "auto"} and not reranker_device.startswith("cpu"):
+                    try:
+                        rr = self.reranker.rerank(query, [c["text"] for c in candidates], top_k=top_k, priority=priority)
+                        if rr.get("success"):
+                            ordered: list[dict[str, Any]] = []
+                            for item in rr["results"]:
+                                base = dict(candidates[item["index"]])
+                                base["rerank_score"] = item["score"]
+                                ordered.append(base)
+                            candidates = ordered
+                            reranked = True
+                        else:
+                            reranker_failed = True
+                    except Exception:
                         reranker_failed = True
-                except Exception:
-                    reranker_failed = True
 
             if not reranked:
                 q_terms = [t.lower() for t in re.findall(r"\w+", query) if len(t) > 1]
