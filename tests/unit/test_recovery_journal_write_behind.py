@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from local_ai_hub import http_server
+from local_ai_hub.json_utils import dumps as json_dumps
 from local_ai_hub.resilience import RecoveryJournal
 
 
@@ -135,6 +136,157 @@ def test_completion_batch_commits_multiple_updates_in_one_transaction(tmp_path: 
         assert batch_committed.wait(3), "worker did not commit both completions together"
     finally:
         journal.close()
+
+
+def test_byte_budget_covers_inflight_batch_and_refilled_queue(tmp_path: Path, monkeypatch: Any) -> None:
+    journal = RecoveryJournal(tmp_path / "state")
+    journal._max_retained_completion_bytes = 5_000
+    for request_id in ("request-1", "request-2", "request-3"):
+        _claimed(journal, request_id)
+    write_entered = threading.Event()
+    release_write = threading.Event()
+    overflow_returned = threading.Event()
+    original_connect = journal._connect
+
+    class BlockedConnection:
+        def __init__(self, connection: sqlite3.Connection):
+            self.connection = connection
+
+        def __enter__(self) -> "BlockedConnection":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            self.connection.close()
+
+        def executemany(self, sql: str, parameters: list[tuple[Any, ...]]):
+            if sql.lstrip().upper().startswith("UPDATE REQUESTS SET STATE"):
+                write_entered.set()
+                assert release_write.wait(3)
+            return self.connection.executemany(sql, parameters)
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self.connection, name)
+
+    monkeypatch.setattr(journal, "_connect", lambda: BlockedConnection(original_connect()))
+    detail = "detail-" * 40
+    response1 = {"blob": "a" * 1_200}
+    response2 = {"blob": "b" * 1_200}
+    journal.finish("request-1", True, detail, response=response1)
+    assert write_entered.wait(2)
+    journal.finish("request-2", True, detail, response=response2)
+    payload_floor = sum(
+        len(detail.encode("utf-8")) + len(json_dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        for value in (response1, response2)
+    )
+    assert journal._retained_completion_bytes >= payload_floor
+
+    def finish_overflow() -> None:
+        journal.finish("request-3", True, detail, response={"blob": "c" * 1_200})
+        overflow_returned.set()
+
+    caller = threading.Thread(target=finish_overflow)
+    caller.start()
+    try:
+        assert overflow_returned.wait(2), "byte overflow waited for the blocked SQLite writer"
+        assert journal._retained_completion_bytes <= journal._max_retained_completion_bytes
+        assert journal._retained_completion_bytes == sum(journal._completion_reservations.values())
+        assert len(journal._in_flight_writes) == 1
+        assert len(journal._pending_writes) == 1
+        assert "request-3" not in journal._pending_completions
+        assert journal._journal_unavailable is True
+        with pytest.raises(sqlite3.DatabaseError, match="refusing mutation dispatch"):
+            _claimed(journal, "request-4")
+    finally:
+        release_write.set()
+        caller.join(3)
+        journal.close()
+    assert not caller.is_alive()
+    assert journal._retained_completion_bytes == 0
+    assert not journal._completion_reservations
+
+    reopened = RecoveryJournal(tmp_path / "state")
+    try:
+        replay = reopened.begin(
+            "request-3",
+            "tenant",
+            "/api/mutate",
+            identity="agent-a",
+            payload={"value": "request-3"},
+        )
+        assert replay["claimed"] is False
+        assert replay["state"] == "abandoned"
+        assert replay["outcome_unknown"] is True
+    finally:
+        reopened.close()
+
+
+def test_duplicate_request_completions_keep_separate_reservations_until_commit(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    journal = RecoveryJournal(tmp_path / "state")
+    journal._max_retained_completion_bytes = 10_000
+    _claimed(journal, "request-1")
+    write_entered = threading.Event()
+    release_write = threading.Event()
+    durable_commit = threading.Event()
+    release_after_commit = threading.Event()
+    original_connect = journal._connect
+
+    class BlockedConnection:
+        def __init__(self, connection: sqlite3.Connection):
+            self.connection = connection
+
+        def __enter__(self) -> "BlockedConnection":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            self.connection.close()
+
+        def executemany(self, sql: str, parameters: list[tuple[Any, ...]]):
+            if sql.lstrip().upper().startswith("UPDATE REQUESTS SET STATE"):
+                write_entered.set()
+                assert release_write.wait(3)
+            return self.connection.executemany(sql, parameters)
+
+        def commit(self) -> None:
+            self.connection.commit()
+            if not durable_commit.is_set():
+                durable_commit.set()
+                assert release_after_commit.wait(3)
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self.connection, name)
+
+    monkeypatch.setattr(journal, "_connect", lambda: BlockedConnection(original_connect()))
+    journal.finish("request-1", True, "first detail", response={"blob": "a" * 700})
+    assert write_entered.wait(2)
+    first_reservation = journal._retained_completion_bytes
+    journal.finish("request-1", True, "second detail", response={"blob": "b" * 900})
+    try:
+        assert len(journal._completion_reservations) == 2
+        assert len(journal._in_flight_writes) == 1
+        assert len(journal._pending_writes) == 1
+        assert journal._retained_completion_bytes > first_reservation
+        assert journal._retained_completion_bytes == sum(journal._completion_reservations.values())
+        assert journal._pending_completions["request-1"][5].find("bbbb") >= 0
+        release_write.set()
+        assert durable_commit.wait(3)
+        with journal._changed:
+            assert journal._retained_completion_bytes == sum(journal._completion_reservations.values())
+            assert len(journal._completion_reservations) == 2
+    finally:
+        release_write.set()
+        release_after_commit.set()
+        journal.close()
+    assert journal._retained_completion_bytes == 0
+    assert not journal._completion_reservations
+    assert not journal._pending_completions
+    with closing(sqlite3.connect(journal.path)) as connection:
+        row = connection.execute(
+            "SELECT response_json FROM requests WHERE request_id=?", ("request-1",)
+        ).fetchone()
+    assert row is not None and "bbbb" in str(row[0])
 
 
 def test_saturated_queue_keeps_http_completion_nonblocking_and_fails_closed(
@@ -285,7 +437,22 @@ def test_background_write_failure_preserves_unknown_boundary_and_blocks_new_clai
             identity="agent-a",
             payload_fingerprint=journal.fingerprint_payload({"value": "request-1"}),
         )
-        assert pending is not None and pending["state"] == "done"
-        assert pending["response"] == {"success": True}
+        assert pending is not None and pending["state"] == "running"
+        assert pending["response"] is None
     finally:
         journal.close()
+    assert journal._retained_completion_bytes == 0
+    assert not journal._completion_reservations
+    reopened = RecoveryJournal(tmp_path / "state")
+    try:
+        replay = reopened.begin(
+            "request-1",
+            "tenant",
+            "/api/mutate",
+            identity="agent-a",
+            payload={"value": "request-1"},
+        )
+        assert replay["state"] == "abandoned"
+        assert replay["outcome_unknown"] is True
+    finally:
+        reopened.close()
