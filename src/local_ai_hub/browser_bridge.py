@@ -31,17 +31,23 @@ CAPTURE_ERROR_STATUSES = {
     "timeout": 408,
 }
 _SENSITIVE_KEYS = {
-    "authorization",
+    "access_token",
+    "api_key",
     "auth_headers",
+    "authorization",
     "cookie",
     "cookies",
     "credentials",
     "form_values",
     "network_bodies",
     "password_values",
+    "private_key",
+    "refresh_token",
     "request_bodies",
     "response_bodies",
+    "secret_key",
 }
+
 _NETWORK_BODY_KEYS = {"body", "headers", "request_body", "response_body"}
 _DEFAULTS = {
     "capability_ttl_seconds": 60,
@@ -615,8 +621,12 @@ def _safe_origin(value: Any) -> str:
     if not host:
         return ""
     host = f"[{host}]" if ":" in host and not host.startswith("[") else host
-    origin = f"{parsed.scheme.lower()}://{host.lower()}" + (f":{port}" if port is not None else "")
+    scheme = parsed.scheme.lower()
+    if (scheme == "http" and port == 80) or (scheme == "https" and port == 443):
+        port = None
+    origin = f"{scheme}://{host.lower()}" + (f":{port}" if port is not None else "")
     return origin if len(origin) <= 256 else ""
+
 
 
 def _safe_capture_timestamp(value: Any) -> str:
@@ -686,7 +696,9 @@ def capture_to_artifacts(
             styles_id = batch.put_json(dict(value.get("computed_styles", {})), "browser-computed-styles")
             runtime_id = batch.put_json(_safe_runtime(value.get("runtime", {})), "browser-runtime")
             screenshot_id = batch.put_bytes(screenshot, "browser-screenshot", mime)
+            initial_identity = _capture_identity(value.get("capture_identity", {}).get("initial"))
             bundle = {
+
                 "version": 1,
                 "source": "current-tab",
                 "tab_id": str(value["tab_id"]),
@@ -694,10 +706,11 @@ def capture_to_artifacts(
                 "provenance": {
                     "captured_at": _safe_capture_timestamp(value.get("captured_at"))
                     or datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z"),
-                    "target_origin": _capture_identity(value["capture_identity"]["initial"])["target_origin"],
-                    "document_token": _capture_identity(value["capture_identity"]["initial"])["document_token"],
-                    "document_state_token": _capture_identity(value["capture_identity"]["initial"])["document_state_token"],
+                    "target_origin": initial_identity["target_origin"] if initial_identity else "",
+                    "document_token": initial_identity["document_token"] if initial_identity else "",
+                    "document_state_token": initial_identity["document_state_token"] if initial_identity else "",
                 },
+
                 "screenshot": {"artifact_id": screenshot_id, "mime_type": mime},
                 "dom": {"artifact_id": dom_id, "format": "live-dom", "redaction": "none"},
                 "accessibility": {"artifact_id": accessibility_id, "format": "accessibility-snapshot"},
