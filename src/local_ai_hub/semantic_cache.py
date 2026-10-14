@@ -252,5 +252,4 @@ class SemanticGenerationCache:
         }
 
 
-SemanticCache = SemanticGenerationCache
 
