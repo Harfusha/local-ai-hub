@@ -35,10 +35,93 @@ from .process_utils import canonical_root, canonical_workspace_id
 
 import re
 from functools import lru_cache
+from collections import OrderedDict
 
 
 _MAX_RERANK_CANDIDATES = 512
 _INDEX_EMBED_BATCH_SIZE = 64
+_CENTROID_FILTER_MIN_CHUNKS = 10_000
+_CENTROID_COUNT = 64
+_CENTROID_SAMPLE_SIZE = 512
+_CENTROID_ITERATIONS = 8
+_CENTROID_PROBES = 4
+_CENTROID_CACHE_MAX_ENTRIES = 8
+_CENTROID_CACHE_MAX_BYTES = 64 * 1024 * 1024
+_CENTROID_ENTRY_MAX_BYTES = 16 * 1024 * 1024
+_CENTROID_CACHE_LOCK = threading.RLock()
+_CENTROID_BUILD_LOCK = threading.Lock()
+_CENTROID_CACHE: OrderedDict[tuple[Any, ...], tuple[Any, dict[int, tuple[tuple[str, int], ...]], int]] = OrderedDict()
+_CENTROID_CACHE_BYTES = 0
+
+
+def _centroid_threshold_reached(chunk_count: int) -> bool:
+    return chunk_count > _CENTROID_FILTER_MIN_CHUNKS
+
+
+def _fine_cosine_scores(matrix: Any, query_vector: Any) -> Any:
+    """Exact cosine stage, kept separate so candidate filtering stays measurable."""
+    import numpy as np
+
+    norms = np.linalg.norm(matrix, axis=1)
+    scores = np.zeros(len(norms), dtype=np.float32)
+    valid = np.isfinite(norms) & (norms > 1e-9)
+    if valid.any():
+        dot_scores = np.dot(matrix, query_vector)
+        scores[valid] = dot_scores[valid] / norms[valid]
+    return np.where(np.isfinite(scores), scores, 0.0)
+
+
+def _decode_centroid_vector(raw: Any, dimension: int, np: Any) -> Any | None:
+    try:
+        if isinstance(raw, (bytes, memoryview)):
+            vector = np.frombuffer(raw, dtype=np.float32)
+        elif isinstance(raw, str):
+            vector = np.asarray(json.loads(raw), dtype=np.float32)
+        else:
+            return None
+        vector = np.asarray(vector, dtype=np.float32).reshape(-1)
+        if vector.size != dimension or not np.isfinite(vector).all():
+            return None
+        norm = float(np.linalg.norm(vector))
+        if norm > 1e-9:
+            vector = vector / norm
+        return vector
+    except Exception:
+        return None
+
+
+def _centroid_cache_get(key: tuple[Any, ...]) -> tuple[Any, dict[int, tuple[tuple[str, int], ...]], int] | None:
+    with _CENTROID_CACHE_LOCK:
+        value = _CENTROID_CACHE.get(key)
+        if value is not None:
+            _CENTROID_CACHE.move_to_end(key)
+        return value
+
+
+def _centroid_cache_put(
+    key: tuple[Any, ...],
+    value: tuple[Any, dict[int, tuple[tuple[str, int], ...]], int],
+) -> bool:
+    global _CENTROID_CACHE_BYTES
+    size = value[2]
+    if size > _CENTROID_ENTRY_MAX_BYTES:
+        return False
+    with _CENTROID_CACHE_LOCK:
+        for old_key in tuple(_CENTROID_CACHE):
+            if old_key != key and old_key[:4] == key[:4]:
+                _CENTROID_CACHE_BYTES -= _CENTROID_CACHE.pop(old_key)[2]
+        previous = _CENTROID_CACHE.pop(key, None)
+        if previous is not None:
+            _CENTROID_CACHE_BYTES -= previous[2]
+        while _CENTROID_CACHE and (
+            len(_CENTROID_CACHE) >= _CENTROID_CACHE_MAX_ENTRIES
+            or _CENTROID_CACHE_BYTES + size > _CENTROID_CACHE_MAX_BYTES
+        ):
+            _, evicted = _CENTROID_CACHE.popitem(last=False)
+            _CENTROID_CACHE_BYTES -= evicted[2]
+        _CENTROID_CACHE[key] = value
+        _CENTROID_CACHE_BYTES += size
+    return True
 
 
 class ProjectPolicySyncError(RuntimeError):
@@ -2291,6 +2374,152 @@ class RAGStore:
         scored.sort(key=lambda x: x["fts_score"], reverse=True)
         return scored[:limit]
 
+    def _centroid_index_for_search(
+        self, scope_key: str, workspace: str, embedding_space: str, query_vector: Any,
+    ) -> tuple[int, tuple[tuple[str, int], ...]] | None:
+        try:
+            np = importlib.import_module("numpy")
+        except Exception:
+            return None
+        dimension = int(getattr(query_vector, "size", len(query_vector) if isinstance(query_vector, (list, tuple)) else 0))
+        if dimension <= 0 or dimension > 4096:
+            return None
+        with closing(self._connect()) as con:
+            generation = self._workspace_index_generation(con, scope_key, workspace)
+            row = con.execute(
+                "SELECT COUNT(*) FROM chunks WHERE tenant=? AND workspace=? AND embedding_space=? AND embedding_space<>''",
+                (scope_key, workspace, embedding_space),
+            ).fetchone()
+            chunk_count = int(row[0]) if row else 0
+        if not _centroid_threshold_reached(chunk_count):
+            return None
+        key = (str(self.db_path.resolve()), scope_key, workspace, embedding_space, dimension, generation)
+        cached = _centroid_cache_get(key)
+        if cached is None:
+            with _CENTROID_BUILD_LOCK:
+                cached = _centroid_cache_get(key)
+                if cached is None:
+                    cached = self._build_centroid_index(
+                        scope_key, workspace, embedding_space, dimension, generation, chunk_count
+                    )
+                    if cached is not None and not _centroid_cache_put(key, cached):
+                        return None
+                    cached = _centroid_cache_get(key)
+        if cached is None:
+            return None
+        centers, buckets, _ = cached
+        query = np.asarray(query_vector, dtype=np.float32).reshape(-1)
+        norm = float(np.linalg.norm(query))
+        if query.size != dimension or not math.isfinite(norm) or norm <= 1e-9:
+            return None
+        similarities = np.dot(centers, query / norm)
+        ordered = np.argsort(-similarities, kind="stable")
+        selected: list[tuple[str, int]] = []
+        for cluster_id in ordered[: min(_CENTROID_PROBES, len(centers))]:
+            selected.extend(buckets.get(int(cluster_id), ()))
+        return (generation, tuple(selected)) if selected else None
+
+    def _build_centroid_index(
+        self, scope_key: str, workspace: str, embedding_space: str,
+        dimension: int, generation: int, chunk_count: int,
+    ) -> tuple[Any, dict[int, tuple[tuple[str, int], ...]], int] | None:
+        try:
+            np = importlib.import_module("numpy")
+        except Exception:
+            return None
+        sample_count = min(_CENTROID_SAMPLE_SIZE, chunk_count)
+        if sample_count < 2:
+            return None
+        positions = {
+            round(index * (chunk_count - 1) / max(1, sample_count - 1))
+            for index in range(sample_count)
+        }
+        query = (
+            "SELECT path,chunk_no,embedding FROM chunks WHERE tenant=? AND workspace=? "
+            "AND embedding_space=? AND embedding_space<>'' ORDER BY path,chunk_no"
+        )
+        with closing(self._connect()) as con:
+            con.execute("BEGIN")
+            if self._workspace_index_generation(con, scope_key, workspace) != generation:
+                return None
+            sample = []
+            sample_path_bytes = 0
+            cursor = con.execute(query, (scope_key, workspace, embedding_space))
+            position = 0
+            try:
+                while True:
+                    batch = cursor.fetchmany(512)
+                    if not batch:
+                        break
+                    for path, _, raw in batch:
+                        if position in positions:
+                            vector = _decode_centroid_vector(raw, dimension, np)
+                            if vector is None:
+                                return None
+                            sample.append(vector)
+                            sample_path_bytes += len(str(path).encode("utf-8"))
+                        position += 1
+            finally:
+                cursor.close()
+            if len(sample) < 2:
+                return None
+            training = np.stack(sample).astype(np.float32, copy=False)
+            centers = [training[0].copy()]
+            while len(centers) < min(_CENTROID_COUNT, len(training)):
+                nearest = np.max(np.dot(training, np.stack(centers).T), axis=1)
+                candidate = training[int(np.argmin(nearest))]
+                if float(np.max(np.dot(np.stack(centers), candidate))) > 0.99999:
+                    break
+                centers.append(candidate.copy())
+            centers_array = np.stack(centers).astype(np.float32, copy=False)
+            for _ in range(_CENTROID_ITERATIONS):
+                labels = np.argmax(np.dot(training, centers_array.T), axis=1)
+                updated = []
+                for cluster_id in range(len(centers_array)):
+                    members = training[labels == cluster_id]
+                    if len(members):
+                        center = members.mean(axis=0)
+                        norm = float(np.linalg.norm(center))
+                        if norm > 1e-9:
+                            updated.append(center / norm)
+                if not updated:
+                    return None
+                centers_array = np.stack(updated).astype(np.float32, copy=False)
+
+            estimated_entry_bytes = int(
+                centers_array.nbytes
+                + chunk_count * (sample_path_bytes // max(1, len(sample)) + 256)
+            )
+            if estimated_entry_bytes > _CENTROID_ENTRY_MAX_BYTES:
+                return None
+
+            buckets: dict[int, list[tuple[str, int]]] = {index: [] for index in range(len(centers_array))}
+            retained_bytes = int(centers_array.nbytes)
+            cursor = con.execute(query, (scope_key, workspace, embedding_space))
+            try:
+                while True:
+                    batch = cursor.fetchmany(256)
+                    if not batch:
+                        break
+                    vectors = []
+                    for _, _, raw in batch:
+                        vector = _decode_centroid_vector(raw, dimension, np)
+                        if vector is None:
+                            return None
+                        vectors.append(vector)
+                    labels = np.argmax(np.dot(np.stack(vectors), centers_array.T), axis=1)
+                    for (path, chunk_no, _), cluster_id in zip(batch, labels):
+                        path = str(path)
+                        retained_bytes += len(path.encode("utf-8")) + 256
+                        if retained_bytes > _CENTROID_ENTRY_MAX_BYTES:
+                            return None
+                        buckets[int(cluster_id)].append((path, int(chunk_no)))
+            finally:
+                cursor.close()
+            if self._workspace_index_generation(con, scope_key, workspace) != generation:
+                return None
+        return centers_array, {key: tuple(value) for key, value in buckets.items()}, retained_bytes
+
     def _search_uncached(self, query: str, tenant: str, workspace: str, top_k: int = 8, use_reranker: bool = True, priority: int = 3, scope_path: str | None = None) -> dict[str, Any]:
         scope_key = self._scope_key(tenant)
         with closing(self._connect()) as con:
@@ -2377,6 +2606,15 @@ class RAGStore:
         except Exception:
             np = None
 
+        centroid_index = None
+        if np is not None and embedding_space_resolved:
+            try:
+                centroid_index = self._centroid_index_for_search(
+                    scope_key, workspace, embedding_space, query_vec
+                )
+            except Exception:
+                centroid_index = None
+
         if np is not None:
             q = np.asarray(query_vec, dtype=np.float32).reshape(-1)
             dimension = int(q.size)
@@ -2414,11 +2652,30 @@ class RAGStore:
             path_filter = self._search_path_exclusion(con, uncertain_paths, "path")
             con.execute("BEGIN")
             norm_scope = scope_path.replace("\\", "/").rstrip("/") if scope_path else None
+            centroid_active = False
+            if centroid_index is not None:
+                centroid_generation, centroid_rows = centroid_index
+                if self._workspace_index_generation(con, scope_key, workspace) == centroid_generation:
+                    con.execute(
+                        "CREATE TEMP TABLE IF NOT EXISTS rag_centroid_candidates "
+                        "(path TEXT NOT NULL, chunk_no INTEGER NOT NULL, PRIMARY KEY(path,chunk_no)) WITHOUT ROWID"
+                    )
+                    con.execute("DELETE FROM rag_centroid_candidates")
+                    con.executemany(
+                        "INSERT OR IGNORE INTO rag_centroid_candidates(path,chunk_no) VALUES(?,?)",
+                        centroid_rows,
+                    )
+                    centroid_active = True
             last_path: str | None = None
             last_chunk_no: int | None = None
             while True:
                 predicates = ["tenant=?", "workspace=?", "embedding_space=?", "embedding_space<>''"]
                 params: list[Any] = [scope_key, workspace, embedding_space]
+                if centroid_active:
+                    predicates.append(
+                        "EXISTS (SELECT 1 FROM rag_centroid_candidates cc "
+                        "WHERE cc.path=chunks.path AND cc.chunk_no=chunks.chunk_no)"
+                    )
                 if path_filter:
                     predicates.append(path_filter.removeprefix(" AND "))
                 if norm_scope is not None:
@@ -2428,7 +2685,7 @@ class RAGStore:
                     predicates.append("(path>? OR (path=? AND chunk_no>?))")
                     params.extend((last_path, last_path, last_chunk_no))
                 cursor = con.execute(
-                    "SELECT path, chunk_no, embedding, content_hash FROM chunks WHERE "
+                    "SELECT chunks.path, chunks.chunk_no, chunks.embedding, chunks.content_hash FROM chunks AS chunks WHERE "
                     + " AND ".join(predicates)
                     + " ORDER BY path, chunk_no LIMIT ?",
                     (*params, batch_size),
@@ -2461,14 +2718,7 @@ class RAGStore:
                                     matrix[index] = vector
                             except (TypeError, ValueError, OverflowError, json.JSONDecodeError):
                                 continue
-                    norms = np.linalg.norm(matrix, axis=1)
-                    scores = np.empty_like(norms)
-                    scores.fill(0.0)
-                    valid = np.isfinite(norms) & (norms > 1e-9)
-                    if q_norm > 1e-9 and valid.any():
-                        dot_scores = np.dot(matrix, q)
-                        scores[valid] = dot_scores[valid] / norms[valid]
-                    scores = np.where(np.isfinite(scores), scores, 0.0)
+                    scores = _fine_cosine_scores(matrix, q)
                     local_count = min(candidate_limit, len(batch))
                     if local_count < len(batch):
                         kth = len(batch) - local_count
