@@ -302,7 +302,8 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
     contract_notes: list[str] = []
     if fs.status:
         contract_notes.append(
-            '`local_ai_status.detail` uses `brief`, `cache`, `telemetry`, `full`, or `agent_state`; '
+            '`local_ai_status.detail` uses `brief`, `cache`, `telemetry`, `full`, `agent_state`, or `traces`; '
+            '`traces` accepts bounded `min_duration_ms` and `trace_action` filters. '
             'action also accepts `status`, `health`, `check`, and `info` aliases.'
         )
     if fs.repo:
@@ -524,7 +525,7 @@ def generate_skill_references(cfg: dict[str, Any]) -> dict[str, str]:
         tool_bullets.append("- `local_ai_coord`: edit leases and reusable investigation memos" + (", Agent OS task lifecycle, scoped memory/relations, context, verification, negative knowledge, and coordination primitives" if fs.agent_os else "") + ".")
     if fs.status:
         status_detail_note = ", Agent OS task/incident state" if fs.agent_os else ""
-        tool_bullets.append(f"- `local_ai_status`: bounded health/cache/telemetry{status_detail_note} inspection; no polling loops.")
+        tool_bullets.append(f"- `local_ai_status`: bounded health/cache/telemetry/debug-trace{status_detail_note} inspection; no polling loops.")
     if local_semantic_enabled:
         tool_bullets.append(f"- Semantic routing contract: {semantic_handoff}")
     else:

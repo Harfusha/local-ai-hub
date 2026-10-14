@@ -19,7 +19,7 @@ from collections import OrderedDict
 from collections.abc import Mapping
 from pathlib import Path, PureWindowsPath
 from typing import Any, Literal, TypeAlias
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 
 from local_ai_hub.client import CURRENT_REQUEST_CANCEL_EVENT, HubClient
 try:
@@ -202,7 +202,7 @@ def _classify_mcp_operation(tool_name: str, arguments: dict[str, Any]) -> tuple[
         action = "brief"
     lightweight_read = (
         tool_name == "local_ai_artifact"
-        or (tool_name == "local_ai_status" and action in {"brief", "cache", "telemetry"})
+        or (tool_name == "local_ai_status" and action in {"brief", "cache", "telemetry", "traces"})
         or (tool_name == "local_ai_repo" and action in {"map", "code_index", "search"})
         or (
             tool_name == "local_ai_command"
@@ -1928,8 +1928,8 @@ def _record_adoption(tool: str, arguments: dict[str, Any], result: Any, duration
 
 @mcp.tool()
 @_instrumented_tool()
-def local_ai_status(action: StatusAction = "", detail: StatusDetail = "brief", scope: str = "process", extra_fields: list[str] | None = None, adoption_signal: Literal["", "bypassed"] = "", target_tool: str = "", target_action: str = "", max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "") -> dict[str, Any]:
-    """Health/queue/token-saving status. detail: brief, cache, telemetry, full, agent_state. scope: process (default) or window. action is an alias for detail. To report a deliberate bypass, set adoption_signal=bypassed with validated target_tool and target_action; omitted means no bypass. Telemetry is metadata-only. Do not poll status during normal repository work or while preprocessing/model startup is in progress; one bounded health check is enough before native fallback. Use when: make one bounded health, cache, or telemetry check. Skip when: repository evidence or task work is needed."""
+def local_ai_status(action: StatusAction = "", detail: StatusDetail = "brief", scope: str = "process", extra_fields: list[str] | None = None, adoption_signal: Literal["", "bypassed"] = "", target_tool: str = "", target_action: str = "", min_duration_ms: int = 0, trace_action: str = "", max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "") -> dict[str, Any]:
+    """Health/queue/token-saving status. detail: brief, cache, telemetry, full, agent_state, traces. Traces accepts min_duration_ms and trace_action filters. scope: process (default) or window. action is an alias for detail. To report a deliberate bypass, set adoption_signal=bypassed with validated target_tool and target_action; omitted means no bypass. Telemetry is metadata-only. Do not poll status during normal repository work or while preprocessing/model startup is in progress; one bounded health check is enough before native fallback. Use when: make one bounded health, cache, telemetry, or debug-trace query. Skip when: repository evidence or task work is needed."""
     if not isinstance(action, str) or action not in STATUS_ACTIONS:
         return contract_error(f"action must be one of: {', '.join(STATUS_ACTIONS[1:])}")
     if not isinstance(detail, str) or detail not in StatusDetail.__args__:
@@ -1938,6 +1938,10 @@ def local_ai_status(action: StatusAction = "", detail: StatusDetail = "brief", s
         return contract_error("scope must be process or window")
     if not isinstance(max_response_tokens, int) or isinstance(max_response_tokens, bool) or not 0 <= max_response_tokens <= 100000:
         return contract_error("max_response_tokens must be between 0 and 100000")
+    if not isinstance(min_duration_ms, int) or isinstance(min_duration_ms, bool) or not 0 <= min_duration_ms <= 86_400_000:
+        return contract_error("min_duration_ms must be an integer between 0 and 86400000")
+    if not isinstance(trace_action, str) or len(trace_action) > 64:
+        return contract_error("trace_action must be a string of at most 64 characters")
     if action:
         act = action.strip().lower()
         if act in STATUS_DETAILS:
@@ -1959,6 +1963,18 @@ def local_ai_status(action: StatusAction = "", detail: StatusDetail = "brief", s
     scope = scope.strip().lower()
     if scope not in {"process", "window"}:
         return contract_error("scope must be process or window")
+
+    if detail == "traces":
+        query = urlencode({
+            "min_duration_ms": min_duration_ms,
+            "action": trace_action.strip(),
+            "limit": 20,
+        })
+        try:
+            report = CLIENT.get(f"/api/debug-traces?{query}")
+        except Exception as exc:
+            return _compact({"success": False, "error": str(exc)[:500]}, "status")
+        return _compact(report, "status")
 
     if action and detail not in {"agent_state", "telemetry"}:
         status = CLIENT.get(f"/api/live/status?light=1&scope={scope}")

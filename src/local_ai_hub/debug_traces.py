@@ -1050,14 +1050,29 @@ class DebugTraceStore:
         except sqlite3.Error:
             return {"success": False, "error": "trace store unavailable", "trace_id": trace_id, "retryable": True}
 
-    def list(self, *, kind: str = "", state: str = "", agent: str = "", model: str = "", limit: int = 50, offset: int = 0) -> dict[str, Any]:
+    def list(
+        self,
+        *,
+        kind: str = "",
+        state: str = "",
+        agent: str = "",
+        model: str = "",
+        action: str = "",
+        min_duration_ms: int = 0,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, Any]:
         limit = min(self.max_list_limit, max(1, int(limit)))
         offset = max(0, int(offset))
+        min_duration_ms = min(86_400_000, max(0, int(min_duration_ms)))
         where: list[str] = []
         values: list[Any] = []
-        for column, value in (("kind", kind), ("state", state), ("agent", agent), ("model", model)):
+        for column, value in (("kind", kind), ("state", state), ("agent", agent), ("model", model), ("action", action)):
             if value:
                 where.append(f"{column}=?"); values.append(str(value))
+        duration_sql = "MAX(0, CAST((COALESCE(NULLIF(finished_at, 0), updated_at) - created_at) * 1000 AS INTEGER))"
+        if min_duration_ms:
+            where.append(f"{duration_sql}>=?"); values.append(min_duration_ms)
         clause = " WHERE " + " AND ".join(where) if where else ""
         try:
             with closing(self._connect()) as con:
@@ -1068,6 +1083,7 @@ class DebugTraceStore:
                     rows = []
                 else:
                     rows = con.execute(f"""SELECT trace_id,kind,tenant,agent,action,source,model,request_id,async_job_id,scheduler_job_id,state,created_at,updated_at,finished_at,error,
+                        {duration_sql} AS duration_ms,
                         CASE WHEN json_valid(request_json) THEN substr(json_extract(request_json, '$.action'), 1, 48) END AS request_action,
                         CASE WHEN json_valid(request_json) THEN substr(json_extract(request_json, '$.command'), 1, 512) END AS request_command,
                         CASE WHEN json_valid(request_json) THEN COALESCE(NULLIF(TRIM(json_extract(request_json, '$.project')), ''), NULLIF(TRIM(json_extract(request_json, '$.workspace')), ''), NULLIF(TRIM(json_extract(request_json, '$.root')), ''), NULLIF(TRIM(json_extract(request_json, '$.repo_root')), '')) END AS request_project,

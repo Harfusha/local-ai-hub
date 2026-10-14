@@ -91,7 +91,7 @@ def _action_contracts(
     return result
 
 
-_STATUS_ACTIONS = ("brief", "cache", "telemetry", "full", "agent_state")
+_STATUS_ACTIONS = ("brief", "cache", "telemetry", "full", "agent_state", "traces")
 _REPO_ACTIONS = (
     "profile", "search", "map", "code_index", "deterministic", "context", "route", "delegate",
     "solve", "review_diff", "impact", "refactor_impact", "resolve_imports", "generate_tests",
@@ -266,6 +266,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "target_tool": {"type": "string", "enum": list(_ADOPTION_TOOL_NAMES)},
             "target_action": {"type": "string", "minLength": 1, "maxLength": 80,
                                "pattern": "^[a-z][a-z0-9_]{0,79}$"},
+            "min_duration_ms": {"type": "integer", "minimum": 0, "maximum": 86400000, "default": 0},
+            "trace_action": {"type": "string", "maxLength": 64, "default": ""},
             "extra_fields": {"type": "array", "items": {"type": "string"}},
         },
     ),

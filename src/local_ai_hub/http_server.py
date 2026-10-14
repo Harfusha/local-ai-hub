@@ -4926,6 +4926,8 @@ class Handler(BaseHTTPRequestHandler):
                     state=str((query.get("state") or [""])[0]),
                     agent=str((query.get("agent") or [""])[0]),
                     model=str((query.get("model") or [""])[0]),
+                    action=str((query.get("action") or [""])[0]),
+                    min_duration_ms=_query_int(query, "min_duration_ms", 0),
                     limit=_query_int(query, "limit", 50),
                     offset=_query_int(query, "offset", 0),
                 )
