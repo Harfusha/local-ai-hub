@@ -1,10 +1,12 @@
 from __future__ import annotations
-
+import os
+import re
 import subprocess
 import time
 from pathlib import Path
+from typing import Any
 
-from .process_utils import hidden_run_kwargs
+from .process_utils import hidden_run_kwargs, pid_alive
 
 
 def parse_worktree_porcelain(payload: str) -> list[str]:
@@ -105,3 +107,167 @@ def worktree_is_clean_ancestor(
         if proof is None or proof.returncode != 0:
             return False, "worktree contains commits outside the approved repository history"
     return True, ""
+
+
+def is_worktree_locked(
+    repo_root: str | Path,
+    worktree: str | Path,
+    timeout: float = 5.0,
+) -> tuple[bool, str]:
+    """Check if worktree is locked using git worktree list --porcelain."""
+    repo = Path(repo_root).resolve(strict=True)
+    target = Path(worktree).resolve(strict=False)
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), "worktree", "list", "--porcelain"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            **hidden_run_kwargs(),
+        )
+        if proc.returncode != 0:
+            return False, ""
+
+        current_wt: Path | None = None
+        for line in proc.stdout.splitlines():
+            line_str = line.strip()
+            if line_str.startswith("worktree "):
+                raw_wt = line_str.removeprefix("worktree ").strip()
+                try:
+                    current_wt = Path(raw_wt).resolve(strict=False)
+                except Exception:
+                    current_wt = None
+            elif current_wt == target and line_str.startswith("locked"):
+                reason = line_str.removeprefix("locked").strip()
+                return True, reason
+        return False, ""
+    except Exception:
+        return False, ""
+
+
+def lock_worktree(
+    repo_root: str | Path,
+    worktree: str | Path,
+    reason: str = "",
+    pid: int | None = None,
+    timeout: float = 5.0,
+) -> bool:
+    """Lock worktree with git worktree lock, embedding owner PID in reason."""
+    repo = Path(repo_root).resolve(strict=True)
+    target = Path(worktree).resolve(strict=False)
+    target_pid = int(pid if pid is not None else os.getpid())
+    full_reason = f"pid: {target_pid}; {reason}" if reason else f"pid: {target_pid}"
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), "worktree", "lock", "--reason", full_reason, str(target)],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            **hidden_run_kwargs(),
+        )
+        return proc.returncode == 0
+    except Exception:
+        return False
+
+
+def unlock_worktree(
+    repo_root: str | Path,
+    worktree: str | Path,
+    timeout: float = 5.0,
+) -> bool:
+    """Unlock worktree with git worktree unlock or fallback to unlinking lock file."""
+    repo = Path(repo_root).resolve(strict=True)
+    target = Path(worktree).resolve(strict=False)
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo), "worktree", "unlock", str(target)],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            **hidden_run_kwargs(),
+        )
+        if proc.returncode == 0:
+            return True
+    except Exception:
+        pass
+
+    try:
+        cmn_proc = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            **hidden_run_kwargs(),
+        )
+        if cmn_proc.returncode == 0:
+            raw_cmn = cmn_proc.stdout.strip()
+            cmn_dir = Path(raw_cmn) if Path(raw_cmn).is_absolute() else (repo / raw_cmn).resolve()
+            wt_name = target.name
+            lock_file = cmn_dir / "worktrees" / wt_name / "locked"
+            if lock_file.exists():
+                lock_file.unlink(missing_ok=True)
+                return True
+    except Exception:
+        pass
+    return False
+
+
+def unlock_zombie_worktrees(
+    repo_root: str | Path,
+    timeout: float = 5.0,
+) -> list[dict[str, Any]]:
+    """Scan and unlock worktrees locked by dead/crashed processes."""
+    repo = Path(repo_root).resolve(strict=True)
+    unlocked_list: list[dict[str, Any]] = []
+    try:
+        cmn_proc = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            **hidden_run_kwargs(),
+        )
+        if cmn_proc.returncode != 0:
+            return []
+        raw_cmn = cmn_proc.stdout.strip()
+        cmn_dir = Path(raw_cmn) if Path(raw_cmn).is_absolute() else (repo / raw_cmn).resolve()
+        worktrees_dir = cmn_dir / "worktrees"
+        if not worktrees_dir.is_dir():
+            return []
+
+        for wt_folder in worktrees_dir.iterdir():
+            if not wt_folder.is_dir():
+                continue
+            lock_file = wt_folder / "locked"
+            if not lock_file.is_file():
+                continue
+
+            try:
+                content = lock_file.read_text(encoding="utf-8", errors="replace").strip()
+            except OSError:
+                continue
+
+            pid_match = re.search(r"\bpid[:=\s]+(\d+)\b", content, re.IGNORECASE)
+            if pid_match:
+                try:
+                    owner_pid = int(pid_match.group(1))
+                except ValueError:
+                    continue
+
+                if not pid_alive(owner_pid):
+                    if unlock_worktree(repo, wt_folder.name, timeout=timeout):
+                        unlocked_list.append({
+                            "worktree": wt_folder.name,
+                            "pid": owner_pid,
+                            "reason": content,
+                            "status": "unlocked",
+                        })
+    except Exception:
+        pass
+    return unlocked_list
+
