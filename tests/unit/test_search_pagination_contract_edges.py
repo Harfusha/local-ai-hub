@@ -226,6 +226,7 @@ def test_http_code_index_route_returns_bounded_400_for_upper_bound(
     handler._begin_trace = lambda _path: None
     handler._read_json = lambda: {"root": ".", "query": "symbol", "limit": MAX_PAGE_SIZE + 1, "offset": 0}
     handler._validate_payload = lambda _path, _payload: None
+    handler._bind_repository_root_payload = lambda _payload: True
     handler._tenant = lambda: "test"
     handler._claim_recovery = lambda *_args: True
     responses: list[tuple[int, dict[str, object]]] = []
