@@ -81,6 +81,7 @@ from .dashboard import DASHBOARD_HTML
 from .config import ConfigError, deep_merge, load_config, save_runtime_overrides, validate_config
 from .delivery import decide_delivery
 from .resilience import RecoveryJournal
+from .sqlite_support import is_busy_error
 from .agent_identity import AgentScope, ScopeContext
 from .project_config import resolve_project_context, _git_common_dir as _real_git_common_dir
 from .state_paths import configured_state_dir
@@ -3626,6 +3627,20 @@ class Handler(BaseHTTPRequestHandler):
             trace_store.event(api_trace_id, "async_job_submitted", {"job_id": result.get("job_id", ""), "trace_id": result.get("trace_id", ""), "delivery": decision})
         return 200, result
 
+    def _send_database_locked(self) -> None:
+        mutation = str(getattr(self, "command", "GET")).upper() not in {"GET", "HEAD", "OPTIONS"}
+        response = {
+            "success": False,
+            "degraded": True,
+            "error": "database_locked",
+            "error_code": "database_locked",
+            "status_code": 503,
+            "terminal": mutation,
+            "retryable": not mutation,
+            "outcome_unknown": mutation,
+        }
+        self._send(503, response)
+
     def _send(self, status: int, data: Any, *, headers: Mapping[str, str] | None = None) -> None:
         execution_started = getattr(self, "_handler_execution_started", None)
         operation = str(getattr(self, "_admin_operation", ""))
@@ -5219,6 +5234,9 @@ class Handler(BaseHTTPRequestHandler):
             if _is_client_disconnect(exc):
                 self._finish_debug_trace(499, {"success": False, "terminal": True}, error="client disconnected")
                 self._close_trace_context()
+                return
+            if is_busy_error(exc):
+                self._send_database_locked()
                 return
             try:
                 if APP is not None:
@@ -8165,6 +8183,9 @@ class Handler(BaseHTTPRequestHandler):
             if _is_client_disconnect(exc):
                 self._finish_debug_trace(499, {"success": False, "terminal": True}, error="client disconnected")
                 self._close_trace_context()
+            elif is_busy_error(exc):
+                self._send_database_locked()
+                return
             logger = getattr(APP, "logger", None)
             if logger is not None:
                 logger.error("POST request failed error_type=%s", type(exc).__name__)
