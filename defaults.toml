@@ -441,6 +441,7 @@ max_failure_entries = 1000
 l1_entries = 128
 l1_ttl_seconds = 900
 max_output_chars = 2000000
+max_output_bytes = 8000000
 inline_output_chars = 5000
 environment_keys = ["CI", "NODE_ENV", "APP_ENV", "PYTHONPATH"]
 
@@ -572,7 +573,7 @@ ignore_dirs = [
   ".serena", ".local-ai-hub", "tool-envs", "site-packages", "__pycache__",
   ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox", ".nox", ".eggs", "htmlcov",
   "target", "out", ".terraform", ".turbo", ".parcel-cache",
-  "Library", "Temp", "Logs", "UserSettings"
+  "Library", "Temp", "Logs", "UserSettings", ".system_generated"
 ]
 
 
