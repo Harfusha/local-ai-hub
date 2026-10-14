@@ -32,6 +32,29 @@ def loads(value: str | bytes | bytearray) -> Any:
     return json.loads(value)
 
 
+def _has_non_string_mapping_key(value: Any) -> bool:
+    pending = [value]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if isinstance(current, dict):
+            identity = id(current)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            for key, item in current.items():
+                if not isinstance(key, str):
+                    return True
+                pending.append(item)
+        elif isinstance(current, (list, tuple)):
+            identity = id(current)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            pending.extend(current)
+    return False
+
+
 def dumps(value: Any, **kwargs: Any) -> str:
     """Serialize JSON compactly while preserving caller-specific options."""
     kwargs.setdefault("ensure_ascii", False)
@@ -43,8 +66,14 @@ def dumps(value: Any, **kwargs: Any) -> str:
     supported = {"ensure_ascii", "separators", "sort_keys", "default"}
     compact = kwargs.get("separators") == (",", ":") and not kwargs.get("ensure_ascii", False)
     if compact and not (set(kwargs) - supported):
+        # orjson sorts coerced key strings, while the stdlib sorts original
+        # key types before coercion. Keep canonical ordering for non-string keys.
+        if kwargs.get("sort_keys") and _has_non_string_mapping_key(value):
+            return json.dumps(value, **kwargs)
         if _orjson is not None:
-            options = _orjson.OPT_SORT_KEYS if kwargs.get("sort_keys") else 0
+            options = _orjson.OPT_NON_STR_KEYS
+            if kwargs.get("sort_keys"):
+                options |= _orjson.OPT_SORT_KEYS
             default = kwargs.get("default")
             if default is None:
                 encoded = _orjson.dumps(value, option=options)
@@ -64,8 +93,12 @@ def dumps_bytes(value: Any, **kwargs: Any) -> bytes:
     supported = {"ensure_ascii", "separators", "sort_keys", "default"}
     compact = kwargs.get("separators") == (",", ":") and not kwargs.get("ensure_ascii", False)
     if compact and not (set(kwargs) - supported):
+        if kwargs.get("sort_keys") and _has_non_string_mapping_key(value):
+            return json.dumps(value, **kwargs).encode("utf-8")
         if _orjson is not None:
-            options = _orjson.OPT_SORT_KEYS if kwargs.get("sort_keys") else 0
+            options = _orjson.OPT_NON_STR_KEYS
+            if kwargs.get("sort_keys"):
+                options |= _orjson.OPT_SORT_KEYS
             default = kwargs.get("default")
             if default is None:
                 return _orjson.dumps(value, option=options)
