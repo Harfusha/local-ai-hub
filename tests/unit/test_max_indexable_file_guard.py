@@ -146,12 +146,37 @@ def test_bounded_snapshot_detects_file_growth_after_stat(
     tools = RepositoryTools({"rag": {"max_file_bytes": max_bytes}})
     original_open = Path.open
     grew = False
+    read_sizes: list[int] = []
+    bytes_returned = 0
+
+    class BoundedReadTracker:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args: object) -> object:
+            return self.stream.__exit__(*args)
+
+        def read(self, size: int = -1) -> bytes:
+            nonlocal bytes_returned
+            assert size >= 0, "bounded snapshot attempted an unbounded read"
+            read_sizes.append(size)
+            data = self.stream.read(size)
+            bytes_returned += len(data)
+            assert bytes_returned <= max_bytes + 1
+            return data
+
+        def __getattr__(self, name: str):
+            return getattr(self.stream, name)
 
     def grow_before_read(path: Path, mode: str = "r", *args: object, **kwargs: object):
         nonlocal grew
         if path.resolve() == target.resolve() and mode == "rb" and not grew:
             grew = True
             target.write_bytes(b"x" * (max_bytes + 1))
+            return BoundedReadTracker(original_open(path, mode, *args, **kwargs))
         return original_open(path, mode, *args, **kwargs)
 
     monkeypatch.setattr(Path, "open", grow_before_read)
@@ -161,6 +186,8 @@ def test_bounded_snapshot_detects_file_growth_after_stat(
 
     assert grew is True
     assert target.stat().st_size == max_bytes + 1
+    assert read_sizes == [max_bytes + 1]
+    assert bytes_returned == max_bytes + 1
 
 
 def test_configured_limit_allows_exact_boundary_and_skips_next_byte(
@@ -245,18 +272,28 @@ def test_diagnostics_do_not_read_oversized_python_file(
     target.write_bytes(b"x" * (MAX_FILE_BYTES + 1))
     target_resolved = target.resolve()
     read_attempts: list[Path] = []
+    open_attempts: list[Path] = []
     original_read_text = Path.read_text
+    original_open = Path.open
 
     def track_read_text(path: Path, *args: object, **kwargs: object) -> str:
         if path.resolve() == target_resolved:
             read_attempts.append(Path(path))
         return original_read_text(path, *args, **kwargs)
 
+    def track_open(path: Path, mode: str = "r", *args: object, **kwargs: object):
+        if path.resolve() == target_resolved and mode in {"r", "rb"}:
+            open_attempts.append(Path(path))
+            raise AssertionError("oversized diagnostics file reached snapshot reader")
+        return original_open(path, mode, *args, **kwargs)
+
     monkeypatch.setattr(Path, "read_text", track_read_text)
+    monkeypatch.setattr(Path, "open", track_open)
 
     result = index.get_diagnostics_for_file(str(root), "diagnostics.py")
 
     assert read_attempts == []
+    assert open_attempts == []
     assert result["success"] is True
     assert result["skipped"] is True
 
@@ -271,15 +308,25 @@ def test_find_symbol_body_does_not_read_oversized_python_file(
     target.write_bytes(b"def BodySymbol(): return 1\n" + b" " * (MAX_FILE_BYTES + 1))
     target_resolved = target.resolve()
     read_attempts: list[Path] = []
+    open_attempts: list[Path] = []
     original_read_text = Path.read_text
+    original_open = Path.open
 
     def track_read_text(path: Path, *args: object, **kwargs: object) -> str:
         if path.resolve() == target_resolved:
             read_attempts.append(Path(path))
         return original_read_text(path, *args, **kwargs)
 
+    def track_open(path: Path, mode: str = "r", *args: object, **kwargs: object):
+        if path.resolve() == target_resolved and mode in {"r", "rb"}:
+            open_attempts.append(Path(path))
+            raise AssertionError("oversized body file reached snapshot reader")
+        return original_open(path, mode, *args, **kwargs)
+
     monkeypatch.setattr(Path, "read_text", track_read_text)
+    monkeypatch.setattr(Path, "open", track_open)
 
     index.find_symbol(str(root), "BodySymbol", include_body=True)
 
     assert read_attempts == []
+    assert open_attempts == []
