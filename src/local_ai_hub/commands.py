@@ -2690,6 +2690,168 @@ def _patch_write_paths(root: Path, patch: bytes, timeout: float) -> list[str]:
     return list(dict.fromkeys(safe_paths))
 
 
+def simulate_patch(
+    cwd: str | Path,
+    patch: str,
+    *,
+    timeout: float = 15.0,
+    allow_whitespace_fallback: bool = True,
+) -> dict[str, Any]:
+    """In-memory dry-run patch simulation without modifying files on disk."""
+    if not isinstance(patch, str) or not patch.strip():
+        return {
+            "valid": False,
+            "files": [],
+            "additions": 0,
+            "deletions": 0,
+            "file_stats": [],
+            "error": "patch text is empty",
+            "whitespace_fallback_used": False,
+        }
+
+    try:
+        cwd_path = Path(cwd).resolve(strict=True)
+    except Exception as exc:
+        return {
+            "valid": False,
+            "files": [],
+            "additions": 0,
+            "deletions": 0,
+            "file_stats": [],
+            "error": f"invalid cwd: {exc}",
+            "whitespace_fallback_used": False,
+        }
+
+    patch_bytes = patch.encode("utf-8")
+
+    # 1. Parse numstat / affected files
+    files: list[str] = []
+    file_stats: list[dict[str, Any]] = []
+    total_additions = 0
+    total_deletions = 0
+
+    numstat_proc = subprocess.run(
+        ["git", "apply", "--numstat", "-z"],
+        input=patch_bytes,
+        cwd=str(cwd_path),
+        capture_output=True,
+        check=False,
+        timeout=timeout,
+        **hidden_run_kwargs(),
+    )
+    if numstat_proc.returncode == 0:
+        records = numstat_proc.stdout.split(b"\0")
+        idx = 0
+        while idx < len(records) - 1:
+            fields = records[idx].split(b"\t", 2)
+            idx += 1
+            if len(fields) == 3:
+                try:
+                    adds = int(fields[0].decode("ascii", errors="replace")) if fields[0] != b"-" else 0
+                except ValueError:
+                    adds = 0
+                try:
+                    dels = int(fields[1].decode("ascii", errors="replace")) if fields[1] != b"-" else 0
+                except ValueError:
+                    dels = 0
+                if fields[2]:
+                    p = os.fsdecode(fields[2])
+                else:
+                    if idx + 1 < len(records) - 1:
+                        p = os.fsdecode(records[idx + 1])
+                        idx += 2
+                    else:
+                        p = ""
+                if p:
+                    files.append(p)
+                    file_stats.append({"path": p, "additions": adds, "deletions": dels})
+                    total_additions += adds
+                    total_deletions += dels
+    else:
+        for line in patch.splitlines():
+            if line.startswith("+++ b/"):
+                p = line[6:].strip()
+                if p and p not in files:
+                    files.append(p)
+            elif line.startswith("+") and not line.startswith("+++"):
+                total_additions += 1
+            elif line.startswith("-") and not line.startswith("---"):
+                total_deletions += 1
+        for p in files:
+            file_stats.append({"path": p, "additions": total_additions, "deletions": total_deletions})
+
+    # 2. Dry-run applicability check (zero disk write)
+    check_proc = subprocess.run(
+        ["git", "apply", "--check", "--whitespace=nowarn"],
+        input=patch_bytes,
+        cwd=str(cwd_path),
+        capture_output=True,
+        check=False,
+        timeout=timeout,
+        **hidden_run_kwargs(),
+    )
+    if check_proc.returncode == 0:
+        return {
+            "valid": True,
+            "files": list(dict.fromkeys(files)),
+            "additions": total_additions,
+            "deletions": total_deletions,
+            "file_stats": file_stats,
+            "error": None,
+            "whitespace_fallback_used": False,
+        }
+
+    whitespace_used = False
+    err_msg = check_proc.stderr.decode("utf-8", errors="replace").strip()
+    if allow_whitespace_fallback:
+        ws_proc = subprocess.run(
+            ["git", "apply", "--check", "--ignore-whitespace", "--ignore-space-change"],
+            input=patch_bytes,
+            cwd=str(cwd_path),
+            capture_output=True,
+            check=False,
+            timeout=timeout,
+            **hidden_run_kwargs(),
+        )
+        if ws_proc.returncode == 0:
+            return {
+                "valid": True,
+                "files": list(dict.fromkeys(files)),
+                "additions": total_additions,
+                "deletions": total_deletions,
+                "file_stats": file_stats,
+                "error": None,
+                "whitespace_fallback_used": True,
+            }
+        err_msg = ws_proc.stderr.decode("utf-8", errors="replace").strip() or err_msg
+
+    return {
+        "valid": False,
+        "files": list(dict.fromkeys(files)),
+        "additions": total_additions,
+        "deletions": total_deletions,
+        "file_stats": file_stats,
+        "error": err_msg or "patch check failed",
+        "whitespace_fallback_used": False,
+    }
+
+
+def patch_dry_run(
+    cwd: str | Path,
+    patch: str,
+    *,
+    timeout: float = 15.0,
+    allow_whitespace_fallback: bool = True,
+) -> dict[str, Any]:
+    """Alias for simulate_patch."""
+    return simulate_patch(
+        cwd,
+        patch,
+        timeout=timeout,
+        allow_whitespace_fallback=allow_whitespace_fallback,
+    )
+
+
 def _invocation_error(reason: str, error: str) -> dict[str, Any]:
     return {
         "safe": False,
@@ -8147,6 +8309,7 @@ class CommandBroker:
         auto_rollback: bool = True,
         log_callback: Any | None = None,
         docker_image: str = "python:3.11-slim",
+        dry_run: bool = False,
         _transaction_context: str = "",
         _work_attempt_fence: WorkAttemptFence | None = None,
     ) -> dict[str, Any]:
@@ -8154,6 +8317,19 @@ class CommandBroker:
         cwd_path = Path(cwd).resolve(strict=True) if _transaction_context else Path(canonical_root(cwd))
         if not patch or not patch.strip():
             return {"success": False, "error": "patch text is empty", "terminal": True, "retryable": False}
+        if dry_run:
+            sim = self.simulate_patch(cwd_path, patch, timeout=float(timeout or self.git_snapshot_timeout))
+            return {
+                "success": sim["valid"],
+                "dry_run": True,
+                "valid": sim["valid"],
+                "files": sim["files"],
+                "additions": sim["additions"],
+                "deletions": sim["deletions"],
+                "file_stats": sim.get("file_stats", []),
+                "error": sim.get("error", "") or "",
+                "whitespace_fallback_used": sim.get("whitespace_fallback_used", False),
+            }
         if _transaction_context:
             transaction_root = self._transaction_root_for_context(_transaction_context).resolve(strict=True)
             if cwd_path != transaction_root:
@@ -10384,6 +10560,38 @@ class CommandBroker:
             }
         except Exception as exc:
             return {"success": False, "error": str(exc)}
+
+    def simulate_patch(
+        self,
+        cwd: str | Path,
+        patch: str,
+        *,
+        timeout: float | None = None,
+        allow_whitespace_fallback: bool = True,
+    ) -> dict[str, Any]:
+        """In-memory dry-run patch simulation without modifying files on disk."""
+        return simulate_patch(
+            cwd,
+            patch,
+            timeout=float(timeout or self.git_snapshot_timeout),
+            allow_whitespace_fallback=allow_whitespace_fallback,
+        )
+
+    def patch_dry_run(
+        self,
+        cwd: str | Path,
+        patch: str,
+        *,
+        timeout: float | None = None,
+        allow_whitespace_fallback: bool = True,
+    ) -> dict[str, Any]:
+        """Alias for simulate_patch."""
+        return self.simulate_patch(
+            cwd,
+            patch,
+            timeout=timeout,
+            allow_whitespace_fallback=allow_whitespace_fallback,
+        )
 
     def test_flaky_detect(
         self,
