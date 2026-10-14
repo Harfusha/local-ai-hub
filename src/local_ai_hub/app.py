@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .json_utils import dumps as json_dumps, dumps_bytes as json_dumps_bytes, loads as json_loads
+from .json_utils import dumps as json_dumps
 
 import stat
 import io
@@ -1606,11 +1606,11 @@ class LocalAIApp:
                 "completed_phases": [],
                 "updated_at": time.time(),
             }
-            atomic_write(journal_path, json_dumps_bytes(manifest, sort_keys=True))
+            atomic_write(journal_path, json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"))
             atomic_write(payload_path, raw_bundle)
             manifest["status"] = "incomplete"
             manifest["updated_at"] = time.time()
-            atomic_write(journal_path, json_dumps_bytes(manifest, sort_keys=True))
+            atomic_write(journal_path, json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"))
             return manifest
 
         def staging_failure(root_path: str | None, exc: Exception) -> dict[str, Any]:
@@ -1645,7 +1645,7 @@ class LocalAIApp:
             manifest["status"] = "incomplete"
             manifest["updated_at"] = time.time()
             journal_path = Path(self.config["server"]["state_dir"]) / "bundle-imports" / f"{manifest['import_id']}.json"
-            atomic_write(journal_path, json_dumps_bytes(manifest, sort_keys=True))
+            atomic_write(journal_path, json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"))
 
         def finish_import_intent(manifest: dict[str, Any]) -> bool:
             manifest["status"] = "complete"
@@ -1653,7 +1653,7 @@ class LocalAIApp:
             journal_dir = Path(self.config["server"]["state_dir"]) / "bundle-imports"
             journal_path = journal_dir / f"{manifest['import_id']}.json"
             payload_path = journal_dir / f"{manifest['import_id']}.bundle"
-            atomic_write(journal_path, json_dumps_bytes(manifest, sort_keys=True))
+            atomic_write(journal_path, json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8"))
             try:
                 payload_path.unlink(missing_ok=True)
                 journal_path.unlink(missing_ok=True)
