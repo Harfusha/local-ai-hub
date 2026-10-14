@@ -6,6 +6,7 @@ import hashlib
 import importlib
 import heapq
 import json
+import logging
 import math
 import os
 import errno
@@ -21,7 +22,14 @@ from . import __version__
 from .cache import SQLiteCache, TieredCache, SingleFlightCache, stable_hash
 from .normalizer import normalize_query
 from .scheduler import QueueFullError
-from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy, quick_sanity_check
+from .sqlite_support import (
+    connect_sqlite,
+    ensure_incremental_vacuum,
+    initialize_wal,
+    is_busy_error,
+    retry_busy,
+    quick_sanity_check,
+)
 from .process_utils import canonical_root, canonical_workspace_id
 
 
@@ -142,6 +150,8 @@ class RAGStore:
         state_dir = Path(config["server"]["state_dir"])
         state_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = state_dir / "rag.sqlite3"
+        if not ensure_incremental_vacuum(self.db_path).get("success"):
+            logging.getLogger(__name__).warning("RAG database incremental vacuum setup incomplete")
         self.scope = str(config.get("rag", {}).get("scope", "shared")).lower()
         self._workspace_locks: dict[str, threading.RLock] = {}
         self._workspace_locks_guard = threading.Lock()
@@ -266,6 +276,19 @@ class RAGStore:
                     PRIMARY KEY (tenant, workspace, path)
                 )"""
             )
+            con.execute(
+                """CREATE TABLE IF NOT EXISTS project_file_owners (
+                    tenant TEXT NOT NULL,
+                    workspace TEXT NOT NULL,
+                    root TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    PRIMARY KEY (tenant, workspace, root, path)
+                )"""
+            )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_project_file_owners_path "
+                "ON project_file_owners(tenant, workspace, path)"
+            )
             try:
                 con.execute(
                     """CREATE VIRTUAL TABLE IF NOT EXISTS chunk_fts USING fts5(
@@ -292,6 +315,7 @@ class RAGStore:
                 if existing:
                     con.execute("DELETE FROM chunks")
                     con.execute("DELETE FROM files")
+                    con.execute("DELETE FROM project_file_owners")
                     try:
                         con.execute("DELETE FROM chunk_fts")
                     except Exception:
@@ -300,6 +324,7 @@ class RAGStore:
                 self.index_reset = True
                 con.execute("DELETE FROM chunks")
                 con.execute("DELETE FROM files")
+                con.execute("DELETE FROM project_file_owners")
                 try:
                     con.execute("DELETE FROM chunk_fts")
                 except Exception:
@@ -1312,6 +1337,10 @@ class RAGStore:
                     con.executemany("DELETE FROM files WHERE tenant=? AND workspace=? AND path=?", del_paths)
                     if fts_exists:
                         con.executemany("DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path=?", del_paths)
+                con.execute(
+                    "DELETE FROM project_file_owners WHERE tenant=? AND workspace=? AND root=?",
+                    (scope_key, workspace, str(root_path)),
+                )
                 con.executemany(
                     "INSERT INTO chunks(tenant,workspace,path,chunk_no,content_hash,text,embedding,embedding_space) VALUES(?,?,?,?,?,?,?,?)",
                     [
@@ -1330,6 +1359,15 @@ class RAGStore:
                 con.executemany(
                     "INSERT INTO files(tenant,workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?,?)",
                     [(scope_key, workspace, rel, mtime_ns, size, file_hash) for rel, mtime_ns, size, file_hash in file_rows],
+                )
+                owner_root = str(root_path)
+                con.executemany(
+                    "INSERT OR IGNORE INTO project_file_owners(tenant,workspace,root,path) "
+                    "SELECT ?,?,?,? WHERE EXISTS (SELECT 1 FROM files WHERE tenant=? AND workspace=? AND path=?)",
+                    [
+                        (scope_key, workspace, owner_root, rel, scope_key, workspace, rel)
+                        for rel in current_meta
+                    ],
                 )
                 self._store_workspace_embedding_space(con, scope_key, workspace, embedding_space)
                 uncertainty_changed = self._update_workspace_read_uncertainty(
@@ -1388,21 +1426,67 @@ class RAGStore:
                 policy_removed = self._sync_workspace_project_policy_identity(
                     root, scope_key, workspace, policy_context
                 )
-            existing = {str(r[0]) for r in con.execute(
-                "SELECT path FROM files WHERE tenant=? AND workspace=?", (scope_key, workspace)
+            owner_root = str(Path(root).resolve())
+            owned = {str(r[0]) for r in con.execute(
+                "SELECT path FROM project_file_owners WHERE tenant=? AND workspace=? AND root=?",
+                (scope_key, workspace, owner_root),
             ).fetchall()}
-            deleted = existing - current
+            deleted = owned - current
             for rel in deleted:
-                con.execute("DELETE FROM chunks WHERE tenant=? AND workspace=? AND path=?", (scope_key, workspace, rel))
-                con.execute("DELETE FROM files WHERE tenant=? AND workspace=? AND path=?", (scope_key, workspace, rel))
-                try:
-                    con.execute("DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path=?", (scope_key, workspace, rel))
-                except Exception:
-                    pass
+                con.execute(
+                    "DELETE FROM project_file_owners WHERE tenant=? AND workspace=? AND root=? AND path=?",
+                    (scope_key, workspace, owner_root, rel),
+                )
+                still_owned = con.execute(
+                    "SELECT 1 FROM project_file_owners WHERE tenant=? AND workspace=? AND path=? LIMIT 1",
+                    (scope_key, workspace, rel),
+                ).fetchone()
+                if still_owned is None:
+                    self._delete_rag_path_rows(con, scope_key, workspace, rel)
             if deleted:
                 self._bump_workspace_index_generation(con, scope_key, workspace)
             con.commit()
         return policy_removed + len(deleted)
+
+    @staticmethod
+    def _delete_rag_path_rows(con: sqlite3.Connection, tenant: str, workspace: str, path: str) -> None:
+        con.execute("DELETE FROM chunks WHERE tenant=? AND workspace=? AND path=?", (tenant, workspace, path))
+        con.execute("DELETE FROM files WHERE tenant=? AND workspace=? AND path=?", (tenant, workspace, path))
+        try:
+            con.execute("DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path=?", (tenant, workspace, path))
+        except sqlite3.Error:
+            pass
+
+    def remove_project(
+        self, root: str, tenant: str, workspace: str, *, preserve_paths: set[str] | None = None
+    ) -> int:
+        """Delete indexed paths only when this exact root owns their provenance."""
+        scope_key = self._scope_key(tenant)
+        owner_root = str(Path(root).resolve())
+        preserve = {str(path).replace("\\", "/") for path in (preserve_paths or set())}
+        with self._get_workspace_lock(workspace), closing(self._connect()) as con:
+            paths = [str(row[0]) for row in con.execute(
+                "SELECT path FROM project_file_owners WHERE tenant=? AND workspace=? AND root=?",
+                (scope_key, workspace, owner_root),
+            ).fetchall()]
+            removed = 0
+            for path in paths:
+                con.execute(
+                    "DELETE FROM project_file_owners WHERE tenant=? AND workspace=? AND root=? AND path=?",
+                    (scope_key, workspace, owner_root, path),
+                )
+                still_owned = con.execute(
+                    "SELECT 1 FROM project_file_owners WHERE tenant=? AND workspace=? AND path=? LIMIT 1",
+                    (scope_key, workspace, path),
+                ).fetchone()
+                if still_owned is None and path not in preserve:
+                    before = con.total_changes
+                    self._delete_rag_path_rows(con, scope_key, workspace, path)
+                    removed += int(con.total_changes > before)
+            if removed:
+                self._bump_workspace_index_generation(con, scope_key, workspace)
+            con.commit()
+        return removed
 
     def remove_paths(self, tenant: str, workspace: str, paths: list[str]) -> int:
         """Remove explicitly known paths from a semantic workspace.
@@ -1416,6 +1500,7 @@ class RAGStore:
             return 0
         removed = 0
         with self._get_workspace_lock(workspace), closing(self._connect()) as con:
+            changes_before = con.total_changes
             for rel in unique:
                 row = con.execute(
                     "SELECT 1 FROM files WHERE tenant=? AND workspace=? AND path=?",
@@ -1427,7 +1512,13 @@ class RAGStore:
                     con.execute("DELETE FROM chunk_fts WHERE tenant=? AND workspace=? AND path=?", (scope_key, workspace, rel))
                 except Exception:
                     pass
+                con.execute(
+                    "DELETE FROM project_file_owners WHERE tenant=? AND workspace=? AND path=?",
+                    (scope_key, workspace, rel),
+                )
                 removed += int(row is not None)
+            if con.total_changes > changes_before:
+                self._bump_workspace_index_generation(con, scope_key, workspace)
             con.commit()
         return removed
 
@@ -1800,6 +1891,15 @@ class RAGStore:
                     con.executemany(
                         "INSERT INTO files(tenant,workspace,path,mtime_ns,size,content_hash) VALUES(?,?,?,?,?,?)",
                         files_to_insert,
+                    )
+                    for rel in set(deleted_paths or []) | policy_deleted:
+                        con.execute(
+                            "DELETE FROM project_file_owners WHERE tenant=? AND workspace=? AND root=? AND path=?",
+                            (scope_key, workspace, str(root_path), str(rel).replace("\\", "/")),
+                        )
+                    con.executemany(
+                        "INSERT OR IGNORE INTO project_file_owners(tenant,workspace,root,path) VALUES(?,?,?,?)",
+                        [(scope_key, workspace, str(root_path), rel) for rel in processed_paths],
                     )
                     if embedding_space:
                         self._store_workspace_embedding_space(con, scope_key, workspace, embedding_space)

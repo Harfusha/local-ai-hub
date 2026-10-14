@@ -496,6 +496,31 @@ def retry_busy(
     raise AssertionError("unreachable")
 
 
+def ensure_incremental_vacuum(path: Path, *, timeout_seconds: float = 5.0) -> dict[str, Any]:
+    """Enable incremental auto-vacuum, converting an existing database once if needed."""
+    timeout = max(0.1, float(timeout_seconds))
+    deadline = time.monotonic() + timeout
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        con = sqlite3.connect(path, timeout=timeout)
+        try:
+            con.execute(f"PRAGMA busy_timeout={int(timeout * 1000)}")
+            current = con.execute("PRAGMA auto_vacuum").fetchone()
+            mode = int(current[0]) if current else 0
+            if mode != 2:
+                con.execute("PRAGMA auto_vacuum=INCREMENTAL")
+                con.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
+                con.execute("VACUUM")
+                con.set_progress_handler(None, 0)
+                current = con.execute("PRAGMA auto_vacuum").fetchone()
+                mode = int(current[0]) if current else 0
+            return {"success": mode == 2, "auto_vacuum": mode}
+        finally:
+            con.close()
+    except (OSError, sqlite3.Error) as exc:
+        return {"success": False, "error": type(exc).__name__}
+
+
 def incremental_vacuum(
     path: Path,
     *,

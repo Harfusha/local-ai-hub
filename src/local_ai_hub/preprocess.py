@@ -24,7 +24,14 @@ from .project_config import (
     resolve_project_config,
     resolve_project_context,
 )
-from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy
+from .sqlite_support import (
+    connect_sqlite,
+    ensure_incremental_vacuum,
+    incremental_vacuum,
+    initialize_wal,
+    is_busy_error,
+    retry_busy,
+)
 from .worktrees import discover_worktree_roots
 from .process_utils import canonical_root, set_current_thread_priority
 
@@ -145,6 +152,8 @@ class ProjectPreprocessor:
         self.state_dir = Path(config["server"]["state_dir"])
         self.state_dir.mkdir(parents=True, exist_ok=True)
         self.db_path = self.state_dir / "preprocess.sqlite3"
+        if not ensure_incremental_vacuum(self.db_path).get("success"):
+            logger.warning("preprocessing database incremental vacuum setup incomplete")
         self._db_lock = threading.RLock()
         self._stop = threading.Event()
         self._cpu_wakeup = threading.Event()
@@ -1274,11 +1283,14 @@ class ProjectPreprocessor:
     def cleanup_deleted_projects(self) -> dict[str, Any]:
         """Scan all registered projects and remove projects whose root directory no longer exists on disk."""
         pruned: list[str] = []
+        rag_roots_by_workspace: dict[str, list[str]] = {}
         with self._db_lock, closing(self._connect()) as con:
-            rows = con.execute("SELECT root FROM projects").fetchall()
+            rows = con.execute("SELECT root,workspace FROM projects").fetchall()
             for r in rows:
                 root_path = Path(r["root"])
                 if not root_path.exists():
+                    workspace = str(r["workspace"])
+                    rag_roots_by_workspace.setdefault(workspace, []).append(str(r["root"]))
                     con.execute("DELETE FROM projects WHERE root=?", (r["root"],))
                     con.execute("DELETE FROM file_refs WHERE root=?", (r["root"],))
                     con.execute("DELETE FROM source_index WHERE root=?", (r["root"],))
@@ -1293,13 +1305,10 @@ class ProjectPreprocessor:
             self._forget_project_runtime(p)
             if self.code_index is not None:
                 try:
-                    with closing(self.code_index._connect()) as ci_con:
-                        ci_con.execute("DELETE FROM files WHERE root=?", (p,))
-                        ci_con.execute("DELETE FROM symbols WHERE root=?", (p,))
-                        ci_con.execute("DELETE FROM refs WHERE root=?", (p,))
-                        ci_con.execute("DELETE FROM edges WHERE root=?", (p,))
-                        ci_con.commit()
-                except sqlite3.Error as exc:
+                    result = self.code_index.prune(p, [])
+                    if not result.get("success"):
+                        logger.warning("deleted-project code-index purge incomplete (%s)", result.get("error", "unknown"))
+                except (AttributeError, sqlite3.Error) as exc:
                     logger.warning("deleted-project code-index purge incomplete (%s)", type(exc).__name__)
             if self.deterministic is not None:
                 try:
@@ -1311,6 +1320,28 @@ class ProjectPreprocessor:
                 except sqlite3.Error as exc:
                     logger.warning("deleted-project deterministic purge incomplete (%s)", type(exc).__name__)
 
+        if self.rag is not None:
+            for workspace, roots in rag_roots_by_workspace.items():
+                for root in roots:
+                    try:
+                        with self._db_lock, closing(self._connect()) as con:
+                            live_paths = {
+                                str(row[0]).replace("\\", "/")
+                                for row in con.execute(
+                                    "SELECT file_refs.path FROM file_refs "
+                                    "JOIN projects ON projects.root=file_refs.root "
+                                    "WHERE projects.workspace=?",
+                                    (workspace,),
+                                ).fetchall()
+                            }
+                        self.rag.remove_project(
+                            root, "__preprocess__", workspace, preserve_paths=live_paths
+                        )
+                    except Exception as exc:
+                        logger.warning("deleted-project RAG purge incomplete (%s)", type(exc).__name__)
+
+        self._vacuum_derived_databases()
+
         self._wake_all()
         return {
             "success": True,
@@ -1318,6 +1349,22 @@ class ProjectPreprocessor:
             "pruned_projects": pruned,
             "message": f"Successfully cleaned up {len(pruned)} missing worktree(s)/project(s)" if pruned else "No missing projects found (all active directories exist on disk)",
         }
+
+    def _vacuum_derived_databases(self) -> None:
+        """Reclaim a bounded batch of free pages from owned derived indexes."""
+        vacuum_paths = [self.db_path]
+        for owner in (self.code_index, self.deterministic, self.rag):
+            path = getattr(owner, "db_path", None) if owner is not None else None
+            if path is not None:
+                vacuum_paths.append(Path(path))
+        for path in dict.fromkeys(vacuum_paths):
+            setup = ensure_incremental_vacuum(path)
+            result = incremental_vacuum(path) if setup.get("success") else setup
+            if not result.get("success"):
+                logger.warning(
+                    "deleted-project database vacuum incomplete (%s)",
+                    result.get("error", "unknown"),
+                )
 
     def cleanup_orphaned_indexes(self, max_roots: int | None = None) -> dict[str, Any]:
         """Bounded idle cleanup for derived index roots no longer registered."""
@@ -3866,6 +3913,7 @@ class ProjectPreprocessor:
                         component.optimize()
                 except Exception as maintenance_exc:
                     logger.debug("Derived-index optimization skipped (%s)", type(maintenance_exc).__name__)
+            self._vacuum_derived_databases()
             self.cleanup_orphaned_indexes()
             self._last_db_maintenance = now
             with self._stats_lock:
