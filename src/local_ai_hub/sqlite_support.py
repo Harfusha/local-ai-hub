@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import random
 import re
@@ -12,6 +13,9 @@ import uuid
 from contextlib import closing
 from pathlib import Path
 from typing import Any, Callable, TypeVar
+
+
+_LOGGER = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
@@ -137,18 +141,38 @@ def rotate_database_backups(
     if not root.is_dir():
         return []
 
+    error_counts: dict[tuple[str, str, int | None], int] = {}
+
+    def record_error(operation: str, exc: OSError) -> None:
+        key = (operation, type(exc).__name__, exc.errno)
+        error_counts[key] = error_counts.get(key, 0) + 1
+
+    def report_errors() -> None:
+        if not error_counts:
+            return
+        total = sum(error_counts.values())
+        details = "; ".join(
+            f"operation={operation},count={count},exception_type={error_type},errno={error_number}"
+            for (operation, error_type, error_number), count in sorted(error_counts.items())
+        )
+        _LOGGER.warning(
+            "Database backup rotation encountered filesystem errors: "
+            "operation=rotate_database_backups,error_count=%d,%s",
+            total,
+            details,
+        )
+
     groups: dict[str, list[Path]] = {}
     now = time.time()
 
     try:
         entries = list(root.iterdir())
-    except OSError:
+    except OSError as exc:
+        record_error("scan", exc)
+        report_errors()
         return []
 
     for entry in entries:
-        if not entry.is_file():
-            continue
-
         name = entry.name
         # SQLite may be actively using any of these files beside its database.
         if name.endswith(("-wal", "-shm", "-journal")) or "-mj" in name:
@@ -166,7 +190,8 @@ def rotate_database_backups(
         if group_key is not None:
             try:
                 metadata = entry.lstat()
-            except OSError:
+            except OSError as exc:
+                record_error("lstat", exc)
                 continue
             if not stat.S_ISREG(metadata.st_mode):
                 continue
@@ -178,7 +203,8 @@ def rotate_database_backups(
     for key, candidates in groups.items():
         try:
             candidates.sort(key=lambda p: (p.stat().st_mtime, p.name))
-        except OSError:
+        except OSError as exc:
+            record_error("sort_stat", exc)
             continue
 
         to_prune: set[Path] = set()
@@ -193,8 +219,8 @@ def rotate_database_backups(
                 try:
                     if (now - p.stat().st_mtime) > max_age_seconds:
                         to_prune.add(p)
-                except OSError:
-                    pass
+                except OSError as exc:
+                    record_error("age_stat", exc)
 
         for p in sorted(to_prune, key=lambda x: x.name):
             try:
@@ -204,12 +230,13 @@ def rotate_database_backups(
                     if sidecar.exists():
                         try:
                             sidecar.unlink(missing_ok=True)
-                        except OSError:
-                            pass
+                        except OSError as exc:
+                            record_error("unlink_sidecar", exc)
                 pruned.append(p)
-            except OSError:
-                pass
+            except OSError as exc:
+                record_error("unlink_snapshot", exc)
 
+    report_errors()
     return pruned
 
 
@@ -236,8 +263,13 @@ def backup_durable_database(path: Path | str, *, purpose: str = "schema-mismatch
     source.close()
     try:
         rotate_database_backups(source_path.parent, prefix=source_path.name, max_copies=3)
-    except Exception:
-        pass
+    except Exception as exc:
+        _LOGGER.warning(
+            "Database backup rotation raised after snapshot creation: "
+            "operation=rotate_database_backups,error_count=1,exception_type=%s,errno=%s",
+            type(exc).__name__,
+            getattr(exc, "errno", None),
+        )
     return backup_path
 
 
