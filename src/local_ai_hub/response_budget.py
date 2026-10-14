@@ -8,6 +8,7 @@ existing semantic projection and keeps exact detail behind artifact/evidence IDs
 """
 
 from hashlib import sha256
+import math
 import re
 import time
 from typing import Any, Mapping
@@ -94,9 +95,18 @@ def _bounded_string(value: str, max_chars: int) -> str:
 
 def _safe_limit(value: Any, default: int) -> int:
     try:
-        return max(64, int(value))
+        def_val = max(64, int(default))
     except (TypeError, ValueError, OverflowError):
-        return default
+        def_val = 1200
+    try:
+        if value is None:
+            return def_val
+        val_float = float(value)
+        if not math.isfinite(val_float) or val_float <= 0:
+            return def_val
+        return max(64, int(val_float))
+    except (TypeError, ValueError, OverflowError):
+        return def_val
 
 
 def _bounded_pointer_item(value: Any, *, budget_chars: int, depth: int = 0) -> Any:
@@ -690,8 +700,9 @@ def result_id(value: Any) -> str:
 
 def delta_response(previous: Any, current: Any, *, result_id: str = "") -> dict[str, Any]:
     """Return only changed top-level mapping fields plus stable status fields."""
+    res_id = str(result_id or "").replace("\x00", "")[:160]
     if not isinstance(previous, dict) or not isinstance(current, dict):
-        return {"result_id": result_id, "delta": {"changed": {"value": current}, "added": {}, "removed": []}}
+        return {"result_id": res_id, "delta": {"changed": {"value": current}, "added": {}, "removed": []}}
     changed: dict[str, Any] = {}
     added: dict[str, Any] = {}
     removed: list[str] = []
@@ -703,7 +714,7 @@ def delta_response(previous: Any, current: Any, *, result_id: str = "") -> dict[
     for key in previous:
         if key not in current:
             removed.append(key)
-    out: dict[str, Any] = {"result_id": result_id, "delta": {"changed": changed, "added": added, "removed": removed}}
+    out: dict[str, Any] = {"result_id": res_id, "delta": {"changed": changed, "added": added, "removed": removed}}
     for key in ("success", "status", "error", "warning", "terminal", "retryable"):
         if key in current:
             out[key] = current[key]
@@ -877,3 +888,43 @@ def budget_response(
     return _bounded_result(
         result, requested=requested, original=original, source=value, protected_keys=protected
     )
+
+
+def is_response_budgeted(value: Mapping[str, Any] | None) -> bool:
+    """Return True if value has a valid response_budget dictionary."""
+    if not isinstance(value, Mapping):
+        return False
+    budget = value.get("response_budget")
+    return isinstance(budget, Mapping) and "returned_tokens" in budget
+
+
+def get_response_budget_info(value: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """Return a dictionary copy of the response_budget metadata if present."""
+    if not isinstance(value, Mapping):
+        return None
+    budget = value.get("response_budget")
+    return dict(budget) if isinstance(budget, Mapping) else None
+
+
+def get_returned_tokens(value: Mapping[str, Any] | None) -> int:
+    """Return returned_tokens from response_budget if present, else 0."""
+    if not isinstance(value, Mapping):
+        return 0
+    budget = value.get("response_budget")
+    if isinstance(budget, Mapping) and "returned_tokens" in budget:
+        try:
+            return max(0, int(budget["returned_tokens"]))
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return 0
+
+
+def is_budget_rejected(value: Mapping[str, Any] | None) -> bool:
+    """Return True if response_budget signals that the requested limit was rejected."""
+    if not isinstance(value, Mapping):
+        return False
+    budget = value.get("response_budget")
+    if isinstance(budget, Mapping):
+        return bool(budget.get("rejected", False))
+    return False
+
