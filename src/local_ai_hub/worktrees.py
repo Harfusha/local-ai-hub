@@ -328,13 +328,6 @@ def unlock_zombie_worktrees(
         pass
     return unlocked_list
 
-            return False, "git_status_failed"
-        if proc.stdout.strip():
-            return False, "uncommitted_changes_in_worktree"
-        return True, ""
-    except Exception as exc:
-        return False, str(exc)
-
 
 def switch_worktree_branch(
     worktree_path: str | Path,
