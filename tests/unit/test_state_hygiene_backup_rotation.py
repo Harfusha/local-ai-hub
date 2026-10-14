@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import logging
 import sqlite3
 import time
 from pathlib import Path
@@ -174,3 +175,141 @@ def test_rotation_only_prunes_verified_helper_backups(tmp_path: Path) -> None:
     assert journal.exists()
     assert live_db.exists()
     assert sum(path.exists() for path in backups) == 1
+
+
+def test_rotation_logs_when_managed_snapshot_cannot_be_deleted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    live_db = state_dir / "agent_state.sqlite"
+    connection = sqlite3.connect(live_db)
+    try:
+        connection.execute("CREATE TABLE state (value TEXT)")
+        connection.execute("INSERT INTO state VALUES ('live')")
+    finally:
+        connection.close()
+
+    backups = [backup_durable_database(live_db) for _ in range(3)]
+    ordered = sorted(backups, key=lambda path: path.stat().st_mtime)
+    blocked, sidecar_snapshot = ordered[:2]
+    blocked_sidecar = Path(f"{sidecar_snapshot}-wal")
+    blocked_sidecar.write_text("sidecar", encoding="utf-8")
+    original_unlink = type(blocked).unlink
+
+    def deny_managed_snapshot(self: Path, *args: object, **kwargs: object) -> None:
+        if self in {blocked, blocked_sidecar}:
+            raise PermissionError(13, "private path detail", str(self))
+        original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(blocked), "unlink", deny_managed_snapshot)
+    with caplog.at_level(logging.WARNING, logger="local_ai_hub.sqlite_support"):
+        pruned = rotate_database_backups(
+            state_dir, prefix=live_db.name, max_copies=1, max_age_seconds=None
+        )
+
+    assert blocked.exists()
+    assert blocked not in pruned
+    warnings = [
+        record
+        for record in caplog.records
+        if record.name == "local_ai_hub.sqlite_support"
+        and record.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert "rotate_database_backups" in message
+    assert "PermissionError" in message
+    assert "error_count=2" in message
+    assert "unlink_sidecar" in message
+    assert "private path detail" not in message
+    assert blocked.name not in message
+    assert blocked_sidecar.exists()
+
+    monkeypatch.setattr(type(blocked), "unlink", original_unlink)
+    original_iterdir = type(state_dir).iterdir
+
+    def deny_scan(self: Path, *args: object, **kwargs: object) -> object:
+        if self == state_dir:
+            raise PermissionError(13, "private scan path", str(self))
+        return original_iterdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(state_dir), "iterdir", deny_scan)
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="local_ai_hub.sqlite_support"):
+        assert rotate_database_backups(state_dir, prefix=live_db.name) == []
+    scan_warnings = [
+        record
+        for record in caplog.records
+        if record.name == "local_ai_hub.sqlite_support"
+        and record.levelno == logging.WARNING
+    ]
+    assert len(scan_warnings) == 1
+    assert "operation=scan" in scan_warnings[0].getMessage()
+    assert str(state_dir) not in scan_warnings[0].getMessage()
+
+    monkeypatch.setattr(type(state_dir), "iterdir", original_iterdir)
+    original_lstat = type(blocked).lstat
+    lstat_blocked = max(
+        (path for path in backups if path.exists()),
+        key=lambda path: path.stat().st_mtime,
+    )
+
+    def deny_lstat(self: Path, *args: object, **kwargs: object) -> object:
+        if self == lstat_blocked:
+            raise PermissionError(13, "private metadata path", str(self))
+        return original_lstat(self, *args, **kwargs)
+
+    monkeypatch.setattr(type(blocked), "lstat", deny_lstat)
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="local_ai_hub.sqlite_support"):
+        rotate_database_backups(
+            state_dir, prefix=live_db.name, max_copies=2, max_age_seconds=None
+        )
+    lstat_warnings = [
+        record
+        for record in caplog.records
+        if record.name == "local_ai_hub.sqlite_support"
+        and record.levelno == logging.WARNING
+    ]
+    assert len(lstat_warnings) == 1
+    assert "operation=lstat" in lstat_warnings[0].getMessage()
+    assert str(lstat_blocked) not in lstat_warnings[0].getMessage()
+
+
+def test_backup_returns_valid_snapshot_and_warns_when_rotation_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    live_db = tmp_path / "agent_state.sqlite"
+    connection = sqlite3.connect(live_db)
+    try:
+        connection.execute("CREATE TABLE state (value TEXT)")
+        connection.execute("INSERT INTO state VALUES ('live')")
+    finally:
+        connection.close()
+
+    def fail_rotation(*args: object, **kwargs: object) -> list[Path]:
+        raise OSError(5, "private rotation path detail")
+
+    monkeypatch.setattr("local_ai_hub.sqlite_support.rotate_database_backups", fail_rotation)
+    with caplog.at_level(logging.WARNING, logger="local_ai_hub.sqlite_support"):
+        backup = backup_durable_database(live_db)
+
+    assert backup.exists()
+    connection = sqlite3.connect(backup)
+    try:
+        assert connection.execute("PRAGMA quick_check").fetchone() == ("ok",)
+    finally:
+        connection.close()
+    warnings = [
+        record
+        for record in caplog.records
+        if record.name == "local_ai_hub.sqlite_support"
+        and record.levelno == logging.WARNING
+    ]
+    assert len(warnings) == 1
+    message = warnings[0].getMessage()
+    assert "rotate_database_backups" in message
+    assert "OSError" in message
+    assert "private rotation path detail" not in message
+    assert str(live_db) not in message
