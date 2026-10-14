@@ -7713,8 +7713,8 @@ class Handler(BaseHTTPRequestHandler):
                         "clone_id", "worktree_id", "branch", "repository_id", "repository_revision",
                     ))
                     or bool(payload.get("include_diagnostics", False))
-                    or bool(payload.get("changed_paths"))
-                    or bool(payload.get("focus"))
+                    or "changed_paths" in payload
+                    or "focus" in payload
                 )
                 if not guarded_requested:
                     guard_fields = (

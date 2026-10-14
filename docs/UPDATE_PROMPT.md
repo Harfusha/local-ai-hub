@@ -16,7 +16,7 @@ Local AI Hub has no remote-access or remote-control mode. HTTP binds only to `12
 
 `local_ai_repo` validates actions against its supported registry. `skeletonize` transforms supplied source text only; it does not inspect a repository. `generate_tests_for_diff` returns manual, skipped test scaffolds; it is not test-pass evidence. `local_ai_status` telemetry and agent-state details avoid the live-status request.
 
-MCP aliases normalize before endpoint dispatch: `local_ai_command` accepts `root` for `cwd` and `changed_paths` or `files` for `paths`; `local_ai_repo` accepts `cwd` for `root`, `paths` or `files` for `changed_paths`, and `symbol` for `query`. Explicit canonical parameters take precedence, including empty lists.
+MCP aliases normalize before endpoint dispatch: `local_ai_command` accepts `root` for `cwd` and `changed_paths` or `files` for `paths`; `local_ai_repo` accepts `cwd` for `root`, `paths` or `files` for `changed_paths`, and `symbol` for `query`. Explicit canonical parameters take precedence, including empty lists. On `/api/context/pack`, presence of `changed_paths` or `focus` requests guarded handling, including an empty list; explicit `guarded` values must be boolean.
 
 For `local_ai_command(action="flaky_detect")`, `runs` is an integer execution count with minimum `1` and default `5`; MCP clients validate the published schema, and the command endpoint receives the selected count.
 
