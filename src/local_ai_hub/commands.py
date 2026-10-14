@@ -5169,6 +5169,7 @@ class CommandBroker:
         argv_override: Sequence[str] | None = None,
         env_overrides: Mapping[str, str] | None = None,
         environment_overrides: Mapping[str, str] | None = None,
+        stdin: str | bytes | None = None,
     ) -> dict[str, Any]:
         if isinstance(command, str):
             tokens = self._tokens(command)
@@ -5217,7 +5218,8 @@ class CommandBroker:
         if environment_overrides:
             proc_env.update(environment_overrides)
         kwargs: dict[str, Any] = {
-            "cwd": str(Path(cwd).resolve()), "stdin": subprocess.DEVNULL,
+            "cwd": str(Path(cwd).resolve()),
+            "stdin": subprocess.PIPE if stdin is not None else subprocess.DEVNULL,
             "stdout": subprocess.PIPE, "stderr": subprocess.PIPE,
             "env": proc_env,
         }
@@ -5243,6 +5245,18 @@ class CommandBroker:
                     raise OSError("Unable to assign suspended process to Windows Job Object")
                 if not _resume_suspended_process(process):
                     raise OSError("Unable to resume suspended Windows process")
+            if stdin is not None and getattr(process, "stdin", None):
+                try:
+                    raw_bytes = stdin.encode("utf-8") if isinstance(stdin, str) else stdin
+                    process.stdin.write(raw_bytes)
+                    process.stdin.flush()
+                except Exception:
+                    pass
+                finally:
+                    try:
+                        process.stdin.close()
+                    except Exception:
+                        pass
         except BaseException as exc:
             cleanup_unconfirmed = False
             if job_handle:
@@ -7388,6 +7402,8 @@ class CommandBroker:
         _work_attempt_fence: WorkAttemptFence | None = None,
         _project_command_context: _ResolvedProjectCommand | None = None,
         request_cancel_event: threading.Event | None = None,
+        stdin: str | bytes | None = None,
+        input: str | bytes | None = None,
     ) -> dict[str, Any]:
         if env is not None and _environment_overrides is None:
             _environment_overrides = env
@@ -7894,6 +7910,8 @@ class CommandBroker:
                     execute_options["env_overrides"] = project_env_overrides
                 if _environment_overrides:
                     execute_options["environment_overrides"] = _environment_overrides
+                if stdin is not None or input is not None:
+                    execute_options["stdin"] = stdin if stdin is not None else input
                 result = self._execute(
                     command,
                     cwd,
