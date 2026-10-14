@@ -6,6 +6,7 @@ import json
 import hashlib
 import shutil
 import sqlite3
+import sys
 import threading
 import tempfile
 import time
@@ -134,6 +135,10 @@ class RecoveryJournal:
         self._writer_overflowed = False
         self._writer_thread: threading.Thread | None = None
         self._write_queue_capacity = 1024
+        self._max_retained_completion_bytes = 8 * 1024 * 1024
+        self._retained_completion_bytes = 0
+        self._completion_reservations: dict[int, int] = {}
+        self._in_flight_writes: dict[int, tuple[str, str, float, str, int, str, int]] = {}
         self._write_batch_interval = 0.1
 
     def _connect(self) -> sqlite3.Connection:
@@ -339,6 +344,21 @@ class RecoveryJournal:
             result["outcome_unknown"] = True
         return result
 
+    @staticmethod
+    def _completion_retained_size(
+        completion: tuple[str, str, float, str, int, str, int],
+    ) -> int:
+        request_id, state, _updated_at, detail, _status_code, response_json, _sequence = completion
+        # Count Python string storage plus conservative tuple, queue and mapping
+        # overhead. The queue, overlay and in-flight index share these string objects.
+        return (
+            sys.getsizeof(request_id)
+            + sys.getsizeof(state)
+            + sys.getsizeof(detail)
+            + sys.getsizeof(response_json)
+            + 512
+        )
+
     def finish(self, request_id: str, success: bool, detail: str = "", *, status_code: int = 200, response: Any = None) -> None:
         request_id = self.validate_request_id(request_id)
         response_json = ""
@@ -351,6 +371,7 @@ class RecoveryJournal:
                     response_json = encoded
             except Exception:
                 response_json = ""
+        detail = detail[:500]
         with self._changed:
             if self._writer_closing or self._writer_error is not None or self._writer_overflowed:
                 self._journal_unavailable = True
@@ -370,11 +391,21 @@ class RecoveryJournal:
                 request_id,
                 "done" if success else "failed",
                 time.time(),
-                detail[:500],
+                detail,
                 int(status_code),
                 response_json,
-                self._write_sequence,
+                self._write_sequence + 1,
             )
+            retained_size = self._completion_retained_size(completion)
+            if self._retained_completion_bytes + retained_size > self._max_retained_completion_bytes:
+                self._writer_overflowed = True
+                self._journal_unavailable = True
+                self._journal_unavailable_reason = "request journal completion byte budget exceeded; refusing mutation dispatch"
+                self._changed.notify_all()
+                return
+            self._write_sequence += 1
+            self._completion_reservations[completion[6]] = retained_size
+            self._retained_completion_bytes += retained_size
             self._pending_completions[request_id] = completion
             self._changed.notify_all()
             self._pending_writes.append(completion)
@@ -420,6 +451,7 @@ class RecoveryJournal:
                         break
                     self._changed.wait(remaining)
                 batch = [self._pending_writes.popleft() for _ in range(min(len(self._pending_writes), self._write_queue_capacity))]
+                self._in_flight_writes.update({completion[6]: completion for completion in batch})
                 self._changed.notify_all()
             try:
                 self._write_completion_batch(batch)
@@ -429,17 +461,27 @@ class RecoveryJournal:
                     self._journal_unavailable = True
                     self._journal_unavailable_reason = f"request journal completion write failed: {exc}"
                     self._pending_writes.clear()
+                    self._pending_completions.clear()
+                    self._in_flight_writes.clear()
+                    self._completion_reservations.clear()
+                    self._retained_completion_bytes = 0
                     self._writer_running = False
                     self._writer_thread = None
                     self._changed.notify_all()
+                batch.clear()
                 return
             with self._changed:
                 for completion in batch:
                     request_id = completion[0]
+                    sequence = completion[6]
+                    self._retained_completion_bytes -= self._completion_reservations.pop(sequence, 0)
+                    self._in_flight_writes.pop(sequence, None)
                     pending = self._pending_completions.get(request_id)
-                    if pending is not None and pending[6] == completion[6]:
+                    if pending is not None and pending[6] == sequence:
                         self._pending_completions.pop(request_id, None)
+                self._retained_completion_bytes = max(0, self._retained_completion_bytes)
                 self._changed.notify_all()
+            batch.clear()
 
     def close(self, timeout_seconds: float = 8.0) -> None:
         with self._changed:
