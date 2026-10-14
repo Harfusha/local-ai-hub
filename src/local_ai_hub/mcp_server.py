@@ -3957,10 +3957,39 @@ def local_ai_work(
 
 @mcp.tool()
 @_instrumented_tool()
-def local_ai_artifact(action: ArtifactAction = "get", artifact_id: str = "", offset: int = 0, max_chars: int = 4000, section: str = "", extra_fields: list[str] | None = None, max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "", binary: bool = False, slices: list[dict[str, int]] | None = None) -> dict[str, Any]:
+def local_ai_artifact(action: ArtifactAction = "get", artifact_id: str = "", offset: int = 0, max_chars: int = 4000, section: str = "", extra_fields: list[str] | None = None, max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "", binary: bool = False, slices: list[dict[str, int]] | None = None, path: str = "", line_start: int = 0, line_end: int = 0, start_line: int = 0, end_line: int = 0) -> dict[str, Any]:
     """Fetch an artifact operation defined by the shared contract. Evidence IDs start with E."""
     if not operation_enabled(FEATURES, "local_ai_artifact"):
         return {"success": False, "unsupported": True, "error": "local_ai_artifact is disabled in configuration"}
+    if not artifact_id and path:
+        resolved_path = Path(path).resolve()
+        if not resolved_path.is_file():
+            return {"success": False, "error": f"File not found: {path}"}
+        try:
+            content = resolved_path.read_text(encoding="utf-8", errors="replace")
+        except Exception as exc:
+            return {"success": False, "error": f"Failed to read file: {exc}"}
+        lines = content.splitlines(keepends=True)
+        effective_start = start_line or line_start or 1
+        effective_end = end_line or line_end or len(lines)
+        if effective_start < 1:
+            effective_start = 1
+        if effective_end > len(lines):
+            effective_end = len(lines)
+        if effective_start <= effective_end and lines:
+            sliced_text = "".join(lines[effective_start - 1 : effective_end])
+        else:
+            sliced_text = ""
+        return {
+            "success": True,
+            "path": str(resolved_path),
+            "line_start": effective_start,
+            "line_end": effective_end,
+            "total_lines": len(lines),
+            "total_chars": len(content),
+            "text": sliced_text,
+            "truncated": False,
+        }
     if slices is not None:
         if action not in {"get", "slice"}:
             return {"success": False, "error": "slices are only valid for get or slice actions"}
