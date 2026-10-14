@@ -68,6 +68,49 @@ def test_find_symbol_uses_l1_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert len(symbol_queries) == 0, f"Expected 0 SQLite queries for cached symbol, got: {symbol_queries}"
 
 
+def test_find_symbol_l1_cache_owns_miss_and_hit_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    idx, repo = _setup_index(tmp_path)
+    first = idx.find_symbol(str(repo), "AwesomeService")
+    assert first["success"] is True
+
+    db_queries = []
+    orig_connect = idx._connect
+
+    class InterceptingConn:
+        def __init__(self, con):
+            self._con = con
+
+        def execute(self, sql, *args):
+            db_queries.append(sql)
+            return self._con.execute(sql, *args)
+
+        def close(self):
+            self._con.close()
+
+        def __getattr__(self, item):
+            return getattr(self._con, item)
+
+    monkeypatch.setattr(idx, "_connect", lambda **kw: InterceptingConn(orig_connect(**kw)))
+
+    first["symbols"][0]["name"] = "poisoned"
+    first["symbols"].clear()
+    first["root"] = "poisoned"
+    second = idx.find_symbol(str(repo), "AwesomeService")
+    assert not [q for q in db_queries if "symbols" in q.lower()]
+    assert second["root"] == str(repo)
+    assert second["matches_count"] == 1
+    assert second["symbols"][0]["name"] == "AwesomeService"
+
+    second["symbols"][0]["name"] = "hit-poisoned"
+    second["pattern"] = "hit-poisoned"
+    third = idx.find_symbol(str(repo), "AwesomeService")
+    assert not [q for q in db_queries if "symbols" in q.lower()]
+    assert third["pattern"] == "AwesomeService"
+    assert third["symbols"][0]["name"] == "AwesomeService"
+
+
 def test_find_symbol_l1_cache_invalidates_on_update_file(tmp_path: Path) -> None:
     idx, repo = _setup_index(tmp_path)
 

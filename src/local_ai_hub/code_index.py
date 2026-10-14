@@ -2580,7 +2580,7 @@ class CodeIndex:
             "matches_count": len(results),
             "symbols": results,
         }
-        self._symbol_l1.set(cache_key, out)
+        self._symbol_l1.set(cache_key, copy.deepcopy(out))
         return out
 
     def find_declaration(self, root: str, symbol_name: str, path: str | None = None) -> dict[str, Any]:
