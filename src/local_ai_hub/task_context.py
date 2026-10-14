@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,18 +29,22 @@ class _ProjectContextInput(Protocol):
 
 
 def _bounded_text(value: Any, limit: int) -> str:
-    return str(value or "")[: max(0, limit)]
+    if value is None:
+        return ""
+    return str(value).replace("\x00", "")[: max(0, limit)]
 
 
 def _bounded_list(value: Any, limit: int = 64) -> tuple[str, ...]:
     if isinstance(value, str):
         value = (value,)
-    if not isinstance(value, (list, tuple)):
+    if not isinstance(value, (list, tuple, set)):
         return ()
     result: list[str] = []
     seen: set[str] = set()
     for item in value:
-        text = str(item or "").strip()
+        if item is None:
+            continue
+        text = str(item).replace("\x00", "").strip()
         if text and text not in seen:
             result.append(text[:240])
             seen.add(text)
@@ -58,9 +63,10 @@ def build_context_request(
     project_context: _ProjectContextInput | None = None,
 ) -> ContextRequest:
     """Build request from task fields plus explicitly trusted project context."""
-    repository_revision = _bounded_text(payload.get("repository_revision"), 200)
-    repo_revision = _bounded_text(payload.get("repo_revision") or repository_revision, 200)
-    request_root = _bounded_text(payload.get("root"), 1000)
+    clean_payload = dict(payload) if isinstance(payload, Mapping) else {}
+    repository_revision = _bounded_text(clean_payload.get("repository_revision"), 200)
+    repo_revision = _bounded_text(clean_payload.get("repo_revision") or repository_revision, 200)
+    request_root = _bounded_text(clean_payload.get("root"), 1000)
     request_hints = normalize_context_path_hints(trusted_path_hints)
     effective_settings_digest = normalize_settings_digest(settings_digest)
     if project_context is not None:
@@ -93,12 +99,16 @@ def build_context_request(
             effective_settings_digest,
             project_digest,
         )
-    raw_budget = payload.get("token_budget", 4000)
+    raw_budget = clean_payload.get("token_budget", 4000)
     try:
-        token_budget = max(1, min(int(raw_budget or 4000), 128_000))
+        raw_budget_float = float(raw_budget or 4000)
+        if not math.isfinite(raw_budget_float) or raw_budget_float <= 0:
+            token_budget = 4000
+        else:
+            token_budget = max(1, min(int(raw_budget_float), 128_000))
     except (TypeError, ValueError, OverflowError):
         token_budget = 4000
-    root = _bounded_text(payload.get("root"), 1000)
+    root = _bounded_text(clean_payload.get("root"), 1000)
     coordination_id = ""
     if project_context is not None:
         try:
@@ -113,29 +123,29 @@ def build_context_request(
             getattr(project_context, "coordination_id", None), 200
         )
     return ContextRequest(
-        task_id=_bounded_text(payload.get("task_id"), 200),
+        task_id=_bounded_text(clean_payload.get("task_id"), 200),
         token_budget=token_budget,
-        include_kinds=_bounded_list(payload.get("include_kinds")),
-        changed_paths=_bounded_list(payload.get("changed_paths"), 32),
+        include_kinds=_bounded_list(clean_payload.get("include_kinds")),
+        changed_paths=_bounded_list(clean_payload.get("changed_paths"), 32),
         root=request_root,
         tenant=_bounded_text(tenant, 200),
         identity=_bounded_text(identity, 200),
-        include_diagnostics=bool(payload.get("include_diagnostics", False)),
-        clone_id=_bounded_text(payload.get("clone_id"), 200),
-        worktree_id=_bounded_text(payload.get("worktree_id"), 200),
-        branch=_bounded_text(payload.get("branch"), 200),
-        repository_id=_bounded_text(payload.get("repository_id"), 200),
+        include_diagnostics=bool(clean_payload.get("include_diagnostics", False)),
+        clone_id=_bounded_text(clean_payload.get("clone_id"), 200),
+        worktree_id=_bounded_text(clean_payload.get("worktree_id"), 200),
+        branch=_bounded_text(clean_payload.get("branch"), 200),
+        repository_id=_bounded_text(clean_payload.get("repository_id"), 200),
         # Coordination is trusted only when supplied by the server-resolved
         # ProjectContext. A similarly named client field is deliberately ignored.
         coordination_id=coordination_id,
-        session_id=_bounded_text(payload.get("session_id"), 200),
+        session_id=_bounded_text(clean_payload.get("session_id"), 200),
         repository_revision=repository_revision,
-        phase=_bounded_text(payload.get("phase"), 80),
-        focus=_bounded_list(payload.get("focus"), 16),
-        preload_profile=_bounded_text(payload.get("preload_profile"), 120),
+        phase=_bounded_text(clean_payload.get("phase"), 80),
+        focus=_bounded_list(clean_payload.get("focus"), 16),
+        preload_profile=_bounded_text(clean_payload.get("preload_profile"), 120),
         repo_revision=repo_revision,
-        since_hash=_bounded_text(payload.get("since_hash") or payload.get("etag"), 120),
-        scoped_task_only=bool(payload.get("_scoped_task_only", False)),
+        since_hash=_bounded_text(clean_payload.get("since_hash") or clean_payload.get("etag"), 120),
+        scoped_task_only=bool(clean_payload.get("_scoped_task_only", False)),
         settings_digest=effective_settings_digest,
         path_hints=request_hints,
     )
@@ -244,7 +254,9 @@ def _project_hint_expiry_is_current(value: Any) -> bool:
     return datetime.now(timezone.utc) < expires
 
 
-def _repository_projection(repository: Mapping[str, Any]) -> dict[str, Any]:
+def _repository_projection(repository: Mapping[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(repository, Mapping):
+        return {}
     allowed = {
         "success", "context", "text", "evidence", "evidence_ids", "warnings",
         "repo_revision", "repository_revision", "changed_paths", "stale",
@@ -279,7 +291,15 @@ def compose_task_context(
     agent_text = compiled.text()
     repo_text = str(repo.get("text") or repo.get("context") or "")
     raw_text = "\n\n".join(part for part in (agent_text, repo_text) if part)
-    max_chars = max(512, min(int(token_budget or 4000), 128_000) * 4)
+    try:
+        raw_budget_float = float(token_budget or 4000)
+        if not math.isfinite(raw_budget_float) or raw_budget_float <= 0:
+            budget_int = 4000
+        else:
+            budget_int = max(1, min(int(raw_budget_float), 128_000))
+    except (TypeError, ValueError, OverflowError):
+        budget_int = 4000
+    max_chars = max(512, budget_int * 4)
     text = raw_text[:max_chars]
     truncated = len(text) < len(raw_text)
 
@@ -322,7 +342,7 @@ def compose_task_context(
         "etag": etag,
         "text": text,
         "estimated_tokens": max(1, len(text) // 4) if text else 0,
-        "token_budget": int(token_budget or 4000),
+        "token_budget": budget_int,
         "truncated": truncated or compiled.truncated,
         "source_layers": ["agent_state", "repository"] if repository_required else ["agent_state"],
         "agent_state": compiled.to_dict(compact=True),
@@ -336,3 +356,18 @@ def compose_task_context(
         "omitted_sections": ["repository"] if repository_required and not repo_ok else [],
         "next_action": "refresh_repository_context" if repository_required and not repo_ok else "use_compiled_context",
     }
+
+
+def is_task_context_complete(context: Mapping[str, Any] | None) -> bool:
+    if not isinstance(context, Mapping):
+        return False
+    return bool(context.get("complete", False)) and bool(context.get("success", False))
+
+
+def get_task_context_evidence_ids(context: Mapping[str, Any] | None) -> list[str]:
+    if not isinstance(context, Mapping):
+        return []
+    ids = context.get("evidence_ids")
+    if not isinstance(ids, (list, tuple)):
+        return []
+    return [str(item) for item in ids if item]
