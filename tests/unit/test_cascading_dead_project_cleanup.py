@@ -6,10 +6,13 @@ import time
 from contextlib import closing
 from pathlib import Path
 
+import pytest
+
+from local_ai_hub import sqlite_support
 from local_ai_hub.code_index import CodeIndex
+from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.preprocess import ProjectPreprocessor
 from local_ai_hub.rag import RAGStore
-from local_ai_hub import sqlite_support
 from local_ai_hub.sqlite_support import ensure_incremental_vacuum
 
 
@@ -24,12 +27,19 @@ class _StubEmbeddings:
         }
 
 
-def test_deleted_project_cleanup_prunes_only_its_rag_paths(tmp_path: Path) -> None:
+@pytest.mark.parametrize("failure_site", ["code_index", "deterministic", "rag"])
+def test_deleted_project_cleanup_prunes_only_its_rag_paths(
+    tmp_path: Path, monkeypatch, failure_site: str
+) -> None:
     state_dir = tmp_path / "state"
     config = {"server": {"state_dir": str(state_dir)}, "rag": {"scope": "shared"}}
     rag = RAGStore(config, _StubEmbeddings())
     code_index = CodeIndex(config, None)
-    preprocessor = ProjectPreprocessor(config, None, rag, None, None, None, code_index=code_index)
+    deterministic = DeterministicEngine(config, code_index=code_index)
+    preprocessor = ProjectPreprocessor(
+        config, None, rag, None, None, None,
+        code_index=code_index, deterministic=deterministic,
+    )
 
     dead_root = tmp_path / "removed-project"
     dead_root.mkdir()
@@ -100,7 +110,61 @@ def test_deleted_project_cleanup_prunes_only_its_rag_paths(tmp_path: Path) -> No
         path: path.stat().st_size
         for path in (preprocessor.db_path, code_index.db_path, rag.db_path)
     }
-    preprocessor.cleanup_deleted_projects()
+    attempts = 0
+
+    def fail_once(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise sqlite3.OperationalError(f"injected bounded {failure_site} lock failure")
+        return None
+
+    if failure_site == "code_index":
+        original = code_index.prune
+
+        def fail_code_index(root: str, paths: list[str]) -> dict[str, object]:
+            fail_once()
+            return original(root, paths)
+
+        monkeypatch.setattr(code_index, "prune", fail_code_index)
+    elif failure_site == "deterministic":
+        original = deterministic._connect
+
+        def fail_deterministic():
+            fail_once()
+            return original()
+
+        monkeypatch.setattr(deterministic, "_connect", fail_deterministic)
+    else:
+        original = rag.remove_project
+
+        def fail_rag(*args, **kwargs):
+            fail_once()
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(rag, "remove_project", fail_rag)
+    first_cleanup = preprocessor.cleanup_deleted_projects()
+    assert first_cleanup["pruned_count"] == 0
+    assert first_cleanup["success"] is False
+    assert first_cleanup["failed_projects"] == [str(dead_root)]
+    with closing(sqlite3.connect(preprocessor.db_path)) as con:
+        assert con.execute(
+            "SELECT 1 FROM projects WHERE root=?", (str(dead_root),)
+        ).fetchone() is not None
+        assert con.execute(
+            "SELECT 1 FROM file_refs WHERE root=? AND path='stale.md'", (str(dead_root),)
+        ).fetchone() is not None
+
+    retried_cleanup = preprocessor.cleanup_deleted_projects()
+    assert retried_cleanup["pruned_count"] == 1
+    assert attempts == 2
+    with closing(sqlite3.connect(preprocessor.db_path)) as con:
+        assert con.execute(
+            "SELECT 1 FROM projects WHERE root=?", (str(dead_root),)
+        ).fetchone() is None
+        assert con.execute(
+            "SELECT 1 FROM file_refs WHERE root=?", (str(dead_root),)
+        ).fetchone() is None
 
     with closing(sqlite3.connect(rag.db_path)) as con:
         assert con.execute(
@@ -125,7 +189,9 @@ def test_deleted_project_cleanup_prunes_only_its_rag_paths(tmp_path: Path) -> No
     for db_path, size_before in before_db_sizes.items():
         with closing(sqlite3.connect(db_path)) as con:
             assert con.execute("PRAGMA auto_vacuum").fetchone() == (2,)
-        assert db_path.stat().st_size < size_before
+        # A failed cascade pass also runs bounded vacuum; retry can therefore
+        # finish cleanup without further file-size change on that store.
+        assert db_path.stat().st_size <= size_before
 
     reclaim_payload = "periodic reclaim payload " * 90_000
     with closing(sqlite3.connect(preprocessor.db_path)) as con:
