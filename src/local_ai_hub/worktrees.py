@@ -20,11 +20,14 @@ def parse_worktree_porcelain(payload: str) -> list[str]:
     return roots
 
 
-def discover_worktree_roots(root: str, timeout_seconds: float = 5.0) -> list[str]:
+def discover_worktree_roots(root: str | Path, timeout_seconds: float = 5.0) -> list[str]:
     """Discover existing sibling worktrees without reading repository content."""
+    root_path = Path(root)
+    if not root_path.is_dir():
+        return []
     try:
         result = subprocess.run(
-            ["git", "-C", str(root), "worktree", "list", "--porcelain"],
+            ["git", "-C", str(root_path), "worktree", "list", "--porcelain"],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
@@ -60,7 +63,12 @@ def is_hub_temporary_worktree(path: str | Path) -> bool:
     try:
         resolved = candidate.resolve(strict=True)
         temp_root = Path(tempfile.gettempdir()).resolve(strict=True)
-        return resolved.parent == temp_root and resolved.is_dir()
+        is_same_temp = False
+        try:
+            is_same_temp = resolved.parent.samefile(temp_root)
+        except OSError:
+            is_same_temp = resolved.parent == temp_root
+        return is_same_temp and resolved.is_dir()
     except (OSError, RuntimeError):
         return False
 
@@ -75,6 +83,13 @@ def worktree_is_clean_ancestor(
     """Prove a clean checkout and its creation base are already in repo HEAD."""
     repo = Path(repo_root).resolve(strict=False)
     checkout = Path(worktree_path).resolve(strict=False)
+    if not repo.is_dir():
+        return False, "repository root is not a directory"
+    if not checkout.is_dir():
+        return False, "worktree path is not a directory"
+    clean_base = str(base_commit or "").strip()
+    if not clean_base:
+        return False, "base_commit must be a non-empty commit hash"
 
     def git(path: Path, *args: str) -> subprocess.CompletedProcess[str] | None:
         try:
@@ -98,7 +113,7 @@ def worktree_is_clean_ancestor(
         return False, "worktree is dirty or status is unavailable"
     root_head = git(repo, "rev-parse", "--verify", "HEAD^{commit}")
     wt_head = git(checkout, "rev-parse", "--verify", "HEAD^{commit}")
-    base = git(repo, "rev-parse", "--verify", f"{base_commit}^{{commit}}")
+    base = git(repo, "rev-parse", "--verify", f"{clean_base}^{{commit}}")
     if any(result is None or result.returncode != 0 for result in (root_head, wt_head, base)):
         return False, "worktree ancestry metadata is unavailable"
     assert root_head is not None and wt_head is not None and base is not None
