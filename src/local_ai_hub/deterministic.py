@@ -190,6 +190,7 @@ class DeterministicEngine:
               root TEXT NOT NULL,path TEXT NOT NULL,kind TEXT NOT NULL,name TEXT NOT NULL,value TEXT NOT NULL,
               line INTEGER NOT NULL DEFAULT 0,extra_json TEXT NOT NULL DEFAULT '{}');
             CREATE INDEX IF NOT EXISTS idx_facts_root_kind_name ON facts(root,kind,name);
+            CREATE INDEX IF NOT EXISTS idx_facts_root_name_kind ON facts(root,name,kind);
             CREATE INDEX IF NOT EXISTS idx_facts_root_path ON facts(root,path);
             CREATE TABLE IF NOT EXISTS dependencies(
               root TEXT NOT NULL,source TEXT NOT NULL,name TEXT NOT NULL,version TEXT NOT NULL DEFAULT '',scope TEXT NOT NULL DEFAULT '',
