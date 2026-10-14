@@ -4034,7 +4034,17 @@ def local_ai_artifact(action: ArtifactAction = "get", artifact_id: str = "", off
     if not operation_enabled(FEATURES, "local_ai_artifact"):
         return {"success": False, "unsupported": True, "error": "local_ai_artifact is disabled in configuration"}
     if not artifact_id and path:
-        resolved_path = Path(path).resolve()
+        try:
+            workspace_root = Path(_workspace).resolve()
+            candidate_path = Path(path)
+            if not candidate_path.is_absolute():
+                candidate_path = workspace_root / candidate_path
+            resolved_path = candidate_path.resolve(strict=False)
+            resolved_path.relative_to(workspace_root)
+        except ValueError:
+            return {"success": False, "error": "Path must stay inside the workspace"}
+        except (OSError, RuntimeError):
+            return {"success": False, "error": "Invalid file path"}
         if not resolved_path.is_file():
             return {"success": False, "error": f"File not found: {path}"}
         try:
