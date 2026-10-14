@@ -22,6 +22,8 @@ DEFAULT_MAX_BINARY_BYTES = 4_000_000
 DEFAULT_MAX_JSON_BYTES = 4_000_000
 _ARTIFACT_TABLE = "artifacts"
 _ARTIFACT_V2_TABLE = "artifacts_v2"
+MAX_ARTIFACT_SLICES = 16
+MAX_ARTIFACT_SLICE_CHARS = 50_000
 _ARTIFACT_MIGRATION_BACKUP_SUFFIX = ".pre-tenant-identity.bak"
 
 
@@ -837,6 +839,95 @@ class ArtifactStore:
             "next_offset": offset + len(piece) if offset + len(piece) < total_chars else None,
             "total_chars": total_chars,
             "sections": sections,
+        }
+
+    def get_slices(
+        self,
+        artifact_id: str,
+        slices: list[dict[str, int]],
+        tenant: str | None = None,
+    ) -> dict[str, Any]:
+        """Fetch several bounded text spans in caller order with one SQLite read."""
+        if not isinstance(slices, list) or not slices or len(slices) > MAX_ARTIFACT_SLICES:
+            return {"success": False, "error": f"slices must contain 1 to {MAX_ARTIFACT_SLICES} ranges", "artifact_id": artifact_id}
+
+        normalized: list[tuple[int, int]] = []
+        total_requested = 0
+        for item in slices:
+            if not isinstance(item, dict) or set(item) != {"offset", "max_chars"}:
+                return {"success": False, "error": "each slice must contain only offset and max_chars", "artifact_id": artifact_id}
+            offset, max_chars = item.get("offset"), item.get("max_chars")
+            if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+                return {"success": False, "error": "slice offset must be a non-negative integer", "artifact_id": artifact_id}
+            if isinstance(max_chars, bool) or not isinstance(max_chars, int) or not 1 <= max_chars <= MAX_ARTIFACT_SLICE_CHARS:
+                return {"success": False, "error": f"slice max_chars must be between 1 and {MAX_ARTIFACT_SLICE_CHARS}", "artifact_id": artifact_id}
+            total_requested += max_chars
+            if total_requested > MAX_ARTIFACT_SLICE_CHARS:
+                return {"success": False, "error": f"combined slice max_chars cannot exceed {MAX_ARTIFACT_SLICE_CHARS}", "artifact_id": artifact_id}
+            normalized.append((offset, max_chars))
+
+        cutoff = time.time() - self.ttl_seconds
+        expressions: list[str] = []
+        params: list[Any] = []
+        sqlite_max_int = (1 << 63) - 1
+        for offset, max_chars in normalized:
+            expressions.append("substr(COALESCE(page_text, text), ?, ?)")
+            params.extend((min(offset + 1, sqlite_max_int), max_chars))
+            nul_byte_offset = offset % 8
+            nul_byte_count = (nul_byte_offset + max_chars + 7) // 8
+            expressions.append("substr(nul_mask, ?, ?)")
+            params.extend((min(offset // 8 + 1, sqlite_max_int), nul_byte_count))
+        query = (
+            f"SELECT kind, mime_type, char_count, section_names, {', '.join(expressions)} "
+            f"FROM {self._table} WHERE artifact_id=? AND created_at>=?"
+        )
+        params.extend((artifact_id, cutoff))
+        if tenant is not None:
+            query += " AND tenant_identity=?"
+            params.append(self._tenant_identity(tenant))
+
+        def _do_get_slices() -> tuple[Any, ...] | None:
+            with closing(self._connect()) as con:
+                return con.execute(query, params).fetchone()
+
+        row = retry_busy(_do_get_slices, retries=3)
+        if not row:
+            return {"success": False, "error": "artifact not found or expired", "artifact_id": artifact_id}
+        if row[1]:
+            return {"success": False, "error": "binary artifact requires binary retrieval", "artifact_id": artifact_id}
+        if row[2] is None or row[3] is None:
+            return {"success": False, "error": "artifact paging metadata unavailable", "artifact_id": artifact_id}
+        try:
+            sections = json.loads(row[3])
+        except Exception:
+            return {"success": False, "error": "artifact paging metadata unavailable", "artifact_id": artifact_id}
+        if not isinstance(sections, list) or any(not isinstance(name, str) for name in sections):
+            return {"success": False, "error": "artifact paging metadata unavailable", "artifact_id": artifact_id}
+
+        total_chars = int(row[2])
+        result_slices: list[dict[str, Any]] = []
+        for index, (offset, _max_chars) in enumerate(normalized):
+            piece = row[4 + index * 2] or ""
+            nul_mask = row[5 + index * 2] or b""
+            if nul_mask:
+                chars = list(piece)
+                bit_offset = offset % 8
+                for char_index in range(len(chars)):
+                    bit_index = bit_offset + char_index
+                    mask_index = bit_index // 8
+                    if mask_index < len(nul_mask) and nul_mask[mask_index] & (1 << (bit_index % 8)):
+                        chars[char_index] = "\x00"
+                piece = "".join(chars)
+            result_slices.append({"offset": offset, "text": piece})
+        return {
+            "success": True,
+            "artifact_id": artifact_id,
+            "kind": row[0],
+            "slices": result_slices,
+            "total_chars": total_chars,
+            "sections": sections,
+            "truncated": False,
+            "budget_limited": False,
         }
 
     def list(self, tenant: str = "", limit: int = 20) -> list[dict[str, Any]]:

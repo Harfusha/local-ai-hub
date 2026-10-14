@@ -72,10 +72,13 @@ class Reranker:
             "max_length": self.max_length,
         })
 
-    def _cache_identity(self) -> str | None:
+    def _cache_identity(self, *, allow_cpu_fallback: bool = True) -> str | None:
         if self._loaded_model_revision() is None:
             return None
-        return self._execution_identity()
+        return stable_hash({
+            "execution": self._execution_identity(),
+            "allow_cpu_fallback": allow_cpu_fallback,
+        })
 
     def _candidate_specs(self) -> list[tuple[str, str]]:
         if self.backend == "openvino":
@@ -149,7 +152,7 @@ class Reranker:
             self.active_device = None
             return False
 
-    def _ensure_model(self) -> bool:
+    def _ensure_model(self, *, allow_cpu_fallback: bool = True) -> bool:
         if not self.enabled:
             return False
         if self._model is not None:
@@ -162,6 +165,8 @@ class Reranker:
             if self._load_error is not None and start >= len(candidates) and time.time() - self._load_error_time < 15.0:
                 return False
             for index in range(start, len(candidates)):
+                if not allow_cpu_fallback and str(candidates[index][1]).strip().lower().startswith("cpu"):
+                    continue
                 if self._load_candidate(index):
                     return True
             return False
@@ -184,9 +189,11 @@ class Reranker:
             release_model(self, used_cuda=used_cuda)
             return True
 
-    def _predict(self, pairs: list[tuple[str, str]], *, priority: int) -> Any | None:
+    def _predict(
+        self, pairs: list[tuple[str, str]], *, priority: int, allow_cpu_fallback: bool = True
+    ) -> Any | None:
         while True:
-            if not self._ensure_model():
+            if not self._ensure_model(allow_cpu_fallback=allow_cpu_fallback):
                 return None
             if self._model is None:
                 continue
@@ -205,25 +212,41 @@ class Reranker:
                     self._model = None
                     self.active_backend = None
                     self.active_device = None
-                    if self._ensure_model():
+                    if self._ensure_model(allow_cpu_fallback=allow_cpu_fallback):
                         continue
                 return None
 
-    def rerank(self, query: str, documents: list[str], top_k: int | None = None, priority: int = 3) -> dict[str, Any]:
+    def rerank(
+        self,
+        query: str,
+        documents: list[str],
+        top_k: int | None = None,
+        priority: int = 3,
+        allow_cpu_fallback: bool = True,
+    ) -> dict[str, Any]:
         if not documents:
             return {"success": True, "model": self.model_name, "results": []}
-        if not self._ensure_model():
+        if not self._ensure_model(allow_cpu_fallback=allow_cpu_fallback):
             return {"success": False, "error": self._load_error or "reranker disabled", "results": []}
+        if not allow_cpu_fallback and str(self.active_device or "").strip().lower().startswith("cpu"):
+            return {"success": False, "error": "CPU reranking disabled for this request", "results": []}
 
         request_key = stable_hash({
             "execution": self._execution_identity(),
             "query": query,
             "documents": documents,
             "top_k": top_k,
+            "allow_cpu_fallback": allow_cpu_fallback,
         })
         result, _coalesced = self.flight_group.do(
             request_key,
-            lambda: self._rerank_uncached(query, documents, top_k=top_k, priority=priority),
+            lambda: self._rerank_uncached(
+                query,
+                documents,
+                top_k=top_k,
+                priority=priority,
+                allow_cpu_fallback=allow_cpu_fallback,
+            ),
         )
         output = dict(result)
         if isinstance(output.get("results"), list):
@@ -231,7 +254,12 @@ class Reranker:
         return output
 
     def _rerank_uncached(
-        self, query: str, documents: list[str], top_k: int | None = None, priority: int = 3
+        self,
+        query: str,
+        documents: list[str],
+        top_k: int | None = None,
+        priority: int = 3,
+        allow_cpu_fallback: bool = True,
     ) -> dict[str, Any]:
 
         # OpenVINO may compile successfully for NPU and then reject a real input
@@ -242,7 +270,7 @@ class Reranker:
         max_restarts = max(1, len(self._candidate_specs()) + 1)
         for _restart in range(max_restarts):
             execution_identity = self._execution_identity()
-            cache_identity = self._cache_identity()
+            cache_identity = self._cache_identity(allow_cpu_fallback=allow_cpu_fallback)
             use_cache = self.cache_enabled and cache_identity is not None
             scores: list[float | None] = [None] * len(documents)
             missing_pairs: list[tuple[str, str]] = []
@@ -270,7 +298,11 @@ class Reranker:
             if missing_pairs:
                 for start in range(0, len(missing_pairs), self.batch_size):
                     stop = min(len(missing_pairs), start + self.batch_size)
-                    predicted = self._predict(missing_pairs[start:stop], priority=priority)
+                    predicted = self._predict(
+                        missing_pairs[start:stop],
+                        priority=priority,
+                        allow_cpu_fallback=allow_cpu_fallback,
+                    )
                     if predicted is None:
                         return {"success": False, "error": self._load_error or "reranker backend unavailable", "results": []}
                     try:
