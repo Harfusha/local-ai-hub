@@ -1291,7 +1291,7 @@ def _telemetry_failure(value: Any) -> dict[str, Any]:
 def _preserve_contract_state(raw: Any, projected: Any) -> Any:
     """Restore bounded result-state fields after projection and compaction."""
     state_keys = {
-        "success", "status_code", "error", "terminal", "retryable", "degraded",
+        "success", "hub_online", "status_code", "error", "terminal", "retryable", "degraded",
         "stale", "evidence", "evidence_ids", "cancel", "cancelled", "timed_out",
     }
     if isinstance(raw, dict) and isinstance(projected, dict):
