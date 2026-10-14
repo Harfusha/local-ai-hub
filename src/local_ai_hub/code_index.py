@@ -19,7 +19,7 @@ from typing import Any, Iterator
 
 from . import __version__
 
-_PARSER_ANALYZER_VERSION = f"{__version__}:call-edges-v13-scoped-fallback"
+_PARSER_ANALYZER_VERSION = f"{__version__}:call-edges-v14-import-targets"
 from .cache import MemoryLRUCache, stable_hash
 from .normalizer import tokenize_query_terms
 from .process_utils import canonical_root
@@ -1313,7 +1313,14 @@ class CodeIndex:
                     edges.append({"src": "<module>", "dst": a.name, "kind": "imports", "line": n.lineno})
 
             def visit_ImportFrom(s, n):
-                edges.append({"src": "<module>", "dst": n.module or "", "kind": "imports", "line": n.lineno})
+                prefix = "." * n.level
+                base = prefix + (n.module or "")
+                if base:
+                    edges.append({"src": "<module>", "dst": base, "kind": "imports", "line": n.lineno})
+                for alias in n.names:
+                    if alias.name != "*":
+                        target = f"{base}.{alias.name}" if n.module else f"{base}{alias.name}"
+                        edges.append({"src": "<module>", "dst": target, "kind": "imports", "line": n.lineno})
 
         V().visit(tree)
         return syms, refs, edges
@@ -2289,6 +2296,57 @@ class CodeIndex:
             "scope": "returned_symbol_candidates", "files_examined": len(rows), **counts,
             "diagnostics": diagnostics[:64], "diagnostics_truncated": len(diagnostics) > 64,
             "complete": len(rows) == len(unique_paths),
+        }
+
+    def python_module_import_graph(self, root: str) -> dict[str, Any]:
+        """Return the fresh Python import edges already stored for one indexed root."""
+        resolved_root = canonical_root(root)
+        root_path = Path(resolved_root)
+        if not root_path.is_dir():
+            return {"success": False, "state": "unindexed", "error": f"directory not found: {root}"}
+
+        with closing(self._connect()) as con:
+            rows = con.execute(
+                "SELECT path, analyzer_version, mtime_ns, size_bytes FROM files WHERE root=? AND language='python' ORDER BY path",
+                (resolved_root,),
+            ).fetchall()
+            if not rows:
+                return {"success": False, "state": "unindexed", "error": "no indexed Python files"}
+
+            stale_paths: list[str] = []
+            for row in rows:
+                relative = Path(str(row["path"]))
+                candidate = (root_path / relative).resolve(strict=False)
+                try:
+                    candidate.relative_to(root_path)
+                    current = candidate.stat()
+                    fresh = (
+                        str(row["analyzer_version"] or "") == _PARSER_ANALYZER_VERSION
+                        and current.st_mtime_ns == row["mtime_ns"]
+                        and current.st_size == row["size_bytes"]
+                    )
+                except (OSError, ValueError):
+                    fresh = False
+                if not fresh:
+                    stale_paths.append(str(row["path"]))
+            if stale_paths:
+                return {
+                    "success": False,
+                    "state": "stale",
+                    "error": "indexed Python files need reindexing",
+                    "stale_paths": stale_paths[:20],
+                }
+
+            imports = con.execute(
+                "SELECT e.path, e.dst FROM edges AS e JOIN files AS f ON f.root=e.root AND f.path=e.path "
+                "WHERE e.root=? AND f.language='python' AND e.kind='imports' ORDER BY e.path, e.line, e.dst",
+                (resolved_root,),
+            ).fetchall()
+        return {
+            "success": True,
+            "state": "indexed",
+            "paths": [str(row["path"]) for row in rows],
+            "imports": [{"path": str(row["path"]), "target": str(row["dst"] or "")} for row in imports],
         }
 
     def query(self, root: str, query: str, limit: int = 20, *, verify_freshness: bool = False) -> dict[str, Any]:

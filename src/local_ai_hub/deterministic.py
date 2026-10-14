@@ -5908,11 +5908,23 @@ def test_{sym}_regression_edge_cases():
         mod_to_file: dict[str, Path] = {}
         file_to_mod: dict[Path, str] = {}
         
-        py_files: list[Path] = []
-        for p in p_root.rglob("*.py"):
-            if any(part in skip_dirs for part in p.parts):
-                continue
-            py_files.append(p)
+        if self.code_index is None:
+            return {"success": False, "error": "Python import index unavailable", "index_state": "unindexed"}
+        graph_reader = getattr(self.code_index, "python_module_import_graph", None)
+        if not callable(graph_reader):
+            return {"success": False, "error": "Python import index API unavailable", "index_state": "unindexed"}
+        indexed_graph = graph_reader(str(p_root))
+        if not indexed_graph.get("success"):
+            return {
+                "success": False,
+                "error": indexed_graph.get("error", "Python import index unavailable"),
+                "index_state": indexed_graph.get("state", "unindexed"),
+            }
+        py_files = sorted(
+            p_root / Path(relative)
+            for relative in indexed_graph.get("paths", [])
+            if not any(part in skip_dirs for part in Path(relative).parts)
+        )
 
         for p in py_files:
             rel = p.relative_to(p_root)
@@ -5926,6 +5938,9 @@ def test_{sym}_regression_edge_cases():
             mod_name = ".".join(parts)
             mod_to_file[mod_name] = p
             file_to_mod[p] = mod_name
+
+        if not file_to_mod:
+            return {"success": False, "error": "no indexed Python modules", "index_state": "unindexed"}
 
         def _find_matches(target: str) -> list[str]:
             matches: list[str] = []
@@ -5941,42 +5956,26 @@ def test_{sym}_regression_edge_cases():
 
         graph: dict[str, set[str]] = {m: set() for m in mod_to_file}
 
-        for p in py_files:
-            mod_name = file_to_mod.get(p)
+        for edge in indexed_graph.get("imports", []):
+            relative_path = Path(str(edge.get("path", "")))
+            source_path = (p_root / relative_path).resolve(strict=False)
+            mod_name = file_to_mod.get(source_path)
             if not mod_name:
                 continue
-            try:
-                content = p.read_text(encoding="utf-8", errors="replace")
-                tree = ast.parse(content, filename=str(p))
-            except Exception:
+            target = str(edge.get("target", ""))
+            if not target:
                 continue
-
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Import):
-                    for alias in node.names:
-                        for known in _find_matches(alias.name):
-                            if known != mod_name:
-                                graph[mod_name].add(known)
-                elif isinstance(node, ast.ImportFrom):
-                    base = ""
-                    if node.level and node.level > 0:
-                        pkg_parts = mod_name.split(".")[:-1]
-                        if node.level - 1 <= len(pkg_parts):
-                            base_parts = pkg_parts[:len(pkg_parts) - (node.level - 1)]
-                            if node.module:
-                                base_parts.append(node.module)
-                            base = ".".join(base_parts)
-                    elif node.module:
-                        base = node.module
-
-                    for alias in node.names:
-                        candidates = [f"{base}.{alias.name}" if base else alias.name]
-                        if base:
-                            candidates.append(base)
-                        for target in candidates:
-                            for known in _find_matches(target):
-                                if known != mod_name:
-                                    graph[mod_name].add(known)
+            if target.startswith("."):
+                level = len(target) - len(target.lstrip("."))
+                package_parts = mod_name.split(".") if relative_path.name == "__init__.py" else mod_name.split(".")[:-1]
+                if level - 1 > len(package_parts):
+                    continue
+                base_parts = package_parts[:len(package_parts) - (level - 1)]
+                remainder = target[level:]
+                target = ".".join([*base_parts, remainder] if remainder else base_parts)
+            for known in _find_matches(target):
+                if known != mod_name:
+                    graph[mod_name].add(known)
 
         cycles: list[list[str]] = []
         seen_cycles: set[tuple[str, ...]] = set()
