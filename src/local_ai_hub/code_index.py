@@ -764,6 +764,11 @@ def _call_edge_source(
     return source.replace("\\", "/")
 
 
+def _edge_endpoint_name(endpoint: str) -> str:
+    """Return the searchable terminal name for a qualified edge endpoint."""
+    return str(endpoint).replace("\\", "/").rsplit("/", 1)[-1].rsplit("::", 1)[-1]
+
+
 def _mask_non_code(text: str, language: str, *, mask_literals: bool = True) -> str:
     """Blank comments and literals while preserving source offsets and lines."""
     chars = list(text)
@@ -1065,6 +1070,8 @@ class CodeIndex:
             root TEXT,
             src TEXT,
             dst TEXT,
+            src_name TEXT,
+            dst_name TEXT,
             kind TEXT,
             path TEXT,
             line INTEGER
@@ -1084,6 +1091,25 @@ class CodeIndex:
         );
         CREATE INDEX IF NOT EXISTS idx_parse_blobs_updated ON parse_blobs(updated_at);
         """)
+        edge_columns = {str(row["name"]) for row in con.execute("PRAGMA table_info(edges)").fetchall()}
+        if "src_name" not in edge_columns:
+            con.execute("ALTER TABLE edges ADD COLUMN src_name TEXT")
+        if "dst_name" not in edge_columns:
+            con.execute("ALTER TABLE edges ADD COLUMN dst_name TEXT")
+        with closing(con.execute("SELECT rowid, src, dst FROM edges WHERE src_name IS NULL OR dst_name IS NULL")) as rows:
+            con.executemany(
+                "UPDATE edges SET src_name=?, dst_name=? WHERE rowid=?",
+                [
+                    (_edge_endpoint_name(str(row[1])), _edge_endpoint_name(str(row[2])), int(row[0]))
+                    for row in rows.fetchall()
+                ],
+            )
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_edges_root_kind_dst_name ON edges(root, kind, dst_name)"
+        )
+        con.execute(
+            "CREATE INDEX IF NOT EXISTS idx_edges_root_kind_src_name ON edges(root, kind, src_name)"
+        )
         file_columns = {str(row["name"]) for row in con.execute("PRAGMA table_info(files)").fetchall()}
         if "analyzer_version" not in file_columns:
             raise sqlite3.DatabaseError(
@@ -1827,7 +1853,16 @@ class CodeIndex:
                 [(str(base), path, s["name"], s["kind"], s["line"], s["end_line"], s.get("container", ""), s.get("name_path", s["name"]), s.get("signature", ""), s.get("access", "public"), s.get("docstring", "")) for s in syms],
             )
             con.executemany("INSERT INTO refs(root, path, name, line, kind) VALUES(?,?,?,?,?)", [(str(base), path, r["name"], r["line"], r.get("kind", "call")) for r in refs])
-            con.executemany("INSERT INTO edges(root, src, dst, kind, path, line) VALUES(?,?,?,?,?,?)", [(str(base), e["src"], e["dst"], e.get("kind", "reference"), path, e["line"]) for e in edges])
+            con.executemany(
+                "INSERT INTO edges(root, src, dst, src_name, dst_name, kind, path, line) VALUES(?,?,?,?,?,?,?,?)",
+                [
+                    (
+                        str(base), e["src"], e["dst"], _edge_endpoint_name(e["src"]),
+                        _edge_endpoint_name(e["dst"]), e.get("kind", "reference"), path, e["line"],
+                    )
+                    for e in edges
+                ],
+            )
             con.commit()
 
         self._advance_query_cache_generation()
@@ -2008,7 +2043,13 @@ class CodeIndex:
             files_to_insert.append((c_root, path, content_hash, _PARSER_ANALYZER_VERSION, lang, now))
             syms_to_insert.extend((c_root, path, x["name"], x["kind"], x["line"], x["end_line"], x.get("container", ""), x.get("name_path", x["name"]), x.get("signature", ""), x.get("access", "public"), x.get("docstring", "")) for x in syms)
             refs_to_insert.extend((c_root, path, x["name"], x["line"], x.get("kind", "call")) for x in refs)
-            edges_to_insert.extend((c_root, x["src"], x["dst"], x.get("kind", "reference"), path, x["line"]) for x in edges)
+            edges_to_insert.extend(
+                (
+                    c_root, x["src"], x["dst"], _edge_endpoint_name(x["src"]),
+                    _edge_endpoint_name(x["dst"]), x.get("kind", "reference"), path, x["line"],
+                )
+                for x in edges
+            )
 
         if files_to_insert or deleted_paths:
             with self._lock, closing(self._connect()) as con:
@@ -2027,7 +2068,10 @@ class CodeIndex:
                 con.executemany("INSERT OR REPLACE INTO files(root,path,content_hash,analyzer_version,language,updated_at) VALUES(?,?,?,?,?,?)", files_to_insert)
                 con.executemany("INSERT OR REPLACE INTO symbols(root,path,name,kind,line,end_line,container,name_path,signature,access,docstring) VALUES(?,?,?,?,?,?,?,?,?,?,?)", syms_to_insert)
                 con.executemany("INSERT INTO refs(root,path,name,line,kind) VALUES(?,?,?,?,?)", refs_to_insert)
-                con.executemany("INSERT INTO edges(root,src,dst,kind,path,line) VALUES(?,?,?,?,?,?)", edges_to_insert)
+                con.executemany(
+                    "INSERT INTO edges(root,src,dst,src_name,dst_name,kind,path,line) VALUES(?,?,?,?,?,?,?,?)",
+                    edges_to_insert,
+                )
                 con.commit()
             self._advance_query_cache_generation()
         self._status_cache.pop(c_root, None)
@@ -3189,11 +3233,14 @@ class CodeIndex:
             with closing(self._connect()) as con:
                 rows = con.execute(
                     f"""SELECT src, dst, kind, path, line FROM edges
-                       WHERE root=? AND kind='calls'
+                       WHERE root=? AND kind=? AND dst_name=?
                          AND {_root_archive_path_sql("path")}
                          AND (dst=? OR dst LIKE ? ESCAPE '!' OR dst LIKE ? ESCAPE '!')
                        ORDER BY path, line LIMIT ?""",
-                    (resolved, sym, f"%/{escaped_sym}", f"%::{escaped_sym}", result_limit + 1),
+                    (
+                        resolved, "calls", _edge_endpoint_name(sym), sym,
+                        f"%/{escaped_sym}", f"%::{escaped_sym}", result_limit + 1,
+                    ),
                 ).fetchall()
         except sqlite3.DatabaseError as exc:
             return {
@@ -3238,11 +3285,14 @@ class CodeIndex:
             with closing(self._connect()) as con:
                 rows = con.execute(
                     f"""SELECT src, dst, kind, path, line FROM edges
-                       WHERE root=? AND kind='calls'
+                       WHERE root=? AND kind=? AND src_name=?
                          AND {_root_archive_path_sql("path")}
                          AND (src=? OR src LIKE ? ESCAPE '!' OR src LIKE ? ESCAPE '!')
                        ORDER BY path, line LIMIT ?""",
-                    (resolved, sym, f"%/{escaped_sym}", f"%::{escaped_sym}", result_limit + 1),
+                    (
+                        resolved, "calls", _edge_endpoint_name(sym), sym,
+                        f"%/{escaped_sym}", f"%::{escaped_sym}", result_limit + 1,
+                    ),
                 ).fetchall()
         except sqlite3.DatabaseError as exc:
             return {
