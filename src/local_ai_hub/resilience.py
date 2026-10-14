@@ -6,6 +6,7 @@ import json
 import hashlib
 import shutil
 import sqlite3
+import sys
 import threading
 import tempfile
 import time
@@ -125,6 +126,20 @@ class RecoveryJournal:
         # is an interrupted request rather than work to wait for.
         if not self._journal_unavailable:
             self.mark_interrupted_on_startup()
+        self._pending_writes: deque[tuple[str, str, float, str, int, str, int]] = deque()
+        self._pending_completions: dict[str, tuple[str, str, float, str, int, str, int]] = {}
+        self._write_sequence = 0
+        self._writer_running = False
+        self._writer_closing = False
+        self._writer_error: Exception | None = None
+        self._writer_overflowed = False
+        self._writer_thread: threading.Thread | None = None
+        self._write_queue_capacity = 1024
+        self._max_retained_completion_bytes = 8 * 1024 * 1024
+        self._retained_completion_bytes = 0
+        self._completion_reservations: dict[int, int] = {}
+        self._in_flight_writes: dict[int, tuple[str, str, float, str, int, str, int]] = {}
+        self._write_batch_interval = 0.1
 
     def _connect(self) -> sqlite3.Connection:
         return connect_sqlite(self.path, timeout_seconds=5.0)
@@ -308,7 +323,41 @@ class RecoveryJournal:
                             result["outcome_unknown"] = True
                     con.commit()
             retry_busy(write, retries=2)
+        pending = self._pending_completions.get(request_id)
+        if pending is not None and result.get("state") != "conflict":
+            result.update(self._completion_result(pending))
         return result
+
+    @staticmethod
+    def _completion_result(
+        completion: tuple[str, str, float, str, int, str, int],
+    ) -> dict[str, Any]:
+        _request_id, state, updated_at, _detail, status_code, response_json, _sequence = completion
+        response = RecoveryJournal._decode_response(response_json)
+        result: dict[str, Any] = {
+            "state": state,
+            "status_code": status_code,
+            "response": response,
+            "updated_at": updated_at,
+        }
+        if state in {"done", "failed"} and response is None:
+            result["outcome_unknown"] = True
+        return result
+
+    @staticmethod
+    def _completion_retained_size(
+        completion: tuple[str, str, float, str, int, str, int],
+    ) -> int:
+        request_id, state, _updated_at, detail, _status_code, response_json, _sequence = completion
+        # Count Python string storage plus conservative tuple, queue and mapping
+        # overhead. The queue, overlay and in-flight index share these string objects.
+        return (
+            sys.getsizeof(request_id)
+            + sys.getsizeof(state)
+            + sys.getsizeof(detail)
+            + sys.getsizeof(response_json)
+            + 512
+        )
 
     def finish(self, request_id: str, success: bool, detail: str = "", *, status_code: int = 200, response: Any = None) -> None:
         request_id = self.validate_request_id(request_id)
@@ -322,16 +371,134 @@ class RecoveryJournal:
                     response_json = encoded
             except Exception:
                 response_json = ""
-        with self._lock:
-            def write() -> None:
-                with closing(self._connect()) as con:
-                    con.execute(
-                        "UPDATE requests SET state=?, updated_at=?, detail=?, status_code=?, response_json=? WHERE request_id=?",
-                        ("done" if success else "failed", time.time(), detail[:500], int(status_code), response_json, request_id),
-                    )
-                    con.commit()
-            retry_busy(write, retries=2)
+        detail = detail[:500]
+        with self._changed:
+            if self._writer_closing or self._writer_error is not None or self._writer_overflowed:
+                self._journal_unavailable = True
+                self._journal_unavailable_reason = self._journal_unavailable_reason or (
+                    "request journal writer is unavailable; refusing mutation dispatch"
+                )
+                self._changed.notify_all()
+                return
+            if len(self._pending_writes) >= self._write_queue_capacity:
+                self._writer_overflowed = True
+                self._journal_unavailable = True
+                self._journal_unavailable_reason = "request journal completion queue is full; refusing mutation dispatch"
+                self._changed.notify_all()
+                return
+            self._write_sequence += 1
+            completion = (
+                request_id,
+                "done" if success else "failed",
+                time.time(),
+                detail,
+                int(status_code),
+                response_json,
+                self._write_sequence + 1,
+            )
+            retained_size = self._completion_retained_size(completion)
+            if self._retained_completion_bytes + retained_size > self._max_retained_completion_bytes:
+                self._writer_overflowed = True
+                self._journal_unavailable = True
+                self._journal_unavailable_reason = "request journal completion byte budget exceeded; refusing mutation dispatch"
+                self._changed.notify_all()
+                return
+            self._write_sequence += 1
+            self._completion_reservations[completion[6]] = retained_size
+            self._retained_completion_bytes += retained_size
+            self._pending_completions[request_id] = completion
             self._changed.notify_all()
+            self._pending_writes.append(completion)
+            if not self._writer_running:
+                self._writer_running = True
+                self._writer_thread = threading.Thread(
+                    target=self._write_behind_loop,
+                    name="recovery-journal-writer",
+                    daemon=True,
+                )
+                self._writer_thread.start()
+
+    def _write_completion_batch(
+        self,
+        batch: list[tuple[str, str, float, str, int, str, int]],
+    ) -> None:
+        def write() -> None:
+            with closing(self._connect()) as con:
+                con.execute("BEGIN IMMEDIATE")
+                con.executemany(
+                    "UPDATE requests SET state=?, updated_at=?, detail=?, status_code=?, response_json=? WHERE request_id=?",
+                    [
+                        (state, updated_at, detail, status_code, response_json, request_id)
+                        for request_id, state, updated_at, detail, status_code, response_json, _sequence in batch
+                    ],
+                )
+                con.commit()
+
+        retry_busy(write, retries=2)
+
+    def _write_behind_loop(self) -> None:
+        while True:
+            with self._changed:
+                if not self._pending_writes:
+                    self._writer_running = False
+                    self._writer_thread = None
+                    self._changed.notify_all()
+                    return
+                deadline = time.monotonic() + self._write_batch_interval
+                while not self._writer_closing and len(self._pending_writes) < self._write_queue_capacity:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    self._changed.wait(remaining)
+                batch = [self._pending_writes.popleft() for _ in range(min(len(self._pending_writes), self._write_queue_capacity))]
+                self._in_flight_writes.update({completion[6]: completion for completion in batch})
+                self._changed.notify_all()
+            try:
+                self._write_completion_batch(batch)
+            except Exception as exc:
+                with self._changed:
+                    self._writer_error = exc
+                    self._journal_unavailable = True
+                    self._journal_unavailable_reason = f"request journal completion write failed: {exc}"
+                    self._pending_writes.clear()
+                    self._pending_completions.clear()
+                    self._in_flight_writes.clear()
+                    self._completion_reservations.clear()
+                    self._retained_completion_bytes = 0
+                    self._writer_running = False
+                    self._writer_thread = None
+                    self._changed.notify_all()
+                batch.clear()
+                return
+            with self._changed:
+                for completion in batch:
+                    request_id = completion[0]
+                    sequence = completion[6]
+                    self._retained_completion_bytes -= self._completion_reservations.pop(sequence, 0)
+                    self._in_flight_writes.pop(sequence, None)
+                    pending = self._pending_completions.get(request_id)
+                    if pending is not None and pending[6] == sequence:
+                        self._pending_completions.pop(request_id, None)
+                self._retained_completion_bytes = max(0, self._retained_completion_bytes)
+                self._changed.notify_all()
+            batch.clear()
+
+    def close(self, timeout_seconds: float = 8.0) -> None:
+        with self._changed:
+            self._writer_closing = True
+            thread = self._writer_thread
+            if self._pending_writes and not self._writer_running and self._writer_error is None:
+                self._writer_running = True
+                thread = threading.Thread(
+                    target=self._write_behind_loop,
+                    name="recovery-journal-writer",
+                    daemon=True,
+                )
+                self._writer_thread = thread
+                thread.start()
+            self._changed.notify_all()
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=max(0.0, float(timeout_seconds)))
 
     def lookup(
         self,
@@ -354,8 +521,12 @@ class RecoveryJournal:
             return {"state": "conflict", "error": "request id already belongs to a different identity, operation, or payload"}
         response = self._decode_response(str(row[6] or ""))
         result = {"state": row[4], "status_code": int(row[5] or 0), "response": response, "updated_at": float(row[7])}
+        pending = self._pending_completions.get(request_id)
+        if pending is not None:
+            result.update(self._completion_result(pending))
         if row[4] == "abandoned" or (row[4] in {"done", "failed"} and response is None):
-            result["outcome_unknown"] = True
+            if pending is None:
+                result["outcome_unknown"] = True
         return result
 
     def lookup_metadata(
@@ -379,7 +550,14 @@ class RecoveryJournal:
             return {"state": "conflict", "error": "request id already belongs to a different identity or operation"}
         state = str(row[3])
         result = {"state": state, "status_code": int(row[4] or 0), "updated_at": float(row[6])}
-        if state == "abandoned" or (state in {"done", "failed"} and not row[5]):
+        pending = self._pending_completions.get(request_id)
+        if pending is not None:
+            completion = self._completion_result(pending)
+            result.update({key: completion[key] for key in ("state", "status_code", "updated_at")})
+            result.pop("outcome_unknown", None)
+            if completion.get("outcome_unknown"):
+                result["outcome_unknown"] = True
+        elif state == "abandoned" or (state in {"done", "failed"} and not row[5]):
             result["outcome_unknown"] = True
         return result
 
