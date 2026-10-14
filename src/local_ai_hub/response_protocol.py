@@ -3,6 +3,7 @@ from __future__ import annotations
 from .json_utils import dumps as json_dumps
 
 import copy
+import math
 from typing import Any, Iterable
 
 
@@ -22,10 +23,12 @@ _PROFILE_FIELDS: dict[str, tuple[str, ...] | None] = {
 
 
 def _dense(value: str, limit: int) -> str:
-    value = value.strip()
-    if len(value) <= limit:
-        return value
-    return value[: max(1, limit - 16)].rstrip() + " […truncated…]"
+    if limit <= 0:
+        return ""
+    text = str(value or "").replace("\x00", "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: max(1, limit - 16)].rstrip() + " […truncated…]"
 
 
 def _bound(value: Any, chars: int, depth: int = 0) -> Any:
@@ -60,7 +63,13 @@ def project_response(
     profile = str(profile or "compact").strip().lower()
     if profile not in _PROFILE_FIELDS:
         profile = "compact"
-    fields = [str(x).strip() for x in (return_fields or ()) if str(x).strip()]
+    if isinstance(return_fields, str):
+        raw_return = (return_fields,)
+    elif isinstance(return_fields, Iterable):
+        raw_return = return_fields
+    else:
+        raw_return = ()
+    fields = [str(x).replace("\x00", "").strip() for x in raw_return if str(x).strip()]
     if fields:
         # Explicit projection is authoritative and may request fields outside the
         # profile's default surface. Profiles are defaults, not a second hidden deny-list.
@@ -70,7 +79,14 @@ def project_response(
         allowed = _PROFILE_FIELDS[profile]
         selected = canonical if allowed is None else {k: canonical[k] for k in allowed if k in canonical}
 
-    token_budget = int(max_output_tokens or 0)
+    try:
+        raw_tokens = float(max_output_tokens or 0)
+        if not math.isfinite(raw_tokens) or raw_tokens <= 0:
+            token_budget = 0
+        else:
+            token_budget = int(raw_tokens)
+    except (TypeError, ValueError, OverflowError):
+        token_budget = 0
     if token_budget <= 0:
         token_budget = {"minimal": 120, "compact": 350, "standard": 900, "debug": 2400}[profile]
     token_budget = max(64, min(token_budget, 4096))
@@ -127,3 +143,23 @@ def project_response(
         if isinstance(out.get(key), str):
             out[key] = _dense(out[key], max(32, char_budget // 4))
     return out
+
+
+def supported_profiles() -> tuple[str, ...]:
+    """Return tuple of supported response profile names."""
+    return tuple(_PROFILE_FIELDS.keys())
+
+
+def is_profile_supported(profile: str) -> bool:
+    """Return True if profile is a recognized response profile name."""
+    if not profile or not isinstance(profile, str):
+        return False
+    return profile.strip().lower() in _PROFILE_FIELDS
+
+
+def profile_fields(profile: str) -> tuple[str, ...] | None:
+    """Return default field tuple for the given profile, or None for debug/unknown."""
+    if not profile or not isinstance(profile, str):
+        return None
+    return _PROFILE_FIELDS.get(profile.strip().lower())
+
