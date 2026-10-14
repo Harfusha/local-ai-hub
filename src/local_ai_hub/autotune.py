@@ -18,17 +18,46 @@ class RuntimeTuner:
     explicitly quality-equivalent resident candidates, preserving requested quality gates.
     """
 
-    def __init__(self, config: dict[str, Any]):
-        cfg = config.get("autotune", {})
+    def __init__(self, config: dict[str, Any] | None = None):
+        clean_cfg = config if isinstance(config, dict) else {}
+        cfg = clean_cfg.get("autotune") if isinstance(clean_cfg.get("autotune"), dict) else {}
         self.enabled = bool(cfg.get("enabled", True))
-        self.alpha = min(1.0, max(0.01, float(cfg.get("ema_alpha", 0.20))))
-        self.min_samples = max(1, int(cfg.get("min_samples", 2)))
-        self.resident_latency_ratio = max(0.5, float(cfg.get("resident_latency_ratio", 1.15)))
+        try:
+            raw_alpha = float(cfg.get("ema_alpha", 0.20))
+            if not math.isfinite(raw_alpha):
+                raw_alpha = 0.20
+        except (TypeError, ValueError):
+            raw_alpha = 0.20
+        self.alpha = min(1.0, max(0.01, raw_alpha))
+
+        try:
+            raw_min = int(cfg.get("min_samples", 2))
+        except (TypeError, ValueError):
+            raw_min = 2
+        self.min_samples = max(1, raw_min)
+
+        try:
+            raw_ratio = float(cfg.get("resident_latency_ratio", 1.15))
+            if not math.isfinite(raw_ratio):
+                raw_ratio = 1.15
+        except (TypeError, ValueError):
+            raw_ratio = 1.15
+        self.resident_latency_ratio = max(0.5, raw_ratio)
+
         self._lock = threading.RLock()
         self._models: dict[str, dict[str, float]] = {}
         self._persist_enabled = bool(cfg.get("persist", True))
-        self._persist_interval_seconds = max(0.0, float(cfg.get("persist_interval_seconds", 15.0)))
-        state_dir = Path(str(config.get("server", {}).get("state_dir", "~/.local-ai-hub/state"))).expanduser()
+        try:
+            raw_interval = float(cfg.get("persist_interval_seconds", 15.0))
+            if not math.isfinite(raw_interval):
+                raw_interval = 15.0
+        except (TypeError, ValueError):
+            raw_interval = 15.0
+        self._persist_interval_seconds = max(0.0, raw_interval)
+
+        server_cfg = clean_cfg.get("server") if isinstance(clean_cfg.get("server"), dict) else {}
+        raw_state_dir = server_cfg.get("state_dir") if isinstance(server_cfg, dict) else None
+        state_dir = Path(str(raw_state_dir or "~/.local-ai-hub/state")).expanduser()
         self._state_path = state_dir / "runtime-tuner.json"
         self._last_persist_seconds = 0.0
         self._load_state()
@@ -89,21 +118,42 @@ class RuntimeTuner:
                 pass
 
     def observe(self, model: str, result: dict[str, Any], elapsed_ms: float) -> None:
-        if not self.enabled or not model:
+        if not self.enabled or not model or not isinstance(model, str) or not isinstance(result, dict):
             return
-        load_ms = float(result.get("load_duration_ns", 0) or 0) / 1e6
-        tokens = float(result.get("eval_count", 0) or 0)
-        eval_seconds = float(result.get("eval_duration_ns", 0) or 0) / 1e9
-        tps = tokens / max(0.001, eval_seconds) if tokens else 0.0
+        try:
+            val_elapsed = float(elapsed_ms)
+            if not math.isfinite(val_elapsed) or val_elapsed < 0:
+                return
+        except (TypeError, ValueError):
+            return
+
+        def _safe_float(val: Any, default: float = 0.0) -> float:
+            try:
+                res = float(val)
+                return res if math.isfinite(res) and res >= 0 else default
+            except (TypeError, ValueError):
+                return default
+
+        load_ns = _safe_float(result.get("load_duration_ns", 0))
+        load_ms = load_ns / 1e6
+
+        tokens = _safe_float(result.get("eval_count", 0))
+        eval_ns = _safe_float(result.get("eval_duration_ns", 0))
+        eval_seconds = eval_ns / 1e9
+        tps = tokens / max(0.001, eval_seconds) if tokens > 0 and eval_seconds > 0 else 0.0
+
         with self._lock:
             current = self._models.setdefault(
                 model,
-                {"latency_ms": float(elapsed_ms), "load_ms": load_ms, "tps": tps, "samples": 0.0},
+                {"latency_ms": val_elapsed, "load_ms": load_ms, "tps": tps, "samples": 0.0},
             )
             samples_before = float(current.get("samples", 0.0))
             alpha = self.alpha
-            for key, value in (("latency_ms", float(elapsed_ms)), ("load_ms", load_ms), ("tps", tps)):
-                current[key] = (1 - alpha) * float(current[key]) + alpha * value
+            for key, value in (("latency_ms", val_elapsed), ("load_ms", load_ms), ("tps", tps)):
+                prev = float(current.get(key, value))
+                if not math.isfinite(prev):
+                    prev = value
+                current[key] = (1 - alpha) * prev + alpha * value
             current["samples"] = float(current.get("samples", 0.0)) + 1.0
             self._persist_locked(force=samples_before < self.min_samples <= current["samples"])
 
@@ -147,3 +197,27 @@ class RuntimeTuner:
             "persistence_enabled": self._persist_enabled,
             "models": models,
         }
+
+    def has_model(self, model: str) -> bool:
+        if not model or not isinstance(model, str):
+            return False
+        with self._lock:
+            return model in self._models
+
+    def get_model_profile(self, model: str) -> dict[str, float] | None:
+        with self._lock:
+            profile = self._models.get(model)
+            return dict(profile) if profile is not None else None
+
+    def model_names(self) -> list[str]:
+        with self._lock:
+            return list(self._models.keys())
+
+    def reset(self, model: str | None = None) -> None:
+        with self._lock:
+            if model is None:
+                self._models.clear()
+            else:
+                self._models.pop(model, None)
+            self._persist_locked(force=True)
+
