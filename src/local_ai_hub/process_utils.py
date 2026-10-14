@@ -1237,6 +1237,7 @@ def run_hidden(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProces
     stderr_capture = _BoundedPipeCapture(max_output_bytes, text_mode, output_encoding, output_errors)
     reader_errors: list[BaseException] = []
     writer_errors: list[BaseException] = []
+    capture_unconfirmed = False
 
     def drain(stream: Any, capture: _BoundedPipeCapture) -> None:
         try:
@@ -1294,6 +1295,7 @@ def run_hidden(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProces
         return stdout_capture.getvalue(), stderr_capture.getvalue()
 
     def terminate_and_join(*, require_tree_termination: bool) -> _CleanupOutcome:
+        nonlocal capture_unconfirmed
         process_group = None
         cleanup_kwargs: dict[str, Any] = {}
         if os.name != "nt":
@@ -1310,12 +1312,9 @@ def run_hidden(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProces
         if require_tree_termination:
             cleanup_kwargs["grace_seconds"] = cancel_grace_seconds
         confirmed = _request_tree_cleanup(process, cleanup_kwargs)
-        if os.name == "nt" and not confirmed:
-            try:
-                if process.poll() is None:
-                    process.kill()
-            except OSError:
-                pass
+        if not confirmed:
+            stdout, stderr = captured()
+            return _CleanupOutcome(stdout, stderr, False, process, process_group)
         try:
             process.wait(timeout=max(0.1, cancel_grace_seconds if require_tree_termination else _POST_TERMINATION_DRAIN_SECONDS))
         except (OSError, subprocess.TimeoutExpired):
@@ -1323,15 +1322,10 @@ def run_hidden(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProces
         join_deadline = time.monotonic() + _POST_TERMINATION_DRAIN_SECONDS
         for thread in readers + ([writer] if writer is not None else []):
             thread.join(timeout=max(0.0, join_deadline - time.monotonic()))
-        if any(thread.is_alive() for thread in readers + ([writer] if writer is not None else [])):
-            for stream in (stdout_pipe, stderr_pipe, stdin_pipe):
-                if stream is not None:
-                    try:
-                        stream.close()
-                    except Exception:
-                        pass
-            for thread in readers + ([writer] if writer is not None else []):
-                thread.join(timeout=_POST_TERMINATION_DRAIN_SECONDS)
+        if any(thread.is_alive() for thread in readers):
+            # Reader threads own their buffered streams until read completion.
+            # Closing them here can block on a read1/close lock held by a thread.
+            capture_unconfirmed = True
         confirmed = confirmed and process.poll() is not None
         stdout, stderr = captured()
         cleanup = _CleanupOutcome(stdout, stderr, confirmed, process, process_group)
@@ -1344,6 +1338,11 @@ def run_hidden(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProces
             )
             _attach_cleanup_outcome(error, cleanup)
             _attach_capture_limits(error, stdout_capture, stderr_capture)
+            error.output_capture_unconfirmed = (
+                not cleanup.cleanup_confirmed
+                or capture_unconfirmed
+                or any(thread.is_alive() for thread in readers)
+            )
             raise error
         return cleanup
 
@@ -1355,6 +1354,11 @@ def run_hidden(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProces
                 error = ProcessCancelledError(command, cleanup.stdout, cleanup.stderr)
                 _attach_cleanup_outcome(error, cleanup)
                 _attach_capture_limits(error, stdout_capture, stderr_capture)
+                error.output_capture_unconfirmed = (
+                    not cleanup.cleanup_confirmed
+                    or capture_unconfirmed
+                    or any(thread.is_alive() for thread in readers)
+                )
                 raise error
             process_done = process.poll() is not None
             streams_done = all(not thread.is_alive() for thread in readers)
@@ -1371,6 +1375,11 @@ def run_hidden(argv: Sequence[str], **kwargs: Any) -> subprocess.CompletedProces
                 error = subprocess.TimeoutExpired(command, timeout, output=cleanup.stdout, stderr=cleanup.stderr)
                 _attach_cleanup_outcome(error, cleanup)
                 _attach_capture_limits(error, stdout_capture, stderr_capture)
+                error.output_capture_unconfirmed = (
+                    not cleanup.cleanup_confirmed
+                    or capture_unconfirmed
+                    or any(thread.is_alive() for thread in readers)
+                )
                 raise error
             time.sleep(_CANCEL_POLL_SECONDS if remaining is None else min(_CANCEL_POLL_SECONDS, remaining))
         if reader_errors:
@@ -1525,6 +1534,7 @@ def _request_tree_cleanup(
 def _attach_cleanup_outcome(error: BaseException, outcome: _CleanupOutcome) -> None:
     error.cleanup_confirmed = outcome.cleanup_confirmed
     error.cleanup_unconfirmed = not outcome.cleanup_confirmed
+    error.output_capture_unconfirmed = not outcome.cleanup_confirmed
     if not outcome.cleanup_confirmed:
         error.cleanup_process = outcome.process
         error.cleanup_process_group = outcome.process_group
