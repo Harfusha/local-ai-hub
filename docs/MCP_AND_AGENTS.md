@@ -42,7 +42,7 @@ If Serena is unavailable, the hub degrades to built-in indexes. Treat response s
 
 ## Public operation contract notes
 
-- `local_ai_status.detail` uses `brief`, `cache`, `telemetry`, `full`, or `agent_state`; `action` also accepts the `status`, `health`, `check`, and `info` aliases.
+- `local_ai_status.detail` uses `brief`, `cache`, `telemetry`, `full`, `agent_state`, or `traces`; `traces` accepts `min_duration_ms` and `trace_action`. `action` also accepts the `status`, `health`, `check`, and `info` aliases.
 - `local_ai_repo(action="pipeline")` accepts closed step objects with a supported action and per-step `id`/`result`; run no more than four steps in parallel.
 - `local_ai_artifact(action="list")` does not require `artifact_id`; `binary` is supported and binary payloads are never inlined.
 - `local_ai_coord(action="pubsub_poll")` accepts `after_seq` from 0 through 2^63-1.
