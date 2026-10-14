@@ -2607,7 +2607,10 @@ class RAGStore:
             np = None
 
         centroid_index = None
-        if np is not None and embedding_space_resolved:
+        # Workspace-wide centroids cannot guarantee coverage after a path
+        # scope or read-uncertainty exclusion is applied. Keep those queries
+        # exact so the prefilter cannot hide their only matching chunks.
+        if np is not None and embedding_space_resolved and not scope_path and not uncertain_paths:
             try:
                 centroid_index = self._centroid_index_for_search(
                     scope_key, workspace, embedding_space, query_vec
