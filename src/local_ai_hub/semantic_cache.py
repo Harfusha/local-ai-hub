@@ -137,8 +137,15 @@ class SemanticGenerationCache:
                 vec_list = []
                 for r in rows:
                     try:
-                        candidate = self._decode_vector(r[1])
-                        vec_list.append(np.array(candidate, dtype=np.float32) if len(candidate) == len(vector) else np.zeros(len(vector), dtype=np.float32))
+                        raw_vec = r[1]
+                        if isinstance(raw_vec, memoryview):
+                            raw_vec = raw_vec.tobytes()
+                        if isinstance(raw_vec, (bytes, bytearray)):
+                            arr = np.frombuffer(raw_vec, dtype=np.float32)
+                            vec_list.append(arr if arr.shape[0] == len(vector) else np.zeros(len(vector), dtype=np.float32))
+                        else:
+                            candidate = self._decode_vector(raw_vec)
+                            vec_list.append(np.array(candidate, dtype=np.float32) if len(candidate) == len(vector) else np.zeros(len(vector), dtype=np.float32))
                     except Exception:
                         vec_list.append(np.zeros(len(vector), dtype=np.float32))
 

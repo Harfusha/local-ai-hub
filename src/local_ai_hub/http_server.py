@@ -92,7 +92,7 @@ from .agent_verification import VerificationReceipt
 from .task_context import build_context_request, compose_task_context
 from .agent_learning import ImprovementCandidate, SLOObservation
 from .operation_contracts import normalize_transport_error
-from .json_utils import dumps as json_dumps, loads as json_loads
+from .json_utils import dumps as json_dumps, dumps_bytes as json_dumps_bytes, loads as json_loads
 from .process_utils import process_identity, process_owner_state, process_parent_pid
 
 from .browser_bridge import (
@@ -870,7 +870,7 @@ def _is_loopback_client_address(client_address: Any) -> bool:
 
 
 def _json_bytes(data: Any) -> bytes:
-    return json_dumps(data).encode("utf-8")
+    return json_dumps_bytes(data)
 
 
 AGENT_EVENT_PAGE_MAX_BYTES = 1024 * 1024
