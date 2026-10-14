@@ -36,6 +36,7 @@ from .model_policy import ModelExecutionPolicy
 from .ollama_subagents import OllamaSubagentCatalog
 from .process_utils import canonical_root
 from .repo_tools import RepositoryTools
+from .search_pagination import MAX_PAGE_SIZE, MAX_PAGE_WINDOW, pagination_bounds_error
 from .router import ModelRouter, review_diff_complexity
 from .sqlite_support import connect_sqlite
 from .adoption_metrics import AdoptionMetricsStore
@@ -2460,7 +2461,24 @@ class LocalAIServices:
         enrich: bool = False,
         path_hints: list[Any] | tuple[Any, ...] | None = None,
         scope: str = "repo_search",
+        *,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> dict[str, Any]:
+        page_limit = max(1, int(top_k)) if limit is None else limit
+        bounds_error = pagination_bounds_error(page_limit, offset)
+        if bounds_error:
+            return {
+                "success": False,
+                "error": bounds_error,
+                "status_code": 400,
+                "root": root,
+                "results": [],
+                "total_matches": 0,
+                "has_more": False,
+                "limit": page_limit if isinstance(page_limit, int) and not isinstance(page_limit, bool) and 1 <= page_limit <= MAX_PAGE_SIZE else None,
+                "offset": offset if isinstance(offset, int) and not isinstance(offset, bool) and 0 <= offset < MAX_PAGE_WINDOW else None,
+            }
         if enrich and not rollout_feature_enabled(self.config, "enriched_search"):
             return {
                 "success": False,
@@ -2508,22 +2526,17 @@ class LocalAIServices:
             hint_root = Path(root).expanduser().resolve(strict=True)
         except (OSError, RuntimeError, ValueError):
             hint_root = None
-        inventory_loader = getattr(self.repo_tools, "_git_files", None)
-        file_inventory = (
-            inventory_loader(hint_root)
-            if hint_root is not None and callable(inventory_loader)
-            else None
-        )
-        if hint_root is not None and (hint_root / ".git").exists() and file_inventory is None:
-            return {
-                "success": False,
-                "root": root,
-                "error": "git_inventory_unavailable",
-                "results": [],
-                "terminal": True,
-                "retryable": False,
-            }
+        # Exact pagination streams Git paths in RepositoryTools. Do not prebuild
+        # a repository-sized inventory here; directory hints are ranked by root.
+        file_inventory = None
         search_scope = scope if isinstance(scope, str) else "repository_search"
+        page_limit = top_k if limit is None else limit
+        bounds_error = pagination_bounds_error(page_limit, offset)
+        if bounds_error:
+            return {"success": False, "error": bounds_error, "status_code": 400,
+                    "limit": page_limit if isinstance(page_limit, int) and not isinstance(page_limit, bool) and 1 <= page_limit <= MAX_PAGE_SIZE else None,
+                    "offset": offset if isinstance(offset, int) and not isinstance(offset, bool) and 0 <= offset < MAX_PAGE_WINDOW else None,
+                    "total_matches": 0, "has_more": False, "results": []}
         request_hints: list[PathHint] = []
         allowed_hint_fields = {
             "path", "purpose", "scope", "evidence_id", "provenance",
@@ -2695,12 +2708,73 @@ class LocalAIServices:
 
         def compute() -> dict[str, Any]:
             candidate_limit = max(
-                1, int(getattr(self.repo_tools, "max_hits", 80)) * 4
+                1, int(getattr(self.repo_tools, "max_hits", 80)) * 4,
+                offset + page_limit,
             )
+            override_patterns = tuple(
+                pattern
+                for pattern, action in project_context.settings.path_overrides.items()
+                if action == "include"
+            )
+
+            def matching_hint_roots(hints: list[PathHint], *, learned: bool) -> tuple[Path, ...]:
+                if hint_root is None:
+                    return ()
+                roots: list[Path] = []
+                for hint in hints:
+                    target = validate_path_hint(
+                        hint_root,
+                        hint,
+                        purpose="repository_search",
+                        scope=search_scope,
+                        repository_revision=repository_revision,
+                        config_digest=project_context.config_digest,
+                        learned=learned,
+                    )
+                    if target is not None:
+                        roots.append(target)
+                return tuple(roots)
+
+            configured_hints = [
+                PathHint(path=path, purpose="repository_search", scope=search_scope)
+                for path in project_context.settings.entry_points
+            ]
+            # Saved hints are validated in the learned mode used by
+            # ProjectContext.prioritize_paths; configured entry points are not.
+            durable_hint_roots = (
+                *matching_hint_roots(saved_hints, learned=True),
+                *matching_hint_roots(configured_hints, learned=False),
+            )
+            request_hint_roots = matching_hint_roots(request_hints, learned=False)
+
+            def path_priority(relative: str) -> tuple[int, int, int]:
+                candidate = (hint_root / relative).resolve(strict=False) if hint_root else None
+
+                def matches(roots: tuple[Path, ...]) -> bool:
+                    return bool(candidate and any(
+                        candidate == root or root in candidate.parents for root in roots
+                    ))
+
+                override_match = any(
+                    path_matches_pattern(relative, pattern) for pattern in override_patterns
+                )
+                return (
+                    0 if matches(request_hint_roots) else 1,
+                    0 if matches(durable_hint_roots) else 1,
+                    0 if override_match else 1,
+                )
+
             full_result = self.repo_tools.search(
                 root, query, candidate_limit, context_lines=eff_ctx_lines,
                 project_settings=project_context.settings,
                 git_inventory=file_inventory,
+                limit=page_limit,
+                offset=offset,
+                exact_count=True,
+                force_include_paths=(
+                    list(force_include_patterns) if hinted_force_include else []
+                ),
+                path_priority=path_priority,
             )
             if not isinstance(full_result, dict) or not full_result.get("success", True):
                 result = dict(full_result) if isinstance(full_result, dict) else {
@@ -2709,29 +2783,9 @@ class LocalAIServices:
                 result["preprocessed_hit"] = False
                 return result
 
-            targeted = {"results": []}
-            if paths:
-                try:
-                    search_options = {"project_settings": project_context.settings}
-                    search_options["git_inventory"] = file_inventory
-                    if hinted_force_include:
-                        search_options["force_include_paths"] = list(force_include_patterns)
-                    targeted = (
-                        self.repo_tools.search_paths(
-                            root, query, paths, candidate_limit,
-                            context_lines=eff_ctx_lines, **search_options
-                        )
-                        if eff_ctx_lines is not None
-                        else self.repo_tools.search_paths(
-                            root, query, paths, candidate_limit, **search_options
-                        )
-                    )
-                except Exception:
-                    targeted = {"results": []}
-
             combined: list[dict[str, Any]] = []
             seen_hits: set[tuple[str, int]] = set()
-            for source in (full_result, targeted):
+            for source in (full_result,):
                 source_hits = source.get("results", []) if isinstance(source, dict) else []
                 if not isinstance(source_hits, list):
                     continue
@@ -2817,7 +2871,40 @@ class LocalAIServices:
                 key=lambda item: path_rank.get(str(item["path"]), len(path_rank))
             )
             result = dict(full_result)
-            result["results"] = allowed_results[:max(1, int(top_k))]
+            count_is_exact = (
+                full_result.get("count_exact") is True
+                and isinstance(full_result.get("total_matches"), int)
+                and not isinstance(full_result.get("total_matches"), bool)
+            )
+            if not count_is_exact:
+                return {
+                    "success": False,
+                    "error": "repository search could not produce an exact match count",
+                    "status_code": 503,
+                    "preprocessed_hit": False,
+                }
+            total_matches = int(full_result["total_matches"])
+            source_page = full_result.get("results", [])
+            if not isinstance(source_page, list) or len(allowed_results) != len(source_page):
+                return {
+                    "success": False,
+                    "error": "repository search filters disagreed while materializing the exact page",
+                    "status_code": 503,
+                    "preprocessed_hit": False,
+                }
+            result["total_matches"] = total_matches
+            result["matches_count"] = total_matches
+            result["count_exact"] = count_is_exact
+            result["offset"] = offset
+            result["limit"] = page_limit
+            page_results = allowed_results
+            result["results"] = page_results
+            result["has_more"] = (
+                offset + len(page_results) < total_matches
+                if count_is_exact
+                else True if offset + len(page_results) < len(allowed_results) else None
+            )
+            result["truncated"] = False
             result["preprocessed_hit"] = bool(
                 paths
                 and any(str(item.get("path")) in set(paths) for item in allowed_results)
@@ -2829,7 +2916,7 @@ class LocalAIServices:
             }
             if enrich:
                 result["enriched"] = True
-                for hit in result.get("results", [])[:top_k]:
+                for hit in result.get("results", []):
                     rel = str(hit.get("path") or "")
                     target = (base / rel).resolve()
                     try:
@@ -2875,6 +2962,8 @@ class LocalAIServices:
             {
                 "query": query,
                 "top_k": top_k,
+                "limit": page_limit,
+                "offset": offset,
                 "ci": paths[:24],
                 "ctx": eff_ctx_lines,
                 "scope": search_scope,
@@ -2987,19 +3076,25 @@ class LocalAIServices:
             return self.deterministic.query(root, query, limit)
         return self._repo_cached("deterministic", root, canonical, compute)
 
-    def code_query(self, root: str, query: str, limit: int = 20, include_code: bool = False) -> dict[str, Any]:
+    def code_query(self, root: str, query: str, limit: int = 24, include_code: bool = False, offset: int = 0) -> dict[str, Any]:
+        bounds_error = pagination_bounds_error(limit, offset)
+        if bounds_error:
+            return {"success": False, "error": bounds_error, "status_code": 400,
+                    "limit": limit if isinstance(limit, int) and not isinstance(limit, bool) and 1 <= limit <= MAX_PAGE_SIZE else None,
+                    "offset": offset if isinstance(offset, int) and not isinstance(offset, bool) and 0 <= offset < MAX_PAGE_WINDOW else None,
+                    "total_matches": 0, "has_more": False, "symbols": []}
         if self.code_index is None:
-            return {"success": False, "error": "code index unavailable"}
+            return {"success": False, "error": "code index unavailable", "status_code": 503, "limit": limit, "offset": offset, "total_matches": 0, "has_more": False, "symbols": []}
         if self.learner is not None:
             try: self.learner.record(root, query)
             except Exception: pass
         try:
-            canonical = {"terms": sorted(set(self.code_index._query_terms(query))), "limit": limit, "include_code": include_code}
+            canonical = {"terms": sorted(set(self.code_index._query_terms(query))), "limit": limit, "offset": offset, "include_code": include_code}
         except Exception:
-            canonical = {"query": " ".join(query.lower().split()), "limit": limit, "include_code": include_code}
+            canonical = {"query": " ".join(query.lower().split()), "limit": limit, "offset": offset, "include_code": include_code}
         def compute() -> dict[str, Any]:
             self._refresh_changed_intelligence(root)
-            res = self.code_index.query(root, query, limit)
+            res = self.code_index.query(root, query, limit=limit, offset=offset)
             if isinstance(res, dict):
                 res["preprocessed_hit"] = bool(res.get("success") and res.get("symbols"))
                 if include_code and res.get("symbols") and self.repo_tools is not None:

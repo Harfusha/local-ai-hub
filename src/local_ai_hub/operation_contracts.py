@@ -7,6 +7,8 @@ import math
 from copy import deepcopy
 from typing import Any
 
+from .search_pagination import MAX_PAGE_SIZE, MAX_PAGE_WINDOW, pagination_bounds_error
+
 REPO_PHASES = ("", "plan", "edit", "review", "test", "handoff")
 MAX_REPO_PIPELINE_PARALLEL_STEPS = 4
 MAX_EVENT_SEQUENCE = (1 << 63) - 1
@@ -243,6 +245,8 @@ _ACTION_SCOPED_FIELDS = {
         "is_worktree": frozenset({"preprocess"}),
         "parent_root": frozenset({"preprocess"}),
         "path_hints": frozenset({"search", "context"}),
+        "limit": frozenset({"search", "code_index"}),
+        "offset": frozenset({"search", "code_index"}),
         "directory_hints": frozenset({"context"}),
         "exclude_paths": frozenset({"context"}),
         "force_include_paths": frozenset({"context"}),
@@ -281,6 +285,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "task": {"type": "string", "default": ""},
             "task_id": {"type": "string", "default": ""},
             "include_code": {"type": "boolean", "default": False},
+            "limit": {"type": "integer", "minimum": 1, "maximum": MAX_PAGE_SIZE, "default": 24},
+            "offset": {"type": "integer", "minimum": 0, "maximum": MAX_PAGE_WINDOW - 1, "default": 0},
             "include_diagnostics": {"type": "boolean", "default": False},
             **{name: {"type": "string", "default": ""} for name in (
                 "clone_id", "worktree_id", "branch", "repository_id", "session_id", "repository_revision",
@@ -1370,6 +1376,13 @@ def validate_operation_arguments(
             for field in ("path_hints", "directory_hints", "exclude_paths", "force_include_paths"):
                 if field in arguments:
                     return f"{field} requires mode='adaptive' for action='context'"
+    if tool == "local_ai_repo" and action in {"search", "code_index"}:
+        bounds_error = pagination_bounds_error(
+            arguments.get("limit", properties.get("limit", {}).get("default", 24)),
+            arguments.get("offset", properties.get("offset", {}).get("default", 0)),
+        )
+        if bounds_error:
+            return bounds_error
     for field in action_contract["required"]:
         if field not in arguments or (field in action_contract["non_empty"] and not arguments[field]):
             return f"{field} is required for action='{action}'"
