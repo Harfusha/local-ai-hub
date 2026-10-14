@@ -92,6 +92,7 @@ from .agent_verification import VerificationReceipt
 from .task_context import build_context_request, compose_task_context
 from .agent_learning import ImprovementCandidate, SLOObservation
 from .operation_contracts import normalize_transport_error
+from .search_pagination import MAX_HTTP_PAGE_RESPONSE_BYTES
 from .json_utils import dumps as json_dumps, dumps_bytes as json_dumps_bytes, loads as json_loads
 from .process_utils import process_identity, process_owner_state, process_parent_pid
 
@@ -3690,6 +3691,29 @@ class Handler(BaseHTTPRequestHandler):
             else None
         )
         body = _json_bytes(data)
+        response_path = urlparse(str(getattr(self, "path", ""))).path
+        if (
+            response_path in {"/api/search", "/api/repo/code-index"}
+            and int(status) < 400
+            and len(body) > MAX_HTTP_PAGE_RESPONSE_BYTES
+            and isinstance(data, dict)
+        ):
+            page_key = "results" if response_path == "/api/search" else "symbols"
+            data = {
+                "success": False,
+                "status_code": 413,
+                "terminal": True,
+                "retryable": False,
+                "error": "requested search page exceeds the 4 MiB HTTP response limit; reduce limit or snippet size",
+                "root": data.get("root"),
+                "offset": data.get("offset", 0),
+                "limit": data.get("limit", 24),
+                "total_matches": data.get("total_matches", 0),
+                "has_more": data.get("has_more", False),
+                page_key: [],
+            }
+            status = 413
+            body = _json_bytes(data)
         serialization_ms = max(0.0, (time.perf_counter() - serialization_started) * 1000.0)
         self._finish_debug_trace(status, data)
         if APP is not None and not getattr(self, "_telemetry_finished", False):
@@ -7575,7 +7599,13 @@ class Handler(BaseHTTPRequestHandler):
             if 'post_repo_map_1' in post_route_ids:
                 self._send(200, APP.services.repo_map(str(payload.get("root", ".")), int(payload.get("max_symbols", 120)))); return
             if 'post_repo_code_index_1' in post_route_ids:
-                self._send(200, APP.services.code_query(str(payload.get("root", ".")), str(payload.get("query", "")), int(payload.get("limit", 20)), bool(payload.get("include_code", False)))); return
+                result = APP.services.code_query(
+                    str(payload.get("root", ".")), str(payload.get("query", "")),
+                    payload.get("limit", 24), bool(payload.get("include_code", False)),
+                    payload.get("offset", 0),
+                )
+                status = int(result.pop("status_code", 200))
+                self._send(status, result); return
             if 'post_repo_investigate_1' in post_route_ids:
                 self._send(200, APP.services.repo_investigate(
                     str(payload.get("root", ".")),
@@ -7609,14 +7639,18 @@ class Handler(BaseHTTPRequestHandler):
                     int(payload.get("max_dependents", APP.config.get("workflow", {}).get("impact_max_dependents", 30))),
                 )); return
             if 'post_search_1' in post_route_ids:
-                self._send(200, APP.services.repo_search(
+                result = APP.services.repo_search(
                     str(payload.get("root", ".")),
                     str(payload.get("query", "")),
                     int(payload.get("top_k", 12)),
                     context_lines=int(payload["context_lines"]) if payload.get("context_lines") is not None else None,
                     enrich=bool(payload.get("enrich", False)),
+                    limit=payload.get("limit", 24),
+                    offset=payload.get("offset", 0),
                     path_hints=payload.get("path_hints"),
-                )); return
+                )
+                status = int(result.pop("status_code", 200))
+                self._send(status, result); return
             if path == "/api/context/pack":
                 explicit_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
                 raw_tenant = payload.get("tenant") or (str(explicit_tenant).strip() if explicit_tenant else None)

@@ -19,11 +19,12 @@ from typing import Any, Iterator
 
 from . import __version__
 
-_PARSER_ANALYZER_VERSION = f"{__version__}:call-edges-v14-import-targets"
+_PARSER_ANALYZER_VERSION = f"{__version__}:call-edges-v13-scoped-fallback"
 from .cache import MemoryLRUCache, stable_hash
 from .normalizer import tokenize_query_terms
 from .process_utils import canonical_root
 from .repo_tools import FileTooLargeError, is_root_archive_path
+from .search_pagination import MAX_PAGE_SIZE, MAX_PAGE_WINDOW, pagination_bounds_error
 from .sqlite_support import (
     connect_sqlite,
     ensure_incremental_vacuum,
@@ -1003,7 +1004,6 @@ class CodeIndex:
         self._parse_blob_l1 = MemoryLRUCache(max_entries=4096, ttl_seconds=3600)
         self._parse_diagnostic = threading.local()
         self._query_l1 = MemoryLRUCache(max_entries=2048, ttl_seconds=1800)
-        self._symbol_l1 = MemoryLRUCache(max_entries=4096, ttl_seconds=1800)
         self._impact_result_l1 = MemoryLRUCache(max_entries=512, ttl_seconds=1800)
         self._impact_path_format_l1 = MemoryLRUCache(max_entries=256, ttl_seconds=1800)
         self._impact_candidate_count_l1 = MemoryLRUCache(max_entries=256, ttl_seconds=1800)
@@ -1314,14 +1314,7 @@ class CodeIndex:
                     edges.append({"src": "<module>", "dst": a.name, "kind": "imports", "line": n.lineno})
 
             def visit_ImportFrom(s, n):
-                prefix = "." * n.level
-                base = prefix + (n.module or "")
-                if base:
-                    edges.append({"src": "<module>", "dst": base, "kind": "imports", "line": n.lineno})
-                for alias in n.names:
-                    if alias.name != "*":
-                        target = f"{base}.{alias.name}" if n.module else f"{base}{alias.name}"
-                        edges.append({"src": "<module>", "dst": target, "kind": "imports", "line": n.lineno})
+                edges.append({"src": "<module>", "dst": n.module or "", "kind": "imports", "line": n.lineno})
 
         V().visit(tree)
         return syms, refs, edges
@@ -2299,68 +2292,36 @@ class CodeIndex:
             "complete": len(rows) == len(unique_paths),
         }
 
-    def python_module_import_graph(self, root: str) -> dict[str, Any]:
-        """Return the fresh Python import edges already stored for one indexed root."""
-        resolved_root = canonical_root(root)
-        root_path = Path(resolved_root)
-        if not root_path.is_dir():
-            return {"success": False, "state": "unindexed", "error": f"directory not found: {root}"}
-
-        with closing(self._connect()) as con:
-            rows = con.execute(
-                "SELECT path, analyzer_version, mtime_ns, size_bytes FROM files WHERE root=? AND language='python' ORDER BY path",
-                (resolved_root,),
-            ).fetchall()
-            if not rows:
-                return {"success": False, "state": "unindexed", "error": "no indexed Python files"}
-
-            stale_paths: list[str] = []
-            for row in rows:
-                relative = Path(str(row["path"]))
-                candidate = (root_path / relative).resolve(strict=False)
-                try:
-                    candidate.relative_to(root_path)
-                    current = candidate.stat()
-                    fresh = (
-                        str(row["analyzer_version"] or "") == _PARSER_ANALYZER_VERSION
-                        and current.st_mtime_ns == row["mtime_ns"]
-                        and current.st_size == row["size_bytes"]
-                    )
-                except (OSError, ValueError):
-                    fresh = False
-                if not fresh:
-                    stale_paths.append(str(row["path"]))
-            if stale_paths:
-                return {
-                    "success": False,
-                    "state": "stale",
-                    "error": "indexed Python files need reindexing",
-                    "stale_paths": stale_paths[:20],
-                }
-
-            imports = con.execute(
-                "SELECT e.path, e.dst FROM edges AS e JOIN files AS f ON f.root=e.root AND f.path=e.path "
-                "WHERE e.root=? AND f.language='python' AND e.kind='imports' ORDER BY e.path, e.line, e.dst",
-                (resolved_root,),
-            ).fetchall()
-        return {
-            "success": True,
-            "state": "indexed",
-            "paths": [str(row["path"]) for row in rows],
-            "imports": [{"path": str(row["path"]), "target": str(row["dst"] or "")} for row in imports],
-        }
-
-    def query(self, root: str, query: str, limit: int = 20, *, verify_freshness: bool = False) -> dict[str, Any]:
+    def query(
+        self,
+        root: str,
+        query: str,
+        limit: int = 24,
+        offset: int = 0,
+        *,
+        verify_freshness: bool = False,
+    ) -> dict[str, Any]:
         """Search the built-in symbol index without requiring an external model.
 
         The endpoint intentionally returns compact symbol metadata. Agents can follow
         with ``find_symbol``/``inspect_symbol`` when source bodies are actually needed.
         """
+        bounds_error = pagination_bounds_error(limit, offset)
+        if bounds_error:
+            return {
+                "success": False, "error": bounds_error,
+                "status_code": 400,
+                "limit": limit if isinstance(limit, int) and not isinstance(limit, bool) and 1 <= limit <= MAX_PAGE_SIZE else None,
+                "offset": offset if isinstance(offset, int) and not isinstance(offset, bool) and 0 <= offset < MAX_PAGE_WINDOW else None,
+                "total_matches": 0, "has_more": False, "symbols": [],
+            }
+        limit = max(1, min(limit, int(self.config.get("code_index", {}).get("max_query_results", 30))))
         resolved_root = canonical_root(root)
         if not Path(resolved_root).is_dir():
             return {
                 "success": False, "root": resolved_root, "error": "root directory does not exist",
                 "stale_root": True, "confidence": 0.0,
+                "total_matches": 0, "has_more": False, "limit": limit, "offset": offset,
                 "coverage": {"query_term_count": 0, "matched_term_count": 0, "query_term_coverage": 0.0, "complete": False, "scope": "no_candidates"},
                 "freshness": {"status": "stale_root", "scope": "repository", "checked_paths": 0, "stale_paths": [], "unknown_paths": [], "complete": False},
                 "truncated": False,
@@ -2371,25 +2332,44 @@ class CodeIndex:
         if not terms:
             return {
                 "success": True, "root": resolved_root, "query": query, "terms": [],
-                "matches_count": 0, "returned_count": 0, "symbols": [], "confidence": 0.0,
+                "matches_count": 0, "total_matches": 0, "has_more": False,
+                "returned_count": 0, "symbols": [], "confidence": 0.0,
+                "limit": limit, "offset": offset,
                 "coverage": {"query_term_count": 0, "matched_term_count": 0, "query_term_coverage": 0.0, "complete": False, "scope": "indexed_symbol_candidates"},
                 "freshness": {"status": "not_checked", "scope": "returned_symbol_candidates", "checked_paths": 0, "stale_paths": [], "unknown_paths": [], "complete": False},
                 "truncated": False,
                 "parse_outcomes": {"scope": "returned_symbol_candidates", "files_examined": 0, "unknown_files": 0, "complete": False},
             }
-        limit = max(1, min(int(limit), int(self.config.get("code_index", {}).get("max_query_results", 30))))
         cache_generation = _query_cache_generation(self._query_cache_generation_key)
-        cache_key = stable_hash({"root": resolved_root, "terms": terms, "limit": limit, "generation": cache_generation})
+        cache_key = stable_hash({
+            "root": resolved_root, "terms": terms, "limit": limit, "offset": offset,
+            "generation": cache_generation,
+        })
         cached = None if verify_freshness else self._query_l1.get(cache_key)
         if isinstance(cached, dict):
             return copy.deepcopy(cached)
 
-        clauses: list[str] = []
-        args: list[Any] = [resolved_root]
-        for term in terms:
-            like = f"%{term}%"
-            clauses.append("(lower(name) LIKE ? OR lower(name_path) LIKE ? OR lower(container) LIKE ? OR lower(path) LIKE ?)")
-            args.extend([like, like, like, like])
+        def score_match(name: Any, name_path: Any, container: Any, path: Any) -> float:
+            name_l = str(name or "").lower()
+            haystack = " ".join((
+                name_l,
+                str(name_path or "").lower(),
+                str(container or "").lower(),
+                str(path or "").lower(),
+            ))
+            score = 0.0
+            for term in terms:
+                if name_l == term:
+                    score += 8.0
+                elif name_l.startswith(term):
+                    score += 5.0
+                elif term in name_l:
+                    score += 3.0
+                elif term in haystack:
+                    score += 1.0
+            return score
+
+        score_sql = "hub_code_index_score(name,name_path,container,path)"
         ignored_paths = []
         for directory in sorted(getattr(self.repo_tools, "ignore_dirs", ())):
             name = str(directory).strip().strip("/\\").lower()
@@ -2399,20 +2379,24 @@ class CodeIndex:
             "instr('/' || lower(path) || '/', ?) = 0" for _ in ignored_paths
         )
         root_archive_sql = _root_archive_path_sql()
-        sql = (
-            "SELECT path,name,kind,line,end_line,container,name_path,signature,access,docstring "
-            "FROM symbols WHERE root=? AND (" + " OR ".join(clauses) + ")"
+        filters_sql = (
+            "root=? AND " + score_sql + " > 0"
             + " AND " + root_archive_sql
             + (" AND " + ignored_path_sql if ignored_path_sql else "")
-            + " LIMIT ?"
         )
-        candidate_limit = max(limit * 12, 120)
-        args.extend(f"/{name}/" for name in ignored_paths)
-        args.append(candidate_limit + 1)
+        args: list[Any] = [resolved_root, *(f"/{name}/" for name in ignored_paths)]
+        count_sql = "SELECT COUNT(*) FROM symbols WHERE " + filters_sql
+        sql = (
+            "SELECT path,name,kind,line,end_line,container,name_path,signature,access,docstring,"
+            + score_sql + " AS _score FROM symbols WHERE " + filters_sql
+            + " ORDER BY _score DESC,path ASC,line ASC,name_path ASC LIMIT ? OFFSET ?"
+        )
         with self._lock, closing(self._connect()) as con:
-            all_rows = con.execute(sql, args).fetchall()
-        candidate_truncated = len(all_rows) > candidate_limit
-        rows = all_rows[:candidate_limit]
+            con.create_function("hub_code_index_score", 4, score_match, deterministic=True)
+            total_matches = int(con.execute(count_sql, args).fetchone()[0])
+            rows = con.execute(sql, [*args, limit, offset]).fetchall()
+        candidate_truncated = False
+        candidate_limit = None
 
         ranked: list[tuple[float, dict[str, Any]]] = []
         for row in rows:
@@ -2449,11 +2433,11 @@ class CodeIndex:
                 "matched_terms": matched_terms,
             }
             ranked.append((score, item))
-        ranked.sort(key=lambda x: (-x[0], x[1]["path"], x[1]["line"]))
-        symbols = [item for _, item in ranked[:limit]]
+        symbols = [item for _, item in ranked]
         matched_terms = sorted({term for item in symbols for term in item["matched_terms"]})
         term_coverage = round(len(matched_terms) / max(1, len(terms)), 3)
-        truncated = candidate_truncated or len(ranked) > len(symbols)
+        has_more = offset + len(symbols) < total_matches
+        truncated = has_more
         candidate_paths = list(dict.fromkeys(str(item["path"]) for item in symbols if item.get("path")))
         freshness = self._candidate_freshness(resolved_root, candidate_paths) if verify_freshness else {
             "status": "not_checked", "scope": "returned_symbol_candidates", "checked_paths": 0,
@@ -2469,7 +2453,11 @@ class CodeIndex:
             "query": query,
             "terms": terms,
             "matches_count": len(symbols),
-            "observed_match_count": len(ranked),
+            "total_matches": total_matches,
+            "has_more": has_more,
+            "limit": limit,
+            "offset": offset,
+            "observed_match_count": total_matches,
             "returned_count": len(symbols),
             "symbols": symbols,
             "confidence": confidence,
@@ -2479,7 +2467,7 @@ class CodeIndex:
                 "matched_term_count": len(matched_terms),
                 "matched_terms": matched_terms,
                 "query_term_coverage": term_coverage,
-                "candidate_match_count": len(ranked),
+                "candidate_match_count": total_matches,
                 "returned_symbol_count": len(symbols),
                 "complete": False,
                 "scope": "indexed_symbol_candidates",
@@ -2489,7 +2477,7 @@ class CodeIndex:
             "truncation": {
                 "result_limit": limit,
                 "returned_count": len(symbols),
-                "observed_match_count": len(ranked),
+                "observed_match_count": total_matches,
                 "candidate_cap": candidate_limit,
                 "candidate_cap_reached": candidate_truncated,
             },
@@ -2516,25 +2504,6 @@ class CodeIndex:
         pat = name_path_pattern.strip()
         if not pat:
             return {"success": False, "error": "name_path_pattern required"}
-
-        cache_generation = _query_cache_generation(self._query_cache_generation_key)
-        cache_key = stable_hash({
-            "action": "find_symbol",
-            "root": resolved_root,
-            "pattern": pat,
-            "depth": depth,
-            "include_body": include_body,
-            "include_info": include_info,
-            "include_kinds": tuple(sorted(include_kinds or [])),
-            "exclude_kinds": tuple(sorted(exclude_kinds or [])),
-            "substring_matching": substring_matching,
-            "relative_path": relative_path,
-            "limit": limit,
-            "generation": cache_generation,
-        })
-        cached = self._symbol_l1.get(cache_key)
-        if isinstance(cached, dict):
-            return copy.deepcopy(cached)
 
         where = ["root = ?", _root_archive_path_sql("path")]
         args: list[Any] = [resolved_root]
@@ -2631,15 +2600,13 @@ class CodeIndex:
 
             results.append(item)
 
-        out = {
+        return {
             "success": True,
             "root": resolved_root,
             "pattern": pat,
             "matches_count": len(results),
             "symbols": results,
         }
-        self._symbol_l1.set(cache_key, copy.deepcopy(out))
-        return out
 
     def find_declaration(self, root: str, symbol_name: str, path: str | None = None) -> dict[str, Any]:
         res = self.find_symbol(root, symbol_name, depth=0, include_body=True, include_info=True, relative_path=path, limit=5)
@@ -3500,4 +3467,55 @@ class CodeIndex:
             "truncation": {"callees": truncated},
             "coverage": {"complete": not truncated, "returned": len(callees), "limit": result_limit},
             "freshness": {"status": "not_checked"},
+        }
+
+def python_module_import_graph(self, root: str) -> dict[str, Any]:
+        """Return the fresh Python import edges already stored for one indexed root."""
+        resolved_root = canonical_root(root)
+        root_path = Path(resolved_root)
+        if not root_path.is_dir():
+            return {"success": False, "state": "unindexed", "error": f"directory not found: {root}"}
+
+        with closing(self._connect()) as con:
+            rows = con.execute(
+                "SELECT path, analyzer_version, mtime_ns, size_bytes FROM files WHERE root=? AND language='python' ORDER BY path",
+                (resolved_root,),
+            ).fetchall()
+            if not rows:
+                return {"success": False, "state": "unindexed", "error": "no indexed Python files"}
+
+            stale_paths: list[str] = []
+            for row in rows:
+                relative = Path(str(row["path"]))
+                candidate = (root_path / relative).resolve(strict=False)
+                try:
+                    candidate.relative_to(root_path)
+                    current = candidate.stat()
+                    fresh = (
+                        str(row["analyzer_version"] or "") == _PARSER_ANALYZER_VERSION
+                        and current.st_mtime_ns == row["mtime_ns"]
+                        and current.st_size == row["size_bytes"]
+                    )
+                except (OSError, ValueError):
+                    fresh = False
+                if not fresh:
+                    stale_paths.append(str(row["path"]))
+            if stale_paths:
+                return {
+                    "success": False,
+                    "state": "stale",
+                    "error": "indexed Python files need reindexing",
+                    "stale_paths": stale_paths[:20],
+                }
+
+            imports = con.execute(
+                "SELECT e.path, e.dst FROM edges AS e JOIN files AS f ON f.root=e.root AND f.path=e.path "
+                "WHERE e.root=? AND f.language='python' AND e.kind='imports' ORDER BY e.path, e.line, e.dst",
+                (resolved_root,),
+            ).fetchall()
+        return {
+            "success": True,
+            "state": "indexed",
+            "paths": [str(row["path"]) for row in rows],
+            "imports": [{"path": str(row["path"]), "target": str(row["dst"] or "")} for row in imports],
         }

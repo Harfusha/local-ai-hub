@@ -285,6 +285,14 @@ class AgentProjector:
 
         if self.flat_symbols and isinstance(data.get("symbols"), list):
             data["symbols"] = self._flatten_symbols(data["symbols"], extra_fields=extra)
+        if task_kind == "code_index" and isinstance(data.get("symbols"), list):
+            requested_limit = data.get("limit")
+            result_limit = (
+                max(1, min(requested_limit, 100_000))
+                if isinstance(requested_limit, int) and not isinstance(requested_limit, bool)
+                else 24
+            )
+            data["symbols"] = data["symbols"][:result_limit]
 
         max_text = max(300, int(p.get("max_text", 6000)))
         if isinstance(data.get("text"), str):
@@ -325,9 +333,14 @@ class AgentProjector:
 
         if isinstance(data.get("results"), list):
             results = data["results"]
-            if self.coalesce_snippets:
+            result_limit = 24
+            if task_kind == "search":
+                requested_limit = data.get("limit")
+                if isinstance(requested_limit, int) and not isinstance(requested_limit, bool):
+                    result_limit = max(1, min(requested_limit, 100_000))
+            if self.coalesce_snippets and task_kind != "search":
                 results = self._coalesce_snippets(results)
-            results = results[:24]
+            results = results[:result_limit]
             # Search results backed by E-ids use progressive disclosure too. This
             # prevents 10-20 near-duplicate source snippets entering cloud context.
             if results and all(isinstance(v, dict) and v.get("path") for v in results):
@@ -363,7 +376,8 @@ class AgentProjector:
                         blocks.append(r)
                 data["text"] = "\n\n".join(blocks)
                 data["format"] = "text"
-                data.pop("results", None)
+                if task_kind != "search":
+                    data.pop("results", None)
 
         # Codex benefits from action/evidence density; Claude/Gemini can use relationships.
         if not bool(p.get("relationships", False)) and "relationships" not in extra:

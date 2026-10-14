@@ -55,6 +55,7 @@ from local_ai_hub.ollama_subagents import OllamaSubagentCatalog
 from local_ai_hub.process_utils import canonical_root, canonical_workspace_id, is_rooted_path
 from local_ai_hub.token_accounting import account_projection, attach_accounting, context_digest, finalize_tool_accounting, json_tokens, pop_accounting, tool_request_tokens
 from local_ai_hub.trace_context import efficiency_metadata, reset_metadata, set_metadata
+from local_ai_hub.search_pagination import MAX_PAGE_SIZE
 from local_ai_hub.adoption_metrics import AdoptionMetricsStore
 from local_ai_hub.routing import semantic_handoff_hint
 from local_ai_hub.operation_contracts import (
@@ -1180,6 +1181,13 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
         projected,
         max_text_chars=MAX_TEXT,
         max_evidence=MAX_EVIDENCE,
+        max_items=(
+            max(1, min(raw_value["limit"], MAX_PAGE_SIZE))
+            if task_kind in {"search", "code_index"} and isinstance(raw_value, dict)
+            and isinstance(raw_value.get("limit"), int)
+            and not isinstance(raw_value.get("limit"), bool)
+            else 50
+        ),
         extra_fields=compact_extra_fields,
     )
     compacted = _preserve_contract_state(raw_value, compacted)
@@ -1195,6 +1203,7 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
             compacted = delta_response(previous, compacted, result_id=result_id(compacted))
         protected_keys = tuple(dict.fromkeys((
             *_RELIABILITY_PROTECTED_KEYS,
+            *(('offset', 'limit', 'total_matches', 'has_more') if task_kind in {"search", "code_index"} else ()),
             *(('slices', 'truncated', 'budget_limited') if task_kind == "artifact" else ()),
             *(_CONTEXT_PROTECTED_KEYS if task_kind in {"context", "context_compile"} else ()),
             *(_STATUS_PROTECTED_KEYS if task_kind == "status" else ()),
@@ -1209,6 +1218,29 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
             protected_keys=protected_keys,
             token_metadata=efficiency_metadata(),
         )
+    if (
+        task_kind in {"search", "code_index"}
+        and isinstance(raw_value, dict)
+        and raw_value.get("success") is True
+        and isinstance(raw_value.get("results" if task_kind == "search" else "symbols"), list)
+    ):
+        page_key = "results" if task_kind == "search" else "symbols"
+        expected_count = len(raw_value[page_key])
+        returned_results = compacted.get(page_key) if isinstance(compacted, dict) else None
+        if not isinstance(returned_results, list) or len(returned_results) < expected_count:
+            compacted = {
+                "success": False,
+                "status_code": 413,
+                "terminal": True,
+                "retryable": False,
+                "error": f"The requested {task_kind} page exceeds the configured MCP response budget; reduce limit.",
+                "root": raw_value.get("root"),
+                "offset": raw_value.get("offset", 0),
+                "limit": raw_value.get("limit", 24),
+                "total_matches": raw_value.get("total_matches", 0),
+                "has_more": raw_value.get("has_more", False),
+                page_key: [],
+            }
     return _normalize_deterministic(account_projection(raw_value, compacted))
 
 
@@ -2743,6 +2775,9 @@ def _local_ai_repo_impl(
     directory_hints: list[str] | None = None,
     exclude_paths: list[str] | None = None,
     force_include_paths: list[str] | None = None,
+    *,
+    limit: int = 24,
+    offset: int = 0,
 ) -> dict[str, Any]:
     """Primary bounded repository worker for the main agent.
 
@@ -2853,11 +2888,12 @@ def _local_ai_repo_impl(
             }
         return _compact(CLIENT.post("/api/search", {
             "root": root, "query": query or task, "top_k": 12, "enrich": enrich,
+            "limit": limit, "offset": offset,
         }, timeout=min(120, _timeout("quick")), path_hints=normalized_hints or None), "search", extra_fields=extra if extra else None)
     if action == "map":
         return _compact(CLIENT.post("/api/repo/map", {"root": root, "max_symbols": 100}, timeout=_timeout("quick")), "architecture")
     if action == "code_index":
-        return _compact(CLIENT.post("/api/repo/code-index", {"root": root, "query": query or task, "limit": 24, "include_code": include_code}, timeout=_timeout("quick")), "architecture")
+        return _compact(CLIENT.post("/api/repo/code-index", {"root": root, "query": query or task, "limit": limit, "offset": offset, "include_code": include_code}, timeout=_timeout("quick")), "code_index")
     if action in {"semantic", "intelligence"}:
         backend = "serena" if action == "semantic" else "auto"
         operation = relation or ("find_symbol" if backend == "serena" else "search")
@@ -3370,6 +3406,9 @@ def local_ai_repo(
     files: list[str] | None = None,
     cwd: str | None = None,
     symbol: str | None = None,
+    *,
+    limit: int = 24,
+    offset: int = 0,
 ) -> dict[str, Any]:
     """Primary bounded repository worker. Use when: indexed repository evidence is needed. Skip when: fresh evidence already answers it."""
     root = root if root is not None else cwd if cwd is not None else "."
@@ -3386,6 +3425,13 @@ def local_ai_repo(
         "force_include_paths": force_include_paths,
     }
     resolved_action = _resolve_action("repo", action)
+    if resolved_action in {"search", "code_index"}:
+        pagination_error = validate_operation_arguments(
+            "local_ai_repo", resolved_action, {"limit": limit, "offset": offset}
+        )
+        if pagination_error is not None:
+            return {"success": False, "error": pagination_error, "status_code": 400,
+                    "terminal": True, "retryable": False}
     if any(value is not None for value in context_controls.values()):
         if resolved_action == "context":
             validation_error = validate_operation_arguments(
@@ -3418,7 +3464,7 @@ def local_ai_repo(
         include_code, include_tests, edits, extra_fields, max_response_tokens, response_profile, reuse_key,
         include_diagnostics, clone_id, worktree_id, branch, repository_id, session_id, repository_revision,
         changed_paths, phase, focus, preload_profile, guarded, since_hash, approval, override_reason,
-        token_budget, is_worktree, parent_root, steps, **forward,
+        token_budget, is_worktree, parent_root, steps, limit=limit, offset=offset, **forward,
     )
 
 
