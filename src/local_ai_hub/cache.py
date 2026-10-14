@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .json_utils import dumps as json_dumps
+from .json_utils import dumps as json_dumps, loads as json_loads
 
 import hashlib
 import json
@@ -260,6 +260,15 @@ class MemoryLRUCache:
             items.move_to_end(key)
             self._hits[idx] += 1
             return value
+
+    def get_many(self, keys: list[str]) -> dict[str, Any]:
+        """Look up multiple keys across memory shards."""
+        results: dict[str, Any] = {}
+        for key in keys:
+            val = self.get(key)
+            if val is not None:
+                results[key] = val
+        return results
 
     def set(self, key: str, value: Any) -> None:
         idx = self._shard_idx(key)
@@ -554,6 +563,61 @@ class SQLiteCache:
                 return value
         return self._safe(op, None)
 
+    def get_many(self, keys: list[str]) -> dict[str, Any]:
+        """Look up multiple keys with chunked SQLite queries."""
+        if not keys:
+            return {}
+        unique_keys = list(dict.fromkeys(keys))
+        def op() -> dict[str, Any]:
+            now = time.time()
+            results: dict[str, Any] = {}
+            keys_to_touch: list[str] = []
+            keys_to_delete: list[str] = []
+            with self._lock, closing(self._connect()) as con:
+                for i in range(0, len(unique_keys), 400):
+                    chunk = unique_keys[i:i + 400]
+                    placeholders = ",".join("?" for _ in chunk)
+                    rows = con.execute(
+                        f"SELECT cache_key, value_json, created_at FROM cache_entries WHERE namespace=? AND cache_key IN ({placeholders})",
+                        (self.namespace, *chunk),
+                    ).fetchall()
+                    for r in rows:
+                        k = str(r[0])
+                        created_at = float(r[2])
+                        if self.ttl_seconds and now - created_at > self.ttl_seconds:
+                            keys_to_delete.append(k)
+                            continue
+                        try:
+                            val = json_loads(r[1])
+                            results[k] = val
+                            if k not in self._touched_keys:
+                                keys_to_touch.append(k)
+                        except Exception:
+                            keys_to_delete.append(k)
+                if keys_to_delete:
+                    for i in range(0, len(keys_to_delete), 400):
+                        del_chunk = keys_to_delete[i:i + 400]
+                        del_placeholders = ",".join("?" for _ in del_chunk)
+                        con.execute(
+                            f"DELETE FROM cache_entries WHERE namespace=? AND cache_key IN ({del_placeholders})",
+                            (self.namespace, *del_chunk),
+                        )
+                    con.commit()
+                if keys_to_touch:
+                    for i in range(0, len(keys_to_touch), 400):
+                        touch_chunk = keys_to_touch[i:i + 400]
+                        touch_placeholders = ",".join("?" for _ in touch_chunk)
+                        con.execute(
+                            f"UPDATE cache_entries SET accessed_at=?, hits=hits+1 WHERE namespace=? AND cache_key IN ({touch_placeholders})",
+                            (now, self.namespace, *touch_chunk),
+                        )
+                    con.commit()
+                    self._touched_keys.update(keys_to_touch)
+                    if len(self._touched_keys) > min(self.max_entries, 8192):
+                        self._touched_keys.clear()
+            return results
+        return self._safe(op, {})
+
     def set(self, key: str, value: Any) -> None:
         payload = json_dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
 
@@ -725,6 +789,28 @@ class TieredCache:
 
     def get(self, key: str) -> Any | None:
         return self.get_checked(key)[0]
+
+    def get_many(self, keys: list[str]) -> dict[str, Any]:
+        """Look up multiple keys across L1 and L2."""
+        if not keys:
+            return {}
+        results: dict[str, Any] = {}
+        missing_keys: list[str] = []
+        for k in keys:
+            val = self.l1.get(k)
+            if val is not None:
+                self.l1_hits += 1
+                results[k] = val
+            else:
+                missing_keys.append(k)
+        if missing_keys:
+            l2_results = self.l2.get_many(missing_keys) if hasattr(self.l2, "get_many") else {}
+            for k, val in l2_results.items():
+                self.l2_hits += 1
+                self.l1.set(k, val)
+                results[k] = val
+            self.misses += len(missing_keys) - len(l2_results)
+        return results
 
     def set(self, key: str, value: Any) -> None:
         if self._coordinator is not None:
