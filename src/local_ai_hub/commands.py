@@ -8801,6 +8801,11 @@ class CommandBroker:
                             attempt_history.append({"attempt": attempt, "error": f"fix generator error: {exc}"})
                             continue
                     patches = dict(generated_patches or {})
+                    if not patches and self.incident_store is not None:
+                        rem = last_result.get("remediation") or {}
+                        fix = rem.get("verified_fix")
+                        if isinstance(fix, dict):
+                            patches = {str(k): str(v) for k, v in fix.items()}
                 elif self.incident_store is not None:
                     rem = last_result.get("remediation") or {}
                     fix = rem.get("verified_fix")
@@ -8808,8 +8813,15 @@ class CommandBroker:
                         patches = {str(k): str(v) for k, v in fix.items()}
 
                 if not patches:
-                    attempt_history.append({"attempt": attempt, "error": "no candidate patches synthesized"})
-                    continue
+                    return {
+                        "success": False,
+                        "repaired": False,
+                        "attempts": len(attempt_history),
+                        "history": attempt_history,
+                        "original_result": initial,
+                        "reason": "no_candidate_synthesizer",
+                        "error": "No repair candidate was synthesized.",
+                    }
 
                 patch_targets: list[tuple[str, Path, str]] = []
                 invalid_patch_path = False
