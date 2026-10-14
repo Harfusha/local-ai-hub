@@ -511,3 +511,78 @@ class ScopeLeaseStore:
             {"tenant": r[0], "blocked_by": r[1], "requested_path": r[2], "updated_at": r[3]}
             for r in rows
         ]
+
+    def check_path(
+        self,
+        path: str,
+        root: str = "",
+        *,
+        tenant: str | None = None,
+        coordination_id: str | None | object = _COORDINATION_ID_UNSET,
+    ) -> dict[str, Any]:
+        """Check if a specific file or directory path is leased or in conflict."""
+        if not path:
+            return {"leased": False, "conflict": False, "path": "", "tenant": None, "lease_id": None, "expires_at": None, "purpose": None}
+        try:
+            root_path, physical_root_id = self._root(root)
+            rel_path = _norm_rel(str(path), root=root_path)
+        except Exception as exc:
+            return {"leased": False, "conflict": False, "path": str(path), "error": str(exc), "tenant": None, "lease_id": None, "expires_at": None, "purpose": None}
+
+        if coordination_id is _COORDINATION_ID_UNSET:
+            root_id = physical_root_id
+        elif coordination_id is None:
+            return {"leased": False, "conflict": False, "path": rel_path, "tenant": None, "lease_id": None, "expires_at": None, "purpose": None}
+        else:
+            namespace = str(coordination_id).strip()
+            if not namespace or "\x00" in namespace or len(namespace) > 512:
+                return {"leased": False, "conflict": False, "path": rel_path, "tenant": None, "lease_id": None, "expires_at": None, "purpose": None}
+            root_id = f"project:{namespace}"
+
+        now = time.time()
+
+        def read() -> tuple[Any, ...] | None:
+            with closing(self._connect()) as con:
+                if coordination_id is _COORDINATION_ID_UNSET:
+                    rows = con.execute(
+                        "SELECT lease_id, tenant, path, purpose, expires_at FROM leases "
+                        "WHERE root_id=? AND expires_at>?",
+                        (root_id, now),
+                    ).fetchall()
+                else:
+                    rows = con.execute(
+                        "SELECT lease_id, tenant, path, purpose, expires_at FROM leases "
+                        "WHERE (root_id=? OR (root_id=? AND root_path=?)) AND expires_at>?",
+                        (root_id, physical_root_id, root_path, now),
+                    ).fetchall()
+                for row in rows:
+                    if _overlap(rel_path, row[2]):
+                        return row
+                return None
+
+        matched = retry_busy(read, retries=3)
+        if matched is None:
+            return {
+                "leased": False,
+                "conflict": False,
+                "path": rel_path,
+                "tenant": None,
+                "lease_id": None,
+                "expires_at": None,
+                "purpose": None,
+            }
+
+        held_lease_id, held_tenant, held_path, held_purpose, held_expires_at = matched
+        conflict = bool(tenant is not None and held_tenant != tenant)
+        return {
+            "leased": True,
+            "conflict": conflict,
+            "path": rel_path,
+            "held_path": held_path,
+            "tenant": held_tenant,
+            "lease_id": held_lease_id,
+            "expires_at": held_expires_at,
+            "purpose": held_purpose,
+        }
+
+    acquire = claim
