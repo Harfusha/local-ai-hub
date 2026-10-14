@@ -8159,9 +8159,10 @@ class CommandBroker:
                     "terminal": True, "retryable": False}
 
         # 2. Check if patch applies cleanly
+        apply_flags = ["--whitespace=nowarn"]
         try:
             check_proc = subprocess.run(
-                ["git", "apply", "--check", "--whitespace=nowarn"],
+                ["git", "apply", "--check"] + apply_flags,
                 input=patch_bytes,
                 cwd=str(cwd_path), capture_output=True, check=False,
                 timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
@@ -8177,6 +8178,21 @@ class CommandBroker:
                 "retryable": False,
             }
         if check_proc.returncode != 0:
+            fallback_flags = ["--ignore-whitespace", "--ignore-space-change"]
+            try:
+                check_fallback = subprocess.run(
+                    ["git", "apply", "--check"] + fallback_flags,
+                    input=patch_bytes,
+                    cwd=str(cwd_path), capture_output=True, check=False,
+                    timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
+                )
+                if check_fallback.returncode == 0:
+                    check_proc = check_fallback
+                    apply_flags = fallback_flags
+            except subprocess.TimeoutExpired:
+                pass
+
+        if check_proc.returncode != 0:
             err_msg = check_proc.stderr.decode("utf-8", errors="replace")
             return {
                 "success": False,
@@ -8190,7 +8206,7 @@ class CommandBroker:
         # 3. Apply patch
         try:
             apply_proc = subprocess.run(
-                ["git", "apply", "--whitespace=nowarn"],
+                ["git", "apply"] + apply_flags,
                 input=patch_bytes,
                 cwd=str(cwd_path), capture_output=True, check=False,
                 timeout=self.git_snapshot_timeout, **hidden_run_kwargs()
