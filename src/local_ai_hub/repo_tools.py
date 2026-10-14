@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import fnmatch
+import heapq
 import json
 import math
 import os
@@ -16,14 +17,28 @@ from queue import Empty, Queue
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 from types import MappingProxyType
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from .budget import chars_for_tokens, estimate_tokens
 from .normalizer import tokenize_query_terms
 from .process_utils import canonical_root, hidden_run_kwargs, popen_managed, terminate_tree
+from .search_pagination import MAX_PAGE_SIZE, MAX_PAGE_WINDOW, pagination_bounds_error
 
 
 _WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_./:-]{1,80}")
+MAX_EXACT_SEARCH_FILES = 8000
+
+
+class GitFileInventory(list[Path]):
+    """Bounded Git path inventory with an explicit completeness marker."""
+
+    def __init__(self, paths: Iterable[Path], *, complete: bool):
+        super().__init__(paths)
+        self.complete = complete
+
+
+class _IncompleteGitInventory(RuntimeError):
+    pass
 
 
 def is_root_archive_path(relative: str | Path) -> bool:
@@ -241,13 +256,12 @@ class RepositoryTools:
             raise ValueError(f"root directory does not exist: {path}")
         return path
 
-    def _git_files(self, root: Path, *, max_files: int | None = None) -> list[Path] | None:
-        """Return tracked + untracked files using bounded, coalesced Git probes.
+    def _git_files(self, root: Path, *, max_files: int | None = None) -> GitFileInventory | None:
+        """Stream a bounded tracked + untracked Git inventory.
 
-        A short cache absorbs bursts, a per-root flight lock prevents concurrent
-        callers from spawning identical Git processes, and a timeout cooldown keeps
-        pathological repositories off the foreground hot path. Returning ``None``
-        intentionally delegates to the bounded Python inventory fallback.
+        At most ``max_files`` paths are retained (the default hard bound is
+        ``self.max_files``); ``complete=False`` marks a further eligible path.
+        The NUL-delimited subprocess output is consumed in fixed-size chunks.
         """
         if not self.prefer_git or not (root / ".git").exists():
             return None
@@ -257,86 +271,141 @@ class RepositoryTools:
         with self._git_files_lock:
             cached = self._git_files_cache.get(key)
             if cached and (self.git_files_cache_ttl <= 0 or now - cached[0] <= self.git_files_cache_ttl):
-                cache_is_complete = len(cached[1]) < self.max_files
-                # A default inventory may be truncated before explicit caller
-                # eligibility filters (notably max_file_bytes) are applied.
-                if max_files is None or cache_is_complete:
-                    self._git_stats["file_list_hits"] += 1
-                    return [(root / rel).resolve(strict=False) for rel in cached[1][:limit]]
+                self._git_stats["file_list_hits"] += 1
+                return GitFileInventory(
+                    [(root / rel).resolve(strict=False) for rel in cached[1][:limit]],
+                    complete=len(cached[1]) <= limit,
+                )
             if now < self._git_files_slow_until.get(key, 0.0):
                 return None
             flight = self._git_files_flights.setdefault(key, threading.Lock())
 
-        # Do not wait longer for a coalesced probe than a direct Git probe could take.
         if not flight.acquire(timeout=self.git_files_timeout + 0.25):
             with self._git_files_lock:
                 self._git_stats["file_list_coalesced"] += 1
             return None
+        process = None
+        timer = None
+        timed_out = threading.Event()
         try:
             now = time.monotonic()
             with self._git_files_lock:
                 cached = self._git_files_cache.get(key)
                 if cached and (self.git_files_cache_ttl <= 0 or now - cached[0] <= self.git_files_cache_ttl):
-                    cache_is_complete = len(cached[1]) < self.max_files
-                    if max_files is None or cache_is_complete:
-                        self._git_stats["file_list_hits"] += 1
-                        self._git_stats["file_list_coalesced"] += 1
-                        return [(root / rel).resolve(strict=False) for rel in cached[1][:limit]]
+                    self._git_stats["file_list_hits"] += 1
+                    self._git_stats["file_list_coalesced"] += 1
+                    return GitFileInventory(
+                        [(root / rel).resolve(strict=False) for rel in cached[1][:limit]],
+                        complete=len(cached[1]) <= limit,
+                    )
                 if now < self._git_files_slow_until.get(key, 0.0):
                     return None
                 self._git_stats["file_list_misses"] += 1
-            try:
-                completed = subprocess.run(
-                    ["git", "-C", str(root), "ls-files", "-co", "--exclude-standard", "-z"],
-                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=self.git_files_timeout, check=False,
-                    **hidden_run_kwargs(),
-                )
-                if completed.returncode != 0:
-                    return None
-                rels: list[str] = []
-                for raw in completed.stdout.split(b"\0"):
-                    if not raw:
-                        continue
-                    rel = raw.decode("utf-8", errors="surrogateescape").replace("\\", "/")
-                    candidate = (root / rel).resolve(strict=False)
+            process = popen_managed(
+                ["git", "-C", str(root), "ls-files", "-co", "--exclude-standard", "-z"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                **hidden_run_kwargs(text=False),
+            )
+
+            def kill_on_timeout() -> None:
+                if process is not None and process.poll() is None:
+                    timed_out.set()
                     try:
-                        candidate.relative_to(root)
-                    except ValueError:
-                        continue
-                    if max_files is not None:
-                        relative = Path(rel)
-                        if any(part.lower() in self.ignore_dirs for part in relative.parts[:-1]):
-                            continue
-                        if candidate.suffix.lower() in self.ignore_extensions:
-                            continue
-                        if self.extensions and candidate.suffix.lower() not in self.extensions and candidate.name.lower() not in self.special_filenames:
-                            continue
-                        try:
-                            if candidate.stat().st_size > self.max_file_bytes:
-                                continue
-                        except OSError:
-                            continue
-                    rels.append(rel)
-                    if len(rels) >= limit:
+                            terminate_tree(process.pid, grace_seconds=0.1, process_handle=process)
+                        except (OSError, ValueError):
+                        pass
+
+            timer = threading.Timer(self.git_files_timeout, kill_on_timeout)
+            timer.daemon = True
+            timer.start()
+            rels: list[str] = []
+            pending = bytearray()
+            truncated = False
+
+            def consider(raw: bytes) -> bool:
+                nonlocal truncated
+                if not raw:
+                    return True
+                rel = raw.decode("utf-8", errors="surrogateescape").replace("\\", "/")
+                candidate = (root / rel).resolve(strict=False)
+                try:
+                    candidate.relative_to(root)
+                except ValueError:
+                    return True
+                if max_files is not None:
+                    relative = Path(rel)
+                    if any(part.lower() in self.ignore_dirs for part in relative.parts[:-1]):
+                        return True
+                    if candidate.suffix.lower() in self.ignore_extensions:
+                        return True
+                    if self.extensions and candidate.suffix.lower() not in self.extensions and candidate.name.lower() not in self.special_filenames:
+                        return True
+                    try:
+                        if candidate.stat().st_size > self.max_file_bytes:
+                            return True
+                    except OSError:
+                        return True
+                if len(rels) >= limit:
+                    truncated = True
+                    return False
+                rels.append(rel)
+                return True
+
+            assert process.stdout is not None
+            while True:
+                chunk = process.stdout.read(64 * 1024)
+                if not chunk:
+                    break
+                pending.extend(chunk)
+                while True:
+                    separator = pending.find(0)
+                    if separator < 0:
+                        if len(pending) > 64 * 1024:
+                            raise OSError("Git path exceeded bounded inventory buffer")
                         break
-                with self._git_files_lock:
-                    if max_files is None:
-                        self._git_files_cache[key] = (time.monotonic(), tuple(rels))
-                        if len(self._git_files_cache) > 64:
-                            for k in list(self._git_files_cache.keys())[:-32]:
-                                self._git_files_cache.pop(k, None)
-                    self._git_files_slow_until.pop(key, None)
-                return [(root / rel).resolve(strict=False) for rel in rels]
-            except subprocess.TimeoutExpired:
-                with self._git_files_lock:
-                    self._git_stats["file_list_timeouts"] += 1
-                    self._git_files_slow_until[key] = time.monotonic() + self.git_files_slow_cooldown
+                    raw = bytes(pending[:separator])
+                    del pending[:separator + 1]
+                    if not consider(raw):
+                        break
+                if truncated:
+                    break
+            if pending and not truncated:
+                consider(bytes(pending))
+            if truncated:
+                terminate_tree(process.pid, grace_seconds=0.1, process_handle=process)
+            return_code = process.wait()
+            if timed_out.is_set() or (return_code != 0 and not truncated):
+                if timed_out.is_set():
+                    with self._git_files_lock:
+                        self._git_stats["file_list_timeouts"] += 1
+                        self._git_files_slow_until[key] = time.monotonic() + self.git_files_slow_cooldown
                 return None
-            except OSError:
-                with self._git_files_lock:
-                    self._git_files_slow_until[key] = time.monotonic() + self.git_files_slow_cooldown
-                return None
+            complete = not truncated
+            inventory = GitFileInventory(
+                [(root / rel).resolve(strict=False) for rel in rels], complete=complete,
+            )
+            with self._git_files_lock:
+                if max_files is None and complete:
+                    self._git_files_cache[key] = (time.monotonic(), tuple(rels))
+                    if len(self._git_files_cache) > 64:
+                        for cache_key in list(self._git_files_cache.keys())[:-32]:
+                            self._git_files_cache.pop(cache_key, None)
+                self._git_files_slow_until.pop(key, None)
+            return inventory
+        except OSError:
+            with self._git_files_lock:
+                self._git_files_slow_until[key] = time.monotonic() + self.git_files_slow_cooldown
+            return None
         finally:
+            if timer is not None:
+                timer.cancel()
+            if process is not None and process.poll() is None:
+                try:
+                    terminate_tree(process.pid, grace_seconds=0.1, process_handle=process)
+                    process.wait(timeout=1)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
             flight.release()
 
     def iter_files(
@@ -1454,23 +1523,351 @@ class RepositoryTools:
             yielded += 1
             yield path
 
+    def _exact_search_page(
+        self, base: Path, query: str, limit: int, offset: int,
+        context_lines: int | None, project_settings: Any | None,
+        git_inventory: Any, force_include_paths: list[str] | tuple[str, ...],
+        path_priority: Callable[[str], tuple[int, int, int]] | None,
+    ) -> dict[str, Any]:
+        """Count every eligible result while retaining only the requested prefix."""
+        terms = self._terms(query)
+        phrase = query.strip().lower()
+        if not terms and not phrase:
+            return {
+                "success": True, "root": str(base), "results": [], "terms": [],
+                "matches_count": 0, "total_matches": 0, "has_more": False,
+                "limit": limit, "offset": offset, "truncated": False,
+                "count_exact": True, "engine": "python_exact",
+            }
+
+        snippet_lines = max(1, min(int(context_lines), 40)) if context_lines is not None else self.snippet_lines
+        retain_count = offset + limit
+        file_cap = max(1, min(int(self.max_files), MAX_EXACT_SEARCH_FILES))
+        deadline = time.monotonic() + 60.0
+        extension_check = getattr(self, "_path_extension_is_searchable", None)
+        force_patterns = tuple(force_include_paths or ())
+
+        def candidates() -> Iterable[Path]:
+            if git_inventory is not _UNSET_GIT_INVENTORY and getattr(git_inventory, "complete", True) is False:
+                raise _IncompleteGitInventory(
+                    f"Git inventory is truncated at the {file_cap}-file exact-search bound"
+                )
+
+            if self.prefer_git and (base / ".git").exists():
+                process = popen_managed(
+                    ["git", "-C", str(base), "ls-files", "-co", "--exclude-standard", "-z"],
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                    **hidden_run_kwargs(text=False),
+                )
+                timed_out = threading.Event()
+
+                def stop_git() -> None:
+                    if process.poll() is None:
+                        timed_out.set()
+                        try:
+                            terminate_tree(process.pid, grace_seconds=0.1, process_handle=process)
+                        except (OSError, ValueError):
+                            pass
+
+                timer = threading.Timer(self.git_files_timeout, stop_git)
+                timer.daemon = True
+                timer.start()
+                pending = bytearray()
+                previous_key: str | None = None
+                try:
+                    assert process.stdout is not None
+                    while True:
+                        chunk = process.stdout.read(64 * 1024)
+                        if not chunk:
+                            break
+                        pending.extend(chunk)
+                        while True:
+                            separator = pending.find(0)
+                            if separator < 0:
+                                if len(pending) > 64 * 1024:
+                                    raise OSError("Git path exceeded bounded stream buffer")
+                                break
+                            raw = bytes(pending[:separator])
+                            del pending[:separator + 1]
+                            if not raw:
+                                continue
+                            relative = raw.decode("utf-8", errors="surrogateescape").replace("\\", "/")
+                            key = Path(relative).as_posix()
+                            if key == previous_key:
+                                continue
+                            if previous_key is not None and key < previous_key:
+                                raise _IncompleteGitInventory("Git emitted an unsorted exact-search inventory")
+                            previous_key = key
+                            yield base / relative
+                    if pending:
+                        relative = pending.decode("utf-8", errors="surrogateescape").replace("\\", "/")
+                        key = Path(relative).as_posix()
+                        if key != previous_key:
+                            if previous_key is not None and key < previous_key:
+                                raise _IncompleteGitInventory("Git emitted an unsorted exact-search inventory")
+                            yield base / relative
+                    return_code = process.wait()
+                    if timed_out.is_set():
+                        raise TimeoutError("exact Git inventory exceeded its configured time bound")
+                    if return_code != 0:
+                        raise OSError("Git exact-search inventory failed")
+                finally:
+                    timer.cancel()
+                    if process.poll() is None:
+                        terminate_tree(process.pid, grace_seconds=0.1, process_handle=process)
+                        process.wait()
+                return
+
+            # Exact mode never consumes a materialized cache inventory: it can be
+            # repository-sized even when the result page is small. Use the direct
+            # Git stream above or a streaming filesystem walk below.
+            def raise_walk_error(error: OSError) -> None:
+                raise error
+
+            for directory, dirnames, filenames in os.walk(
+                base, followlinks=False, onerror=raise_walk_error,
+            ):
+                dirnames[:] = [
+                    name for name in dirnames
+                    if name.casefold() not in _HARD_SEARCH_DIRS
+                ]
+                for filename in filenames:
+                    yield Path(directory) / filename
+
+        class _WorstFirst:
+            __slots__ = ("rank", "item")
+
+            def __init__(self, item: dict[str, Any]) -> None:
+                self.item = item
+                priority = path_priority(str(item["path"])) if path_priority else (0, 0, 0)
+                self.rank = (
+                    *priority, -float(item["score"]),
+                    str(item["path"]), int(item["start_line"]),
+                )
+
+            def __lt__(self, other: Any) -> bool:
+                return self.rank > other.rank
+
+        def retain(heap: list[Any], item: dict[str, Any], maximum: int) -> None:
+            entry = _WorstFirst(item)
+            if len(heap) < maximum:
+                heapq.heappush(heap, entry)
+            elif entry.rank < heap[0].rank:
+                heapq.heapreplace(heap, entry)
+
+        global_best: list[Any] = []
+        total_matches = 0
+        scanned = 0
+        previous_relative_path: str | None = None
+        try:
+            for path in candidates():
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("exact repository search exceeded 60 seconds")
+                try:
+                    if path.is_symlink():
+                        continue
+                    path = path.resolve(strict=True)
+                    path.relative_to(base)
+                    relative = path.relative_to(base)
+                    rel = relative.as_posix()
+                    forced = any(self._path_control_matches(rel, (pattern,)) for pattern in force_patterns)
+                    if project_settings is None:
+                        if self._is_ignored_relative_path(relative):
+                            continue
+                    elif not self._project_file_allowed(
+                        base, path, project_settings,
+                        force_include=forced,
+                    ):
+                        continue
+                    if callable(extension_check) and not extension_check(
+                        path, project_settings=project_settings,
+                    ):
+                        continue
+                    # Built-in enumerators yield unique paths. Explicit sorted
+                    # inventories can contain adjacent duplicates; collapse them
+                    # with one path of state rather than a repository-sized set.
+                    if rel == previous_relative_path:
+                        continue
+                    if not path.is_file():
+                        continue
+                    if path.stat().st_size > self.max_file_bytes:
+                        continue
+                    if scanned >= file_cap:
+                        return {
+                            "success": False, "root": str(base), "results": [],
+                            "error": f"exact repository search exceeds the {file_cap}-file scan bound",
+                            "status_code": 503, "terminal": True, "retryable": False,
+                        }
+                    scanned += 1
+                    previous_relative_path = rel
+                    file_hash, lines = self._read_snapshot(
+                        path, max_bytes=self.max_file_bytes,
+                    )
+                except (OSError, RuntimeError, ValueError) as exc:
+                    return {
+                        "success": False, "root": str(base), "results": [],
+                        "error": f"exact repository search could not enumerate/read an eligible file ({type(exc).__name__})",
+                        "status_code": 503, "terminal": True, "retryable": False,
+                    }
+
+                path_lower = rel.lower()
+                file_best: list[Any] = []
+                current_bucket: int | None = None
+                bucket_best: dict[str, Any] | None = None
+
+                def finish_bucket() -> None:
+                    nonlocal bucket_best
+                    if bucket_best is not None:
+                        retain(file_best, bucket_best, max(1, self.max_snippets_per_file))
+                        bucket_best = None
+
+                for idx, line in enumerate(lines):
+                    if idx % 1024 == 0 and time.monotonic() >= deadline:
+                        raise TimeoutError("exact repository search exceeded 60 seconds")
+                    low = line.lower()
+                    matched = [term for term in terms if term in low]
+                    if not matched:
+                        continue
+                    score = float(
+                        len(matched) * 3
+                        + sum(1 for term in terms if term in path_lower) * 2
+                        + sum(min(low.count(term), 3) * 0.5 for term in matched)
+                    )
+                    if phrase and len(phrase) <= 120 and phrase in low:
+                        score += 8
+                    start = max(0, idx - snippet_lines)
+                    end = min(len(lines), idx + snippet_lines + 1)
+                    hit = {
+                        "path": rel, "start_line": start + 1, "end_line": end,
+                        "score": round(score, 3),
+                        "text": "\n".join(f"{n + 1}: {lines[n]}" for n in range(start, end)),
+                        "file_sha256": file_hash,
+                    }
+                    bucket = hit["start_line"] // snippet_lines
+                    if current_bucket is not None and bucket != current_bucket:
+                        finish_bucket()
+                    current_bucket = bucket
+                    if bucket_best is None or _WorstFirst(hit).rank < _WorstFirst(bucket_best).rank:
+                        bucket_best = hit
+                finish_bucket()
+                total_matches += len(file_best)
+                for entry in file_best:
+                    hit = entry.item
+                    retain(global_best, {
+                        key: hit[key]
+                        for key in ("path", "start_line", "end_line", "score", "file_sha256")
+                    }, retain_count)
+        except TimeoutError as exc:
+            return {
+                "success": False, "root": str(base), "results": [],
+                "error": str(exc), "status_code": 503,
+                "terminal": True, "retryable": False,
+            }
+        except _IncompleteGitInventory as exc:
+            return {
+                "success": False, "root": str(base), "results": [],
+                "error": str(exc), "status_code": 503,
+                "terminal": True, "retryable": False,
+            }
+        except OSError as exc:
+            return {
+                "success": False, "root": str(base), "results": [],
+                "error": f"exact repository search could not enumerate files ({type(exc).__name__})",
+                "status_code": 503, "terminal": True, "retryable": False,
+            }
+
+        ranked = [entry.item for entry in sorted(global_best, key=lambda entry: entry.rank)]
+        page_refs = ranked[offset:offset + limit]
+        page_by_path: dict[str, list[dict[str, Any]]] = {}
+        for reference in page_refs:
+            page_by_path.setdefault(str(reference["path"]), []).append(reference)
+        materialized: dict[tuple[str, int], dict[str, Any]] = {}
+        for relative_path, references in page_by_path.items():
+            target = base / relative_path
+            try:
+                target = target.resolve(strict=True)
+                target.relative_to(base)
+                digest, lines = self._read_snapshot(target, max_bytes=self.max_file_bytes)
+            except (OSError, RuntimeError, ValueError) as exc:
+                return {
+                    "success": False, "root": str(base), "results": [],
+                    "error": f"exact repository search could not materialize a page file ({type(exc).__name__})",
+                    "status_code": 503, "terminal": True, "retryable": False,
+                }
+            if any(reference["file_sha256"] != digest for reference in references):
+                return {
+                    "success": False, "root": str(base), "results": [],
+                    "error": "repository changed while exact search was materializing its page",
+                    "status_code": 503, "terminal": True, "retryable": False,
+                }
+            for reference in references:
+                start = max(0, int(reference["start_line"]) - 1)
+                end = min(len(lines), int(reference["end_line"]))
+                materialized[(relative_path, int(reference["start_line"]))] = {
+                    **reference,
+                    "text": "\n".join(f"{index + 1}: {lines[index]}" for index in range(start, end)),
+                }
+        page = [
+            materialized[(str(reference["path"]), int(reference["start_line"]))]
+            for reference in page_refs
+        ]
+        return {
+            "success": True, "root": str(base), "scanned_files": scanned,
+            "terms": terms, "results": page, "matches_count": total_matches,
+            "total_matches": total_matches,
+            "has_more": offset + len(page) < total_matches,
+            "limit": limit, "offset": offset, "truncated": False,
+            "count_exact": True, "engine": "python_exact",
+        }
+
     def search(
         self, root: str, query: str, top_k: int = 12, context_lines: int | None = None,
         *, project_settings: Any | None = None,
         git_inventory: Any = _UNSET_GIT_INVENTORY,
+        limit: int | None = None,
+        offset: int = 0,
+        exact_count: bool = False,
+        force_include_paths: list[str] | tuple[str, ...] = (),
+        path_priority: Callable[[str], tuple[int, int, int]] | None = None,
     ) -> dict[str, Any]:
         base = self._root(root)
+        if exact_count:
+            exact_limit = limit if limit is not None else top_k
+            bounds_error = pagination_bounds_error(exact_limit, offset)
+            if bounds_error:
+                return {
+                    "success": False, "root": str(base), "results": [],
+                    "error": bounds_error, "status_code": 400,
+                    "limit": exact_limit if isinstance(exact_limit, int) and not isinstance(exact_limit, bool) and 1 <= exact_limit <= MAX_PAGE_SIZE else None,
+                    "offset": offset if isinstance(offset, int) and not isinstance(offset, bool) and 0 <= offset < MAX_PAGE_WINDOW else None,
+                    "total_matches": 0, "has_more": False,
+                }
+            return self._exact_search_page(
+                base, query, exact_limit, offset, context_lines,
+                project_settings, git_inventory, force_include_paths,
+                path_priority,
+            )
         terms = self._terms(query)
         phrase = query.strip().lower()
         if not terms and not phrase:
-            return {"success": True, "root": str(base), "results": []}
+            empty_limit = max(1, int(limit if limit is not None else top_k))
+            return {
+                "success": True, "root": str(base), "results": [],
+                "matches_count": 0, "total_matches": 0, "has_more": False,
+                "limit": empty_limit, "offset": max(0, int(offset)),
+                "truncated": False, "count_exact": True,
+            }
+        result_limit = max(1, int(limit if limit is not None else top_k))
+        offset = max(0, int(offset))
         effective_snippet_lines = max(1, min(int(context_lines), 40)) if context_lines is not None else self.snippet_lines
         hits: list[dict[str, Any]] = []
         scanned = 0
         python_fallback_scanned: int | None = None
         read_errors = 0
         truncation_reasons: list[str] = []
-        candidate_limit = max(1, self.max_hits * 4)
+        # Keep enough globally ranked candidates for the requested page. The
+        # multiplier remains the minimum working set for legacy top_k callers.
+        candidate_limit = max(1, self.max_hits * 4, offset + result_limit)
         candidate_engine = "python"
         project_candidates = None
         if project_settings is not None:
@@ -1600,7 +1997,6 @@ class RepositoryTools:
         dedup: list[dict[str, Any]] = []
         seen: set[tuple[str, int]] = set()
         per_file: Counter[str] = Counter()
-        result_limit = max(1, int(top_k))
         for hit in hits:
             key = (hit["path"], hit["start_line"] // max(1, self.snippet_lines))
             if key in seen or per_file[hit["path"]] >= self.max_snippets_per_file:
@@ -1608,12 +2004,12 @@ class RepositoryTools:
             seen.add(key)
             per_file[hit["path"]] += 1
             dedup.append(hit)
-            if len(dedup) > result_limit:
-                if "result_limit" not in truncation_reasons:
-                    truncation_reasons.append("result_limit")
-                break
-        dedup = dedup[:result_limit]
-        candidate_pool = hits[: max(len(dedup), max(1, int(top_k)) * 4)]
+        total_matches = len(dedup)
+        page_results = dedup[offset : offset + result_limit]
+        has_more = offset + len(page_results) < total_matches
+        if has_more and "result_limit" not in truncation_reasons:
+            truncation_reasons.append("result_limit")
+        candidate_pool = hits[: max(len(page_results), result_limit * 4)]
         candidate_tokens = sum(estimate_tokens(str(item.get("text", ""))) for item in candidate_pool)
         if read_errors:
             truncation_reasons.append("read_errors")
@@ -1622,9 +2018,12 @@ class RepositoryTools:
             "root": str(base),
             "scanned_files": scanned,
             "terms": terms,
-            "results": dedup,
+            "results": page_results,
+            "matches_count": total_matches,
+            "total_matches": total_matches,
+            "has_more": has_more,
             "engine": candidate_engine,
-            "truncated": bool(truncation_reasons or read_errors),
+            "truncated": bool(truncation_reasons or read_errors or has_more),
             "truncation_reasons": truncation_reasons,
             "read_errors": read_errors,
         }
