@@ -5888,8 +5888,18 @@ def test_{sym}_regression_edge_cases():
         except Exception as exc:
             return {"success": False, "healthy": False, "error": str(exc), "stats": dict(self._stats)}
 
-    def find_circular_dependencies(self, root: str, language: str = "python") -> dict[str, Any]:
+    def find_circular_dependencies(
+        self,
+        root: str,
+        language: str = "python",
+        max_depth: int = 15,
+        max_cycles: int = 50,
+    ) -> dict[str, Any]:
         """Detect circular module import cycles in Python and JS/TS codebases."""
+        if type(max_depth) is not int or not 1 <= max_depth <= 256:
+            raise ValueError("max_depth must be an integer between 1 and 256")
+        if type(max_cycles) is not int or not 1 <= max_cycles <= 10000:
+            raise ValueError("max_cycles must be an integer between 1 and 10000")
         p_root = Path(root).expanduser().resolve(strict=False)
         if not p_root.is_dir():
             return {"success": False, "error": f"directory not found: {root}"}
@@ -5969,28 +5979,45 @@ def test_{sym}_regression_edge_cases():
                                     graph[mod_name].add(known)
 
         cycles: list[list[str]] = []
+        seen_cycles: set[tuple[str, ...]] = set()
         visited: set[str] = set()
         stack: list[str] = []
         stack_set: set[str] = set()
+        truncated = False
+        cycle_limit_exceeded = False
 
         def dfs(curr: str):
+            nonlocal truncated, cycle_limit_exceeded
             visited.add(curr)
             stack.append(curr)
             stack_set.add(curr)
             for nxt in sorted(graph.get(curr, [])):
+                if cycle_limit_exceeded:
+                    break
                 if nxt in stack_set:
                     idx = stack.index(nxt)
                     cycle = stack[idx:] + [nxt]
                     min_idx = cycle[:-1].index(min(cycle[:-1]))
                     canon = cycle[min_idx:-1] + cycle[:min_idx] + [cycle[min_idx]]
-                    if canon not in cycles:
+                    canon_key = tuple(canon)
+                    if canon_key not in seen_cycles:
+                        if len(cycles) >= max_cycles:
+                            truncated = True
+                            cycle_limit_exceeded = True
+                            break
                         cycles.append(canon)
+                        seen_cycles.add(canon_key)
                 elif nxt not in visited:
-                    dfs(nxt)
+                    if len(stack) >= max_depth:
+                        truncated = True
+                    else:
+                        dfs(nxt)
             stack.pop()
             stack_set.remove(curr)
 
         for node in sorted(graph.keys()):
+            if cycle_limit_exceeded:
+                break
             if node not in visited:
                 dfs(node)
 
@@ -6010,6 +6037,8 @@ def test_{sym}_regression_edge_cases():
             "cycles_found": len(formatted_cycles),
             "cycles": formatted_cycles,
             "has_cycles": len(formatted_cycles) > 0,
+            "truncated": truncated,
+            "complete": not truncated,
         }
 
     def generate_types(self, root: str, file_path: str, write_stub: bool = False) -> dict[str, Any]:
