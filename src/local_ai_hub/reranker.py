@@ -296,8 +296,9 @@ class Reranker:
             pending_writes: list[tuple[str, float]] = []
             switched = False
             if missing_pairs:
-                for start in range(0, len(missing_pairs), self.batch_size):
-                    stop = min(len(missing_pairs), start + self.batch_size)
+                micro_batch_size = 2
+                for start in range(0, len(missing_pairs), micro_batch_size):
+                    stop = min(len(missing_pairs), start + micro_batch_size)
                     predicted = self._predict(
                         missing_pairs[start:stop],
                         priority=priority,
