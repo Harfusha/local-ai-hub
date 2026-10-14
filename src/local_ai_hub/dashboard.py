@@ -1650,9 +1650,13 @@ $('apiSpecBtn')?.addEventListener('click',async()=>{
 });
 
 $('migrationDriftBtn')?.addEventListener('click',async()=>{
+  if($('migrationDriftSec'))$('migrationDriftSec').style.display='none';
   const btn=$('migrationDriftBtn');if(btn){btn.disabled=true;btn.textContent='Checking…';}setScanPending('Checking migration drift');
   try{
-    const r=await post('/api/repo/migration_drift',{root:'.'});
+    const root=selectedRepoRoot();
+    if(!root)throw new Error('Repository root is required');
+    const r=await post('/api/repo/migration_drift',{root});
+    if(!r.success)throw new Error(r.error||r.message||'Migration drift unavailable');
     if($('migrationDriftSec'))$('migrationDriftSec').style.display='block';
     const drift=r.drift||{};
     const tables=Object.keys(drift);
@@ -1662,7 +1666,7 @@ $('migrationDriftBtn')?.addEventListener('click',async()=>{
       return clickableRow(item,`<td><b>${esc(t)}</b></td><td><span class="chip ${r.in_sync?'ok':'warn-t'}">${r.in_sync?'SYNC':'DRIFT'}</span></td><td class="bad-t">${esc((item.missing_in_db||[]).join(', ')||'—')}</td><td class="bad-t">${esc((item.missing_in_code||[]).join(', ')||'—')}</td><td class="warn-t">${esc(JSON.stringify(item.type_mismatches||{})||'—')}</td>`,'migration_drift');
     },5);
     showScanReady('migrationDriftSec','Migration Drift ('+n(tables.length)+' tables)');
-  }catch(e){alert('Migration drift check failed: '+e.message)}
+  }catch(e){const status=$('archScanStatus');if(status){status.style.display='inline-flex';status.textContent='⚠️ Migration drift check failed';status.onclick=null;}alert('Migration drift check failed: '+e.message)}
   finally{if(btn){btn.disabled=false;btn.textContent='Migration Drift'}}
 });
 
