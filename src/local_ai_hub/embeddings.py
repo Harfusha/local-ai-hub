@@ -668,7 +668,10 @@ class EmbeddingModel:
         for i, text in enumerate(texts):
             clean_text = str(text).replace("\r\n", "\n")
             key = batch_keys[i] if cache_identity_usable and i < len(batch_keys) else (self._embedding_cache_key(cache_identity, query, clean_text) if cache_identity_usable else "")
-            cached = cached_map.get(key) if key in cached_map else (self.cache.get(key) if cache_identity_usable and key else None)
+            if cache_identity_usable and key:
+                cached = cached_map.get(key) if hasattr(self.cache, "get_many") else self.cache.get(key)
+            else:
+                cached = None
             # Runtime dimension is shared mutable state. Concurrent requests may
             # finish on different backends, so use dimensions learned for this
             # exact cache identity rather than a process-wide last result.

@@ -794,23 +794,44 @@ class TieredCache:
         """Look up multiple keys across L1 and L2."""
         if not keys:
             return {}
-        results: dict[str, Any] = {}
-        missing_keys: list[str] = []
-        for k in keys:
-            val = self.l1.get(k)
-            if val is not None:
-                self.l1_hits += 1
-                results[k] = val
-            else:
-                missing_keys.append(k)
-        if missing_keys:
-            l2_results = self.l2.get_many(missing_keys) if hasattr(self.l2, "get_many") else {}
-            for k, val in l2_results.items():
-                self.l2_hits += 1
-                self.l1.set(k, val)
-                results[k] = val
-            self.misses += len(missing_keys) - len(l2_results)
-        return results
+
+        def lookup() -> dict[str, Any]:
+            results: dict[str, Any] = {}
+            missing_keys: list[str] = []
+            for key in keys:
+                value = self.l1.get(key)
+                if value is not None:
+                    self.l1_hits += 1
+                    results[key] = value
+                else:
+                    missing_keys.append(key)
+            if missing_keys:
+                l2_results = self.l2.get_many(missing_keys) if hasattr(self.l2, "get_many") else {}
+                for key, value in l2_results.items():
+                    self.l2_hits += 1
+                    self.l1.set(key, value)
+                    results[key] = value
+                self.misses += len(missing_keys) - len(l2_results)
+            return results
+
+        if self._coordinator is None:
+            return lookup()
+        try:
+            with self._coordinator.locked():
+                generation, poisoned = self._coordinator.read_locked()
+                self._sync_l1_generation(generation)
+                if poisoned:
+                    recovered = self._recover_poisoned_namespace(generation)
+                    if recovered is None:
+                        self.misses += len(keys)
+                        return {}
+                return lookup()
+        except Exception:
+            # Coordination failures fail closed; never return unvalidated L1 data.
+            self.l1.clear()
+            self._l1_generation = None
+            self.misses += len(keys)
+            return {}
 
     def set(self, key: str, value: Any) -> None:
         if self._coordinator is not None:
