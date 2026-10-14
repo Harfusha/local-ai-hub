@@ -34,6 +34,24 @@ _CANCEL_GRACE_SECONDS = 1.0
 _SAFE_UNLINK_RETRY_BUDGET_SECONDS = 5.0
 
 
+def ensure_extended_path(p: Path | str, threshold: int = 240) -> Path:
+    """Prepend Windows extended-length path prefix (\\\\?\\) if path length exceeds threshold."""
+    if os.name != "nt":
+        return Path(p)
+    raw = str(p)
+    if raw.startswith(("\\\\?\\", "\\\\.\\")):
+        return Path(raw)
+    try:
+        resolved = os.path.abspath(raw)
+    except Exception:
+        resolved = raw
+    if len(resolved) > threshold:
+        if resolved.startswith("\\\\"):
+            return Path("\\\\?\\UNC\\" + resolved.lstrip("\\"))
+        return Path("\\\\?\\" + resolved)
+    return Path(raw)
+
+
 def safe_unlink(path: Path, max_attempts: int = 5, delay: float = 0.05) -> None:
     """Retry transient Windows locks with at most five seconds of backoff."""
     if (
