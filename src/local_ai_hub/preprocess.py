@@ -1283,71 +1283,98 @@ class ProjectPreprocessor:
     def cleanup_deleted_projects(self) -> dict[str, Any]:
         """Scan all registered projects and remove projects whose root directory no longer exists on disk."""
         pruned: list[str] = []
-        rag_roots_by_workspace: dict[str, list[str]] = {}
         with self._db_lock, closing(self._connect()) as con:
             rows = con.execute("SELECT root,workspace FROM projects").fetchall()
-            for r in rows:
-                root_path = Path(r["root"])
-                if not root_path.exists():
-                    workspace = str(r["workspace"])
-                    rag_roots_by_workspace.setdefault(workspace, []).append(str(r["root"]))
-                    con.execute("DELETE FROM projects WHERE root=?", (r["root"],))
-                    con.execute("DELETE FROM file_refs WHERE root=?", (r["root"],))
-                    con.execute("DELETE FROM source_index WHERE root=?", (r["root"],))
-                    con.execute("DELETE FROM source_fts WHERE root=?", (r["root"],))
-                    con.execute("DELETE FROM module_cards WHERE root=?", (r["root"],))
-                    con.execute("DELETE FROM project_cards WHERE root=?", (r["root"],))
-                    con.execute("DELETE FROM hot_query_state WHERE root=?", (r["root"],))
-                    pruned.append(r["root"])
-            con.commit()
-        
-        for p in pruned:
-            self._forget_project_runtime(p)
+        failed: list[str] = []
+        for row in rows:
+            root = str(row["root"])
+            workspace = str(row["workspace"])
+            if Path(root).exists():
+                continue
+
+            cascade_ok = True
             if self.code_index is not None:
                 try:
-                    result = self.code_index.prune(p, [])
-                    if not result.get("success"):
-                        logger.warning("deleted-project code-index purge incomplete (%s)", result.get("error", "unknown"))
-                except (AttributeError, sqlite3.Error) as exc:
+                    result = self.code_index.prune(root, [])
+                    if not isinstance(result, dict) or not result.get("success"):
+                        cascade_ok = False
+                        logger.warning(
+                            "deleted-project code-index purge incomplete (%s)",
+                            result.get("error", "unknown") if isinstance(result, dict) else "invalid result",
+                        )
+                except Exception as exc:
+                    cascade_ok = False
                     logger.warning("deleted-project code-index purge incomplete (%s)", type(exc).__name__)
             if self.deterministic is not None:
                 try:
                     with closing(self.deterministic._connect()) as det_con:
-                        det_con.execute("DELETE FROM files WHERE root=?", (p,))
-                        det_con.execute("DELETE FROM facts WHERE root=?", (p,))
-                        det_con.execute("DELETE FROM manifests WHERE root=?", (p,))
+                        det_con.execute("DELETE FROM files WHERE root=?", (root,))
+                        det_con.execute("DELETE FROM facts WHERE root=?", (root,))
                         det_con.commit()
-                except sqlite3.Error as exc:
-                    logger.warning("deleted-project deterministic purge incomplete (%s)", type(exc).__name__)
+                except Exception as exc:
+                    cascade_ok = False
+                    logger.warning(
+                        "deleted-project deterministic purge incomplete (%s: %s)",
+                        type(exc).__name__, exc,
+                    )
 
-        if self.rag is not None:
-            for workspace, roots in rag_roots_by_workspace.items():
-                for root in roots:
-                    try:
-                        with self._db_lock, closing(self._connect()) as con:
-                            live_paths = {
-                                str(row[0]).replace("\\", "/")
-                                for row in con.execute(
-                                    "SELECT file_refs.path FROM file_refs "
-                                    "JOIN projects ON projects.root=file_refs.root "
-                                    "WHERE projects.workspace=?",
-                                    (workspace,),
-                                ).fetchall()
-                            }
-                        self.rag.remove_project(
-                            root, "__preprocess__", workspace, preserve_paths=live_paths
-                        )
-                    except Exception as exc:
-                        logger.warning("deleted-project RAG purge incomplete (%s)", type(exc).__name__)
+            if self.rag is not None:
+                try:
+                    with self._db_lock, closing(self._connect()) as con:
+                        aliases = con.execute(
+                            "SELECT projects.root,file_refs.path FROM file_refs "
+                            "JOIN projects ON projects.root=file_refs.root "
+                            "WHERE projects.workspace=? AND projects.root<>?",
+                            (workspace, root),
+                        ).fetchall()
+                    live_paths = {
+                        str(alias["path"]).replace("\\", "/")
+                        for alias in aliases
+                        if Path(str(alias["root"])).exists()
+                    }
+                    self.rag.remove_project(
+                        root, "__preprocess__", workspace, preserve_paths=live_paths
+                    )
+                except Exception as exc:
+                    cascade_ok = False
+                    logger.warning("deleted-project RAG purge incomplete (%s)", type(exc).__name__)
+
+            if not cascade_ok:
+                failed.append(root)
+                continue
+
+            try:
+                with self._db_lock, closing(self._connect()) as con:
+                    con.execute("DELETE FROM projects WHERE root=?", (root,))
+                    con.execute("DELETE FROM file_refs WHERE root=?", (root,))
+                    con.execute("DELETE FROM source_index WHERE root=?", (root,))
+                    con.execute("DELETE FROM source_fts WHERE root=?", (root,))
+                    con.execute("DELETE FROM module_cards WHERE root=?", (root,))
+                    con.execute("DELETE FROM project_cards WHERE root=?", (root,))
+                    con.execute("DELETE FROM hot_query_state WHERE root=?", (root,))
+                    con.commit()
+                self._forget_project_runtime(root)
+                pruned.append(root)
+            except Exception as exc:
+                failed.append(root)
+                logger.warning("deleted-project registry purge incomplete (%s)", type(exc).__name__)
 
         self._vacuum_derived_databases()
 
         self._wake_all()
         return {
-            "success": True,
+            "success": not failed,
             "pruned_count": len(pruned),
             "pruned_projects": pruned,
-            "message": f"Successfully cleaned up {len(pruned)} missing worktree(s)/project(s)" if pruned else "No missing projects found (all active directories exist on disk)",
+            "failed_count": len(failed),
+            "failed_projects": failed,
+            "message": (
+                f"Successfully cleaned up {len(pruned)} missing worktree(s)/project(s)"
+                if pruned
+                else f"Cleanup incomplete for {len(failed)} missing project(s)"
+                if failed
+                else "No missing projects found (all active directories exist on disk)"
+            ),
         }
 
     def _vacuum_derived_databases(self) -> None:
