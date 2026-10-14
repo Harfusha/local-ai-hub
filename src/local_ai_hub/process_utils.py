@@ -21,7 +21,7 @@ import uuid
 import weakref
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 
 _LOW_PRIORITY_VALUES = {"idle", "below_normal", "normal"}
@@ -673,6 +673,25 @@ def hidden_run_kwargs(*, text: bool = False, detached: bool = False, new_group: 
         # invalid byte used to crash subprocess reader threads and strand callers.
         kwargs.update({"text": True, "encoding": "utf-8", "errors": "replace"})
     return kwargs
+
+
+def clean_git_env(
+    base_env: Mapping[str, str] | None = None,
+    extra_env: Mapping[str, str] | None = None,
+    *,
+    preserve: Iterable[str] | None = None,
+) -> dict[str, str]:
+    """Return environment dictionary cleansed of GIT_* metadata to avoid subshell contamination."""
+    source = os.environ if base_env is None else base_env
+    preserve_set = {k.upper() for k in (preserve or ())}
+    cleaned = {
+        key: value
+        for key, value in source.items()
+        if not key.upper().startswith("GIT_") or key.upper() in preserve_set
+    }
+    if extra_env:
+        cleaned.update(extra_env)
+    return cleaned
 
 
 def pid_alive(pid: int) -> bool:
