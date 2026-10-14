@@ -1003,6 +1003,7 @@ class CodeIndex:
         self._parse_blob_l1 = MemoryLRUCache(max_entries=4096, ttl_seconds=3600)
         self._parse_diagnostic = threading.local()
         self._query_l1 = MemoryLRUCache(max_entries=2048, ttl_seconds=1800)
+        self._symbol_l1 = MemoryLRUCache(max_entries=4096, ttl_seconds=1800)
         self._impact_result_l1 = MemoryLRUCache(max_entries=512, ttl_seconds=1800)
         self._impact_path_format_l1 = MemoryLRUCache(max_entries=256, ttl_seconds=1800)
         self._impact_candidate_count_l1 = MemoryLRUCache(max_entries=256, ttl_seconds=1800)
@@ -2458,6 +2459,25 @@ class CodeIndex:
         if not pat:
             return {"success": False, "error": "name_path_pattern required"}
 
+        cache_generation = _query_cache_generation(self._query_cache_generation_key)
+        cache_key = stable_hash({
+            "action": "find_symbol",
+            "root": resolved_root,
+            "pattern": pat,
+            "depth": depth,
+            "include_body": include_body,
+            "include_info": include_info,
+            "include_kinds": tuple(sorted(include_kinds or [])),
+            "exclude_kinds": tuple(sorted(exclude_kinds or [])),
+            "substring_matching": substring_matching,
+            "relative_path": relative_path,
+            "limit": limit,
+            "generation": cache_generation,
+        })
+        cached = self._symbol_l1.get(cache_key)
+        if isinstance(cached, dict):
+            return copy.deepcopy(cached)
+
         where = ["root = ?", _root_archive_path_sql("path")]
         args: list[Any] = [resolved_root]
 
@@ -2553,13 +2573,15 @@ class CodeIndex:
 
             results.append(item)
 
-        return {
+        out = {
             "success": True,
             "root": resolved_root,
             "pattern": pat,
             "matches_count": len(results),
             "symbols": results,
         }
+        self._symbol_l1.set(cache_key, out)
+        return out
 
     def find_declaration(self, root: str, symbol_name: str, path: str | None = None) -> dict[str, Any]:
         res = self.find_symbol(root, symbol_name, depth=0, include_body=True, include_info=True, relative_path=path, limit=5)
