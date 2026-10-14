@@ -462,7 +462,12 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "cwd": {"type": "string", "default": "."},
             "root": {"type": "string"},
             "runs": {"type": "integer", "description": "Number of executions to run for flaky detection", "minimum": 1, "default": 5},
-            "env": {"type": "object", "description": "Environment variable overrides", "default": {}},
+            "env": {
+                "type": "object",
+                "description": "Environment variable overrides",
+                "additionalProperties": {"type": "string"},
+                "default": {},
+            },
             "task_id": {"type": "string", "default": ""},
             "criterion": {"type": "string", "default": ""},
             "timeout": {"type": "integer", "default": 0},
