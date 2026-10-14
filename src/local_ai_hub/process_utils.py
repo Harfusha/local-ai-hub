@@ -31,8 +31,11 @@ _CANCEL_POLL_SECONDS = 0.1
 _CANCEL_GRACE_SECONDS = 1.0
 
 
+_SAFE_UNLINK_RETRY_BUDGET_SECONDS = 5.0
+
+
 def safe_unlink(path: Path, max_attempts: int = 5, delay: float = 0.05) -> None:
-    """Unlink a file, retrying transient Windows access-denied locks."""
+    """Retry transient Windows locks with at most five seconds of backoff."""
     if (
         isinstance(max_attempts, bool)
         or not isinstance(max_attempts, int)
@@ -51,7 +54,10 @@ def safe_unlink(path: Path, max_attempts: int = 5, delay: float = 0.05) -> None:
     initial = path.stat(follow_symlinks=False)
     identity = (initial.st_dev, initial.st_ino, initial.st_mode)
     last_error: PermissionError | None = None
+    retry_deadline = time.monotonic() + _SAFE_UNLINK_RETRY_BUDGET_SECONDS
     for attempt in range(max_attempts):
+        if attempt and last_error is not None and time.monotonic() >= retry_deadline:
+            raise last_error
         if attempt:
             current = path.stat(follow_symlinks=False)
             if (current.st_dev, current.st_ino, current.st_mode) != identity:
@@ -67,7 +73,10 @@ def safe_unlink(path: Path, max_attempts: int = 5, delay: float = 0.05) -> None:
             current = path.stat(follow_symlinks=False)
             if (current.st_dev, current.st_ino, current.st_mode) != identity:
                 raise
-            time.sleep(delay * (2**attempt))
+            remaining = retry_deadline - time.monotonic()
+            if remaining <= 0:
+                raise error
+            time.sleep(min(delay * (2**attempt), remaining))
 
 
 class ProcessCancelledError(subprocess.SubprocessError):
