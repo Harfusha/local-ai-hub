@@ -104,9 +104,22 @@ class _ArtifactBatch:
         self._check_cancelled()
         digest = hashlib.sha256((kind + "\0" + text).encode("utf-8")).hexdigest()[:24]
         artifact_id = self._store._scoped_artifact_id(self._connection, f"art_{digest}", self._tenant_identity)
+        section_names = self._store._section_names(text)
+        page_text, nul_mask = self._store._page_text_metadata(text)
         self._connection.execute(
-            f"INSERT OR REPLACE INTO {self._store._table}(artifact_id, created_at, tenant, tenant_identity, kind, text) VALUES(?,?,?,?,?,?)",
-            (artifact_id, time.time(), self._tenant_identity, self._tenant_identity, kind, text),
+            f"INSERT OR REPLACE INTO {self._store._table}(artifact_id, created_at, tenant, tenant_identity, kind, text, char_count, section_names, page_text, nul_mask) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (
+                artifact_id,
+                time.time(),
+                self._tenant_identity,
+                self._tenant_identity,
+                kind,
+                text,
+                len(text),
+                json.dumps(section_names, ensure_ascii=False, separators=(",", ":")),
+                page_text,
+                nul_mask,
+            ),
         )
         return artifact_id
 
@@ -192,6 +205,55 @@ class ArtifactStore:
         except sqlite3.OperationalError:
             pass
         return con
+
+    def _ensure_paging_metadata(self, con: sqlite3.Connection) -> None:
+        table = self._table
+        columns = {str(row[1]) for row in con.execute(f"PRAGMA table_info({table})")}
+        if "char_count" not in columns:
+            con.execute(f"ALTER TABLE {table} ADD COLUMN char_count INTEGER")
+        if "section_names" not in columns:
+            con.execute(f"ALTER TABLE {table} ADD COLUMN section_names TEXT")
+        if "page_text" not in columns:
+            con.execute(f"ALTER TABLE {table} ADD COLUMN page_text TEXT")
+        if "nul_mask" not in columns:
+            con.execute(f"ALTER TABLE {table} ADD COLUMN nul_mask BLOB")
+
+        cutoff = time.time() - self.ttl_seconds
+        last_rowid = 0
+        while True:
+            row = con.execute(
+                f"SELECT rowid, text FROM {table} "
+                "WHERE rowid>? AND (char_count IS NULL OR section_names IS NULL) "
+                "AND mime_type IS NULL AND created_at>=? ORDER BY rowid LIMIT 1",
+                (last_rowid, cutoff),
+            ).fetchone()
+            if row is None:
+                break
+            last_rowid = int(row[0])
+            text = str(row[1] or "")
+            section_names = self._section_names(text)
+            page_text, nul_mask = self._page_text_metadata(text)
+            con.execute(
+                f"UPDATE {table} SET char_count=?, section_names=?, page_text=?, nul_mask=? WHERE rowid=?",
+                (
+                    len(text),
+                    json.dumps(section_names, ensure_ascii=False, separators=(",", ":")),
+                    page_text,
+                    nul_mask,
+                    last_rowid,
+                ),
+            )
+
+    @staticmethod
+    def _page_text_metadata(text: str) -> tuple[str | None, bytes | None]:
+        """Make SQLite substr lossless for NUL while keeping its paging payload bounded."""
+        if "\x00" not in text:
+            return None, None
+        mask = bytearray((len(text) + 7) // 8)
+        for index, character in enumerate(text):
+            if character == "\x00":
+                mask[index // 8] |= 1 << (index % 8)
+        return text.replace("\x00", "\ufffd"), bytes(mask)
 
     @staticmethod
     def _tenant_identity(tenant: str) -> str:
@@ -356,7 +418,11 @@ class ArtifactStore:
                             blob BLOB,
                             size_bytes INTEGER,
                             checksum TEXT,
-                            identity_json TEXT
+                            identity_json TEXT,
+                            char_count INTEGER,
+                            section_names TEXT,
+                            page_text TEXT,
+                            nul_mask BLOB
                         )"""
                         )
                         self._table = _ARTIFACT_TABLE
@@ -376,7 +442,11 @@ class ArtifactStore:
                                 blob BLOB,
                                 size_bytes INTEGER,
                                 checksum TEXT,
-                                identity_json TEXT
+                                identity_json TEXT,
+                                char_count INTEGER,
+                                section_names TEXT,
+                                page_text TEXT,
+                                nul_mask BLOB
                             )"""
                         )
                         if existing_columns:
@@ -476,6 +546,7 @@ class ArtifactStore:
                         ("tenant_storage", "sha256-v1"),
                     )
                     con.execute(f"CREATE INDEX IF NOT EXISTS idx_{self._table}_created ON {self._table}(created_at)")
+                    self._ensure_paging_metadata(con)
                     con.commit()
             retry_busy(_setup, retries=5, base_delay_seconds=0.02)
             self._initialized = True
@@ -594,6 +665,38 @@ class ArtifactStore:
         }
 
     @staticmethod
+    def _section_names(text: str) -> list[str]:
+        """Return the bounded section-name projection exposed by paged reads."""
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, dict):
+            names: list[str] = []
+            for key in parsed:
+                names.append(f"json:{str(key)}")
+                if len(names) == 50:
+                    break
+            return names
+
+        names: list[str] = []
+        heading = re.compile(r"(?m)^(?:#{1,6}\s+([^\n#].*?)|([A-Z][A-Z0-9 _/.-]{2,48}):)\s*$")
+        for match in heading.finditer(text):
+            label = (match.group(1) or match.group(2) or "").strip().rstrip(":")
+            if not label:
+                continue
+            slug = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")[:64] or "section"
+            base = slug
+            suffix = 2
+            while slug in names:
+                slug = f"{base}-{suffix}"
+                suffix += 1
+            names.append(slug)
+            if len(names) == 50:
+                break
+        return names
+
+    @staticmethod
     def _section_map(text: str) -> dict[str, tuple[int, int]]:
         """Return deterministic, addressable sections without asking an LLM to rewrite anything."""
         sections: dict[str, tuple[int, int]] = {}
@@ -646,26 +749,43 @@ class ArtifactStore:
     def get(self, artifact_id: str, offset: int = 0, max_chars: int = 6000, section: str = "", tenant: str | None = None) -> dict[str, Any]:
         offset = max(0, int(offset))
         max_chars = max(256, min(int(max_chars), 50_000))
+        section = str(section or "").strip()
         cutoff = time.time() - self.ttl_seconds
-        def _do_get() -> tuple[str, str, float] | None:
+
+        def _do_get() -> tuple[Any, ...] | None:
             with closing(self._connect()) as con:
                 # Reads stay read-only; expiry cleanup happens on writes. This avoids
                 # turning every artifact slice fetch into a WAL writer.
-                query = f"SELECT kind, text, mime_type, created_at FROM {self._table} WHERE artifact_id=? AND created_at>=?"
-                params: list[Any] = [artifact_id, cutoff]
+                if section:
+                    query = f"SELECT kind, text, mime_type, created_at, char_count, section_names FROM {self._table} WHERE artifact_id=? AND created_at>=?"
+                    params: list[Any] = [artifact_id, cutoff]
+                else:
+                    query = f"SELECT kind, substr(COALESCE(page_text, text), ?, ?), mime_type, created_at, char_count, section_names, substr(nul_mask, ?, ?) FROM {self._table} WHERE artifact_id=? AND created_at>=?"
+                    nul_byte_offset = offset % 8
+                    nul_byte_count = (nul_byte_offset + max_chars + 7) // 8
+                    sqlite_max_int = (1 << 63) - 1
+                    params = [
+                        min(offset + 1, sqlite_max_int),
+                        max_chars,
+                        min(offset // 8 + 1, sqlite_max_int),
+                        nul_byte_count,
+                        artifact_id,
+                        cutoff,
+                    ]
                 if tenant is not None:
                     query += " AND tenant_identity=?"
                     params.append(self._tenant_identity(tenant))
                 return con.execute(query, params).fetchone()
+
         row = retry_busy(_do_get, retries=3)
         if not row:
             return {"success": False, "error": "artifact not found or expired", "artifact_id": artifact_id}
         if row[2]:
             return {"success": False, "error": "binary artifact requires binary retrieval"}
-        text = row[1]
-        section = str(section or "").strip()
-        sections = self._section_map(text)
+
         if section:
+            text = row[1]
+            sections = self._section_map(text)
             try:
                 parsed = json.loads(text)
             except Exception:
@@ -688,16 +808,35 @@ class ArtifactStore:
                     "offset": offset, "next_offset": offset + len(piece) if offset + len(piece) < len(section_text) else None,
                     "total_chars": len(section_text), "sections": list(sections)[:50]}
 
-        piece = text[offset:offset + max_chars]
+        if row[4] is None or row[5] is None:
+            return {"success": False, "error": "artifact paging metadata unavailable", "artifact_id": artifact_id}
+        try:
+            sections = json.loads(row[5])
+        except Exception:
+            return {"success": False, "error": "artifact paging metadata unavailable", "artifact_id": artifact_id}
+        if not isinstance(sections, list) or any(not isinstance(name, str) for name in sections):
+            return {"success": False, "error": "artifact paging metadata unavailable", "artifact_id": artifact_id}
+        piece = row[1] or ""
+        nul_mask = row[6] or b""
+        if nul_mask:
+            chars = list(piece)
+            bit_offset = offset % 8
+            for index in range(len(chars)):
+                bit_index = bit_offset + index
+                mask_index = bit_index // 8
+                if mask_index < len(nul_mask) and nul_mask[mask_index] & (1 << (bit_index % 8)):
+                    chars[index] = "\x00"
+            piece = "".join(chars)
+        total_chars = int(row[4])
         return {
             "success": True,
             "artifact_id": artifact_id,
             "kind": row[0],
             "text": piece,
             "offset": offset,
-            "next_offset": offset + len(piece) if offset + len(piece) < len(text) else None,
-            "total_chars": len(text),
-            "sections": list(sections)[:50],
+            "next_offset": offset + len(piece) if offset + len(piece) < total_chars else None,
+            "total_chars": total_chars,
+            "sections": sections,
         }
 
     def list(self, tenant: str = "", limit: int = 20) -> list[dict[str, Any]]:
