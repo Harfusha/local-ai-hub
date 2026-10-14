@@ -1266,12 +1266,19 @@ class CodeIndex:
                 idx = overloads.get(base_name_path, 0)
                 overloads[base_name_path] = idx + 1
                 name_path = base_name_path if idx == 0 else f"{base_name_path}[{idx}]"
-
                 doc = ast.get_docstring(n) or ""
                 doc_summary = doc.strip().splitlines()[0] if doc.strip() else ""
-                args_str = ", ".join(a.arg for a in n.args.args)
-                ret = ast.unparse(n.returns) if n.returns else ""
-                sig = f"def {n.name}({args_str})" + (f" -> {ret}" if ret else "")
+
+                try:
+                    args_str = ast.unparse(n.args) if getattr(n, "args", None) else ""
+                except Exception:
+                    args_str = ", ".join(a.arg for a in n.args.args)
+                try:
+                    ret = ast.unparse(n.returns) if getattr(n, "returns", None) else ""
+                except Exception:
+                    ret = ""
+                fn_kw = "async def" if isinstance(n, ast.AsyncFunctionDef) else "def"
+                sig = f"{fn_kw} {n.name}({args_str})" + (f" -> {ret}" if ret else "")
 
                 is_method = bool(stack)
                 kind = "method" if is_method else "function"
@@ -1576,6 +1583,8 @@ class CodeIndex:
                     for match in INLINE_ARROW_DEF.finditer(line)
                     if match.group(1) not in known_names
                 )
+            raw_sig = raw_lines[i - 1].strip() if i - 1 < len(raw_lines) else line.strip()
+            clean_sig = re.sub(r"\s*(?:\{|=>|;)\s*$", "", raw_sig)[:160]
             for kind, name in declarations:
                 raw_syms.append({
                     "name": name,
@@ -1584,7 +1593,7 @@ class CodeIndex:
                     "end_line": i,
                     "container": curr_namespace,
                     "name_path": f"{curr_namespace}\\{name}" if curr_namespace else name,
-                    "signature": line.strip()[:100],
+                    "signature": clean_sig,
                     "access": "public",
                     "docstring": "",
                 })
