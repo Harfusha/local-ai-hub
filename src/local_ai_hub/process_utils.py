@@ -4,6 +4,7 @@ import ctypes
 import hashlib
 import json
 import locale
+import math
 import ntpath
 import os
 import posixpath
@@ -28,6 +29,45 @@ _POST_TERMINATION_DRAIN_SECONDS = 0.5
 _WORKTREE_OWNERSHIP_FILE = "local-ai-hub-worktree-ownership.json"
 _CANCEL_POLL_SECONDS = 0.1
 _CANCEL_GRACE_SECONDS = 1.0
+
+
+def safe_unlink(path: Path, max_attempts: int = 5, delay: float = 0.05) -> None:
+    """Unlink a file, retrying transient Windows access-denied locks."""
+    if (
+        isinstance(max_attempts, bool)
+        or not isinstance(max_attempts, int)
+        or not 1 <= max_attempts <= 10
+    ):
+        raise ValueError("max_attempts must be an integer from 1 to 10")
+    if (
+        isinstance(delay, bool)
+        or not isinstance(delay, (int, float))
+        or not 0 <= delay <= 60
+        or not math.isfinite(delay)
+    ):
+        raise ValueError("delay must be finite and between 0 and 60 seconds")
+
+    path = Path(path)
+    initial = path.stat(follow_symlinks=False)
+    identity = (initial.st_dev, initial.st_ino, initial.st_mode)
+    last_error: PermissionError | None = None
+    for attempt in range(max_attempts):
+        if attempt:
+            current = path.stat(follow_symlinks=False)
+            if (current.st_dev, current.st_ino, current.st_mode) != identity:
+                assert last_error is not None
+                raise last_error
+        try:
+            path.unlink()
+            return
+        except PermissionError as error:
+            if getattr(error, "winerror", None) != 5 or attempt + 1 == max_attempts:
+                raise
+            last_error = error
+            current = path.stat(follow_symlinks=False)
+            if (current.st_dev, current.st_ino, current.st_mode) != identity:
+                raise
+            time.sleep(delay * (2**attempt))
 
 
 class ProcessCancelledError(subprocess.SubprocessError):
