@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import threading
+from concurrent.futures import ThreadPoolExecutor
 import time
 from collections import Counter, OrderedDict
 from functools import lru_cache
@@ -1523,6 +1524,34 @@ class RepositoryTools:
             yielded += 1
             yield path
 
+    def _read_search_snapshots(
+        self, jobs: list[tuple[Any, Path]],
+    ):
+        """Read search files in order with bounded workers and queued snapshots."""
+        if not jobs:
+            return
+
+        worker_count = min(4, len(jobs))
+        pending_limit = min(8, worker_count * 2)
+
+        def read(path: Path) -> tuple[str | None, list[str] | None, OSError | None]:
+            try:
+                stat = path.stat()
+                if stat.st_size > self.max_file_bytes:
+                    raise FileTooLargeError(f"{path} exceeds {self.max_file_bytes} bytes")
+                file_hash, lines = self._read_snapshot(path, stat=stat)
+                return file_hash, lines, None
+            except OSError as exc:
+                return None, None, exc
+
+        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="repo-search-read") as pool:
+            for offset in range(0, len(jobs), pending_limit):
+                batch = jobs[offset:offset + pending_limit]
+                for (metadata, _path), (file_hash, lines, error) in zip(
+                    batch, pool.map(read, (path for _metadata, path in batch)),
+                ):
+                    yield metadata, file_hash, lines, error
+
     def _exact_search_page(
         self, base: Path, query: str, limit: int, offset: int,
         context_lines: int | None, project_settings: Any | None,
@@ -1904,6 +1933,7 @@ class RepositoryTools:
             per_path_lines: dict[str, list[int]] = {}
             for rel, line_no in candidates:
                 per_path_lines.setdefault(rel, []).append(line_no)
+            read_jobs: list[tuple[Any, Path]] = []
             for rel, line_numbers in per_path_lines.items():
                 path = (base / rel).resolve(strict=False)
                 try:
@@ -1914,9 +1944,9 @@ class RepositoryTools:
                     continue
                 if project_settings is not None and not self._project_file_allowed(base, path, project_settings):
                     continue
-                try:
-                    file_hash, lines = self._read_snapshot(path)
-                except OSError:
+                read_jobs.append(((rel, line_numbers), path))
+            for (rel, line_numbers), file_hash, lines, error in self._read_search_snapshots(read_jobs):
+                if error is not None:
                     read_errors += 1
                     continue
                 scanned += 1
@@ -1956,6 +1986,7 @@ class RepositoryTools:
                 if project_candidates is not None
                 else self.iter_files(str(base), max_files=self.python_fallback_max_files + 1)
             )
+            fallback_jobs: list[tuple[str, Path]] = []
             for path in fallback_paths:
                 if python_fallback_scanned >= self.python_fallback_max_files:
                     truncation_reasons.append("file_limit")
@@ -1963,10 +1994,10 @@ class RepositoryTools:
                 scanned += 1
                 python_fallback_scanned += 1
                 rel = str(path.relative_to(base)).replace("\\", "/")
+                fallback_jobs.append((rel, path))
+            for rel, file_hash, lines, error in self._read_search_snapshots(fallback_jobs):
                 path_lower = rel.lower()
-                try:
-                    file_hash, lines = self._read_snapshot(path)
-                except OSError:
+                if error is not None:
                     read_errors += 1
                     continue
                 for idx, line in enumerate(lines):
