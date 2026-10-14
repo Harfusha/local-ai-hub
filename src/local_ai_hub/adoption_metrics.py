@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from contextlib import closing
+import math
 import re
 import sqlite3
 import threading
@@ -29,21 +30,33 @@ def _identifier(value: str, field: str) -> str:
 def _duration_bucket(value: int | float | None) -> str | None:
     if value is None:
         return None
-    value = max(0, int(value))
-    if value <= 50: return "0-50ms"
-    if value <= 250: return "51-250ms"
-    if value <= 500: return "251-500ms"
-    if value <= 2000: return "501ms-2s"
+    try:
+        val = float(value)
+        if not math.isfinite(val):
+            return None
+        v = max(0, int(val))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if v <= 50: return "0-50ms"
+    if v <= 250: return "51-250ms"
+    if v <= 500: return "251-500ms"
+    if v <= 2000: return "501ms-2s"
     return "2s+"
 
 
-def _output_bucket(value: int | None) -> str | None:
+def _output_bucket(value: int | float | None) -> str | None:
     if value is None:
         return None
-    value = max(0, int(value))
-    if value <= 255: return "0-255B"
-    if value <= 1023: return "256B-1KiB"
-    if value <= 4095: return "1-4KiB"
+    try:
+        val = float(value)
+        if not math.isfinite(val):
+            return None
+        v = max(0, int(val))
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if v <= 255: return "0-255B"
+    if v <= 1023: return "256B-1KiB"
+    if v <= 4095: return "1-4KiB"
     return "4KiB+"
 
 
@@ -51,6 +64,10 @@ class AdoptionMetricsStore:
     """Stores only daily low-cardinality aggregates; never raw tool payloads."""
 
     def __init__(self, state_dir: Path | str, *, retention_days: int = 35, max_actions: int = 256):
+        if not state_dir or not str(state_dir).strip():
+            raise ValueError("state_dir cannot be empty")
+        if "\x00" in str(state_dir):
+            raise ValueError("state_dir cannot contain null bytes")
         self.path = Path(state_dir) / "adoption_metrics.sqlite3"
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.retention_days = max(2, min(int(retention_days), 365))
@@ -107,7 +124,11 @@ class AdoptionMetricsStore:
         self.record(tool, action, intent, "bypassed", fallback_reason=reason, now=now)
 
     def report(self, *, days: int = 7, now: datetime | None = None) -> dict[str, Any]:
-        days = max(1, min(int(days), self.retention_days))
+        try:
+            d = int(days)
+        except (TypeError, ValueError):
+            d = 7
+        days = max(1, min(d, self.retention_days))
         current = now or datetime.now(timezone.utc)
         start = current.date() - timedelta(days=days - 1)
         start_text = start.isoformat()
@@ -119,7 +140,14 @@ class AdoptionMetricsStore:
         totals = {outcome: 0 for outcome in _OUTCOMES}
         reasons: dict[str, int] = {}; failures: dict[str, int] = {}; latency: dict[str, int] = {}; output: dict[str, int] = {}; actions: dict[tuple[str, str, str], int] = {}
         for day, tool, action, outcome, reason, latency_bucket, output_bucket, count in rows:
-            count = int(count); daily[day][outcome] += count; totals[outcome] += count
+            count = int(count)
+            if day not in daily:
+                daily[day] = {"day": day, **{o: 0 for o in _OUTCOMES}}
+            if outcome in daily[day]:
+                daily[day][outcome] += count
+            else:
+                daily[day][outcome] = count
+            totals[outcome] = totals.get(outcome, 0) + count
             key = (tool, action, outcome); actions[key] = actions.get(key, 0) + count
             if outcome == "blocked" and reason: reasons[reason] = reasons.get(reason, 0) + count
             if outcome == "failed" and reason: failures[reason] = failures.get(reason, 0) + count
@@ -129,4 +157,20 @@ class AdoptionMetricsStore:
             count for (tool, _action, outcome), count in actions.items()
             if tool == "local_ai_task" and outcome == "used"
         )
-        return {"days": days, "daily": list(daily.values()), "totals": totals, "routing_adoption": {"local_recommended": totals["recommended"], "local_used": local_used, "bypassed": totals["bypassed"], "fallback_used": totals["fallback_used"]}, "action_adoption": [{"tool": tool, "action": action, "outcome": outcome, "count": count} for (tool, action, outcome), count in sorted(actions.items())], "blocked_reasons": [{"reason": key, "count": value} for key, value in sorted(reasons.items())], "terminal_failures": [{"reason": key, "count": value} for key, value in sorted(failures.items())], "dormant_actions": [f"{tool}:{action}" for tool, action in dormant], "latency_buckets": [{"bucket": key, "count": value} for key, value in sorted(latency.items())], "output_size_buckets": [{"bucket": key, "count": value} for key, value in sorted(output.items())]}
+        return {
+            "days": days,
+            "daily": list(daily.values()),
+            "totals": totals,
+            "routing_adoption": {
+                "local_recommended": totals.get("recommended", 0),
+                "local_used": local_used,
+                "bypassed": totals.get("bypassed", 0),
+                "fallback_used": totals.get("fallback_used", 0),
+            },
+            "action_adoption": [{"tool": tool, "action": action, "outcome": outcome, "count": count} for (tool, action, outcome), count in sorted(actions.items())],
+            "blocked_reasons": [{"reason": key, "count": value} for key, value in sorted(reasons.items())],
+            "terminal_failures": [{"reason": key, "count": value} for key, value in sorted(failures.items())],
+            "dormant_actions": [f"{tool}:{action}" for tool, action in dormant],
+            "latency_buckets": [{"bucket": key, "count": value} for key, value in sorted(latency.items())],
+            "output_size_buckets": [{"bucket": key, "count": value} for key, value in sorted(output.items())],
+        }
