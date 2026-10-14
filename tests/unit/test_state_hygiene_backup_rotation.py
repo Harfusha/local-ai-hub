@@ -23,7 +23,7 @@ def test_rotate_database_backups_prunes_excess_snapshots(tmp_path: Path) -> None
     now = time.time()
     created_backups = []
     for i in range(6):
-        b = state_dir / f"agent_state.sqlite.path-migration-{i}.sqlite3"
+        b = state_dir / f"agent_state.sqlite.path-migration-{1_000_000_000_000_000_000 + i}.sqlite3"
         b.write_text(f"backup {i}", encoding="utf-8")
         # Ensure distinct mtimes
         mtime = now - (60 * (10 - i))
@@ -33,7 +33,7 @@ def test_rotate_database_backups_prunes_excess_snapshots(tmp_path: Path) -> None
     # Create 4 .bak files for deterministic
     bak_files = []
     for i in range(4):
-        b = state_dir / f"deterministic.sqlite3.bak.{i}"
+        b = state_dir / f"deterministic.sqlite3.migration-v0-v1-{i:032x}.bak"
         b.write_text(f"bak {i}", encoding="utf-8")
         mtime = now - (60 * (10 - i))
         os.utime(b, (mtime, mtime))
@@ -52,7 +52,7 @@ def test_rotate_database_backups_prunes_excess_snapshots(tmp_path: Path) -> None
     assert remaining_agent == [created_backups[3], created_backups[4], created_backups[5]]
 
     # Remaining bak files for deterministic should be exactly 3 newest (indices 1, 2, 3)
-    remaining_bak = sorted(state_dir.glob("deterministic.sqlite3.bak.*"))
+    remaining_bak = sorted(state_dir.glob("deterministic.sqlite3.migration-v0-v1-*.bak"))
     assert len(remaining_bak) == 3
     assert remaining_bak == [bak_files[1], bak_files[2], bak_files[3]]
 
@@ -69,7 +69,7 @@ def test_backup_durable_database_auto_rotates(tmp_path: Path) -> None:
     # Create 5 backups
     backups = []
     for i in range(5):
-        b = backup_durable_database(db_path, purpose=f"step-{i}")
+        b = backup_durable_database(db_path)
         backups.append(b)
         time.sleep(0.01)
 
@@ -90,13 +90,13 @@ def test_rotate_database_backups_prunes_by_max_age(tmp_path: Path) -> None:
 
     now = time.time()
     # 1 old backup (10 days old)
-    old_b = state_dir / "app.sqlite.backup-old.sqlite3"
+    old_b = state_dir / "app.sqlite.path-migration-1000000000000000000.sqlite3"
     old_b.write_text("old", encoding="utf-8")
     t_old = now - (10 * 86400)
     os.utime(old_b, (t_old, t_old))
 
     # 1 fresh backup (1 hour old)
-    fresh_b = state_dir / "app.sqlite.backup-fresh.sqlite3"
+    fresh_b = state_dir / "app.sqlite.path-migration-1000000000000000001.sqlite3"
     fresh_b.write_text("fresh", encoding="utf-8")
     t_fresh = now - 3600
     os.utime(fresh_b, (t_fresh, t_fresh))
@@ -117,11 +117,11 @@ def test_rotate_database_backups_cleans_wal_shm_sidecars(tmp_path: Path) -> None
     # Create 4 backups so 1 gets pruned with max_copies=3
     files = []
     for i in range(4):
-        b = state_dir / f"db.sqlite.snap-{i}.sqlite3"
+        b = state_dir / f"db.sqlite.path-migration-{1_000_000_000_000_000_000 + i}.sqlite3"
         b.write_text("db", encoding="utf-8")
-        wal = state_dir / f"db.sqlite.snap-{i}.sqlite3-wal"
+        wal = Path(f"{b}-wal")
         wal.write_text("wal", encoding="utf-8")
-        shm = state_dir / f"db.sqlite.snap-{i}.sqlite3-shm"
+        shm = Path(f"{b}-shm")
         shm.write_text("shm", encoding="utf-8")
         t = now - 100 * (4 - i)
         os.utime(b, (t, t))
@@ -145,3 +145,32 @@ def test_rotate_database_backups_cleans_wal_shm_sidecars(tmp_path: Path) -> None
 def test_rotate_database_backups_handles_missing_dir(tmp_path: Path) -> None:
     non_existent = tmp_path / "does_not_exist"
     assert rotate_database_backups(non_existent) == []
+
+
+def test_rotation_only_prunes_verified_helper_backups(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    live_db = state_dir / "agent_state.sqlite"
+    connection = sqlite3.connect(live_db)
+    try:
+        connection.execute("CREATE TABLE state (value TEXT)")
+        connection.execute("INSERT INTO state VALUES ('live')")
+    finally:
+        connection.close()
+
+    backups = [backup_durable_database(live_db) for _ in range(3)]
+    foreign = state_dir / "agent_state.sqlite.notes"
+    foreign.write_text("keep", encoding="utf-8")
+    journal = state_dir / "agent_state.sqlite-journal"
+    journal.write_text("active journal", encoding="utf-8")
+    old = time.time() - 60
+    os.utime(foreign, (old, old))
+    os.utime(journal, (old, old))
+
+    pruned = rotate_database_backups(state_dir, prefix=live_db.name, max_copies=1)
+
+    assert len(pruned) == 2
+    assert foreign.exists()
+    assert journal.exists()
+    assert live_db.exists()
+    assert sum(path.exists() for path in backups) == 1

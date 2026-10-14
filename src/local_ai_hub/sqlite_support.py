@@ -6,6 +6,7 @@ import random
 import re
 import shutil
 import sqlite3
+import stat
 import time
 import uuid
 from contextlib import closing
@@ -109,9 +110,14 @@ class DurableSchemaMismatchError(RuntimeError):
 
 
 _BACKUP_PATTERNS = (
-    re.compile(r"^(?P<base>.+?\.(?:sqlite3|sqlite|db))\.(?P<suffix>.+)$", re.IGNORECASE),
-    re.compile(r"^(?P<base>migrated_.+?)(?:\.[^.]+)?$", re.IGNORECASE),
-    re.compile(r"^(?P<base>.+?)\.bak(?:\..+)?$", re.IGNORECASE),
+    re.compile(
+        r"^(?P<base>.+?\.(?:sqlite3|sqlite|db))\.(?:schema-mismatch|path-migration(?:-target)?)-\d{19}\.sqlite3$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"^(?P<base>.+?\.(?:sqlite3|sqlite|db))\.migration-v0-v1-(?:\d{19}|[0-9a-f]{32})\.bak$",
+        re.IGNORECASE,
+    ),
 )
 
 
@@ -144,28 +150,28 @@ def rotate_database_backups(
             continue
 
         name = entry.name
-        # Skip sidecars like -wal and -shm from directly forming backup keys
-        if name.endswith("-wal") or name.endswith("-shm"):
+        # SQLite may be actively using any of these files beside its database.
+        if name.endswith(("-wal", "-shm", "-journal")) or "-mj" in name:
             continue
 
         group_key: str | None = None
-        if prefix is not None:
-            if name == prefix:
-                continue
-            if (
-                name.startswith(f"{prefix}.")
-                or name.startswith(f"{prefix}-")
-                or name.startswith(f"{prefix}_")
-            ):
-                group_key = prefix
-        else:
-            for pat in _BACKUP_PATTERNS:
-                m = pat.match(name)
-                if m:
-                    group_key = m.group("base")
-                    break
+        for pat in _BACKUP_PATTERNS:
+            m = pat.match(name)
+            if m:
+                candidate_key = m.group("base")
+                if prefix is None or candidate_key == prefix:
+                    group_key = candidate_key
+                break
 
         if group_key is not None:
+            try:
+                metadata = entry.lstat()
+            except OSError:
+                continue
+            if not stat.S_ISREG(metadata.st_mode):
+                continue
+            if getattr(metadata, "st_file_attributes", 0) & 0x400:
+                continue
             groups.setdefault(group_key, []).append(entry)
 
     pruned: list[Path] = []
