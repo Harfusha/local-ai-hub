@@ -6,6 +6,7 @@ import ast
 import copy
 import errno
 import json
+import logging
 import os
 import re
 import sqlite3
@@ -23,7 +24,13 @@ from .cache import MemoryLRUCache, stable_hash
 from .normalizer import tokenize_query_terms
 from .process_utils import canonical_root
 from .repo_tools import FileTooLargeError, is_root_archive_path
-from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, quick_sanity_check
+from .sqlite_support import (
+    connect_sqlite,
+    ensure_incremental_vacuum,
+    initialize_wal,
+    is_busy_error,
+    quick_sanity_check,
+)
 from .sqlite_counts import global_row_counts, initialize_row_counts
 
 _CODE_INDEX_INIT_LOCKS: weakref.WeakValueDictionary[str, threading.RLock] = weakref.WeakValueDictionary()
@@ -988,6 +995,8 @@ class CodeIndex:
         self.parse_blob_max = int(config.get("code_index", {}).get("parse_blob_max_entries", 100000))
         self._lock = threading.RLock()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        if not ensure_incremental_vacuum(self.db_path).get("success"):
+            logging.getLogger(__name__).warning("code-index database incremental vacuum setup incomplete")
         self._status_cache: dict[str, Any] = {}
         self._rev_cache = {}
         self._rev_lock = threading.Lock()
