@@ -7,6 +7,7 @@ import shutil
 import stat
 import subprocess
 from collections.abc import Iterable, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
@@ -411,3 +412,126 @@ def create_private_transaction_snapshot(source: str | Path, destination: str | P
     """Copy a worktree's complete file input state into a private Git checkout."""
     transaction_root, _ = create_private_transaction_snapshot_with_manifest(source, destination)
     return transaction_root
+
+
+class TransactionStashHook:
+    """Hook to stash dirty working tree state and restore it upon abort or error."""
+
+    def __init__(self, root: str | Path, message: str | None = None) -> None:
+        self.root = Path(root).expanduser().resolve(strict=True)
+        self.message = message or "transaction_stash_guard"
+        self._stashed = False
+        self._stash_sha: str | None = None
+
+    @property
+    def is_stashed(self) -> bool:
+        return self._stashed
+
+    def _is_dirty(self) -> bool:
+        proc = subprocess.run(
+            ["git", "-C", str(self.root), "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+            env=_clean_git_env(),
+            **hidden_run_kwargs(),
+        )
+        if proc.returncode != 0:
+            raise OSError(f"cannot inspect git status: {proc.stderr[-512:]}")
+        return bool(proc.stdout.strip())
+
+    def save(self) -> bool:
+        if not self._is_dirty():
+            return False
+        msg = f"lah-transaction: {self.message}"
+        proc = subprocess.run(
+            ["git", "-C", str(self.root), "stash", "push", "--include-untracked", "-m", msg],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+            env=_clean_git_env(),
+            **hidden_run_kwargs(),
+        )
+        if proc.returncode != 0:
+            raise OSError(f"cannot stash changes: {proc.stderr[-512:]}")
+        rev_proc = subprocess.run(
+            ["git", "-C", str(self.root), "rev-parse", "-q", "--verify", "refs/stash"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=15,
+            env=_clean_git_env(),
+            **hidden_run_kwargs(),
+        )
+        if rev_proc.returncode == 0:
+            self._stash_sha = rev_proc.stdout.strip()
+        self._stashed = True
+        return True
+
+    def restore(self) -> bool:
+        if not self._stashed:
+            return False
+        proc = subprocess.run(
+            ["git", "-C", str(self.root), "stash", "pop"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+            env=_clean_git_env(),
+            **hidden_run_kwargs(),
+        )
+        if proc.returncode != 0:
+            raise OSError(f"cannot restore stash: {proc.stderr[-512:]}")
+        self._stashed = False
+        self._stash_sha = None
+        return True
+
+    def abort(self) -> bool:
+        return self.restore()
+
+    def drop(self) -> bool:
+        if not self._stashed:
+            return False
+        proc = subprocess.run(
+            ["git", "-C", str(self.root), "stash", "drop"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=30,
+            env=_clean_git_env(),
+            **hidden_run_kwargs(),
+        )
+        if proc.returncode != 0:
+            raise OSError(f"cannot drop stash: {proc.stderr[-512:]}")
+        self._stashed = False
+        self._stash_sha = None
+        return True
+
+    def __enter__(self) -> TransactionStashHook:
+        self.save()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        if exc_type is not None and self._stashed:
+            self.restore()
+
+
+@contextmanager
+def stash_transaction_guard(
+    root: str | Path,
+    message: str | None = None,
+    *,
+    auto_restore_on_error: bool = True,
+):
+    """Context manager executing block with stashed changes, restoring stash on abort or error."""
+    hook = TransactionStashHook(root, message=message)
+    hook.save()
+    try:
+        yield hook
+    except Exception:
+        if auto_restore_on_error and hook.is_stashed:
+            hook.restore()
+        raise
+
