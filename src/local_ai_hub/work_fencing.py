@@ -68,6 +68,8 @@ class FencingLease:
 
 
 def canonical_resource(resource: str | Path) -> str:
+    if not isinstance(resource, (str, Path)):
+        raise ValueError("resource must be a non-empty filesystem root")
     value = str(resource).strip()
     if not value or "\x00" in value:
         raise ValueError("resource must be a non-empty filesystem root")
@@ -78,24 +80,31 @@ def _coordination_scope(
     resource: str | Path,
     coordination_id: str | None | object,
 ) -> tuple[str, str]:
-    physical = canonical_resource(resource)
     if coordination_id is None:
         raise ValueError("project coordination id is required")
     if coordination_id is _COORDINATION_ID_UNSET:
+        physical = canonical_resource(resource)
         return physical, physical
-    namespace = str(coordination_id).strip()
+    if not isinstance(coordination_id, str):
+        raise ValueError("invalid project coordination id")
+    namespace = coordination_id.strip()
     if not namespace or "\x00" in namespace or len(namespace) > 512:
         raise ValueError("invalid project coordination id")
+    physical = canonical_resource(resource)
     return physical, f"project:{namespace}"
 
 
 def normalize_paths(
     paths: Sequence[str], *, root: str | Path | None = None
 ) -> tuple[str, ...]:
+    if paths is None or isinstance(paths, (str, bytes, bytearray)):
+        raise ValueError("writer lease paths must be a sequence of exact paths")
     normalized: set[str] = set()
     resolved_root = Path(root).resolve(strict=False) if root is not None else None
     for value in paths:
-        raw = str(value).replace("\\", "/")
+        if not isinstance(value, str):
+            raise ValueError(f"unsafe lease path: {value!r}")
+        raw = value.replace("\\", "/")
         windows = PureWindowsPath(raw)
         posix = PurePosixPath(raw)
         parts = raw.split("/")
@@ -324,11 +333,13 @@ class FencingLeaseStore:
         Call once at execution start or recovery. Continue a live attempt only by
         renewing its returned token; never mint a replacement from a stale worker.
         """
-        root_id, scope_id = _coordination_scope(resource, coordination_id)
-        work = str(work_id).strip()
-        owner = str(owner_id).strip()
+        if not isinstance(work_id, str) or not isinstance(owner_id, str):
+            raise ValueError("work_id and owner_id must be non-empty strings")
+        work = work_id.strip()
+        owner = owner_id.strip()
         if not work or not owner or "\x00" in work + owner:
-            raise ValueError("work_id and owner_id must be non-empty")
+            raise ValueError("work_id and owner_id must be non-empty strings")
+        root_id, scope_id = _coordination_scope(resource, coordination_id)
         now = float(self._clock())
         expires_at = now + self._ttl(ttl_seconds)
         attempt_id = uuid4().hex
@@ -466,15 +477,17 @@ class FencingLeaseStore:
         Overlapping live scopes fail closed; disjoint scopes may coexist. Mutating
         callers must pass the current ``WorkAttemptFence`` and use ``commit_guard``.
         """
+        if not isinstance(owner_id, str):
+            raise ValueError("owner_id must be a non-empty string")
+        owner = owner_id.strip()
+        if not owner or "\x00" in owner:
+            raise ValueError("owner_id must be a non-empty string")
+        scope = normalize_paths(paths)
         root_id = canonical_resource(resource)
         if coordination_id is _COORDINATION_ID_UNSET and attempt.scope_id:
             scope_id = attempt.scope_id
         else:
             root_id, scope_id = _coordination_scope(resource, coordination_id)
-        owner = str(owner_id).strip()
-        if not owner or "\x00" in owner:
-            raise ValueError("owner_id must be non-empty")
-        scope = normalize_paths(paths)
         now = float(self._clock())
         if not math.isfinite(now):
             raise ValueError("lease clock must return a finite timestamp")
@@ -523,7 +536,15 @@ class FencingLeaseStore:
                         (scope_id, root_id, now),
                     ).fetchall()
                     for (raw_paths,) in live:
-                        existing = tuple(json.loads(str(raw_paths)))
+                        try:
+                            decoded_paths = json.loads(raw_paths)
+                            if not isinstance(decoded_paths, list):
+                                raise ValueError("live lease paths are not a list")
+                            existing = normalize_paths(decoded_paths)
+                        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                            raise LeaseUnavailableError(
+                                "an active writer has a corrupt path scope"
+                            ) from exc
                         if _overlaps(scope, existing):
                             raise LeaseUnavailableError(
                                 "an active writer owns an overlapping path scope"
