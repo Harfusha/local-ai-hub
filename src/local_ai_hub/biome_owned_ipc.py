@@ -29,7 +29,7 @@ _INBOUND_SESSION_QUEUE_BUDGET = 2 * _INBOUND_QUEUE_SIZE * _MAX_INBOUND_FRAME
 _MAX_CAPTURE = 8192
 # This implementation is grounded to the currently reviewed upstream protocol
 # source and release only.  Any other installed version fails before server IPC.
-_VERSION = re.compile(r"^biome (2\.5\.15)$", re.IGNORECASE)
+_VERSION = re.compile(r"^Version: (2\.5\.15)$")
 
 
 class BiomeOwnershipError(RuntimeError):
