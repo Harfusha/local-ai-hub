@@ -94,7 +94,7 @@ def test_search_reads_candidate_files_concurrently_and_keeps_results(
             )
         return tools
 
-    expected = make_tools().search(str(tmp_path), "needle", top_k=10)
+    expected = make_tools().search(str(tmp_path), "needle", limit=10)
     tools = make_tools()
     original_read_bytes = Path.read_bytes
     active = 0
@@ -119,7 +119,7 @@ def test_search_reads_candidate_files_concurrently_and_keeps_results(
         return original_read_bytes(path)
 
     monkeypatch.setattr(Path, "read_bytes", tracked_read_bytes)
-    actual = tools.search(str(tmp_path), "needle", top_k=10)
+    actual = tools.search(str(tmp_path), "needle", limit=10)
 
     assert actual == expected
     assert max_active >= 2

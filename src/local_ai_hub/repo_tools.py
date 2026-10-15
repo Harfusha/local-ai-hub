@@ -1869,10 +1869,9 @@ class RepositoryTools:
         }
 
     def search(
-        self, root: str, query: str, top_k: int = 12, context_lines: int | None = None,
+        self, root: str, query: str, limit: int = 12, context_lines: int | None = None,
         *, project_settings: Any | None = None,
         git_inventory: Any = _UNSET_GIT_INVENTORY,
-        limit: int | None = None,
         offset: int = 0,
         exact_count: bool = False,
         force_include_paths: list[str] | tuple[str, ...] = (),
@@ -1880,7 +1879,7 @@ class RepositoryTools:
     ) -> dict[str, Any]:
         base = self._root(root)
         if exact_count:
-            exact_limit = limit if limit is not None else top_k
+            exact_limit = limit
             bounds_error = pagination_bounds_error(exact_limit, offset)
             if bounds_error:
                 return {
@@ -1895,18 +1894,22 @@ class RepositoryTools:
                 project_settings, git_inventory, force_include_paths,
                 path_priority,
             )
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
+                    "error": "limit must be a positive integer", "root": str(base), "results": []}
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
+                    "error": "offset must be a nonnegative integer", "root": str(base), "results": []}
         terms = self._terms(query)
         phrase = query.strip().lower()
         if not terms and not phrase:
-            empty_limit = max(1, int(limit if limit is not None else top_k))
             return {
                 "success": True, "root": str(base), "results": [],
                 "matches_count": 0, "total_matches": 0, "has_more": False,
-                "limit": empty_limit, "offset": max(0, int(offset)),
+                "limit": limit, "offset": offset,
                 "truncated": False, "count_exact": True,
             }
-        result_limit = max(1, int(limit if limit is not None else top_k))
-        offset = max(0, int(offset))
+        result_limit = limit
         effective_snippet_lines = max(1, min(int(context_lines), 40)) if context_lines is not None else self.snippet_lines
         hits: list[dict[str, Any]] = []
         scanned = 0
@@ -1914,7 +1917,7 @@ class RepositoryTools:
         read_errors = 0
         truncation_reasons: list[str] = []
         # Keep enough globally ranked candidates for the requested page. The
-        # multiplier remains the minimum working set for legacy top_k callers.
+        # multiplier remains the minimum working set for ranked search callers.
         candidate_limit = max(1, self.max_hits * 4, offset + result_limit)
         candidate_engine = "python"
         project_candidates = None
@@ -3186,7 +3189,7 @@ class RepositoryTools:
         source_query = is_source_context_query(query)
         requested_top_k = max(1, int(top_k))
         search_top_k = max(requested_top_k, min(64, requested_top_k * 4)) if source_query else top_k
-        search = self.search(root, query, top_k=search_top_k)
+        search = self.search(root, query, limit=search_top_k)
         if not search.get("success"):
             return search
         if source_query:

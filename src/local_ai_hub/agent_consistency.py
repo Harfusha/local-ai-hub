@@ -1104,7 +1104,7 @@ class AgentConsistencyGuard:
         if request.changed_paths:
             result = self.repository_tools.search_paths(request.root, query, list(request.changed_paths), top_k=self.max_candidates, context_lines=3)
         else:
-            result = self.repository_tools.search(request.root, query, top_k=self.max_candidates, context_lines=3)
+            result = self.repository_tools.search(request.root, query, limit=self.max_candidates, context_lines=3)
         if not result.get("success"):
             return ()
         candidates: list[ReuseCandidate] = []

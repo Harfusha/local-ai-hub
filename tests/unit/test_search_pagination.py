@@ -141,10 +141,10 @@ def test_repo_tools_pages_all_lexical_matches_in_ranked_order(tmp_path: Path) ->
         (root / f"{index:03}.py").write_text("needle appears here\n", encoding="utf-8")
     tools = RepositoryTools({"server": {"state_dir": str(tmp_path / "state")}})
 
-    first = tools.search(str(root), "needle", top_k=20, limit=20)
-    second = tools.search(str(root), "needle", top_k=20, limit=20, offset=20)
-    third = tools.search(str(root), "needle", top_k=20, limit=20, offset=40)
-    fourth = tools.search(str(root), "needle", top_k=20, limit=20, offset=60)
+    first = tools.search(str(root), "needle", limit=20)
+    second = tools.search(str(root), "needle", limit=20, offset=20)
+    third = tools.search(str(root), "needle", limit=20, offset=40)
+    fourth = tools.search(str(root), "needle", limit=20, offset=60)
 
     pages = [first, second, third, fourth]
     assert [item["path"] for page in pages for item in page["results"]] == [f"{index:03}.py" for index in range(65)]
