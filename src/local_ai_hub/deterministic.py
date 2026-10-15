@@ -4594,6 +4594,8 @@ def test_{sym}_regression_edge_cases():
         def _extract_file_info(item: tuple[str, Path, os.stat_result]) -> dict[str, Any] | None:
             rel, f, before = item
             cases: list[str] = []
+            suffix = f.suffix.lower()
+            cases_scan_complete = suffix in {".py", ".cs"}
             try:
                 if time.monotonic() >= deadline:
                     raise TimeoutError("test matrix read deadline exceeded")
@@ -4608,25 +4610,29 @@ def test_{sym}_regression_edge_cases():
                     before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns,
                 ) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
                     raise OSError("file changed during bounded read")
-                if f.suffix.lower() == ".py":
+                if suffix == ".py":
                     for ln in txt.splitlines():
                         if time.monotonic() >= deadline:
-                            raise TimeoutError("test matrix case scan deadline exceeded")
+                            cases_scan_complete = False
+                            break
                         if ln.strip().startswith("def test_"):
                             cases.append(ln.strip().split("(")[0].replace("def ", "").strip())
                             if len(cases) > 15:
+                                cases_scan_complete = False
                                 break
-                elif f.suffix.lower() == ".cs":
+                elif suffix == ".cs":
                     attribute_pending = 0
                     for line in txt.splitlines():
                         if time.monotonic() >= deadline:
-                            raise TimeoutError("test matrix case scan deadline exceeded")
+                            cases_scan_complete = False
+                            break
                         if re.search(r"\[(?:Test|UnityTest|Fact)\b", line):
                             attribute_pending = 20
                         if attribute_pending and (method := re.search(r"\bvoid\s+([A-Za-z0-9_]+)", line)):
                             cases.append(method.group(1))
                             attribute_pending = 0
                             if len(cases) > 15:
+                                cases_scan_complete = False
                                 break
                         elif attribute_pending:
                             attribute_pending -= 1
@@ -4658,6 +4664,11 @@ def test_{sym}_regression_edge_cases():
                 "run_argv": run_argv,
                 "content_sha256": digest,
                 "cases_truncated": len(cases) > 15,
+                "cases_scan_complete": cases_scan_complete,
+                "case_detection": {
+                    ".py": "python_test_function_name_heuristic",
+                    ".cs": "csharp_test_attribute_method_heuristic",
+                }.get(suffix, "not_implemented_for_language"),
             }
 
         selected: list[tuple[str, Path, os.stat_result]] = []
@@ -4680,6 +4691,9 @@ def test_{sym}_regression_edge_cases():
                     if row.get("cases_truncated"):
                         incomplete = True
                         warnings.append("test_case_result_limit_reached")
+                    if not row.get("cases_scan_complete", True):
+                        incomplete = True
+                        warnings.append("test_case_scan_incomplete")
                     test_files.append(row)
 
         return {
@@ -4688,7 +4702,15 @@ def test_{sym}_regression_edge_cases():
             "run_all_command": run_all_cmd,
             "test_files_count": len(test_files),
             "test_files": test_files,
-            "coverage": {"scan_complete": not incomplete, "warnings": sorted(set(warnings))},
+            "coverage": {
+                "scan_complete": not incomplete,
+                "scan_complete_within_scope": not incomplete,
+                "scope": "current supported test files emitted by repo_tools iterator",
+                "max_depth": 25,
+                "max_files": 2000,
+                "inventory_omissions_unknown": True,
+                "warnings": sorted(set(warnings)),
+            },
         }
 
     def affected_tests(self, root: str, changed_paths: list[str] | None = None, base: str = "HEAD") -> dict[str, Any]:
