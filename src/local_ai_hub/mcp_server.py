@@ -3711,7 +3711,7 @@ def local_ai_command(
         return _compact(CLIENT.post("/api/speculative-lint", payload, timeout=host_timeout), "command")
     if action.startswith("mock_server"):
         sub_act = "start" if action in {"mock_server", "mock_server_start"} else "stop" if action == "mock_server_stop" else "status"
-        port_val = int(command) if (command and command.isdigit()) else 11440
+        port_val = int(command) if (command and command.isdigit()) else (0 if sub_act == "start" else 11440)
         return _compact(CLIENT.post("/api/command/mock_server", {
             "action": sub_act, "root": eff_cwd, "port": port_val, "spec_path": criterion or None,
         }, timeout=host_timeout), "command")
