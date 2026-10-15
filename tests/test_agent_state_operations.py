@@ -15,6 +15,7 @@ from local_ai_hub.agent_identity import AgentScope, ScopeContext
 from local_ai_hub.agent_memory import MemoryRecord, MemoryKind, MemoryStatus
 from local_ai_hub.agent_incidents import IncidentRecord, IncidentFingerprint
 from local_ai_hub.agent_consistency import AgentConsistencyGuard
+from local_ai_hub.project_config import resolve_project_context
 
 
 def app_with_agent_state(tmp_path: Path) -> LocalAIApp:
@@ -92,7 +93,11 @@ def memory_export_context(record: MemoryRecord) -> dict[str, object]:
     provenance = record.provenance if isinstance(record.provenance, dict) else {}
     context: dict[str, object] = {"scope": record.scope, "tenant": provenance.get("tenant")}
     if scope == "repository":
-        context.update(root=provenance.get("root"), scope_id=record.scope_id)
+        context.update(
+            root=provenance.get("root"),
+            scope_id=record.scope_id,
+            repository_id=provenance.get("repository_id", "fixture-repository-id"),
+        )
     elif scope == "task":
         context.update(root=provenance.get("root"), task_id=record.scope_id)
     elif scope == "session":
@@ -132,7 +137,8 @@ def test_selective_export_and_import_valid_records(tmp_path: Path):
             value={"architecture": "modular"},
             scope_id="repo1",
             status=MemoryStatus.CONFIRMED,
-            provenance={"root": str(tmp_path / "app1" / "repo"), "tenant": "tenant-a"},
+            provenance={"root": str(tmp_path / "app1" / "repo"), "tenant": "tenant-a",
+                        "repository_id": "fixture-repository-id"},
         )
         saved = app1.agent_memory.record(rec, actor="user")
         bundle_bytes = app1.export_bundle(
@@ -164,6 +170,7 @@ def test_selective_bundle_roundtrips_memory_metadata(tmp_path: Path):
     provenance = {
         "root": str(tmp_path / "repo"),
         "tenant": "tenant-a",
+        "repository_id": "fixture-repository-id",
         "repository_revision": "rev-7",
         "path_refs": ["src/parser.py"],
         "symbol_refs": ["Parser.parse"],
@@ -226,6 +233,9 @@ def test_project_bundle_roundtrips_agent_state_memory_metadata(tmp_path: Path):
     provenance = {
         "root": str(source_repo),
         "tenant": "tenant-a",
+        "repository_id": resolve_project_context(
+            source_repo, tmp_path / "source-app" / "state"
+        ).coordination_id,
         "repository_revision": "rev-project",
         "path_refs": ["src/project.py"],
         "symbol_refs": ["Project.run"],
@@ -288,7 +298,11 @@ def test_project_bundle_rejects_foreign_repository_memory(tmp_path: Path):
     foreign_repo = tmp_path / "foreign-repo"
     source_repo.mkdir()
     foreign_repo.mkdir()
-    provenance = {"root": str(foreign_repo), "tenant": "tenant-a", "path_refs": ["src/foreign.py"]}
+    provenance = {"root": str(foreign_repo), "tenant": "tenant-a",
+                  "repository_id": resolve_project_context(
+                      foreign_repo, tmp_path / "source-app" / "state"
+                  ).coordination_id,
+                  "path_refs": ["src/foreign.py"]}
     with app_with_agent_state(tmp_path / "source-app") as app:
         record = app.agent_memory.record(
             MemoryRecord.create(
@@ -321,6 +335,7 @@ def test_project_bundle_rejects_repository_memory_without_root(tmp_path: Path):
                 value="must not export",
                 scope_id="rootless",
                 status=MemoryStatus.CONFIRMED,
+                provenance={"repository_id": "fixture-repository-id", "tenant": "tenant-a"},
             ),
             actor="user",
         )
@@ -347,7 +362,10 @@ def test_project_bundle_import_rejects_repository_memory_without_root(tmp_path: 
                 value="must not import",
                 scope_id="repo-import-rootless",
                 status=MemoryStatus.CONFIRMED,
-                provenance={"root": str(source_repo), "tenant": "tenant-a"},
+                provenance={"root": str(source_repo), "tenant": "tenant-a",
+                            "repository_id": resolve_project_context(
+                                source_repo, tmp_path / "source-app" / "state"
+                            ).coordination_id},
             ),
             actor="user",
         )
@@ -395,7 +413,11 @@ def test_project_bundle_rejects_tampered_agent_state_records(tmp_path: Path):
                 value="original",
                 scope_id="repo-tamper",
                 status=MemoryStatus.CONFIRMED,
-                provenance={"root": str(source_repo), "tenant": "tenant-a", "path_refs": ["src/tamper.py"]},
+                provenance={"root": str(source_repo), "tenant": "tenant-a",
+                            "repository_id": resolve_project_context(
+                                source_repo, tmp_path / "source-app" / "state"
+                            ).coordination_id,
+                            "path_refs": ["src/tamper.py"]},
             ),
             actor="user",
         )
@@ -432,7 +454,10 @@ def test_project_bundle_rejects_removed_agent_state_integrity_data(tmp_path: Pat
                 key="removal-check",
                 value="original",
                 status=MemoryStatus.CONFIRMED,
-                provenance={"root": str(source_repo), "tenant": "tenant-a"},
+                provenance={"root": str(source_repo), "tenant": "tenant-a",
+                            "repository_id": resolve_project_context(
+                                source_repo, tmp_path / "source-app" / "state"
+                            ).coordination_id},
             ),
             actor="user",
         )
@@ -496,7 +521,8 @@ def test_bundle_requires_exact_current_application_version(tmp_path: Path):
             value="current-only",
             scope_id="repo1",
             status=MemoryStatus.CONFIRMED,
-            provenance={"root": str(tmp_path / "source" / "repo"), "tenant": "tenant-a"},
+            provenance={"root": str(tmp_path / "source" / "repo"), "tenant": "tenant-a",
+                        "repository_id": "fixture-repository-id"},
         )
         saved = app.agent_memory.record(rec, actor="user")
         raw = app.export_bundle(
