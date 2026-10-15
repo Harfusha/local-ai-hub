@@ -1,39 +1,47 @@
 # Local AI Hub: Master Implementation Plan for 100 Ergonomics, Quality & Performance Enhancements
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** Follow the governing simplified integration process below. Execute and review bounded tasks directly; optional independent implementation agents follow the same criteria. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Transform Local AI Hub into a rock-solid, ultra-fast, and deeply capable local engine for cloud and local coding agents by executing all 100 identified enhancements across 6 modular waves.
 
-**Architecture:** The 100 tasks are decomposed into 6 decoupled Waves designed for execution by isolated subagents. Each wave has disjoint file boundaries and explicit SQLite transaction isolation to prevent lock contention and merge conflicts. Strict TDD (Test-Driven Development) is required for every single task: write failing test -> verify failure -> write minimal implementation -> verify pass -> commit.
+**Architecture:** The primary agent owns the 6 waves, implementation, review, and integration on current `master`, under the governing [simplified integration process](../specs/2026-10-07-simplified-worktree-integration.md). Optional parallel implementations require disjoint write scopes and isolation where needed. All unit state uses temporary databases. Apply TDD to behavior changes: failing regression, minimal implementation, passing targeted tests, review, then commit.
 
 **Tech Stack:** Python 3.11+, SQLite 3 (WAL mode, custom pragmas, recursive CTEs), NumPy, tree-sitter / regex AST fallbacks, pytest, MCP (Model Context Protocol), Windows Process Job Objects.
 
 ---
 
-## Subagent Execution Protocol
+## Development and Optional Subagent Protocol
 
 > 📖 **Operational Playbook:** Detailed dispatch scripts, subagent prompts (Implementer, Spec Reviewer, Quality Reviewer), and worktree teardown routines are documented in [Subagent Dispatch Playbook](file:///c:/Users/Adam/.local-ai-hub/docs/superpowers/plans/2026-10-13-subagent-dispatch-playbook.md).
 
-To execute these 100 tasks using subagents without collisions:
+The October 7 governing process takes precedence over historical per-task worktree and mandatory reviewer-agent wording in this plan and all linked wave plans. Use the following isolation rules only when a separate implementation worker is warranted:
 
 1. **Subagent Worktree Isolation:**
-   - Every subagent operates in its own git worktree (`git worktree add -b feature/<wave>-<task_id> ../wt-<task_id>`).
+   - An independent writing subagent operates in an assigned isolated worktree (`git worktree add -b codex/<wave>-<task_id> ../wt-<task_id>`). Routine work stays on `master`.
    - Run verification commands against the worktree root.
 2. **Database Isolation During Tests:**
    - Tests MUST use in-memory SQLite (`:memory:`) or isolated temporary state directories via `tmp_path` fixtures (`test_cfg["state_dir"] = str(tmp_path)`).
    - NEVER point unit tests to live databases in `c:\Users\Adam\.local-ai-hub\state\`.
 3. **Two-Stage Review Process:**
-   - After subagent finishes, a Spec Reviewer verifies:
-     - Exact line numbers and function signatures match the specification.
+   - The primary agent performs a specification review; a separate reviewer agent is optional:
+     - Observable behavior and public contracts satisfy the task criteria; historical line numbers are navigation hints.
      - No extraneous edits or architectural drift.
-   - Code Quality Reviewer verifies:
+   - The primary agent then performs a code-quality review:
      - Error handling, bounded timeouts, Windows process flags, type annotations, zero full-file rewrites.
 4. **Integration Gate:**
-   - Squash-merge into master only when `python -m pytest tests/unit/ -q` passes without regressions.
+   - Integrate each reviewed bounded change promptly after its relevant tests pass on integrated `master`. Run the full required suite at each wave/release gate. Preserve and classify every leftover before recoverable archival; no blanket stash/reset/rebase/merge.
 
 ---
 
 ## Wave Breakdown & Dependency DAG
+
+### Integration checkpoint — 2026-10-15, master `6ce835de`
+
+- Full local inventory: 244 branches and 106 registered worktrees; 105 worktrees clean, only the current master checkout dirty. No stashes. No worktree status errors.
+- 56 branch refs are not ancestral to master. `git cherry` finds no patch-unique changes on `gemini/wave-6-task-77`, `gemini/wave-8-task-84`, `gemini/wave-9-task-87`, `gemini/wave-9-task-88`, or `gemini/wave-9-task-94`.
+- The remaining 51 refs include unique patches and overlapping ancestry. In particular, tasks 100–127 form one stack ending at `gemini/wave-11-task-127`; refs are not independent implementation units.
+- Preserve all refs and worktrees pending task-criterion and patch review. Ancestry or patch novelty alone does not authorize integration or deletion. No blanket merge, reset, stash, rebase, or cleanup was performed.
+- T79 is committed as `6ce835de`; T74–T78 remain a dirty reviewed implementation candidate. Focused integrated regression command: `python -m pytest tests/test_agent_events.py tests/test_agent_events_fresh_init.py tests/test_agent_tasks.py tests/test_repo_tools.py tests/unit/test_agent_question_channel.py tests/unit/test_agent_question_scope.py tests/unit/test_cross_workspace_memory.py tests/unit/test_verify_completion_projection.py tests/unit/test_simulate_merge_projection.py tests/unit/test_worktree_dotgit_file.py -q --tb=short` — 86 passed, request `req_b5c8cca96a18`. This is candidate evidence, not full release acceptance.
 
 ```mermaid
 graph TD
