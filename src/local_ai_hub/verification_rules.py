@@ -312,6 +312,7 @@ def complete_task_with_project_rules(
     actor: str = "agent",
     idempotency_key: str = "",
     now: float | None = None,
+    response_budget_tokens: int | None = None,
 ) -> TaskState:
     """Resolve payload-root project rules and gate mutation on persisted receipts."""
     task_key = str(task_id or "").strip()
@@ -364,15 +365,19 @@ def complete_task_with_project_rules(
         state_data = dict(getattr(checkpoint, "state_data", {}))
         state_data["repo_root"] = str(project.root)
         state_data["repository_revision"] = revision
+        checkpoint_obj = TaskCheckpoint(
+            phase=getattr(checkpoint, "phase", ""),
+            next_action=getattr(checkpoint, "next_action", ""),
+            affected_paths=getattr(checkpoint, "affected_paths", ()),
+            evidence_ids=getattr(checkpoint, "evidence_ids", ()),
+            blockers=getattr(checkpoint, "blockers", ()),
+            state_data=state_data,
+        )
+        task_store.preflight_completion_response_budget(
+            task_key, response_budget_tokens, actor=actor,
+            checkpoint=checkpoint_obj if state_data != dict(getattr(checkpoint, "state_data", {})) else None,
+        )
         if state_data != dict(getattr(checkpoint, "state_data", {})):
-            checkpoint_obj = TaskCheckpoint(
-                phase=getattr(checkpoint, "phase", ""),
-                next_action=getattr(checkpoint, "next_action", ""),
-                affected_paths=getattr(checkpoint, "affected_paths", ()),
-                evidence_ids=getattr(checkpoint, "evidence_ids", ()),
-                blockers=getattr(checkpoint, "blockers", ()),
-                state_data=state_data,
-            )
             suffix = "_project_completion_context"
             task_store.checkpoint(
                 task_key,
@@ -385,8 +390,34 @@ def complete_task_with_project_rules(
             reason=reason,
             actor=actor,
             idempotency_key=idempotency_key,
+            response_budget_tokens=response_budget_tokens,
         )
     before_generation = _completion_mutation_generation(before)
+    preflight_current = task_store.get(task_key)
+    if (
+        preflight_current is None
+        or str(getattr(preflight_current, "owner", "") or "").strip() != before_owner
+        or _completion_mutation_generation(preflight_current) != before_generation
+    ):
+        raise CompletionGateError("task owner or mutation generation changed before completion preflight")
+    preflight_checkpoint = getattr(preflight_current, "checkpoint", None)
+    preflight_state_data = dict(getattr(preflight_checkpoint, "state_data", {}))
+    preflight_state_data["repo_root"] = str(project.root)
+    preflight_state_data["repository_revision"] = revision
+    preflight_checkpoint_candidate = TaskCheckpoint(
+        phase=getattr(preflight_checkpoint, "phase", ""),
+        next_action=getattr(preflight_checkpoint, "next_action", ""),
+        affected_paths=getattr(preflight_checkpoint, "affected_paths", ()),
+        evidence_ids=getattr(preflight_checkpoint, "evidence_ids", ()),
+        blockers=getattr(preflight_checkpoint, "blockers", ()),
+        state_data=preflight_state_data,
+    )
+    task_store.preflight_completion_response_budget(
+        task_key, response_budget_tokens, actor=actor,
+        checkpoint=(preflight_checkpoint_candidate
+                    if preflight_state_data != dict(getattr(preflight_checkpoint, "state_data", {}))
+                    else None),
+    )
     result = evaluate_project_completion(
         verification_store,
         project.settings,
@@ -416,6 +447,7 @@ def complete_task_with_project_rules(
             current is None
             or (before_owner and current_owner != before_owner)
             or current_generation != before_generation
+            or getattr(current, "checkpoint", None) != preflight_checkpoint
         ):
             raise CompletionGateError("task owner or mutation generation changed during completion verification")
         current_state_data = dict(getattr(current_chk, "state_data", {}))
@@ -430,6 +462,9 @@ def complete_task_with_project_rules(
                 blockers=getattr(current_chk, "blockers", ()),
                 state_data=current_state_data,
             )
+        else:
+            checkpoint_obj = None
+        if checkpoint_obj is not None:
             suffix = "_project_completion_context"
             task_store.checkpoint(
                 task_key,
@@ -442,4 +477,5 @@ def complete_task_with_project_rules(
         reason=reason,
         actor=actor,
         idempotency_key=idempotency_key,
+        response_budget_tokens=response_budget_tokens,
     )

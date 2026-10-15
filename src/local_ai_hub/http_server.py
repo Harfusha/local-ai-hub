@@ -6321,15 +6321,27 @@ class Handler(BaseHTTPRequestHandler):
                         task_id=str(ctx_data.get("task_id", "")),
                         session_id=str(ctx_data.get("session_id", "")),
                     )
-                    task = APP.agent_tasks.create(
-                        contract,
-                        context,
-                        task_id=str(payload.get("task_id", "") or ""),
-                        actor=actor,
-                        idempotency_key=idempotency_key,
-                        auto_worktree=bool(payload.get("auto_worktree", False)),
-                        repo_root=str(payload.get("repo_root", "")),
-                    )
+                    try:
+                        task = APP.agent_tasks.create(
+                            contract,
+                            context,
+                            task_id=str(payload.get("task_id", "") or ""),
+                            actor=actor,
+                            idempotency_key=idempotency_key,
+                            auto_worktree=bool(payload.get("auto_worktree", False)),
+                            repo_root=str(payload.get("repo_root", "")),
+                            response_budget_tokens=payload.get("response_budget_tokens"),
+                        )
+                    except CheckpointResponseBudgetError as exc:
+                        self._send(413, {
+                            "success": False, "error": str(exc), "terminal": True, "retryable": False,
+                            "mutation_applied": False, "operation_not_started": True,
+                            "response_budget": {"requested_tokens": exc.requested_tokens,
+                                                "required_tokens": exc.required_tokens,
+                                                "unit": "estimated_tokens"},
+                        }); return
+                    except ValueError as exc:
+                        self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                     # A prediction is optional and must never fail task persistence.
                     warmup_scheduled = False
                     try:
@@ -6365,9 +6377,18 @@ class Handler(BaseHTTPRequestHandler):
                             actor=actor,
                             idempotency_key=idempotency_key,
                             checkpoint=checkpoint,
+                            response_budget_tokens=payload.get("response_budget_tokens"),
                         )
                         self._send(200, {"success": True, "task": task.to_dict()}); return
-                    except (KeyError, InvalidTransitionError, CompletionGateError) as exc:
+                    except CheckpointResponseBudgetError as exc:
+                        self._send(413, {
+                            "success": False, "error": str(exc), "terminal": True, "retryable": False,
+                            "mutation_applied": False, "operation_not_started": True,
+                            "response_budget": {"requested_tokens": exc.requested_tokens,
+                                                "required_tokens": exc.required_tokens,
+                                                "unit": "estimated_tokens"},
+                        }); return
+                    except (KeyError, ValueError, CompletionGateError) as exc:
                         self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                 if action == "complete":
                     try:
@@ -6419,9 +6440,18 @@ class Handler(BaseHTTPRequestHandler):
                             reason=str(payload.get("reason", payload.get("value", "completed by agent"))),
                             actor=actor,
                             idempotency_key=idempotency_key,
+                            response_budget_tokens=payload.get("response_budget_tokens"),
                         )
                         self._send(200, {"success": True, "task": task.to_dict()}); return
-                    except (KeyError, InvalidTransitionError, CompletionGateError) as exc:
+                    except CheckpointResponseBudgetError as exc:
+                        self._send(413, {
+                            "success": False, "error": str(exc), "terminal": True, "retryable": False,
+                            "mutation_applied": False, "operation_not_started": True,
+                            "response_budget": {"requested_tokens": exc.requested_tokens,
+                                                "required_tokens": exc.required_tokens,
+                                                "unit": "estimated_tokens"},
+                        }); return
+                    except (KeyError, ValueError, CompletionGateError) as exc:
                         self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                 if action == "fail":
                     try:
@@ -6430,9 +6460,18 @@ class Handler(BaseHTTPRequestHandler):
                             reason=str(payload.get("reason", payload.get("value", payload.get("error", "failed by agent")))),
                             actor=actor,
                             idempotency_key=idempotency_key,
+                            response_budget_tokens=payload.get("response_budget_tokens"),
                         )
                         self._send(200, {"success": True, "task": task.to_dict()}); return
-                    except (KeyError, InvalidTransitionError, CompletionGateError) as exc:
+                    except CheckpointResponseBudgetError as exc:
+                        self._send(413, {
+                            "success": False, "error": str(exc), "terminal": True, "retryable": False,
+                            "mutation_applied": False, "operation_not_started": True,
+                            "response_budget": {"requested_tokens": exc.requested_tokens,
+                                                "required_tokens": exc.required_tokens,
+                                                "unit": "estimated_tokens"},
+                        }); return
+                    except (KeyError, ValueError, CompletionGateError) as exc:
                         self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                 if action == "checkpoint":
                     chk_data = payload.get("checkpoint") or {}

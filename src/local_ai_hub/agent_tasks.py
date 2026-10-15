@@ -39,7 +39,7 @@ class CompletionGateError(RuntimeError):
 
 
 class CheckpointResponseBudgetError(CompletionGateError):
-    """Raised before persistence when a checkpoint's full memory receipt cannot fit."""
+    """Raised before persistence when a task mutation's full memory receipt cannot fit."""
 
     def __init__(self, requested_tokens: int, required_tokens: int) -> None:
         self.requested_tokens = requested_tokens
@@ -308,6 +308,27 @@ def _preserve_checkpoint_memory_state(
         evidence_ids=checkpoint.evidence_ids,
         blockers=checkpoint.blockers,
         state_data=merged_state_data,
+    )
+
+
+def _checkpoint_with_scheduled_worktree_cleanup(checkpoint: TaskCheckpoint) -> TaskCheckpoint:
+    """Keep completed worktree cleanup asynchronous and visible in task state."""
+    state_data = dict(checkpoint.state_data)
+    worktree = state_data.get("worktree")
+    if not isinstance(worktree, Mapping) or worktree.get("cleanup_success"):
+        return checkpoint
+    state_data["worktree"] = {
+        **dict(worktree),
+        "cleanup_pending": True,
+        "cleanup_scheduled": True,
+    }
+    return TaskCheckpoint(
+        phase=checkpoint.phase,
+        next_action=checkpoint.next_action,
+        affected_paths=checkpoint.affected_paths,
+        evidence_ids=checkpoint.evidence_ids,
+        blockers=checkpoint.blockers,
+        state_data=state_data,
     )
 
 
@@ -1322,12 +1343,21 @@ class TaskStore:
         repo_root: str = "",
         repository_revision: str = "",
         worktree_ttl_seconds: float = 24 * 60 * 60.0,
+        response_budget_tokens: int | None = None,
     ) -> TaskState:
+        if response_budget_tokens is not None and (
+            isinstance(response_budget_tokens, bool)
+            or not isinstance(response_budget_tokens, int)
+            or response_budget_tokens < 1
+        ):
+            raise ValueError("response_budget_tokens must be a positive integer")
         t_id = task_id or f"task_{uuid.uuid4().hex[:12]}"
         now = time.time()
         initial_status = TaskStatus.PLANNED
         initial_sd: dict[str, Any] = {}
         canonical_root = _canonical_repository_root(repo_root) if repo_root else ""
+        requested_canonical_root = canonical_root
+        worktree_plan = None
         try:
             from .trace_context import current as current_trace_context
             authenticated_tenant = str(current_trace_context().get("tenant", "") or "").strip()
@@ -1340,13 +1370,13 @@ class TaskStore:
 
         if auto_worktree:
             try:
-                from .process_utils import create_git_worktree
+                from .process_utils import prepare_git_worktree
                 r_root = repo_root or context.repository_id or "."
                 if context.repository_id and Path(r_root).expanduser().resolve(strict=False) != Path(context.repository_id).expanduser().resolve(strict=False):
                     raise ValueError("task worktree repository does not match task context")
                 worktree_ttl = max(60.0, min(float(worktree_ttl_seconds), 30 * 24 * 60 * 60.0))
                 worktree_expiry = now + worktree_ttl
-                wt_res = create_git_worktree(
+                worktree_plan = prepare_git_worktree(
                     r_root,
                     branch_name=f"hub/task-{t_id}",
                     task_id=t_id,
@@ -1355,13 +1385,12 @@ class TaskStore:
                     ttl_seconds=worktree_ttl,
                     expires_at=worktree_expiry,
                 )
-                if wt_res.get("success"):
-                    initial_sd["worktree"] = wt_res
-                    if not canonical_root and wt_res.get("repo_root"):
-                        canonical_root = _canonical_repository_root(wt_res["repo_root"])
-                        initial_sd["repo_root"] = canonical_root
+                initial_sd["worktree"] = worktree_plan.response_metadata()
+                if not canonical_root:
+                    canonical_root = worktree_plan.repo_root
+                    initial_sd["repo_root"] = canonical_root
             except Exception:
-                pass
+                worktree_plan = None
 
         if canonical_root and authenticated_tenant:
             initial_sd["_agent_task_scope"] = {
@@ -1389,6 +1418,46 @@ class TaskStore:
             checkpoint=TaskCheckpoint(state_data=initial_sd),
             verification_receipts={},
         )
+
+        self._preflight_response_budget(initial_state, response_budget_tokens)
+        fallback_state = None
+        if worktree_plan is not None and not requested_canonical_root and not repo_root:
+            fallback_sd = dict(initial_sd)
+            fallback_sd.pop("worktree", None)
+            fallback_sd.pop("repo_root", None)
+            fallback_sd.pop("_agent_task_scope", None)
+            fallback_memory = self._task_memory_context(t_id, contract, context, root_override="")
+            if fallback_memory is None:
+                fallback_sd.pop("memory_context", None)
+            else:
+                fallback_sd["memory_context"] = fallback_memory
+            fallback_state = replace(
+                initial_state,
+                checkpoint=replace(initial_state.checkpoint, state_data=fallback_sd),
+            )
+            self._preflight_response_budget(fallback_state, response_budget_tokens)
+
+        if worktree_plan is not None:
+            try:
+                from .process_utils import create_git_worktree
+                r_root = repo_root or context.repository_id or "."
+                wt_res = create_git_worktree(
+                    r_root,
+                    branch_name=f"hub/task-{t_id}",
+                    task_id=t_id,
+                    owner=actor,
+                    created_at=now,
+                    ttl_seconds=worktree_plan.ttl_seconds,
+                    expires_at=worktree_plan.expires_at,
+                    prepared_plan=worktree_plan,
+                )
+            except Exception:
+                wt_res = {"success": False}
+            if not wt_res.get("success"):
+                if fallback_state is not None:
+                    initial_state = fallback_state
+                else:
+                    initial_sd.pop("worktree", None)
 
         event = AgentEvent.create(
             stream_id=f"task:{t_id}",
@@ -1952,9 +2021,16 @@ class TaskStore:
         actor: str,
         idempotency_key: str,
         checkpoint: TaskCheckpoint | None = None,
+        response_budget_tokens: int | None = None,
         _allow_server_memory_refresh: bool = False,
         _expected_reap: tuple[str, str, TaskStatus, float, float] | None = None,
     ) -> TaskState:
+        if response_budget_tokens is not None and (
+            isinstance(response_budget_tokens, bool)
+            or not isinstance(response_budget_tokens, int)
+            or response_budget_tokens < 1
+        ):
+            raise ValueError("response_budget_tokens must be a positive integer")
         current = self.get(task_id)
         if not current:
             raise KeyError(f"Task {task_id} not found")
@@ -1981,6 +2057,8 @@ class TaskStore:
 
         if target == current.status:
             if target == TaskStatus.COMPLETED:
+                candidate = replace(current, checkpoint=checkpoint) if checkpoint is not None else current
+                self._preflight_response_budget(candidate, response_budget_tokens)
                 # No-op retries must not trust an old terminal projection alone.
                 self._verify_completion(current)
                 if checkpoint is not None:
@@ -1989,9 +2067,11 @@ class TaskStore:
                 return self.checkpoint(
                     task_id,
                     checkpoint,
+                    response_budget_tokens=response_budget_tokens,
                     actor=actor,
                     idempotency_key=idempotency_key,
                 )
+            self._preflight_response_budget(current, response_budget_tokens)
             if not idempotency_key:
                 return current
             return self._replay_same_status_transition(
@@ -2078,6 +2158,7 @@ class TaskStore:
             verification_receipts=current.verification_receipts,
         )
 
+        self._preflight_response_budget(updated, response_budget_tokens)
         if target == TaskStatus.COMPLETED:
             self._verify_completion(updated)
 
@@ -2164,19 +2245,43 @@ class TaskStore:
         reason: str = "completed by agent",
         actor: str = "agent",
         idempotency_key: str = "",
+        response_budget_tokens: int | None = None,
     ) -> TaskState:
+        if response_budget_tokens is not None and (
+            isinstance(response_budget_tokens, bool)
+            or not isinstance(response_budget_tokens, int)
+            or response_budget_tokens < 1
+        ):
+            raise ValueError("response_budget_tokens must be a positive integer")
         current = self.get(task_id)
         if not current:
             raise KeyError(f"Task {task_id} not found")
         if current.status == TaskStatus.COMPLETED:
+            completion_checkpoint = _checkpoint_with_scheduled_worktree_cleanup(current.checkpoint)
             completed = self.transition(
                 task_id,
                 TaskStatus.COMPLETED,
                 reason=reason,
                 actor=actor,
                 idempotency_key=idempotency_key,
+                checkpoint=completion_checkpoint,
+                response_budget_tokens=response_budget_tokens,
             )
-            return self._cleanup_completed_worktree(completed, actor=actor)
+            return completed
+        if current.status not in (TaskStatus.PLANNED, TaskStatus.ACTIVE, TaskStatus.VERIFYING,
+                                  TaskStatus.WAITING, TaskStatus.BLOCKED):
+            raise InvalidTransitionError(f"Cannot complete task {task_id} from {current.status.value}")
+        completion_checkpoint = _checkpoint_with_scheduled_worktree_cleanup(current.checkpoint)
+        self.preflight_completion_response_budget(
+            task_id, response_budget_tokens, actor=actor, checkpoint=completion_checkpoint,
+        )
+        if response_budget_tokens is not None:
+            candidate = replace(
+                current, status=TaskStatus.COMPLETED, owner=actor,
+                updated_at=time.time(), heartbeat_expires_at=0.0,
+                checkpoint=completion_checkpoint,
+            )
+            self._verify_completion(candidate)
         if current.status == TaskStatus.PLANNED:
             current = self.transition(
                 task_id,
@@ -2211,37 +2316,46 @@ class TaskStore:
             reason=reason,
             actor=actor,
             idempotency_key=idempotency_key,
+            checkpoint=completion_checkpoint,
+            response_budget_tokens=response_budget_tokens,
         )
-        return self._cleanup_completed_worktree(completed, actor=actor)
+        return completed
 
-    def _cleanup_completed_worktree(self, task: TaskState, *, actor: str) -> TaskState:
-        """Best-effort cleanup after verified completion; never undo task status."""
-        wt = task.checkpoint.state_data.get("worktree")
-        if not isinstance(wt, dict) or wt.get("cleanup_success"):
-            return task
-        reason = "worktree cleanup requires verified creation metadata"
-        try:
-            from .worktrees import is_hub_temporary_worktree, worktree_is_clean_ancestor
-
-            base = str(wt.get("base_commit", ""))
-            if not base or not all(wt.get(key) for key in (
-                "creator_pid", "creator_creation_identity", "creator_creation_identity_type", "creator_executable"
-            )):
-                return self._mark_cleanup_pending(task, reason, actor=actor)
-            path = Path(str(wt.get("worktree_path", "")))
-            if not is_hub_temporary_worktree(path):
-                return self._mark_cleanup_pending(task, "worktree is outside the managed temporary root", actor=actor)
-            safe, reason = worktree_is_clean_ancestor(
-                wt.get("repo_root", ""), path, base
+    def preflight_completion_response_budget(
+        self,
+        task_id: str,
+        response_budget_tokens: int | None,
+        *,
+        actor: str,
+        checkpoint: TaskCheckpoint | None = None,
+    ) -> None:
+        """Check the final completion projection before any completion writes."""
+        if response_budget_tokens is None:
+            return
+        if (
+            isinstance(response_budget_tokens, bool)
+            or not isinstance(response_budget_tokens, int)
+            or response_budget_tokens < 1
+        ):
+            raise ValueError("response_budget_tokens must be a positive integer")
+        current = self.get(task_id)
+        if current is None:
+            raise KeyError(f"Task {task_id} not found")
+        candidate_checkpoint = current.checkpoint
+        if checkpoint is not None:
+            candidate_checkpoint = _preserve_checkpoint_memory_state(
+                current.checkpoint.state_data, checkpoint
             )
-            if not safe:
-                return self._mark_cleanup_pending(task, reason, actor=actor)
-            result = self.cleanup_worktree(task.task_id, actor=actor, _required_base_commit=base)
-            if result.get("success"):
-                return self.get(task.task_id) or task
-            return self._mark_cleanup_pending(task, str(result.get("error") or "worktree cleanup failed"), actor=actor)
-        except Exception as exc:
-            return self._mark_cleanup_pending(task, f"worktree cleanup failed: {type(exc).__name__}", actor=actor)
+        candidate_checkpoint = _checkpoint_with_scheduled_worktree_cleanup(candidate_checkpoint)
+        candidate = replace(
+            current,
+            status=TaskStatus.COMPLETED,
+            owner=actor,
+            updated_at=time.time(),
+            heartbeat_expires_at=0.0,
+            checkpoint=candidate_checkpoint,
+        )
+        self._preflight_response_budget(candidate, response_budget_tokens)
 
     def _mark_cleanup_pending(self, task: TaskState, reason: str, *, actor: str) -> TaskState:
         wt = task.checkpoint.state_data.get("worktree")
@@ -2261,7 +2375,7 @@ class TaskStore:
             return self.get(task.task_id) or task
 
     def cleanup_idle_worktrees(self, *, limit: int = 32, deadline_seconds: float = 8.0) -> dict[str, int]:
-        """Reap only expired, terminal, Hub-owned temporary worktrees with dead creator identity."""
+        """Reap scheduled or expired terminal worktrees after ownership and cleanliness checks."""
         from .process_utils import process_owner_state
         from .worktrees import is_hub_temporary_worktree, worktree_is_clean_ancestor
 
@@ -2311,7 +2425,11 @@ class TaskStore:
                 }
                 repo = Path(str(wt["repo_root"])).resolve(strict=True)
                 path = Path(str(wt["worktree_path"]))
-                if expires_at >= time.time() or process_owner_state(creator, tempfile.gettempdir(), "worktree") != "stale":
+                cleanup_scheduled = wt.get("cleanup_scheduled") is True
+                if not cleanup_scheduled and (
+                    expires_at >= time.time()
+                    or process_owner_state(creator, tempfile.gettempdir(), "worktree") != "stale"
+                ):
                     counts["preserved"] += 1
                     continue
                 if not is_hub_temporary_worktree(path):
@@ -2369,10 +2487,17 @@ class TaskStore:
         idempotency_key: str = "",
         response_budget_tokens: int | None = None,
     ) -> TaskState:
+        if response_budget_tokens is not None and (
+            isinstance(response_budget_tokens, bool)
+            or not isinstance(response_budget_tokens, int)
+            or response_budget_tokens < 1
+        ):
+            raise ValueError("response_budget_tokens must be a positive integer")
         current = self.get(task_id)
         if not current:
             raise KeyError(f"Task {task_id} not found")
         if current.status == TaskStatus.FAILED:
+            self._preflight_response_budget(current, response_budget_tokens)
             return current
         if current.status in (
             TaskStatus.PLANNED,
