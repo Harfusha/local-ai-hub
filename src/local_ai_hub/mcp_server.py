@@ -3384,7 +3384,9 @@ def _local_ai_repo_impl(
         files_arg = [path] if path else ([query] if query and not query.startswith("-") else [])
         return _compact(CLIENT.post("/api/repo/context_budget", {
             "root": root, "files": files_arg, "max_tokens": max_tokens or 4000,
-        }, timeout=_timeout("quick")), "architecture")
+        }, timeout=_timeout("quick")), "architecture", extra_fields=[
+            *(extra_fields or []), "token_count_provenance", "omitted_files", "complete", "slice_recommendations_estimated",
+        ])
     if action == "git_diff":
         if rev1 is not None or rev2 is not None:
             if staged or any(not isinstance(value, str) or not value.strip() or len(value) > 512

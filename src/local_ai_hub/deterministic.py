@@ -7615,21 +7615,19 @@ def test_{sym}_regression_edge_cases():
         if not root_path.is_dir():
             return {"success": False, "error": f"invalid root directory: {root}"}
 
-        target_files = files or []
+        from .code_tokens import count_code_tokens
+        from .project_config import resolve_project_context
+        settings = resolve_project_context(canon_root, configured_state_dir(self.config, create=False)).settings
+        target_files = list(dict.fromkeys(files or []))
         if not target_files:
-            found: list[str] = []
-            for cur_root, _, filenames in os.walk(root_path):
-                if any(p in cur_root for p in (".git", "node_modules", "__pycache__", ".venv")):
-                    continue
-                for f in filenames:
-                    if f.endswith((".py", ".ts", ".js", ".json", ".md")):
-                        p = Path(cur_root) / f
-                        found.append(str(p.relative_to(root_path)).replace("\\", "/"))
-                        if len(found) >= 15:
-                            break
-                if len(found) >= 15:
-                    break
-            target_files = found
+            target_files = [path.relative_to(root_path).as_posix()
+                            for path in self.repo_tools.iter_files(canon_root, max_files=15)]
+        omitted_files: list[dict[str, str]] = []
+        bytes_read = 0
+        all_exact = True
+        if len(target_files) > 64:
+            omitted_files.append({"path": "", "reason": "file_count_limit"})
+        target_files = target_files[:64]
 
         file_breakdown: list[dict[str, Any]] = []
         total_chars = 0
@@ -7638,15 +7636,25 @@ def test_{sym}_regression_edge_cases():
 
         for rel in target_files:
             fpath = root_path / rel
-            if not fpath.is_file():
-                continue
             try:
-                content = fpath.read_text(encoding="utf-8", errors="replace")
-            except Exception:
+                fpath.resolve(strict=True).relative_to(root_path)
+                if not self.repo_tools._project_file_allowed(root_path, fpath, settings):
+                    raise ValueError("path policy")
+                limit = min(2_000_000, self.repo_tools.max_file_bytes, 8_000_000 - bytes_read)
+                with fpath.open("rb") as handle:
+                    raw = handle.read(max(0, limit) + 1)
+                if len(raw) > limit:
+                    raise ValueError("source budget")
+                bytes_read += len(raw)
+                content = raw.decode("utf-8", errors="replace")
+            except (OSError, ValueError):
+                omitted_files.append({"path": str(rel)[:240], "reason": "source_unavailable_or_outside_budget"})
                 continue
 
             chars = len(content)
-            tokens = int(chars / 3.8) + 1
+            token_count = count_code_tokens(content)
+            tokens = int(token_count["tokens"])
+            all_exact = all_exact and bool(token_count["exact"])
             total_chars += chars
             total_tokens += tokens
 
@@ -7687,6 +7695,7 @@ def test_{sym}_regression_edge_cases():
                 "lines": len(lines),
                 "chars": chars,
                 "est_tokens": tokens,
+                "token_count_provenance": token_count,
                 "compressible_regions_count": len(compressible),
             })
 
@@ -7708,6 +7717,11 @@ def test_{sym}_regression_edge_cases():
             "max_tokens": max_tokens,
             "total_files": len(file_breakdown),
             "total_tokens": total_tokens,
+            "token_count_provenance": {"encoding": "o200k_base", "exact": all_exact,
+                                       "scope": "sum_of_decoded_file_counts"},
+            "omitted_files": omitted_files,
+            "complete": not omitted_files,
+            "slice_recommendations_estimated": True,
             "budget_exceeded": exceeded,
             "file_breakdown": file_breakdown,
             "compressible_regions": all_compressible_regions[:15],

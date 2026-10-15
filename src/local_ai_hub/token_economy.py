@@ -31,12 +31,9 @@ from local_ai_hub.process_utils import hidden_run_kwargs, popen_managed
 
 @lru_cache(maxsize=1)
 def _encodings():
-    # Help, trim-run and repo-map must not download tokenizers during import.
-    try:
-        import tiktoken
-        return tiktoken.get_encoding("o200k_base"), tiktoken.get_encoding("cl100k_base")
-    except Exception:
-        return None, None
+    # Neither import nor counting may fetch tokenizer files implicitly.
+    from local_ai_hub.code_tokens import offline_encoding
+    return offline_encoding("o200k_base"), offline_encoding("cl100k_base")
 
 ANSI_REGEX = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
 DEFAULT_EXTS = {
@@ -52,25 +49,21 @@ def strip_ansi(text: str) -> str:
     return ANSI_REGEX.sub("", text)
 
 
+def count_tokens_with_provenance(text: str) -> tuple[tuple[int, int, int, int, int], dict[str, Any]]:
+    from local_ai_hub.code_tokens import count_code_tokens
+    o200k = count_code_tokens(text, encoding="o200k_base")
+    cl100k = count_code_tokens(text, encoding="cl100k_base")
+    exact = bool(o200k["exact"] and cl100k["exact"])
+    counts = (text.count("\n") + (1 if text else 0), len(text.split()), len(text),
+              int(o200k["tokens"]), int(cl100k["tokens"]))
+    return counts, {"exact": exact, "method": "offline_verified_bpe" if exact else "estimated_or_mixed",
+                    "by_encoding": {"o200k_base": o200k, "cl100k_base": cl100k},
+                    "accuracy_bound_verified": exact}
+
+
 def count_tokens(text: str) -> tuple[int, int, int, int, int]:
-    """Count (lines, words, chars, o200k_tokens, cl100k_tokens) for a string."""
-    chars = len(text)
-    words = len(text.split())
-    lines = text.count("\n") + (1 if text else 0)
-
-    enc_o200k, enc_cl100k = _encodings()
-    if enc_o200k is not None and enc_cl100k is not None:
-        try:
-            tok_o200k = len(enc_o200k.encode(text, disallowed_special=()))
-            tok_cl100k = len(enc_cl100k.encode(text, disallowed_special=()))
-            return lines, words, chars, tok_o200k, tok_cl100k
-        except Exception:
-            pass
-
-    # High-accuracy fallback heuristic: ~3.8 chars per token for o200k, ~3.6 for cl100k
-    tok_o200k = int(chars / 3.8) if chars else 0
-    tok_cl100k = int(chars / 3.6) if chars else 0
-    return lines, words, chars, tok_o200k, tok_cl100k
+    """Count lines/words/chars and named-encoding tokens, with offline fallback."""
+    return count_tokens_with_provenance(text)[0]
 
 
 def tokcount_main(argv: list[str] | None = None) -> int:
@@ -91,13 +84,15 @@ def tokcount_main(argv: list[str] | None = None) -> int:
             parser.print_help()
             return 0
         content = sys.stdin.read()
-        lines, words, chars, o200k, cl100k = count_tokens(content)
+        counts, provenance = count_tokens_with_provenance(content)
+        lines, words, chars, o200k, cl100k = counts
         if args.json:
-            print(json_dumps({"source": "stdin", "lines": lines, "words": words, "chars": chars, "tokens_o200k": o200k, "tokens_cl100k": cl100k}, indent=2))
+            print(json_dumps({"source": "stdin", "lines": lines, "words": words, "chars": chars, "tokens_o200k": o200k, "tokens_cl100k": cl100k, "token_count_provenance": provenance}, indent=2))
         elif args.quiet:
             print(o200k)
         else:
-            print(f"Stdin | Lines: {lines:,} | Words: {words:,} | Chars: {chars:,} | Tokens (o200k/Astra): {o200k:,} | Tokens (cl100k): {cl100k:,}")
+            label = "exact named encodings" if provenance["exact"] else "estimated; see --json provenance"
+            print(f"Stdin | Lines: {lines:,} | Words: {words:,} | Chars: {chars:,} | Tokens (o200k/Astra): {o200k:,} | Tokens (cl100k): {cl100k:,} | {label}")
         return 0
 
     total_lines = total_words = total_chars = total_o200k = total_cl100k = 0
@@ -109,14 +104,15 @@ def tokcount_main(argv: list[str] | None = None) -> int:
         if p.is_file():
             try:
                 content = p.read_text(encoding="utf-8", errors="replace")
-                lines, words, chars, o200k, cl100k = count_tokens(content)
+                counts, provenance = count_tokens_with_provenance(content)
+                lines, words, chars, o200k, cl100k = counts
                 total_lines += lines
                 total_words += words
                 total_chars += chars
                 total_o200k += o200k
                 total_cl100k += cl100k
                 file_count += 1
-                file_stats.append({"path": str(p), "lines": lines, "words": words, "chars": chars, "tokens_o200k": o200k, "tokens_cl100k": cl100k})
+                file_stats.append({"path": str(p), "lines": lines, "words": words, "chars": chars, "tokens_o200k": o200k, "tokens_cl100k": cl100k, "token_count_provenance": provenance})
                 if not args.quiet and not args.json and len(args.paths) > 1:
                     print(f"{p} | Lines: {lines:,} | Chars: {chars:,} | Tokens: {o200k:,}")
             except Exception as exc:
@@ -132,19 +128,21 @@ def tokcount_main(argv: list[str] | None = None) -> int:
                     fp = Path(root) / f
                     try:
                         content = fp.read_text(encoding="utf-8", errors="replace")
-                        lines, words, chars, o200k, cl100k = count_tokens(content)
+                        counts, provenance = count_tokens_with_provenance(content)
+                        lines, words, chars, o200k, cl100k = counts
                         total_lines += lines
                         total_words += words
                         total_chars += chars
                         total_o200k += o200k
                         total_cl100k += cl100k
                         file_count += 1
-                        file_stats.append({"path": str(fp), "lines": lines, "words": words, "chars": chars, "tokens_o200k": o200k, "tokens_cl100k": cl100k})
+                        file_stats.append({"path": str(fp), "lines": lines, "words": words, "chars": chars, "tokens_o200k": o200k, "tokens_cl100k": cl100k, "token_count_provenance": provenance})
                     except Exception:
                         pass
 
     if args.json:
         print(json_dumps({
+            "token_count_provenance": {"exact": all(item["token_count_provenance"]["exact"] for item in file_stats), "scope": "sum_of_named_encoding_file_counts"},
             "total_files": file_count,
             "lines": total_lines,
             "words": total_words,
@@ -156,7 +154,8 @@ def tokcount_main(argv: list[str] | None = None) -> int:
     elif args.quiet:
         print(total_o200k)
     else:
-        print(f"Total ({file_count:,} files) | Lines: {total_lines:,} | Words: {total_words:,} | Chars: {total_chars:,} | Tokens (o200k/Astra): {total_o200k:,} | Tokens (cl100k): {total_cl100k:,}")
+        label = "exact named encodings" if all(item["token_count_provenance"]["exact"] for item in file_stats) else "estimated or mixed; see --json provenance"
+        print(f"Total ({file_count:,} files) | Lines: {total_lines:,} | Words: {total_words:,} | Chars: {total_chars:,} | Tokens (o200k/Astra): {total_o200k:,} | Tokens (cl100k): {total_cl100k:,} | {label}")
     return 0
 
 
