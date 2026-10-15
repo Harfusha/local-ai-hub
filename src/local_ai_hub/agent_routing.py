@@ -136,7 +136,14 @@ class RoutingEngine:
             normalized = path.replace("\\", "/")
             base = normalized.split("/")[-1]
             name = base.rsplit(".", 1)[0]
-            test_target = f"tests/test_{name}.py"
+            path_key = normalized.casefold()
+            test_file = base.casefold()
+            is_existing_python_test = (
+                (path_key.startswith("tests/") or "/tests/" in path_key)
+                and test_file.startswith("test_")
+                and test_file.endswith(".py")
+            )
+            test_target = normalized if is_existing_python_test else f"tests/test_{name}.py"
             if test_target not in selected:
                 selected.append(test_target)
 
