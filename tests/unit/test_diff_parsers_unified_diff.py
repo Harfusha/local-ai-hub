@@ -22,6 +22,31 @@ def test_python_multiline_signature_strips_each_diff_prefix():
     assert result["public"]["required_count"] == 1
 
 
+def test_python_positional_only_arguments_keep_self_and_default_counts():
+    result = diff_parsers.extract_py_diff_defs(["+def method(self, /, required, optional=3):"])
+    assert result["method"]["pos_args"] == ["required", "optional"]
+    assert result["method"]["required_count"] == 1
+
+
+def test_python_inline_async_and_class_bodies_keep_original_signatures():
+    async_line = '+async def fetch(self, /, item: str = "x:y"): return item'
+    class_line = "+class InlineWidget: pass"
+    result = diff_parsers.extract_py_diff_defs([async_line, class_line])
+    assert result["fetch"]["pos_args"] == ["item"]
+    assert result["fetch"]["required_count"] == 0
+    assert result["fetch"]["sig"] == async_line[1:]
+    assert result["InlineWidget"]["kind"] == "class"
+    assert result["InlineWidget"]["sig"] == class_line[1:]
+
+
+def test_python_missing_header_colon_handles_annotations_dict_strings_and_default_parens():
+    line = '+def build(value: dict[str, int] = {"key:part": (1, 2)}, label: str = "left:right")'
+    result = diff_parsers.extract_py_diff_defs([line])
+    assert result["build"]["pos_args"] == ["value", "label"]
+    assert result["build"]["required_count"] == 0
+    assert result["build"]["sig"] == line[1:]
+
+
 def test_headers_and_non_exported_typescript_do_not_expand_public_api():
     assert diff_parsers.extract_py_diff_defs(["+++def fake():", "---def removed():", "@@ def header():"]) == {}
     assert diff_parsers.extract_ts_diff_defs(["+function internal() {}", "-class Internal {}"] ) == {}
