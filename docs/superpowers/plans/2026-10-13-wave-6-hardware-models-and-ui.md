@@ -268,6 +268,8 @@ Run Ruff / Biome via long-running daemon with persistent IPC pipe rather than sp
 
 ### Task 92: Traces Search MCP Action for Self-Debugging (#57)
 
+**2026-10-15 source assessment and SDK parity — execution deferred.** Existing `DebugTraceStore.list` already applies parameterized exact action and minimum-duration filters; existing `local_ai_status(action="traces")` reaches the trace endpoint behind the HTTP `trace.read` authorization gate. Completed `HubClient.status(detail="traces", min_duration_ms=..., trace_action=...)` parity and reused it from MCP without a health request. Client/MCP filters reject booleans, non-integers, negative/over-day duration and over-64-character action; HTTP malformed/out-of-range trace filters now return explicit 400 instead of silently widening the query. Deferred SDK source cases cover encoded filters and pre-transport rejection, alongside existing temporary SQLite and MCP cases. No test/import/server request executed. Source behavior is implemented; integrated authorization/filter/transport acceptance remains pending with the whole-bundle gate.
+
 **Files:**
 - Modify: `src/local_ai_hub/debug_traces.py:110-150`
 - Modify: `src/local_ai_hub/mcp_server.py:1680-1700`

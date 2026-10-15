@@ -1973,13 +1973,8 @@ def local_ai_status(action: StatusAction = "", detail: StatusDetail = "brief", s
         ])
 
     if detail == "traces":
-        query = urlencode({
-            "min_duration_ms": min_duration_ms,
-            "action": trace_action.strip(),
-            "limit": 20,
-        })
         try:
-            report = CLIENT.get(f"/api/debug-traces?{query}")
+            report = CLIENT.status("traces", min_duration_ms=min_duration_ms, trace_action=trace_action)
         except Exception as exc:
             return _compact({"success": False, "error": str(exc)[:500]}, "status")
         return _compact(report, "status")
