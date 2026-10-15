@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import sqlite3
+import time
 from contextlib import closing
 from pathlib import Path
 
@@ -231,5 +232,55 @@ def test_session_history_uses_signed_tool_accounting_delta(tmp_path):
         store.record_tool_accounting({"tool": "local_ai_repo", "net_cloud_token_delta_est": -42})
         assert store.flush(2)
         assert store.sessions()[0]["tokens_saved"] == -42
+    finally:
+        store.close()
+
+
+def test_window_token_totals_survive_raw_retention_pruning(tmp_path):
+    store = TelemetryStore(tmp_path, enabled=True, max_events=100)
+    try:
+        for _ in range(150):
+            store.record_tool_accounting({"tool": "local_ai_repo", "net_cloud_token_delta_est": 7})
+        assert store.flush(3)
+        store._prune()
+        store._summary_cache.clear()
+        with closing(store._connect()) as con:
+            assert con.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 100
+        summary = store.summary(30, scope="window")
+        assert summary["tool_accounting_events"] == 150
+        assert summary["net_cloud_token_delta_est"] == 1050
+        assert summary["accounting_boundary_incomplete"] is False
+    finally:
+        store.close()
+
+
+def test_rollup_accounting_keeps_exact_partial_day_boundary_without_overlap(tmp_path):
+    store = TelemetryStore(tmp_path, enabled=True)
+    cutoff = time.time() - 86400
+    try:
+        for created_at, delta in [(cutoff - 60, 100), (cutoff + 60, 7), (time.time(), 11)]:
+            store.record(event_type="tool_accounting", created_at=created_at, net_cloud_token_delta=delta)
+        assert store.flush(2)
+        summary = store.summary(1, scope="window")
+        assert summary["tool_accounting_events"] == 2
+        assert summary["net_cloud_token_delta_est"] == 18
+    finally:
+        store.close()
+
+
+def test_pruned_partial_boundary_day_is_reported_incomplete_not_invented(tmp_path, monkeypatch):
+    store = TelemetryStore(tmp_path, enabled=True)
+    cutoff = time.time() // 86400 * 86400 - 43200
+    monkeypatch.setattr(store, "_cutoff", lambda days: cutoff)
+    try:
+        store.record(event_type="tool_accounting", created_at=cutoff + 60, net_cloud_token_delta=7)
+        store.record(event_type="tool_accounting", net_cloud_token_delta=11)
+        assert store.flush(2)
+        with closing(store._connect()) as con:
+            con.execute("DELETE FROM events WHERE created_at<?", (time.time() - 3600,))
+            con.commit()
+        summary = store.summary(1, scope="window")
+        assert summary["net_cloud_token_delta_est"] == 11
+        assert summary["accounting_boundary_incomplete"] is True
     finally:
         store.close()

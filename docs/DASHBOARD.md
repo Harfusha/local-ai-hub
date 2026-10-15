@@ -16,6 +16,8 @@ The dark layout shares readable typography, consistent controls, visible keyboar
 
 Status metadata refreshes in the background before its 15-second validity window expires, so the 30-day telemetry aggregation can exceed the short per-probe deadline without blanking every subsequent poll. Expired results remain unavailable. Project inventory failures are shown explicitly, bulk controls stay disabled until status recovers, and project counts are displayed separately from concurrent preprocessing capacity.
 
+Rolling-window token and USD totals use persistent daily accounting plus raw records for the partial first UTC day, without adding the same events twice. Pruning retained request details therefore does not erase accumulated savings. If raw records for the partial boundary day were pruned, the estimate is marked incomplete rather than reconstructing unknown amounts. Latency/request/cache samples and the detailed baseline-source breakdown use retained records and are labeled accordingly. Events that failed to persist before the schema repair cannot be recovered from these aggregates.
+
 If another request is building the first status snapshot, the overview shows `warming`, keeps prior rendered status when available, and retries through its bounded poll backoff.
 
 ## Agent debug traces
