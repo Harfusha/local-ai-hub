@@ -7642,7 +7642,36 @@ class Handler(BaseHTTPRequestHandler):
                 root = str(payload.get("root", "."))
                 diff = payload.get("diff")
                 if APP.deterministic is not None:
-                    self._send(200, APP.deterministic.call_graph_diff(root, diff=diff))
+                    if "old_code" in payload or "new_code" in payload:
+                        result = APP.deterministic.ast_diff(payload.get("old_code"), payload.get("new_code"))
+                        if result.get("success"):
+                            try:
+                                artifact_id = APP.artifacts.put_json(result, tenant, "ast-structural-diff")
+                                if not isinstance(artifact_id, str) or not artifact_id:
+                                    raise ValueError("artifact ID unavailable")
+                            except Exception:
+                                self._send(503, {"success": False, "terminal": False, "retryable": True,
+                                                 "error_code": "ast_diff_artifact_unavailable",
+                                                 "error": "structural diff artifact could not be stored"}); return
+                            changes = result["changes"]
+                            preview: list[dict[str, Any]] = []
+                            preview_chars = 0
+                            for change in changes[:32]:
+                                size = len(json.dumps(change, ensure_ascii=False))
+                                if preview_chars + size > 8000:
+                                    break
+                                preview.append(change)
+                                preview_chars += size
+                            result = {**result, "artifact_id": artifact_id, "changes_total": len(changes),
+                                      "changes_returned": len(preview), "changes": preview,
+                                      "truncated": len(changes) > len(preview)}
+                            if len(changes) > len(preview) or len(json.dumps(result["tree"], ensure_ascii=False)) + preview_chars > 8000:
+                                result.pop("tree", None)
+                                result["tree_in_artifact"] = True
+                                result["truncated"] = True
+                        self._send(200, result)
+                    else:
+                        self._send(200, APP.deterministic.call_graph_diff(root, diff=diff))
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return

@@ -7907,6 +7907,13 @@ def test_{sym}_regression_edge_cases():
                 "stub_content": "\n".join(declarations) + "\n",
             }
 
+    @staticmethod
+    def ast_diff(old_code: str, new_code: str) -> dict[str, Any]:
+        """Classify bounded Python structural changes without executing source."""
+        from .ast_diff import ast_diff
+
+        return ast_diff(old_code, new_code)
+
     def skeletonize_code(
         self,
         code: str = "",
