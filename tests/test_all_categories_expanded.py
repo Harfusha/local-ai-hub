@@ -82,7 +82,9 @@ def process_data(x):
     subprocess.run(["git", "commit", "-m", "c2"], cwd=repo, capture_output=True, check=True)
 
     det = DeterministicEngine()
-    hotspots_res = det.find_hotspots(str(repo), days=7, limit=10)
+    # Commit timestamps can differ from the test runner's clock; include the
+    # full supported history window so this fixture tests ranking, not recency.
+    hotspots_res = det.find_hotspots(str(repo), days=3650, limit=10)
     assert hotspots_res["success"] is True
     assert hotspots_res["complete"] is True, hotspots_res
     assert len(hotspots_res["hotspots"]) >= 1
