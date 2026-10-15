@@ -44,6 +44,8 @@ def _expected_payload(action: str, root: str, command: str, **overrides: Any) ->
         "paths": None,
         "patch": "",
         "auto_rollback": True,
+        "runs": 5,
+        "env": {},
     }
     payload.update(overrides)
     return payload
