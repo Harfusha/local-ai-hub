@@ -701,6 +701,7 @@ class EmbeddingModel:
         recomputed_cached = 0
         response_cache_identity = cache_identity
         result_cache_enabled = cache_identity_usable
+        pending_cache_writes: dict[str, dict[str, Any]] = {}
 
         if missing_texts:
             computed_vectors: list[list[float]] | None = None
@@ -851,7 +852,11 @@ class EmbeddingModel:
                         vectors[index] = vector
                     if result_cache_enabled:
                         key = self._embedding_cache_key(result_cache_identity, query, text)
-                        self.cache.set(key, {"identity": result_cache_identity, "dimension": result_dimension, "vector": vector})
+                        pending_cache_writes[key] = {
+                            "identity": result_cache_identity,
+                            "dimension": result_dimension,
+                            "vector": vector,
+                        }
                 recomputed_cached = len(cached_texts)
                 batch_deduplicated += sum(len(indices) - 1 for indices in cached_groups.values())
                 cache_hits = 0
@@ -863,7 +868,11 @@ class EmbeddingModel:
                 if result_cache_enabled:
                     clean_text = str(text).replace("\r\n", "\n")
                     key = self._embedding_cache_key(result_cache_identity, query, clean_text)
-                    self.cache.set(key, {"identity": result_cache_identity, "dimension": result_dimension, "vector": vector})
+                    pending_cache_writes[key] = {
+                        "identity": result_cache_identity,
+                        "dimension": result_dimension,
+                        "vector": vector,
+                    }
                 self._computed += 1
             self._computed += recomputed_cached
             self._batch_deduplicated += batch_deduplicated
@@ -880,6 +889,13 @@ class EmbeddingModel:
                 result_dimension,
                 persist=self.cache_enabled and self._identity_cacheable(response_cache_identity),
             )
+        if pending_cache_writes:
+            batch_writer = getattr(self.cache, "set_many", None)
+            if callable(batch_writer):
+                batch_writer(pending_cache_writes)
+            else:
+                for key, cached_vector in pending_cache_writes.items():
+                    self.cache.set(key, cached_vector)
         execution_snapshot = getattr(self._execution_local, "snapshot", None)
         provenance = self._model_provenance(response_cache_identity)
         if used_backend == "ollama":
