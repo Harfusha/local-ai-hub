@@ -14,7 +14,7 @@ from local_ai_hub.sqlite_support import connect_sqlite
 def _command_broker_for_task(tmp_path, task_id):
     state_dir = tmp_path / "state"
     state_dir.mkdir()
-    state_store = AgentStateStore(state_dir / "agent_state.sqlite3")
+    state_store = AgentStateStore(state_dir / "agent_state.sqlite")
     tasks = TaskStore(state_store)
     artifacts = ArtifactStore(state_dir)
     verifier = VerificationStore(state_store, task_store=tasks, artifact_store=artifacts)
@@ -51,7 +51,7 @@ def _passing_test_command(tmp_path):
 
 
 def test_receipt_projection_helper_is_caller_transaction_atomic(tmp_path):
-    db_path = tmp_path / "agent_state.sqlite3"
+    db_path = tmp_path / "agent_state.sqlite"
     state_store = AgentStateStore(db_path)
     tasks = TaskStore(state_store)
     task_id = "task-caller-owned-receipt"
@@ -98,7 +98,7 @@ def test_receipt_projection_helper_is_caller_transaction_atomic(tmp_path):
 def test_command_receipt_is_durable_and_allows_task_completion(tmp_path, monkeypatch):
     state_dir = tmp_path / "state"
     state_dir.mkdir()
-    state_store = AgentStateStore(state_dir / "agent_state.sqlite3")
+    state_store = AgentStateStore(state_dir / "agent_state.sqlite")
     tasks = TaskStore(state_store)
     artifacts = ArtifactStore(state_dir)
     verifier = VerificationStore(state_store, task_store=tasks, artifact_store=artifacts)
@@ -144,7 +144,7 @@ def test_command_receipt_is_durable_and_allows_task_completion(tmp_path, monkeyp
     assert receipt_data["evidence_id"] == result["verification_evidence_id"]
     assert artifacts.get(receipt_data["evidence_id"], tenant="tenant-a")["success"] is True
 
-    reloaded_state_store = AgentStateStore(state_dir / "agent_state.sqlite3")
+    reloaded_state_store = AgentStateStore(state_dir / "agent_state.sqlite")
     reloaded_tasks = TaskStore(reloaded_state_store)
     reloaded_verifier = VerificationStore(
         reloaded_state_store, task_store=reloaded_tasks, artifact_store=ArtifactStore(state_dir),
