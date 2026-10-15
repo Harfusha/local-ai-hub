@@ -1,5 +1,4 @@
 import os
-import os
 import subprocess
 import sys
 import time
@@ -61,6 +60,16 @@ def _same_live_identity(pid: int, expected: dict[str, object]) -> bool:
     )
 
 
+def _owned_ancestry(pid: int, ancestor_pid: int, max_depth: int = 8) -> list[int] | None:
+    chain = [pid]
+    while chain[-1] != ancestor_pid and len(chain) <= max_depth:
+        parent_pid = process_utils.process_parent_pid(chain[-1])
+        if not parent_pid or parent_pid in chain:
+            return None
+        chain.append(parent_pid)
+    return chain if chain[-1] == ancestor_pid else None
+
+
 @pytest.mark.parametrize("termination", ["terminate_tree", "release_owned_job"])
 def test_owned_windows_job_termination_kills_parent_child_and_grandchild(tmp_path, termination):
     root_script = tmp_path / "root.py"
@@ -82,20 +91,26 @@ def test_owned_windows_job_termination_kills_parent_child_and_grandchild(tmp_pat
         stderr=subprocess.DEVNULL,
     )
     try:
-        assert _wait_for_pid_file(parent_pid_file) == parent.pid
+        parent_handle_identity = process_utils.process_identity(parent.pid)
+        assert parent_handle_identity is not None
+        script_parent_pid = _wait_for_pid_file(parent_pid_file)
         child_pid = _wait_for_pid_file(child_pid_file)
         grandchild_pid = _wait_for_pid_file(grandchild_pid_file)
-        parent_identity = process_utils.process_identity(parent.pid)
-        child_identity = process_utils.process_identity(child_pid)
-        grandchild_identity = process_utils.process_identity(grandchild_pid)
-        assert parent_identity is not None
-        assert child_identity is not None
-        assert grandchild_identity is not None
-        assert process_utils.process_parent_pid(child_pid) == parent.pid
-        assert process_utils.process_parent_pid(grandchild_pid) == child_pid
-        assert process_utils.pid_alive(parent.pid)
-        assert process_utils.pid_alive(child_pid)
-        assert process_utils.pid_alive(grandchild_pid)
+        parent_chain = _owned_ancestry(script_parent_pid, parent.pid)
+        child_chain = _owned_ancestry(child_pid, script_parent_pid)
+        grandchild_chain = _owned_ancestry(grandchild_pid, child_pid)
+        assert parent_chain is not None
+        assert child_chain is not None
+        assert grandchild_chain is not None
+        owned_pids = tuple(dict.fromkeys(parent_chain + child_chain + grandchild_chain))
+        identities = {parent.pid: parent_handle_identity}
+        for pid in owned_pids:
+            identity = process_utils.process_identity(pid)
+            assert identity is not None
+            if pid == parent.pid:
+                assert identity.get("creation_identity") == parent_handle_identity.get("creation_identity")
+            identities[pid] = identity
+            assert process_utils.pid_alive(pid)
 
         if termination == "terminate_tree":
             assert process_utils.terminate_tree(
@@ -106,15 +121,11 @@ def test_owned_windows_job_termination_kills_parent_child_and_grandchild(tmp_pat
 
         parent.wait(timeout=8.0)
         deadline = time.monotonic() + 8.0
-        while time.monotonic() < deadline and any((
-            _same_live_identity(parent.pid, parent_identity),
-            _same_live_identity(child_pid, child_identity),
-            _same_live_identity(grandchild_pid, grandchild_identity),
-        )):
+        while time.monotonic() < deadline and any(
+            _same_live_identity(pid, identity) for pid, identity in identities.items()
+        ):
             time.sleep(0.05)
-        assert not _same_live_identity(parent.pid, parent_identity)
-        assert not _same_live_identity(child_pid, child_identity)
-        assert not _same_live_identity(grandchild_pid, grandchild_identity)
+        assert all(not _same_live_identity(pid, identity) for pid, identity in identities.items())
     finally:
         if parent.poll() is None:
             process_utils.terminate_tree(parent.pid, process_handle=parent, grace_seconds=1.0)
