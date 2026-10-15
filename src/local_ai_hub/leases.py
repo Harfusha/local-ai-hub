@@ -41,6 +41,7 @@ _LEASE_REQUIRED_UNIQUE = {
     "leases": (("lease_id", "path"),),
     "lease_waits": (("root_id", "tenant", "blocked_by", "requested_path"),),
 }
+_LEASE_COMPLETE_GROUPS = (("leases", "lease_waits"),)
 
 
 def _preflight_lease_schema(path: Path) -> None:
@@ -52,6 +53,7 @@ def _preflight_lease_schema(path: Path) -> None:
             con,
             path,
             _LEASE_DURABLE_SCHEMA,
+            complete_groups=_LEASE_COMPLETE_GROUPS,
             required_unique=_LEASE_REQUIRED_UNIQUE,
             backup_on_mismatch=False,
         )
@@ -129,6 +131,7 @@ class ScopeLeaseStore:
                         con,
                         self.path,
                         _LEASE_DURABLE_SCHEMA,
+                        complete_groups=_LEASE_COMPLETE_GROUPS,
                         required_unique=_LEASE_REQUIRED_UNIQUE,
                         backup_on_mismatch=False,
                     )
