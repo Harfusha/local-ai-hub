@@ -278,46 +278,14 @@ class IncidentStore:
         with self._lock:
             if self._initialized or not self.state_store.enabled:
                 return
+            if self.state_store._initialized and self.state_store.db_path.exists():
+                if self.state_store.db_path.stat().st_size > 0:
+                    self.state_store._preflight_schema_read_only()
             self.state_store._ensure_schema()
             def _setup() -> None:
                 con = connect_sqlite(self.state_store.db_path)
                 try:
                     with con:
-                        existing = {str(row[0]) for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-                        if "agent_incidents" in existing:
-                            actual_columns = {str(row[1]) for row in con.execute("PRAGMA table_info(agent_incidents)")}
-                            column_definitions = [
-                                ("operation_class", "TEXT NOT NULL DEFAULT 'unknown'"),
-                                ("error_class", "TEXT NOT NULL DEFAULT ''"),
-                                ("signature_hash", "TEXT NOT NULL DEFAULT ''"),
-                                ("redacted_message", "TEXT NOT NULL DEFAULT ''"),
-                                ("state_revision", "TEXT NOT NULL DEFAULT ''"),
-                                ("attempts", "INTEGER NOT NULL DEFAULT 0"),
-                                ("evidence_ids", "TEXT NOT NULL DEFAULT '[]'"),
-                                ("root_cause", "TEXT"),
-                                ("verified_fix", "TEXT"),
-                                ("confidence", "REAL NOT NULL DEFAULT 0"),
-                                ("resolved", "INTEGER NOT NULL DEFAULT 0"),
-                                ("created_at", "REAL NOT NULL DEFAULT 0"),
-                                ("updated_at", "REAL NOT NULL DEFAULT 0"),
-                                ("expires_at", "REAL"),
-                                ("affected_paths", "TEXT NOT NULL DEFAULT '[]'"),
-                                ("ignored", "INTEGER NOT NULL DEFAULT 0"),
-                                ("repository_key", "TEXT NOT NULL DEFAULT ''"),
-                                ("tenant_key", "TEXT NOT NULL DEFAULT ''"),
-                            ]
-                            missing_columns = [
-                                (column, definition)
-                                for column, definition in column_definitions
-                                if column not in actual_columns
-                            ]
-                            if "incident_id" not in actual_columns or missing_columns:
-                                self.state_store._verified_backup(con)
-                            if "incident_id" not in actual_columns:
-                                con.execute("ALTER" + " TABLE agent_incidents ADD COLUMN incident_id TEXT NOT NULL DEFAULT ''")
-                                con.execute("UPDATE agent_incidents SET incident_id = 'legacy-' || rowid WHERE incident_id = ''")
-                            for column, definition in missing_columns:
-                                con.execute("ALTER" + f" TABLE agent_incidents ADD COLUMN {column} {definition}")
                         con.execute(
                             """
                             CREATE TABLE IF NOT EXISTS agent_incidents (

@@ -12,6 +12,7 @@ from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStore
 from local_ai_hub.agent_tasks import GoalContract, TaskStore
 from local_ai_hub.agent_verification import VerificationReceipt, VerificationStore
 from local_ai_hub.artifacts import ArtifactStore
+from local_ai_hub.sqlite_support import DurableSchemaMismatchError
 
 
 def _seed_durable_rows(db_path: Path, artifact_dir: Path):
@@ -66,43 +67,12 @@ def _seed_durable_rows(db_path: Path, artifact_dir: Path):
     return task, event, memory, receipt
 
 
-def _table_counts(connection: sqlite3.Connection) -> dict[str, int]:
-    tables = [str(row[0]) for row in connection.execute(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
-    )]
-    return {name: int(connection.execute(f' SELECT COUNT(*) FROM "{name}"').fetchone()[0]) for name in tables}
-
-
-def _migration_backups(db_path: Path) -> list[Path]:
-    return sorted(db_path.parent.glob(f"{db_path.name}.migration-v0-v1-*.bak"))
-
-
-def test_current_unversioned_agent_state_migrates_with_verified_backup_and_restart(tmp_path: Path):
+def test_current_agent_state_reopens_without_changing_durable_rows(tmp_path: Path):
     db_path = tmp_path / "agent_state.sqlite3"
     task, event, memory, receipt = _seed_durable_rows(db_path, tmp_path / "artifacts")
     with closing(sqlite3.connect(db_path)) as connection:
-        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        connection.execute("PRAGMA user_version=0")
-        connection.commit()
-        expected_counts = _table_counts(connection)
-        expected_events = connection.execute(
-            "SELECT event_id, payload FROM agent_events WHERE event_id=?", (event.event_id,)
-        ).fetchall()
-
-    AgentStateStore(db_path)._ensure_schema()
-
-    backups = _migration_backups(db_path)
-    assert len(backups) == 1
-    with closing(sqlite3.connect(backups[0])) as backup:
-        assert backup.execute("PRAGMA quick_check").fetchone() == ("ok",)
-        assert backup.execute("PRAGMA user_version").fetchone() == (0,)
-        assert _table_counts(backup) == expected_counts
-        assert backup.execute(
-            "SELECT event_id, payload FROM agent_events WHERE event_id=?", (event.event_id,)
-        ).fetchall() == expected_events
-    with closing(sqlite3.connect(db_path)) as connection:
         assert connection.execute("PRAGMA user_version").fetchone() == (1,)
-        assert _table_counts(connection) == expected_counts
+        assert connection.execute("SELECT event_id FROM agent_events WHERE event_id=?", (event.event_id,)).fetchone() == (event.event_id,)
 
     reopened_state = AgentStateStore(db_path)
     reopened_tasks = TaskStore(reopened_state)
@@ -127,6 +97,9 @@ def test_current_unversioned_agent_state_migrates_with_verified_backup_and_resta
     assert restored_memory is not None, restored_memory_row
     assert restored_memory.value == memory.value
     assert any(row.receipt_id == receipt.receipt_id for row in reopened_verifications.completion(task.task_id).receipts)
+    with closing(sqlite3.connect(db_path)) as connection:
+        tables = {str(row[0]) for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        assert "agent_event_schema_versions" not in tables
 
 
 def test_unsupported_future_schema_version_fails_closed_without_mutation(tmp_path: Path):
@@ -138,35 +111,30 @@ def test_unsupported_future_schema_version_fails_closed_without_mutation(tmp_pat
         connection.commit()
     original = db_path.read_bytes()
 
-    with pytest.raises(RuntimeError, match="unsupported agent state schema version: 2"):
+    with pytest.raises(DurableSchemaMismatchError):
         AgentStateStore(db_path)._ensure_schema()
 
     assert db_path.read_bytes() == original
     with closing(sqlite3.connect(db_path)) as connection:
         assert connection.execute("PRAGMA user_version").fetchone() == (2,)
         assert connection.execute("SELECT event_id FROM agent_events WHERE event_id=?", (event.event_id,)).fetchone() == (event.event_id,)
-    assert not _migration_backups(db_path)
-
-
-def test_migration_backup_failure_prevents_schema_version_write(tmp_path: Path, monkeypatch):
+def test_unversioned_durable_state_rejects_without_writing_or_backup(tmp_path: Path):
     db_path = tmp_path / "agent_state.sqlite3"
     _, event, _, _ = _seed_durable_rows(db_path, tmp_path / "artifacts")
     with closing(sqlite3.connect(db_path)) as connection:
         connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         connection.execute("PRAGMA user_version=0")
         connection.commit()
+    original = db_path.read_bytes()
 
-    def fail_backup(cls, source):
-        raise OSError("injected durable backup failure")
-
-    monkeypatch.setattr(AgentStateStore, "_verified_backup", classmethod(fail_backup))
-    with pytest.raises(OSError, match="injected durable backup failure"):
+    with pytest.raises(DurableSchemaMismatchError):
         AgentStateStore(db_path)._ensure_schema()
 
+    assert db_path.read_bytes() == original
     with closing(sqlite3.connect(db_path)) as connection:
         assert connection.execute("PRAGMA user_version").fetchone() == (0,)
         assert connection.execute("SELECT event_id FROM agent_events WHERE event_id=?", (event.event_id,)).fetchone() == (event.event_id,)
-    assert not _migration_backups(db_path)
+    assert not list(tmp_path.glob("*.bak"))
 
 
 def test_corrupt_agent_state_fails_closed_without_replacing_bytes(tmp_path: Path):
@@ -178,4 +146,3 @@ def test_corrupt_agent_state_fails_closed_without_replacing_bytes(tmp_path: Path
         AgentStateStore(db_path)._ensure_schema()
 
     assert db_path.read_bytes() == original
-    assert not _migration_backups(db_path)
