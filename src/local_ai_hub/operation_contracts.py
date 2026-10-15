@@ -521,12 +521,21 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
         projection="semantic result", default_effect="local_model_execution",
         feature_requirements=("has_any_model",), action_requirements={"vision": ("vision",)},
         read_only=("status", "wait", "result", "evaluation_report"),
+        required={
+            "candidate_create": ("candidate_data",),
+            "candidate_promote": ("candidate", "approver"),
+        },
+        non_empty={
+            "candidate_promote": ("candidate", "approver"),
+        },
         action_effects={
             "submit": "durable_job", "cancel": "durable_job", "candidate_create": "candidate_store",
             "candidate_promote": "candidate_store", "evaluation_record": "evaluation_store",
             "browser": "browser_capture",
         },
         allowed={
+            "candidate_create": ("candidate_data",),
+            "candidate_promote": ("candidate", "approver"),
             "hardware_benchmark": ("model", "prompt", "max_tokens"),
             "speculative_draft": ("task", "candidate", "context", "root"),
             "vision": (
