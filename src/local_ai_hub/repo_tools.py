@@ -46,7 +46,7 @@ class _IncompleteGitInventory(RuntimeError):
 
 
 def is_root_archive_path(relative: str | Path) -> bool:
-    """Return whether a repository-relative path belongs to a root audit overlay."""
+    """Identify audit overlays and archived source copies, not ordinary docs."""
     parts = tuple(
         part.casefold()
         for part in str(relative).replace("\\", "/").strip("/").split("/")
@@ -54,6 +54,10 @@ def is_root_archive_path(relative: str | Path) -> bool:
     )
     if not parts:
         return False
+    if parts[:3] == ("docs", "integration", "archive") and re.search(
+        r"\.(?:py|pyi|js|jsx|ts|tsx|cs|go|rs|java|c|cc|cpp|h|hpp)(?:\.txt)?$", parts[-1]
+    ):
+        return True
     if parts[0] in {"handoff", ".handoff", ".merge-checks", ".sync-checks", ".system_generated"}:
         return True
     if len(parts) > 1 and parts[:2] == ("artifacts", "handoff"):
