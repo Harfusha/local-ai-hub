@@ -76,7 +76,7 @@ def test_dashboard_exposes_activity_mode_and_reports_http_failures() -> None:
     assert "invalid mode" in mode_source.lower()
     fetch_start = DASHBOARD_HTML.index("async function apiFetch")
     fetch_end = DASHBOARD_HTML.index("function setFrontendVisionCaptureState", fetch_start)
-    assert "X-LocalAI-Token" in DASHBOARD_HTML[fetch_start:fetch_end]
+    assert "X-LocalAI-Token" not in DASHBOARD_HTML[fetch_start:fetch_end]
     assert "X-LocalAI-Client" in DASHBOARD_HTML[fetch_start:fetch_end]
     assert "Active" in DASHBOARD_HTML
     assert "Gaming" in DASHBOARD_HTML
@@ -460,7 +460,8 @@ def test_dashboard_ux_refinements_and_empty_states() -> None:
     # 4. Styled empty table state
     assert "No active items recorded" in DASHBOARD_HTML
     # 5. Worktrees toolbar
-    assert 'id="worktreeRoot" placeholder="Repository root"' in DASHBOARD_HTML
+    assert 'list="worktreeRoots"' in DASHBOARD_HTML
+    assert 'Choose or enter repository root' in DASHBOARD_HTML
     # 6. Reliability tab auto-tail
     assert "if(tabId==='reliability')loadLogsTail();" in DASHBOARD_HTML
     # 7. Bundles table wrap

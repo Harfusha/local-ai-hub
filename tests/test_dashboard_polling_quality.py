@@ -57,53 +57,11 @@ def _run_polling_javascript(scenario: str, *, include_status: bool = False) -> N
     assert result.returncode == 0, result.stderr or result.stdout
 
 
-def test_agent_os_event_source_restores_last_composite_cursor() -> None:
-    node = shutil.which("node")
-    if not node:
-        pytest.skip("Node.js is required to exercise dashboard EventSource reconnect")
-    marker = "let sseSource=null"
-    start = DASHBOARD_HTML.index(marker)
-    end = DASHBOARD_HTML.index("function handleAgentOsStreamEvent", start)
-    stream_source = DASHBOARD_HTML[start:end]
-    setup = r"""
-      const assert = require('node:assert/strict');
-      const stored = new Map([['agentOsStreamLastEventId', 'task%3Aone:6']]);
-      const sessionStorage = {getItem: key => stored.get(key) || null, setItem: (key, value) => stored.set(key, value)};
-      const nodes = {sseStreamBadge: {}};
-      const $ = id => nodes[id];
-      const getSavedToken = () => '';
-      const apiToken = '';
-      const received = [];
-      function handleAgentOsStreamEvent(event) { received.push(event); }
-      class EventSource {
-        constructor(url) { this.url = url; EventSource.last = this; }
-        close() { this.closed = true; }
-      }
-    """
-    scenario = r"""
-      connectAgentOsStream();
-      const first = new URL(EventSource.last.url, 'http://localhost');
-      assert.equal(first.searchParams.get('last_event_id'), 'task%3Aone:6');
-      const old = EventSource.last;
-      old.onmessage({lastEventId: 'task%3Aone:7', data: JSON.stringify({event_id: 'event-7'})});
-      connectAgentOsStream();
-      const resumed = new URL(EventSource.last.url, 'http://localhost');
-      assert.equal(old.closed, true);
-      assert.equal(resumed.searchParams.get('last_event_id'), 'task%3Aone:7');
-      assert.equal(received.length, 1);
-    """
-    script = (
-        "const vm = require('node:vm');\n"
-        f"vm.runInNewContext({json.dumps(setup + stream_source + scenario)}, "
-        "{require, process, URL, URLSearchParams, console});\n"
-    )
-    with tempfile.TemporaryDirectory() as directory:
-        script_path = Path(directory) / "dashboard_event_source.cjs"
-        script_path.write_text(script, encoding="utf-8")
-        result = subprocess.run(
-            [node, str(script_path)], capture_output=True, text=True, timeout=5
-        )
-    assert result.returncode == 0, result.stderr or result.stdout
+def test_removed_sse_panel_does_not_leave_an_unused_subscription() -> None:
+    assert 'new EventSource(' not in DASHBOARD_HTML
+    assert 'connectAgentOsStream' not in DASHBOARD_HTML
+    assert 'agentOsStreamLastEventId' not in DASHBOARD_HTML
+    assert '/api/live?after=' in DASHBOARD_HTML
 
 
 def test_trajectory_inspector_pages_with_cursor_and_reports_retention_gap() -> None:
@@ -259,9 +217,9 @@ def test_trace_reveal_drains_event_pages_and_reconstructs_content_pages() -> Non
     node = shutil.which("node")
     if not node:
         pytest.skip("Node.js is required to exercise dashboard trace paging")
-    start = DASHBOARD_HTML.index("function appendBoundedTraceEvents(")
+    start = DASHBOARD_HTML.index("async function fetchTraceContentPages(")
     end = DASHBOARD_HTML.index("function setTraceDetailsOpen(", start)
-    source = DASHBOARD_HTML[start:end]
+    source = DASHBOARD_HTML[DASHBOARD_HTML.index("function traceAppendEvents("):DASHBOARD_HTML.index("function traceFiniteSequence(")] + DASHBOARD_HTML[start:end]
     setup = r"""
     const traceEventBufferLimit = 200;
     let activeTraceId = 'trace-id', traceEvents = [], activeTraceData = {}, traceEventTotal = 5;
@@ -300,8 +258,9 @@ def test_trace_reveal_drains_event_pages_and_reconstructs_content_pages() -> Non
       assert.deepEqual(result.session.response, {ok: true});
       assert.equal(result.full_payload_requested, true);
       assert.equal(result.payload_truncated, false);
-      const bounded = [];
-      assert.equal(appendBoundedTraceEvents(bounded, Array.from({length: 250}, (_, index) => ({seq: index + 1}))), 250);
+      const projected = traceAppendEvents([], Array.from({length: 250}, (_, index) => ({seq: index + 1})));
+      const bounded = projected.events;
+      assert.equal(projected.eventsTotal, 250);
       assert.equal(bounded.length, 200);
       assert.equal(bounded[0].seq, 51);
       const budget = {used: 0, limit: 12};
@@ -332,8 +291,8 @@ def test_trace_reveal_keeps_event_history_window_bounded() -> None:
     node = shutil.which("node")
     if not node:
         pytest.skip("Node.js is required to exercise dashboard trace paging")
-    start = DASHBOARD_HTML.index("function appendBoundedTraceEvents(")
-    end = DASHBOARD_HTML.index("function setTraceDetailsOpen(", start)
+    start = DASHBOARD_HTML.index("function traceAppendEvents(")
+    end = DASHBOARD_HTML.index("function traceFiniteSequence(", start)
     source = DASHBOARD_HTML[start:end]
     setup = r"""
     const traceEventBufferLimit = 200;
@@ -349,8 +308,7 @@ def test_trace_reveal_keeps_event_history_window_bounded() -> None:
     script_source = setup + source + r"""
     (async () => {
       const assert = require('node:assert/strict');
-      const result = [];
-      appendBoundedTraceEvents(result, Array.from({length: 205}, (_, index) => ({seq: index + 1})));
+      const result = traceAppendEvents([], Array.from({length: 205}, (_, index) => ({seq: index + 1}))).events;
       assert.equal(result.length, 200);
       assert.equal(result[0].seq, 6);
       assert.equal(result[result.length - 1].seq, 205);

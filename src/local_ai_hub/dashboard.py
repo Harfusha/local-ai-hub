@@ -117,10 +117,8 @@ tbody tr.click:hover{background:#162338}
 .diag-banner.info{background:#0f1d2e;border:1px solid #2563eb;color:#93c5fd}
 .control-menu{position:relative;margin-left:auto}.control-menu summary{list-style:none;cursor:pointer;background:#19232d;border:1px solid #394758;border-radius:6px;padding:6px 10px;font-size:11px}.control-menu summary::-webkit-details-marker{display:none}.control-menu[open] summary{background:#243343;color:#fff}
 .control-popover{position:absolute;right:0;top:calc(100% + 7px);z-index:30;min-width:330px;padding:10px;background:#10161d;border:1px solid #394758;border-radius:8px;box-shadow:0 16px 45px #000b;display:grid;grid-template-columns:1fr 1fr;gap:7px}
-.control-popover .token{grid-column:1/-1;display:flex;gap:6px}
-.control-popover .token input{min-width:0;flex:1;background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:6px 8px;font-size:11px}
 .control-popover .tiny.muted{grid-column:1/-1;padding-top:4px;font-weight:600;color:var(--muted);letter-spacing:0.02em}
-.control-popover button{width:100%}
+.control-popover>button{width:100%}
 .project-toolbar{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
 .project-toolbar input,.project-toolbar select{background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:7px 9px;font-size:11px}
 .project-toolbar input{flex:1;min-width:180px}
@@ -279,6 +277,10 @@ input:not([type=checkbox]):not([type=radio]),select{min-height:32px;max-width:10
 .section h2{padding:13px 16px;font-size:14px;flex-wrap:wrap}
 table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
 .group-title{flex-wrap:wrap;gap:8px;line-height:1.5}
+.arena-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.arena-grid>*{min-width:0}
+.split>*{min-width:0}
+@media(max-width:600px){.arena-grid{grid-template-columns:1fr}.control-popover{min-width:0;width:min(340px,calc(100vw - 24px));max-height:calc(100dvh - 140px);overflow:auto}.kv{grid-template-columns:minmax(100px,40%) minmax(0,1fr)}.project-toolbar input{min-width:min(180px,100%)}.reliability-footer>div{flex-wrap:wrap}}
 .metric-status{margin:0 0 12px;color:var(--muted);font-size:12px}
 .metric-status.warn-t{color:var(--warn)}
 .metric-details{margin-top:12px;padding:12px 16px;border:1px solid var(--line);border-radius:9px;color:var(--muted);background:var(--panel)}
@@ -304,7 +306,6 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
     <details id="controlMenu" class="control-menu">
       <summary>Controls</summary>
       <div class="control-popover">
-        <div class="token"><input type="password" id="apiToken" autocomplete="off" placeholder="Local API token (optional)"><button class="btn" id="saveToken">Set token</button></div>
         <div class="tiny muted">Diagnostics</div>
         <button class="btn" id="detailedTelemetryToggle" aria-pressed="false">Detailed telemetry: Off</button>
         <button class="btn ok" id="optDbBtn">Optimize databases</button>
@@ -394,13 +395,14 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
 <div id="work" class="page">
   <section class="section"><h2>Live scheduler work <span class="tiny" id="queueSummary">Current queue only; not request history.</span></h2><div class="table-wrap"><table><thead><tr><th>State</th><th>Job</th><th>Agent</th><th>Source</th><th>Model</th><th>Priority</th><th>Wait</th><th>Processing</th><th>Reason</th></tr></thead><tbody id="jobs"></tbody></table></div></section>
   <section class="section"><h2>Active API requests <span class="tiny">monitoring endpoints excluded</span></h2><div class="table-wrap"><table><thead><tr><th>Request</th><th>Agent</th><th>Tenant</th><th>Action</th><th>Age</th></tr></thead><tbody id="activeReq"></tbody></table></div></section>
-  <section class="section"><h2>Request history — Recent API requests <span class="tiny">Persisted API telemetry; distinct from scheduler work and Agent OS task runs.</span></h2><div class="request-filter"><input id="requestHistorySearch" type="search" placeholder="Search request ID, route, project, agent, error…" autocomplete="off"><select id="requestHistoryAction" aria-label="Filter by endpoint"><option value="">All endpoints</option></select><select id="requestHistoryStatus" aria-label="Filter by status"><option value="">All results</option><option value="failed">Failed</option><option value="2xx">2xx</option><option value="4xx">4xx</option><option value="5xx">5xx</option></select><select id="requestHistoryPeriod" aria-label="Filter by time"><option value="">All loaded</option><option value="3600">Last hour</option><option value="86400">Last 24 hours</option><option value="604800">Last 7 days</option><option value="2592000">Last 30 days</option></select><button class="btn" id="requestHistoryReset">Reset</button><span class="tiny request-summary" id="requestHistorySummary">0 requests</span></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Request</th><th>Project</th><th>Agent</th><th>Tenant</th><th>Action</th><th>Status</th><th>Trace availability</th><th>Duration</th></tr></thead><tbody id="recentReq"></tbody></table></div></section>
+  <section class="section"><h2>Request history — Recent API requests <span class="tiny">Persisted API telemetry; distinct from scheduler work and Agent OS task runs.</span></h2><div class="request-filter"><input id="requestHistorySearch" aria-label="Search request history" type="search" placeholder="Search request ID, route, project, agent, error…" autocomplete="off"><select id="requestHistoryAction" aria-label="Filter by endpoint"><option value="">All endpoints</option></select><select id="requestHistoryStatus" aria-label="Filter by status"><option value="">All results</option><option value="failed">Failed</option><option value="2xx">2xx</option><option value="4xx">4xx</option><option value="5xx">5xx</option></select><select id="requestHistoryPeriod" aria-label="Filter by time"><option value="">All loaded</option><option value="3600">Last hour</option><option value="86400">Last 24 hours</option><option value="604800">Last 7 days</option><option value="2592000">Last 30 days</option></select><button class="btn" id="requestHistoryReset">Reset</button><span class="tiny request-summary" id="requestHistorySummary">0 requests</span></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Request</th><th>Project</th><th>Agent</th><th>Tenant</th><th>Action</th><th>Status</th><th>Trace availability</th><th>Duration</th></tr></thead><tbody id="recentReq"></tbody></table></div></section>
 </div>
 
 <div id="agentos" class="page">
   <div id="agentOsDisabledBanner" class="diag-banner bad" style="display:none">⚠️ <b>Agent OS feature is disabled in configuration</b> (<code>features.agent_os = false</code>). Durable task tracking and memory are inactive.</div>
   <section class="section">
     <h2><span style="display:flex;align-items:center;gap:8px">Agent Operating System <span class="tiny" id="agentOsState">0 active · 0 total tasks · 0 memories</span></span><div style="display:flex;gap:6px;align-items:center"><button class="btn ok" id="agentOsRefresh" style="padding:4px 10px;font-size:11px">↻ Refresh</button><button class="btn warn" id="agentOsCleanup" style="padding:4px 10px;font-size:11px">🧹 Cleanup stale state</button></div></h2>
+    <div class="project-toolbar"><input id="agentOsRoot" list="worktreeRoots" aria-label="Repository root for Agent OS" placeholder="Choose or enter repository root"><span class="tiny muted">Select a repository and use Refresh. Access stays scoped to the current client.</span></div>
     <div class="subtabs">
       <button class="subtab-btn active" id="subtabTasks" data-agentos-tab="tasks">Tasks &amp; Contracts</button>
       <button class="subtab-btn" id="subtabMemory" data-agentos-tab="memory">Memory &amp; Facts</button>
@@ -413,7 +415,7 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
   <div id="agentOsTasksSec" style="display:block">
     <section class="section">
       <div class="project-toolbar">
-        <input id="agentOsSearch" type="search" placeholder="Search tasks by ID, goal, next action..." autocomplete="off">
+        <input id="agentOsSearch" aria-label="Search tasks" type="search" placeholder="Search tasks by ID, goal, next action..." autocomplete="off">
         <select id="agentOsTaskStatus" aria-label="Task status filter"><option value="">All task statuses</option><option value="planned">Planned</option><option value="active">Active</option><option value="verifying">Verifying</option><option value="completed">Completed</option><option value="failed">Failed</option><option value="blocked">Blocked</option></select>
         <button class="btn ok" id="agentOsCreateTaskBtn" style="padding:5px 9px">+ Create Task</button>
         <span class="tiny project-summary" id="agentOsSummary"></span>
@@ -425,7 +427,7 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
   <div id="agentOsMemorySec" style="display:none">
     <section class="section">
       <div class="project-toolbar">
-        <input id="agentOsMemSearch" type="search" placeholder="Search memory keys and values..." autocomplete="off">
+        <input id="agentOsMemSearch" aria-label="Search memories" type="search" placeholder="Search memory keys and values..." autocomplete="off">
         <select id="agentOsMemScope" aria-label="Memory scope"><option value="">All scopes</option><option value="task">Task</option><option value="session">Session</option><option value="repository">Repository</option><option value="user">User</option><option value="system">System</option></select>
         <select id="agentOsMemKind" aria-label="Memory kind"><option value="">All kinds</option><option value="fact">Fact</option><option value="decision">Decision</option><option value="preference">Preference</option><option value="pattern">Pattern</option><option value="negative_knowledge">Negative Knowledge</option></select>
         <button class="btn ok" id="agentOsRecordMemBtn" style="padding:5px 9px">+ Record Memory</button>
@@ -437,7 +439,7 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
   <div id="agentOsIncidentsSec" style="display:none">
     <section class="section">
       <div class="project-toolbar">
-        <input id="agentOsIncSearch" type="search" placeholder="Search error class, root cause, verified fix..." autocomplete="off">
+        <input id="agentOsIncSearch" aria-label="Search incidents" type="search" placeholder="Search error class, root cause, verified fix..." autocomplete="off">
         <select id="agentOsIncFilter" aria-label="Incident status"><option value="">All incidents</option><option value="unresolved">Unresolved</option><option value="resolved">Resolved with fix</option><option value="ignored">Ignored</option></select>
         <button class="btn warn" id="agentOsRecordIncBtn" style="padding:5px 9px">+ Record Anti-Pattern</button>
       </div>
@@ -448,7 +450,7 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
   <div id="agentOsTrajectoriesSec" style="display:none">
     <section class="section">
       <div class="project-toolbar">
-        <input id="trajSearch" type="search" placeholder="Search task runs..." autocomplete="off">
+        <input id="trajSearch" aria-label="Search task runs" type="search" placeholder="Search task runs..." autocomplete="off">
         <button class="btn ok" id="trajRefreshBtn" style="padding:5px 9px">↻ Refresh Run History</button>
         <span class="tiny project-summary" id="trajSummary">Durable Agent OS tasks, checkpoints, and verification receipts — no HTTP request history.</span>
       </div>
@@ -466,7 +468,7 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
     <section class="section">
       <h2>Request trace inspector <span class="tiny" id="traceSummary">Request/model/tool evidence; separate from Agent task runs.</span></h2>
       <p class="tiny" id="tracePrivacyNotice">Podrobný obsah je vypnutý ve výchozím stavu. Podrobná telemetrie ukládá úplný endpoint input/output lokálně.</p>
-      <div class="trace-toolbar"><span class="tiny">Inspect request events, model prompts, tool calls, and outputs.</span><button class="btn ok" id="visionReviewOpen" style="padding:4px 8px;font-size:11px">Frontend vision review</button><select id="traceKind"><option value="">All kinds</option><option value="api_request">API requests</option><option value="async_job">Async jobs</option></select><button class="btn" id="traceRefresh" style="padding:4px 8px;font-size:11px">Refresh</button></div>
+      <div class="trace-toolbar"><span class="tiny">Inspect request events, model prompts, tool calls, and outputs.</span><button class="btn ok" id="visionReviewOpen" style="padding:4px 8px;font-size:11px">Frontend vision review</button><select id="traceKind" aria-label="Trace kind"><option value="">All kinds</option><option value="api_request">API requests</option><option value="async_job">Async jobs</option></select><button class="btn" id="traceRefresh" style="padding:4px 8px;font-size:11px">Refresh</button></div>
       <div class="table-wrap"><table><thead><tr><th>State</th><th>Kind</th><th>Action</th><th>Agent</th><th>Model</th><th>Created</th><th>Updated</th><th>Links</th></tr></thead><tbody id="traces"></tbody></table></div>
     </section>
   </div>
@@ -477,7 +479,7 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
   <div id="prepDiagnosticBar" class="diag-banner info" style="display:none"></div>
   <section class="section">
     <h2><span style="display:flex;align-items:center;gap:8px">Projects <span class="tiny" id="prepState">0 registered projects · global running</span></span><div style="display:flex;gap:6px;align-items:center"><button class="btn warn" id="prepAllToggle" style="padding:4px 10px;font-size:11px">Pause all projects</button><button class="btn ok" id="regProjectBtn" style="padding:4px 10px;font-size:11px">+ Register</button><button class="btn warn" id="cleanMissingBtn" style="padding:4px 10px;font-size:11px">🧹 Clean missing</button></div></h2>
-    <div class="project-toolbar"><input id="projectSearch" type="search" placeholder="Search repository identity, project, or worktree…" autocomplete="off"><select id="projectFilter" aria-label="Project status"><option value="all">All states</option><option value="running">Running</option><option value="waiting">Waiting</option><option value="error">Error</option><option value="paused">Paused</option><option value="ready">Ready</option></select><label class="tiny"><input id="projectGroupWorktrees" type="checkbox" checked> Group worktrees</label><select id="projectSort" aria-label="Project sort"><option value="priority">Operational priority</option><option value="name">Name</option><option value="progress">Progress</option><option value="recent">Recent activity</option></select><span class="tiny project-summary" id="projectSummary">0 of 0 projects</span></div>
+    <div class="project-toolbar"><input id="projectSearch" aria-label="Search projects" type="search" placeholder="Search repository identity, project, or worktree…" autocomplete="off"><select id="projectFilter" aria-label="Project status"><option value="all">All states</option><option value="running">Running</option><option value="waiting">Waiting</option><option value="error">Error</option><option value="paused">Paused</option><option value="ready">Ready</option></select><label class="tiny"><input id="projectGroupWorktrees" type="checkbox" checked> Group worktrees</label><select id="projectSort" aria-label="Project sort"><option value="priority">Operational priority</option><option value="name">Name</option><option value="progress">Progress</option><option value="recent">Recent activity</option></select><span class="tiny project-summary" id="projectSummary">0 of 0 projects</span></div>
     <div class="table-wrap"><table class="project-table"><thead><tr><th>Project</th><th>State &amp; activity</th><th>Phase &amp; progress</th><th>Indexes</th><th>Actions</th></tr></thead><tbody id="projectsBody"></tbody></table></div>
   </section>
 </div>
@@ -489,7 +491,8 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
   <section class="section" style="margin-top:12px">
     <h2>Active Git Worktrees &amp; Subagent Sandboxes <span class="tiny" id="worktreeSummary">0 worktrees</span></h2>
     <div class="project-toolbar">
-      <input id="worktreeRoot" placeholder="Repository root" style="flex:1;min-width:220px">
+      <input id="worktreeRoot" aria-label="Repository root for worktrees" placeholder="Choose or enter repository root" list="worktreeRoots" style="flex:1;min-width:220px">
+      <datalist id="worktreeRoots"></datalist>
       <button class="btn ok" id="refreshWorktreesBtn">↻ Refresh Worktrees</button>
       <button class="btn warn" id="pruneWorktreesBtn">🧹 Prune Stale Worktrees</button>
       <span class="tiny muted project-summary">Isolated worktrees prevent concurrent file write collisions</span>
@@ -520,7 +523,7 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
 
   <section class="section" style="margin-top:12px">
     <h2>RAG Vector Workspaces <span class="tiny">Persistent semantic code index</span></h2>
-    <div class="project-toolbar"><input id="ragWorkspaceSearch" type="search" placeholder="Search RAG workspaces…" autocomplete="off"><span class="tiny" id="ragWorkspaceSummary">Workspace identity and index status.</span></div>
+    <div class="project-toolbar"><input id="ragWorkspaceSearch" aria-label="Search RAG workspaces" type="search" placeholder="Search RAG workspaces…" autocomplete="off"><span class="tiny" id="ragWorkspaceSummary">Workspace identity and index status.</span></div>
     <div id="ragWorkspacesList" style="padding:12px"><div class="tiny muted">Loading RAG workspaces…</div></div>
   </section>
 
@@ -528,10 +531,10 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
     <h2>Local Model Arena <span class="tiny">Side-by-side prompt testbed comparing fast tier vs smart tier</span></h2>
     <div style="padding:12px">
       <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">
-        <input type="text" id="arenaPromptInput" placeholder="Test prompt (e.g. Write a Python function with LRU cache to solve knapsack problem)..." style="flex:1;min-width:320px;background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:8px 12px;font-size:12px">
+        <input type="text" id="arenaPromptInput" aria-label="Arena test prompt" placeholder="Test prompt (e.g. Write a Python function with LRU cache to solve knapsack problem)..." style="flex:1;min-width:min(320px,100%);background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:8px 12px;font-size:12px">
         <button class="btn ok" id="arenaRunBtn">Run Arena Benchmark</button>
       </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+      <div class="arena-grid">
         <div class="card" style="min-height:180px">
           <div class="label" id="arenaFastLabel">Fast Tier (Auto)</div>
           <div id="arenaFastStats" class="tiny muted" style="margin:4px 0">Ready</div>
@@ -572,7 +575,7 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
     </div>
   </section>
   <section class="section">
-    <h2><span>Operational log tail</span><div style="display:flex;gap:6px;align-items:center"><input type="text" id="logFilterInput" placeholder="Filter logs…" style="background:#0d141c;color:var(--fg);border:1px solid #334355;border-radius:5px;padding:3px 7px;font-size:11px;width:150px"><select id="logLinesSelect" style="background:#0d141c;color:var(--fg);border:1px solid #334355;border-radius:5px;padding:3px 6px;font-size:11px"><option value="100">100 lines</option><option value="250" selected>250 lines</option><option value="500">500 lines</option></select><button class="btn" id="loadLogs" style="padding:3px 8px">Refresh</button><button class="btn" id="copyLogsBtn" style="padding:3px 8px">Copy</button></div></h2>
+    <h2><span>Operational log tail</span><div style="display:flex;gap:6px;align-items:center"><input type="text" id="logFilterInput" aria-label="Filter operational logs" placeholder="Filter logs…" style="background:#0d141c;color:var(--fg);border:1px solid #334355;border-radius:5px;padding:3px 7px;font-size:11px;width:150px"><select id="logLinesSelect" aria-label="Log line count" style="background:#0d141c;color:var(--fg);border:1px solid #334355;border-radius:5px;padding:3px 6px;font-size:11px"><option value="100">100 lines</option><option value="250" selected>250 lines</option><option value="500">500 lines</option></select><button class="btn" id="loadLogs" style="padding:3px 8px">Refresh</button><button class="btn" id="copyLogsBtn" style="padding:3px 8px">Copy</button></div></h2>
     <pre id="logTail" style="margin:0;padding:12px;white-space:pre-wrap;max-height:420px;overflow:auto;background:#0d1219;color:#c9d6e4;font-size:11px">Click Refresh to load logs.</pre>
   </section>
 </div>
@@ -581,11 +584,11 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
   <section class="section">
     <h2>Runtime configuration <span class="tiny">safe override sidecar · restart required after save</span></h2>
     <div style="padding:14px">
-      <div class="dash-group"><div class="group-title">Hardware &amp; Engine</div><div class="kv" style="padding:0;margin-bottom:12px"><div>Hardware profile</div><div><select id="cfgProfile" style="background:#172233;color:var(--fg);border:1px solid #2e405a;border-radius:6px;padding:6px 10px"><option>auto</option><option>cpu</option><option>integrated</option><option>low</option><option>balanced</option><option>high</option><option>max</option></select></div></div></div>
+      <div class="dash-group"><div class="group-title">Hardware &amp; Engine</div><div class="kv" style="padding:0;margin-bottom:12px"><div>Hardware profile</div><div><select id="cfgProfile" aria-label="Hardware profile" style="background:#172233;color:var(--fg);border:1px solid #2e405a;border-radius:6px;padding:6px 10px"><option>auto</option><option>cpu</option><option>integrated</option><option>low</option><option>balanced</option><option>high</option><option>max</option></select></div></div></div>
       <div class="dash-group"><div class="group-title">Core MCP Tools</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-bottom:12px"><label><input type="checkbox" id="cfgFeatStatus"> status (local_ai_status)</label><label><input type="checkbox" id="cfgFeatRepo"> repo (local_ai_repo)</label><label><input type="checkbox" id="cfgFeatTasks"> tasks (local_ai_task &amp; Ollama)</label><label><input type="checkbox" id="cfgFeatRag"> rag (local_ai_rag)</label><label><input type="checkbox" id="cfgFeatCommands"> commands (local_ai_command)</label><label><input type="checkbox" id="cfgFeatCoord"> coord (local_ai_coord)</label><label><input type="checkbox" id="cfgFeatArtifacts"> artifacts (local_ai_artifact)</label></div></div>
       <div class="dash-group"><div class="group-title">Code Intelligence &amp; Indexing</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-bottom:12px"><label><input type="checkbox" id="cfgPreprocess"> Preprocessing enabled</label><label><input type="checkbox" id="cfgIntel"> Managed code intelligence</label><label><input type="checkbox" id="cfgSerena"> Serena backend</label></div></div>
       <div class="dash-group"><div class="group-title">Advanced Subsystems</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-bottom:12px"><label><input type="checkbox" id="cfgFeatSubagents"> Subagents (Ollama workers)</label><label><input type="checkbox" id="cfgFeatAgentOs"> Agent OS (durable memory/receipts)</label><label><input type="checkbox" id="cfgFeatDashboard"> Web Dashboard</label></div></div>
-      <div class="tiny muted" style="margin:4px 0 7px">Scope and impact: saves only dashboard-managed overrides. Restart applies changes; reset removes only those overrides.</div><div style="display:flex;gap:8px;flex-wrap:wrap;padding-top:6px"><button class="btn ok" id="cfgSave">Save overrides (restart required)</button><button class="btn" id="cfgReload">Reload view</button><button class="btn warn" id="cfgReset">Reset dashboard overrides</button><span class="tiny" id="cfgStatus"></span></div>
+      <div class="tiny muted" style="margin:4px 0 7px">Scope and impact: saves only dashboard-managed overrides. Restart applies changes; reset removes only those overrides.</div><div style="display:flex;gap:8px;flex-wrap:wrap;padding-top:6px"><button class="btn ok" id="cfgSave">Save overrides (restart required)</button><button class="btn" id="cfgReload">Reload view</button><button class="btn warn" id="cfgReset">Reset dashboard overrides</button><span class="tiny" id="cfgStatus" role="status"></span></div>
     </div>
   </section>
   <section class="section"><h2>Effective configuration <span class="tiny" id="cfgPath"></span></h2><pre id="cfgPreview" style="margin:0;padding:14px;white-space:pre-wrap;max-height:520px;overflow:auto;background:#090d14;color:#c9d6e4;font-size:11px"></pre></section>
@@ -598,7 +601,7 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
       <p class="tiny muted">Bundles compress preprocessed index (AST, deterministic facts, RAG vectors and semantic cards) for instant restore on a different machine without re-indexing.</p>
       <div class="split" style="margin-top:10px">
         <div class="card" style="padding:12px"><h3 style="font-size:12px;margin:0 0 8px">Export Bundle</h3><div class="table-wrap"><table><thead><tr><th>Repository identity</th><th>Bundle readiness</th><th>Index contents</th><th>Action</th></tr></thead><tbody id="bundleExportTable"></tbody></table></div></div>
-        <div class="card" style="padding:12px"><h3 style="font-size:12px;margin:0 0 8px">Import Bundle</h3><div style="display:flex;flex-direction:column;gap:8px"><input type="file" id="bundleFile" accept=".zip,application/zip" style="color:var(--fg);font-size:12px"><input type="text" id="bundleTargetRoot" placeholder="Optional target repository root" style="background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:7px;font-size:11px"><button class="btn" id="bundleImport">Import selected ZIP</button><div id="bundleImportStatus" class="tiny muted"></div></div></div>
+        <div class="card" style="padding:12px"><h3 style="font-size:12px;margin:0 0 8px">Import Bundle</h3><div style="display:flex;flex-direction:column;gap:8px"><input type="file" id="bundleFile" aria-label="Bundle ZIP file" accept=".zip,application/zip" style="color:var(--fg);font-size:12px"><input type="text" id="bundleTargetRoot" aria-label="Target repository root" placeholder="Optional target repository root" style="background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:7px;font-size:11px"><button class="btn" id="bundleImport">Import selected ZIP</button><div id="bundleImportStatus" class="tiny muted"></div></div></div>
       </div>
     </div>
   </section>
@@ -606,8 +609,8 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
 
 <div id="events" class="page"><section class="section"><h2>Live activity <span class="tiny">RAM ring buffer · display pause does not pause runtime</span></h2><div class="project-toolbar"><select id="eventSeverity" aria-label="Event severity"><option value="">All severities</option><option value="failure">Failures</option><option value="warning">Warnings</option><option value="success">Successful</option></select><input id="eventSource" type="search" placeholder="Event source, agent, action…" aria-label="Event source"><span class="tiny" id="eventSummary">No events received.</span></div><div class="event-header"><span>Time</span><span>Agent</span><span>Type</span><span>Action / Stage</span><span class="hide-sm">Model / Tenant</span><span>Duration</span><span>Status</span></div><div id="eventList" class="events"></div></section></div>
 
-<div id="modalBg" class="modal-bg"><div class="modal"><div class="modal-head"><strong id="modalTitle">Details</strong><span id="modalLive" class="tiny" style="margin-left:10px"></span><button class="btn spacer" id="modalClose">Close</button></div><div id="modalBody"></div></div></div>
-<div id="visionReviewModal" class="modal-bg"><div class="modal vision-review-modal"><div class="modal-head"><strong>Frontend vision review</strong><span class="tiny" id="visionReviewStatus" aria-live="polite"></span><button class="btn spacer" id="visionReviewClose">Close</button></div><div id="visionReviewBody" class="modal-body-wrap"><div class="modal-card"><div class="modal-card-head"><span>Review input</span><span class="tiny">PNG/JPEG or current-tab evidence</span></div><div class="modal-card-body"><label class="modal-form"><span>Screenshot</span><input id="visionScreenshot" type="file" accept="image/png,image/jpeg,image/webp"></label><label class="modal-form"><span>Prompt</span><textarea id="visionPrompt" rows="4" maxlength="20000" placeholder="What should the visual critic inspect?"></textarea></label><div class="modal-actions-bar"><button class="btn" id="visionCaptureCurrentTab" type="button">Capture current tab</button><span id="visionCaptureState" class="trace-capture-state not-captured" data-capture-state="not_captured">Capture state · Not captured</span></div><div id="visionCaptureError" class="diag-banner bad" role="alert" style="display:none"></div><input id="visionFindingId" type="hidden"><button class="btn ok" id="visionReviewSubmit" type="button">Run vision review</button></div></div><div id="visionReviewResult" aria-live="polite"></div></div></div></div>
+<div id="modalBg" class="modal-bg" role="dialog" aria-modal="true" aria-labelledby="modalTitle"><div class="modal"><div class="modal-head"><strong id="modalTitle">Details</strong><span id="modalLive" class="tiny" style="margin-left:10px"></span><button class="btn spacer" id="modalClose">Close</button></div><div id="modalBody"></div></div></div>
+<div id="visionReviewModal" class="modal-bg" role="dialog" aria-modal="true" aria-label="Frontend vision review"><div class="modal vision-review-modal"><div class="modal-head"><strong>Frontend vision review</strong><span class="tiny" id="visionReviewStatus" aria-live="polite"></span><button class="btn spacer" id="visionReviewClose">Close</button></div><div id="visionReviewBody" class="modal-body-wrap"><div class="modal-card"><div class="modal-card-head"><span>Review input</span><span class="tiny">PNG/JPEG or current-tab evidence</span></div><div class="modal-card-body"><label class="modal-form"><span>Screenshot</span><input id="visionScreenshot" aria-label="Screenshot for frontend review" type="file" accept="image/png,image/jpeg,image/webp"></label><label class="modal-form"><span>Prompt</span><textarea id="visionPrompt" aria-label="Frontend review instructions" rows="4" maxlength="20000" placeholder="What should the visual critic inspect?"></textarea></label><div class="modal-actions-bar"><button class="btn" id="visionCaptureCurrentTab" type="button">Capture current tab</button><span id="visionCaptureState" class="trace-capture-state not-captured" data-capture-state="not_captured">Capture state · Not captured</span></div><div id="visionCaptureError" class="diag-banner bad" role="alert" style="display:none"></div><input id="visionFindingId" type="hidden"><button class="btn ok" id="visionReviewSubmit" type="button">Run vision review</button></div></div><div id="visionReviewResult" aria-live="polite"></div></div></div></div>
 
 <script>
 let cursor=0,paused=false,last=null,lastTraces=[],lastOverviewAnnouncement='',lastOverviewReceivedAt=0;
@@ -853,16 +856,6 @@ document.head.insertAdjacentHTML('beforeend','<style>.trace-primary{margin:0 0 1
 
 document.head.insertAdjacentHTML('beforeend','<style>.trace-presentation-field{display:grid;grid-template-columns:minmax(150px,220px) minmax(0,1fr);gap:6px 12px;align-items:start;padding:7px 0;min-width:0}.trace-presentation-field+ .trace-presentation-field{border-top:1px solid #273544}.trace-presentation-field>strong{color:var(--muted);font-size:10px;line-height:1.4;overflow-wrap:anywhere}.trace-presentation-field>div,.trace-presentation-field>span,.trace-presentation-field>pre,.trace-presentation-field>details{min-width:0;overflow-wrap:anywhere}.trace-command-top{border:1px solid #2d3d4e;border-radius:8px;background:#0c121a;padding:10px;margin:0 0 14px}.trace-command-top>h3{margin:0 0 4px;font-size:12px;color:var(--fg)}@media(max-width:700px){.trace-presentation-field{grid-template-columns:1fr;gap:3px}.trace-command-top{padding:8px}}</style>');
 const nativeFetch=window.fetch.bind(window);
-function getSavedToken(){
-  try{return localStorage.getItem('apiToken')||sessionStorage.getItem('localAiHubToken')||'';}catch{return '';}
-}
-function saveToken(val){
-  apiToken=val.trim();
-  try{localStorage.setItem('apiToken',apiToken);sessionStorage.setItem('localAiHubToken',apiToken);}catch{}
-}
-let apiToken=getSavedToken();
-if($('apiToken')) $('apiToken').value=apiToken;
-
 function setupTraceInspector(){
   if($('traceInspector'))return;
   document.body.insertAdjacentHTML('beforeend','<div id="traceInspector" class="page trace-page"><div class="trace-layout"><aside class="trace-sidebar"><div class="trace-sidebar-head"><button class="btn" data-trace-back>← Queue & requests</button><strong>Agent trace history</strong><span class="tiny" id="traceSideSummary">Select a run to inspect</span></div><div id="traceSidebarList" class="trace-sidebar-list"></div></aside><main class="trace-main"><div class="trace-main-head"><div><h1 id="tracePageTitle">Select an agent trace</h1><span id="tracePageLive" class="tiny"></span></div><button class="btn spacer" data-trace-back>Back</button></div><div id="tracePageBody" class="trace-select-empty">Choose a trace from the left.</div></main></div></div>');
@@ -873,7 +866,6 @@ if($('traceSidebarList')&&!$('traceHistorySearch')){$('traceSidebarList').insert
 let statusPollInFlight=false,hasLiveStatus=false;
 let sloScope=$('sloScope')?$('sloScope').value:'1h';
 if($('sloScope')) $('sloScope').onchange=()=>{sloScope=$('sloScope').value;statusPoller.refresh()};
-if($('saveToken')) $('saveToken').onclick=()=>{if($('apiToken'))saveToken($('apiToken').value);statusPoller.refresh()};
 function syncDetailedTelemetryToggle(enabled){
   const button=$('detailedTelemetryToggle');if(!button)return;
   button.textContent=`Detailed telemetry: ${enabled?'On':'Off'}`;
@@ -950,8 +942,22 @@ function shouldRefreshDashboardStatus(status){
   return true;
 }
 
+function scopeAgentOsRequest(path,options={}){
+  if(!String(path).startsWith('/api/agent-state/'))return {path,options};
+  const root=$('agentOsRoot')?.value?.trim();
+  if(!root)throw new Error('Choose a repository root in Agent OS first.');
+  if(String(options.method||'GET').toUpperCase()==='GET'){
+    path+=String(path).includes('?')?'&':'?';
+    path+='root='+encodeURIComponent(root);
+  }else{
+    const payload=options.body?JSON.parse(options.body):{};
+    options={...options,body:JSON.stringify({...payload,root})};
+  }
+  return {path,options};
+}
 async function apiFetch(path,opts={}){
-  opts={...opts};const h=new Headers(opts.headers||{});h.set('X-LocalAI-Client','dashboard');if(apiToken)h.set('X-LocalAI-Token',apiToken);opts.headers=h;
+  const scoped=scopeAgentOsRequest(path,opts);path=scoped.path;opts=scoped.options;
+  opts={...opts};const h=new Headers(opts.headers||{});h.set('X-LocalAI-Client','dashboard');opts.headers=h;
   const request=async requestOpts=>{
     const next={...requestOpts};let controller=null,timer=null;
     if(!next.signal&&typeof AbortController==='function'){
@@ -962,12 +968,7 @@ async function apiFetch(path,opts={}){
     delete next.timeoutMs;
     try{return await nativeFetch(path,next)}finally{if(timer)clearTimeout(timer)}
   };
-  let r=await request(opts);
-  if(r.status===401&&!apiToken){
-    const entered=prompt('Local AI Hub API token');
-    if(entered){saveToken(entered);if($('apiToken'))$('apiToken').value=apiToken;h.set('X-LocalAI-Token',apiToken);r=await request({...opts,headers:h})}
-  }
-  return r;
+  return request(opts);
 }
 function setFrontendVisionCaptureState(state,label){const el=$('visionCaptureState');if(!el)return;const normalized=['produced','empty','not_captured','redacted'].includes(String(state||''))?String(state):'not_captured';el.className=`trace-capture-state ${normalized.replace('_','-')}`;el.dataset.captureState=normalized;el.textContent=`Capture state · ${label||traceCaptureStateLabel(normalized)}`;}
 function setFrontendVisionCaptureError(message){const el=$('visionCaptureError');if(!el)return;const text=String(message||'');el.textContent=text;el.style.display=text?'':'none';}
@@ -1012,28 +1013,6 @@ function copyText(text, btn){
     setTimeout(()=>{btn.textContent=oldText},1500);
   }
 }
-async function checkTaskCriterion(taskId,criterion,btn){
-  const oldText=btn.textContent;
-  btn.disabled=true;
-  btn.textContent='Checking…';
-  try{
-    const res=await post('/api/agent-state/verification',{action:'completion',task_id:taskId});
-    const c=res.completion||{};
-    const passed=(c.satisfied_criteria||[]).includes(criterion);
-    if(passed){
-      btn.className='action-btn-sm ok';
-      btn.textContent='✓ Verified';
-    }else{
-      btn.className='action-btn-sm warn-t';
-      btn.textContent='Pending';
-    }
-  }catch(e){
-    btn.textContent='Error';
-  }finally{
-    btn.disabled=false;
-  }
-}
-
 function renderCodeIntelModal(d,title){
   if(d.code||d.tests||d.test_code){
     const code=d.code||d.tests||d.test_code;
@@ -1196,67 +1175,6 @@ function renderAuditVulnModal(v){
   `;
 }
 
-function renderSecretFindingModal(s){
-  const rule=s.rule||s.secret_type||'Secret';
-  const desc=s.description||rule;
-  const isMock=s.is_test||s.is_placeholder;
-  const file=s.file||'—';
-  const line=s.line||0;
-  const match=s.match||s.redacted_secret||'***';
-  const entropy=s.entropy!==undefined?s.entropy:'—';
-  const snippet=s.redacted_snippet||match;
-  const sev=isMock?'LOW':(s.severity||'HIGH');
-  const badgeCls=isMock?'badge-waiting':(sev==='CRITICAL'?'badge-error':'badge-running');
-
-  $('modalBody').innerHTML=`
-    <div class="modal-hero">
-      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-        <div>
-          <div class="tiny muted mono">SECURITY AUDIT · CREDENTIAL SCANNER</div>
-          <h2 style="margin:2px 0 0;font-size:16px">🔑 <b>${esc(desc)}</b></h2>
-        </div>
-        <span class="badge-status ${badgeCls}">${isMock?'🧪 TEST SUITE MOCK':(sev+' LEAK')}</span>
-      </div>
-    </div>
-    <div class="modal-body-wrap">
-      <div class="modal-card">
-        <div class="modal-card-head"><span>Finding Details</span></div>
-        <div class="modal-card-body">
-          <div class="kv" style="padding:0">
-            <div>Rule Key</div><div class="mono">${esc(rule)}</div>
-            <div>File Location</div><div class="mono tiny">${esc(file)}:${n(line)}</div>
-            <div>Masked Match</div><div class="mono bad-t">${esc(match)}</div>
-            <div>Shannon Entropy</div><div><span class="chip">${esc(entropy)}</span> <span class="tiny muted">(>3.5 indicates true random cryptographic entropy)</span></div>
-            <div>Classification</div><div><b>${isMock?'<span class="warn-t">Unit Test Fixture (Safe)</span>':'<span class="bad-t">Live Production Credential Leak (Action Required)</span>'}</b></div>
-          </div>
-        </div>
-      </div>
-      <div class="modal-card">
-        <div class="modal-card-head"><span>Source Snippet</span></div>
-        <div class="modal-card-body">
-          <pre class="code-box" style="margin:0">${esc(snippet)}</pre>
-        </div>
-      </div>
-      ${!isMock?`
-      <div class="diag-banner bad">
-        <span>⚠️</span>
-        <div>
-          <b>Recommended Immediate Actions:</b>
-          <ol style="margin:4px 0 0;padding-left:18px;font-size:11px">
-            <li>Revoke or rotate this credential in provider dashboard immediately.</li>
-            <li>Purge credential from git history using <code>git-filter-repo</code> or BFG.</li>
-            <li>Move secrets to environment variables (e.g. <code>.env</code> in <code>.gitignore</code>).</li>
-          </ol>
-        </div>
-      </div>
-      `:''}
-      <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose')?.click()">Close</button>
-      </div>
-    </div>
-  `;
-}
-
 function renderArchEdgeModal(e){
   const fromName=e.from?.split(/[\\/]/).pop()||e.from;
   const toName=e.to?.split(/[\\/]/).pop()||e.to;
@@ -1287,722 +1205,6 @@ function renderArchEdgeModal(e){
       </div>
     </div>
   `;
-}
-
-function ansiToHtml(text){
-  if(!text)return '';
-  const colors={
-    '30':'#6e7681','31':'#f85149','32':'#3fb950','33':'#d29922','34':'#58a6ff','35':'#bc8cff','36':'#39c5cf','37':'#f0f6fc',
-    '90':'#8b949e','91':'#ff7b72','92':'#56d364','93':'#e3b341','94':'#79c0ff','95':'#d2a8ff','96':'#56d4dd','97':'#ffffff'
-  };
-  let out='',open=false;
-  const escaped=text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  const parts=escaped.split(/\u001b\[([0-9;]*)m/);
-  for(let i=0;i<parts.length;i++){
-    if(i%2===1){
-      const code=parts[i];
-      if(open){out+='</span>';open=false;}
-      if(code!=='0'&&code!==''){
-        const c=colors[code];
-        if(c){out+=`<span style="color:${c}">`;open=true;}
-        else if(code==='1'){out+='<span style="font-weight:bold">';open=true;}
-      }
-    }else{
-      out+=parts[i];
-    }
-  }
-  if(open)out+='</span>';
-  return out;
-}
-
-function renderCmdResult(res){
-  const outEl=$('cmdOutput'),paneEl=$('cmdTermPane'),metaEl=$('cmdExecMeta');
-  if(outEl)outEl.textContent=JSON.stringify(res,null,2);
-  let termContent='';
-  if(res?.stdout)termContent+=res.stdout;
-  if(res?.stderr)termContent+=(termContent?'\n':'')+res.stderr;
-  if(!termContent&&res?.output)termContent=res.output;
-  if(!termContent&&res?.error)termContent='Error: '+res.error;
-  if(paneEl)paneEl.innerHTML=ansiToHtml(termContent)||'<span class="muted">(no output)</span>';
-  if(metaEl){
-    const ec=res?.exit_code??res?.exitCode??res?.result?.exit_code;
-    const dur=res?.duration_ms??res?.duration??res?.result?.duration_ms;
-    const ok=ec===0;
-    metaEl.innerHTML=`${ec!==undefined?`<span class="pill tiny ${ok?'ok':'bad'}">exit: ${ec}</span>`:''} ${dur?`<span class="pill tiny">${Math.round(dur)}ms</span>`:''}`;
-  }
-}
-
-if($('cmdTermViewBtn'))$('cmdTermViewBtn').onclick=()=>{
-  if($('cmdTermPane'))$('cmdTermPane').style.display='block';
-  if($('cmdOutput'))$('cmdOutput').style.display='none';
-  $('cmdTermViewBtn')?.classList.add('active');
-  $('cmdJsonViewBtn')?.classList.remove('active');
-};
-if($('cmdJsonViewBtn'))$('cmdJsonViewBtn').onclick=()=>{
-  if($('cmdTermPane'))$('cmdTermPane').style.display='none';
-  if($('cmdOutput'))$('cmdOutput').style.display='block';
-  $('cmdJsonViewBtn')?.classList.add('active');
-  $('cmdTermViewBtn')?.classList.remove('active');
-};
-
-if($('cmdClassify'))$('cmdClassify').onclick=async()=>{
-  const command=$('cmdInput')?.value?.trim()||'';
-  if(!command)return;
-  const res=await post('/api/command',{action:'classify',command});
-  renderCmdResult(res);
-};
-
-if($('cmdRun'))$('cmdRun').onclick=async()=>{
-  const command=$('cmdInput')?.value?.trim()||'',cwd=$('cmdRoot')?.value?.trim()||'';
-  if(!command||!cwd){
-    renderCmdResult({error:'Repository root and command are required.'});
-    return;
-  }
-  const c=await post('/api/command',{action:'classify',command});
-  if(!c?.classification?.allowed){
-    renderCmdResult(c);
-    return;
-  }
-  if(!confirm('Run this '+c.classification.class+' command?\n\n'+command))return;
-  const btn=$('cmdRun');
-  if(btn)btn.disabled=true;
-  try{
-    const res=await post('/api/command',{action:'run',command,cwd,force:true});
-    renderCmdResult(res);
-  } finally {
-    if(btn)btn.disabled=false;
-    statusPoller.refresh();
-  }
-};
-
-async function openGitDiffModal(defaultRoot,defaultPath,defaultStaged){
-  const root=defaultRoot||$('cmdRoot')?.value?.trim()||'.';
-  const path=defaultPath||'';
-  const staged=!!defaultStaged;
-  if($('modalTitle'))$('modalTitle').textContent='Visual Git Diff';
-  if($('modalLive'))$('modalLive').innerHTML='';
-  if($('modalBody'))$('modalBody').innerHTML=`
-    <div style="padding:8px 12px;background:#131d2b;border-bottom:1px solid #2e405a;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <input id="diffModalRoot" value="${esc(root)}" placeholder="Repo root" style="background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:4px 8px;font-size:11px;min-width:180px">
-      <input id="diffModalPath" value="${esc(path)}" placeholder="File path (optional)" style="background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:4px 8px;font-size:11px;min-width:180px">
-      <label style="font-size:11px;color:var(--fg);display:inline-flex;align-items:center;gap:4px">
-        <input type="checkbox" id="diffModalStaged" ${staged?'checked':''}> Staged only
-      </label>
-      <button class="btn ok tiny" id="diffModalRefresh">↻ Refresh Diff</button>
-      <button class="btn tiny" id="diffModalStageBtn" title="Stage current path or all (git add)">📥 Stage</button>
-      <button class="btn warn tiny" id="diffModalUnstageBtn" title="Unstage changes (git reset)">↩ Unstage</button>
-      <span id="diffModalStats" style="margin-left:auto;display:flex;gap:6px;align-items:center"></span>
-    </div>
-    <div id="diffModalContainer" style="padding:12px;max-height:550px;overflow:auto;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:12px">
-      <div class="muted">Loading diff…</div>
-    </div>
-  `;
-  if($('modalBg'))$('modalBg').classList.add('open');
-
-  async function loadDiff(){
-    const r=$('diffModalRoot')?.value?.trim()||'.';
-    const p=$('diffModalPath')?.value?.trim()||'';
-    const s=$('diffModalStaged')?.checked;
-    const container=$('diffModalContainer');
-    const statsEl=$('diffModalStats');
-    if(!container)return;
-    container.innerHTML='<div class="muted">Loading diff…</div>';
-    try{
-      const res=await apiFetch('/api/git/diff?root='+encodeURIComponent(r)+'&path='+encodeURIComponent(p)+'&staged='+(s?'true':'false')+'&max_lines=1000');
-      const data=await res.json();
-      if(!data.success){
-        container.innerHTML=`<div class="bad-t">Error: ${esc(data.error||'Failed to load git diff')}</div>`;
-        return;
-      }
-      const stats=data.stats||{};
-      if(statsEl){
-        statsEl.innerHTML=`
-          <span class="pill ok tiny">+${stats.insertions||0}</span>
-          <span class="pill bad tiny">-${stats.deletions||0}</span>
-          <span class="pill tiny">${stats.files_changed||0} files</span>
-        `;
-      }
-      if(!data.raw_diff||!data.raw_diff.trim()){
-        container.innerHTML='<div class="muted" style="text-align:center;padding:30px">No changes detected (clean working tree).</div>';
-        return;
-      }
-      const lines=data.raw_diff.split('\n');
-      let html='<div style="background:#0d1117;border-radius:6px;border:1px solid #30363d;overflow:hidden">';
-      for(let line of lines){
-        let style='padding:1px 8px;white-space:pre-wrap;line-height:1.45;';
-        if(line.startsWith('+++')||line.startsWith('---')){
-          style+='background:#161b22;color:#8b949e;font-weight:bold;';
-        }else if(line.startsWith('@@')){
-          style+='background:#162031;color:#58a6ff;font-weight:bold;';
-        }else if(line.startsWith('+')){
-          style+='background:rgba(46,160,67,0.15);color:#3fb950;';
-        }else if(line.startsWith('-')){
-          style+='background:rgba(248,81,73,0.15);color:#f85149;';
-        }else if(line.startsWith('diff --git')){
-          style+='background:#21262d;color:#f0f6fc;font-weight:bold;margin-top:8px;border-top:1px solid #30363d;';
-        }else{
-          style+='color:#c9d1d9;';
-        }
-        html+=`<div style="${style}">${esc(line)||' '}</div>`;
-      }
-      html+='</div>';
-      container.innerHTML=html;
-    }catch(err){
-      if(container)container.innerHTML=`<div class="bad-t">Error: ${esc(String(err))}</div>`;
-    }
-  }
-
-  const refBtn=$('diffModalRefresh');
-  const stgCh=$('diffModalStaged');
-  const stageBtn=$('diffModalStageBtn');
-  const unstageBtn=$('diffModalUnstageBtn');
-  if(refBtn)refBtn.onclick=loadDiff;
-  if(stgCh)stgCh.onchange=loadDiff;
-  if(stageBtn)stageBtn.onclick=async()=>{
-    const r=$('diffModalRoot')?.value?.trim()||'.';
-    const p=$('diffModalPath')?.value?.trim()||'';
-    const cmd='git add '+(p?`"${p}"`:'.');
-    await post('/api/command',{action:'run',command:cmd,cwd:r,force:true});
-    await loadDiff();
-  };
-  if(unstageBtn)unstageBtn.onclick=async()=>{
-    const r=$('diffModalRoot')?.value?.trim()||'.';
-    const p=$('diffModalPath')?.value?.trim()||'';
-    const cmd='git reset HEAD -- '+(p?`"${p}"`:'.');
-    await post('/api/command',{action:'run',command:cmd,cwd:r,force:true});
-    await loadDiff();
-  };
-  loadDiff();
-}
-
-if($('cmdGitDiffBtn'))$('cmdGitDiffBtn').onclick=()=>openGitDiffModal($('cmdRoot')?.value?.trim());
-
-if($('intelRediscover'))$('intelRediscover').onclick=async()=>{if($('intelControlStatus'))$('intelControlStatus').textContent='working…';const r=await post('/api/code-intelligence/control',{action:'rediscover'});if($('intelControlStatus'))$('intelControlStatus').textContent=r.success?'rediscovery complete':'error: '+(r.error||'failed');statusPoller.refresh()};
-if($('intelReset'))$('intelReset').onclick=async()=>{if(!confirm('Reset all managed Serena MCP sessions?'))return;if($('intelControlStatus'))$('intelControlStatus').textContent='working…';const r=await post('/api/code-intelligence/control',{action:'reset',backend:'all'});if($('intelControlStatus'))$('intelControlStatus').textContent=r.success?'sessions reset':'error: '+(r.error||'failed');statusPoller.refresh()};
-
-function selectedRepoRoot(){
-  return $('cmdRoot')?.value?.trim()||(last?.preprocessing?.projects||[]).find(p=>p?.root)?.root||'';
-}
-
-async function loadArchGraph(){
-  try{
-    const roots=(last?.preprocessing?.projects||[]).map(p=>p?.root).filter(Boolean);
-    if(!roots.length)return;
-    const params=roots.map(root=>'roots='+encodeURIComponent(root)).join('&');
-    const r=await apiFetch('/api/cross_project_graph?'+params,{cache:'no-store'});
-    if(!r.ok)return;
-    archData=await r.json();
-    renderArchGraph();
-  }catch(e){console.warn('arch graph error',e)}
-}
-
-function renderArchGraph(){
-  if(!archData)return;
-  const svg=$('archSvg');
-  if(!svg)return;
-  const W=svg.clientWidth||800,H=svg.clientHeight||520;
-  const nodes=(archData.nodes||[]).map((n,i)=>({...n,x:W/2+Math.cos(i/Math.max(1,archData.nodes.length)*2*Math.PI)*200,y:H/2+Math.sin(i/Math.max(1,archData.nodes.length)*2*Math.PI)*160,vx:0,vy:0}));
-  const edges=archData.edges||[];
-  archNodes=nodes;archEdges=edges;
-  if($('archSummary'))$('archSummary').textContent=nodes.length+' projects · '+edges.length+' connections · '+n(archData.shared_packages||0)+' shared packages';
-  rows('archEdgesTable',edges,e=>clickableRow(e,`<td>${esc(e.from?.split('/').pop()||e.from)}</td><td>${esc(e.to?.split('/').pop()||e.to)}</td><td><span class="chip">${esc(e.type)}</span></td><td>${esc(e.label)}</td>`,'arch_edge'),4);
-  drawArch(svg,nodes,edges,W,H);
-  runSimulation(svg,nodes,edges,W,H);
-}
-
-function drawArch(svg,nodes,edges,W,H){
-  svg.innerHTML='';
-  const defs=document.createElementNS('http://www.w3.org/2000/svg','defs');
-  const marker=document.createElementNS('http://www.w3.org/2000/svg','marker');
-  marker.setAttribute('id','arr');marker.setAttribute('markerWidth','6');marker.setAttribute('markerHeight','4');marker.setAttribute('refX','6');marker.setAttribute('refY','2');marker.setAttribute('orient','auto');
-  const mp=document.createElementNS('http://www.w3.org/2000/svg','polygon');mp.setAttribute('points','0 0, 6 2, 0 4');mp.setAttribute('fill','#4a6080');marker.appendChild(mp);defs.appendChild(marker);
-
-  const markerRed=document.createElementNS('http://www.w3.org/2000/svg','marker');
-  markerRed.setAttribute('id','arr-red');markerRed.setAttribute('markerWidth','6');markerRed.setAttribute('markerHeight','4');markerRed.setAttribute('refX','6');markerRed.setAttribute('refY','2');markerRed.setAttribute('orient','auto');
-  const mpRed=document.createElementNS('http://www.w3.org/2000/svg','polygon');mpRed.setAttribute('points','0 0, 6 2, 0 4');mpRed.setAttribute('fill','#f87171');markerRed.appendChild(mpRed);defs.appendChild(markerRed);
-  svg.appendChild(defs);
-
-  const viewport=document.createElementNS('http://www.w3.org/2000/svg','g');
-  viewport.setAttribute('id','archViewport');
-  viewport.setAttribute('transform',`translate(${archPan.x},${archPan.y}) scale(${archZoom})`);
-  svg.appendChild(viewport);
-
-  const adj={};
-  edges.forEach(e=>{ (adj[e.from]=adj[e.from]||[]).push(e.to); });
-  const cycleEdges=new Set();
-  function findCycles(curr, visited, pathStack){
-    visited.add(curr);
-    pathStack.push(curr);
-    for(const nxt of (adj[curr]||[])){
-      const idx = pathStack.indexOf(nxt);
-      if(idx !== -1){
-        for(let k=idx; k<pathStack.length-1; k++){
-          cycleEdges.add(`${pathStack[k]}->${pathStack[k+1]}`);
-        }
-        cycleEdges.add(`${pathStack[pathStack.length-1]}->${nxt}`);
-      } else if(!visited.has(nxt)){
-        findCycles(nxt, visited, pathStack);
-      }
-    }
-    pathStack.pop();
-  }
-  const vis=new Set();
-  nodes.forEach(n=>{ if(!vis.has(n.root)) findCycles(n.root, vis, []); });
-
-  const nodeIdx=Object.fromEntries(nodes.map((n,i)=>[n.root,i]));
-  edges.forEach(e=>{
-    const s=nodes[nodeIdx[e.from]],t=nodes[nodeIdx[e.to]];
-    if(!s||!t)return;
-    const isCycle = cycleEdges.has(`${e.from}->${e.to}`);
-    const line=document.createElementNS('http://www.w3.org/2000/svg','line');
-    line.setAttribute('class','arch-edge');line.setAttribute('x1',s.x);line.setAttribute('y1',s.y);line.setAttribute('x2',t.x);line.setAttribute('y2',t.y);
-    line.setAttribute('stroke',isCycle ? '#f87171' : (e.type==='shared_route'?'#7b5fff':'#3a5572'));
-    line.setAttribute('stroke-width',isCycle ? '2.5' : '1.5');
-    if(isCycle) line.setAttribute('stroke-dasharray','4 2');
-    line.setAttribute('marker-end',isCycle ? 'url(#arr-red)' : 'url(#arr)');
-    viewport.appendChild(line);
-  });
-  nodes.forEach((nd,i)=>{
-    const matches = !archFilter || (nd.root||'').toLowerCase().includes(archFilter) || (nd.label||'').toLowerCase().includes(archFilter);
-    const g=document.createElementNS('http://www.w3.org/2000/svg','g');g.setAttribute('transform',`translate(${nd.x},${nd.y})`);
-    g.style.opacity = matches ? '1.0' : '0.25';
-    const circ=document.createElementNS('http://www.w3.org/2000/svg','circle');
-    circ.setAttribute('r','26');circ.setAttribute('fill','#1a2d40');
-    circ.setAttribute('stroke',matches && archFilter ? '#fbbf24' : '#5380a8');
-    circ.setAttribute('stroke-width',matches && archFilter ? '2.5' : '1.5');
-    circ.style.cursor='pointer';
-    const lbl=document.createElementNS('http://www.w3.org/2000/svg','text');
-    lbl.setAttribute('text-anchor','middle');lbl.setAttribute('dy','4');lbl.setAttribute('fill','#c5d4e5');lbl.setAttribute('font-size','10');lbl.style.pointerEvents='none';
-    lbl.textContent=(nd.root||'').split(/[\\/]/).pop()?.slice(0,12)||'?';
-    g.appendChild(circ);g.appendChild(lbl);
-    let moved=false;
-    g.addEventListener('mousedown',ev=>{ev.preventDefault();moved=false;archDragging={node:nd,svg,dx:(ev.clientX/archZoom)-nd.x,dy:(ev.clientY/archZoom)-nd.y,setMoved:()=>{moved=true}}});
-    circ.addEventListener('click',ev=>{if(!moved)openArchNodeModal(nd)});
-    viewport.appendChild(g);
-  });
-  svg.addEventListener('mousemove',ev=>{
-    if(!archDragging)return;
-    archDragging.setMoved?.();
-    archDragging.node.x=(ev.clientX/archZoom)-archDragging.dx;
-    archDragging.node.y=(ev.clientY/archZoom)-archDragging.dy;
-    updateArchPositions(svg,nodes,edges);
-  });
-  svg.addEventListener('mouseup',()=>{archDragging=null});
-}
-
-function updateArchPositions(svg,nodes,edges){
-  const vp=$('archViewport')||svg;
-  const lines=vp.querySelectorAll('.arch-edge');const nodeIdx=Object.fromEntries(nodes.map((n,i)=>[n.root,i]));
-  lines.forEach((l,i)=>{const e=edges[i];if(!e)return;const s=nodes[nodeIdx[e.from]],t=nodes[nodeIdx[e.to]];if(!s||!t)return;l.setAttribute('x1',s.x);l.setAttribute('y1',s.y);l.setAttribute('x2',t.x);l.setAttribute('y2',t.y)});
-  const gs=vp.querySelectorAll('g');nodes.forEach((nd,i)=>{if(gs[i])gs[i].setAttribute('transform',`translate(${nd.x},${nd.y})`)});
-}
-
-function runSimulation(svg,nodes,edges,W,H){
-  const nodeIdx=Object.fromEntries(nodes.map((n,i)=>[n.root,i]));
-  let t=0;
-  function tick(){
-    if(t++>200||archDragging)return;
-    nodes.forEach(n=>{n.vx*=0.9;n.vy*=0.9;n.vx+=(W/2-n.x)*0.002;n.vy+=(H/2-n.y)*0.002});
-    nodes.forEach((a,i)=>nodes.forEach((b,j)=>{if(i>=j)return;const dx=b.x-a.x,dy=b.y-a.y,d=Math.sqrt(dx*dx+dy*dy)||1;const f=Math.max(0,80-d)/d*0.5;a.vx-=f*dx;a.vy-=f*dy;b.vx+=f*dx;b.vy+=f*dy}));
-    edges.forEach(e=>{const s=nodes[nodeIdx[e.from]],t2=nodes[nodeIdx[e.to]];if(!s||!t2)return;const dx=t2.x-s.x,dy=t2.y-s.y,d=Math.sqrt(dx*dx+dy*dy)||1;const f=(d-120)/d*0.15;s.vx+=f*dx;s.vy+=f*dy;t2.vx-=f*dx;t2.vy-=f*dy});
-    nodes.forEach(nd=>{nd.x=Math.max(30,Math.min(W-30,nd.x+nd.vx));nd.y=Math.max(30,Math.min(H-30,nd.y+nd.vy))});
-    updateArchPositions(svg,nodes,edges);requestAnimationFrame(tick);
-  }
-  tick();
-}
-$('archRefresh')?.addEventListener('click',loadArchGraph);
-$('archZoomIn')?.addEventListener('click', () => {
-  archZoom = Math.min(3.0, archZoom * 1.25);
-  const vp = $('archViewport');
-  if (vp) vp.setAttribute('transform', `translate(${archPan.x},${archPan.y}) scale(${archZoom})`);
-});
-$('archZoomOut')?.addEventListener('click', () => {
-  archZoom = Math.max(0.3, archZoom / 1.25);
-  const vp = $('archViewport');
-  if (vp) vp.setAttribute('transform', `translate(${archPan.x},${archPan.y}) scale(${archZoom})`);
-});
-$('archZoomReset')?.addEventListener('click', () => {
-  archZoom = 1.0; archPan = {x: 0, y: 0};
-  const vp = $('archViewport');
-  if (vp) vp.setAttribute('transform', `translate(0,0) scale(1)`);
-});
-$('archFilterInput')?.addEventListener('input', (ev) => {
-  archFilter = (ev.target.value || '').trim().toLowerCase();
-  const svg = $('archSvg');
-  if (archNodes && archEdges && svg) drawArch(svg, archNodes, archEdges, svg.clientWidth||800, svg.clientHeight||520);
-});
-
-$('symbolGraphBtn')?.addEventListener('click',async()=>{
-  const sym=$('symbolInput')?.value?.trim();
-  const root=selectedRepoRoot();
-  if(!root){alert('Repository root is required');return}
-  try{
-    const r=await apiFetch('/api/symbol_callgraph?root='+encodeURIComponent(root)+'&symbol='+encodeURIComponent(sym||''),{cache:'no-store'});
-    if(!r.ok)return;
-    const d=await r.json();
-    if(d.nodes&&d.nodes.length){
-      archData={nodes:d.nodes.map(n=>({root:n.id,label:n.label})),edges:d.edges.map(e=>({from:e.from,to:e.to,type:e.type,label:e.type}))};
-      renderArchGraph();
-    }else{alert('No callgraph nodes found for symbol: '+sym)}
-  }catch(e){console.warn(e)}
-});
-
-function showScanReady(secId, label){
-  const el=$(secId);
-  if(el){el.style.display='block';el.scrollIntoView({behavior:'smooth',block:'start'})}
-  const status=$('archScanStatus');
-  if(status){
-    status.style.display='inline-flex';
-    status.textContent=`✓ ${label} (click to jump ↓)`;
-    status.onclick=()=>$(secId)?.scrollIntoView({behavior:'smooth',block:'start'});
-  }
-}
-
-function setScanPending(label){
-  const status=$('archScanStatus');
-  if(status){
-    status.style.display='inline-flex';
-    status.textContent=`⏳ ${label}…`;
-    status.onclick=null;
-  }
-}
-
-$('deadCodeBtn')?.addEventListener('click',async()=>{
-  const btn=$('deadCodeBtn');if(btn){btn.disabled=true;btn.textContent='Scanning…';}setScanPending('Scanning dead code');
-  try{
-    const root=selectedRepoRoot();
-    if(!root){alert('Repository root is required');return}
-    const r=await apiFetch('/api/dead_code?root='+encodeURIComponent(root),{cache:'no-store'});
-    const d=await r.json();
-    if($('deadCodeSec'))$('deadCodeSec').style.display='block';
-    if($('deadCodeSummary'))$('deadCodeSummary').textContent=n(d.dead_symbols_count||0)+' potentially unused symbols';
-    rows('deadCodeTable',d.dead_symbols||[],s=>clickableRow(s,`<td><b>${esc(s.name)}</b></td><td><span class="chip">${esc(s.kind)}</span></td><td>${esc(s.path)}</td><td>${n(s.line)}</td><td>${esc(s.container||'—')}</td><td class="muted">${esc(s.reason)}</td>`,'dead_code'),6);
-    showScanReady('deadCodeSec','Dead Code ('+n(d.dead_symbols_count||0)+')');
-  }catch(e){alert('Dead code scan failed: '+e.message)}
-  finally{if(btn){btn.disabled=false;btn.textContent='Scan Dead Code'}}
-});
-$('auditDepsBtn')?.addEventListener('click',async()=>{
-  const btn=$('auditDepsBtn');if(btn){btn.disabled=true;btn.textContent='Auditing…';}setScanPending('Auditing dependencies');
-  try{
-    const root=selectedRepoRoot();
-    if(!root){alert('Repository root is required');return}
-    const r=await apiFetch('/api/audit_dependencies?root='+encodeURIComponent(root),{cache:'no-store'});
-    const d=await r.json();
-    if($('auditSec'))$('auditSec').style.display='block';
-    if($('auditSummary'))$('auditSummary').textContent=`Score ${d.security_score||'A'} · ${n(d.total_dependencies||0)} packages · ${n(d.vulnerability_count||0)} advisories`;
-    rows('auditTable',d.vulnerabilities||[],v=>clickableRow(v,`<td><b>${esc(v.package)}</b></td><td><span class="chip ${v.severity==='HIGH'?'bad-t':'warn-t'}">${esc(v.severity)}</span></td><td>${esc(v.installed_version)}</td><td class="ok">${esc(v.fixed_version)}</td><td>${esc(v.advisory)}</td><td class="muted">${esc(v.manifest_path)}</td>`,'audit_vulnerability'),6);
-    showScanReady('auditSec','Security Audit ('+n(d.vulnerability_count||0)+' advisories)');
-  }catch(e){alert('Security audit failed: '+e.message)}
-  finally{if(btn){btn.disabled=false;btn.textContent='Audit Security'}}
-});
-
-$('circDepsBtn')?.addEventListener('click',async()=>{
-  const btn=$('circDepsBtn');if(btn){btn.disabled=true;btn.textContent='Checking…';}setScanPending('Checking circular deps');
-  try{
-    const r=await post('/api/repo/circular_dependencies',{root:'.'});
-    if($('circDepsSec'))$('circDepsSec').style.display='block';
-    const cycles=r.cycles||[];
-    if($('circDepsSummary'))$('circDepsSummary').textContent=n(cycles.length)+' circular cycle(s) detected';
-    rows('circDepsTable',cycles,(c,i)=>clickableRow({cycle:c},`<td><b>#${i+1}</b></td><td><span class="chip">${esc(r.language||'python')}</span></td><td class="mono">${esc(Array.isArray(c)?c.join(' ➔ '):String(c))}</td><td>${n(Array.isArray(c)?c.length:1)}</td>`,'circ_dep'),4);
-    if(archNodes&&archEdges&&$('archSvg')){
-      drawArch($('archSvg'),archNodes,archEdges,$('archSvg').clientWidth||800,$('archSvg').clientHeight||520);
-    }
-    showScanReady('circDepsSec','Circular Deps ('+n(cycles.length)+')');
-  }catch(e){alert('Circular dependency scan failed: '+e.message)}
-  finally{if(btn){btn.disabled=false;btn.textContent='Circular Deps'}}
-});
-
-$('complexityBtn')?.addEventListener('click',async()=>{
-  const btn=$('complexityBtn');if(btn){btn.disabled=true;btn.textContent='Analyzing…';}setScanPending('Analyzing complexity');
-  try{
-    const r=await post('/api/repo/complexity',{root:'.'});
-    if($('complexitySec'))$('complexitySec').style.display='block';
-    const funcs=r.functions||[];
-    if($('complexitySummary'))$('complexitySummary').textContent=`Total ${n(r.total_functions||funcs.length)} functions · High risk: ${n(r.high_risk_count||0)}`;
-    rows('complexityTable',funcs,f=>{
-      const riskCls=f.risk==='high'?'bad-t':f.risk==='medium'?'warn-t':'ok';
-      return clickableRow(f,`<td><b>${esc(f.name)}</b></td><td class="muted">${esc(f.file)}:${n(f.line)}</td><td>${n(f.cyclomatic_complexity)}</td><td>${n(f.cognitive_complexity)}</td><td><span class="chip ${riskCls}">${esc(f.risk||'low')}</span></td>`,'complexity');
-    },5);
-    showScanReady('complexitySec','Complexity ('+n(funcs.length)+' funcs)');
-  }catch(e){alert('Complexity analysis failed: '+e.message)}
-  finally{if(btn){btn.disabled=false;btn.textContent='Code Complexity'}}
-});
-
-$('apiSpecBtn')?.addEventListener('click',async()=>{
-  const btn=$('apiSpecBtn');if(btn){btn.disabled=true;btn.textContent='Extracting…';}setScanPending('Extracting API spec');
-  try{
-    const r=await post('/api/repo/api_spec',{root:'.'});
-    if($('apiSpecSec'))$('apiSpecSec').style.display='block';
-    const routes=r.routes||[];
-    if($('apiSpecSummary'))$('apiSpecSummary').textContent=`${n(routes.length)} endpoints detected · Framework: ${esc(r.framework||'auto')}`;
-    rows('apiSpecTable',routes,rt=>clickableRow(rt,`<td><b>${esc(rt.path)}</b></td><td><span class="chip ok">${esc((rt.methods||['GET']).join(','))}</span></td><td class="mono">${esc(rt.handler||'—')}</td><td>${esc(rt.framework||'—')}</td><td class="tiny muted">${esc(rt.doc||'—')}</td>`,'api_route'),5);
-    showScanReady('apiSpecSec','API Spec ('+n(routes.length)+' routes)');
-  }catch(e){alert('API Spec extraction failed: '+e.message)}
-  finally{if(btn){btn.disabled=false;btn.textContent='API Spec'}}
-});
-
-$('migrationDriftBtn')?.addEventListener('click',async()=>{
-  if($('migrationDriftSec'))$('migrationDriftSec').style.display='none';
-  const btn=$('migrationDriftBtn');if(btn){btn.disabled=true;btn.textContent='Checking…';}setScanPending('Checking migration drift');
-  try{
-    const root=selectedRepoRoot();
-    if(!root)throw new Error('Repository root is required');
-    const r=await post('/api/repo/migration_drift',{root});
-    if(!r.success)throw new Error(r.error||r.message||'Migration drift unavailable');
-    if($('migrationDriftSec'))$('migrationDriftSec').style.display='block';
-    const drift=r.drift||{};
-    const tables=Object.keys(drift);
-    if($('migrationDriftSummary'))$('migrationDriftSummary').textContent=r.in_sync?'Database and code models are fully in sync ✓':`${n(tables.length)} drift table(s) found`;
-    rows('migrationDriftTable',tables,t=>{
-      const item=drift[t]||{};
-      return clickableRow(item,`<td><b>${esc(t)}</b></td><td><span class="chip ${r.in_sync?'ok':'warn-t'}">${r.in_sync?'SYNC':'DRIFT'}</span></td><td class="bad-t">${esc((item.missing_in_db||[]).join(', ')||'—')}</td><td class="bad-t">${esc((item.missing_in_code||[]).join(', ')||'—')}</td><td class="warn-t">${esc(JSON.stringify(item.type_mismatches||{})||'—')}</td>`,'migration_drift');
-    },5);
-    showScanReady('migrationDriftSec','Migration Drift ('+n(tables.length)+' tables)');
-  }catch(e){const status=$('archScanStatus');if(status){status.style.display='inline-flex';status.textContent='⚠️ Migration drift check failed';status.onclick=null;}alert('Migration drift check failed: '+e.message)}
-  finally{if(btn){btn.disabled=false;btn.textContent='Migration Drift'}}
-});
-
-let secretScanCache=[];
-
-function renderSecretScanTable(){
-  const hideTests=$('secretScanHideTests')?.checked??true;
-  const filtered=hideTests?secretScanCache.filter(s=>!s.is_test&&!s.is_placeholder):secretScanCache;
-  rows('secretScanTable',filtered,s=>{
-    const isMock=s.is_test||s.is_placeholder;
-    const sevChip=isMock
-      ?'<span class="chip" style="color:#94a3b8;border-color:#475569">TEST / MOCK</span>'
-      :(s.severity==='CRITICAL'?'<span class="chip bad-t">CRITICAL</span>':'<span class="chip warn-t">HIGH</span>');
-    const matchVal=s.match||s.redacted_secret||s.redacted_snippet||'***';
-    const entropyVal=s.entropy!==undefined?s.entropy:'—';
-    return clickableRow(s,`<td><b>${esc(s.rule||s.secret_type||'secret')}</b></td><td class="muted">${esc(s.description||s.rule||'—')}</td><td class="mono tiny">${esc(s.file)}:${n(s.line)}</td><td class="mono bad-t">${esc(matchVal)}</td><td><span class="mono tiny">${esc(entropyVal)}</span></td><td>${sevChip}</td>`,'secret_finding');
-  },6);
-}
-$('secretScanHideTests')?.addEventListener('change',renderSecretScanTable);
-
-$('secretScanBtn')?.addEventListener('click',async()=>{
-  const btn=$('secretScanBtn');if(btn){btn.disabled=true;btn.textContent='Scanning…';}setScanPending('Scanning secrets');
-  try{
-    const r=await post('/api/repo/secret_scan',{root:'.'});
-    if($('secretScanSec'))$('secretScanSec').style.display='block';
-    secretScanCache=r.findings||[];
-    const realLeaks=r.real_leaks_count!==undefined?r.real_leaks_count:secretScanCache.filter(s=>!s.is_test&&!s.is_placeholder).length;
-    const testLeaks=r.test_findings_count!==undefined?r.test_findings_count:secretScanCache.filter(s=>s.is_test||s.is_placeholder).length;
-    const sum=$('secretScanSummary');
-    if(sum){
-      if(realLeaks>0){
-        sum.innerHTML=`<span class="bad-t">⚠️ ${n(realLeaks)} active credential leak(s) detected!</span> <span class="tiny muted">(${n(testLeaks)} test suite fixtures)</span>`;
-      }else if(testLeaks>0){
-        sum.innerHTML=`<span class="ok">✓ Production code clean</span> <span class="tiny muted">(${n(testLeaks)} mock/test fixtures found)</span>`;
-      }else{
-        sum.innerHTML=`<span class="ok">Clean — 0 leaked credentials found ✓</span>`;
-      }
-    }
-    renderSecretScanTable();
-    showScanReady('secretScanSec',realLeaks>0?`Secrets (${realLeaks} leaks!)`:'Secrets (Clean ✓)');
-  }catch(e){alert('Secret scan failed: '+e.message)}
-  finally{if(btn){btn.disabled=false;btn.textContent='Scan Secrets'}}
-});
-
-// ── Bundles ────────────────────────────────────────────────────────────────────
-
-let sseSource=null,sseEventCount=0,sseEvents=[],sseDebounceTimer=0,sseLastEventId='';
-try{sseLastEventId=sessionStorage.getItem('agentOsStreamLastEventId')||''}catch(e){}
-function connectAgentOsStream(){
-  if(sseSource){
-    try{ sseSource.close(); }catch(e){}
-    sseSource=null;
-  }
-  const badge=$('sseStreamBadge');
-  if(badge){ badge.className='badge-status badge-waiting'; badge.textContent='Connecting…'; }
-  const token=getSavedToken()||apiToken;
-  const params=new URLSearchParams();
-  if(token)params.set('token',token);
-  if(sseLastEventId)params.set('last_event_id',sseLastEventId);
-  const query=params.toString(),url='/api/agent-state/events/stream'+(query?'?'+query:'');
-  try{
-    sseSource=new EventSource(url);
-    sseSource.onopen=()=>{
-      if(badge){ badge.className='badge-status badge-complete'; badge.textContent='🟢 Live Stream Connected'; }
-    };
-    sseSource.onerror=()=>{
-      if(badge){ badge.className='badge-status badge-error'; badge.textContent='🔴 Disconnected (Retrying…)'; }
-    };
-    sseSource.onmessage=(e)=>{
-      if(e.lastEventId){
-        sseLastEventId=String(e.lastEventId);
-        try{sessionStorage.setItem('agentOsStreamLastEventId',sseLastEventId)}catch(err){}
-      }
-      try{
-        const data=JSON.parse(e.data);
-        handleAgentOsStreamEvent(data);
-      }catch(err){}
-    };
-  }catch(e){
-    if(badge){ badge.className='badge-status badge-error'; badge.textContent='Error: '+e.message; }
-  }
-}
-
-function handleAgentOsStreamEvent(ev){
-  const eventId=String(ev?.event_id||'');
-  if(eventId&&sseEvents.some(item=>String(item?.event_id||'')===eventId))return;
-  sseEventCount++;
-  sseEvents.unshift(ev);
-  if(sseEvents.length>200) sseEvents.pop();
-  if($('sseStreamStats')) $('sseStreamStats').textContent=`${sseEventCount} events received`;
-  renderLiveStreamTable();
-
-  // Debounced auto-refresh of background tables when state changes
-  clearTimeout(sseDebounceTimer);
-  sseDebounceTimer=setTimeout(()=>{
-    loadAgentOsView();
-  }, 1200);
-}
-
-function renderLiveStreamTable(){
-  const filter=String($('sseKindFilter')?.value||'').trim();
-  const filtered=filter?sseEvents.filter(e=>String(e.kind||'').startsWith(filter)):sseEvents;
-  rows('agentOsLiveStreamBody', filtered, ev=>{
-    const seq=esc(ev.seq!==undefined?ev.seq:'—');
-    const dt=ev.timestamp?new Date(ev.timestamp*1000).toLocaleTimeString():'—';
-    const stream=esc(ev.stream_id||'—');
-    const kind=esc(ev.kind||'unknown');
-    const actor=esc(ev.actor||'system');
-    const payloadTitle=traceInlineText(ev.payload,1000);
-    let payloadStr=traceInlineText(ev.payload,85);
-    if(payloadStr.length>82) payloadStr=payloadStr.slice(0,82)+'...';
-    let kindBadge='badge-waiting';
-    if(kind.startsWith('task.')) kindBadge='badge-running';
-    else if(kind.startsWith('verification.')) kindBadge='badge-complete';
-    else if(kind.startsWith('incident.')) kindBadge='badge-error';
-    return clickableRow(ev, `<td><strong>${seq}</strong></td><td class="tiny">${dt}</td><td class="tiny mono">${stream}</td><td><span class="badge-status ${kindBadge}">${kind}</span></td><td class="tiny">${actor}</td><td class="tiny" title="${esc(payloadTitle)}">${esc(payloadStr||'—')}</td>`, 'event');
-  }, 6);
-}
-
-$('sseReconnectBtn')?.addEventListener('click', connectAgentOsStream);
-$('sseClearBtn')?.addEventListener('click', () => {
-  sseEvents = [];
-  renderLiveStreamTable();
-});
-$('sseKindFilter')?.addEventListener('change', renderLiveStreamTable);
-
-async function loadInstalledModels(){
-  const list=$('installedModelsList');
-  if(!list)return;
-  try{
-    const r=await apiFetch('/api/models/manage',{cache:'no-store'});
-    const d=await r.json();
-    if(!d.success){
-      const r2=await apiFetch('/api/models',{cache:'no-store'});
-      const d2=await r2.json();
-      const models=d2.data||[];
-      list.innerHTML=models.length?models.map(m=>`<span class="chip ok">🤖 <b>${esc(m.id)}</b></span>`).join(' '):'<span class="muted">No models detected via Ollama</span>';
-      return;
-    }
-    const models=d.models||[];
-    const runningMap=new Map((d.running||[]).map(x=>[x.name,x]));
-    if(!models.length){
-      list.innerHTML='<span class="muted">No installed Ollama models found.</span>';
-      return;
-    }
-    let html='<table style="width:100%;margin:0"><thead><tr><th>Model Name</th><th>Size</th><th>VRAM Status</th><th>Action</th></tr></thead><tbody>';
-    for(const m of models){
-      const name=m.name;
-      const sizeMb=m.size?Math.round(m.size/(1024*1024))+' MB':'—';
-      const isRun=runningMap.has(name);
-      const vramInfo=isRun?`<span class="pill ok tiny">Active in VRAM (${Math.round((runningMap.get(name).size_vram||0)/(1024*1024))} MB)</span>`:'<span class="muted tiny">Idle</span>';
-      html+=`<tr><td><strong>${esc(name)}</strong></td><td class="tiny">${sizeMb}</td><td>${vramInfo}</td><td><button class="btn bad tiny" onclick="deleteOllamaModel(${escJs(name)})">Delete</button></td></tr>`;
-    }
-    html+='</tbody></table>';
-    list.innerHTML=html;
-  }catch(e){
-    list.textContent='Failed to load models';
-  }
-}
-
-async function pullOllamaModel(){
-  const input=$('modelPullName');
-  const name=input?.value?.trim();
-  const st=$('modelManageStatus');
-  if(!name){alert('Enter a model name, e.g. qwen2.5-coder:3b');return;}
-  if(st)st.innerHTML=`<span class="warn-t">Pulling model ${esc(name)} in background…</span>`;
-  try{
-    const res=await post('/api/models/manage',{action:'pull',model:name});
-    if(st)st.innerHTML=res.success?`<span class="ok">✓ Pulling ${esc(name)} started</span>`:`<span class="bad-t">Error: ${esc(res.error)}</span>`;
-    setTimeout(loadInstalledModels,3000);
-  }catch(err){
-    if(st)st.innerHTML=`<span class="bad-t">Error: ${esc(String(err))}</span>`;
-  }
-}
-
-async function deleteOllamaModel(name){
-  if(!confirm(`Delete model ${name}?`))return;
-  const st=$('modelManageStatus');
-  try{
-    const res=await post('/api/models/manage',{action:'delete',model:name});
-    if(st)st.innerHTML=res.success?`<span class="ok">✓ Deleted ${esc(name)}</span>`:`<span class="bad-t">Error: ${esc(res.error)}</span>`;
-    loadInstalledModels();
-  }catch(err){
-    if(st)st.innerHTML=`<span class="bad-t">Error: ${esc(String(err))}</span>`;
-  }
-}
-
-function setDbPreset(preset){
-  const sel=$('dbSelect');
-  const input=$('dbQueryInput');
-  if(!sel||!input)return;
-  if(preset==='tasks'){
-    sel.value='agent_state';
-    input.value='SELECT id, role, status, scope_root, retry_count, updated_at FROM tasks ORDER BY updated_at DESC LIMIT 50';
-  }else if(preset==='events'){
-    sel.value='agent_state';
-    input.value='SELECT id, task_id, event_type, actor, timestamp FROM events ORDER BY id DESC LIMIT 50';
-  }else if(preset==='memory'){
-    sel.value='agent_state';
-    input.value='SELECT id, task_id, key, scope, updated_at, substr(value, 1, 100) as preview FROM agent_memory ORDER BY updated_at DESC LIMIT 50';
-  }else if(preset==='relations'){
-    sel.value='agent_state';
-    input.value='SELECT source_entity, relation, target_entity, weight, updated_at FROM agent_entity_relations ORDER BY weight DESC LIMIT 50';
-  }else if(preset==='cache'){
-    sel.value='cache';
-    input.value='SELECT key, created_at, expires_at FROM cache_entries ORDER BY created_at DESC LIMIT 50';
-  }
-}
-
-async function runDbQuery(){
-  const db=$('dbSelect')?.value||'agent_state';
-  const query=$('dbQueryInput')?.value?.trim();
-  const status=$('dbQueryStatus');
-  const thead=$('dbResultsHead');
-  const tbody=$('dbResultsBody');
-  if(!query){if(status)status.textContent='Please enter a query';return;}
-  if(status)status.innerHTML='<span class="muted">Running query…</span>';
-  try{
-    const res=await post('/api/db/query',{database:db,query:query});
-    if(!res.success){
-      if(status)status.innerHTML=`<span class="bad-t">Error: ${esc(res.error||'Query failed')}</span>`;
-      return;
-    }
-    const cols=res.columns||[];
-    const rows=res.rows||[];
-    if(status)status.innerHTML=`<span class="ok">✓ Returned ${rows.length} row(s) in ${res.duration_ms||0} ms ${res.truncated?'(truncated at 200 rows)':''}</span>`;
-    if(!cols.length){
-      if(thead)thead.innerHTML='';
-      if(tbody)tbody.innerHTML='<tr><td class="muted" style="padding:10px">Query returned no columns.</td></tr>';
-      return;
-    }
-    if(thead)thead.innerHTML='<tr>'+cols.map(c=>`<th>${esc(c)}</th>`).join('')+'</tr>';
-    if(tbody){
-      tbody.innerHTML=rows.map(r=>{
-        return '<tr>'+cols.map(c=>{
-          const v=Array.isArray(r)?r[cols.indexOf(c)]:r[c];
-          const cellText=v===null?'NULL':traceInlineText(v,500);
-          return `<td class="tiny" style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(cellText)}">${esc(cellText||'—')}</td>`;
-        }).join('')+'</tr>';
-      }).join('');
-    }
-  }catch(err){
-    if(status)status.innerHTML=`<span class="bad-t">Error: ${esc(String(err))}</span>`;
-  }
 }
 
 function inferEntityType(obj){
@@ -2160,13 +1362,6 @@ function promptBody(text){
   const split=match.index+(match[0].startsWith('\n')?1:0),main=source.slice(0,split).trim(),cache=source.slice(split).trim();
   return `${promptBlock(main)}<details class="prompt-context"><summary>Context cache · ${n(cache.length)} characters</summary><pre class="prompt-pre">${esc(cache)}</pre></details>`;
 }
-function renderModelPrompt(prompt){
-  const p=prompt&&typeof prompt==='object'?prompt:{},messages=Array.isArray(p.messages)?p.messages:[];
-  if(!messages.length)return `<div class="prompt-fallback"><div class="prompt-card"><div class="prompt-card-head"><span>Model request</span></div>${promptBody(promptText(p.prompt??p.content??p.system??prompt))}</div></div>`;
-  const cards=messages.map((message,index)=>{const role=String(message?.role||'message').toLowerCase(),label=role==='system'?'System instructions':role==='user'?'Task / user prompt':role==='assistant'?'Assistant context':humanLabel(role),text=promptText(message?.content??message?.text??message);return `<article class="prompt-card role-${esc(role)}"><div class="prompt-card-head"><span>${esc(label)}</span><span class="tiny">Message ${index+1} · ${n(text.length)} characters</span></div>${promptBody(text)}</article>`}).join('');
-  const options=p.options&&typeof p.options==='object'?p.options:null,meta=[p.model&&`Model: ${traceInlineText(p.model)}`,`Messages: ${messages.length}`,p.stream!==undefined&&`Stream: ${p.stream?'on':'off'}`,p.keep_alive&&`Keep alive: ${traceInlineText(p.keep_alive)}`].filter(Boolean).map(x=>`<span class="prompt-chip"><strong>${esc(String(x).split(':')[0])}</strong>${esc(String(x).includes(':')?':'+String(x).split(':').slice(1).join(':'):'')}</span>`).join('');
-  return `<div class="prompt-panel"><div class="prompt-meta">${meta}</div><div class="prompt-messages">${cards}</div>${options?`<details class="prompt-context"><summary>Generation settings · ${Object.keys(options).length} values</summary>${renderAny(options)}</details>`:''}</div>`;
-}
 function humanSection(title,value){return `<section class="human-section"><h3>${esc(title)}</h3>${renderAny(value)}</section>`}
 function rawFallback(obj){let raw='';try{raw=JSON.stringify(obj,null,2)}catch(e){raw=String(e)}return `<details class="raw-json"><summary>Raw JSON (fallback)</summary><pre>${esc(raw)}</pre></details>`}
 function toggleTraceStep(button){const step=button.closest('.trace-step');if(!step)return;const key=String(step.dataset.traceStep||'');const open=!step.classList.contains('open');step.classList.toggle('open',open);button.setAttribute('aria-expanded',String(open));if(open)traceOpenSteps.add(key);else traceOpenSteps.delete(key)}
@@ -2312,10 +1507,6 @@ function traceStatus(item){const state=String(item?.state||'queued');return stat
 function traceDisplayState(item){const state=traceStatus(item);return state==='interrupted'?'Interrupted':humanLabel(state)}
 function traceBoundedKey(key,budget){return String(key);}
 function traceBoundedEvents(events,eventLimit=100){const list=Array.isArray(events)?events:[],requestReceived=list.find(event=>event?.event_type==='request_received'),latest=list.slice(-eventLimit),visible=requestReceived&&!latest.includes(requestReceived)?[requestReceived,...latest]:latest;return {events:visible.map(event=>traceRawBoundValue(event)),eventsTotal:list.length,eventsTruncated:list.length>visible.length};}
-function traceRawProjection(detail,eventLimit=100){
-  const rawSession=detail?.session||{},eventProjection=traceBoundedEvents(detail?.events,eventLimit),session=traceDisplaySession(rawSession);
-  return {session,effective_payload:traceRawBoundValue(rawSession.effective_payload),request:traceRawBoundValue(rawSession.request),thinking:traceRawBoundValue(rawSession.thinking),output:traceRawBoundValue(rawSession.output),response:traceRawBoundValue(rawSession.response),events:eventProjection.events,events_total:eventProjection.eventsTotal,events_truncated:eventProjection.eventsTruncated};
-}
 function traceRawBoundValue(value,limit=4096,depth=0){
   if(value===null||value===undefined||typeof value==='number'||typeof value==='boolean'||typeof value==='string')return value;
   if(Array.isArray(value))return value.map(item=>traceRawBoundValue(item,limit,depth+1));
@@ -2447,20 +1638,10 @@ function traceCodexTimeline(model,title='Model chat',renderBudget=null,full=fals
   const emptyOutput=hasOutput||outputState==='produced'?'':`<div class="trace-primary-empty">Model output · ${outputState==='empty'?'Model returned an empty final response':outputState==='redacted'?'Final response is redacted':'No model output captured'}</div>`;
   return traceFinalizeMarkup(`<section class="trace-primary trace-chat-presentation trace-codex-timeline"><div class="trace-primary-head"><h2>${esc(title)}</h2><span class="tiny">${esc(String(modelName))} · ${events.length} events</span></div><div class="trace-tool-timeline trace-timeline-stream">${cards}${emptyOutput}</div></section>`,budget);
 }
-function traceChatColumns(model,title='Model chat',renderBudget=null){return traceCodexTimeline(model,title,renderBudget);}
-function traceToolInteractions(model){
-  const turns=model.presentation?.chatTurns||[],items=[];
-  turns.forEach(turn=>(turn.tools||[]).forEach(item=>items.push({step:turn.step,call:item.call||{},result:item.result||null})));
-  return items.slice(-100);
-}
 function traceToolResultData(result,budget=null){
   // Determine outcome before rendering can omit error fields to fit its budget.
   const failure=candidate=>candidate&&(candidate.error||candidate.error_message||candidate.exception||candidate.is_error||candidate.isError||candidate.success===false),error=Boolean(failure(result?.result)||failure(result)),value=tracePresentationValue(result||{},5000,budget);
   return {value,error};
-}
-function traceToolCardMarkup(item,index,budget){
-  const boundedCall=traceRawBoundValue(item.call||{},5000),call=tracePresentationValue(boundedCall,5000,budget),resultData=traceToolResultData(item.result||{},budget),result=resultData.value||{},error=Boolean(resultData.error),name=call?.name||call?.tool||'tool',argumentsValue=tracePresentationValue(call?.arguments??call?.args??call?.input??{},5000,budget);
-  return traceBudgetMarkup(`<article class="trace-tool-card ${error?'error':''}"><h4>Tool interaction · step ${esc(item.step||index+1)} · call id ${esc(traceInlineText(call?.call_id??'—'))}</h4><div class="trace-tool-field"><strong>tool name</strong><div>${esc(traceInlineText(name))}</div></div><div class="trace-tool-field"><strong>arguments</strong>${renderAny(argumentsValue)}</div><div class="trace-tool-field"><strong>${error?'error':'result'}</strong>${renderAny(result)}</div></article>`,budget);
 }
 function traceModelChatEventTypes(events){const useful=new Set(['model_request','assistant_thinking','thinking','reasoning','assistant_reasoning','tool_call','tool_result','output_delta','output_stream','assistant_output','model_output','output','output_final','final_output','turn_start','turn_end','step_start','step_end']);return (Array.isArray(events)?events:[]).filter(event=>{const type=String(event?.event_type||'').toLowerCase(),payload=event?.payload;return useful.has(type)||(payload&&typeof payload==='object'&&payload.malformed_payload)||(event&&payload!==null&&typeof payload!=='object');});}
 function traceModelContextMarkup(input,budget){const source=input&&typeof input==='object'&&!Array.isArray(input)?input:{},details={};if(source.model!==undefined)details.model=source.model;if(source.stream!==undefined)details.stream=source.stream;if(source.options&&typeof source.options==='object')details.options=source.options;if(source.request&&typeof source.request==='object')details.request={path:source.request.path};if(source.headers||source.metadata||(source.request&&source.request.headers))details.security='Sensitive request metadata redacted';if(!Object.keys(details).length)return '';return `<details class="trace-optional-details trace-model-context" data-trace-key="model-context" data-trace-collapsible><summary>Model details · compact</summary><div class="trace-optional-body">${traceTechnicalMarkup(tracePresentationValue(details,4000,budget),4000)}</div></details>`;}
@@ -2516,7 +1697,6 @@ function tracePresentationShell(title,subtitle,primary,secondary,attention=''){r
 function tracePresentationColumns(title,left,right,budget,headerExtra='',leftTitle='Request details',rightTitle='Result details',aggregate=false){const rawLeft=left.filter(Boolean),rawRight=right.filter(Boolean),all=aggregate?traceAggregatePrimaryFields([...rawLeft,...rawRight]):[...rawLeft,...rawRight],leftMarkup=all.slice(0,rawLeft.length).join(''),rightMarkup=all.slice(rawLeft.length).join(''),groups=tracePresentationGroup(leftTitle,leftMarkup,'request')+tracePresentationGroup(rightTitle,rightMarkup,'result'),markup=`<section class="trace-primary trace-request-presentation"><div class="trace-primary-head"><h2>${esc(title)}</h2>${headerExtra}</div>${groups?`<div class="trace-primary-groups">${groups}</div>`:''}</section>`;return traceFinalizeMarkup(markup,budget);}
 function renderTraceInputOutputPresentation(model){const budget=traceRenderBudget(),input=tracePresentationField('input',model.input,'No input captured',budget,{mode:'primary',showEmpty:true}),output=tracePresentationField('output',model.output,'No output captured',budget,{mode:'primary',showEmpty:true});return tracePresentationColumns('Input / output',[input],[output],budget,'','Input','Output',true);}
 function traceReviewSeverityMarkup(findings,severityMap,budget){const counts={critical:0,high:0,medium:0,low:0},map=severityMap&&typeof severityMap==='object'&&!Array.isArray(severityMap)?severityMap:{};Object.keys(counts).forEach(level=>{const value=Number(map[level]);if(Number.isFinite(value))counts[level]=value;});const items=Array.isArray(findings)?findings:[];items.forEach(item=>{const severity=traceInlineText(item?.severity??item?.priority??'',120).toLowerCase();if(counts[severity]!==undefined&&!Number.isFinite(Number(map[severity])))counts[severity]+=1;});return `<div class="trace-severity-counts" aria-label="severity counts">${Object.entries(counts).map(([level,count])=>`<span class="trace-event-chip ${count?'trace-severity-active':''}">${esc(level)}: ${count}</span>`).join('')}</div>`;}
-function tracePresentationRankedField(label,value,empty,budget){const raw=Array.isArray(value)?value:[];if(!raw.length)return `<div class="trace-presentation-field"><strong>${esc(label)}</strong><span class="trace-primary-empty">${esc(empty)}</span></div>`;const ranked=raw.map((item,index)=>({item,index,score:Number(item?.score??item?.relevance??item?.similarity)})).sort((a,b)=>{const aFinite=Number.isFinite(a.score),bFinite=Number.isFinite(b.score);if(aFinite&&bFinite)return b.score-a.score||a.index-b.index;if(aFinite!==bFinite)return aFinite?-1:1;return a.index-b.index;});const markup=ranked.map((entry,index)=>{const safe=tracePresentationValue(entry.item,1800,budget),score=Number.isFinite(entry.score)?entry.score:'—',rank=index+1,provider=entry.item?.provider||entry.item?.source||'—';return `<details class="trace-rag-source-details"><summary>rank ${esc(rank)} · score ${esc(score)} · provider ${esc(traceInlineText(provider))}</summary>${renderAny(safe)}</details>`}).join('');return `<div class="trace-presentation-field trace-rag-ranked"><strong>${esc(label)}</strong><div class="trace-rag-ranked">${markup}</div></div>`;}
 function traceProjectLabel(value){
   if(typeof value==='string'){const text=value.replace(/[\\/]+$/,'');if(!text)return '';const parts=text.split(/[\\/]/).filter(Boolean);return parts[parts.length-1]||text;}
   const source=value&&typeof value==='object'?value:{};
@@ -2533,10 +1713,6 @@ function traceSearchText(value,limit=420){
   if(directKey)parts.push(traceSearchText(source[directKey],Math.max(40,Math.floor(limit/2))));
   const fields=['reason','status','shown','count','total','limit','budget','truncated'].filter(key=>key!==directKey&&source[key]!==undefined&&source[key]!==null&&source[key]!=='').map(key=>`${humanLabel(key)}: ${traceSearchText(source[key],Math.max(40,Math.floor(limit/3)))}`);
   return parts.concat(fields).join(' · ').slice(0,limit);
-}
-function traceSearchResultRow(item,index,budget){
-   const source=item&&typeof item==='object'?item:{},path=source.path??source.file??source.filename??source.name??'Result',start=source.start_line??source.startLine,end=source.end_line??source.endLine,location=start!==undefined?`line ${traceInlineText(start)}${end!==undefined&&traceInlineText(end)!==traceInlineText(start)?`–${traceInlineText(end)}`:''}`:'',provider=source.provider??source.source??'',score=Number(source.score??source.relevance??source.similarity),snippet=traceHumanText(source.text??source.content??source.snippet??source.summary??source.description??''),scoreMarkup=Number.isFinite(score)?`<span class="trace-search-score">${esc(score)}</span>`:'';
-  return `<div class="trace-search-result-row"><span class="trace-search-rank">${esc(index+1)}</span><div class="trace-search-result-main"><strong>${esc(traceInlineText(path))}</strong>${location?`<span class="tiny">${esc(location)}</span>`:''}${provider?`<span class="tiny">${esc(traceInlineText(provider))}</span>`:''}${snippet?`<div class="trace-search-snippet">${esc(snippet)}</div>`:''}</div>${scoreMarkup}</div>`;
 }
 function traceMeaningfulValue(value,key=''){
   const name=String(key||'').replace(/([a-z0-9])([A-Z])/g,'$1_$2').toLowerCase();
@@ -2761,7 +1937,6 @@ renderRagSearchPresentation=model=>traceWrapPresentationRenderer(traceBaseRender
 renderAsyncJobPresentation=model=>traceWrapPresentationRenderer(traceBaseRenderAsyncJobPresentation,'Async job','background worker lifecycle','async_job',model);
 renderRequestResponsePresentation=model=>traceWrapPresentationRenderer(traceBaseRenderRequestResponsePresentation,'Request / response','request outcome','request_response',model);
 function renderTracePresentation(model){const specializedKinds=['agent_loop','model_chat','command','review','repo_intelligence','rag_search','async_job','request_response'],requested=String(model.presentation?.kind||tracePresentationKind(model)||'request_response').toLowerCase();if(!specializedKinds.includes(requested)){const budget=traceRenderBudget(),inputOutput=renderTraceInputOutputPresentation(model),error=tracePresentationField('error',model.errors,'No error captured',budget,{mode:'primary'});return inputOutput+(error?tracePresentationColumns('Captured error',[error],[],budget,'','Captured error','',true):'');}const inputOutput='',kind=requested;let specialized='';if(kind==='agent_loop')specialized=renderAgentLoopPresentation(model);else if(kind==='model_chat')specialized=renderModelChatPresentation(model);else if(kind==='command')specialized=renderCommandPresentation(model);else if(kind==='review')specialized=renderReviewPresentation(model);else if(kind==='repo_intelligence')specialized=renderRepoIntelligencePresentation(model);else if(kind==='rag_search')specialized=renderRagSearchPresentation(model);else if(kind==='async_job')specialized=renderAsyncJobPresentation(model);else if(kind==='request_response')specialized=renderRequestResponsePresentation(model);return inputOutput+specialized;}
-function tracePrimaryFallback(presentationMarkup,panels,model){if(presentationMarkup)return presentationMarkup;if(model){const budget=traceRenderBudget(),direct=[tracePresentationField('input',model.input,'No input captured',budget,{mode:'primary'}),tracePresentationField('output',model.output,'No output captured',budget,{mode:'primary'}),tracePresentationField('response',model.response,'No response captured',budget,{mode:'primary'}),tracePresentationField('error',model.errors,'No error captured',budget,{mode:'primary'})].filter(Boolean).join('');if(direct)return tracePresentationColumns('Request details',[direct],[],budget,'','Captured request and result','',true);}const primaryIds=new Set(['input','output','response','errors']),primaryPanels=panels.filter(panel=>primaryIds.has(panel.id)&&panel.available),content=primaryPanels.map(panel=>panel.render()).join('');if(!content)return '';return `<section class="trace-primary trace-fallback-presentation"><div class="trace-primary-head"><h2>Request details</h2><span class="tiny">captured request and result</span></div><div class="trace-primary-grid">${content}</div></section>`;}
 function renderTracePresentation(model){const kind=model.presentation?.kind||tracePresentationKind(model),specializedKinds=['agent_loop','model_chat','command','review','vision_review','repo_intelligence','rag_search','async_job','request_response'],inputOutput=specializedKinds.includes(kind)?'':renderTraceInputOutputPresentation(model);if(!specializedKinds.includes(kind)){const budget=traceRenderBudget(),error=tracePresentationField('error',model.errors,'No error captured',budget,{mode:'primary'});return inputOutput+(error?tracePresentationColumns('Captured error',[error],[],budget,'','Captured error','',true):'');}let specialized='';if(kind==='agent_loop')specialized=renderAgentLoopPresentation(model);else if(kind==='model_chat')specialized=renderModelChatPresentation(model);else if(kind==='command')specialized=renderCommandPresentation(model);else if(kind==='vision_review')specialized=renderVisionReviewPresentation(model);else if(kind==='review')specialized=renderReviewPresentation(model);else if(kind==='repo_intelligence')specialized=renderRepoIntelligencePresentation(model);else if(kind==='rag_search')specialized=renderRagSearchPresentation(model);else if(kind==='async_job')specialized=renderAsyncJobPresentation(model);else if(kind==='request_response')specialized=renderRequestResponsePresentation(model);return inputOutput+specialized;}
 function traceDisplayModel(detail){
   const rawSession=detail?.session||{},rawEvents=Array.isArray(detail?.events)?detail.events:[];
@@ -2822,6 +1997,7 @@ function traceHumanTitle(model){
   return ({rag_search:'Search',model_chat:'Model request',agent_loop:'Agent run',command:'Command run',review:'Review',vision_review:'Frontend vision review',repo_intelligence:'Repository lookup',async_job:'Background job',request_response:'Request'}[kind]||'Request');
 }
 function tracePrimaryInput(value){
+  if(value?.capture_status==='metadata_only'&&Object.keys(value).every(key=>['capture_status','field_count'].includes(key)))return undefined;
   const technical=traceTechnicalSettings(value);
   if(value&&typeof value==='object'&&!Array.isArray(value))return Object.fromEntries(Object.entries(value).filter(([key])=>!Object.hasOwn(technical,key)));
   return value;
@@ -2856,6 +2032,7 @@ function traceMetricRow(metrics){
 }
  function renderTraceDetail(d){
   const body=$('tracePageBody'),existing=body?.querySelector('#traceTechnicalDetails');if(existing)traceOptionalDetailsOpen=existing.open;
+  const collapsibleState={...captureTraceCollapsibleDetails(body),technical:traceOptionalDetailsOpen};
   const scrollPositions=captureTraceScrollPositions(body),thinkingDetailsOpen=captureTraceThinkingDetails(body),traceMain=body?.closest('.trace-main'),mainScrollTop=traceMain?.scrollTop||0,mainScrollLeft=traceMain?.scrollLeft||0;
   activeTraceData=d;const model=traceDisplayModel(d),s=model.session,panels=model.panels.filter(panel=>panel.available),technicalPanels=panels.filter(panel=>!['input','output','response'].includes(panel.id));
   const titleEl=$('tracePageTitle'),liveEl=$('tracePageLive');if(titleEl)titleEl.textContent=traceHumanTitle(model);
@@ -2871,13 +2048,10 @@ function traceMetricRow(metrics){
   const detailPolicy='Tajné klíče a přístupové tokeny jsou redigované; běžný obsah zůstává viditelný.';
   const technical=`<details class="trace-optional-details" id="traceTechnicalDetails" data-trace-collapsible data-trace-key="technical"${traceOptionalDetailsOpen?' open':''}><summary>Nastavení a technické údaje · ${technicalPanels.length}</summary><div class="trace-optional-body"><p class="tiny muted">${detailPolicy}</p>${traceSummary(model,{})}${requestSettings}${historyControls}<nav class="trace-tabs" role="tablist" aria-label="Trace technical details">${technicalPanels.map(panel=>traceTab(panel.label,panel.id)).join('')}</nav>${panelMarkup}</div></details>`;
   if(body){body.className='trace-page-body';body.innerHTML=`<div class="human-shell">${header}${traceMetricRow(d?.metrics)}${primaryMarkup}${technical}</div>`;}
-  const restore=()=>{restoreTraceCollapsibleDetails($('tracePageBody'),{technical:traceOptionalDetailsOpen});restoreTraceThinkingDetails($('tracePageBody'),thinkingDetailsOpen);restoreTraceScrollPositions($('tracePageBody'),scrollPositions);const next=$('tracePageBody')?.closest('.trace-main');if(next){next.scrollTop=mainScrollTop;next.scrollLeft=mainScrollLeft}};
+  const restore=()=>{restoreTraceCollapsibleDetails($('tracePageBody'),collapsibleState);restoreTraceThinkingDetails($('tracePageBody'),thinkingDetailsOpen);restoreTraceScrollPositions($('tracePageBody'),scrollPositions);const next=$('tracePageBody')?.closest('.trace-main');if(next){next.scrollTop=mainScrollTop;next.scrollLeft=mainScrollLeft}};
   if(window.requestAnimationFrame)window.requestAnimationFrame(restore);else restore();
  }
 function setTraceView(view){if(!activeTraceData)return;const model=traceDisplayModel(activeTraceData);if(!model.panels.some(panel=>panel.available&&panel.id===view))return;traceView=view;renderTraceDetail(activeTraceData)}
-function appendBoundedTraceEvents(target,page,limit=traceEventBufferLimit){
-  const incoming=Array.isArray(page)?page:[];target.push(...incoming);if(target.length>limit)target.splice(0,target.length-limit);return incoming.length;
-}
 async function fetchTraceContentPages(traceId,field,budget={used:0,limit:8*1024*1024}){
   let offset=0;const chunks=[];let encoding='text',storageTruncated=false;
   for(;;){
@@ -3432,10 +2606,7 @@ async function submitCreateTask(e){
   try{
     const res=await post('/api/agent-state/tasks',{
       action:'create',
-      goal:goal,
-      acceptance_criteria:criteria,
-      scope:scope,
-      risk_profile:risk
+      contract:{goal,acceptance_criteria:criteria,scope,risk_profile:risk}
     });
     if(res.success&&res.task){
       await loadAgentOsView();
@@ -3550,9 +2721,9 @@ function openRecordMemoryModal(){
           <div class="form-group">
             <label for="newMemScope">Scope</label>
             <select id="newMemScope">
-              <option value="task" selected>Task</option>
+              <option value="task">Task</option>
               <option value="session">Session</option>
-              <option value="repository">Repository</option>
+              <option value="repository" selected>Repository</option>
               <option value="user">User</option>
               <option value="system">System</option>
             </select>
@@ -3567,6 +2738,11 @@ function openRecordMemoryModal(){
               <option value="negative_knowledge">Negative Knowledge</option>
             </select>
           </div>
+        </div>
+        <div class="form-group">
+          <label for="newMemTaskId">Task ID (required for Task scope)</label>
+          <input id="newMemTaskId" placeholder="task_…">
+          <span class="form-hint">Use a task from the selected repository. Other scopes do not use this field.</span>
         </div>
         <div id="recordMemStatus" class="tiny"></div>
         <div class="modal-actions-bar" style="justify-content:flex-end;margin-top:10px">
@@ -3587,9 +2763,11 @@ async function submitRecordMemory(e){
   if(!key||rawVal===undefined)return;
   let val=rawVal;
   try{val=JSON.parse(rawVal)}catch{}
-  const scope=$('newMemScope')?.value||'task';
+  const scope=$('newMemScope')?.value||'repository';
   const kind=$('newMemKind')?.value||'fact';
   const statusEl=$('recordMemStatus');
+  const taskId=$('newMemTaskId')?.value?.trim();
+  if(scope==='task'&&!taskId){if(statusEl)statusEl.textContent='Task ID is required for Task scope.';return;}
   if(statusEl)statusEl.textContent='Saving memory…';
 
   try{
@@ -3598,6 +2776,7 @@ async function submitRecordMemory(e){
       key:key,
       value:val,
       scope:scope,
+      ...(scope==='task'?{task_id:taskId}:{}),
       kind:kind,
       confidence:1.0
     });
@@ -4285,46 +3464,6 @@ function renderErrorFingerprintModal(err){
   `;
 }
 
-function openArchNodeModal(nd){
-  const root=nd.root||nd.id||'';
-  const label=nd.label||(String(root).split(/[\\/]/).pop()||'Project');
-  const outEdges=(archEdges||[]).filter(e=>e.from===root);
-  const inEdges=(archEdges||[]).filter(e=>e.to===root);
-
-  openModal({},'Project Architecture Node: '+label,'arch_node');
-  $('modalBody').innerHTML=`
-    <div class="modal-hero">
-      <div style="display:flex;justify-content:space-between;align-items:center">
-        <div>
-          <div class="tiny muted mono">ARCHITECTURE GRAPH NODE</div>
-          <h2 style="margin:2px 0 0;font-size:16px"><b>${esc(label)}</b></h2>
-          <div class="tiny mono muted">${esc(root)}</div>
-        </div>
-      </div>
-    </div>
-    <div class="modal-body-wrap">
-      <div class="modal-card">
-        <div class="modal-card-head"><span>Dependencies (Outgoing Connections: ${outEdges.length})</span></div>
-        <div class="modal-card-body">
-          ${outEdges.length?outEdges.map(e=>`<div style="padding:4px 0">➔ <b>${esc(String(e.to||'').split(/[\\/]/).pop()||'—')}</b> <span class="chip">${esc(e.type||'')}</span> <span class="tiny muted">${esc(e.label||'')}</span></div>`).join(''):'<div class="muted tiny">No outgoing dependencies.</div>'}
-        </div>
-      </div>
-
-      <div class="modal-card">
-        <div class="modal-card-head"><span>Dependents (Incoming Connections: ${inEdges.length})</span></div>
-        <div class="modal-card-body">
-          ${inEdges.length?inEdges.map(e=>`<div style="padding:4px 0">⬅ <b>${esc(String(e.from||'').split(/[\\/]/).pop()||'—')}</b> <span class="chip">${esc(e.type||'')}</span> <span class="tiny muted">${esc(e.label||'')}</span></div>`).join(''):'<div class="muted tiny">No incoming dependents.</div>'}
-        </div>
-      </div>
-
-      <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="switchTab('projects');$('modalClose')?.click()">📁 Open in Projects</button>
-        <button class="btn" onclick="$('modalClose')?.click()">Close</button>
-      </div>
-    </div>
-  `;
-}
-
 function renderDbOptModal(r){
   const dbs=r.details||[];
   $('modalBody').innerHTML=`
@@ -4823,6 +3962,12 @@ document.addEventListener('click',e=>{
   }
 });
 document.addEventListener('keydown',e=>{
+  if(e.key==='Escape'){
+    if($('visionReviewModal')?.classList.contains('open'))closeFrontendVisionReviewModal();
+    else if($('modalBg')?.classList.contains('open'))$('modalClose')?.click();
+    else if($('controlMenu'))$('controlMenu').open=false;
+    return;
+  }
   const tab=e.target.closest?.('[data-trace-view]');
   if(!tab||!['ArrowLeft','ArrowRight','Home','End'].includes(e.key))return;
   e.preventDefault();moveTraceTab(tab,e.key);
@@ -4830,6 +3975,7 @@ document.addEventListener('keydown',e=>{
 
 function switchTab(tabId){
   if(!tabId||!$(tabId))return;
+  if($('controlMenu'))$('controlMenu').open=false;
   document.querySelectorAll('.tabbtn').forEach(x=>x.classList.toggle('active',x.dataset.tab===tabId));
   document.querySelectorAll('.page').forEach(x=>x.classList.toggle('active',x.id===tabId));
   try{localStorage.setItem('activeTab',tabId)}catch{}
@@ -4844,6 +3990,13 @@ function switchTab(tabId){
 document.querySelectorAll('.tabbtn').forEach(b=>b.onclick=()=>switchTab(b.dataset.tab));
 window.addEventListener('hashchange',()=>switchTab(location.hash.replace('#','')));
 $('pauseEvents').onclick=e=>{paused=!paused;e.target.textContent=paused?'Resume live events':'Pause live events'};
+async function fetchDashboardJson(path,options={}){
+  const response=await apiFetch(path,options);
+  let data;
+  try{data=await response.json()}catch{throw new Error(`Invalid server response (HTTP ${response.status})`)}
+  if(!response.ok||data?.success===false)throw new Error(String(data?.error||data?.message||`HTTP ${response.status}`));
+  return data;
+}
 async function post(path,payload){const r=await apiFetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});return await r.json()}
 
 const ACTIVITY_MODES=['active','gaming','maintenance'];
@@ -5229,35 +4382,11 @@ function requestTraceAvailability(request){
 }
 function workRecentRequestRow(request){const trace=requestTrace(request),availability=requestTraceAvailability(request),failed=request.success===false||Number(request.status_code||0)>=400,context=trace?traceContextLabel(trace):(request.error_type||availability.label),requestId=String(request.request_id||'—'),project=traceProjectLabel(request.project||request.workspace||request.root||trace?.project)||'—',inner=`<td>${request.created_at?new Date(request.created_at*1000).toLocaleString():'—'}</td><td><strong>${esc(requestId.slice(-12))}</strong><div class="tiny">${trace?'Trace linked · '+esc(String(trace.trace_id||'').slice(-8)):'Request-only record'}</div></td><td><strong>${esc(project)}</strong></td><td>${esc(request.agent||'—')}</td><td>${esc(request.tenant||'—')}</td><td><strong>${esc(request.action||'—')}</strong><div class="tiny">${esc(context)}</div></td><td><span class="${failed?'bad-t':'ok'}">${n(request.status_code)||'—'}</span>${request.error_type?`<div class="tiny">${esc(request.error_type)}</div>`:''}</td><td><span class="${availability.className}">${esc(availability.label)}</span></td><td>${ms(request.duration_ms)}</td>`;return requestRow(request,inner,9)}
 
-function renderAdoptionRows(items){
-  const body=$('adoptionActions');if(!body)return;body.replaceChildren();
-  const rows=Array.isArray(items)?items.slice(0,12):[];
-  if(!rows.length){const row=document.createElement('tr'),cell=document.createElement('td');cell.colSpan=4;cell.className='muted';cell.style.textAlign='center';cell.style.padding='14px 10px';cell.style.fontStyle='italic';cell.textContent='No action adoption telemetry recorded';row.append(cell);body.append(row);return;}
-  for(const item of rows){const row=document.createElement('tr');for(const value of [item.tool,item.action,item.outcome,item.count]){const cell=document.createElement('td');cell.textContent=String(value??'—').slice(0,64);row.append(cell)}body.append(row)}
-}
-function renderAdoption(report){
-  if(!$('adoptionUsed'))return;
-  const totals=report&&report.totals;
-  if(!totals){if($('adoptionUsed'))$('adoptionUsed').textContent='unavailable';if($('adoptionBlocked'))$('adoptionBlocked').textContent='unavailable';if($('adoptionDormant'))$('adoptionDormant').textContent='unavailable';renderAdoptionRows([]);if($('adoptionDetail'))$('adoptionDetail').textContent='Aggregate adoption telemetry unavailable.';return;}
-  renderAdoptionRows(report.action_adoption);
-  if($('adoptionUsed'))$('adoptionUsed').textContent=`${totals.used||0} / ${totals.bypassed||0}`;
-  if($('adoptionBlocked'))$('adoptionBlocked').textContent=`${totals.blocked||0} / ${totals.failed||0}`;
-  if($('adoptionDormant'))$('adoptionDormant').textContent=(report.dormant_actions||[]).length;
-  const blocked=(report.blocked_reasons||[]).map(x=>`${x.reason}: ${x.count}`).join(', ')||'none';
-  const failed=(report.terminal_failures||[]).map(x=>`${x.reason}: ${x.count}`).join(', ')||'none';
-  const latency=(report.latency_buckets||[]).map(x=>`${x.bucket}: ${x.count}`).join(', ')||'none';
-  const output=(report.output_size_buckets||[]).map(x=>`${x.bucket}: ${x.count}`).join(', ')||'none';
-  if($('adoptionDetail'))$('adoptionDetail').textContent=`Blocked: ${blocked}. Terminal failures: ${failed}. Latency: ${latency}. Output: ${output}.`;
-}
-async function refreshAdoption(){
-  try{const response=await apiFetch('/api/adoption',{cache:'no-store'});const payload=await response.json();renderAdoption(payload.available?payload.adoption:null);}catch(_){renderAdoption(null);}
-}
 function render(s){
   last=s;
   syncDetailedTelemetryToggle(Boolean(s.debug_traces?.enabled));
   const receivedAt=Date.now();
   lastOverviewReceivedAt=receivedAt;
-  refreshAdoption();
   const q=s.scheduler||{},o=s.observability||{},p=s.preprocessing||{},bg=s.background_gpu||{},h=s.headless||{},r=s.runtime_stats||{},ss=q.stats||{},rp=s.runtime_profile||{},cmd=r.commands||{};
   ensureHttpTailTable();setupWorkLayout();
   renderOverviewHealth(s,receivedAt);
@@ -5324,9 +4453,7 @@ function render(s){
     }
   })();
 
-  const firstProject=(p.projects||[]).find(x=>x.root);
-  const worktreeRoot=$('worktreeRoot');
-  if(firstProject&&worktreeRoot&&!worktreeRoot.value)worktreeRoot.value=firstProject.root;
+  if($('worktreeRoots'))$('worktreeRoots').innerHTML=[...new Set((p.projects||[]).map(project=>project.root).filter(Boolean))].sort().map(root=>`<option value="${esc(root)}"></option>`).join('');
 
   const statusBadge=dashboardHealthBadge(s);
   $('health').innerHTML=`<span class="${statusBadge.className}">${s.hub_online?'hub ✓':'hub ✗'} / ${s.ollama_online?'ollama ✓':'ollama ✗'} / ${esc(h.state||'n/a')}${statusBadge.degradedLabel}</span>`;
@@ -5410,7 +4537,7 @@ function render(s){
 
   rows('jobs',visibleJobs,j=>workSchedulerRow(j),5);
   rows('activeReq',visibleActive,x=>workActiveRequestRow(x),4);
-  rows('recentReq',visibleRecent,x=>workRecentRequestRow(x),8);
+  rows('recentReq',visibleRecent,x=>workRecentRequestRow(x),9,'No requests match the current filters.');
   renderTraceList(lastTraces);
 
   const diagBar=$('prepDiagnosticBar');
@@ -5672,6 +4799,7 @@ document.addEventListener('visibilitychange',()=>{
 });
 // ── Bundles ────────────────────────────────────────────────────────────────────
 function renderBundles(s){
+  if(!preprocessingSummary(s?.preprocessing||{}).available){$('bundleExportTable').innerHTML='<tr><td colspan="4" class="empty warn-t">Project inventory unavailable. Export readiness cannot be verified.</td></tr>';return;}
   const projs=groupedProjects(s?.preprocessing?.projects||[]);
   $('bundleExportTable').innerHTML=projs.length?projs.map(p=>{
     const state=projectState(p),progress=Math.round(Number(p.overall_progress_pct||0)),ready=state==='ready'||progress>=100;
@@ -5690,35 +4818,50 @@ document.addEventListener('click',event=>{
   else projectAction(root,button.dataset.projectAction);
 });
 async function exportBundle(root){
+  try{
   const r=await apiFetch('/api/bundle/export',{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/zip'},body:JSON.stringify({root})});
   if(!r.ok){alert('Export failed: '+(await r.text()));return;}
   const blob=await r.blob();const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download='bundle.zip';a.click();URL.revokeObjectURL(url);
+  }catch(error){alert('Export failed: '+String(error.message||error))}
 }
 $('bundleImport')?.addEventListener('click',async()=>{
   const file=$('bundleFile')?.files?.[0];const statusEl=$('bundleImportStatus');if(!file){if(statusEl)statusEl.textContent='Select a file first';return;}
+  const button=$('bundleImport');if(button.disabled)return;button.disabled=true;
   if(statusEl)statusEl.textContent='Uploading…';
   const target=$('bundleTargetRoot')?.value?.trim()||'';const suffix=target?'?target_root='+encodeURIComponent(target):'';
   try{
     const r=await apiFetch('/api/bundle/import'+suffix,{method:'POST',headers:{'Content-Type':'application/zip'},body:await file.arrayBuffer()});
     const d=await r.json();
     if(statusEl)statusEl.textContent=d.success?'Import successful: '+String(d.root||''):'Error: '+String(d.error||'failed');
-  }catch(e){if(statusEl)statusEl.textContent='Upload error: '+(e?.message||e)}
+  }catch(e){if(statusEl)statusEl.textContent='Upload error: '+(e?.message||e)}finally{button.disabled=false}
 });
 
 // ── Agent OS ──────────────────────────────────────────────────────────────────
-let agentOsTasks=[], agentOsMemories=[], agentOsIncidents=[];
+let agentOsTasks=[], agentOsMemories=[], agentOsIncidents=[],agentOsLoadErrors={};
+function setAgentOsScopeReady(ready){
+  ['agentOsCreateTaskBtn','agentOsRecordMemBtn','agentOsRecordIncBtn','agentOsCleanup'].forEach(id=>{if($(id))$(id).disabled=!ready});
+}
 async function loadAgentOsView(){
-  try{
-    const [tasksRes, memRes, incRes] = await Promise.all([
-      apiFetch('/api/agent-state/tasks', {cache:'no-store'}).then(r=>r.json()).catch(()=>({tasks:[]})),
-      apiFetch('/api/agent-state/memory', {cache:'no-store'}).then(r=>r.json()).catch(()=>({records:[]})),
-      post('/api/agent-state/incidents', {action:'list', limit:100}).catch(()=>({incidents:[]})),
-    ]);
-    agentOsTasks=tasksRes.tasks||[];
-    agentOsMemories=memRes.records||[];
-    agentOsIncidents=incRes.incidents||[];
-    renderAgentOsView();
-  }catch(e){console.warn('Agent OS view load error', e)}
+  const selectedRoot=$('agentOsRoot')?.value?.trim();
+  setAgentOsScopeReady(false);
+  if(!selectedRoot){
+    agentOsTasks=[];agentOsMemories=[];agentOsIncidents=[];
+    agentOsLoadErrors={tasks:'Choose a repository root above',memory:'Choose a repository root above',incidents:'Choose a repository root above'};
+    renderAgentOsView();return;
+  }
+  const results=await Promise.allSettled([
+    fetchDashboardJson('/api/agent-state/tasks',{cache:'no-store'}),
+    fetchDashboardJson('/api/agent-state/memory',{cache:'no-store'}),
+    fetchDashboardJson('/api/agent-state/incidents',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'list',limit:100})})
+  ]);
+  if($('agentOsRoot')?.value?.trim()!==selectedRoot)return;
+  agentOsLoadErrors={};
+  ['tasks','memory','incidents'].forEach((key,index)=>{if(results[index].status==='rejected')agentOsLoadErrors[key]=String(results[index].reason?.message||results[index].reason)});
+  agentOsTasks=results[0].status==='fulfilled'?(results[0].value.tasks||[]):[];
+  agentOsMemories=results[1].status==='fulfilled'?(results[1].value.records||[]):[];
+  agentOsIncidents=results[2].status==='fulfilled'?(results[2].value.incidents||[]):[];
+  setAgentOsScopeReady(Object.keys(agentOsLoadErrors).length===0);
+  renderAgentOsView();
 }
 
 function switchAgentOsSubtab(tabKey){
@@ -5810,9 +4953,28 @@ function renderAgentOsView(){
     const fix=esc(i.verified_fix||'—');
     return clickableRow(i,`<td><strong>${id}</strong></td><td>${statusChip}</td><td>${n(i.attempts||1)}</td><td><span class="chip">${op}</span></td><td><span class="chip bad-t">${ec}</span></td><td class="tiny" title="${esc(i.redacted_message||'')}">${msg}</td><td class="tiny">${cause}</td><td class="tiny ok">${fix}</td>`,'incident',i.incident_id);
   },8);
+  renderAgentOsLoadErrors();
+}
+
+function renderAgentOsLoadErrors(){
+  const failed=Object.keys(agentOsLoadErrors);
+  if(failed.length){
+    if($('agentOsState'))$('agentOsState').textContent=$('agentOsRoot')?.value?.trim()?'Partially unavailable · '+failed.join(', '):'Select a repository';
+    if($('agentOsSummary'))$('agentOsSummary').textContent='Some data could not be loaded. Refresh to retry.';
+  }
+  [['tasks','agentOsTasksBody',7],['memory','agentOsMemoryBody',7],['incidents','agentOsIncBody',8]].forEach(([key,id,columns])=>{
+    if(agentOsLoadErrors[key]&&$(id))$(id).innerHTML=`<tr><td colspan="${columns}" class="empty warn-t">Unavailable: ${esc(agentOsLoadErrors[key])}. Use Refresh to retry.</td></tr>`;
+  });
 }
 
 $('agentOsRefresh')?.addEventListener('click',loadAgentOsView);
+$('agentOsRoot')?.addEventListener('input',()=>{
+  setAgentOsScopeReady(false);
+  agentOsTasks=[];agentOsMemories=[];agentOsIncidents=[];
+  agentOsLoadErrors={tasks:'Repository selection changed. Use Refresh',memory:'Repository selection changed. Use Refresh',incidents:'Repository selection changed. Use Refresh'};
+  renderAgentOsView();
+});
+$('agentOsRoot')?.addEventListener('keydown',event=>{if(event.key==='Enter')loadAgentOsView()});
 $('agentOsCleanup')?.addEventListener('click',openCleanupModal);
 $('agentOsSearch')?.addEventListener('input',renderAgentOsView);
 $('agentOsTaskStatus')?.addEventListener('change',renderAgentOsView);
@@ -5847,7 +5009,7 @@ function renderRagWorkspaces(){
 }
 async function loadRagWorkspaces(){
   try{
-    const r=await apiFetch('/api/rag/workspaces',{cache:'no-store'}),d=await r.json();
+    const d=await fetchDashboardJson('/api/rag/workspaces',{cache:'no-store'});
     ragWorkspaces=d.workspaces||[];
     renderRagWorkspaces();
   }catch(e){if($('ragWorkspacesList'))$('ragWorkspacesList').textContent='Failed to load workspaces'}
@@ -5856,7 +5018,7 @@ $('ragWorkspaceSearch')?.addEventListener('input',renderRagWorkspaces);
 
 async function loadActiveLeases(){
   try{
-    const r=await apiFetch('/api/leases',{cache:'no-store'}),d=await r.json();
+    const d=await fetchDashboardJson('/api/leases',{cache:'no-store'});
     const leases=d.leases||[];
     rows('activeLeasesBody',leases,l=>{
       const id=esc(l.lease_id||'—');
@@ -5867,24 +5029,32 @@ async function loadActiveLeases(){
       const action=`<button class="action-btn-sm danger" data-release-lease="${id}">Release</button>`;
       return clickableRow(l,`<td><strong>${id}</strong></td><td>${paths}</td><td>${tenant}</td><td class="tiny">${purp}</td><td class="tiny ok">${exp}</td><td>${action}</td>`,'lease',l.lease_id);
     },6);
-  }catch(e){console.warn('Leases load error',e)}
+  }catch(e){if($('activeLeasesBody'))$('activeLeasesBody').innerHTML=`<tr><td colspan="6" class="empty warn-t">Leases unavailable: ${esc(e.message||e)}</td></tr>`}
 }
 document.addEventListener('click',async e=>{
   const btn=e.target.closest?.('[data-release-lease]');
   if(!btn)return;
   const leaseId=btn.dataset.releaseLease;
   try{
-    await post('/api/leases/release',{lease_id:leaseId});
+    const result=await post('/api/leases/release',{lease_id:leaseId});
+    if(result.success===false)throw new Error(result.error||'Release failed');
     await loadActiveLeases();
   }catch(err){alert('Release lease error: '+err)}
 });
 
 // ── Git Worktrees Manager ──────────────────────────────────────────────────
 async function loadWorktrees(){
+  if($('pruneWorktreesBtn'))$('pruneWorktreesBtn').disabled=true;
+  const root=$('worktreeRoot')?.value?.trim();
+  if(!root){
+    if($('worktreeSummary'))$('worktreeSummary').textContent='Choose a repository root';
+    if($('worktreesTable'))$('worktreesTable').innerHTML='<tr><td colspan="5" class="empty">Choose or enter a repository root, then refresh.</td></tr>';
+    return;
+  }
   try{
-    const root=$('worktreeRoot')?.value?.trim()||'.';
-    const r=await apiFetch('/api/coord/worktrees?root='+encodeURIComponent(root),{cache:'no-store'});
-    const d=await r.json();
+    const d=await fetchDashboardJson('/api/coord/worktrees?root='+encodeURIComponent(root),{cache:'no-store'});
+    if($('worktreeRoot')?.value?.trim()!==root)return;
+    if($('pruneWorktreesBtn'))$('pruneWorktreesBtn').disabled=false;
     const wts=d.worktrees||[];
     if($('worktreeSummary'))$('worktreeSummary').textContent=`${wts.length} active worktree${wts.length===1?'':'s'}`;
     rows('worktreesTable',wts,w=>{
@@ -5899,15 +5069,25 @@ async function loadWorktrees(){
       const act=`<button class="action-btn-sm danger" data-release-worktree="${dir}">Remove</button>`;
       return `<tr><td class="mono tiny">${dir}</td><td><span class="chip">${br}</span></td><td class="mono tiny">${head}</td><td>${statusBadge}</td><td>${act}</td></tr>`;
     },5);
-  }catch(e){console.warn('Failed to load worktrees',e)}
+  }catch(e){
+    if($('worktreeSummary'))$('worktreeSummary').textContent='Worktrees unavailable';
+    if($('worktreesTable'))$('worktreesTable').innerHTML=`<tr><td colspan="5" class="empty warn-t">${esc(e.message||e)}. Check the repository root and refresh.</td></tr>`;
+  }
 }
 
 $('refreshWorktreesBtn')?.addEventListener('click',loadWorktrees);
+$('worktreeRoot')?.addEventListener('input',()=>{
+  if($('pruneWorktreesBtn'))$('pruneWorktreesBtn').disabled=true;
+  if($('worktreeSummary'))$('worktreeSummary').textContent='Refresh for the selected repository';
+  if($('worktreesTable'))$('worktreesTable').innerHTML='<tr><td colspan="5" class="empty">Repository selection changed. Refresh to load its worktrees.</td></tr>';
+});
+$('worktreeRoot')?.addEventListener('keydown',event=>{if(event.key==='Enter')loadWorktrees()});
 $('pruneWorktreesBtn')?.addEventListener('click',async()=>{
   if(!confirm('Prune stale Git worktrees?'))return;
-  const root=$('worktreeRoot')?.value?.trim()||'.';
+  const root=$('worktreeRoot')?.value?.trim();if(!root)return;
   try{
-    await post('/api/coord/worktree_prune',{root});
+    const result=await post('/api/coord/worktree_prune',{root});
+    if(result.success===false)throw new Error(result.error||'Prune failed');
     await loadWorktrees();
   }catch(err){alert('Prune worktrees error: '+err)}
 });
@@ -5918,9 +5098,10 @@ document.addEventListener('click',async e=>{
   const wtPath=btn.dataset.releaseWorktree;
   if(!wtPath)return;
   if(!confirm(`Remove worktree ${wtPath}?`))return;
-  const root=$('worktreeRoot')?.value?.trim()||'.';
+  const root=$('worktreeRoot')?.value?.trim();if(!root)return;
   try{
-    await post('/api/coord/worktree_release',{root,worktree_path:wtPath});
+    const result=await post('/api/coord/worktree_release',{root,worktree_path:wtPath});
+    if(result.success===false)throw new Error(result.error||'Remove failed');
     await loadWorktrees();
   }catch(err){alert('Remove worktree error: '+err)}
 });
@@ -5939,8 +5120,9 @@ $('arenaRunBtn')?.addEventListener('click',async()=>{
     const t0=performance.now();
     try{
       const res=await post('/api/delegate',{task:prompt,complexity});
+      if(res.success===false)throw new Error(res.error||'Inference failed');
       const lat=Math.round(performance.now()-t0);
-      const model=res.route?.model||res.model||(complexity==='auto'?'qwen2.5-coder:1.5b':'qwen2.5-coder:3b');
+      const model=res.route?.model||res.model||'Model not reported';
       const gen=res.eval_count||res.tokens_generated||0;
       const tps=res.eval_duration?Math.round((gen/(res.eval_duration/1e9))*10)/10:(lat>0&&gen>0?Math.round((gen/(lat/1000))*10)/10:'—');
       if(labelEl)labelEl.textContent=`${complexity==='auto'?'Fast Tier':'Smart Tier'} (${model})`;
@@ -5967,11 +5149,13 @@ let cachedTrajTasks=[];
 
 async function loadTrajectories(){
   try{
-    const r=await apiFetch('/api/agent-state/tasks?limit=100',{cache:'no-store'});
-    const d=await r.json();
+    const d=await fetchDashboardJson('/api/agent-state/tasks?limit=100',{cache:'no-store'});
     cachedTrajTasks=d.tasks||[];
     renderTrajectories();
-  }catch(e){console.warn('Failed to load trajectories',e)}
+  }catch(e){
+    if($('trajSummary'))$('trajSummary').textContent='Run history unavailable';
+    if($('trajTableBody'))$('trajTableBody').innerHTML=`<tr><td colspan="6" class="empty warn-t">${esc(e.message||e)}. Refresh to retry.</td></tr>`;
+  }
 }
 
 function renderTrajectories(){
