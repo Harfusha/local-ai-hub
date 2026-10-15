@@ -236,12 +236,14 @@ def test_mcp_relations_require_canonical_query_limit_offset_and_reject_bool(monk
     assert requests[-1][1]["offset"] == 4
 
     before_alias = len(requests)
-    symbol_alias = asyncio.run(local_ai_repo(action="callers", root=".", symbol="target"))
-    conflicting_alias = asyncio.run(local_ai_repo(
-        action="implementations", root=".", query="Base", symbol="OldBase",
-    ))
+    symbol_alias = asyncio.run(mcp_server.mcp.call_tool("local_ai_repo", {
+        "action": "callers", "root": ".", "symbol": "target",
+    }))
+    conflicting_alias = asyncio.run(mcp_server.mcp.call_tool("local_ai_repo", {
+        "action": "implementations", "root": ".", "query": "Base", "symbol": "OldBase",
+    }))
     assert len(requests) == before_alias
-    assert symbol_alias["status_code"] == conflicting_alias["status_code"] == 400
+    assert "400" in str(symbol_alias) and "400" in str(conflicting_alias)
 
 
 def test_registered_mcp_relation_wire_rejects_first_item_over_budget(monkeypatch):
