@@ -21,7 +21,9 @@ from local_ai_hub.agent_consistency import (
     ReuseCandidate,
 )
 from local_ai_hub.agent_tasks import GoalContract
+from local_ai_hub.project_config import resolve_project_context
 from local_ai_hub.repo_tools import RepositoryTools
+from local_ai_hub.state_paths import configured_state_dir
 from local_ai_hub.telemetry import TelemetryStore
 
 
@@ -663,7 +665,8 @@ def test_adaptive_context_pack_serializes_relevance_metadata(repository: Path):
 def test_guard_records_verified_finding_after_discovery(repository: Path):
     state = AgentStateStore(repository.parent / "guard-state.sqlite3")
     memory = MemoryStore(state)
-    guard = AgentConsistencyGuard(RepositoryTools(_cfg(repository.parent)), memory_store=memory)
+    repository_tools = RepositoryTools(_cfg(repository.parent))
+    guard = AgentConsistencyGuard(repository_tools, memory_store=memory)
     request = _request(repository)
 
     saved = guard.record_finding(
@@ -692,6 +695,12 @@ def test_guard_records_verified_finding_after_discovery(repository: Path):
     assert saved.symbol_refs == ("UserService",)
     assert saved.related_task == request.task_id
     assert saved.provenance["tenant"] == request.tenant
+    expected_repository_id = resolve_project_context(
+        repository,
+        configured_state_dir(repository_tools.config, create=False),
+    ).coordination_id
+    assert expected_repository_id
+    assert saved.provenance["repository_id"] == expected_repository_id
     assert saved.expires_at is not None
     assert "secret source" not in json.dumps(saved.to_dict())
 
@@ -705,6 +714,7 @@ def test_guard_records_verified_finding_after_discovery(repository: Path):
     )
     assert other_tenant is not None
     assert other_tenant.record_id != saved.record_id
+    assert other_tenant.provenance["repository_id"] == saved.provenance["repository_id"]
     assert other_tenant.provenance["tenant"] == "other-tenant"
     assert [
         record.record_id
@@ -712,6 +722,7 @@ def test_guard_records_verified_finding_after_discovery(repository: Path):
             scope="repository",
             key=saved.key,
             root=str(repository),
+            repository_id=saved.provenance["repository_id"],
             tenant=request.tenant,
             semantic=False,
         )
@@ -720,6 +731,7 @@ def test_guard_records_verified_finding_after_discovery(repository: Path):
         scope="repository",
         key=other_tenant.key,
         root=str(repository),
+        repository_id=saved.provenance["repository_id"],
         tenant=request.tenant,
         semantic=False,
     ) == []

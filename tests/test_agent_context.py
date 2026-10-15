@@ -209,7 +209,7 @@ def test_repository_memory_context_excludes_foreign_tenant(tmp_path: Path):
             scope_id=str(tmp_path),
             key=f"fact-{tenant}",
             value=value,
-            provenance={"root": str(tmp_path), "tenant": tenant},
+            provenance={"root": str(tmp_path), "repository_id": "repo-a", "tenant": tenant},
         ))
     compiler = ContextCompiler(state_store, memory_store=memory_store)
 
@@ -217,6 +217,7 @@ def test_repository_memory_context_excludes_foreign_tenant(tmp_path: Path):
         task_id="task-1",
         root=str(tmp_path),
         tenant="tenant-a",
+        coordination_id="repo-a",
     ))
 
     context = "\n".join(element.content for element in result.elements)
@@ -467,7 +468,7 @@ def test_context_compile_marks_changed_repository_memory_stale(tmp_path: Path):
             key="compile-stale",
             value="old evidence",
             status=MemoryStatus.CONFIRMED,
-            provenance={"root": str(tmp_path), "tenant": "tenant-1", "repository_revision": "rev-1", "path_refs": ["src/a.py"]},
+            provenance={"root": str(tmp_path), "repository_id": "repo-a", "tenant": "tenant-1", "repository_revision": "rev-1", "path_refs": ["src/a.py"]},
         )
     )
     unrelated = memory_store.record(
@@ -477,7 +478,7 @@ def test_context_compile_marks_changed_repository_memory_stale(tmp_path: Path):
             key="compile-unrelated",
             value="keep evidence",
             status=MemoryStatus.CONFIRMED,
-            provenance={"root": str(tmp_path / "other"), "tenant": "tenant-1", "repository_revision": "rev-1", "path_refs": ["src/a.py"]},
+            provenance={"root": str(tmp_path / "other"), "repository_id": "repo-b", "tenant": "tenant-1", "repository_revision": "rev-1", "path_refs": ["src/a.py"]},
         )
     )
     compiler = ContextCompiler(state_store=state_store, memory_store=memory_store)
@@ -487,13 +488,14 @@ def test_context_compile_marks_changed_repository_memory_stale(tmp_path: Path):
         root=str(tmp_path),
         repository_revision="rev-2",
         changed_paths=("src/a.py",),
+        coordination_id="repo-a",
         token_budget=120,
     )
     compiler.compile(request)
     compiler.compile(request)
 
-    assert memory_store.get(stale_candidate.record_id, scope="repository", root=str(tmp_path), tenant="tenant-1").status is MemoryStatus.STALE
-    assert memory_store.get(unrelated.record_id, scope="repository", root=str(tmp_path / "other"), tenant="tenant-1").status is MemoryStatus.CONFIRMED
+    assert memory_store.get(stale_candidate.record_id, scope="repository", root=str(tmp_path), repository_id="repo-a", tenant="tenant-1").status is MemoryStatus.STALE
+    assert memory_store.get(unrelated.record_id, scope="repository", root=str(tmp_path / "other"), repository_id="repo-b", tenant="tenant-1").status is MemoryStatus.CONFIRMED
     events = state_store.events(
         stream_id=_memory_event_stream_id(
             stale_candidate.scope,
@@ -542,7 +544,7 @@ def test_stale_memory_is_excluded_from_authoritative_context(tmp_path: Path):
             key="stale-finding",
             value="old evidence",
             status=MemoryStatus.STALE,
-            provenance={"root": str(tmp_path), "repository_revision": "rev-1", "path_refs": ["src/a.py"]},
+            provenance={"root": str(tmp_path), "repository_id": "repo-a", "tenant": "tenant-1", "repository_revision": "rev-1", "path_refs": ["src/a.py"]},
         )
     )
     fresh = memory_store.record(
@@ -552,12 +554,12 @@ def test_stale_memory_is_excluded_from_authoritative_context(tmp_path: Path):
             key="fresh-finding",
             value="current evidence",
             status=MemoryStatus.CONFIRMED,
-            provenance={"root": str(tmp_path), "tenant": "tenant-1", "repository_revision": "rev-2", "path_refs": ["src/b.py"]},
+            provenance={"root": str(tmp_path), "repository_id": "repo-a", "tenant": "tenant-1", "repository_revision": "rev-2", "path_refs": ["src/b.py"]},
         )
     )
 
     context = ContextCompiler(state_store=state_store, memory_store=memory_store).compile(
-        ContextRequest(task_id="task-1", root=str(tmp_path), tenant="tenant-1", token_budget=120)
+        ContextRequest(task_id="task-1", root=str(tmp_path), tenant="tenant-1", coordination_id="repo-a", token_budget=120)
     )
 
     assert stale.record_id not in {element.element_id for element in context.elements}
@@ -576,13 +578,14 @@ def test_stale_memory_remains_visible_as_diagnostic(tmp_path: Path):
             key="stale-finding",
             value="old evidence",
             status=MemoryStatus.STALE,
-            provenance={"root": str(tmp_path), "tenant": "tenant-1", "repository_revision": "rev-1", "path_refs": ["src/a.py"]},
+            provenance={"root": str(tmp_path), "repository_id": "repo-a", "tenant": "tenant-1", "repository_revision": "rev-1", "path_refs": ["src/a.py"]},
         )
     )
 
     context = ContextCompiler(state_store=state_store, memory_store=memory_store).compile(
         ContextRequest(
             task_id="task-1", root=str(tmp_path), tenant="tenant-1",
+            coordination_id="repo-a",
             token_budget=120, include_diagnostics=True,
         )
     )
@@ -604,7 +607,7 @@ def test_memory_diagnostics_are_repository_scoped(tmp_path: Path):
             key="stale-a",
             value="old evidence A",
             status=MemoryStatus.STALE,
-            provenance={"root": repository_a, "tenant": "tenant-1", "repository_revision": "rev-1"},
+            provenance={"root": repository_a, "repository_id": "repo-a", "tenant": "tenant-1", "repository_revision": "rev-1"},
         )
     )
     stale_b = memory_store.record(
@@ -614,13 +617,14 @@ def test_memory_diagnostics_are_repository_scoped(tmp_path: Path):
             key="stale-b",
             value="old evidence B",
             status=MemoryStatus.STALE,
-            provenance={"root": repository_b, "tenant": "tenant-1", "repository_revision": "rev-1"},
+            provenance={"root": repository_b, "repository_id": "repo-b", "tenant": "tenant-1", "repository_revision": "rev-1"},
         )
     )
 
     context = ContextCompiler(state_store=state_store, memory_store=memory_store).compile(
         ContextRequest(
             task_id="task-a", root=repository_a, tenant="tenant-1",
+            coordination_id="repo-a",
             token_budget=120, include_diagnostics=True,
         )
     )
