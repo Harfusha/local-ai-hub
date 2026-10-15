@@ -15,7 +15,7 @@ import threading
 import time
 from contextlib import closing
 from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -979,6 +979,8 @@ class TelemetryStore:
             "local_compute_tokens_avoided_est": int(history.get("local_compute_tokens_avoided_est", 0) or 0),
             "token_savings_breakdown": history.get("token_savings_breakdown", {}),
             "tool_accounting_events": int(history.get("tool_accounting_events", 0) or 0),
+            "accounting_boundary_incomplete": bool(history.get("accounting_boundary_incomplete", False)),
+            "token_accounting_storage": history.get("token_accounting_storage", "retained_process_events"),
             "cloud_token_cost_usd_per_million": float(history.get("cloud_token_cost_usd_per_million", self.cloud_token_cost_usd_per_million) or 0.0),
             "estimated_savings_usd": float(history.get("estimated_savings_usd", 0.0) or 0.0),
             "estimated_input_savings_usd": float(history.get("estimated_input_savings_usd", 0.0) or 0.0),
@@ -1758,6 +1760,7 @@ class TelemetryStore:
         flush_complete = True
         if _flush:
             flush_complete = self.flush(0.5)
+        accounting_boundary_incomplete = False
         with closing(self._connect()) as con:
             row = con.execute(
                 """SELECT COUNT(*), COALESCE(SUM(cache_hit),0), COALESCE(SUM(coalesced),0),
@@ -1851,6 +1854,37 @@ class TelemetryStore:
                    FROM events WHERE created_at>=? AND event_type='tool_accounting'""",
                 (cutoff,),
             ).fetchone()
+            if scope == "window":
+                # Raw retention is shorter than the reporting window. Use daily
+                # totals once per complete UTC day, and raw rows only for the
+                # partial first day. This preserves the exact rolling cutoff
+                # without counting retained rows a second time.
+                columns = (
+                    "gross_avoided_cloud_tokens", "gross_input_tokens_avoided", "gross_output_tokens_avoided",
+                    "agent_protocol_tokens", "tool_request_tokens", "tool_response_tokens", "tool_schema_tokens",
+                    "local_compute_tokens_avoided", "net_cloud_token_delta", "cloud_token_overhead",
+                    "net_after_schema_token_delta", "schema_adjusted_overhead",
+                )
+                boundary = datetime.fromtimestamp(cutoff, tz=timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+                boundary_end = (boundary + timedelta(days=1)).timestamp()
+                day = boundary.strftime("%Y-%m-%d")
+                fields = ",".join(columns)
+                sums = ",".join(f"COALESCE(SUM({column}),0)" for column in ("events", *columns))
+                tool_accounting = con.execute(
+                    f"SELECT {sums} FROM ("
+                    f"SELECT events,{fields} FROM daily_rollups WHERE day>? AND event_type='tool_accounting' "
+                    f"UNION ALL SELECT 1 AS events,{fields} FROM events "
+                    "WHERE created_at>=? AND created_at<? AND event_type='tool_accounting')",
+                    (day, cutoff, boundary_end),
+                ).fetchone()
+                boundary_rollup = con.execute(
+                    "SELECT COALESCE(SUM(events),0) FROM daily_rollups WHERE day=? AND event_type='tool_accounting'", (day,)
+                ).fetchone()[0]
+                boundary_raw = con.execute(
+                    "SELECT COUNT(*) FROM events WHERE created_at>=? AND created_at<? AND event_type='tool_accounting'",
+                    (boundary.timestamp(), boundary_end),
+                ).fetchone()[0]
+                accounting_boundary_incomplete = boundary_rollup > boundary_raw
             # Realtime summaries must stay cheap even at max raw-event retention.
             # Attribute each call to its dominant savings source in SQL; the full
             # multi-source breakdown is parsed only by the explicit diagnostic report.
@@ -1961,6 +1995,8 @@ class TelemetryStore:
             "local_compute_tokens_avoided_est": local_compute_tokens_avoided,
             "token_savings_breakdown": dict(sorted(savings_breakdown.items(), key=lambda kv: (-kv[1], kv[0]))),
             "tool_accounting_events": tool_accounting_events,
+            "accounting_boundary_incomplete": accounting_boundary_incomplete,
+            "token_accounting_storage": "daily_rollups_and_boundary_events" if scope == "window" else "retained_process_events",
             "cloud_token_cost_usd_per_million": self.cloud_token_cost_usd_per_million,
             "cloud_input_token_cost_usd_per_million": self.cloud_input_token_cost_usd_per_million,
             "cloud_output_token_cost_usd_per_million": self.cloud_output_token_cost_usd_per_million,

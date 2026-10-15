@@ -637,7 +637,7 @@ function dashboardTelemetryState(observability={}){
   const dropped=Math.max(0,Number(writer.dropped)||0),errors=Math.max(0,Number(writer.writer_errors)||0);
   const available=observability.enabled!==false&&observability.data_available!==false&&observability.stale!==true&&
     (observability.data_available===true||Object.hasOwn(observability,'net_cloud_token_delta_est'));
-  return {available,complete:available&&!dropped&&!errors,dropped,errors};
+  return {available,complete:available&&!dropped&&!errors&&!observability.accounting_boundary_incomplete,dropped,errors};
 }
 
 function formatEstimatedUsd(value){
@@ -659,6 +659,10 @@ function renderTelemetryMetrics(observability={}){
     const sources=Object.entries(observability.token_savings_breakdown||{}).map(([name,value])=>name+': '+n(value)).join('\n');
     breakdown.textContent='Period: '+period+'\nAccounted calls: '+n(calls)+'\nBaseline: '+n(observability.gross_cloud_tokens_avoided_est)+' tokens\nProtocol: '+n(observability.agent_protocol_tokens_est)+' tokens (call '+n(observability.agent_tool_request_tokens_est)+' + read '+n(observability.agent_tool_response_tokens_est)+')\nSchema-adjusted delta: '+n(observability.net_after_schema_token_delta_est)+' tokens\nSchema catalog exposure: '+n(observability.tool_schema_tokens_exposure_est)+' tokens\nLocal compute reuse: '+n(observability.local_compute_tokens_avoided_est)+' tokens\nWriter: '+n(state.dropped)+' records dropped; '+n(state.errors)+' write errors'+(sources?'\nBaseline sources:\n'+sources:'\nNo baseline source recorded.');
   }
+  if(breakdown){
+    breakdown.textContent=breakdown.textContent.replace('Baseline sources:','Baseline sources (retained detail only):');
+    if(observability.token_accounting_storage==='daily_rollups_and_boundary_events')breakdown.textContent+='\nAccounting: persistent daily totals plus retained partial-day records'+(observability.accounting_boundary_incomplete?'\nPartial boundary day has missing records; its lost savings are not reconstructed.':'');
+  }
   if(!state.available){
     for(const id of ['handledRequests','tokensSaved','dollarsSaved','cache','latency','reliabilityValue'])if($(id))$(id).textContent='Unavailable';
     for(const id of ['handledRequestsSub','tokensSavedSub','dollarsSavedSub','cacheSub','queueWait','reliabilitySub'])if($(id))$(id).textContent='Telemetry unavailable · '+period;
@@ -668,6 +672,9 @@ function renderTelemetryMetrics(observability={}){
   if($('tokensSavedSub'))$('tokensSavedSub').textContent=period+' · '+(calls?n(calls)+' accounted calls':'No accounted calls yet')+(!state.complete?' · partial estimate':'');
   if($('dollarsSaved'))$('dollarsSaved').textContent=formatEstimatedUsd(observability.estimated_savings_usd??0);
   if($('dollarsSavedSub'))$('dollarsSavedSub').textContent=(observability.estimated_savings_pricing_mode==='input_output'?'Separate input/output rates':'Blended rate')+' · '+period+(!state.complete?' · incomplete data':'');
+  if(period==='Last 30 days'){
+    for(const id of ['handledRequestsSub','cacheSub','queueWait'])if($(id))$(id).textContent='Retained samples · '+$(id).textContent;
+  }
   if(breakdown)breakdown.textContent+='\nUSD input rate: $'+Number(observability.cloud_input_token_cost_usd_per_million??observability.cloud_token_cost_usd_per_million??0).toFixed(2)+' / 1M\nUSD output rate: $'+Number(observability.cloud_output_token_cost_usd_per_million??observability.cloud_token_cost_usd_per_million??0).toFixed(2)+' / 1M';
 }
 

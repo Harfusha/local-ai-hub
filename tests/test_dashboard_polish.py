@@ -32,6 +32,7 @@ assert.equal(zero.available,true);
 assert.equal(zero.complete,true);
 assert.equal(dashboardTelemetryState({data_available:true,writer:{dropped:4}}).complete,false);
 assert.equal(dashboardTelemetryState({data_available:true,writer:{writer_errors:2}}).complete,false);
+assert.equal(dashboardTelemetryState({data_available:true,accounting_boundary_incomplete:true}).complete,false);
 assert.equal(dashboardTelemetryState({data_available:true,stale:true}).available,false);
 assert.equal(formatEstimatedUsd(0.0008),'≈ $0.0008');
 assert.equal(formatEstimatedUsd(0),'≈ $0.00');
