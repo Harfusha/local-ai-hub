@@ -58,6 +58,13 @@ from local_ai_hub.token_accounting import account_projection, attach_accounting,
 from local_ai_hub.trace_context import efficiency_metadata, reset_metadata, set_metadata
 from local_ai_hub.search_pagination import MAX_PAGE_SIZE
 from local_ai_hub.adoption_metrics import AdoptionMetricsStore
+from local_ai_hub.task_memory_wire import (
+    mcp_wire_tokens as _task_memory_mcp_wire_tokens,
+    normalize_task_memory_response as _normalize_task_memory_response,
+    task_memory_audit_projection as _task_memory_audit_projection,
+    task_memory_essential_response as _task_memory_essential_response,
+    task_memory_projection as _task_memory_projection,
+)
 from local_ai_hub.routing import semantic_handoff_hint
 from local_ai_hub.operation_contracts import (
     operation_actions,
@@ -897,6 +904,7 @@ _RELIABILITY_PROTECTED_KEYS = (
     *LIFECYCLE_PROTECTED_KEYS,
     "success", "terminal", "retryable", "unsupported", "degraded", "stale",
     "fallback_used", "evidence", "evidence_ids", "cancelled", "cancel_requested", "cancel_reason",
+    "mutation_applied", "operation_not_started",
 )
 _VERIFY_PROTECTED_KEYS = ("missing_criteria", "unverified_criteria", "receipts")
 _TOPOLOGY_PROTECTED_KEYS = ("coverage", "architecture_pattern_verified", "import_scope")
@@ -1035,90 +1043,6 @@ def _reuse_state(key: str, value: Any) -> tuple[bool, Any]:
     while len(_REUSE_VALUES) > RESPONSE_REUSE_LIMIT:
         _REUSE_VALUES.popitem(last=False)
     return previous == digest, previous_value
-
-
-def _task_memory_audit_projection(value: Any) -> Any:
-    """Current usage receipt only; never expose history, prompts or source bodies."""
-    if value is None:
-        return None
-    if not isinstance(value, dict):
-        return {"invalid": True}
-    out: dict[str, Any] = {}
-    truncated = False
-    used = value.get("used_ids")
-    if isinstance(used, (list, tuple)):
-        out["used_ids"] = [item for item in used[:8] if isinstance(item, str)]
-        truncated = len(used) > 8
-    reason = value.get("not_used_reason")
-    if isinstance(reason, str):
-        out["not_used_reason"] = reason[:512]
-        truncated |= len(reason) > 512
-    if isinstance(value.get("source_checked"), bool):
-        out["source_checked"] = value["source_checked"]
-    checks = value.get("source_checks")
-    if isinstance(checks, dict):
-        out["source_checks"] = {}
-        for memory_id, check in list(checks.items())[:8]:
-            if not isinstance(memory_id, str):
-                continue
-            if isinstance(check, bool):
-                out["source_checks"][memory_id] = check
-            elif isinstance(check, dict):
-                projected = {key: check[key] for key in ("checked", "source_checked")
-                             if isinstance(check.get(key), bool)}
-                if isinstance(check.get("evidence_id"), str):
-                    projected["evidence_id"] = check["evidence_id"]
-                if isinstance(check.get("evidence_ids"), (list, tuple)):
-                    projected["evidence_ids"] = [item for item in check["evidence_ids"][:8]
-                                                 if isinstance(item, str)]
-                    truncated |= len(check["evidence_ids"]) > 8
-                out["source_checks"][memory_id] = projected
-        truncated |= len(checks) > 8
-    if truncated:
-        out["truncated"] = True
-    return out
-
-
-def _task_memory_projection(value: Any) -> dict[str, Any] | None:
-    """Carry the server-selected adoption bundle, not the whole task checkpoint."""
-    if not isinstance(value, dict):
-        return None
-    task = value.get("task")
-    checkpoint = task.get("checkpoint") if isinstance(task, dict) else None
-    state = checkpoint.get("state_data") if isinstance(checkpoint, dict) else None
-    memory = state.get("memory_context") if isinstance(state, dict) else None
-    if not isinstance(memory, dict):
-        return None
-    bundle = {key: copy.deepcopy(memory[key]) for key in (
-        "schema_version", "tenant_key", "instruction", "items", "warnings", "estimated_tokens",
-    ) if key in memory}
-    # The producer owns relevance and bounded content. Preserve its item
-    # wrappers and metadata exactly; do not rerank or truncate advice here.
-    projected_task = {key: copy.deepcopy(task[key]) for key in (
-        "task_id", "status", "owner", "lease_id", "created_at", "updated_at",
-        "heartbeat_expires_at", "stale",
-    ) if key in task}
-    if isinstance(task.get("context"), dict):
-        projected_task["context"] = {
-            key: task["context"][key] for key in (
-                "repository_id", "clone_id", "worktree_id", "branch", "task_id", "session_id",
-            ) if isinstance(task["context"].get(key), str)
-        }
-    projected_task["checkpoint"] = {"state_data": {"memory_context": bundle}}
-    if "memory_audit" in state:
-        projected_task["checkpoint"]["state_data"]["memory_audit"] = _task_memory_audit_projection(state["memory_audit"])
-    if "phase" in checkpoint:
-        projected_task["checkpoint"]["phase"] = checkpoint["phase"]
-    projected = {key: copy.deepcopy(value[key]) for key in (
-        "success", "status", "status_code", "error", "terminal", "retryable",
-        "context_id", "task_id", "request_id", "artifact_id", "evidence_ids",
-        "stale", "degraded", "partial", "supported", "unsupported", "outcome_unknown",
-        "request_not_sent", "in_progress", "cancelled", "timed_out", "fallback_used",
-    ) if key in value}
-    projected["task"] = projected_task
-    if "task_id" in projected_task:
-        projected["task_id"] = projected_task["task_id"]
-    return projected
 
 
 def _code_index_page_with_prefix(
@@ -1269,7 +1193,7 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
                     memory_projection["delta"][section].pop("task", None)
             elif repeated:
                 memory_projection["reused"] = True
-        return _normalize_deterministic(account_projection(value, memory_projection))
+        return _normalize_task_memory_response(account_projection(value, memory_projection))
     if options.get("tool") == "local_ai_command":
         value = _agent_output(value, "local_ai_command", {
             **options, "extra_fields": extra_fields,
@@ -4105,11 +4029,26 @@ def local_ai_coord(
             answer=answer or value or query,
         ), "status")
     if action.startswith("task_"):
-        task_kwargs = {
+        task_kwargs: dict[str, Any] = {
             "action": action, "task_id": task_id, "contract": contract,
             "checkpoint": checkpoint, "status": status, "reason": reason,
             "root": root, "ttl_seconds": ttl_seconds, "include_stale": include_stale,
         }
+        if action == "task_checkpoint":
+            requested, _, _, budget_enabled = _response_budget("task_checkpoint", {
+                "max_response_tokens": max_response_tokens,
+                "response_profile": response_profile,
+                "reuse_key": reuse_key,
+                "tool": "local_ai_coord",
+            })
+            try:
+                explicit_limit = int(max_response_tokens or 0)
+            except (TypeError, ValueError, OverflowError):
+                explicit_limit = 0
+            if explicit_limit > 0:
+                requested = explicit_limit
+            if budget_enabled:
+                task_kwargs["response_budget_tokens"] = requested
         if action == "task_list":
             task_kwargs["query"] = query
         if action == "task_create" and task:
@@ -4505,25 +4444,15 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
 
             for _ in range(16):
                 text = json_dumps(text_payload())
-                wire = {"content": [{"type": "text", "text": text}],
-                        "structuredContent": payload, "isError": False}
-                returned = json_tokens(wire)
+                returned = _task_memory_mcp_wire_tokens(payload, text_payload=text_payload())
                 payload["response_budget"]["returned_tokens"] = returned
                 text = json_dumps(text_payload())
-                measured = json_tokens({"content": [{"type": "text", "text": text}],
-                                        "structuredContent": payload, "isError": False})
+                measured = _task_memory_mcp_wire_tokens(payload, text_payload=text_payload())
                 if measured == returned and measured <= requested:
                     return [mcp_types.TextContent(type="text", text=text)], payload
             return None
 
-        essential = {key: copy.deepcopy(value[key]) for key in (
-            "success", "status", "status_code", "error", "terminal", "retryable",
-            "context_id", "task_id", "stale", "degraded", "partial", "task",
-            "supported", "unsupported", "outcome_unknown", "request_not_sent",
-            "in_progress", "cancelled", "timed_out", "fallback_used",
-        ) if key in value}
-        task = essential["task"]
-        essential["task"] = {key: task[key] for key in ("task_id", "status", "checkpoint") if key in task}
+        essential = _task_memory_essential_response(value)
         # Strip only optional task metadata. The complete memory bundle remains
         # byte-for-byte equivalent JSON in every successful candidate.
         for source in (value, essential):
@@ -4619,6 +4548,7 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
         protocol_keys = (
             "status", "status_code", "terminal", "retryable", "request_id", "execution_id",
             "exit_code", "outcome_unknown", "request_not_sent", "in_progress", "timed_out",
+            "mutation_applied", "operation_not_started",
         )
         for include_optional in (True, False):
             for error_chars in (None, 512, 256, 128, 64, 32, 16, 8, 1):
