@@ -98,6 +98,24 @@ def test_cached_summary_refreshes_writer_and_marks_new_rejection_incomplete(tmp_
     assert refreshed["decision_grade"]["detail"] == refreshed["detail"]
 
 
+def test_cached_staleness_persists_when_writer_counters_stop_changing(tmp_path: Path) -> None:
+    store = _store_without_writer(tmp_path)
+    empty_snapshot = store._writer_snapshot()
+    with store._stats_lock:
+        store._stats.update(attempted=1, accepted=1, queued=1, processed=1, written=1)
+    stale = store._refresh_cached_writer_status(
+        {"detail": {"truncated": False}}, empty_snapshot
+    )
+
+    refreshed_again = store._refresh_cached_writer_status(
+        stale, stale["writer"]
+    )
+
+    assert refreshed_again["summary_cache_stale"] is True
+    assert refreshed_again["detail"]["status"] == "incomplete"
+    assert "cached_summary_data" in refreshed_again["detail"]["omitted_sections"]
+
+
 def test_dashboard_and_realtime_cache_hits_refresh_writer_status(tmp_path: Path) -> None:
     store = _store_without_writer(tmp_path)
     with store._stats_lock:

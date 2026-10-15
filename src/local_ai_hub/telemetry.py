@@ -1838,6 +1838,8 @@ class TelemetryStore:
         """Refresh cheap process counters so cache hits cannot preserve a false clean status."""
         refreshed = dict(data)
         writer = self._writer_snapshot()
+        # Only a new SQL summary can clear a prior stale marker; identical later
+        # writer counters do not make the cached aggregate current again.
         changed = bool(data.get("summary_cache_stale") or data.get("stale")) or any(
             int(writer.get(key, 0)) != int(previous_writer.get(key, 0))
             for key in ("attempted", "accepted", "rejected_overflow", "lost_after_acceptance", "written", "writer_errors")
