@@ -16,7 +16,15 @@ from .compact import compact_result, syntax_aware_truncate
 from .token_accounting import json_tokens, token_efficiency_metadata
 
 
+LIFECYCLE_PROTECTED_KEYS = (
+    "operation", "operation_id", "action", "status", "state", "accepted", "completed",
+    "job_id", "task_id", "work_id", "request_id", "execution_id", "in_progress",
+    "request_not_sent", "outcome_unknown", "complete", "partial", "cancel_requested",
+    "expires_at", "artifact_id", "output_artifact_id",
+)
+
 _POINTER_KEYS = (
+    *LIFECYCLE_PROTECTED_KEYS,
     "success", "supported", "unsupported", "status", "error", "warning", "message",
     "action", "task_id", "work_id", "cache_hit", "coalesced", "in_progress",
     "terminal", "retryable", "artifact_id", "artifact_ids", "evidence_id",
@@ -75,9 +83,11 @@ _CONTEXT_PROTECTED_KEYS = (
     "context_truncated", "context_chars", "context_pack", "adaptive_context_pack",
 )
 _RESPONSE_PROTECTED_KEYS = (
+    *LIFECYCLE_PROTECTED_KEYS,
     "success", "status", "error", "status_code", "terminal", "retryable", "evidence_id", "evidence_ids",
 )
 _IDENTIFIER_KEYS = {
+    "operation_id", "job_id", "output_artifact_id",
     "artifact_id", "context_id", "etag", "repo_revision", "revision", "task_id", "work_id",
     "request_id", "execution_id",
     "delta_from", "since_hash", "reuse_key",

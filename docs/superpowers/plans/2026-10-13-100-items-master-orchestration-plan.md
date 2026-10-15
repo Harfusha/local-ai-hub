@@ -161,3 +161,6 @@ python tools/selftest.py
 # 5. Doctor diagnostics
 python tools/doctor.py
 ```
+
+
+**Audit source checkpoint F14/F24/F31:** lifecycle operation/job/request identity and acceptance/completion flags now survive generic projection and budget protection; mutation budget preflight and full wire acceptance remain OPEN. Checkpoint memory audit is documented in the public nested schema and diagnostics name checkpoint validation accurately. Skill setup/uninstall preserves unmanaged or modified shared trees, records exact content ownership, stages replacements and restores the previous version on failure. Source review found and repaired sibling-import and rollback issues before integration. Deferred regression source added; no project tests, compile, build, install or restart executed in this checkpoint. F31 replacement concurrency/hostile filesystem races and final installed-instance behavior remain unverified.
