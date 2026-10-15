@@ -113,7 +113,7 @@ def test_command_validator_classifies_doctor_and_selftest(tmp_path: Path):
 def test_passing_task_test_command_records_verification_receipt(tmp_path: Path):
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
-    state_store = AgentStateStore(state_dir / "agent_state.sqlite3", enabled=True)
+    state_store = AgentStateStore(state_dir / "agent_state.sqlite", enabled=True)
     task_store = TaskStore(state_store)
     artifacts = {}
 
@@ -185,12 +185,12 @@ def test_passing_task_test_command_records_verification_receipt(tmp_path: Path):
 def test_memory_store_query_search(tmp_path: Path):
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
-    state_store = AgentStateStore(state_dir / "agent_state.sqlite3", enabled=True)
+    state_store = AgentStateStore(state_dir / "agent_state.sqlite", enabled=True)
     mem_store = MemoryStore(state_store)
 
-    mem_store.record(MemoryRecord.create(key="backend_config", value="Serena runs on port 9000", kind="config", scope="repo"))
-    mem_store.record(MemoryRecord.create(key="db_port", value="Port 5432 is postgres", kind="fact", scope="repo"))
-    mem_store.record(MemoryRecord.create(key="auth_token_pattern", value="JWT tokens use RS256", kind="finding", scope="repo"))
+    mem_store.record(MemoryRecord.create(key="backend_config", value="Serena runs on port 9000", kind="config", scope="repository"))
+    mem_store.record(MemoryRecord.create(key="db_port", value="Port 5432 is postgres", kind="fact", scope="repository"))
+    mem_store.record(MemoryRecord.create(key="auth_token_pattern", value="JWT tokens use RS256", kind="finding", scope="repository"))
 
     # Search query in value
     res1 = mem_store.find(query="port")
@@ -251,6 +251,23 @@ allowed_roots = ["{tmp_path.as_posix()}"]
         except urllib.error.HTTPError as exc:
             raise AssertionError(exc.read().decode("utf-8", errors="replace")) from exc
 
+    def post_json_status(endpoint: str, data: dict) -> tuple[int, dict]:
+        data = {"root": str(tmp_path), **data}
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}{endpoint}",
+            data=json.dumps(data).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "X-LocalAI-Token": "test-api-token-long-enough",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req) as resp:
+                return resp.status, json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode("utf-8", errors="replace"))
+
     try:
         # 1. Flat task_create
         r1 = post_json("/api/agent-state/tasks", {"action": "create", "task_id": "flat-1", "goal": "Fix everything"})
@@ -258,7 +275,18 @@ allowed_roots = ["{tmp_path.as_posix()}"]
         assert r1["task"]["task_id"] == "flat-1"
 
         # 2. Flat task_checkpoint
-        r2 = post_json("/api/agent-state/tasks", {"action": "checkpoint", "task_id": "flat-1", "phase": "validation", "next_action": "run_tests"})
+        old_status, old_response = post_json_status(
+            "/api/agent-state/tasks",
+            {"action": "checkpoint", "task_id": "flat-1", "phase": "validation", "next_action": "run_tests"},
+        )
+        assert old_status == 400
+        assert old_response["success"] is False
+        assert old_response["error"] == "checkpoint must be an object"
+
+        r2 = post_json(
+            "/api/agent-state/tasks",
+            {"action": "checkpoint", "task_id": "flat-1", "checkpoint": {"phase": "validation", "next_action": "run_tests"}},
+        )
         assert r2["success"] is True
         assert r2["task"]["checkpoint"]["phase"] == "validation"
 
@@ -343,7 +371,7 @@ def test_task_store_auto_complete_and_fail(tmp_path: Path):
 
     state_dir = tmp_path / "state"
     state_dir.mkdir(parents=True, exist_ok=True)
-    state_store = AgentStateStore(state_dir / "agent_state.sqlite3", enabled=True)
+    state_store = AgentStateStore(state_dir / "agent_state.sqlite", enabled=True)
     task_store = TaskStore(state_store)
     artifact_store = ArtifactStore(state_dir / "artifacts")
     verif_store = VerificationStore(state_store, task_store=task_store, artifact_store=artifact_store)
