@@ -1612,28 +1612,22 @@ class HubClient:
         if act == "pubsub_publish":
             return self.post("/api/coord/pubsub_publish", {
                 "root": kwargs.get("root", "."),
-                "topic": kwargs.get("topic") or kwargs.get("key", "default"),
-                "message": kwargs.get("message") or kwargs.get("value", ""),
-                "publisher": kwargs.get("publisher") or kwargs.get("approver", "agent"),
+                "topic": kwargs.get("topic") if kwargs.get("topic") is not None else "default",
+                "message": kwargs.get("message") if kwargs.get("message") is not None else "",
+                "publisher": kwargs.get("publisher") if kwargs.get("publisher") is not None else "agent",
             })
         if act == "pubsub_poll":
-            raw_limit = kwargs.get("limit")
+            limit = kwargs.get("limit")
+            after_seq = kwargs.get("after_seq")
             payload = {
                 "root": kwargs.get("root", "."),
-                "topic": kwargs.get("topic") or kwargs.get("key", "default"),
-                "limit": int(raw_limit if raw_limit is not None else 50),
+                "topic": kwargs.get("topic") if kwargs.get("topic") is not None else "default",
+                "limit": limit if limit is not None else 50,
+                "after_seq": after_seq if after_seq is not None else 0,
             }
-            # Keep the legacy sequence cursor by default, but preserve the
-            # timestamp-based contract when the caller explicitly selects it.
             since_timestamp = kwargs.get("since_timestamp")
             if since_timestamp is not None:
-                payload["since_timestamp"] = float(since_timestamp)
-            else:
-                raw_after_seq = kwargs.get("after_seq")
-                payload["after_seq"] = int(raw_after_seq if raw_after_seq is not None else 0)
-            if "after_seq" in kwargs and since_timestamp is not None:
-                raw_after_seq = kwargs.get("after_seq")
-                payload["after_seq"] = int(raw_after_seq if raw_after_seq is not None else 0)
+                payload["since_timestamp"] = since_timestamp
             return self.post("/api/coord/pubsub_poll", payload)
         if act == "simulate_merge":
             return self.post("/api/coord/simulate_merge", {

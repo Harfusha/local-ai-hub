@@ -4158,22 +4158,16 @@ class LocalAIServices:
         topic: str,
         since_timestamp: float = 0.0,
         limit: int = 50,
-        after_seq: int | None = None,
-        **kwargs: Any,
+        after_seq: int = 0,
     ) -> dict[str, Any]:
-        import inspect
         from .agent_events import SwarmPubSub
         bus = SwarmPubSub.get_default(state_store=self.agent_state)
-        sig = inspect.signature(bus.poll)
-        poll_kwargs: dict[str, Any] = {}
-        if "after_seq" in sig.parameters:
-            poll_kwargs["after_seq"] = after_seq if after_seq is not None else 0
-        if "limit" in sig.parameters:
-            poll_kwargs["limit"] = limit
-        if "since_timestamp" in sig.parameters:
-            if "since_timestamp" in kwargs or since_timestamp != 0.0 or "after_seq" not in sig.parameters:
-                poll_kwargs["since_timestamp"] = since_timestamp
-        return bus.poll(topic, **poll_kwargs)
+        return bus.poll(
+            topic,
+            since_timestamp=since_timestamp,
+            limit=limit,
+            after_seq=after_seq,
+        )
 
     def synthesize_commit(self, root: str, hint: str = "", task_id: str = "") -> dict[str, Any]:
         tasks_data: list[dict[str, Any]] = []

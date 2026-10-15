@@ -1700,8 +1700,8 @@ def test_pubsub_service_uses_app_store_and_preserves_sequence_gap(monkeypatch):
             calls.append(("publish", topic, message, sender))
             return {"success": True}
 
-        def poll(self, topic, *, after_seq, limit):
-            calls.append(("poll", topic, after_seq, limit))
+        def poll(self, topic, *, since_timestamp, limit, after_seq):
+            calls.append(("poll", topic, since_timestamp, limit, after_seq))
             return page
 
     bus = Bus()
@@ -1715,14 +1715,14 @@ def test_pubsub_service_uses_app_store_and_preserves_sequence_gap(monkeypatch):
     services.agent_state = app_store
 
     assert services.pubsub_publish("build", {"event": "done"}, sender="worker")["success"] is True
-    result = services.pubsub_poll("build", after_seq=3, limit=50)
+    result = services.pubsub_poll("build", since_timestamp=12.5, after_seq=3, limit=50)
 
     assert result == page
     assert calls == [
         ("store", app_store),
         ("publish", "build", {"event": "done"}, "worker"),
         ("store", app_store),
-        ("poll", "build", 3, 50),
+        ("poll", "build", 12.5, 50, 3),
     ]
 
 
