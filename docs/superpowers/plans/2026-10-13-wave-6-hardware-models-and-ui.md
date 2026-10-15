@@ -160,12 +160,16 @@ When `task_create` is executed with criteria or changed paths, dispatch asynchro
 
 ### Task 87: Dynamic Request Matchers in Mock Server (#44)
 
+**2026-10-15 implementation checkpoint — execution deferred.** Existing template matching treated literal route characters as regex syntax and ignored query rules. Added compiled matchers for escaped literal/template paths, explicit `path_regex` and `query_matchers` wildcard rules. Explicit regexes are limited to 256 characters, character classes/escapes/anchors and at most one repetition; groups, alternatives, backreferences and counted repeats fail before listener bind. Template parameters occupy whole segments. Query rules support `*`/`?`, at most 16 rules, 128-character keys/patterns, 512-character values and 64 parsed fields. Targets/path lengths are bounded; request socket I/O has a five-second timeout. PATCH and HEAD now use the same matcher, with HEAD omitting the body.
+
+The existing `spec_path` accepts a bounded JSON mock cassette/spec `{ "routes": [{ "method": "GET", "path_regex": "^/users/[0-9]+$", "query_matchers": {"name": "Ada*"} }] }`, or OpenAPI operations with `x-local-ai-path-regex` / `x-local-ai-query-matchers`. Spec input stays under root, caps at 4 MB/256 routes and rejects malformed/empty supported-route sets before bind. This explicit matcher spec is distinct from recorded HTTP-response cassettes; it does not execute regex supplied outside the restricted grammar. Existing loopback/ephemeral listeners and synthetic unmatched responses remain. Deferred regressions cover dynamic matching, literal escaping, duplicate query values, limits and rejection before bind; no listener or test was started during implementation.
+
 **Files:**
 - Modify: `src/local_ai_hub/commands.py:10150-10190`
 - Test: `tests/unit/test_mock_server_regex_matcher.py`
 
-- [ ] **Step 1: Write test verifying mock server matches requests with dynamic URL paths or query params**
-- [ ] **Step 2: Implement regex matcher**
+- [x] **Step 1: Write dynamic matcher and pre-bind rejection regression source (execution deferred)**
+- [x] **Step 2: Implement bounded regex/query matching (validation pending)**
 Support regex URL matching and query parameter wildcards in cassette definitions.
 - [ ] **Step 3: Run test and verify pass & Commit**
 `git commit -m "feat(mock): add regex and query parameter matchers to mock server"`
