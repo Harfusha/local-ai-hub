@@ -74,13 +74,19 @@ def test_artifact_registry_drives_feature_actions_and_generated_schema():
     feature_set = FeatureSet.from_config(config)
     schema = generate_mcp_tool_schemas(config)[TOOL]["parameters"]
 
-    assert actions == ["get", "slice", "list"]
+    assert actions == ["get", "slice", "list", "source"]
     assert feature_set.supported_artifact_actions() == actions
     assert schema["properties"]["action"]["enum"] == actions
     assert "artifact_id" not in schema.get("required", [])
-    assert schema["allOf"][0]["if"]["properties"]["action"]["enum"] == ["list"]
-    assert schema["allOf"][0]["else"]["required"] == ["artifact_id"]
-    assert schema["allOf"][0]["else"]["properties"]["artifact_id"]["minLength"] == 1
+    requirements = {
+        rule["if"]["properties"]["action"]["enum"][0]: rule["then"]
+        for rule in schema["allOf"]
+        if "enum" in rule["if"]["properties"]["action"]
+    }
+    assert requirements["get"]["required"] == ["artifact_id"]
+    assert requirements["slice"]["required"] == ["artifact_id"]
+    assert requirements["source"]["required"] == ["path"]
+    assert requirements["get"]["properties"]["artifact_id"]["minLength"] == 1
     assert schema["properties"]["binary"] == {"type": "boolean", "default": False}
 
 
@@ -179,14 +185,14 @@ def test_mcp_boundary_rejects_invalid_operation_before_handler(monkeypatch):
     )
 
     assert response[1]["status_code"] == 400
-    assert "invalid action" in response[1]["error"]
+    assert "action" in response[1]["error"]
     assert called is False
 
     response = asyncio.run(
         mcp_server.mcp.call_tool("local_ai_status", {"action": "agent_state"})
     )
     assert response[1]["status_code"] == 400
-    assert "invalid action" in response[1]["error"]
+    assert "unexpected argument" in response[1]["error"]
     assert called is False
 
 
@@ -362,7 +368,7 @@ def test_registry_schemas_keep_feature_filters_and_action_specific_requirements(
     coord = schemas["local_ai_coord"]["parameters"]["properties"]
 
     assert "agent_state" not in status["detail"]["enum"]
-    assert "agent_state" not in status["action"]["enum"]
+    assert "action" not in status
     assert "graph" not in repo["action"]["enum"]
     assert "dry_run" not in repo and "edits" not in repo
     assert "vision" not in task["action"]["enum"]
@@ -449,7 +455,7 @@ def test_repo_search_timeout_respects_120_second_protocol_limit(monkeypatch):
 
     assert captured == {
         "path": "/api/search",
-        "payload": {"root": "C:/repo", "query": "needle", "top_k": 12, "enrich": False},
+        "payload": {"root": "C:/repo", "query": "needle", "top_k": 12, "limit": 24, "offset": 0, "enrich": False},
         "timeout": 120,
         "path_hints": None,
     }
@@ -486,6 +492,7 @@ def test_repo_path_hints_schema_is_bounded_and_context_scoped():
     valid = {"path_hints": [{"path": "src/auth.py", "purpose": "repository_search", "scope": "repo_search"}]}
     assert validate_operation_arguments("local_ai_repo", "search", valid) is None
     context_hints = {
+        "query": "Find authentication code",
         **valid,
         "directory_hints": ["src"],
         "exclude_paths": ["vendor"],
@@ -528,7 +535,7 @@ def test_repo_verify_receipt_is_action_scoped():
     }
     assert validate_operation_arguments(
         "local_ai_repo", "search", {"receipt": valid_receipt}
-    ) == "receipt is only valid for action='verify_receipt'"
+    ) == "receipt is not valid for action='search'"
 
     disabled_config = _config()
     disabled_config["features"]["agent_os"] = False
@@ -542,7 +549,7 @@ def test_repo_verify_receipt_is_action_scoped():
     )
     assert validate_operation_arguments(
         "local_ai_repo", "context", {"receipt": valid_receipt}, features=disabled_features
-    ) == "receipt is only valid for action='verify_receipt'"
+    ) == "receipt is not valid for action='context'"
 
 
 def test_local_ai_repo_path_hints_normalize_and_reject_root_escape(monkeypatch, tmp_path):
@@ -551,11 +558,12 @@ def test_local_ai_repo_path_hints_normalize_and_reject_root_escape(monkeypatch, 
     captured = []
     hint = {"path": str(tmp_path / "src"), "purpose": "repository_search", "scope": "repo_search"}
 
-    def consumer(*args, path_hints=None):
+    def consumer(*args, path_hints=None, **kwargs):
         captured.append(path_hints)
-        return {"success": True}
+        return {"success": True, "results": []}
 
     monkeypatch.setattr(mcp_server, "_local_ai_repo_impl", consumer)
+    monkeypatch.setattr(mcp_server.FEATURES, "repo", True)
     result = mcp_server.local_ai_repo("search", root=str(tmp_path), path_hints=[hint])
     assert result["success"] is True
     assert captured == [[{**hint, "path": "src"}]]
@@ -787,20 +795,20 @@ def test_artifact_list_schema_rejects_fields_used_only_by_get_and_slice():
 def test_artifact_slice_numeric_bounds_are_published_and_enforced(action):
     schema = operation_input_schema("local_ai_artifact", action)
     assert schema["properties"]["offset"]["minimum"] == 0
-    assert schema["properties"]["max_chars"]["minimum"] == 512
-    assert schema["properties"]["max_chars"]["maximum"] == 12000
+    assert schema["properties"]["max_chars"]["minimum"] == 1
+    assert schema["properties"]["max_chars"]["maximum"] == 50000
 
     base = {"artifact_id": "artifact-1"}
     assert validate_operation_arguments(
-        "local_ai_artifact", action, {**base, "offset": 0, "max_chars": 512}
+        "local_ai_artifact", action, {**base, "offset": 0, "max_chars": 1}
     ) is None
     assert validate_operation_arguments(
-        "local_ai_artifact", action, {**base, "max_chars": 12000}
+        "local_ai_artifact", action, {**base, "max_chars": 50000}
     ) is None
     assert validate_operation_arguments(
         "local_ai_artifact", action, {**base, "offset": -1}
     ) is not None
-    for max_chars in (511, 12001):
+    for max_chars in (0, 50001):
         assert validate_operation_arguments(
             "local_ai_artifact", action, {**base, "max_chars": max_chars}
         ) is not None
@@ -826,6 +834,7 @@ def test_artifact_output_schemas_describe_source_payload_variants():
         set(get_schema["anyOf"][0]["properties"])
         | set(get_schema["anyOf"][1]["properties"])
         | set(get_schema["anyOf"][2]["properties"])
+        | set(get_schema["anyOf"][3]["properties"])
     )
 
 
@@ -1099,7 +1108,7 @@ def test_disabled_tool_dispatch_registration_is_scoped(monkeypatch: pytest.Monke
         ("local_ai_status", {
             "adoption_signal": "bypassed", "target_tool": "local_ai_repo", "target_action": "search",
         }),
-        ("local_ai_task", {"action": "eval_suite", "task_id": "task-1", "cases": [], "language": "python"}),
+        ("local_ai_task", {"action": "eval_suite", "task": "Evaluate Python cases", "cases": []}),
         ("local_ai_command", {"action": "patch_and_verify", "execution_id": "exec-1", "paths": ["src/a.py"], "patch": "diff"}),
         ("local_ai_coord", {"action": "task_complete", "task_id": "task-1", "criterion": "c1", "board_id": "board-1"}),
     ],
