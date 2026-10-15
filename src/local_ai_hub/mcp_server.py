@@ -60,6 +60,7 @@ from local_ai_hub.adoption_metrics import AdoptionMetricsStore
 from local_ai_hub.routing import semantic_handoff_hint
 from local_ai_hub.operation_contracts import (
     operation_actions,
+    operation_guide_cards,
     operation_enabled,
     operation_tool_output_schema,
     operation_tool_input_schema,
@@ -202,7 +203,7 @@ def _classify_mcp_operation(tool_name: str, arguments: dict[str, Any]) -> tuple[
         action = "brief"
     lightweight_read = (
         tool_name == "local_ai_artifact"
-        or (tool_name == "local_ai_status" and action in {"brief", "cache", "telemetry", "traces"})
+        or (tool_name == "local_ai_status" and action in {"brief", "cache", "telemetry", "traces", "guide"})
         or (tool_name == "local_ai_repo" and action in {"map", "code_index", "search"})
         or (
             tool_name == "local_ai_command"
@@ -1931,7 +1932,7 @@ def _record_adoption(tool: str, arguments: dict[str, Any], result: Any, duration
 @mcp.tool()
 @_instrumented_tool()
 def local_ai_status(action: StatusAction = "", detail: StatusDetail = "brief", scope: str = "process", extra_fields: list[str] | None = None, adoption_signal: Literal["", "bypassed"] = "", target_tool: str = "", target_action: str = "", min_duration_ms: int = 0, trace_action: str = "", max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "") -> dict[str, Any]:
-    """Health/queue/token-saving status. detail: brief, cache, telemetry, full, agent_state, traces. Traces accepts min_duration_ms and trace_action filters. scope: process (default) or window. action is an alias for detail. To report a deliberate bypass, set adoption_signal=bypassed with validated target_tool and target_action; omitted means no bypass. Telemetry is metadata-only. Do not poll status during normal repository work or while preprocessing/model startup is in progress; one bounded health check is enough before native fallback. Use when: make one bounded health, cache, telemetry, or debug-trace query. Skip when: repository evidence or task work is needed."""
+    """Health/queue/token-saving status. detail: brief, cache, telemetry, full, agent_state, traces, guide. Guide returns local feature-aware tool cards without a health query. Traces accepts min_duration_ms and trace_action filters. scope: process (default) or window. action is an alias for detail. To report a deliberate bypass, set adoption_signal=bypassed with validated target_tool and target_action; omitted means no bypass. Telemetry is metadata-only. Do not poll status during normal repository work or while preprocessing/model startup is in progress; one bounded health check is enough before native fallback. Use when: make one bounded health, cache, telemetry, guide or debug-trace query. Skip when: repository evidence or task work is needed."""
     if not isinstance(action, str) or action not in STATUS_ACTIONS:
         return contract_error(f"action must be one of: {', '.join(STATUS_ACTIONS[1:])}")
     if not isinstance(detail, str) or detail not in StatusDetail.__args__:
@@ -1965,6 +1966,11 @@ def local_ai_status(action: StatusAction = "", detail: StatusDetail = "brief", s
     scope = scope.strip().lower()
     if scope not in {"process", "window"}:
         return contract_error("scope must be process or window")
+
+    if detail == "guide":
+        return _compact(operation_guide_cards(FEATURES), "status", extra_fields=[
+            *(extra_fields or []), "guide_cards", "guide_scope", "guide_tips", "schema_token_reduction_verified",
+        ])
 
     if detail == "traces":
         query = urlencode({

@@ -128,12 +128,16 @@ Replace naive `len(text) // 4` with regex-aware subword estimator splitting iden
 
 ### Task 85: Compact Schema Guide Cards `local_ai_status detail="guide"` (#12)
 
+**2026-10-15 implementation checkpoint — execution deferred.** Added `guide` to the existing status action/detail contract. The result contains one compact card per enabled tool, with selector, required fields for its example action, example arguments, enabled action count and a token-use tip. Examples/requirements use the existing operation registry and feature gates; disabled tools/actions are not advertised. Guide generation is local to the MCP process and invokes neither health HTTP nor models nor any example. The cards explicitly defer other actions/optional fields to the full schema. MCP retains guide fields through projection. Both agent prompts describe the new detail.
+
+Deferred regression source covers all eight contract-derived cards, feature exclusions, example schema validity and both MCP selector forms with HTTP calls forbidden. Nothing was executed. The planned 70% schema-token reduction remains an unverified acceptance target; `schema_token_reduction_verified=false` prevents the implementation from claiming it before a current full-wire baseline comparison. The implementation commit therefore describes compact cards without asserting the unmeasured percentage.
+
 **Files:**
 - Modify: `src/local_ai_hub/mcp_server.py:1675-1710`
 - Test: `tests/unit/test_guide_cards_status.py`
 
-- [ ] **Step 1: Write test verifying `local_ai_status(detail="guide")` returns compact per-tool cards**
-- [ ] **Step 2: Implement guide cards**
+- [x] **Step 1: Write contract/feature/MCP guide regression source (execution deferred)**
+- [x] **Step 2: Implement local compact guide cards (validation and token target pending)**
 Provide concise required parameters, action examples, and token tips for each tool, reducing schema prompting overhead by 70%.
 - [ ] **Step 3: Run test and verify pass & Commit**
 `git commit -m "feat(mcp): add compact guide cards to local_ai_status to save 70% schema tokens"`
@@ -255,12 +259,14 @@ Compare table columns in live SQLite vs SQL migration files, reporting added or 
 
 ### Task 94: Micro-Batching with Lock Yield in Reranker (#88)
 
+**2026-10-15 source reassessment — execution deferred.** Master already contains `67a9047f`: `_rerank_uncached` sends at most two pairs to each `_predict`, which releases both the cooperative priority slot and `_predict_lock` before the next batch. Existing backend/device identity checks restart a whole logical ranking after accelerator changes rather than mixing scores. No duplicate production rewrite is needed. The existing interleaving regression substitutes a fair lock and open gate, so it cannot prove production priority behavior. Added a deferred case using the actual `CooperativePriorityGate` and `threading.Lock`, with event-controlled fake model inference: a waiting foreground request must run between background batches. Only the condition's wait method is observed to synchronize arrival; production admission logic remains intact. Neither regression was executed in this phase. Same-priority FIFO fairness, real inference latency and native backend behavior are not established by this source assessment and remain final validation concerns.
+
 **Files:**
 - Modify: `src/local_ai_hub/reranker.py:240-280`
 - Test: `tests/unit/test_reranker_micro_batching.py`
 
-- [ ] **Step 1: Write test verifying concurrent threads can interleave inference requests**
-- [ ] **Step 2: Implement fix**
+- [x] **Step 1: Write interleaving regression including the real priority gate (execution deferred)**
+- [x] **Step 2: Existing two-pair batching and lock release confirmed in source; no duplicate rewrite**
 Chunk reranking pairs into micro-batches of 2 pairs. Release and re-acquire `_predict_lock` between micro-batches to allow concurrent threads to proceed.
 - [ ] **Step 3: Run test and verify pass & Commit**
 `git commit -m "perf(reranker): use micro-batching with lock yield to prevent thread starvation during inference"`
