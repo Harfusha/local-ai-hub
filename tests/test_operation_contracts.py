@@ -1065,7 +1065,7 @@ def test_disabled_tool_dispatch_registration_is_scoped(monkeypatch: pytest.Monke
             "preload_profile": "balanced", "repository_revision": "abc123", "changed_paths": ["src/a.py"],
         }),
         ("local_ai_repo", {
-            "action": "context_compile", "include_diagnostics": True, "clone_id": "clone",
+            "action": "context_compile", "task_id": "task-compile", "include_diagnostics": True, "clone_id": "clone",
             "worktree_id": "worktree", "branch": "main", "repository_id": "repo",
             "session_id": "session", "repository_revision": "abc123",
         }),
