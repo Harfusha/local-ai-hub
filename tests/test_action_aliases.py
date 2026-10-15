@@ -1,25 +1,23 @@
 from __future__ import annotations
 
-from local_ai_hub.mcp_server import _resolve_action, _normalize_deterministic, _desc_status, _desc_coord, _desc_command
+from local_ai_hub.mcp_server import _normalize_deterministic, _desc_status, _desc_coord, _desc_command
+from local_ai_hub.operation_contracts import operation_actions, operation_tool_input_schema, validate_operation_call
 
 
-def test_action_aliases_resolution():
-    assert _resolve_action("coord", "ctx") == "context_compile"
-    assert _resolve_action("coord", "neg_rec") == "negative_knowledge_record"
-    assert _resolve_action("coord", "neg_find") == "negative_knowledge_find"
-    assert _resolve_action("coord", "mem_put") == "memory_record"
-    assert _resolve_action("coord", "mem_get") == "memory_get"
-    assert _resolve_action("coord", "task_new") == "task_create"
-    assert _resolve_action("command", "patch") == "patch_and_verify"
-    assert _resolve_action("command", "fix") == "auto_fix"
-    assert _resolve_action("command", "repair") == "repair_loop"
-    assert _resolve_action("command", "fmt") == "format"
-    assert _resolve_action("repo", "idx") == "code_index"
-    assert _resolve_action("repo", "review") == "review_diff"
-    assert _resolve_action("task", "gen") == "delegate"
-    assert _resolve_action("task", "explore") == "explore"
-    # Unmapped action passes through unchanged
-    assert _resolve_action("command", "run") == "run"
+def test_only_canonical_action_names_are_published_and_accepted():
+    for tool in ("local_ai_repo", "local_ai_task", "local_ai_command", "local_ai_coord"):
+        schema = operation_tool_input_schema(tool)
+        assert schema["properties"]["action"]["enum"] == list(operation_actions(tool))
+    aliases = {
+        "local_ai_repo": ("sec", "idx", "review", "ctx"),
+        "local_ai_task": ("gen", "rev", "del"),
+        "local_ai_command": ("patch", "fix", "repair", "fmt"),
+        "local_ai_coord": ("ctx", "compile_ctx", "neg_rec", "mem_put", "task_new"),
+    }
+    for tool, tool_aliases in aliases.items():
+        for alias in tool_aliases:
+            rejection = validate_operation_call(tool, {"action": alias, "root": "."})
+            assert rejection is not None
 
 
 def test_normalize_deterministic_keys_and_timestamps():

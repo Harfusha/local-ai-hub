@@ -8306,7 +8306,12 @@ class Handler(BaseHTTPRequestHandler):
             if 'post_declaration_1' in post_route_ids:
                 self._send(200, APP.services.code_find_declaration(str(payload.get("root", ".")), str(payload.get("symbol", "")), path=payload.get("path"))); return
             if 'post_repo_secret_scan_1' in post_route_ids:
-                scan_git_history = payload.get("scan_git_history", payload.get("git_history", False))
+                if "git_history" in payload:
+                    self._send(400, {
+                        "success": False, "error": "git_history is not supported; use scan_git_history",
+                        "status_code": 400, "terminal": True, "retryable": False,
+                    }); return
+                scan_git_history = payload.get("scan_git_history", False)
                 if not isinstance(scan_git_history, bool):
                     self._send(400, {
                         "success": False, "error": "scan_git_history must be a boolean",

@@ -999,11 +999,11 @@ def test_local_ai_coord_verify_receipt_forwards_criterion_and_pass_state(monkeyp
     )]
 
 
-def test_local_ai_coord_alias_ctx_resolves_to_context_compile(monkeypatch, tmp_path):
+def test_local_ai_coord_context_compile_dispatch(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
     backend = _prepare_coord_api(monkeypatch)
     tool_result = mcp_server.local_ai_coord(
-        action="ctx", root=root, task_id="task-68"
+        action="context_compile", root=root, task_id="task-68"
     )
     result = _mcp_coord_json(tool_result)
     assert result["success"] is True
@@ -1012,11 +1012,11 @@ def test_local_ai_coord_alias_ctx_resolves_to_context_compile(monkeypatch, tmp_p
     assert backend.calls[0][1]["task_id"] == "task-68"
 
 
-def test_local_ai_coord_alias_compile_ctx_resolves_to_context_compile(monkeypatch, tmp_path):
+def test_local_ai_coord_context_compile_dispatch_with_task_id(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
     backend = _prepare_coord_api(monkeypatch)
     tool_result = mcp_server.local_ai_coord(
-        action="compile_ctx", root=root, task_id="task-69"
+        action="context_compile", root=root, task_id="task-69"
     )
     result = _mcp_coord_json(tool_result)
     assert result["success"] is True
@@ -1025,11 +1025,11 @@ def test_local_ai_coord_alias_compile_ctx_resolves_to_context_compile(monkeypatc
     assert backend.calls[0][1]["task_id"] == "task-69"
 
 
-def test_local_ai_coord_alias_neg_rec_resolves_to_negative_knowledge_record(monkeypatch, tmp_path):
+def test_local_ai_coord_negative_knowledge_record_dispatch(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
     backend = _prepare_coord_api(monkeypatch)
     tool_result = mcp_server.local_ai_coord(
-        action="neg_rec", root=root, key="ValueError", value="bad input",
+        action="negative_knowledge_record", root=root, key="ValueError", value="bad input",
         reason="missing field"
     )
     result = _mcp_coord_json(tool_result)
@@ -1040,11 +1040,11 @@ def test_local_ai_coord_alias_neg_rec_resolves_to_negative_knowledge_record(monk
     assert backend.calls[0][1]["root_cause"] == "missing field"
 
 
-def test_local_ai_coord_alias_neg_find_resolves_to_negative_knowledge_find(monkeypatch, tmp_path):
+def test_local_ai_coord_negative_knowledge_find_dispatch(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
     backend = _prepare_coord_api(monkeypatch)
     tool_result = mcp_server.local_ai_coord(
-        action="neg_find", root=root, key="ValueError", query="bad input"
+        action="negative_knowledge_find", root=root, key="ValueError", query="bad input"
     )
     result = _mcp_coord_json(tool_result)
     assert result["success"] is True
@@ -1053,12 +1053,12 @@ def test_local_ai_coord_alias_neg_find_resolves_to_negative_knowledge_find(monke
     assert backend.calls[0][1]["query"] == "bad input"
 
 
-def test_local_ai_coord_alias_mem_put_resolves_to_memory_record(monkeypatch, tmp_path):
+def test_local_ai_coord_memory_record_dispatch(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
     record = {"note": "accepted"}
     backend = _prepare_coord_rpc(monkeypatch)
     tool_result = mcp_server.local_ai_coord(
-        action="mem_put", root=root, record=record
+        action="memory_record", root=root, record=record
     )
     result = _mcp_coord_json(tool_result)
     assert result["success"] is True
@@ -1066,12 +1066,12 @@ def test_local_ai_coord_alias_mem_put_resolves_to_memory_record(monkeypatch, tmp
     assert backend.calls[0]["record"] == record
 
 
-def test_local_ai_coord_alias_mem_rec_resolves_to_memory_record(monkeypatch, tmp_path):
+def test_local_ai_coord_memory_record_dispatch_from_record_payload(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
     record = {"note": "recorded"}
     backend = _prepare_coord_rpc(monkeypatch)
     tool_result = mcp_server.local_ai_coord(
-        action="mem_rec", root=root, record=record
+        action="memory_record", root=root, record=record
     )
     result = _mcp_coord_json(tool_result)
     assert result["success"] is True
@@ -1079,11 +1079,11 @@ def test_local_ai_coord_alias_mem_rec_resolves_to_memory_record(monkeypatch, tmp
     assert backend.calls[0]["record"] == record
 
 
-def test_local_ai_coord_alias_mem_get_resolves_to_memory_get(monkeypatch, tmp_path):
+def test_local_ai_coord_memory_get_dispatch(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
     backend = _prepare_coord_rpc(monkeypatch)
     tool_result = mcp_server.local_ai_coord(
-        action="mem_get", root=root, record_id="memory-70"
+        action="memory_get", root=root, record_id="memory-70"
     )
     result = _mcp_coord_json(tool_result)
     assert result["success"] is True
@@ -1091,11 +1091,11 @@ def test_local_ai_coord_alias_mem_get_resolves_to_memory_get(monkeypatch, tmp_pa
     assert backend.calls[0]["record_id"] == "memory-70"
 
 
-def test_local_ai_coord_alias_mem_find_resolves_to_memory_find(monkeypatch, tmp_path):
+def test_local_ai_coord_memory_find_dispatch(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
     backend = _prepare_coord_rpc(monkeypatch)
     tool_result = mcp_server.local_ai_coord(
-        action="mem_find", root=root, query="deadline"
+        action="memory_find", root=root, query="deadline"
     )
     result = _mcp_coord_json(tool_result)
     assert result["success"] is True
@@ -1103,11 +1103,11 @@ def test_local_ai_coord_alias_mem_find_resolves_to_memory_find(monkeypatch, tmp_
     assert backend.calls[0]["query"] == "deadline"
 
 
-def test_local_ai_coord_alias_mem_search_resolves_to_memory_find(monkeypatch, tmp_path):
+def test_local_ai_coord_memory_find_dispatch_with_query(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
     backend = _prepare_coord_rpc(monkeypatch)
     tool_result = mcp_server.local_ai_coord(
-        action="mem_search", root=root, query="status receipt"
+        action="memory_find", root=root, query="status receipt"
     )
     result = _mcp_coord_json(tool_result)
     assert result["success"] is True
@@ -1115,25 +1115,25 @@ def test_local_ai_coord_alias_mem_search_resolves_to_memory_find(monkeypatch, tm
     assert backend.calls[0]["query"] == "status receipt"
 
 
-def test_local_ai_coord_alias_task_new_resolves_to_task_create(monkeypatch, tmp_path):
+def test_local_ai_coord_task_create_dispatch(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
     backend = _prepare_coord_rpc(monkeypatch)
     tool_result = mcp_server.local_ai_coord(
-        action="task_new", root=root, task="alias task", task_id="alias-task-71"
+        action="task_create", root=root, task="canonical task", task_id="canonical-task-71"
     )
     result = _mcp_coord_json(tool_result)
     assert result["success"] is True
     assert backend.calls[0]["action"] == "task_create"
-    assert backend.calls[0]["task"] == "alias task"
-    assert backend.calls[0]["task_id"] == "alias-task-71"
+    assert backend.calls[0]["task"] == "canonical task"
+    assert backend.calls[0]["task_id"] == "canonical-task-71"
 
 
-def test_local_ai_coord_alias_task_chk_resolves_to_task_checkpoint(monkeypatch, tmp_path):
+def test_local_ai_coord_task_checkpoint_dispatch(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
     checkpoint = {"phase": "verify", "revision": "r72"}
     backend = _prepare_coord_rpc(monkeypatch)
     tool_result = mcp_server.local_ai_coord(
-        action="task_chk", root=root, task_id="task-72", checkpoint=checkpoint
+        action="task_checkpoint", root=root, task_id="task-72", checkpoint=checkpoint
     )
     result = _mcp_coord_json(tool_result)
     assert result["success"] is True
@@ -1142,11 +1142,11 @@ def test_local_ai_coord_alias_task_chk_resolves_to_task_checkpoint(monkeypatch, 
     assert backend.calls[0]["task_id"] == "task-72"
 
 
-def test_local_ai_coord_alias_task_done_resolves_to_task_complete(monkeypatch, tmp_path):
+def test_local_ai_coord_task_complete_dispatch(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
     backend = _prepare_coord_rpc(monkeypatch)
     tool_result = mcp_server.local_ai_coord(
-        action="task_done", root=root, task_id="task-73", reason="verified"
+        action="task_complete", root=root, task_id="task-73", reason="verified"
     )
     result = _mcp_coord_json(tool_result)
     assert result["success"] is True

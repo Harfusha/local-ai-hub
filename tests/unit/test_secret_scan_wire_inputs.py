@@ -67,7 +67,21 @@ def test_http_registered_secret_scan_rejects_non_boolean_history_flag(monkeypatc
     assert responses[0][1]["retryable"] is False
 
 
-def test_registered_mcp_secret_scan_keeps_history_control_out_of_path(monkeypatch):
+def test_http_registered_secret_scan_rejects_legacy_git_history_field(monkeypatch):
+    calls = []
+    responses = _invoke_http_secret_scan(
+        {"root": ".", "git_history": True},
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+        monkeypatch,
+    )
+
+    assert calls == []
+    assert responses[0][0] == 400
+    assert responses[0][1]["terminal"] is True
+    assert responses[0][1]["retryable"] is False
+
+
+def test_registered_mcp_secret_scan_requires_staged_toggle_and_explicit_path(monkeypatch):
     calls = []
 
     def post(url, payload, **kwargs):
@@ -76,11 +90,13 @@ def test_registered_mcp_secret_scan_keeps_history_control_out_of_path(monkeypatc
 
     monkeypatch.setattr(mcp_server.CLIENT, "post", post)
 
-    mcp_server.local_ai_repo(action="secret_scan", root="/repo", query="git history")
+    mcp_server.local_ai_repo(
+        action="secret_scan", root="/repo", path="config.env", query="git history", staged=True,
+    )
 
     assert calls[0][0] == "/api/repo/secret_scan"
     assert calls[0][1]["scan_git_history"] is True
-    assert calls[0][1]["path"] is None
+    assert calls[0][1]["path"] == "config.env"
 
 
 def test_registered_mcp_secret_scan_preserves_query_filename_and_validates_toggle(monkeypatch):
@@ -93,6 +109,7 @@ def test_registered_mcp_secret_scan_preserves_query_filename_and_validates_toggl
 
     mcp_server.local_ai_repo(action="secret_scan", root="/repo", query="config.env")
     invalid = mcp_server.local_ai_repo(action="secret_scan", root="/repo", staged="false")
+    missing_path = mcp_server.local_ai_repo(action="secret_scan", root="/repo", staged=True)
 
     assert calls[0][1]["path"] == "config.env"
     assert calls[0][1]["scan_git_history"] is False
@@ -100,6 +117,7 @@ def test_registered_mcp_secret_scan_preserves_query_filename_and_validates_toggl
     assert invalid["status_code"] == 400
     assert invalid["terminal"] is True
     assert invalid["retryable"] is False
+    assert missing_path["status_code"] == 400
 
 
 def test_registered_mcp_secret_scan_does_not_treat_filename_substrings_as_controls(monkeypatch):

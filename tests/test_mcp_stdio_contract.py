@@ -44,9 +44,7 @@ def test_projected_descriptions_advertise_only_schema_actions(
         _assert_advertised_actions_match_schema({
             "name": name,
             "description": mcp_server._all_desc_map[name](),
-            "inputSchema": mcp_server._input_schema_with_action_aliases(
-                name, operation_tool_input_schema(name, features),
-            ),
+            "inputSchema": operation_tool_input_schema(name, features),
         })
 
 
@@ -94,9 +92,17 @@ def test_stdio_handshake_publishes_all_registered_live_schemas(tmp_path: Path) -
 
     with patch.object(mcp_server, "FEATURES", features):
         for name in expected_names:
-            expected_input = mcp_server._input_schema_with_action_aliases(
-                name, operation_tool_input_schema(name, features)
-            )
+            expected_input = operation_tool_input_schema(name, features)
+            if name == "local_ai_task":
+                expected_input["properties"]["request_id"] = {
+                    "type": "string", "default": "",
+                    "description": "Stable async-job idempotency key and request correlation ID.",
+                }
+                non_async_actions = sorted(set(mcp_server.operation_actions(name, features)) - {"submit", "status", "wait", "result", "cancel"})
+                expected_input.setdefault("allOf", []).append({
+                    "if": {"properties": {"action": {"enum": non_async_actions}}, "required": ["action"]},
+                    "then": {"not": {"required": ["request_id"]}},
+                })
             expected_output = operation_tool_output_schema(name, features)
             assert wire_tools[name]["inputSchema"] == expected_input, name
             assert wire_tools[name]["outputSchema"] == expected_output, name

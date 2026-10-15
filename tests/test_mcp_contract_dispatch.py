@@ -153,9 +153,17 @@ def test_live_mcp_schemas_match_registry_for_every_public_tool() -> None:
     assert set(wire_tools) == enabled_tools
 
     for name in enabled_tools:
-        expected_input = mcp_server._input_schema_with_action_aliases(
-            name, operation_tool_input_schema(name, mcp_server.FEATURES)
-        )
+        expected_input = operation_tool_input_schema(name, mcp_server.FEATURES)
+        if name == "local_ai_task":
+            expected_input["properties"]["request_id"] = {
+                "type": "string", "default": "",
+                "description": "Stable async-job idempotency key and request correlation ID.",
+            }
+            non_async_actions = sorted(set(mcp_server.operation_actions(name, mcp_server.FEATURES)) - {"submit", "status", "wait", "result", "cancel"})
+            expected_input.setdefault("allOf", []).append({
+                "if": {"properties": {"action": {"enum": non_async_actions}}, "required": ["action"]},
+                "then": {"not": {"required": ["request_id"]}},
+            })
         expected_output = operation_tool_output_schema(name, mcp_server.FEATURES)
         assert registered[name].parameters == expected_input, name
         assert wire_tools[name].inputSchema == expected_input, name
@@ -470,9 +478,17 @@ def test_stdio_tools_list_matches_registered_output_contracts(tmp_path) -> None:
 
     with patch.object(mcp_server, "FEATURES", features):
         for name in expected_names:
-            expected_input = mcp_server._input_schema_with_action_aliases(
-                name, operation_tool_input_schema(name, features)
-            )
+            expected_input = operation_tool_input_schema(name, features)
+            if name == "local_ai_task":
+                expected_input["properties"]["request_id"] = {
+                    "type": "string", "default": "",
+                    "description": "Stable async-job idempotency key and request correlation ID.",
+                }
+                non_async_actions = sorted(set(mcp_server.operation_actions(name, features)) - {"submit", "status", "wait", "result", "cancel"})
+                expected_input.setdefault("allOf", []).append({
+                    "if": {"properties": {"action": {"enum": non_async_actions}}, "required": ["action"]},
+                    "then": {"not": {"required": ["request_id"]}},
+                })
             assert wire_tools[name]["inputSchema"] == expected_input, name
             assert wire_tools[name]["outputSchema"] == operation_tool_output_schema(name, features), name
     if "local_ai_rag" in wire_tools:

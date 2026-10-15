@@ -266,7 +266,6 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
         projection="status", read_only=_STATUS_ACTIONS, selector_required=False,
         action_requirements={"agent_state": ("agent_os",)},
         properties={
-            "action": {"type": "string", "enum": ["status", "health", "check", "info"], "default": ""},
             "detail": {"type": "string", "default": "brief"},
             "scope": {"type": "string", "enum": ["process", "window"], "default": "process"},
             "adoption_signal": {"type": "string", "enum": ["", "bypassed"], "default": ""},
@@ -1364,14 +1363,7 @@ def validate_operation_call(
         return 403, f"{tool} is disabled in configuration"
 
     selector = str(contract.get("selector_field", "action"))
-    if tool == "local_ai_status" and "action" in arguments:
-        alias = arguments.get("action")
-        normalized_alias = alias.strip().lower() if isinstance(alias, str) else ""
-        if normalized_alias in contract["actions"]:
-            selector_value = normalized_alias
-        else:
-            selector_value = arguments.get(selector, "brief")
-    elif selector not in arguments:
+    if selector not in arguments:
         selector_schema = operation_parameters_schema(tool, features).get("properties", {}).get(selector, {})
         selector_value = selector_schema.get("default")
     else:
@@ -1548,9 +1540,7 @@ def validate_operation_arguments(
                 return f"{field} items must be {item_type} for action='{action}'"
         allowed_values = schema.get("enum")
         if allowed_values is not None and field != contract.get("selector_field"):
-            if tool == "local_ai_status" and field == "action":
-                allowed_values = list(dict.fromkeys((*operation_actions(tool, features), *allowed_values)))
-            if not (tool == "local_ai_status" and field == "action" and value == "") and value not in allowed_values:
+            if value not in allowed_values:
                 values = ", ".join(str(item) for item in allowed_values)
                 return f"{field} must be one of {values} for action='{action}'"
         if isinstance(value, str) and "minLength" in schema and len(value) < int(schema["minLength"]):
