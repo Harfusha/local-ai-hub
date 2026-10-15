@@ -1,5 +1,7 @@
 # Generic Agent Update & Upgrade Prompt for Local AI Hub
 
+Omitted retrieval mode selects `adaptive` consistently in MCP, HTTP context packs, Agent OS context compile, and client/service entry points. Explicit `fast` and `full` select current distinct strategies; invalid modes reject before retrieval. Query, focus, changed paths, or omitted guarded fields never silently select an older mode. Pubsub adapters use the current full poll signature, preserving both sequence and timestamp cursors without adapting old providers or coercing client cursor values.
+
 Event and incident storage accepts only current durable schemas. Older event layouts, payload-version override tables, incident ID fabrication and automatic column upgrades are rejected rather than converted. Current producer definitions govern schema validation; prior fingerprints are not compatibility alternatives. Existing durable data is retained for explicit recovery.
 
 Agent State uses `agent_state.sqlite`; old standalone filenames are never copied or merged automatically. Old-only state or an invalid canonical target hiding an old history is rejected while retaining the files. Archived old files alongside readable canonical state remain untouched. Unsupported durable schemas require explicit operator recovery; disposable derived metadata may rebuild.
