@@ -13,7 +13,17 @@ _INVENTORY = json.loads(_FIXTURE.read_text(encoding="utf-8"))
 _CROSSWALK_FIXTURE = Path(__file__).parent / "fixtures" / "http_post_api_coverage_route_crosswalk_t18.json"
 _CROSSWALK = json.loads(_CROSSWALK_FIXTURE.read_text(encoding="utf-8"))
 _RETIRED_ROUTE_IDS = {"post_control_1"}
-_ADDED_ROUTE_IDS = {"post_task_browser_1"}
+_ADDED_ROUTE_IDS = {"post_task_browser_1", "post_context_pack_1"}
+_CURRENT_ADDED_ROUTES = {
+    "post_task_browser_1": "/api/task/browser",
+    "post_context_pack_1": "/api/context/pack",
+}
+_CURRENT_COMMAND_ROUTES = {
+    "post_command_daemon_1": "/api/command/daemon",
+    "post_command_lint_fix_1": "/api/command/lint_fix",
+    "post_command_http_probe_1": "/api/command/http_probe",
+    "post_command_mock_server_1": "/api/command/mock_server",
+}
 
 
 def _rules_as_rows(registry):
@@ -27,9 +37,35 @@ def test_post_registry_matches_root_preimage_route_inventory_in_order() -> None:
     expected = [
         {"route_id": row["route_id"], "paths": sorted(row["paths"])}
         for row in _INVENTORY["post_route_rules"]
-        if row["route_id"] not in _RETIRED_ROUTE_IDS
+        if row["route_id"] not in (_RETIRED_ROUTE_IDS | _ADDED_ROUTE_IDS)
     ]
-    assert _rules_as_rows(tuple(rule for rule in POST_ROUTE_REGISTRY if rule.route_id not in _ADDED_ROUTE_IDS)) == expected
+    for row in expected:
+        if row["route_id"] == "post_command_speculative_lint_1":
+            row["paths"] = [path for path in row["paths"] if path != "/api/speculative-lint"]
+        if row["route_id"] in _CURRENT_COMMAND_ROUTES:
+            row["paths"] = [_CURRENT_COMMAND_ROUTES[row["route_id"]]]
+    context_pack_route_index = next(
+        index for index, row in enumerate(expected) if row["route_id"] == "post_ingest_document_1"
+    )
+    expected.insert(
+        context_pack_route_index,
+        {"route_id": "post_context_pack_1", "paths": [_CURRENT_ADDED_ROUTES["post_context_pack_1"]]},
+    )
+    browser_route_index = next(
+        index for index, row in enumerate(expected) if row["route_id"] == "post_repo_split_changes_1"
+    )
+    expected.insert(
+        browser_route_index,
+        {"route_id": "post_task_browser_1", "paths": [_CURRENT_ADDED_ROUTES["post_task_browser_1"]]},
+    )
+    assert _rules_as_rows(POST_ROUTE_REGISTRY) == expected
+    current_matches: dict[str, list[str]] = {}
+    for row in expected:
+        for path in row["paths"]:
+            current_matches.setdefault(path, []).append(row["route_id"])
+    for path, route_ids in current_matches.items():
+        assert select_http_routes("POST", path) == tuple(route_ids)
+    assert select_http_routes("POST", "/api/speculative-lint") == ()
 
 
 def test_candidate_and_root_preimages_have_route_path_and_priority_parity() -> None:
@@ -44,10 +80,6 @@ def test_candidate_and_root_preimages_have_route_path_and_priority_parity() -> N
         for path in rule["paths"]:
             candidate_matches.setdefault(path, []).append(rule["route_id"])
     assert candidate_matches == root_matches
-    for path, expected in root_matches.items():
-        if path == "/api/control":
-            continue  # Retained only in the immutable T18 preimage fixture.
-        assert select_http_routes("POST", path) == tuple(expected)
 
 
 def test_registry_is_post_only_and_miss_preserves_existing_catch_all() -> None:
@@ -112,15 +144,31 @@ def test_do_post_registered_dispatch_branches_match_inventory_without_moving_gat
     auth_line = next(line for line, name in calls if name == "_require_authorized")
     selector_lines = [line for line, name in calls if name == "select_http_routes"]
     mode_lines = [line for line, name in calls if name == "_http_mode_gate_error"]
-    main_selector_line = min(
+    body_lines = [line for line, name in calls if name == "_read_json"]
+    trace_lines = [line for line, name in calls if name == "_begin_trace"]
+    request_id_lines = [line for line, name in calls if name == "validate_request_id"]
+    route_select_line = min(selector_lines)
+    handler_select_lines = [line for line, name in calls if name == "select_post_handler"]
+    dispatch_lines = [
         node.lineno
-        for node in dispatch.body
+        for node in ast.walk(do_post)
         if isinstance(node, ast.If) and "post_route_ids" in (ast.get_source_segment(source, node.test) or "")
-    )
-    recovery_lines = [line for line, name in calls if name in {"begin", "_claim_recovery"} and line < main_selector_line]
+    ]
     assert len(selector_lines) == 1
-    assert recovery_lines
-    assert auth_line < min(mode_lines) < min(recovery_lines) < selector_lines[0]
+    assert len(handler_select_lines) == 1
+    assert body_lines
+    assert trace_lines
+    assert request_id_lines
+    assert dispatch_lines
+    startup_line = next(
+        node.lineno
+        for node in do_post.body
+        if isinstance(node, ast.If) and "APP is None" in (ast.get_source_segment(source, node.test) or "")
+    )
+    assert route_select_line < startup_line < auth_line < min(mode_lines) < min(trace_lines)
+    assert min(trace_lines) < min(request_id_lines) < min(body_lines)
+    assert max(mode_lines) < min(body_lines)
+    assert route_select_line < min(handler_select_lines) < min(dispatch_lines)
 
 
 def test_root_api_coverage_route_crosswalk_is_row_exact() -> None:
@@ -151,12 +199,13 @@ def test_root_api_coverage_route_crosswalk_is_row_exact() -> None:
     assert [row["path"] for row in rows if len(row["root_route_ids"]) > 1] == ["/api/embed"]
 
 
-def test_agent2_context_pack_stays_outside_t18_registry() -> None:
-    assert select_http_routes("POST", "/api/context/pack") == ()
+def test_context_pack_current_route_stays_outside_preimage_coverage() -> None:
+    assert select_http_routes("POST", "/api/context/pack") == ("post_context_pack_1",)
     source_path = Path(__file__).parents[1] / "src" / "local_ai_hub" / "http_server.py"
     source = source_path.read_text(encoding="utf-8")
     assert 'if path == "/api/context/pack":' in source
-    assert "post_context_pack_1" not in source
+    assert "post_context_pack_1" in {rule.route_id for rule in POST_ROUTE_REGISTRY}
+    assert _CROSSWALK["excluded_post_paths"] == ["/api/context/pack"]
     assert "/api/context/pack" not in [row["path"] for row in _CROSSWALK["rows"]]
 
 
