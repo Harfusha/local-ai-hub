@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+import math
 from typing import Any
 
 from .gpu_monitor import get_gpu_telemetry
@@ -255,14 +256,22 @@ class VRAMBalancer:
 
     def pin_model(self, model_name: str, ttl_seconds: float = 300.0) -> dict[str, Any]:
         """Pin a warm model in VRAM to prevent cache thrashing."""
+        if not isinstance(model_name, str) or not model_name.strip():
+            raise ValueError("model_name must be a non-empty string")
+        try:
+            ttl = float(ttl_seconds)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("ttl_seconds must be finite and positive") from exc
+        if isinstance(ttl_seconds, bool) or not math.isfinite(ttl) or ttl <= 0:
+            raise ValueError("ttl_seconds must be finite and positive")
         with self._lock:
-            self._pinned_model = str(model_name).strip()
-            self._pin_expires = time.monotonic() + max(0.001, float(ttl_seconds))
+            self._pinned_model = model_name.strip()
+            self._pin_expires = time.monotonic() + ttl
             self._invalidate_status_locked()
             return {
                 "pinned": True,
                 "model": self._pinned_model,
-                "ttl_seconds": float(ttl_seconds),
+                "ttl_seconds": ttl,
             }
 
     def get_pinned_model(self) -> str | None:
@@ -289,9 +298,17 @@ class VRAMBalancer:
 
     def recommended_context_budget(self, base_tokens: int = 32768) -> int:
         """Compute dynamically scaled context tokens based on graphics memory headroom."""
+        if isinstance(base_tokens, bool) or not isinstance(base_tokens, int) or base_tokens < 1:
+            raise ValueError("base_tokens must be a positive integer")
         st = self.status()
-        factor = float(st.get("context_budget_factor", 1.0))
-        return max(4096, int(base_tokens * factor))
+        try:
+            factor = float(st.get("context_budget_factor", 1.0))
+        except (TypeError, ValueError, OverflowError):
+            factor = 0.125
+        if not math.isfinite(factor):
+            factor = 0.125
+        factor = min(1.0, max(0.0, factor))
+        return max(min(4096, base_tokens), int(base_tokens * factor))
 
     def get_speculative_pairing(self) -> dict[str, str]:
         """Return target and draft models for speculative decoding."""
