@@ -152,13 +152,17 @@ On Windows Python 3.13, run tree-sitter parsing in a separate pool worker subpro
 
 ### Task 44: SQLite Parameter Overflow Guard (#99)
 
+**2026-10-15 implementation checkpoint — validation deferred by operator.** Shared `sqlite_batches` limits path/pair batches to 250. Applied to `files_needing_reindex` (now reads only requested files), candidate freshness, parse outcomes, parse/fact blob lookup, test-source links and module facts. Multi-query reads use one read transaction where introduced; module facts retain the global path/line ordering and 120-row cap, stopping once filled. Unbounded kind filters use one JSON1 table parameter, preserving one globally ordered query without a variable per kind. Test-source links are deduplicated and deterministically sorted. The plan's old `batch_replace` file hint does not match the current engine API; actual bulk cache/fact paths above are covered instead.
+
+Deferred regression source: `tests/unit/test_sqlite_parameter_overflow.py` uses temporary SQLite databases with `SQLITE_LIMIT_VARIABLE_NUMBER=512` and 2,000 requested paths/links. The new tests have **not been executed**; no passing, performance or release claim is made. Run them only after the remaining implementation/integration bundle, per the latest user instruction.
+
 **Files:**
 - Modify: `src/local_ai_hub/deterministic.py:1200-1240`
 - Modify: `src/local_ai_hub/code_index.py:2700-2730`
 - Test: `tests/unit/test_sqlite_parameter_overflow.py`
 
-- [ ] **Step 1: Write test passing 2,000 items into `batch_replace` and `files_needing_reindex`**
-- [ ] **Step 2: Implement fix**
+- [x] **Step 1: Write regression source for 2,000 bulk items (execution deferred)**
+- [x] **Step 2: Implement fix (source review only; runtime validation pending)**
 Wrap all `WHERE column IN (...)` dynamic query generators with a chunker:
 ```python
 def chunked_in_query(items: list[Any], chunk_size: int = 250):

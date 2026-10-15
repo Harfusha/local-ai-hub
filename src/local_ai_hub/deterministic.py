@@ -28,7 +28,7 @@ from . import __version__
 from .cache import MemoryLRUCache, SQLiteCache, stable_hash
 from .code_index import _mask_non_code
 from .normalizer import tokenize_query_terms
-from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, quick_sanity_check
+from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, quick_sanity_check, sqlite_batches
 from .sqlite_counts import global_row_counts, initialize_row_counts
 from .diff_parsers import (
     extract_cs_diff_defs,
@@ -408,15 +408,19 @@ class DeterministicEngine:
         norm_sources = [p.replace("\\", "/").lstrip("./") for p in source_paths if p]
         if not norm_sources:
             return []
-        placeholders = ",".join("?" for _ in norm_sources)
-        basenames = [Path(p).name for p in norm_sources]
-        b_placeholders = ",".join("?" for _ in basenames)
+        matches: dict[str, None] = {}
         with self._lock, closing(self._connect()) as con:
-            rows = con.execute(
-                f"SELECT DISTINCT test_path FROM test_source_links WHERE root=? AND (source_path IN ({placeholders}) OR source_path IN ({b_placeholders}))",
-                (resolved, *norm_sources, *basenames),
-            ).fetchall()
-        return [str(r[0]) for r in rows]
+            con.execute("BEGIN")
+            for batch in sqlite_batches(list(dict.fromkeys(norm_sources))):
+                placeholders = ",".join("?" for _ in batch)
+                basenames = [Path(path).name for path in batch]
+                rows = con.execute(
+                    f"SELECT DISTINCT test_path FROM test_source_links WHERE root=? AND (source_path IN ({placeholders}) OR source_path IN ({placeholders}))",
+                    (resolved, *batch, *basenames),
+                ).fetchall()
+                for row in rows:
+                    matches[str(row[0])] = None
+        return sorted(matches)
 
     def precompute_test_mappings(self, root: str) -> int:
         """Scan repository files and precompute bidirectional source-to-test links into SQLite."""
@@ -1456,13 +1460,17 @@ class DeterministicEngine:
         blob_map: dict[tuple[str, str], list[dict[str, Any]]] = {}
         if candidates:
             pairs = list(dict.fromkeys((h, lang) for _, h, lang, _ in candidates))
-            clauses = " OR ".join("(content_hash=? AND language=?)" for _ in pairs)
-            params: list[Any] = []
-            for h, lang in pairs:
-                params.extend([h, lang])
             try:
                 with self._lock, closing(self._connect()) as con:
-                    rows = con.execute(f"SELECT content_hash,language,facts_json FROM fact_blobs WHERE analyzer_version=? AND ({clauses})", (__version__, *params)).fetchall()
+                    rows = []
+                    con.execute("BEGIN")
+                    for batch in sqlite_batches(pairs):
+                        clauses = " OR ".join("(content_hash=? AND language=?)" for _ in batch)
+                        params = [value for pair in batch for value in pair]
+                        rows.extend(con.execute(
+                            f"SELECT content_hash,language,facts_json FROM fact_blobs WHERE analyzer_version=? AND ({clauses})",
+                            (__version__, *params),
+                        ).fetchall())
                 for row in rows:
                     value = json.loads(str(row[2]))
                     if isinstance(value, list):
@@ -2012,9 +2020,8 @@ class DeterministicEngine:
                     clauses = ["root=?", "fact_fts MATCH ?"]
                     params: list[Any] = [root_s, expression]
                     if kinds:
-                        placeholders = ",".join("?" for _ in kinds)
-                        clauses.append(f"kind IN ({placeholders})")
-                        params.extend(kinds)
+                        clauses.append("kind IN (SELECT value FROM json_each(?))")
+                        params.append(json_dumps(list(kinds)))
                     params.append(min(5000, max(300, limit * 30)))
                     fts_rows = con.execute(
                         "SELECT path,kind,name,value FROM fact_fts WHERE " + " AND ".join(clauses) + " ORDER BY bm25(fact_fts) LIMIT ?",
@@ -2047,9 +2054,8 @@ class DeterministicEngine:
             clauses = ["root=?"]
             params = [root_s]
             if kinds:
-                placeholders = ",".join("?" for _ in kinds)
-                clauses.append(f"kind IN ({placeholders})")
-                params.extend(kinds)
+                clauses.append("kind IN (SELECT value FROM json_each(?))")
+                params.append(json_dumps(list(kinds)))
             if terms:
                 blob = "lower(path || ' ' || kind || ' ' || name || ' ' || value)"
                 clauses.append("(" + " OR ".join(f"instr({blob}, ?) > 0" for _ in terms) + ")")
@@ -2498,12 +2504,17 @@ class DeterministicEngine:
         # Exact parser facts can add route/entrypoint/test coordinates without prose inference.
         if paths:
             with self._lock, closing(self._connect()) as con:
-                placeholders = ",".join("?" for _ in paths)
-                rows = con.execute(
-                    f"SELECT path,kind,name,value,line FROM facts WHERE root=? AND path IN ({placeholders}) "
-                    "AND kind IN ('entrypoint','entrypoint_file','route','test_file') ORDER BY path,line LIMIT 120",
-                    (self._root(root), *paths),
-                ).fetchall()
+                rows = []
+                con.execute("BEGIN")
+                for batch in sqlite_batches(sorted(set(paths))):
+                    placeholders = ",".join("?" for _ in batch)
+                    rows.extend(con.execute(
+                        f"SELECT path,kind,name,value,line FROM facts WHERE root=? AND path IN ({placeholders}) "
+                        "AND kind IN ('entrypoint','entrypoint_file','route','test_file') ORDER BY path,line LIMIT ?",
+                        (self._root(root), *batch, 120 - len(rows)),
+                    ).fetchall())
+                    if len(rows) >= 120:
+                        break
             for row in rows:
                 kind = str(row["kind"])
                 if kind in {"entrypoint", "entrypoint_file", "route"}:

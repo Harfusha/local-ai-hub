@@ -31,6 +31,7 @@ from .sqlite_support import (
     initialize_wal,
     is_busy_error,
     quick_sanity_check,
+    sqlite_batches,
 )
 from .sqlite_counts import global_row_counts, initialize_row_counts
 
@@ -1756,18 +1757,20 @@ class CodeIndex:
         settings = project_context.settings if project_context is not None else None
         if api is not None and settings is not None and not api.phase_is_allowed(settings, "call_graph"):
             return []
+        existing: dict[str, tuple[str, str, str]] = {}
         with self._lock, closing(self._connect()) as con:
-            existing = {
-                str(row["path"]): (
-                    str(row["content_hash"] or ""),
-                    str(row["analyzer_version"] or ""),
-                    str(row["language"] or ""),
-                )
-                for row in con.execute(
-                    "SELECT path,content_hash,analyzer_version,language FROM files WHERE root=?",
-                    (c_root,),
+            con.execute("BEGIN")
+            for batch in sqlite_batches(list(dict.fromkeys(str(path) for path, _ in items))):
+                placeholders = ",".join("?" for _ in batch)
+                rows = con.execute(
+                    f"SELECT path,content_hash,analyzer_version,language FROM files WHERE root=? AND path IN ({placeholders})",
+                    (c_root, *batch),
                 ).fetchall()
-            }
+                for row in rows:
+                    existing[str(row["path"])] = (
+                        str(row["content_hash"] or ""), str(row["analyzer_version"] or ""),
+                        str(row["language"] or ""),
+                    )
         pending = []
         for path, content_hash in items:
             path = str(path)
@@ -2070,8 +2073,7 @@ class CodeIndex:
                 )
             missing_pairs = [pair for pair in pairs if pair not in blob_map]
             try:
-                for i in range(0, len(missing_pairs), 400):
-                    batch = missing_pairs[i:i + 400]
+                for batch in sqlite_batches(missing_pairs):
                     clauses = " OR ".join("(content_hash=? AND language=?)" for _ in batch)
                     params: list[Any] = []
                     for h, lang in batch:
@@ -2200,12 +2202,15 @@ class CodeIndex:
             return {"status": "no_candidates", "scope": "returned_symbol_candidates", "checked_paths": 0, "stale_paths": [], "unknown_paths": [], "complete": False}
         resolved_root = canonical_root(root)
         try:
-            placeholders = ",".join("?" for _ in unique_paths)
             with self._lock, closing(self._connect()) as con:
-                rows = con.execute(
-                    f"SELECT path,content_hash FROM files WHERE root=? AND path IN ({placeholders})",
-                    (resolved_root, *unique_paths),
-                ).fetchall()
+                rows = []
+                con.execute("BEGIN")
+                for batch in sqlite_batches(unique_paths):
+                    placeholders = ",".join("?" for _ in batch)
+                    rows.extend(con.execute(
+                        f"SELECT path,content_hash FROM files WHERE root=? AND path IN ({placeholders})",
+                        (resolved_root, *batch),
+                    ).fetchall())
             file_hashes = {str(row["path"]): str(row["content_hash"] or "") for row in rows}
         except sqlite3.DatabaseError:
             return {"status": "verification_failed", "scope": "returned_symbol_candidates", "checked_paths": 0, "stale_paths": [], "unknown_paths": unique_paths[:64], "complete": False}
@@ -2256,14 +2261,17 @@ class CodeIndex:
         if not unique_paths:
             return {"scope": "returned_symbol_candidates", "files_examined": 0, **counts, "diagnostics": [], "diagnostics_truncated": False, "complete": False}
         try:
-            placeholders = ",".join("?" for _ in unique_paths)
             with self._lock, closing(self._connect()) as con:
-                rows = con.execute(
-                    f"SELECT f.path,f.language,p.payload_json FROM files f LEFT JOIN parse_blobs p "
-                    f"ON p.content_hash=f.content_hash AND p.language=f.language AND p.analyzer_version=? "
-                    f"WHERE f.root=? AND f.path IN ({placeholders})",
-                    (_PARSER_ANALYZER_VERSION, canonical_root(root), *unique_paths),
-                ).fetchall()
+                rows = []
+                con.execute("BEGIN")
+                for batch in sqlite_batches(unique_paths):
+                    placeholders = ",".join("?" for _ in batch)
+                    rows.extend(con.execute(
+                        f"SELECT f.path,f.language,p.payload_json FROM files f LEFT JOIN parse_blobs p "
+                        f"ON p.content_hash=f.content_hash AND p.language=f.language AND p.analyzer_version=? "
+                        f"WHERE f.root=? AND f.path IN ({placeholders})",
+                        (_PARSER_ANALYZER_VERSION, canonical_root(root), *batch),
+                    ).fetchall())
         except sqlite3.DatabaseError:
             return {"scope": "returned_symbol_candidates", "files_examined": 0, **counts, "unknown_files": len(unique_paths), "diagnostics": [], "diagnostics_truncated": False, "complete": False}
         for row in rows:
@@ -2527,14 +2535,12 @@ class CodeIndex:
                 args.append(f"{norm_path}/%")
 
         if include_kinds:
-            placeholders = ",".join("?" for _ in include_kinds)
-            where.append(f"kind IN ({placeholders})")
-            args.extend(include_kinds)
+            where.append("kind IN (SELECT value FROM json_each(?))")
+            args.append(json_dumps(list(include_kinds)))
 
         if exclude_kinds:
-            placeholders = ",".join("?" for _ in exclude_kinds)
-            where.append(f"kind NOT IN ({placeholders})")
-            args.extend(exclude_kinds)
+            where.append("kind NOT IN (SELECT value FROM json_each(?))")
+            args.append(json_dumps(list(exclude_kinds)))
 
         if substring_matching:
             where.append("(name_path LIKE ? OR name LIKE ?)")
