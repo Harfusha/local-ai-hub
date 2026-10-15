@@ -1,5 +1,4 @@
 """Test isolated worker subprocess execution for Tree-sitter on Windows Python 3.13."""
-import sys
 import threading
 from concurrent.futures.process import BrokenProcessPool
 from unittest.mock import MagicMock
@@ -14,15 +13,85 @@ def reset_worker_circuit_breaker(monkeypatch):
     monkeypatch.setattr(module, "_WORKER_POOL", None)
 
 
-def test_treesitter_worker_isolated_execution():
-    """Verify tree-sitter runs via isolated worker without crashing main process."""
-    source = "def example_func(x: int) -> int:\n    return x + 1\n"
-    # When worker is invoked, it should return parsed symbols
-    result = module._worker_parse(source, "python")
+def test_worker_entrypoint_initializes_then_delegates_without_native_parser(monkeypatch):
+    events = []
+    monkeypatch.setattr(module, "_IN_WORKER", False)
+    monkeypatch.setattr(module, "_INIT_ATTEMPTED", True)
+    monkeypatch.setattr(module, "_init_treesitter", lambda: events.append("initialize"))
+
+    def parse(text, language, *, source_key=None):
+        events.append(("parse", text, language, source_key, module._IN_WORKER))
+        return {"result": ([], [], []), "status": "ok", "syntax_error_count": 0}
+
+    monkeypatch.setattr(module, "_parse_treesitter_internal", parse)
+    result = module._worker_parse("source", "python", source_key="fixture")
+
     assert result["status"] == "ok"
-    assert result["result"] is not None
-    symbols, references, _ = result["result"]
-    assert any(sym["name"] == "example_func" for sym in symbols)
+    assert events == ["initialize", ("parse", "source", "python", "fixture", True)]
+
+
+def test_worker_pool_registers_initializer_without_running_it_in_parent(monkeypatch):
+    pool = MagicMock()
+    constructor = MagicMock(return_value=pool)
+    initializer = MagicMock()
+    monkeypatch.setattr(module, "ProcessPoolExecutor", constructor)
+    monkeypatch.setattr(module, "_initialize_isolated_worker", initializer)
+
+    assert module._get_worker_pool() is pool
+
+    assert constructor.call_args.kwargs["initializer"] is initializer
+    initializer.assert_not_called()
+
+
+def test_windows_worker_initializer_preserves_existing_wer_flags(monkeypatch):
+    api = MagicMock()
+    api.GetCurrentProcess.return_value = 1234
+
+    def get_flags(_process, out_flags):
+        out_flags._obj.value = 0x0041
+        return 0
+
+    api.WerGetFlags.side_effect = get_flags
+    monkeypatch.setattr(module, "_worker_runtime_is_windows", lambda: True)
+    monkeypatch.setattr(module, "_load_worker_windows_api", lambda: api)
+
+    module._initialize_isolated_worker()
+
+    api.WerSetFlags.assert_called_once_with(0x0061, 1234)
+
+
+@pytest.mark.parametrize("failed_call", ["WerGetFlags", "WerSetFlags"])
+def test_windows_worker_initializer_fails_closed_on_hresult_error(monkeypatch, failed_call):
+    api = MagicMock()
+    api.GetCurrentProcess.return_value = 1234
+
+    def get_flags(_process, out_flags):
+        out_flags._obj.value = 0x0040
+        return -1 if failed_call == "WerGetFlags" else 0
+
+    api.WerGetFlags.side_effect = get_flags
+    api.WerSetFlags.return_value = -1
+    monkeypatch.setattr(module, "_worker_runtime_is_windows", lambda: True)
+    monkeypatch.setattr(module, "_load_worker_windows_api", lambda: api)
+    native_parser = MagicMock()
+    monkeypatch.setattr(module, "_parse_treesitter_internal", native_parser)
+
+    with pytest.raises(OSError):
+        module._initialize_isolated_worker()
+
+    native_parser.assert_not_called()
+    if failed_call == "WerGetFlags":
+        api.WerSetFlags.assert_not_called()
+
+
+def test_non_windows_worker_initializer_does_not_load_windows_api(monkeypatch):
+    load_api = MagicMock()
+    monkeypatch.setattr(module, "_worker_runtime_is_windows", lambda: False)
+    monkeypatch.setattr(module, "_load_worker_windows_api", load_api)
+
+    module._initialize_isolated_worker()
+
+    load_api.assert_not_called()
 
 
 def test_treesitter_isolated_worker_handles_crash_gracefully(monkeypatch):
