@@ -56,12 +56,21 @@ def test_pipeline_rejects_bad_step_before_backend(step, tmp_path, monkeypatch):
     assert result["steps_failed"] == 1
 
 
-def test_cursor_and_revision_both_remain_in_handler(monkeypatch, tmp_path):
+def test_pubsub_sequence_and_timestamp_are_distinct_canonical_filters(monkeypatch, tmp_path):
+    from local_ai_hub.operational_mode import OperationalModeSnapshot
+
     calls = []
     monkeypatch.setattr(server, "CLIENT", SimpleNamespace(coord=lambda **kwargs: calls.append(kwargs) or {"success": True}))
     monkeypatch.setattr(server, "FEATURES", FeatureSet({}))
-    server.local_ai_coord(action="pubsub_poll", root=str(tmp_path), after_seq=17, expected_version=3)
+    monkeypatch.setattr(server, "load_operational_mode", lambda _state_dir: OperationalModeSnapshot("active", 1, None))
+    monkeypatch.setattr(server, "_record_tool_accounting", lambda **_kwargs: None)
+    monkeypatch.setattr(server, "_record_adoption", lambda *_args, **_kwargs: None)
+    result = server.local_ai_coord(action="pubsub_poll", root=str(tmp_path), after_seq=17, after_ts=3.5)
+    assert result["success"] is True
     assert calls[0]["after_seq"] == 17
+    assert calls[0]["since_timestamp"] == 3.5
+    retired = server.local_ai_coord(action="pubsub_poll", root=str(tmp_path), expected_version=3)
+    assert retired["terminal"] is True
     for value in (-1, True, MAX_EVENT_SEQUENCE + 1):
         result = server.local_ai_coord(action="pubsub_poll", root=str(tmp_path), after_seq=value)
         assert result["terminal"] is True
