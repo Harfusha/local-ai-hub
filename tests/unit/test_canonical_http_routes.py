@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from local_ai_hub import http_server
 from local_ai_hub.http_route_registry import POST_ROUTE_REGISTRY, select_http_routes
 
 
@@ -61,6 +62,7 @@ _CANONICAL_ROUTES_WITH_ALIASES = (
     ("post_package_audit_1", "/api/repo/package_audit", ("/api/package_audit",)),
     ("post_repo_structural_search_1", "/api/repo/structural_search", ("/api/structural_search",)),
     ("post_context_budget_1", "/api/repo/context_budget", ("/api/context_budget",)),
+    ("post_context_pack_1", "/api/context/pack", ()),
     ("post_ingest_document_1", "/api/rag/ingest_document", ("/api/ingest_document",)),
     ("post_ingest_diagram_1", "/api/rag/ingest_diagram", ("/api/ingest_diagram",)),
     ("post_command_mock_server_1", "/api/command/mock_server", ("/api/mock_server",)),
@@ -77,6 +79,30 @@ def test_only_canonical_endpoint_is_registered(
     assert select_http_routes("POST", canonical) == (route_id,)
     for alias in aliases:
         assert select_http_routes("POST", alias) == ()
+
+
+@pytest.mark.parametrize(
+    "path",
+    tuple(alias for _route_id, _canonical, aliases in _CANONICAL_ROUTES_WITH_ALIASES for alias in aliases),
+)
+def test_retired_post_alias_returns_404_before_auth_or_service(
+    monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    from types import SimpleNamespace
+
+    events: list[str] = []
+    monkeypatch.setattr(http_server, "APP", SimpleNamespace(services=SimpleNamespace()))
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path = path
+    handler._require_authorized = lambda: events.append("authorization")
+    handler._read_json = lambda: pytest.fail("retired alias must not read its request body")
+    handler._begin_trace = lambda *_args, **_kwargs: pytest.fail("retired alias must not start a trace")
+    handler._send = lambda status, payload: events.append(f"response:{status}")
+
+    handler.do_POST()
+
+    assert select_http_routes("POST", path) == ()
+    assert events == ["response:404"]
 
 
 def test_remaining_multi_path_rules_are_distinct_operations() -> None:
