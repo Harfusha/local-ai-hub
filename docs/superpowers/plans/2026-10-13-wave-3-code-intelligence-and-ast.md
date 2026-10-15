@@ -194,12 +194,16 @@ Use AST node start and end line bounds from the symbol index instead of fixed +/
 
 ### Task 46: Honest Result Freshness via Mtime Verification (#16)
 
+**2026-10-15 reassessment and implementation — execution deferred.** The existing opt-in content-hash verifier did not cover the default query path: default and cached queries reported `not_checked`, yet their score could reach 0.925. Default queries now compare each returned file's indexed nanosecond mtime and size, including cache hits. `stat_current_candidates` explicitly distinguishes metadata agreement from content-hash proof; `verify_freshness=True` retains the stronger content check. Stale results carry `stale=true` and confidence at most 0.50; metadata-current results are capped at 0.90. Unknown freshness remains explicit. No source bodies are read by the default stat check.
+
+The app wires stale candidates to the existing preprocessor's `notify_path_changed`, which coalesces owning registered projects and respects background/paused controls. Notifications are additionally bounded by a 512-entry, 30-second cache; notification acceptance does not prove reindex completion. Deferred temporary-database cases cover cached-query freshness and same-size edits with restored mtime. Tests, runtime scheduling and latency remain unexecuted until the complete bundle gate.
+
 **Files:**
 - Modify: `src/local_ai_hub/code_index.py:1180-1220`
 - Test: `tests/unit/test_code_index_freshness_check.py`
 
-- [ ] **Step 1: Write test verifying index returns `stale=True` if file on disk has newer mtime than index**
-- [ ] **Step 2: Implement fix**
+- [x] **Step 1: Write stale cached-query and hash-verification regression source (execution deferred)**
+- [x] **Step 2: Implement freshness checks and existing-queue notifications (validation pending)**
 Before returning `confidence: 0.925`, inspect file `mtime`. If changed, mark result as `stale: True` and trigger background reindex.
 - [ ] **Step 3: Run test and verify pass & Commit**
 `git commit -m "fix(code_index): check file mtime before returning high-confidence search results"`
