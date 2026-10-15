@@ -112,11 +112,12 @@ Conversation history is process-memory only: it expires after inactivity and dis
 ## Agent Operating System projection
  
 When `[agent_state].enabled` is active, the compact MCP surface projects durable agent operating system state without adding new tools:
-- `local_ai_coord`: `task_create`, `task_get`, `task_checkpoint`, `task_transition`, `task_resume`, `task_list`, `task_complete`, `task_fail`, `memory_record`, `memory_get`, `memory_find`, `memory_promote`, `context_compile`, `verify_receipt`, `verify_completion`, `negative_knowledge_record`, `negative_knowledge_find`, `incident_decision`.
+- `local_ai_coord`: `task_create`, `task_get`, `task_checkpoint`, `task_transition`, `task_resume`, `task_list`, `task_complete`, `task_fail`, `ask`, `answer`, `memory_record`, `memory_get`, `memory_find`, `memory_promote`, `context_compile`, `verify_receipt`, `verify_completion`, `negative_knowledge_record`, `negative_knowledge_find`, `incident_decision`.
 - `local_ai_repo`: `context_compile`, `verify_receipt`, `verify_completion`.
 - `local_ai_task`: `candidate_create`, `candidate_promote`.
 - `local_ai_status`: `detail="agent_state"` for health and counts.
-- Privacy boundary: telemetry and agent state never store raw prompts, model outputs, secrets, or absolute file paths.
+- `ask` stores only explicitly submitted question text under the request-bound root, tenant, and session; retrieve with same scope and `question_id`. `answer` stores operator response under the same root and tenant. Tenant authentication requires the existing configured-principal/security policy; a tenant label alone is not proof of identity. Do not put credentials in questions or answers.
+- Privacy boundary: telemetry remains metadata-only; question and answer text is durable local Agent OS state, separate from telemetry.
 ## Shared workspace memo contract
 
 Treat workspace memos and leases as trusted-local shared coordination state; tenant labels are caller-supplied provenance, not identity or authorization. Workspace memos are keyed by canonical workspace and key. Use `expected_version` from a memo read when `memo_put` must reject stale overwrites; a `version_conflict` returns the current generation, so reread and reconcile before retrying. Omission retains last-writer-wins; deletion advances the generation while expiration does not.

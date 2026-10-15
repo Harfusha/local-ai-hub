@@ -717,7 +717,7 @@ def _desc_coord() -> str:
         supported = set(FEATURES.supported_coord_actions())
         actions = [name for name in (
             "claim", "release", "memo_put", "memo_search", "memory_record",
-            "memory_find", "context_compile", "task_create", "task_checkpoint",
+            "memory_find", "context_compile", "task_create", "task_checkpoint", "ask", "answer",
         ) if name in supported]
         purpose = (
             "Agent OS coordination for task contracts, ownership, checkpoints, and verification receipts"
@@ -886,6 +886,7 @@ _RELIABILITY_PROTECTED_KEYS = (
     "success", "terminal", "retryable", "unsupported", "degraded", "stale",
     "fallback_used", "evidence", "evidence_ids", "cancelled", "cancel_requested", "cancel_reason",
 )
+_VERIFY_PROTECTED_KEYS = ("missing_criteria", "unverified_criteria", "receipts")
 _COMMAND_PROTECTED_KEYS = (
     "exit_code", "summary", "request_id", "execution_id", "artifact_id", "artifact_ids",
     "output_artifact_id", "output_truncated", "outcome_unknown", "request_not_sent", "in_progress", "timed_out",
@@ -1207,6 +1208,7 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
             *(('slices', 'truncated', 'budget_limited') if task_kind == "artifact" else ()),
             *(_CONTEXT_PROTECTED_KEYS if task_kind in {"context", "context_compile"} else ()),
             *(_STATUS_PROTECTED_KEYS if task_kind == "status" else ()),
+            *(_VERIFY_PROTECTED_KEYS if task_kind == "verify" else ()),
             *(_COMMAND_PROTECTED_KEYS if task_kind == "command" else ()),
         )))
         compacted = budget_response(
@@ -3750,6 +3752,9 @@ def local_ai_coord(
     max_tokens: int = 0,
     task: str = "",
     task_id: str = "",
+    question_id: str = "",
+    question: str = "",
+    answer: str = "",
     contract: dict[str, Any] | None = None,
     checkpoint: dict[str, Any] | None = None,
     status: str = "",
@@ -3786,7 +3791,7 @@ def local_ai_coord(
     after_seq: int | None = None,
     format: str = "markdown",
 ) -> dict[str, Any]:
-    """Cross-agent coordination for the main agent and bounded Hub workers. Public actions are limited to the contract enum; unscoped memory relation/reaping storage remains private. Claim overlapping edit paths before concurrent Hub work. Search/get memos before repeating expensive investigation and store concise reusable findings after discovery. Native peer subagents are coordinated by Codex rather than by this Hub tool. Use when: Hub workers share edit paths, leases, or reusable findings. Skip when: work is isolated and no shared Hub state or memo is involved."""
+    """Cross-agent coordination for the main agent and bounded Hub workers. ask persists a root/tenant/session-scoped question; retrieve it later with the same question_id, root, tenant and session_id. answer records an operator response under the authenticated root and tenant. Public actions are limited to the contract enum; unscoped memory relation/reaping storage remains private. Claim overlapping edit paths before concurrent Hub work. Search/get memos before repeating expensive investigation and store concise reusable findings after discovery. Native peer subagents are coordinated by Codex rather than by this Hub tool."""
     if not FEATURES.coord:
         return {"success": False, "unsupported": True, "error": "local_ai_coord is disabled in configuration"}
     if after_seq is not None and (isinstance(after_seq, bool) or not isinstance(after_seq, int) or not 0 <= after_seq <= MAX_EVENT_SEQUENCE):
@@ -3828,6 +3833,17 @@ def local_ai_coord(
         return _compact(CLIENT.post("/api/agent-state/tasks", {
             "action": "cleanup_worktree", "task_id": task_id or key or "",
         }, timeout=_timeout("quick")), "status")
+    if action in {"ask", "answer"}:
+        return _compact(CLIENT.coord(
+            action=action,
+            root=root,
+            tenant=tenant,
+            session_id=session_id,
+            task_id=task_id,
+            question_id=question_id or record_id,
+            question=question or query or value,
+            answer=answer or value or query,
+        ), "status")
     if action.startswith("task_"):
         task_kwargs = {
             "action": action, "task_id": task_id, "contract": contract,
@@ -4004,7 +4020,16 @@ def local_ai_coord(
     if action == "pubsub_poll":
         return _compact(CLIENT.coord(action="pubsub_poll", topic=key or target_scope or "default", after_seq=after_seq, limit=ttl_seconds or 50, root=root), "status")
     if action == "simulate_merge":
-        return _compact(CLIENT.coord(action="simulate_merge", root=root, source_branch=key or task_id or value, target_branch=target_scope or "HEAD"), "status")
+        return _compact(
+            CLIENT.coord(
+                action="simulate_merge",
+                root=root,
+                source_branch=key or task_id or value,
+                target_branch=target_scope or "HEAD",
+            ),
+            "general",
+            extra_fields=["mergeable", "conflicts", "exit_code"],
+        )
     if action in {"curate_dataset", "curate_training_dataset"}:
         return _compact(CLIENT.post("/api/agent-state/tasks", {
             "action": "curate_dataset",

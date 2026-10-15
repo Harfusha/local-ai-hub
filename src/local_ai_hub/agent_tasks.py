@@ -27,6 +27,7 @@ from .sqlite_support import connect_sqlite, retry_busy
 from .token_accounting import json_tokens
 
 MAX_TASK_QUERY_SCAN_ROWS = 10_000
+MAX_AGENT_QUESTION_BYTES = 16_384
 
 
 MAX_TRAINING_DATASET_BYTES = 16 * 1024 * 1024
@@ -1036,6 +1037,15 @@ class TaskStore:
                                 ("heartbeat_expires_at", "REAL", 1, 0),
                                 ("created_at", "REAL", 1, 0), ("updated_at", "REAL", 1, 0),
                             ],
+                            "agent_questions": [
+                                ("question_id", "TEXT", 0, 1),
+                                ("root", "TEXT", 1, 0), ("tenant", "TEXT", 1, 0),
+                                ("session_id", "TEXT", 1, 0), ("task_id", "TEXT", 1, 0),
+                                ("question", "TEXT", 1, 0), ("answer", "TEXT", 1, 0),
+                                ("status", "TEXT", 1, 0), ("asked_by", "TEXT", 1, 0),
+                                ("answered_by", "TEXT", 1, 0),
+                                ("created_at", "REAL", 1, 0), ("answered_at", "REAL", 0, 0),
+                            ],
                         },
                         required_if_event_kinds={"agent_tasks_projection": ("task.%",)},
                     )
@@ -1074,10 +1084,221 @@ class TaskStore:
                         ON agent_tasks_projection (status, updated_at DESC);
                         """
                     )
+                    con.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS agent_questions (
+                            question_id TEXT PRIMARY KEY,
+                            root TEXT NOT NULL,
+                            tenant TEXT NOT NULL,
+                            session_id TEXT NOT NULL,
+                            task_id TEXT NOT NULL DEFAULT '',
+                            question TEXT NOT NULL,
+                            answer TEXT NOT NULL DEFAULT '',
+                            status TEXT NOT NULL,
+                            asked_by TEXT NOT NULL,
+                            answered_by TEXT NOT NULL DEFAULT '',
+                            created_at REAL NOT NULL,
+                            answered_at REAL
+                        );
+                        """
+                    )
+                    con.execute(
+                        """
+                        CREATE INDEX IF NOT EXISTS idx_agent_questions_session
+                        ON agent_questions (root, tenant, session_id, created_at DESC);
+                        """
+                    )
                     self._backfill_task_search_index(con)
                     con.commit()
             retry_busy(_setup, retries=5, base_delay_seconds=0.02)
             self._initialized = True
+
+    @staticmethod
+    def _question_row_to_dict(row: tuple[Any, ...]) -> dict[str, Any]:
+        names = (
+            "question_id", "root", "tenant", "session_id", "task_id", "question",
+            "answer", "status", "asked_by", "answered_by", "created_at", "answered_at",
+        )
+        result = dict(zip(names, row))
+        result.pop("root", None)
+        result.pop("tenant", None)
+        return result
+
+    @staticmethod
+    def _validate_question_text(value: Any, label: str) -> str:
+        if not isinstance(value, str) or not value.strip() or "\x00" in value:
+            raise ValueError(f"{label} must be a non-empty string without null bytes")
+        try:
+            encoded = value.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise ValueError(f"{label} must contain valid UTF-8 text") from exc
+        if len(encoded) > MAX_AGENT_QUESTION_BYTES:
+            raise ValueError(f"{label} exceeds {MAX_AGENT_QUESTION_BYTES} UTF-8 bytes")
+        return value.strip()
+
+    @staticmethod
+    def _validate_question_scope(root: Any, tenant: Any, session_id: Any) -> tuple[str, str, str]:
+        values = (root, tenant, session_id)
+        if any(not isinstance(value, str) or not value.strip() or "\x00" in value for value in values):
+            raise ValueError("root, tenant and session_id are required for agent questions")
+        root_value, tenant_value, session_value = (value.strip() for value in values)
+        if len(session_value.encode("utf-8")) > 256:
+            raise ValueError("session_id exceeds 256 UTF-8 bytes")
+        return root_value, tenant_value, session_value
+
+    def ask_question(
+        self,
+        *,
+        root: str,
+        tenant: str,
+        session_id: str,
+        question: str = "",
+        task_id: str = "",
+        actor: str = "agent",
+        question_id: str = "",
+    ) -> dict[str, Any] | None:
+        """Persist a session-bound question or retrieve it within the same scope."""
+        if not self._db_path_available():
+            raise RuntimeError("agent question storage is unavailable")
+        root_value, tenant_value, session_value = self._validate_question_scope(
+            root, tenant, session_id
+        )
+        question_key = str(question_id or "").strip()
+        if len(question_key) > 80:
+            raise ValueError("question_id exceeds 80 characters")
+        self._init_projection_table()
+        if question_key:
+            def _read() -> dict[str, Any] | None:
+                with closing(connect_sqlite(self.state_store.db_path)) as con:
+                    row = con.execute(
+                        """
+                        SELECT question_id, root, tenant, session_id, task_id, question,
+                               answer, status, asked_by, answered_by, created_at, answered_at
+                        FROM agent_questions
+                        WHERE question_id = ? AND root = ? AND tenant = ? AND session_id = ?
+                        """,
+                        (question_key, root_value, tenant_value, session_value),
+                    ).fetchone()
+                return self._question_row_to_dict(row) if row else None
+
+            return retry_busy(_read, retries=5, base_delay_seconds=0.02)
+
+        question_value = self._validate_question_text(question, "question")
+        task_value = str(task_id or "").strip()
+        actor_value = str(actor or "agent").strip() or "agent"
+        question_key = f"q_{uuid.uuid4().hex}"
+        created_at = time.time()
+
+        def _write(con: sqlite3.Connection) -> tuple[dict[str, Any], list[AgentEvent]]:
+            try:
+                con.execute("BEGIN IMMEDIATE")
+                con.execute(
+                    """
+                    INSERT INTO agent_questions (
+                        question_id, root, tenant, session_id, task_id, question, answer,
+                        status, asked_by, answered_by, created_at, answered_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, '', 'pending', ?, '', ?, NULL)
+                    """,
+                    (
+                        question_key, root_value, tenant_value, session_value, task_value,
+                        question_value, actor_value, created_at,
+                    ),
+                )
+                con.execute("COMMIT")
+                return ({
+                    "question_id": question_key,
+                    "session_id": session_value,
+                    "task_id": task_value,
+                    "question": question_value,
+                    "answer": "",
+                    "status": "pending",
+                    "asked_by": actor_value,
+                    "answered_by": "",
+                    "created_at": created_at,
+                    "answered_at": None,
+                }, [])
+            except Exception:
+                if con.in_transaction:
+                    con.execute("ROLLBACK")
+                raise
+
+        return self._run_ordered_task_write(_write)
+
+    def answer_question(
+        self,
+        *,
+        question_id: str,
+        root: str,
+        tenant: str,
+        answer: str,
+        actor: str = "operator",
+    ) -> dict[str, Any] | None:
+        """Record operator response for a question in the authenticated root tenant."""
+        if not self._db_path_available():
+            raise RuntimeError("agent question storage is unavailable")
+        if any(not isinstance(value, str) for value in (root, tenant, question_id)):
+            raise ValueError("question_id, root and tenant must be strings")
+        root_value = root.strip()
+        tenant_value = tenant.strip()
+        question_key = question_id.strip()
+        if (
+            not root_value or not tenant_value or not question_key
+            or "\x00" in root_value or "\x00" in tenant_value or "\x00" in question_key
+        ):
+            raise ValueError("question_id, root and tenant are required")
+        if len(question_key) > 80:
+            raise ValueError("question_id exceeds 80 characters")
+        answer_value = self._validate_question_text(answer, "answer")
+        actor_value = str(actor or "operator").strip() or "operator"
+        answered_at = time.time()
+        self._init_projection_table()
+
+        def _write(con: sqlite3.Connection) -> tuple[dict[str, Any] | None, list[AgentEvent]]:
+            try:
+                con.execute("BEGIN IMMEDIATE")
+                row = con.execute(
+                    """
+                    SELECT question_id, root, tenant, session_id, task_id, question,
+                           answer, status, asked_by, answered_by, created_at, answered_at
+                    FROM agent_questions
+                    WHERE question_id = ? AND root = ? AND tenant = ?
+                    """,
+                    (question_key, root_value, tenant_value),
+                ).fetchone()
+                if row is None:
+                    con.execute("COMMIT")
+                    return None, []
+                current = self._question_row_to_dict(row)
+                if current["status"] == "answered":
+                    if current["answer"] == answer_value:
+                        con.execute("COMMIT")
+                        return current, []
+                    raise ValueError("question has already been answered")
+                con.execute(
+                    """
+                    UPDATE agent_questions
+                    SET answer = ?, status = 'answered', answered_by = ?, answered_at = ?
+                    WHERE question_id = ? AND root = ? AND tenant = ? AND status = 'pending'
+                    """,
+                    (answer_value, actor_value, answered_at, question_key, root_value, tenant_value),
+                )
+                updated_row = con.execute(
+                    """
+                    SELECT question_id, root, tenant, session_id, task_id, question,
+                           answer, status, asked_by, answered_by, created_at, answered_at
+                    FROM agent_questions
+                    WHERE question_id = ? AND root = ? AND tenant = ?
+                    """,
+                    (question_key, root_value, tenant_value),
+                ).fetchone()
+                con.execute("COMMIT")
+                return self._question_row_to_dict(updated_row), []
+            except Exception:
+                if con.in_transaction:
+                    con.execute("ROLLBACK")
+                raise
+
+        return self._run_ordered_task_write(_write)
 
     def create(
         self,

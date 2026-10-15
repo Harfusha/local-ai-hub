@@ -379,6 +379,8 @@ Use Agent OS for every non-trivial multi-step, long-running, delegated, or accep
   `local_ai_coord(action="task_checkpoint", task_id="task-1", checkpoint={{"phase": "testing", "next_action": "run integration tests", "affected_paths": ["src/main.py"]}})`
 - **Resume after session restart or interruption:**
   `local_ai_coord(action="task_resume", task_id="task-1")`
+- **Persist a human question and retrieve its answer:**
+  `local_ai_coord(action="ask", root="/repo", session_id="session-1", question="...", task_id="task-1")`; use returned `question_id` with the same root/session to retrieve it, and record operator response with `action="answer"` plus `question_id` and `answer`.
 - **Complete only after `verify_completion` passes every acceptance criterion; otherwise fail with a reason:**
   `local_ai_coord(action="verify_completion", task_id="task-1")`, then `local_ai_coord(action="task_complete", task_id="task-1")` or `local_ai_coord(action="task_fail", task_id="task-1", reason="reason")`
 

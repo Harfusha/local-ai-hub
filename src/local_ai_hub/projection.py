@@ -409,6 +409,8 @@ class AgentProjector:
             preserve_keys = {"results", "files", "symbols", "active_tasks", *extra}
             if task_kind == "task_memory":
                 preserve_keys.update({"matches", "incidents", "negative_knowledge", "items", "records"})
+            if task_kind == "verify":
+                preserve_keys.update({"missing_criteria", "unverified_criteria", "receipts"})
             telemetry_fields = {
                 "success", "window", "summary", "queue", "hotspots", "by_operation",
                 "error_fingerprints", "detail", "decision_grade",
