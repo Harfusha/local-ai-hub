@@ -2228,6 +2228,7 @@ def local_ai_task(
                 request_id=request_id or None,
             ),
             "status",
+            extra_fields=[*(extra_fields or []), "progress_percent", "current_stage", "progress_available"],
         )
     # The static contract requires summary, evidence, analysis, limitations
     # and next step. Requests below this floor routinely truncate after a

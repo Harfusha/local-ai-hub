@@ -602,6 +602,8 @@ class LocalAIApp:
             return LocalAIApp._execute_async_task_admitted(self, action, payload, tenant)
 
     def _execute_async_task_admitted(self, action: str, payload: dict[str, Any], tenant: str) -> dict[str, Any]:
+        from .async_jobs import report_job_progress
+        report_job_progress(0.0, f"executing:{action}")
         async_payload = dict(payload)
         async_payload["priority"] = 1
         for untrusted_context in ("project_context", "project_model_profile", "system_prefix"):
