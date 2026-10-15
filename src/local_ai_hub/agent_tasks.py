@@ -2453,7 +2453,11 @@ class TaskStore:
         )
 
         if response_budget_tokens is not None:
+            from .trace_context import current as current_trace_context
+            request_id = str(current_trace_context().get("request_id") or "")
             raw_result = {"success": True, "task": updated.to_dict()}
+            if request_id:
+                raw_result["request_id"] = request_id
             projected = task_memory_projection(raw_result)
             if projected is not None:
                 projected = normalize_task_memory_response(account_projection(raw_result, projected))
