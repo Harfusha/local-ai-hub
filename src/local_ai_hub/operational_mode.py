@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import errno
+import math
 import os
 import sys
 import tempfile
@@ -28,14 +29,23 @@ _IN_PROCESS_RELEASE_DEADLINE_SECONDS = 3.0
 
 def _empty_torch_cuda_cache(timeout_seconds: float, **_kwargs: object) -> dict[str, object]:
     """Best-effort cleanup for an already-loaded torch CUDA runtime only."""
+    try:
+        valid_timeout = (
+            isinstance(timeout_seconds, (int, float)) and not isinstance(timeout_seconds, bool)
+            and math.isfinite(timeout_seconds)
+        )
+    except OverflowError:
+        valid_timeout = False
+    if not valid_timeout:
+        return {"success": False, "state": "invalid_timeout", "verified": False}
+    if timeout_seconds <= 0:
+        return {"success": False, "state": "timed_out", "verified": False}
     torch = sys.modules.get("torch")
     cuda = getattr(torch, "cuda", None) if torch is not None else None
     is_available = getattr(cuda, "is_available", None)
     empty_cache = getattr(cuda, "empty_cache", None)
     if not callable(is_available) or not callable(empty_cache) or not is_available():
         return {"success": True, "state": "not_applicable", "verified": False}
-    if timeout_seconds <= 0:
-        return {"success": False, "state": "timed_out", "verified": False}
     try:
         empty_cache()
     except Exception as exc:
@@ -134,6 +144,8 @@ def _degraded_snapshot(error: str) -> OperationalModeSnapshot:
 
 def load_operational_mode(state_dir: str | Path) -> OperationalModeSnapshot:
     """Read the current snapshot; missing state defaults to active, bad state fails closed."""
+    if not isinstance(state_dir, (str, Path)) or not str(state_dir).strip():
+        return _degraded_snapshot("state_dir must be a nonempty path")
     path = _state_path(state_dir)
     with _LOCK:
         try:
@@ -170,6 +182,8 @@ def load_operational_mode(state_dir: str | Path) -> OperationalModeSnapshot:
 
 def set_operational_mode(state_dir: str | Path, mode: str) -> OperationalModeSnapshot:
     """Persist a new mode by replacing a fully flushed file in the same directory."""
+    if not isinstance(state_dir, (str, Path)) or not str(state_dir).strip():
+        raise ValueError("state_dir must be a nonempty path")
     if not isinstance(mode, str) or mode not in _ALLOWED_MODES:
         raise ValueError("mode must be active, gaming, or maintenance")
 
