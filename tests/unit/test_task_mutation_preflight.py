@@ -12,10 +12,12 @@ from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_identity import AgentScope, ScopeContext
 from local_ai_hub.agent_tasks import (
     CheckpointResponseBudgetError,
+    CompletionGateError,
     GoalContract,
     TaskCheckpoint,
     TaskStatus,
     TaskStore,
+    TaskWorktreeError,
 )
 
 
@@ -36,6 +38,39 @@ def _memory() -> dict[str, object]:
 
 def _store(tmp_path) -> TaskStore:
     return TaskStore(AgentStateStore(tmp_path / "agent-state.sqlite3"))
+
+
+def _mock_auto_worktree(monkeypatch, tmp_path):
+    from local_ai_hub import process_utils
+
+    def prepare(root, *, branch_name, task_id, owner, created_at, ttl_seconds, expires_at, **kwargs):
+        metadata = {
+            "success": True,
+            "lease_id": "lease_000000000001",
+            "worktree_id": "worktree_000000000001",
+            "worktree_path": str(tmp_path / "scheduled-worktree"),
+            "branch": branch_name,
+            "base_commit": "a" * 40,
+            "repo_root": str(tmp_path.resolve()),
+            "task_id": task_id,
+            "owner": owner,
+            "created_at": created_at,
+            "ttl_seconds": ttl_seconds,
+            "expires_at": expires_at,
+            "creator_pid": 1,
+            "creator_creation_identity": 2,
+            "creator_creation_identity_type": "test",
+            "creator_executable": "python.exe",
+        }
+        return SimpleNamespace(
+            repo_root=str(tmp_path.resolve()), ttl_seconds=ttl_seconds, expires_at=expires_at,
+            response_metadata=lambda: metadata,
+        )
+
+    monkeypatch.setattr(process_utils, "prepare_git_worktree", prepare)
+    monkeypatch.setattr(
+        process_utils, "create_git_worktree", lambda *args, prepared_plan, **kwargs: prepared_plan.response_metadata(),
+    )
 
 
 def test_create_preflights_memory_before_task_persistence(tmp_path, monkeypatch):
@@ -65,6 +100,25 @@ def test_create_persists_when_full_memory_response_fits(tmp_path, monkeypatch):
 
     assert task.checkpoint.state_data["memory_context"] == _memory()
     assert store.state_store.event_page(f"task:{task.task_id}")["last_seq"] == 1
+
+
+def test_malformed_memory_audit_still_rejects_checkpoint_before_persistence(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    monkeypatch.setattr(store, "_task_memory_context", lambda *args, **kwargs: _memory())
+    task = store.create(_contract(), ScopeContext(), task_id="invalid-memory-audit")
+    invalid_checkpoint = TaskCheckpoint(state_data={
+        "memory_context": _memory(),
+        "memory_audit": {"used_ids": ["missing-memory-id"]},
+    })
+
+    with pytest.raises(CompletionGateError, match="references unavailable memory IDs"):
+        store.checkpoint(
+            task.task_id, invalid_checkpoint, actor=task.owner,
+            idempotency_key="invalid-audit", response_budget_tokens=128,
+        )
+
+    assert store.state_store.event_page(f"task:{task.task_id}")["last_seq"] == 1
+    assert "memory_audit" not in store.get(task.task_id).checkpoint.state_data
 
 
 def test_auto_worktree_create_preflights_before_git_mutation(tmp_path, monkeypatch):
@@ -124,33 +178,64 @@ def test_auto_worktree_create_consumes_preflighted_plan_after_budget_fits(tmp_pa
     assert create_calls[0][1]["prepared_plan"] is plan
 
 
+def test_auto_worktree_preparation_failure_fails_closed_before_task_write(tmp_path, monkeypatch):
+    from local_ai_hub import process_utils
+
+    store = _store(tmp_path)
+    monkeypatch.setattr(
+        process_utils,
+        "prepare_git_worktree",
+        lambda *args, **kwargs: (_ for _ in ()).throw(ValueError("invalid repository")),
+    )
+    commits = []
+    monkeypatch.setattr(store, "_commit_create", lambda *args, **kwargs: commits.append(args))
+
+    with pytest.raises(TaskWorktreeError) as raised:
+        store.create(
+            _contract(), ScopeContext(), task_id="auto-create-prepare-fail", auto_worktree=True,
+        )
+
+    assert raised.value.mutation_applied is False
+    assert raised.value.operation_not_started is True
+    assert raised.value.outcome_unknown is False
+    assert commits == []
+
+
+def test_auto_worktree_git_failure_keeps_started_operation_unknown(tmp_path, monkeypatch):
+    from local_ai_hub import process_utils
+
+    store = _store(tmp_path)
+    plan = SimpleNamespace(
+        repo_root=str(tmp_path.resolve()), ttl_seconds=3600.0, expires_at=9999999999.0,
+        response_metadata=lambda: {"success": True, "worktree_id": "worktree_000000000000"},
+    )
+    monkeypatch.setattr(process_utils, "prepare_git_worktree", lambda *args, **kwargs: plan)
+    monkeypatch.setattr(process_utils, "create_git_worktree", lambda *args, **kwargs: {
+        "success": False, "error": "git invocation timed out", "mutation_applied": None,
+        "operation_not_started": False, "outcome_unknown": True,
+    })
+    commits = []
+    monkeypatch.setattr(store, "_commit_create", lambda *args, **kwargs: commits.append(args))
+
+    with pytest.raises(TaskWorktreeError) as raised:
+        store.create(
+            _contract(), ScopeContext(repository_id=str(tmp_path)), task_id="auto-create-git-fail",
+            auto_worktree=True,
+        )
+
+    assert raised.value.mutation_applied is None
+    assert raised.value.operation_not_started is False
+    assert raised.value.outcome_unknown is True
+    assert commits == []
+
+
 def test_completion_returns_scheduled_worktree_cleanup_without_postcommit_write(tmp_path, monkeypatch):
     store = _store(tmp_path)
-    created = store.create(_contract(), ScopeContext(), task_id="complete-scheduled-cleanup")
-    state_data = {
-        **created.checkpoint.state_data,
-        "worktree": {
-            "task_id": created.task_id,
-            "owner": created.owner,
-            "repo_root": str(tmp_path),
-            "worktree_path": str(tmp_path / "worktree"),
-            "worktree_id": "worktree-test",
-            "branch": "hub/task-complete-scheduled-cleanup",
-            "base_commit": "a" * 40,
-            "created_at": 1.0,
-            "ttl_seconds": 3600.0,
-            "expires_at": 3601.0,
-            "creator_pid": 1,
-            "creator_creation_identity": 2,
-            "creator_creation_identity_type": "test",
-            "creator_executable": "python.exe",
-        },
-    }
-    store.checkpoint(
-        created.task_id,
-        TaskCheckpoint(state_data=state_data),
-        actor=created.owner,
-        idempotency_key="worktree-checkpoint",
+    _mock_auto_worktree(monkeypatch, tmp_path)
+    monkeypatch.setattr(store, "_verify_completion", lambda _task: None)
+    created = store.create(
+        _contract(), ScopeContext(repository_id=str(tmp_path)),
+        task_id="complete-scheduled-cleanup", auto_worktree=True,
     )
     cleanup_calls = []
     monkeypatch.setattr(store, "cleanup_worktree", lambda *args, **kwargs: cleanup_calls.append(args))
@@ -163,34 +248,44 @@ def test_completion_returns_scheduled_worktree_cleanup_without_postcommit_write(
     assert cleanup_calls == []
 
 
+def test_direct_completed_transition_schedules_existing_worktree_cleanup(tmp_path, monkeypatch):
+    store = _store(tmp_path)
+    _mock_auto_worktree(monkeypatch, tmp_path)
+    monkeypatch.setattr(store, "_verify_completion", lambda _task: None)
+    created = store.create(
+        _contract(), ScopeContext(repository_id=str(tmp_path)),
+        task_id="transition-scheduled-cleanup", auto_worktree=True,
+    )
+    active = store.transition(
+        created.task_id, TaskStatus.ACTIVE, reason="activate", actor=created.owner,
+        idempotency_key="activate-transition-cleanup",
+    )
+    verifying = store.transition(
+        created.task_id, TaskStatus.VERIFYING, reason="verify", actor=created.owner,
+        idempotency_key="verify-transition-cleanup",
+    )
+
+    completed = store.transition(
+        created.task_id, TaskStatus.COMPLETED, reason="complete", actor=created.owner,
+        idempotency_key="complete-transition-cleanup",
+    )
+
+    assert active.status is TaskStatus.ACTIVE
+    assert verifying.status is TaskStatus.VERIFYING
+    assert completed.status is TaskStatus.COMPLETED
+    assert completed.checkpoint.state_data["worktree"]["cleanup_pending"] is True
+    assert completed.checkpoint.state_data["worktree"]["cleanup_scheduled"] is True
+
+
 def test_idle_reaper_accepts_scheduled_worktree_before_expiry(tmp_path, monkeypatch):
     from local_ai_hub import process_utils, worktrees
 
     store = _store(tmp_path)
+    _mock_auto_worktree(monkeypatch, tmp_path)
+    monkeypatch.setattr(store, "_verify_completion", lambda _task: None)
     created = store.create(
         _contract(), ScopeContext(repository_id=str(tmp_path)), task_id="scheduled-reaper",
-    )
-    worktree = {
-        "task_id": created.task_id,
-        "owner": created.owner,
-        "repo_root": str(tmp_path),
-        "worktree_path": str(tmp_path / "scheduled-worktree"),
-        "worktree_id": "worktree-scheduled-reaper",
-        "branch": "hub/task-scheduled-reaper",
-        "base_commit": "a" * 40,
-        "created_at": 1000.0,
-        "ttl_seconds": 3600.0,
-        "expires_at": 9999999999.0,
-        "creator_pid": 1,
-        "creator_creation_identity": 2,
-        "creator_creation_identity_type": "test",
-        "creator_executable": "python.exe",
-    }
-    store.checkpoint(
-        created.task_id,
-        TaskCheckpoint(state_data={**created.checkpoint.state_data, "worktree": worktree}),
-        actor=created.owner,
-        idempotency_key="scheduled-reaper-worktree",
+        auto_worktree=True,
     )
     completed = store.complete(created.task_id, actor=created.owner)
     monkeypatch.setattr(
@@ -249,6 +344,18 @@ def test_prepared_worktree_plan_is_read_only_and_bound_to_create_request(tmp_pat
     assert rejected["success"] is False
     assert len(git_reads) == 1
 
+    changed_creator = {**creator, "creation_identity": 789}
+    monkeypatch.setattr(process_utils, "process_identity", lambda pid: dict(changed_creator))
+    identity_rejected = process_utils.create_git_worktree(
+        repo, branch_name="hub/task-prepared", task_id="prepared", owner="agent",
+        created_at=1000.0, ttl_seconds=3600.0, expires_at=4600.0, prepared_plan=plan,
+    )
+
+    assert identity_rejected["mutation_applied"] is False
+    assert identity_rejected["operation_not_started"] is True
+    assert len(git_reads) == 2
+    assert all("worktree add" not in " ".join(args) for args, _kwargs in git_reads)
+
 
 @pytest.mark.parametrize("action", ["create", "checkpoint", "fail", "transition", "complete"])
 def test_sdk_task_coord_only_sends_budget_when_supplied(monkeypatch, action):
@@ -268,6 +375,7 @@ def test_registered_task_mutation_wire_preflights_full_memory_and_preserves_erro
     from local_ai_hub import mcp_server
     from local_ai_hub.task_memory_wire import (
         normalize_task_memory_response,
+        task_memory_original_tokens,
         task_memory_projection,
         task_memory_wire_tokens,
     )
@@ -335,6 +443,7 @@ def test_registered_task_mutation_wire_preflights_full_memory_and_preserves_erro
     client = RegisteredFakeClient()
     monkeypatch.setattr(mcp_server, "CLIENT", client)
     monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_: None)
+    monkeypatch.setattr(mcp_server, "RESPONSE_BUDGET_ENABLED", True)
 
     def invoke(budget):
         result = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
@@ -357,6 +466,8 @@ def test_registered_task_mutation_wire_preflights_full_memory_and_preserves_erro
     assert accepted["context_id"] == "context-wire"
     assert accepted["request_id"] == "request-wire"
     assert accepted["task"]["checkpoint"]["state_data"]["memory_context"] == memory_bundle
+    assert accepted["response_budget"]["original_tokens"] == task_memory_original_tokens(success)
+    assert accepted["response_budget"]["returned_tokens"] <= adequate_budget
 
 
 @pytest.mark.parametrize("action", ["fail", "transition", "complete"])

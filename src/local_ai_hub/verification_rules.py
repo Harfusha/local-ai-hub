@@ -373,29 +373,25 @@ def complete_task_with_project_rules(
             blockers=getattr(checkpoint, "blockers", ()),
             state_data=state_data,
         )
-        task_store.preflight_completion_response_budget(
+        prepared_completion_updated_at = task_store.preflight_completion_response_budget(
             task_key, response_budget_tokens, actor=actor,
             checkpoint=checkpoint_obj if state_data != dict(getattr(checkpoint, "state_data", {})) else None,
         )
-        if state_data != dict(getattr(checkpoint, "state_data", {})):
-            suffix = "_project_completion_context"
-            task_store.checkpoint(
-                task_key,
-                checkpoint_obj,
-                actor=actor,
-                idempotency_key=f"{idempotency_key}{suffix}" if idempotency_key else "",
-            )
         return task_store.complete(
             task_key,
             reason=reason,
             actor=actor,
             idempotency_key=idempotency_key,
             response_budget_tokens=response_budget_tokens,
+            checkpoint=checkpoint_obj if state_data != dict(getattr(checkpoint, "state_data", {})) else None,
+            _prepared_completion_updated_at=prepared_completion_updated_at,
+            _expected_completion_content=task_store._completion_content_snapshot(before),
         )
     before_generation = _completion_mutation_generation(before)
     preflight_current = task_store.get(task_key)
     if (
         preflight_current is None
+        or preflight_current != before
         or str(getattr(preflight_current, "owner", "") or "").strip() != before_owner
         or _completion_mutation_generation(preflight_current) != before_generation
     ):
@@ -412,7 +408,7 @@ def complete_task_with_project_rules(
         blockers=getattr(preflight_checkpoint, "blockers", ()),
         state_data=preflight_state_data,
     )
-    task_store.preflight_completion_response_budget(
+    prepared_completion_updated_at = task_store.preflight_completion_response_budget(
         task_key, response_budget_tokens, actor=actor,
         checkpoint=(preflight_checkpoint_candidate
                     if preflight_state_data != dict(getattr(preflight_checkpoint, "state_data", {}))
@@ -439,16 +435,8 @@ def complete_task_with_project_rules(
         )
     if before is not None and hasattr(before, "checkpoint"):
         current = task_store.get(task_key)
-        current_owner = str(getattr(current, "owner", "") or "").strip()
-        before_owner = str(getattr(before, "owner", "") or "").strip()
         current_chk = getattr(current, "checkpoint", None)
-        current_generation = _completion_mutation_generation(current)
-        if (
-            current is None
-            or (before_owner and current_owner != before_owner)
-            or current_generation != before_generation
-            or getattr(current, "checkpoint", None) != preflight_checkpoint
-        ):
+        if current is None or current != preflight_current:
             raise CompletionGateError("task owner or mutation generation changed during completion verification")
         current_state_data = dict(getattr(current_chk, "state_data", {}))
         current_state_data["repo_root"] = str(project.root)
@@ -464,18 +452,13 @@ def complete_task_with_project_rules(
             )
         else:
             checkpoint_obj = None
-        if checkpoint_obj is not None:
-            suffix = "_project_completion_context"
-            task_store.checkpoint(
-                task_key,
-                checkpoint_obj,
-                actor=actor,
-                idempotency_key=f"{idempotency_key}{suffix}" if idempotency_key else "",
-            )
     return task_store.complete(
         task_key,
         reason=reason,
         actor=actor,
         idempotency_key=idempotency_key,
         response_budget_tokens=response_budget_tokens,
+        checkpoint=checkpoint_obj,
+        _prepared_completion_updated_at=prepared_completion_updated_at,
+        _expected_completion_content=task_store._completion_content_snapshot(preflight_current),
     )
