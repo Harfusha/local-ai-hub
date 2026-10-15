@@ -722,6 +722,10 @@ function formatEstimatedUsd(value){
   const absolute=Math.abs(amount),digits=absolute>0&&absolute<0.01?4:2;
   return '≈ '+(amount<0?'−':'')+'$'+absolute.toFixed(digits);
 }
+function formatChannelSavings(value,rate){
+  if(value==null||rate==null||!Number.isFinite(Number(value))||!Number.isFinite(Number(rate)))return 'unknown';
+  return '$'+Number(value).toFixed(4)+' @ $'+Number(rate).toFixed(2)+' / 1M';
+}
 
 function renderTelemetryMetrics(observability={}){
   const state=dashboardTelemetryState(observability),period=observability.scope==='window'||sloScope==='window'?'Last 30 days':'Since restart';
@@ -747,12 +751,12 @@ function renderTelemetryMetrics(observability={}){
   }
   if($('tokensSaved'))$('tokensSaved').textContent=n(observability.net_cloud_token_delta_est);
   if($('tokensSavedSub'))$('tokensSavedSub').textContent=period+' · '+(calls?n(calls)+' accounted calls':'No accounted calls yet')+(!state.complete?' · partial estimate':'');
-  if($('dollarsSaved'))$('dollarsSaved').textContent=formatEstimatedUsd(observability.estimated_savings_usd??0);
-  if($('dollarsSavedSub'))$('dollarsSavedSub').textContent=(observability.estimated_savings_pricing_mode==='input_output'?'Separate input/output rates':'Blended rate')+' · '+period+(!state.complete?' · incomplete data':'');
+  if($('dollarsSaved'))$('dollarsSaved').textContent=observability.estimated_savings_pricing_mode==='incomplete'||observability.estimated_savings_usd==null?'Unknown':formatEstimatedUsd(observability.estimated_savings_usd);
+  if($('dollarsSavedSub'))$('dollarsSavedSub').textContent=(observability.estimated_savings_pricing_mode==='incomplete'?'Known channel subtotals: input '+formatChannelSavings(observability.estimated_input_savings_usd,observability.cloud_input_token_cost_usd_per_million)+' · output '+formatChannelSavings(observability.estimated_output_savings_usd,observability.cloud_output_token_cost_usd_per_million)+' · historical channel costs unknown':observability.estimated_savings_pricing_mode==='input_output'?'Separate input/output rates':'Cost unavailable')+' · '+period+(!state.complete?' · incomplete data':'');
   if(period==='Last 30 days'){
     for(const id of ['handledRequestsSub','cacheSub','queueWait'])if($(id))$(id).textContent='Retained samples · '+$(id).textContent;
   }
-  if(breakdown)breakdown.textContent+='\nUSD input rate: $'+Number(observability.cloud_input_token_cost_usd_per_million??observability.cloud_token_cost_usd_per_million??0).toFixed(2)+' / 1M\nUSD output rate: $'+Number(observability.cloud_output_token_cost_usd_per_million??observability.cloud_token_cost_usd_per_million??0).toFixed(2)+' / 1M';
+  if(breakdown)breakdown.textContent+='\nUSD input rate: '+(observability.cloud_input_token_cost_usd_per_million==null?'unknown':'$'+Number(observability.cloud_input_token_cost_usd_per_million).toFixed(2)+' / 1M')+'\nUSD output rate: '+(observability.cloud_output_token_cost_usd_per_million==null?'unknown':'$'+Number(observability.cloud_output_token_cost_usd_per_million).toFixed(2)+' / 1M');
 }
 
 function preprocessingSummary(preprocessing={},dependencies={},features={}){
@@ -4498,13 +4502,13 @@ function render(s){
   $('fgQueue').textContent=n(q.foreground_queued)+' queued / '+n(q.foreground_inflight)+' running';
   $('bgQueue').textContent='background '+n(q.background_queued)+' queued / '+n(q.inflight_background)+' running · '+(q.background_allowed?'idle work allowed':'yielding');
 
-  const http=o.http||{},cohorts=o.cohorts||{},agentHttp=cohorts.agent_http||{},inference=cohorts.inference||{},policy=cohorts.policy_rejection||{},compatibility=cohorts.compatibility||{},domains=o.cache_domains||{},generation=domains.generation||{},repository=domains.repository||{},commandCache=domains.command||{},netDelta=Number(o.net_cloud_token_delta_est??0),savedTokens=Math.max(0,netDelta),tokenOverhead=Math.max(0,Number(o.cloud_token_overhead_est||0)),grossSaved=Math.max(0,Number(o.gross_cloud_tokens_avoided_est||0)),protocolTokens=Math.max(0,Number(o.agent_protocol_tokens_est||0)),toolCallTokens=Math.max(0,Number(o.agent_tool_request_tokens_est||0)),toolReadTokens=Math.max(0,Number(o.agent_tool_response_tokens_est||0)),schemaTokens=Math.max(0,Number(o.tool_schema_tokens_exposure_est||0)),schemaDelta=Number(o.net_after_schema_token_delta_est??0),localComputeSaved=Math.max(0,Number(o.local_compute_tokens_avoided_est||0)),savedUsd=Number(o.estimated_savings_usd||0),inputSavedUsd=o.estimated_input_savings_usd,outputSavedUsd=o.estimated_output_savings_usd,inputRate=Number(o.cloud_input_token_cost_usd_per_million||0),outputRate=Number(o.cloud_output_token_cost_usd_per_million||0),rate=Number(o.cloud_token_cost_usd_per_million||0);
+  const http=o.http||{},cohorts=o.cohorts||{},agentHttp=cohorts.agent_http||{},inference=cohorts.inference||{},policy=cohorts.policy_rejection||{},compatibility=cohorts.compatibility||{},domains=o.cache_domains||{},generation=domains.generation||{},repository=domains.repository||{},commandCache=domains.command||{},netDelta=Number(o.net_cloud_token_delta_est??0),savedTokens=Math.max(0,netDelta),tokenOverhead=Math.max(0,Number(o.cloud_token_overhead_est||0)),grossSaved=Math.max(0,Number(o.gross_cloud_tokens_avoided_est||0)),protocolTokens=Math.max(0,Number(o.agent_protocol_tokens_est||0)),toolCallTokens=Math.max(0,Number(o.agent_tool_request_tokens_est||0)),toolReadTokens=Math.max(0,Number(o.agent_tool_response_tokens_est||0)),schemaTokens=Math.max(0,Number(o.tool_schema_tokens_exposure_est||0)),schemaDelta=Number(o.net_after_schema_token_delta_est??0),localComputeSaved=Math.max(0,Number(o.local_compute_tokens_avoided_est||0)),savedUsd=o.estimated_savings_usd,inputSavedUsd=o.estimated_input_savings_usd,outputSavedUsd=o.estimated_output_savings_usd,inputRate=o.cloud_input_token_cost_usd_per_million,outputRate=o.cloud_output_token_cost_usd_per_million;
   $('handledRequests').textContent=n(agentHttp.events);
   $('handledRequestsSub').textContent=n(agentHttp.failures)+' operational failures · '+n(policy.events)+' policy rejections · '+n(compatibility.events)+' compatibility 404s';
   $('tokensSaved').textContent=n(netDelta);
   $('tokensSavedSub').textContent='baseline '+n(grossSaved)+' − protocol '+n(protocolTokens)+' (call '+n(toolCallTokens)+' + read '+n(toolReadTokens)+')'+(tokenOverhead?' · overhead '+n(tokenOverhead):'')+' · schema-adjusted '+n(schemaDelta)+' (catalog ≈'+n(schemaTokens)+')';
-  $('dollarsSaved').textContent='≈ $'+savedUsd.toFixed(2);
-  $('dollarsSavedSub').textContent=o.estimated_savings_pricing_mode==='input_output'?'input ≈ $'+Number(inputSavedUsd||0).toFixed(4)+' @ $'+inputRate.toFixed(2)+' / 1M · output ≈ $'+Number(outputSavedUsd||0).toFixed(4)+' @ $'+outputRate.toFixed(2)+' / 1M':'estimate · blended $'+rate.toFixed(2)+' / 1M';
+  $('dollarsSaved').textContent=o.estimated_savings_pricing_mode==='incomplete'||savedUsd==null?'Unknown':'≈ $'+Number(savedUsd).toFixed(2);
+  $('dollarsSavedSub').textContent=o.estimated_savings_pricing_mode==='incomplete'?'Known channel subtotals: input '+formatChannelSavings(inputSavedUsd,inputRate)+' · output '+formatChannelSavings(outputSavedUsd,outputRate)+' · historical channel costs unknown':o.estimated_savings_pricing_mode==='input_output'?'input '+formatChannelSavings(inputSavedUsd,inputRate)+' · output '+formatChannelSavings(outputSavedUsd,outputRate):'Cost unavailable';
   const qHitRate=(Number(o.preprocessed_query_hit_rate??0)*100).toFixed(1),ingReuse=(Number(p.ingestion_reuse_rate??0)*100).toFixed(1);
   $('cache').textContent=Number(generation.events??inference.events??o.events)>0?((o.generation_cache_hit_rate ?? o.cache_hit_rate ?? 0)*100).toFixed(1)+'%':'No samples';
   $('cacheSub').textContent=n(generation.hits)+' generation · '+n(repository.hits)+' repository ('+qHitRate+'% index hit) · '+n(commandCache.hits)+' command hits · '+n(localComputeSaved)+' local tokens avoided';

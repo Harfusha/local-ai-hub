@@ -7,6 +7,7 @@ import hashlib
 import json
 import base64
 import math
+import numbers
 import os
 import queue
 import re
@@ -66,6 +67,18 @@ _SAFE_TOOL_ACTIONS = frozenset({
     # system actions
     "hub_start", "hub_stop", "heartbeat", "cleanup",
 })
+
+
+def _validate_token_cost_rate(name: str, value: Any) -> float:
+    if isinstance(value, bool) or not isinstance(value, numbers.Real):
+        raise TypeError(f"{name} must be a finite non-negative number")
+    try:
+        rate = float(value)
+    except (OverflowError, ValueError) as exc:
+        raise ValueError(f"{name} must be a finite non-negative number") from exc
+    if not math.isfinite(rate) or rate < 0:
+        raise ValueError(f"{name} must be a finite non-negative number")
+    return rate
 _MAX_QUERY_WINDOW_DAYS = 3650
 _SENSITIVE_METADATA_VALUE_RE = re.compile(
     r"(?i)[\"']?(prompt|source(?:_text)?|input(?:_text)?|completion|output(?:_text)?|"
@@ -448,9 +461,8 @@ class TelemetryStore:
         *,
         retention_days: int = 30,
         rollup_retention_days: int = 365,
-        cloud_token_cost_usd_per_million: float = 3.0,
-        cloud_input_token_cost_usd_per_million: float | None = None,
-        cloud_output_token_cost_usd_per_million: float | None = None,
+        cloud_input_token_cost_usd_per_million: float = 3.0,
+        cloud_output_token_cost_usd_per_million: float = 3.0,
         batch_size: int = 64,
         flush_interval_seconds: float = 0.5,
         queue_size: int = 10000,
@@ -460,11 +472,12 @@ class TelemetryStore:
         self.max_events = max(100, int(max_events))
         self.retention_days = max(1, int(retention_days))
         self.rollup_retention_days = max(self.retention_days, int(rollup_retention_days))
-        self.cloud_token_cost_usd_per_million = max(0.0, float(cloud_token_cost_usd_per_million))
-        input_rate = self.cloud_token_cost_usd_per_million if cloud_input_token_cost_usd_per_million is None else cloud_input_token_cost_usd_per_million
-        output_rate = self.cloud_token_cost_usd_per_million if cloud_output_token_cost_usd_per_million is None else cloud_output_token_cost_usd_per_million
-        self.cloud_input_token_cost_usd_per_million = max(0.0, float(input_rate))
-        self.cloud_output_token_cost_usd_per_million = max(0.0, float(output_rate))
+        self.cloud_input_token_cost_usd_per_million = _validate_token_cost_rate(
+            "cloud_input_token_cost_usd_per_million", cloud_input_token_cost_usd_per_million
+        )
+        self.cloud_output_token_cost_usd_per_million = _validate_token_cost_rate(
+            "cloud_output_token_cost_usd_per_million", cloud_output_token_cost_usd_per_million
+        )
         self.batch_size = max(1, min(int(batch_size), 1000))
         self.flush_interval_seconds = max(0.05, float(flush_interval_seconds))
         self.path = state_dir / "telemetry.sqlite3"
@@ -1005,13 +1018,12 @@ class TelemetryStore:
             "tool_accounting_events": int(history.get("tool_accounting_events", 0) or 0),
             "accounting_boundary_incomplete": bool(history.get("accounting_boundary_incomplete", False)),
             "token_accounting_storage": history.get("token_accounting_storage", "retained_process_events"),
-            "cloud_token_cost_usd_per_million": float(history.get("cloud_token_cost_usd_per_million", self.cloud_token_cost_usd_per_million) or 0.0),
-            "estimated_savings_usd": float(history.get("estimated_savings_usd", 0.0) or 0.0),
-            "estimated_input_savings_usd": float(history.get("estimated_input_savings_usd", 0.0) or 0.0),
-            "estimated_output_savings_usd": float(history.get("estimated_output_savings_usd", 0.0) or 0.0),
-            "estimated_savings_pricing_mode": str(history.get("estimated_savings_pricing_mode", "blended")),
-            "cloud_input_token_cost_usd_per_million": float(history.get("cloud_input_token_cost_usd_per_million", self.cloud_input_token_cost_usd_per_million) or 0.0),
-            "cloud_output_token_cost_usd_per_million": float(history.get("cloud_output_token_cost_usd_per_million", self.cloud_output_token_cost_usd_per_million) or 0.0),
+            "estimated_savings_usd": history.get("estimated_savings_usd"),
+            "estimated_input_savings_usd": history.get("estimated_input_savings_usd"),
+            "estimated_output_savings_usd": history.get("estimated_output_savings_usd"),
+            "estimated_savings_pricing_mode": str(history.get("estimated_savings_pricing_mode", "unknown")),
+            "cloud_input_token_cost_usd_per_million": history.get("cloud_input_token_cost_usd_per_million"),
+            "cloud_output_token_cost_usd_per_million": history.get("cloud_output_token_cost_usd_per_million"),
             "fallback_count": int(history.get("fallback_count", 0) or 0),
             "degraded_count": int(history.get("degraded_count", 0) or 0),
             "retry_count": int(history.get("retry_count", 0) or 0),
@@ -2013,6 +2025,39 @@ class TelemetryStore:
                     (boundary.timestamp(), boundary_end),
                 ).fetchone()[0]
                 accounting_boundary_incomplete = boundary_rollup > boundary_raw
+                pricing_event_window = "created_at>=? AND created_at<? AND event_type='tool_accounting'"
+                pricing_event_params = (cutoff, boundary_end)
+                pricing_rollup_rows = int(con.execute(
+                    """SELECT COUNT(*) FROM daily_rollups WHERE day>? AND event_type='tool_accounting'
+                       AND events>0 AND (gross_avoided_cloud_tokens<>0 OR gross_input_tokens_avoided<>0
+                           OR gross_output_tokens_avoided<>0 OR tool_request_tokens<>0
+                           OR tool_response_tokens<>0 OR net_cloud_token_delta<>0)""",
+                    (day,),
+                ).fetchone()[0])
+            else:
+                pricing_event_window = "created_at>=? AND event_type='tool_accounting'"
+                pricing_event_params = (cutoff,)
+                pricing_rollup_rows = 0
+            # Channel counters are row-level evidence. Aggregate equality can hide
+            # legacy rows when another row has overlapping input/output counters.
+            unpriced_row = (
+                "gross_avoided_cloud_tokens > gross_input_tokens_avoided + gross_output_tokens_avoided "
+                "OR (net_cloud_token_delta <> 0 AND gross_input_tokens_avoided = 0 "
+                "AND gross_output_tokens_avoided = 0 AND tool_request_tokens = 0 AND tool_response_tokens = 0)"
+            )
+            known_channel_rows = con.execute(
+                f"""SELECT COUNT(*), COALESCE(SUM(gross_avoided_cloud_tokens),0),
+                           COALESCE(SUM(gross_input_tokens_avoided),0),
+                           COALESCE(SUM(gross_output_tokens_avoided),0),
+                           COALESCE(SUM(tool_request_tokens),0), COALESCE(SUM(tool_response_tokens),0)
+                    FROM events WHERE {pricing_event_window} AND NOT ({unpriced_row})""",
+                pricing_event_params,
+            ).fetchone()
+            unpriced_event_rows = int(con.execute(
+                f"SELECT COUNT(*) FROM events WHERE {pricing_event_window} AND ({unpriced_row})",
+                pricing_event_params,
+            ).fetchone()[0])
+            pricing_incomplete = bool(pricing_rollup_rows or unpriced_event_rows)
             # Realtime summaries must stay cheap even at max raw-event retention.
             # Attribute each call to its dominant savings source in SQL; the full
             # multi-source breakdown is parsed only by the explicit diagnostic report.
@@ -2055,32 +2100,57 @@ class TelemetryStore:
         net_after_schema_token_delta = int(tool_accounting[11])
         schema_adjusted_overhead = int(tool_accounting[12])
         savings_breakdown = {str(source)[:64]: max(0, int(tokens or 0)) for source, tokens in tool_breakdown_rows}
-        if gross_input_tokens_avoided or gross_output_tokens_avoided:
+        priced_events = int(known_channel_rows[0])
+        priced_gross_tokens = int(known_channel_rows[1])
+        priced_input_tokens = int(known_channel_rows[2])
+        priced_output_tokens = int(known_channel_rows[3])
+        priced_tool_request_tokens = int(known_channel_rows[4])
+        priced_tool_response_tokens = int(known_channel_rows[5])
+        if priced_events and (priced_input_tokens or priced_output_tokens):
             # Tool responses are cloud input; tool calls are cloud output. Keep
             # the token delta signed, but price each side with its own rate.
             # Input/output counters can overlap (output compaction is diagnostic
             # when an upstream input baseline won), so only sum them when they
             # match the additive gross baseline.
-            additive_channels = gross_avoided_cloud_tokens == gross_input_tokens_avoided + gross_output_tokens_avoided
-            priced_input_tokens = gross_input_tokens_avoided if additive_channels or gross_input_tokens_avoided else 0
-            priced_output_tokens = gross_output_tokens_avoided if additive_channels or not gross_input_tokens_avoided else 0
-            net_input_tokens = priced_input_tokens - tool_response_tokens
-            net_output_tokens = priced_output_tokens - tool_request_tokens
+            additive_channels = priced_gross_tokens == priced_input_tokens + priced_output_tokens
+            estimated_gross_input_tokens = priced_input_tokens if additive_channels or priced_input_tokens else 0
+            estimated_gross_output_tokens = priced_output_tokens if additive_channels or not priced_input_tokens else 0
+            net_input_tokens = estimated_gross_input_tokens - priced_tool_response_tokens
+            net_output_tokens = estimated_gross_output_tokens - priced_tool_request_tokens
             estimated_input_savings_usd = round(
                 net_input_tokens * self.cloud_input_token_cost_usd_per_million / 1_000_000, 4
             )
             estimated_output_savings_usd = round(
                 net_output_tokens * self.cloud_output_token_cost_usd_per_million / 1_000_000, 4
             )
-            estimated_savings_usd = round(estimated_input_savings_usd + estimated_output_savings_usd, 4)
-            pricing_mode = "input_output"
-        else:
-            # Older telemetry rows only have the blended total. Preserve their
-            # historical estimate until new channel-specific rows replace them.
+            if pricing_incomplete:
+                # Legacy rows without channel counters remain in accounting totals,
+                # but their USD cost cannot be reconstructed from channel rates.
+                estimated_savings_usd = None
+                pricing_mode = "incomplete"
+            else:
+                estimated_savings_usd = round(estimated_input_savings_usd + estimated_output_savings_usd, 4)
+                pricing_mode = "input_output"
+        elif pricing_incomplete and not priced_events:
+            # Older rows may retain gross and signed token accounting without
+            # either channel counter. Never price those rows with a blended rate.
             estimated_input_savings_usd = None
             estimated_output_savings_usd = None
-            estimated_savings_usd = round(net_cloud_token_delta * self.cloud_token_cost_usd_per_million / 1_000_000, 4)
-            pricing_mode = "blended"
+            estimated_savings_usd = None
+            pricing_mode = "incomplete"
+        else:
+            estimated_input_savings_usd = round(
+                -priced_tool_response_tokens * self.cloud_input_token_cost_usd_per_million / 1_000_000, 4
+            )
+            estimated_output_savings_usd = round(
+                -priced_tool_request_tokens * self.cloud_output_token_cost_usd_per_million / 1_000_000, 4
+            )
+            if pricing_incomplete:
+                estimated_savings_usd = None
+                pricing_mode = "incomplete"
+            else:
+                estimated_savings_usd = round(estimated_input_savings_usd + estimated_output_savings_usd, 4)
+                pricing_mode = "input_output"
 
         prep_events = int(prep_query[0] or 0)
         prep_hits = int(prep_query[1] or 0)
@@ -2123,7 +2193,6 @@ class TelemetryStore:
             "tool_accounting_events": tool_accounting_events,
             "accounting_boundary_incomplete": accounting_boundary_incomplete,
             "token_accounting_storage": "daily_rollups_and_boundary_events" if scope == "window" else "retained_process_events",
-            "cloud_token_cost_usd_per_million": self.cloud_token_cost_usd_per_million,
             "cloud_input_token_cost_usd_per_million": self.cloud_input_token_cost_usd_per_million,
             "cloud_output_token_cost_usd_per_million": self.cloud_output_token_cost_usd_per_million,
             "estimated_input_savings_usd": estimated_input_savings_usd,

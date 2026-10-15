@@ -119,7 +119,8 @@ def test_telemetry_summary_exposes_request_and_signed_token_accounting(tmp_path:
     store = TelemetryStore(
         tmp_path / "telemetry-state",
         enabled=True,
-        cloud_token_cost_usd_per_million=5.0,
+        cloud_input_token_cost_usd_per_million=5.0,
+        cloud_output_token_cost_usd_per_million=5.0,
         flush_interval_seconds=0.01,
     )
     try:
@@ -127,6 +128,8 @@ def test_telemetry_summary_exposes_request_and_signed_token_accounting(tmp_path:
         store.record_tool_accounting({
             "tool": "local_ai_repo",
             "gross_cloud_tokens_avoided_est": 2_000_000,
+            "gross_input_tokens_avoided_est": 1_250_000,
+            "gross_output_tokens_avoided_est": 750_000,
             "agent_protocol_tokens_est": 250_000,
             "agent_tool_request_tokens_est": 50_000,
             "agent_tool_response_tokens_est": 200_000,
@@ -142,7 +145,9 @@ def test_telemetry_summary_exposes_request_and_signed_token_accounting(tmp_path:
         assert summary["context_tokens_avoided_est"] == 2_000_000
         assert summary["net_cloud_token_delta_est"] == 1_750_000
         assert summary["estimated_savings_usd"] == 8.75
-        assert summary["cloud_token_cost_usd_per_million"] == 5.0
+        assert summary["cloud_input_token_cost_usd_per_million"] == 5.0
+        assert summary["cloud_output_token_cost_usd_per_million"] == 5.0
+        assert "cloud_token_cost_usd_per_million" not in summary
     finally:
         store.close()
 
