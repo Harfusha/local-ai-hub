@@ -2007,18 +2007,7 @@ class Handler(BaseHTTPRequestHandler):
         bound_tenant = getattr(self, "_authorization_tenant", None)
         if bound_tenant:
             return str(bound_tenant)
-        principal = self._configured_principal_tenant()
-        if principal:
-            return principal
-        config = getattr(APP, "config", {}) if APP is not None else {}
-        security = config.get("security", {}) if isinstance(config, dict) else {}
-        if isinstance(security, dict) and security.get("api_token"):
-            return self._principal_tenant()
-        if getattr(self, "headers", None):
-            header_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
-            if header_tenant:
-                return str(header_tenant).strip()
-        return self._principal_tenant()
+        return self._principal_identity_tenant()
 
     def _principal_tenant(self) -> str:
         path = str(getattr(self, "path", ""))
@@ -2043,8 +2032,7 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(security, dict):
             security = {}
         return bool(
-            getattr(self, "_authorization_root", None)
-            or security.get("allowed_roots")
+            security.get("allowed_roots")
             or security.get("tenant_derivation_key")
             or security.get("api_token")
         )
@@ -2058,13 +2046,21 @@ class Handler(BaseHTTPRequestHandler):
             or ""
         ).strip()
 
+    def _principal_identity_tenant(self) -> str:
+        authenticated_tenant = getattr(self, "_authorization_tenant", None)
+        if authenticated_tenant and not getattr(self, "_authorization_root", None):
+            self._authenticated_principal_tenant = str(authenticated_tenant).strip()
+        authenticated_tenant = getattr(self, "_authenticated_principal_tenant", None)
+        if authenticated_tenant:
+            return str(authenticated_tenant).strip()
+        return self._configured_principal_tenant() or self._principal_tenant()
+
     def _bind_root_tenant(
         self,
         root: Any,
         tenant_values: list[Any] | tuple[Any, ...] = (),
         *,
         allow_principal_header: bool = False,
-        require_configured_principal: bool = False,
     ) -> tuple[str, str] | None:
         supplied_tenants = {
             str(value).strip()
@@ -2091,11 +2087,10 @@ class Handler(BaseHTTPRequestHandler):
         if not self._root_sandbox_enabled():
             try:
                 canonical = _strict_root_path(root)
-                supplied_tenant = str(tenant_values[0]).strip() if tenant_values and tenant_values[0] else None
-                header_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
-                principal = self._configured_principal_tenant()
-                effective = principal or supplied_tenant or (str(header_tenant).strip() if header_tenant else None) or self._tenant()
-                if principal and any(
+                header_tenant = self.headers.get("X-LocalAI-Tenant")
+                principal = self._principal_identity_tenant()
+                effective = principal
+                if any(
                     value is not None and str(value).strip() != principal
                     for value in (*tenant_values, header_tenant)
                 ):
@@ -2113,11 +2108,7 @@ class Handler(BaseHTTPRequestHandler):
             canonical = _strict_root_path(root)
             if not _root_is_allowed(canonical, security.get("allowed_roots", [])):
                 raise ValueError("root is not allowed")
-            principal = self._configured_principal_tenant()
-            if not principal and require_configured_principal:
-                raise ValueError("authenticated tenant binding is unavailable")
-            if not principal:
-                principal = self._principal_tenant()
+            principal = self._principal_identity_tenant()
             key = str(security.get("tenant_derivation_key") or security.get("api_token") or "")
             if not key:
                 raise ValueError("tenant derivation secret is unavailable")
@@ -2125,7 +2116,7 @@ class Handler(BaseHTTPRequestHandler):
         except (OSError, TypeError, ValueError):
             self._send(403, {"success": False, "error": "root is missing, invalid, or not allowed", "error_code": "root_not_allowed", "terminal": True, "retryable": False})
             return None
-        headers = [self.headers.get("X-LocalAI-Tenant"), self.headers.get("X-Tenant-ID")]
+        headers = [self.headers.get("X-LocalAI-Tenant")]
         header_mismatch = any(
             value is not None
             and str(value).strip() != effective
@@ -2141,25 +2132,27 @@ class Handler(BaseHTTPRequestHandler):
         return str(canonical), effective
 
     def _bind_principal_tenant(self, tenant_values: list[Any] | tuple[Any, ...] = ()) -> bool:
-        configured_principal = self._configured_principal_tenant()
-        header_tenants = [self.headers.get("X-LocalAI-Tenant"), self.headers.get("X-Tenant-ID")]
-        config = getattr(APP, "config", {}) if APP is not None else {}
-        security = config.get("security", {}) if isinstance(config, dict) else {}
-        shared_token_configured = bool(security.get("api_token"))
-        # With a shared API token, headers are claims, never identity. Without
-        # token auth, retain the local legacy tenant hint for compatibility.
-        principal = configured_principal
-        if not principal:
-            principal = self._principal_tenant() if shared_token_configured else next(
-                (str(value).strip() for value in header_tenants if value not in (None, "")),
-                self._principal_tenant(),
-            )
+        principal = self._principal_identity_tenant()
+        header_tenants = [self.headers.get("X-LocalAI-Tenant")]
         requested = [*header_tenants, *tenant_values]
         if any(value is not None and str(value).strip() != principal for value in requested):
             self._send(403, {"success": False, "error": "tenant does not match authenticated principal", "error_code": "tenant_binding_mismatch", "terminal": True, "retryable": False})
             return False
         self._authorization_tenant = principal
         return True
+
+    def _reject_legacy_tenant_header(self) -> bool:
+        headers = getattr(self, "headers", None)
+        if headers is None or headers.get("X-Tenant-ID") is None:
+            return True
+        self._send(400, {
+            "success": False,
+            "error": "X-Tenant-ID is unsupported; use X-LocalAI-Tenant",
+            "error_code": "unsupported_tenant_header",
+            "terminal": True,
+            "retryable": False,
+        })
+        return False
 
     def _bind_memory_payload(self, payload: dict[str, Any]) -> bool:
         record = payload.get("record") if isinstance(payload.get("record"), dict) else {}
@@ -2195,7 +2188,6 @@ class Handler(BaseHTTPRequestHandler):
                 roots[0],
                 [] if action == "record" else tenant_values,
                 allow_principal_header=True,
-                require_configured_principal=True,
             )
             if bound is None:
                 return False
@@ -2286,7 +2278,6 @@ class Handler(BaseHTTPRequestHandler):
                 root_values[0],
                 tenant_bindings,
                 allow_principal_header=True,
-                require_configured_principal=True,
             )
             if bound is None:
                 return False
@@ -2331,7 +2322,6 @@ class Handler(BaseHTTPRequestHandler):
         bound = self._bind_root_tenant(
             payload.get("root"),
             allow_principal_header=True,
-            require_configured_principal=True,
         )
         if bound is None:
             return False
@@ -2369,7 +2359,6 @@ class Handler(BaseHTTPRequestHandler):
             payload.get("root"),
             [payload.get("tenant")],
             allow_principal_header=True,
-            require_configured_principal=True,
         )
         if bound is None:
             return False
@@ -2385,7 +2374,6 @@ class Handler(BaseHTTPRequestHandler):
             payload.get("root"),
             [payload.get("tenant")],
             allow_principal_header=True,
-            require_configured_principal=True,
         )
         if bound is None:
             return False
@@ -2401,7 +2389,6 @@ class Handler(BaseHTTPRequestHandler):
             (query.get("root") or [None])[0],
             query.get("tenant", []),
             allow_principal_header=True,
-            require_configured_principal=True,
         )
         if bound is None:
             return False
@@ -2416,7 +2403,6 @@ class Handler(BaseHTTPRequestHandler):
             payload.get("root"),
             [payload.get("tenant")],
             allow_principal_header=True,
-            require_configured_principal=True,
         )
         if bound is None:
             return False
@@ -2443,7 +2429,6 @@ class Handler(BaseHTTPRequestHandler):
             raw_root,
             query.get("tenant", []),
             allow_principal_header=True,
-            require_configured_principal=True,
         )
         if bound is None:
             return False
@@ -2516,7 +2501,6 @@ class Handler(BaseHTTPRequestHandler):
                 root,
                 [payload.get("tenant")],
                 allow_principal_header=True,
-                require_configured_principal=True,
             )
             if bound is None:
                 return False
@@ -2533,7 +2517,6 @@ class Handler(BaseHTTPRequestHandler):
                     origin_root,
                     [payload.get("tenant")],
                     allow_principal_header=True,
-                    require_configured_principal=True,
                 )
                 if bound_origin is None:
                     return False
@@ -2604,7 +2587,6 @@ class Handler(BaseHTTPRequestHandler):
             task_root,
             tenant_values,
             allow_principal_header=True,
-            require_configured_principal=True,
         )
         if bound is None:
             return False
@@ -2635,7 +2617,6 @@ class Handler(BaseHTTPRequestHandler):
             (query.get("root") or [None])[0],
             query.get("tenant", []),
             allow_principal_header=True,
-            require_configured_principal=True,
         )
         if bound is None:
             return False
@@ -2662,7 +2643,6 @@ class Handler(BaseHTTPRequestHandler):
             payload.get("root"),
             [payload.get("tenant")],
             allow_principal_header=True,
-            require_configured_principal=True,
         )
         if bound is None:
             return False
@@ -2685,7 +2665,6 @@ class Handler(BaseHTTPRequestHandler):
             (query.get("root") or [None])[0],
             query.get("tenant", []),
             allow_principal_header=True,
-            require_configured_principal=True,
         )
         if bound is None:
             return False
@@ -2728,7 +2707,6 @@ class Handler(BaseHTTPRequestHandler):
             payload.get("root"),
             [payload.get("tenant")],
             allow_principal_header=True,
-            require_configured_principal=True,
         )
         if bound is None:
             return False
@@ -2842,7 +2820,7 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(str(getattr(self, "path", ""))).path
         security = APP.config.get("security", {})
         bound_tenant = getattr(self, "_authorization_tenant", None)
-        requested_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
+        requested_tenant = self.headers.get("X-LocalAI-Tenant")
         if path in {"/api/agent-state/memory", "/api/agent-state/tasks"} or path.startswith("/api/memory/"):
             # Root-scoped routes validate any client tenant after resolving request root.
             return True
@@ -2852,7 +2830,7 @@ class Handler(BaseHTTPRequestHandler):
         if not (path.startswith("/api/browser/") or path == "/api/vision/review") or not security.get("api_token"):
             return True
         configured = str(APP.config.get("browser_bridge", {}).get("tenant", "http-default") or "http-default")
-        requested = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
+        requested = self.headers.get("X-LocalAI-Tenant")
         if requested and str(requested).strip() != configured:
             self._send(403, {"success": False, "error": "browser bridge tenant is bound to its configured token tenant", "error_code": "tenant_binding_mismatch", "terminal": True, "retryable": False})
             return False
@@ -3196,6 +3174,8 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def _require_authorized(self, permission: str | None = None) -> bool:
+        if not self._reject_legacy_tenant_header():
+            return False
         if not self._validate_host_and_origin():
             return False
         local_mode_read = (
@@ -4443,7 +4423,6 @@ class Handler(BaseHTTPRequestHandler):
                 (query.get("root") or [None])[0],
                 query.get("tenant", []),
                 allow_principal_header=True,
-                require_configured_principal=True,
             )
             if task_identity is None:
                 return
@@ -4497,7 +4476,6 @@ class Handler(BaseHTTPRequestHandler):
                                 requested_root,
                                 query.get("tenant", []),
                                 allow_principal_header=True,
-                                require_configured_principal=True,
                             )
                             if bound is None:
                                 return
@@ -4620,7 +4598,7 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
                     root_val, repository_id_val = project_identity or (None, None)
                     query_tenant = (query.get("tenant") or [None])[0]
-                    explicit_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
+                    explicit_tenant = self.headers.get("X-LocalAI-Tenant")
                     tenant_val = str(query_tenant).strip() if query_tenant else (str(explicit_tenant).strip() if explicit_tenant else None)
                     task_id_val = (query.get("task_id") or [None])[0]
                     session_id_val = (query.get("session_id") or [None])[0]
@@ -4685,7 +4663,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
                 root_val, repository_id_val = project_identity or (None, None)
                 query_tenant = (query.get("tenant") or [None])[0]
-                explicit_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
+                explicit_tenant = self.headers.get("X-LocalAI-Tenant")
                 tenant_val = str(query_tenant).strip() if query_tenant else (str(explicit_tenant).strip() if explicit_tenant else None)
                 task_id_val = (query.get("task_id") or [None])[0]
                 session_id_val = (query.get("session_id") or [None])[0]
@@ -6759,7 +6737,7 @@ class Handler(BaseHTTPRequestHandler):
                     payload_repository_id = str(payload.get("repository_id") or "").strip()
                     if not repository_id_val and payload_repository_id:
                         repository_id_val = payload_repository_id
-                    explicit_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
+                    explicit_tenant = self.headers.get("X-LocalAI-Tenant")
                     raw_tenant = payload.get("tenant") or (str(explicit_tenant).strip() if explicit_tenant else None)
                     tenant_val = str(raw_tenant).strip() if raw_tenant else None
                     task_id_val = payload.get("task_id")
@@ -6834,7 +6812,7 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
                     root_val, repository_id_val = project_identity or (None, None)
                     requested_scope = _parse_memory_scope(payload.get("scope"))
-                    explicit_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
+                    explicit_tenant = self.headers.get("X-LocalAI-Tenant")
                     raw_tenant = payload.get("tenant") or (str(explicit_tenant).strip() if explicit_tenant else None)
                     tenant_val = None if requested_scope is AgentScope.GLOBAL else (str(raw_tenant).strip() if raw_tenant else None)
                     scope_val, scope_id_val, ambiguous_scope = _resolve_memory_scope(
@@ -6897,7 +6875,7 @@ class Handler(BaseHTTPRequestHandler):
                     if requested_root and project_identity is None:
                         self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
                     root_val, repository_id_val = project_identity or (None, None)
-                    explicit_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
+                    explicit_tenant = self.headers.get("X-LocalAI-Tenant")
                     raw_tenant = payload.get("tenant") or (str(explicit_tenant).strip() if explicit_tenant else None)
                     tenant_val = str(raw_tenant).strip() if raw_tenant else None
                     task_id_val = payload.get("task_id")
@@ -6954,7 +6932,7 @@ class Handler(BaseHTTPRequestHandler):
                     if requested_root and project_identity is None:
                         return None, "memory project identity could not be resolved"
                     root_val, repository_id_val = project_identity or (None, None)
-                    explicit_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
+                    explicit_tenant = self.headers.get("X-LocalAI-Tenant")
                     raw_tenant = payload.get("tenant") or (str(explicit_tenant).strip() if explicit_tenant else None)
                     tenant_val = str(raw_tenant).strip() if raw_tenant else None
                     task_id_val = payload.get("task_id")
@@ -7856,7 +7834,7 @@ class Handler(BaseHTTPRequestHandler):
                 status = int(result.pop("status_code", 200))
                 self._send(status, result); return
             if path == "/api/context/pack":
-                explicit_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
+                explicit_tenant = self.headers.get("X-LocalAI-Tenant")
                 raw_tenant = payload.get("tenant") or (str(explicit_tenant).strip() if explicit_tenant else None)
                 principal_tenant = self._configured_principal_tenant()
                 if principal_tenant and raw_tenant and str(raw_tenant).strip() != principal_tenant:
