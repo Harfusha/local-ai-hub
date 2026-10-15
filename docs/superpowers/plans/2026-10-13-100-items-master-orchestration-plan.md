@@ -4,6 +4,8 @@
 
 **Goal:** Transform Local AI Hub into a rock-solid, ultra-fast, and deeply capable local engine for cloud and local coding agents by executing all 100 identified enhancements across 6 modular waves.
 
+**Current execution phase (2026-10-15):** source integration closes at `492346ce` for the remaining bundle, including canonical scope/CAS/search/context inputs, lease ownership and channel pricing. Task100–127 source dispositions are recorded below; rejected optional patches remain preserved, not merged wholesale. Refresh generated API coverage from this source, then run integrated validation once against the frozen candidate. Historical OPEN source notes below describe earlier checkpoints. Current tests, package/install, live Windows crash containment, dashboard/MCP runtime and resource/model acceptance remain unverified until their final gates actually pass. Operator configuration and durable state have not been rewritten.
+
 **Architecture:** The primary agent owns the 6 waves, implementation, review, and integration on current `master`, under the governing [simplified integration process](../specs/2026-10-07-simplified-worktree-integration.md). Optional parallel implementations require disjoint write scopes and isolation where needed. All unit state uses temporary databases. Apply TDD to behavior changes: failing regression, minimal implementation, passing targeted tests, review, then commit.
 
 **Tech Stack:** Python 3.11+, SQLite 3 (WAL mode, custom pragmas, recursive CTEs), NumPy, tree-sitter / regex AST fallbacks, pytest, MCP (Model Context Protocol), Windows Process Job Objects.
