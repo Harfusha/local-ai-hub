@@ -338,9 +338,7 @@ max_diff_tokens = 24000
 max_local_input_tokens = 56000
 max_local_output_tokens = 8192
 compression_chunk_tokens = 8000
-# Legacy fallback rate for telemetry rows without separate input/output counters.
-cloud_token_cost_usd_per_million = 3.0
-# Cloud model input/output rates used for channel-specific USD savings estimates.
+# Cloud model input/output rates used for USD savings estimates.
 cloud_input_token_cost_usd_per_million = 3.0
 cloud_output_token_cost_usd_per_million = 3.0
 # Large local responses are stored outside agent context and represented by a compact preview + artifact id.
