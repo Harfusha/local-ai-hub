@@ -3040,8 +3040,7 @@ class CodeIndex:
                 indexed_rows: list[sqlite3.Row] = []
                 symbol_rows: list[sqlite3.Row] = []
                 symbols_truncated = False
-                for offset in range(0, len(changed), 400):
-                    chunk = changed[offset:offset + 400]
+                for chunk in sqlite_batches(changed):
                     placeholders = ",".join("?" for _ in chunk)
                     indexed_rows.extend(con.execute(
                         f"SELECT path FROM files WHERE root=? AND {_root_archive_path_sql('path')} AND path IN ({placeholders})",
@@ -3078,10 +3077,11 @@ class CodeIndex:
                 import_graph_truncated = False
                 dependent_scan_limit = max(200, max_dependents * 20)
                 if names:
-                    name_placeholders = ",".join("?" for _ in names)
+                    name_placeholders = "SELECT value FROM json_each(?)"
+                    name_params = (json_dumps(names),)
                     ref_rows = con.execute(
                         f"SELECT path,name,COUNT(*) AS mentions FROM refs WHERE root=? AND {_root_archive_path_sql('path')} AND name IN ({name_placeholders}) GROUP BY path,name LIMIT ?",
-                        (resolved_root, *names, dependent_scan_limit + 1),
+                        (resolved_root, *name_params, dependent_scan_limit + 1),
                     ).fetchall()
                     if len(ref_rows) > dependent_scan_limit:
                         dependent_source_truncated = True
@@ -3096,12 +3096,12 @@ class CodeIndex:
                         item["mentions"] += int(r["mentions"] or 0)
                     edge_rows = con.execute(
                         f"SELECT path,dst,kind FROM edges WHERE root=? AND {_root_archive_path_sql('path')} AND dst IN ({name_placeholders}) LIMIT ?",
-                        (resolved_root, *names, dependent_scan_limit),
+                        (resolved_root, *name_params, dependent_scan_limit),
                     ).fetchall()
                     if len(edge_rows) == dependent_scan_limit:
                         has_more_edges = con.execute(
                             f"SELECT 1 FROM edges WHERE root=? AND {_root_archive_path_sql('path')} AND dst IN ({name_placeholders}) LIMIT 1 OFFSET ?",
-                            (resolved_root, *names, dependent_scan_limit),
+                            (resolved_root, *name_params, dependent_scan_limit),
                         ).fetchone()
                         dependent_source_truncated = has_more_edges is not None
                     for r in edge_rows[:dependent_scan_limit]:
@@ -3213,8 +3213,8 @@ class CodeIndex:
                             WHERE path NOT IN ({changed_placeholders})
                             """,
                             (
-                                resolved_root, *names,
-                                resolved_root, *names,
+                                resolved_root, *name_params,
+                                resolved_root, *name_params,
                                 *changed,
                             ),
                         ).fetchone()
@@ -3234,8 +3234,8 @@ class CodeIndex:
                                 WHERE path NOT IN ({changed_placeholders})
                                 """,
                                 (
-                                    resolved_root, *names,
-                                    resolved_root, *names,
+                                    resolved_root, *name_params,
+                                    resolved_root, *name_params,
                                     *changed,
                                 ),
                             ).fetchone()
@@ -3257,8 +3257,8 @@ class CodeIndex:
                             WHERE normalized_path NOT IN ({changed_placeholders})
                             """,
                             (
-                                resolved_root, *names,
-                                resolved_root, *names,
+                                resolved_root, *name_params,
+                                resolved_root, *name_params,
                                 *changed,
                             ),
                         ).fetchone()
