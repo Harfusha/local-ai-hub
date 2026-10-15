@@ -2355,7 +2355,14 @@ class CodeIndex:
         status = freshness.get("status")
         current = status in {"verified_current_candidates", "stat_current_candidates"}
         result["freshness"] = freshness
-        result["stale"] = True if status == "stale_candidates" else False if current else None
+        if status == "stale_candidates":
+            result["stale"] = True
+        elif current:
+            result["stale"] = False
+        else:
+            # Unknown freshness is described by freshness.status/unknown_paths.
+            # The optional public envelope flag is boolean, never JSON null.
+            result.pop("stale", None)
         factor = 1.0 if status == "verified_current_candidates" else 0.5 if current else 0.0
         coverage = float(result.get("coverage", {}).get("query_term_coverage", 0.0))
         support = min(1.0, len(result.get("symbols", [])) / 3.0)
