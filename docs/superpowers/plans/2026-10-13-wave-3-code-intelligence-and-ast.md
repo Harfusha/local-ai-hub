@@ -280,13 +280,17 @@ Map `old_symbol` and `new_symbol` directly in `mcp_server.py` without forcing ag
 
 ### Task 52: Cross-Process Cache Invalidation via `PRAGMA data_version` (#100)
 
+**2026-10-15 implementation checkpoint — validation deferred by operator.** Added a lazy persistent read-only `SQLiteChangeObserver` with 50-ms SQLite waits, file-identity replacement detection, explicit close and a connection finalizer. Comparing `data_version` across short-lived connections would not work; each observer retains its connection. Unknown observer state bypasses cache reuse. CodeIndex clears query/impact/path/count/status caches and advances existing generation keys; in-flight impact subcaches retain the starting generation. Its observer guard is separate from the long indexing lock so status does not newly wait for an indexing transaction.
+
+Deterministic source-table INSERT/UPDATE/DELETE triggers advance affected root generations and invalidate L2 rows, including raw external writes and root changes. Query-cache writes check the source generation in a write transaction before storing and acknowledge cache-only observer changes, preserving L1 reuse. First installation of the invalidation triggers discards old derived L2 query rows. `LocalAIApp.close()` closes both observers; no production database was opened or changed during this source edit. Deferred source `tests/unit/test_cross_process_cache_invalidation.py` covers another Python process, L1 invalidation, both deterministic cache tiers and stale-result fencing. It has **not been executed**. Windows handle release, trigger behavior, races and cache performance remain acceptance work; no release claim follows.
+
 **Files:**
 - Modify: `src/local_ai_hub/code_index.py:150-190`
 - Modify: `src/local_ai_hub/deterministic.py:180-220`
 - Test: `tests/unit/test_cross_process_cache_invalidation.py`
 
-- [ ] **Step 1: Write test verifying in-memory cache invalidates when SQLite modified by external connection**
-- [ ] **Step 2: Implement fix**
+- [x] **Step 1: Write external-process/cache-tier regression source (execution deferred)**
+- [x] **Step 2: Implement fix (source reviewed; validation pending)**
 Check `PRAGMA data_version`. If value increments, flush in-memory L1 LRU cache.
 - [ ] **Step 3: Run test and verify pass & Commit**
 `git commit -m "fix(cache): use PRAGMA data_version to invalidate in-memory cache on external SQLite writes"`

@@ -207,7 +207,8 @@ Trigger map:
 - `local_ai_work`: only when the user explicitly requests closed delegation; routine work stays with the primary agent
 - symbol or code-relationship questions: `local_ai_repo` semantic actions (Serena symbol navigation); indexed fallback remains available
 - indexed skeletons: `local_ai_repo(action="skeletonize", root=ABS_ROOT, path=FILE)` without inline source returns a bounded symbol/signature outline with mtime/size freshness checks and no source-body reads. Imports, decorators, docstrings and bodies are explicitly omitted; missing/stale indexes require indexing or explicit source. Supplying source in `query` retains the inline transformation mode, where `path` selects a target symbol.
-- AST rename accepts explicit `old_symbol` and `new_symbol`: `local_ai_repo(action="ast_refactor", root=ABS_ROOT, path=FILE, old_symbol="before", new_symbol="after")`. Explicit names take precedence over the existing query/task and diff mappings; omitted apply/staged remains a dry run.
+- AST rename accepts explicit `old_symbol` and `new_symbol`: `local_ai_repo(action="ast_refactor", root=ABS_ROOT, path=FILE, old_symbol="before", new_symbol="after")`. Explicit names take precedence over the existing query/task and diff mappings; `staged=False` (the default) keeps the dry run.
+- SQLite navigation caches observe cross-process commits through `PRAGMA data_version`; deterministic source-table mutations advance project generations and invalidate persistent query results. Cache freshness does not establish whole-repository coverage or release acceptance.
 - Agent OS task and incident state: `local_ai_status(detail="agent_state")`
 - durable agent questions and operator answers: `local_ai_coord(action="ask"|"answer")`; pass explicit `root` and `session_id`; server binds tenant; retrieve with same scope and `question_id`
 - image understanding/frontend review via `qwen3-vl:4b`: `local_ai_task(action="vision")`

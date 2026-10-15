@@ -2109,6 +2109,13 @@ class LocalAIApp:
             self.telemetry.close()
         except Exception:
             pass
+        for name in ("deterministic", "code_index"):
+            try:
+                component = getattr(self, name, None)
+                if component is not None:
+                    component.close()
+            except Exception:
+                pass
         try:
             shutdown_logging()
         except Exception:
