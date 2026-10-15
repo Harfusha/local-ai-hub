@@ -4683,7 +4683,7 @@ def local_ai_coord(
     if action == "verify_export":
         return _compact(CLIENT.post("/api/agent-state/verification", {
             "action": "export", "task_id": task_id, "root": root,
-            "format": format,
+            "format": "markdown" if format is None else format,
         }, timeout=_timeout("quick")), "verify")
     if action == "negative_knowledge_record":
         return _compact(CLIENT.post("/api/agent-state/incidents", {
