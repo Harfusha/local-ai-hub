@@ -3002,7 +3002,7 @@ def _local_ai_repo_impl(
             "investigate", "search", "semantic", "intelligence", "route", "refactor_impact",
             "generate_tests", "generate_mocks", "explain_query", "dependency_slice", "structural_search",
         )},
-        **{name: ("query", "diff", "task", "path") for name in ("diagnose",)},
+        "diagnose": ("diff", "task", "workspace", "path"),
         **{name: ("query", "task", "workspace", "diff") for name in (
             "migration_drift", "package_audit", "git_diff", "type_stubs", "split_changes",
         )},
