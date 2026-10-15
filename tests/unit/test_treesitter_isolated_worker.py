@@ -45,6 +45,7 @@ def test_worker_pool_registers_initializer_without_running_it_in_parent(monkeypa
 
 def test_windows_worker_initializer_preserves_existing_wer_flags(monkeypatch):
     api = MagicMock()
+    api.GetErrorMode.return_value = 0x8000
     api.GetCurrentProcess.return_value = 1234
     api.WerSetFlags.return_value = 0
 
@@ -59,10 +60,12 @@ def test_windows_worker_initializer_preserves_existing_wer_flags(monkeypatch):
     module._initialize_isolated_worker()
 
     api.WerSetFlags.assert_called_once_with(0x0061)
+    api.SetErrorMode.assert_called_once_with(0x8003)
 
 
 def test_windows_worker_initializer_treats_missing_wer_flags_as_zero(monkeypatch):
     api = MagicMock()
+    api.GetErrorMode.return_value = 0
     api.GetCurrentProcess.return_value = 1234
     api.WerGetFlags.return_value = -2147023728  # HRESULT 0x80070490, ERROR_NOT_FOUND
     api.WerSetFlags.return_value = 0

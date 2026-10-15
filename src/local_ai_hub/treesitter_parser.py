@@ -153,6 +153,17 @@ def _initialize_isolated_worker() -> None:
     dword_type = ctypes.c_uint32
     hresult_type = ctypes.c_int32
 
+    # Cover critical-error and general-protection dialogs as well as WER UI.
+    # This initializer runs only in the owned worker; parent/operator flags
+    # stay untouched, and existing child error-mode bits remain set.
+    get_error_mode = api.GetErrorMode
+    get_error_mode.argtypes = []
+    get_error_mode.restype = dword_type
+    set_error_mode = api.SetErrorMode
+    set_error_mode.argtypes = [dword_type]
+    set_error_mode.restype = dword_type
+    set_error_mode(get_error_mode() | 0x0001 | 0x0002)
+
     get_current_process = api.GetCurrentProcess
     get_current_process.argtypes = []
     get_current_process.restype = handle_type
