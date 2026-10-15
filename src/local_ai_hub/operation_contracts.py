@@ -673,8 +673,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
         ),
         action_requirements={name: ("agent_os",) for name in _COORD_ACTIONS[8:]},
         allowed={
-            "ask": ("root", "tenant", "session_id", "question_id", "question"),
-            "answer": ("root", "tenant", "question_id", "answer"),
+            "ask": ("root", "tenant", "session_id", "question_id", "question", "task_id"),
+            "answer": ("root", "tenant", "question_id", "answer", "task_id"),
             "task_cleanup_worktree": ("root", "task_id"),
             "context_compile": (
                 "root", "task_id", "since_hash", "max_tokens", "paths", "include_diagnostics",
@@ -682,7 +682,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
                 "repository_revision", "phase", "focus", "preload_profile",
             ),
             "verify_receipt": ("root", "receipt"),
-            "verify_completion": ("root", "task_id"),
+            "verify_completion": ("root", "task_id", "repository_revision"),
             "verify_export": ("root", "task_id", "format"),
             "task_sync": ("root", "sync_action", "stream_id", "after_seq", "limit", "events"),
         },
