@@ -2064,7 +2064,9 @@ class TelemetryStore:
                 f"SELECT COUNT(*) FROM events WHERE {pricing_event_window} AND ({unpriced_row})",
                 pricing_event_params,
             ).fetchone()[0])
-            pricing_incomplete = bool(pricing_rollup_rows or unpriced_event_rows)
+            pricing_incomplete = bool(
+                pricing_rollup_rows or unpriced_event_rows or accounting_boundary_incomplete
+            )
             # Realtime summaries must stay cheap even at max raw-event retention.
             # Attribute each call to its dominant savings source in SQL; the full
             # multi-source breakdown is parsed only by the explicit diagnostic report.

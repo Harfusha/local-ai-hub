@@ -97,7 +97,7 @@ def _coordination_scope(
 def normalize_paths(
     paths: Sequence[str], *, root: str | Path | None = None
 ) -> tuple[str, ...]:
-    if paths is None or isinstance(paths, (str, bytes, bytearray)):
+    if not isinstance(paths, Sequence) or isinstance(paths, (str, bytes, bytearray)):
         raise ValueError("writer lease paths must be a sequence of exact paths")
     normalized: set[str] = set()
     resolved_root = Path(root).resolve(strict=False) if root is not None else None

@@ -172,6 +172,30 @@ def test_missing_zero_channel_row_stays_unknown_when_signed_deltas_cancel(teleme
     assert summary["estimated_savings_pricing_mode"] == "incomplete"
 
 
+def test_missing_boundary_events_keep_cost_unknown(telemetry_store, monkeypatch):
+    from datetime import datetime, timedelta, timezone
+
+    boundary = (datetime.now(timezone.utc) - timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    monkeypatch.setattr(
+        telemetry_store, "_scope_cutoff",
+        lambda days, scope: (boundary.timestamp() + 43_200, scope),
+    )
+    with closing(telemetry_store._connect()) as con:
+        con.execute(
+            """INSERT INTO daily_rollups(day,event_type,action,agent,model,cache_layer,success,events,
+                       gross_avoided_cloud_tokens)
+               VALUES(?,?,?,?,?,?,1,1,100)""",
+            (boundary.strftime("%Y-%m-%d"), "tool_accounting", "", "", "", ""),
+        )
+        con.commit()
+    summary = telemetry_store.summary(scope="window", _flush=False)
+    assert summary["accounting_boundary_incomplete"] is True
+    assert summary["estimated_savings_usd"] is None
+    assert summary["estimated_savings_pricing_mode"] == "incomplete"
+
+
 def test_rollup_without_channel_coverage_marks_window_cost_incomplete(telemetry_store):
     from datetime import datetime, timedelta, timezone
 

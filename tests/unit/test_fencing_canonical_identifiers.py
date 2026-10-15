@@ -63,7 +63,8 @@ def test_claim_attempt_rejects_coercive_coordination_id_before_store(
 
 @pytest.mark.parametrize(
     ("owner", "paths"),
-    [([], ["src/a.py"]), ("writer", "src/a.py"), ("writer", [None])],
+    [([], ["src/a.py"]), ("writer", "src/a.py"), ("writer", [None]),
+     ("writer", {"src/a.py": True}), ("writer", {"src/a.py"})],
 )
 def test_acquire_rejects_coercive_owner_or_paths_before_store(
     owner: object, paths: object
