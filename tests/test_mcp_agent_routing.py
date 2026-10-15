@@ -151,11 +151,11 @@ def test_coord_verify_receipt_rejects_missing_identity_before_network(monkeypatc
             raise AssertionError("invalid receipt must not reach the Hub")
 
     monkeypatch.setattr(local_ai_mcp, "CLIENT", _Client())
-    result = local_ai_mcp.local_ai_coord(action="verify_receipt", task_id="", key="")
+    result = local_ai_mcp.local_ai_coord(action="verify_receipt", receipt={})
 
     assert result["success"] is False
     assert result["terminal"] is True
-    assert "task_id and criterion" in result["error"]
+    assert "receipt" in result["error"].lower()
 
 
 def test_coord_forwards_explicit_receipt_criterion_and_blackboard_identity(monkeypatch):
@@ -171,15 +171,18 @@ def test_coord_forwards_explicit_receipt_criterion_and_blackboard_identity(monke
             return {"success": True, "echo": kwargs}
 
     monkeypatch.setattr(local_ai_mcp, "CLIENT", _Client())
+    receipt_payload = {
+        "task_id": "task-1", "criterion": "criterion-1", "passed": True,
+    }
     receipt = local_ai_mcp.local_ai_coord(
-        action="verify_receipt", task_id="task-1", criterion="criterion-1"
+        action="verify_receipt", receipt=receipt_payload
     )
     board = local_ai_mcp.local_ai_coord(
         action="blackboard_update", board_id="board-1", section="review", value="finding"
     )
     assert receipt["success"] is True
     assert board["success"] is True
-    assert calls[0][1]["receipt"]["criterion"] == "criterion-1"
+    assert calls[0][1]["receipt"] == receipt_payload
     assert calls[1][1]["board_id"] == "board-1"
     assert calls[1][1]["section"] == "review"
 
@@ -673,7 +676,6 @@ def test_local_ai_task_transcribe_forwards_only_explicit_language_hint(
 
     result = local_ai_mcp.local_ai_task(
         action="transcribe",
-        task="transcribe this recording",
         candidate="recording.wav",
         model="base",
         language=language,
@@ -812,34 +814,6 @@ def test_named_profile_rejects_relative_repository_root() -> None:
     assert result["success"] is False
     assert result["unsupported"] is True
     assert "absolute" in result["error"]
-
-@pytest.mark.parametrize(
-    ("language", "expected_language"),
-    [("cs", "cs"), (" AUTO ", None)],
-)
-def test_local_ai_task_transcribe_forwards_only_explicit_language_hint(
-    monkeypatch, language: str, expected_language: str | None
-) -> None:
-    captured = {}
-
-    def fake_post(path, payload, **kwargs):
-        captured.update({"path": path, "payload": payload, "kwargs": kwargs})
-        return {"success": True, "text": "recognized"}
-
-    monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
-    result = local_ai_mcp.local_ai_task(
-        action="transcribe", task="transcribe this recording",
-        candidate="recording.wav", model="base", language=language,
-    )
-    assert result["success"] is True
-    assert captured["path"] == "/api/task/transcribe"
-    assert captured["payload"]["audio_path"] == "recording.wav"
-    assert captured["payload"]["model"] == "base"
-    if expected_language is None:
-        assert "language" not in captured["payload"]
-    else:
-        assert captured["payload"]["language"] == expected_language
-
 
 def test_async_job_controls_bypass_model_execution_gate(monkeypatch):
     from types import SimpleNamespace
