@@ -4937,13 +4937,20 @@ class Handler(BaseHTTPRequestHandler):
                     }); return
                 self._send(200, {"success": True, "events": APP.telemetry.tail(limit)}); return
             if path == "/api/debug-traces":
+                try:
+                    trace_min_duration = int((query.get("min_duration_ms") or [0])[0])
+                    trace_action = str((query.get("action") or [""])[0])
+                    if not 0 <= trace_min_duration <= 86_400_000 or len(trace_action) > 64:
+                        raise ValueError("trace filter outside allowed bounds")
+                except (TypeError, ValueError, OverflowError):
+                    self._send(400, {"success": False, "error": "trace filters require min_duration_ms=0..86400000 and action of at most 64 characters", "terminal": True, "retryable": False}); return
                 result = APP.debug_traces.list(
                     kind=str((query.get("kind") or [""])[0]),
                     state=str((query.get("state") or [""])[0]),
                     agent=str((query.get("agent") or [""])[0]),
                     model=str((query.get("model") or [""])[0]),
-                    action=str((query.get("action") or [""])[0]),
-                    min_duration_ms=_query_int(query, "min_duration_ms", 0),
+                    action=trace_action.strip(),
+                    min_duration_ms=trace_min_duration,
                     limit=_query_int(query, "limit", 50),
                     offset=_query_int(query, "offset", 0),
                 )

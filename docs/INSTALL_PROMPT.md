@@ -530,6 +530,8 @@ Speculative lint remains opt-in (`speculative_lint.enabled=false`). With `daemon
 
 Managed llama.cpp preset generation carries each configured route's positive `context_length` into `ctx-size`; zero keeps the provider default and invalid values fail before replacing the preset. Existing running servers do not acquire this setting merely because source changed. Native streaming requires a completion marker and treats malformed or interrupted streams as failures. Native OOM context resizing remains unverified and must not be inferred from request `num_ctx`.
 
+Trace search is available through `local_ai_status(action="traces", min_duration_ms=1000, trace_action="search")` and `HubClient.status("traces", min_duration_ms=1000, trace_action="search")`, using the existing operator-authorized trace endpoint. Duration must be an integer from 0 through 86400000; action accepts at most 64 characters. Invalid filters fail explicitly rather than widening the search. Results remain bounded metadata; this does not grant new trace-reading authority.
+
 ## Local telemetry
 
 Basic aggregate telemetry remains enabled locally. Detailed request traces are disabled by default and can be toggled live in the dashboard. When enabled, they retain complete endpoint input/output locally, including sensitive values, within configured size and retention limits. Local telemetry and trace details stay on this device; only normal agent responses requested by cloud agents leave it.

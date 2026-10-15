@@ -19,7 +19,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urlsplit
+from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
 from .process_utils import find_listening_pid, pid_alive, popen_managed, process_identity, retain_process_job_in_child, terminate_tree
 from typing import Any, Mapping, Protocol, Sequence
@@ -1443,7 +1443,17 @@ class HubClient:
             cancel_event=cancel_event,
         )
 
-    def status(self, detail: str = "brief", scope: str = "process") -> dict[str, Any]:
+    def status(self, detail: str = "brief", scope: str = "process", *,
+               min_duration_ms: int = 0, trace_action: str = "") -> dict[str, Any]:
+        if not isinstance(min_duration_ms, int) or isinstance(min_duration_ms, bool) or not 0 <= min_duration_ms <= 86_400_000:
+            return {"success": False, "error": "min_duration_ms must be an integer between 0 and 86400000", "status_code": 400, "terminal": True, "retryable": False}
+        if not isinstance(trace_action, str) or len(trace_action) > 64:
+            return {"success": False, "error": "trace_action must be a string of at most 64 characters", "status_code": 400, "terminal": True, "retryable": False}
+        if detail == "traces":
+            query = urlencode({"min_duration_ms": min_duration_ms, "action": trace_action.strip(), "limit": 20})
+            return self.get(f"/api/debug-traces?{query}")
+        if min_duration_ms or trace_action:
+            return {"success": False, "error": "trace filters require detail=traces", "status_code": 400, "terminal": True, "retryable": False}
         if detail == "agent_state":
             return self.get("/api/status?detail=agent_state")
         return self.get(f"/api/live/status?light=1&scope={scope}&detail={detail}")
