@@ -158,7 +158,6 @@ class CompiledContext:
                         ensure_ascii=False,
                         sort_keys=True,
                         separators=(",", ":"),
-                        default=str,
                     )
                 except (TypeError, ValueError, OverflowError):
                     serialized = json.dumps(
