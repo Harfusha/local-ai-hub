@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from local_ai_hub.http_route_registry import (
@@ -144,14 +145,18 @@ def test_telemetry_preserves_all_source_discovered_exact_http_routes():
 def test_schema_upgrade_adds_metadata_columns_without_discarding_history(tmp_path):
     state = tmp_path / "telemetry"
     store = TelemetryStore(state, enabled=True, flush_interval_seconds=0.01)
-    store.record_http(action="/api/legacy", success=True)
+    store.record_http(action="/api/status", success=True)
     store.flush(1)
     store.close()
 
     db = state / "telemetry.sqlite3"
     con = sqlite3.connect(db)
     try:
-        for column in ("queue_age_ms", "terminal", "retryable", "receipt_count"):
+        for column in (
+            "queue_age_ms", "terminal", "retryable", "receipt_count", "root",
+            "db_wait_ms", "exec_ms", "serialization_ms",
+            "db_wait_measured", "exec_measured", "serialization_measured",
+        ):
             ddl = "ALTER" + " TABLE"
             con.execute(f'{ddl} events DROP COLUMN "{column}"')
         con.commit()
@@ -167,6 +172,64 @@ def test_schema_upgrade_adds_metadata_columns_without_discarding_history(tmp_pat
             columns = {row[1] for row in con.execute("PRAGMA table_info(events)")}
         finally:
             con.close()
-        assert {"queue_age_ms", "terminal", "retryable", "receipt_count"}.issubset(columns)
+        assert set(TelemetryStore._EVENT_COLUMNS).issubset(columns)
+        upgraded.record_http(action="/api/command", success=True)
+        assert upgraded.flush(2)
+        with closing(sqlite3.connect(db)) as con:
+            assert con.execute("SELECT action FROM events ORDER BY id").fetchall() == [
+                ("/api/status",), ("/api/command",),
+            ]
+        assert upgraded.summary(1)["writer"]["dropped"] == 0
     finally:
         upgraded.close()
+
+
+def test_realtime_summary_preserves_pricing_and_writer_health(tmp_path, monkeypatch):
+    store = TelemetryStore(tmp_path, enabled=True)
+    summary = {
+        "data_available": True, "estimated_savings_pricing_mode": "input_output",
+        "estimated_input_savings_usd": 0.0008, "estimated_output_savings_usd": 0.0012,
+        "cloud_input_token_cost_usd_per_million": 2.0,
+        "cloud_output_token_cost_usd_per_million": 8.0,
+        "net_cloud_token_delta_est": -42,
+        "writer": {"dropped": 9, "writer_errors": 1},
+    }
+    monkeypatch.setattr(store, "dashboard_report", lambda *args, **kwargs: {"summary": summary})
+    try:
+        projected = store.realtime_summary()
+        for key, value in summary.items():
+            assert projected[key] == value
+        assert projected["enabled"] is True
+    finally:
+        store.close()
+
+
+def test_dashboard_report_marks_cached_metrics_unavailable_after_read_failure(tmp_path, monkeypatch):
+    store = TelemetryStore(tmp_path, enabled=True)
+    try:
+        cached = store.dashboard_report(scope="process")
+        store._dashboard_cache_at[(30, "process")] = 0
+
+        def fail_report(*args, **kwargs):
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(store, "report", fail_report)
+        result = store.dashboard_report(scope="process")
+        assert result["summary"]["data_available"] is False
+        assert result["summary"]["stale"] is True
+        assert cached["summary"]["data_available"] is True
+        assert store.realtime_summary()["data_available"] is False
+    finally:
+        store.close()
+
+
+def test_session_history_uses_signed_tool_accounting_delta(tmp_path):
+    store = TelemetryStore(tmp_path, enabled=True)
+    try:
+        store.session_start()
+        store.record(event_type="inference", avoided_cloud_tokens=900)
+        store.record_tool_accounting({"tool": "local_ai_repo", "net_cloud_token_delta_est": -42})
+        assert store.flush(2)
+        assert store.sessions()[0]["tokens_saved"] == -42
+    finally:
+        store.close()

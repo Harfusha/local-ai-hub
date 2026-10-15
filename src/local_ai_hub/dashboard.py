@@ -256,6 +256,38 @@ tbody tr.click:hover{background:#162338}
 .copy-btn{background:#192535;border:1px solid #2b3d54;border-radius:4px;color:var(--fg);padding:2px 7px;font-size:10px;cursor:pointer}
 .copy-btn:hover{background:#23354a;color:#fff}
 .code-box{background:#0b1017;border:1px solid #212e3e;border-radius:6px;padding:10px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:11px;color:#d7e2ef;max-height:280px;overflow:auto;white-space:pre-wrap;word-break:break-word}
+/* Shared dashboard rhythm and accessible controls, including narrow screens. */
+body{font-size:13px;line-height:1.5}
+.page{padding:20px;max-width:1800px;margin-inline:auto}
+.toolbar{gap:10px;padding:12px 20px}
+.toolbar>label.tiny{display:flex;align-items:center;gap:6px}
+.tabs{padding-inline:20px;scrollbar-width:thin}
+.tabbtn{padding:9px 13px;min-height:38px}
+.btn{min-height:32px;padding:6px 12px;font-size:12px}
+.btn:disabled,button:disabled{opacity:.5;cursor:not-allowed}
+button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
+input:not([type=checkbox]):not([type=radio]),select{min-height:32px;max-width:100%}
+.grid{gap:14px}.grid>*{min-width:0}
+.grid-2{grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr))}
+.grid-3{grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr))}
+.grid-4{grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr))}
+.grid-6{grid-template-columns:repeat(auto-fit,minmax(min(100%,230px),1fr))}
+.card{padding:17px;min-height:116px;border-radius:11px;gap:7px}
+.label{font-size:11px;letter-spacing:.045em}.value{font-size:25px;line-height:1.25;margin-top:2px}
+.sub,.tiny,.muted{font-size:12px}.sub{line-height:1.55}
+.section{margin-top:16px;border-radius:11px}
+.section h2{padding:13px 16px;font-size:14px;flex-wrap:wrap}
+table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
+.group-title{flex-wrap:wrap;gap:8px;line-height:1.5}
+.metric-status{margin:0 0 12px;color:var(--muted);font-size:12px}
+.metric-status.warn-t{color:var(--warn)}
+.metric-details{margin-top:12px;padding:12px 16px;border:1px solid var(--line);border-radius:9px;color:var(--muted);background:var(--panel)}
+.metric-details summary{cursor:pointer;color:var(--fg);font-weight:600}
+.metric-details p{max-width:90ch}.metric-details pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.7 ui-monospace,Consolas,monospace;margin-bottom:0}
+@media(min-width:1100px){.grid-6{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+@media(max-width:600px){.page{padding:12px}.toolbar{padding:10px 12px}.tabs{padding-inline:12px}.toolbar>.spacer{flex-basis:100%;margin-left:0}.grid-6{grid-template-columns:repeat(2,minmax(0,1fr))}.card{padding:12px;min-height:116px}.value{font-size:21px}.group-title>.tiny{display:none}.section h2 .spacer{margin-left:0}.modal-bg{padding:8px}.modal{max-height:94vh}}
+@media(max-width:380px){.grid-6{grid-template-columns:1fr}}
 </style></head><body>
 <div class="top">
   <div class="toolbar">
@@ -266,7 +298,7 @@ tbody tr.click:hover{background:#162338}
     <span id="conn" class="pill warn-t"><span class="pulse-dot"></span>connecting</span>
     <span id="activityModeBadge" class="pill warn-t" data-mode="unknown">Mode: Unknown</span>
     <span id="updated" class="tiny"></span>
-    <label class="tiny">SLO <select id="sloScope"><option value="process" selected>Since restart</option><option value="window">Last 30 days</option></select></label>
+    <label class="tiny">Metrics period <select id="sloScope"><option value="process" selected>Since restart</option><option value="window">Last 30 days</option></select></label>
     <span class="tiny spacer">Agent debug traces · off by default; payloads available when enabled</span>
     <span id="featSummary" class="pill tiny"></span>
     <details id="controlMenu" class="control-menu">
@@ -325,6 +357,7 @@ tbody tr.click:hover{background:#162338}
 
   <div class="dash-group">
     <div class="group-title"><span>Performance &amp; Token Efficiency</span><span class="tiny muted">Net cloud avoidance after agent tool-call/read overhead, local compute reuse and tail latency</span></div>
+    <p id="efficiencyStatus" class="metric-status" role="status">Loading telemetry…</p>
     <div class="grid grid-6">
       <div class="card"><div class="label">Requests handled</div><div class="value primary-metric" id="handledRequests">…</div><div class="sub" id="handledRequestsSub"></div><canvas id="throughputSpark" class="spark-canvas" width="160" height="30"></canvas></div>
       <div class="card"><div class="label">Net cloud token delta</div><div class="value primary-metric" id="tokensSaved">…</div><div class="sub" id="tokensSavedSub"></div></div>
@@ -333,6 +366,7 @@ tbody tr.click:hover{background:#162338}
       <div class="card"><div class="label">Latency p50 / p95 / p99</div><div class="value" id="latency">…</div><div class="sub" id="queueWait"></div><canvas id="latencySpark" class="spark-canvas" width="160" height="30"></canvas></div>
       <div class="card"><div class="label">Reliability</div><div class="value primary-metric" id="reliabilityValue">…</div><div class="sub" id="reliabilitySub"></div></div>
     </div>
+    <details class="metric-details"><summary>How token savings are estimated</summary><p>Signed source/context baseline minus the tokens spent calling tools and reading their responses. Negative values mean additional cloud token cost. Local compute reuse and schema exposure are separate diagnostics.</p><pre id="efficiencyBreakdown">Waiting for accounting data.</pre></details>
   </div>
 
   <div class="dash-group">
@@ -598,6 +632,51 @@ function dashboardHealthBadge(status={}){
   return {className,degradedCount,degradedLabel};
 }
 
+function dashboardTelemetryState(observability={}){
+  const writer=observability.writer||{};
+  const dropped=Math.max(0,Number(writer.dropped)||0),errors=Math.max(0,Number(writer.writer_errors)||0);
+  const available=observability.enabled!==false&&observability.data_available!==false&&observability.stale!==true&&
+    (observability.data_available===true||Object.hasOwn(observability,'net_cloud_token_delta_est'));
+  return {available,complete:available&&!dropped&&!errors,dropped,errors};
+}
+
+function formatEstimatedUsd(value){
+  const amount=Number(value);
+  if(!Number.isFinite(amount))return 'Unavailable';
+  const absolute=Math.abs(amount),digits=absolute>0&&absolute<0.01?4:2;
+  return '≈ '+(amount<0?'−':'')+'$'+absolute.toFixed(digits);
+}
+
+function renderTelemetryMetrics(observability={}){
+  const state=dashboardTelemetryState(observability),period=observability.scope==='window'||sloScope==='window'?'Last 30 days':'Since restart';
+  const calls=Math.max(0,Number(observability.tool_accounting_events)||0);
+  const status=$('efficiencyStatus'),breakdown=$('efficiencyBreakdown');
+  if(status){
+    status.textContent=period+' · '+(!state.available?'Telemetry unavailable. Metrics cannot be verified.':!state.complete?'Incomplete telemetry. Estimates exclude missing records.':!calls?'No accounted tool calls yet.':'Estimated from '+n(calls)+' accounted tool calls.');
+    status.classList.toggle('warn-t',!state.complete);
+  }
+  if(breakdown){
+    const sources=Object.entries(observability.token_savings_breakdown||{}).map(([name,value])=>name+': '+n(value)).join('\n');
+    breakdown.textContent='Period: '+period+'\nAccounted calls: '+n(calls)+'\nBaseline: '+n(observability.gross_cloud_tokens_avoided_est)+' tokens\nProtocol: '+n(observability.agent_protocol_tokens_est)+' tokens (call '+n(observability.agent_tool_request_tokens_est)+' + read '+n(observability.agent_tool_response_tokens_est)+')\nSchema-adjusted delta: '+n(observability.net_after_schema_token_delta_est)+' tokens\nSchema catalog exposure: '+n(observability.tool_schema_tokens_exposure_est)+' tokens\nLocal compute reuse: '+n(observability.local_compute_tokens_avoided_est)+' tokens\nWriter: '+n(state.dropped)+' records dropped; '+n(state.errors)+' write errors'+(sources?'\nBaseline sources:\n'+sources:'\nNo baseline source recorded.');
+  }
+  if(!state.available){
+    for(const id of ['handledRequests','tokensSaved','dollarsSaved','cache','latency','reliabilityValue'])if($(id))$(id).textContent='Unavailable';
+    for(const id of ['handledRequestsSub','tokensSavedSub','dollarsSavedSub','cacheSub','queueWait','reliabilitySub'])if($(id))$(id).textContent='Telemetry unavailable · '+period;
+    return;
+  }
+  if($('tokensSaved'))$('tokensSaved').textContent=n(observability.net_cloud_token_delta_est);
+  if($('tokensSavedSub'))$('tokensSavedSub').textContent=period+' · '+(calls?n(calls)+' accounted calls':'No accounted calls yet')+(!state.complete?' · partial estimate':'');
+  if($('dollarsSaved'))$('dollarsSaved').textContent=formatEstimatedUsd(observability.estimated_savings_usd??0);
+  if($('dollarsSavedSub'))$('dollarsSavedSub').textContent=(observability.estimated_savings_pricing_mode==='input_output'?'Separate input/output rates':'Blended rate')+' · '+period+(!state.complete?' · incomplete data':'');
+  if(breakdown)breakdown.textContent+='\nUSD input rate: $'+Number(observability.cloud_input_token_cost_usd_per_million??observability.cloud_token_cost_usd_per_million??0).toFixed(2)+' / 1M\nUSD output rate: $'+Number(observability.cloud_output_token_cost_usd_per_million??observability.cloud_token_cost_usd_per_million??0).toFixed(2)+' / 1M';
+}
+
+function preprocessingSummary(preprocessing={},dependencies={}){
+  const available=preprocessing.success!==false&&dependencies['preprocessing.status']?.degraded!==true&&dependencies['preprocessing.stats']?.degraded!==true;
+  const count=value=>Math.max(0,Number(value)||0).toLocaleString();
+  return {available,text:available?count(preprocessing.active_projects)+' monitored · '+count(preprocessing.processing_projects)+' processing projects · '+count(preprocessing.max_preprocessing_projects)+' concurrent slots':'Preprocessing status unavailable'};
+}
+
 function dashboardHealth(snapshot={}){
   const current=snapshot.current||snapshot.live||snapshot.headless||snapshot;
   const observability=snapshot.observability||{},cohorts=observability.cohorts||{},agentHttp=cohorts.agent_http||{},policy=cohorts.policy_rejection||{},inference=cohorts.inference||{};
@@ -606,6 +685,12 @@ function dashboardHealth(snapshot={}){
   const openIssues=count(current.open_incidents??current.active_errors??current.blocked_requests??0),agentFailures=count(agentHttp.failures),policyRejections=count(policy.events),degradedCount=count(inference.degraded_count),retryCount=count(inference.retry_count),restarts=count(current.restarts??snapshot.headless?.restarts),hubOnline=snapshot.hub_online??current.hub_online,ollamaOnline=snapshot.ollama_online??current.ollama_online,heartbeatStale=current.heartbeat_stale===true||snapshot.heartbeat_stale===true;
   const ollamaStatus=String(snapshot.ollama_status??current.ollama_status??(ollamaOnline==null?'unknown':ollamaOnline?'online':'offline')).toLowerCase();
   const signals=[];
+  const failedChecks=Object.entries(snapshot.dependency_status||{}).filter(([,value])=>value?.degraded).map(([name])=>name);
+  if(failedChecks.length)signals.push('unavailable checks: '+failedChecks.join(', '));
+  const writer=observability.writer||{};
+  if(Number(writer.dropped)>0)signals.push(`${Number(writer.dropped).toLocaleString()} telemetry records dropped`);
+  if(Number(writer.writer_errors)>0)signals.push(`${Number(writer.writer_errors).toLocaleString()} telemetry write errors`);
+  if(observability.data_available===false||observability.stale===true)signals.push('telemetry data is unavailable or stale');
   if(agentFailures)signals.push(`${agentFailures} agent HTTP failure${agentFailures===1?'':'s'}`);
   if(policyRejections)signals.push(`${policyRejections} policy rejection${policyRejections===1?'':'s'}`);
   if(degradedCount)signals.push(`${degradedCount} degraded inference${degradedCount===1?'':'s'}`);
@@ -613,7 +698,7 @@ function dashboardHealth(snapshot={}){
   if(restarts)signals.push(`${restarts} supervisor restart${restarts===1?'':'s'}`);
   const actionTab=openIssues||count(current.blocked_requests)?'work':'reliability';
   const actionLabel=actionTab==='work'?'Open queue and requests':'Open reliability details';
-  if(hubOnline===false||heartbeatStale||['degraded','down','offline','unavailable','crashed','stopped','stale'].includes(status)||current.degraded===true){
+  if(hubOnline===false||heartbeatStale||['degraded','down','offline','unavailable','crashed','stopped','stale'].includes(status)||current.degraded===true||snapshot.degraded===true||snapshot.success===false){
     const reason=hubOnline===false?'Hub is offline.':heartbeatStale||status==='stale'?'Runtime heartbeat is stale.':signals.length?`Current runtime is degraded: ${signals.join(', ')}.`:'Current runtime reports an unavailable service.';
     return {level:'degraded',label:'Degraded',reason,actionTab,actionLabel};
   }
@@ -4831,10 +4916,19 @@ async function applyActivityMode(mode){
   finally{buttons.forEach(button=>button.disabled=false);}
 }
 
+function setConfigFormReady(ready){
+  document.querySelectorAll('#config input,#config select').forEach(control=>{control.disabled=!ready});
+  for(const id of ['cfgSave','cfgReset'])if($(id))$(id).disabled=!ready;
+}
+let configViewLoad=null;
 async function loadConfigView(){
+  if(configViewLoad)return configViewLoad;
+  setConfigFormReady(false);
+  $('cfgStatus').textContent='Loading configuration…';
+  configViewLoad=(async()=>{
   try{
     const r=await apiFetch('/api/config',{cache:'no-store'}),d=await r.json();
-    if(!d.success){$('cfgStatus').textContent=d.error||'failed';return}
+    if(r.ok===false||!d.success){$('cfgStatus').textContent=d.error||'Configuration unavailable. Reload to retry.';return}
     const c=d.config||{},feat=c.features||{};
     $('cfgProfile').value=c.hardware?.profile||'auto';
     $('cfgPreprocess').checked=c.preprocessing?.enabled!==false&&feat.preprocessing!==false;
@@ -4854,7 +4948,10 @@ async function loadConfigView(){
     $('cfgPath').textContent=(d.config_path||'')+(d.runtime_override_path?' · overrides '+d.runtime_override_path:'');
     $('cfgPreview').textContent=JSON.stringify(c,null,2);
     $('cfgStatus').textContent='';
-  }catch(e){$('cfgStatus').textContent=String(e)}
+    setConfigFormReady(true);
+  }catch(e){$('cfgStatus').textContent='Configuration unavailable: '+String(e)}
+  })();
+  try{await configViewLoad}finally{configViewLoad=null}
 }
 $('cfgReload').onclick=loadConfigView;
 $('cfgSave').onclick=async()=>{
@@ -4997,6 +5094,12 @@ function groupedProjects(items){
 }
 
 function renderProjects(items){
+  const status=preprocessingSummary(last?.preprocessing||{},last?.dependency_status||{});
+  if(!status.available){
+    if($('projectSummary'))$('projectSummary').textContent='Project inventory unavailable';
+    rows('projectsBody',[],()=>'',5,'Project status unavailable. Refresh status to retry.');
+    return;
+  }
   const entries=Array.isArray(items)?items:[],source=groupedProjects(entries),query=projectQuery.trim().toLowerCase();
   const rank={error:0,running:1,waiting:2,queued:3,paused:4,ready:5};
   const visible=source.filter(x=>{
@@ -5021,10 +5124,10 @@ function renderProjects(items){
     const variants=x.variants||[x],variantLabel=variants.length>1?`<span class="chip" title="${esc(variants.map(v=>v.root).join('\n'))}">${variants.length} worktrees</span>`:'';
     const actions=`<div class="project-actions"><button class="action-btn-sm" data-project-action="${state==='paused'?'resume':'pause'}" data-project-root="${esc(x.root)}" title="${state==='paused'?'Resume project preprocessing':'Pause project'}">${state==='paused'?'▶ Resume':'⏸ Pause'}</button><button class="action-btn-sm" data-project-action="refresh" data-project-root="${esc(x.root)}" title="Re-scan selected project entry">Refresh</button><button class="action-btn-sm danger" data-project-action="delete" data-project-root="${esc(x.root)}" data-project-name="${esc(x.project)}" title="Unregister selected project entry">Unregister</button></div>`;
     return clickableRow(x,`<td><div class="project-name"><b>${esc(x.project)}</b>${isWorktree?'<span class="chip" style="font-size:9px;color:var(--accent2);border-color:#584578">worktree</span>':''}${variantLabel}</div><div class="tiny muted">Repository identity</div><div class="tiny muted mono project-root" title="${esc(x.repository_identity||x.root)}">${esc(x.repository_identity||x.root)}</div></td><td><span class="badge-status ${badge[0]}">${badge[2]}${badge[1]}</span><div class="tiny ${activityCls} project-activity" title="${esc(x.active_detail||activityText)}">${esc(activityText)}</div><div class="tiny muted">${esc(progressHint)}</div></td><td><div class="project-progress-line"><b>${phaseTitle}</b><span>${overall}%</span></div><div class="bar project-progress"><i style="width:${overall}%;background:${state==='error'?'var(--bad)':isComplete?'var(--ok)':'var(--accent)'}"></i></div><div class="tiny muted">${phasePct}% in phase</div></td><td><div class="project-index"><span class="${ragFiles>=tot?'ok':''}">🧠 RAG ${ragPct}%</span><span class="${cards>=tot*0.9?'ok':''}">📄 Cards ${cardPct}%</span></div></td><td>${actions}</td>`,'project',x.root);
-  },5);
+  },5,query||projectFilter!=='all'?'No projects match the current filters.':'No projects registered. Register a repository to begin.');
 }
 async function projectAction(root, action) {
-  try { await post('/api/preprocess', { root, action }); await pollStatus(); } catch(e) { alert('Action error: ' + e); }
+  try { const result=await post('/api/preprocess', { root, action }); if(!result.success)throw new Error(result.error||'Project action failed'); await pollStatus(); } catch(e) { alert('Action error: ' + e); }
 }
 $('regProjectBtn').onclick = openRegisterProjectModal;
 $('cleanMissingBtn').onclick = openCleanMissingModal;
@@ -5244,6 +5347,8 @@ function render(s){
   $('reliabilityValue').innerHTML=`<span class="${agentHttp.failures?'warn-t':'ok'}">${n(agentHttp.failures)} failures</span>`;
   $('reliabilitySub').textContent=n(policy.events)+' policy rejections · '+n(inference.fallback_count)+' fallbacks · '+n(inference.degraded_count)+' degraded · '+n(inference.retry_count)+' retries';
 
+  renderTelemetryMetrics(o);
+
   // Update real-time rolling sparkline and wave data
   const curP95=Number(agentHttp.p95_duration_ms||0);
   const curWait=Number(o.avg_queue_wait_ms||0);
@@ -5277,7 +5382,9 @@ function render(s){
   if($('agentStateCard'))$('agentStateCard').onclick=()=>switchTab('agentos');
 
   $('prep').textContent=(p.paused?'paused':(p.processing_projects?'active':'idle'))+' · '+n(p.steps)+' steps';
-  $('prepSub').textContent=n(p.active_projects)+' active · '+n(p.processing_projects)+'/'+n(p.max_preprocessing_projects)+' preprocessing · card reuse '+ingReuse+'% · query hit '+qHitRate+'%';
+  const prepStatus=preprocessingSummary(p,s.dependency_status||{});
+  $('prepSub').textContent=prepStatus.text+(prepStatus.available?' · card reuse '+ingReuse+'% · query hit '+qHitRate+'%':'');
+  if(!prepStatus.available)$('prep').textContent='Unavailable';
 
   const allJobs=[...(q.inflight_jobs||[]),...(q.pending_jobs||[])];
   if($('currentSummary'))$('currentSummary').textContent=n(q.foreground_queued)+' queued · '+n(q.foreground_inflight)+' running';
@@ -5306,7 +5413,10 @@ function render(s){
     const allDone=projs.length>0&&projs.every(x=>x.status==='complete'||(x.overall_progress_pct||0)>=100);
     const bgYield=p.scheduler_background_allowed===false;
     diagBar.style.display='flex';
-    if(!isEnabled){
+    if(!prepStatus.available){
+      diagBar.className='diag-banner warn';
+      diagBar.textContent='Project status is unavailable. This does not mean that no projects are registered. Refresh status to retry.';
+    }else if(!isEnabled){
       diagBar.className='diag-banner bad';
       diagBar.innerHTML=`<span>❌ <b>Preprocessing is disabled in configuration</b> (<code>preprocessing.enabled = false</code>). Enable it in the Configuration tab.</span>`;
     }else if(isGlobPaused){
@@ -5334,6 +5444,9 @@ function render(s){
 
   const prepPaused=!!p.paused;
   $('prepState').textContent=n((p.projects||[]).length)+' registered projects · global '+(prepPaused?'paused':'running');
+  if(!prepStatus.available)$('prepState').textContent='Project inventory unavailable';
+  $('prepAllToggle').disabled=!prepStatus.available;
+  $('cleanMissingBtn').disabled=!prepStatus.available;
   $('prepToggle').textContent=prepPaused?'Resume preprocessing':'Pause preprocessing';
   $('prepAllToggle').textContent=prepPaused?'Resume all projects':'Pause all projects';
   renderProjects(p.projects||[]);
