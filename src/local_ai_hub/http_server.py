@@ -3459,7 +3459,7 @@ class Handler(BaseHTTPRequestHandler):
                     if field in payload:
                         text(payload[field], field, maximum)
                 if "exit_code" in payload:
-                    bounded_integer(payload["exit_code"], "exit_code", -32768, 32767)
+                    bounded_integer(payload["exit_code"], "exit_code", -(1 << 31), (1 << 32) - 1)
                 for field, maximum_items, maximum_chars in (("evidence_ids", 64, 256), ("affected_paths", 128, 4096)):
                     if field not in payload:
                         continue
