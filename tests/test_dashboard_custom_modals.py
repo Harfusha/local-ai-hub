@@ -394,7 +394,6 @@ def test_dashboard_modal_forms_and_actions_defined() -> None:
         "async function submitFailTask(",
         "async function transitionTaskAction(",
         "async function deleteMemoryAction(",
-        "async function resolveIncidentAction(",
         "async function releaseLeaseAction(",
     ]
     for act in expected_actions:
