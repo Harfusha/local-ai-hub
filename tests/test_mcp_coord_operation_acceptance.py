@@ -697,12 +697,12 @@ def test_local_ai_coord_task_sync_forwards_export_and_import_payloads(monkeypatc
     monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
     monkeypatch.setattr(mcp_server, "CLIENT", backend)
     exported = mcp_server.local_ai_coord(
-        action="task_sync", status="export", key="stream-59", ttl_seconds=3,
-        max_tokens=12,
+        action="task_sync", sync_action="export", stream_id="stream-59",
+        after_seq=3, limit=12,
     )
     events = [{"seq": 4, "kind": "task.updated"}]
     imported = mcp_server.local_ai_coord(
-        action="task_sync", status="import", record=events
+        action="task_sync", sync_action="import", events=events
     )
     assert exported["success"] is True
     assert imported["success"] is True
@@ -716,14 +716,14 @@ def test_local_ai_coord_task_sync_forwards_export_and_import_payloads(monkeypatc
     ]
 
 
-def test_local_ai_coord_task_sync_prefers_explicit_after_seq(monkeypatch):
+def test_local_ai_coord_task_sync_forwards_canonical_cursor_and_limit(monkeypatch):
     backend = ApiBackend({"success": True, "summary": "forwarded"})
     monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
     monkeypatch.setattr(mcp_server, "CLIENT", backend)
 
     result = mcp_server.local_ai_coord(
-        action="task_sync", status="export", key="stream-60", after_seq=7,
-        ttl_seconds=3, max_tokens=12,
+        action="task_sync", sync_action="export", stream_id="stream-60",
+        after_seq=7, limit=12,
     )
 
     assert result["success"] is True
@@ -736,25 +736,30 @@ def test_local_ai_coord_task_sync_preserves_explicit_zero_cursor(monkeypatch):
     monkeypatch.setattr(mcp_server, "CLIENT", backend)
 
     result = mcp_server.local_ai_coord(
-        action="task_sync", status="export", key="stream-61", after_seq=0,
-        ttl_seconds=3, max_tokens=12,
+        action="task_sync", sync_action="export", stream_id="stream-61",
+        after_seq=0, limit=12,
     )
 
     assert result["success"] is True
     assert backend.calls[0][1]["after_seq"] == 0
 
 
-def test_local_ai_coord_task_sync_normalizes_import_status(monkeypatch):
-    backend = ApiBackend({"success": True, "summary": "forwarded"})
-    monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
-    monkeypatch.setattr(mcp_server, "CLIENT", backend)
+def test_local_ai_coord_task_sync_rejects_retired_fields_before_network(
+    monkeypatch, tmp_path
+):
+    backend = _prepare_coord_api(monkeypatch)
+    root = str(tmp_path.resolve())
 
-    result = mcp_server.local_ai_coord(
-        action="task_sync", status=" IMPORT ", record=[{"seq": 8}]
-    )
+    tool_result = asyncio.run(mcp_server.mcp.call_tool(
+        "local_ai_coord", {
+            "action": "task_sync", "root": root, "sync_action": "import",
+            "events": [{"seq": 8}], "status": "import", "record": [{"seq": 8}],
+        }
+    ))
 
-    assert result["success"] is True
-    assert backend.calls[0][1] == {"action": "import", "events": [{"seq": 8}]}
+    result = _mcp_coord_json(tool_result)
+    assert result["success"] is False
+    assert backend.calls == []
 
 
 def test_local_ai_coord_task_zombie_reap_forwards_recovery_flag(monkeypatch):
@@ -987,7 +992,8 @@ def test_local_ai_coord_verify_receipt_forwards_criterion_and_pass_state(monkeyp
     backend = _prepare_coord_api(monkeypatch)
     tool_result = asyncio.run(mcp_server.mcp.call_tool(
         "local_ai_coord", {"action": "verify_receipt", "root": root,
-         "task_id": "task-67", "criterion": "selector passed", "status": "passed"}
+         "receipt": {"task_id": "task-67", "criterion": "selector passed",
+                     "passed": True}}
     ))
     result = _mcp_coord_json(tool_result)
     assert result["success"] is True
