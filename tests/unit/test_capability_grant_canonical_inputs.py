@@ -8,6 +8,20 @@ from local_ai_hub import agent_policy
 from local_ai_hub.agent_policy import ActionRequest, CapabilityGrant, PolicyEngine, RiskClass
 
 
+@pytest.mark.parametrize("field", ["grant_id", "task_id"])
+@pytest.mark.parametrize("value", [" spaced ", "bad\x00identity"])
+def test_identity_must_be_canonical_without_sanitization(field, value):
+    with pytest.raises(ValueError, match=field):
+        CapabilityGrant.from_dict({"grant_id": "grant-1", field: value})
+
+
+@pytest.mark.parametrize("field", ["allowed", "denied"])
+@pytest.mark.parametrize("value", [[], {}, ["write"], 1, None])
+def test_array_entries_reject_before_freezing_or_hashing(field, value):
+    with pytest.raises(ValueError, match="entries must be strings"):
+        CapabilityGrant.from_dict({"grant_id": "grant-1", field: [value]})
+
+
 def test_canonical_json_round_trip_preserves_grant_identity_and_authority() -> None:
     raw = {
         "grant_id": "grant-1",
