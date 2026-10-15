@@ -13,7 +13,7 @@ import time
 from collections import OrderedDict
 from contextlib import closing, contextmanager
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any, Callable, Iterator, Mapping
 
 from . import __version__
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, retry_busy, quick_sanity_check
@@ -63,7 +63,16 @@ class _CommandCacheCoordinator:
                     if os.fstat(fd).st_size == 0:
                         os.write(fd, b"\0")
                     os.lseek(fd, 0, os.SEEK_SET)
-                    msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+                    deadline = time.monotonic() + _COMMAND_CACHE_LOCK_TIMEOUT_SECONDS
+                    while True:
+                        try:
+                            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+                            break
+                        except OSError:
+                            remaining = deadline - time.monotonic()
+                            if remaining <= 0:
+                                raise TimeoutError("command-cache coordination lock timed out")
+                            time.sleep(min(0.01, remaining))
                 else:
                     import fcntl
 
@@ -262,12 +271,29 @@ class MemoryLRUCache:
             return value
 
     def get_many(self, keys: list[str]) -> dict[str, Any]:
-        """Look up multiple keys across memory shards."""
+        """Look up multiple keys across memory shards with one lock per shard."""
         results: dict[str, Any] = {}
+        by_shard: dict[int, list[str]] = {}
         for key in keys:
-            val = self.get(key)
-            if val is not None:
-                results[key] = val
+            by_shard.setdefault(self._shard_idx(key), []).append(key)
+        now = time.monotonic()
+        for idx, shard_keys in by_shard.items():
+            with self._locks[idx]:
+                items = self._shards[idx]
+                for key in shard_keys:
+                    item = items.get(key)
+                    if item is None:
+                        self._misses[idx] += 1
+                        continue
+                    created_at, value = item
+                    if self.ttl_seconds and now - created_at > self.ttl_seconds:
+                        items.pop(key, None)
+                        self._misses[idx] += 1
+                        continue
+                    items.move_to_end(key)
+                    self._hits[idx] += 1
+                    if value is not None:
+                        results[key] = value
         return results
 
     def set(self, key: str, value: Any) -> None:
@@ -280,6 +306,22 @@ class MemoryLRUCache:
             while len(items) > self._shard_max:
                 items.popitem(last=False)
                 self._evictions[idx] += 1
+
+    def set_many(self, items: Mapping[str, Any]) -> None:
+        """Store multiple key-value pairs across memory shards with one lock per shard."""
+        by_shard: dict[int, list[tuple[str, Any]]] = {}
+        for key, value in items.items():
+            by_shard.setdefault(self._shard_idx(key), []).append((key, value))
+        now = time.monotonic()
+        for idx, entries in by_shard.items():
+            with self._locks[idx]:
+                shard_items = self._shards[idx]
+                for key, value in entries:
+                    shard_items[key] = (now, value)
+                    shard_items.move_to_end(key)
+                    while len(shard_items) > self._shard_max:
+                        shard_items.popitem(last=False)
+                        self._evictions[idx] += 1
 
     def delete(self, key: str) -> None:
         idx = self._shard_idx(key)
@@ -646,6 +688,55 @@ class SQLiteCache:
                 con.commit()
         self._safe(op, None)
 
+    def set_many(self, items: Mapping[str, Any]) -> None:
+        """Store multiple entries atomically in one SQLite transaction."""
+        if not items:
+            return
+        now = time.time()
+        rows = [
+            (
+                self.namespace,
+                key,
+                json_dumps(value, ensure_ascii=False, separators=(",", ":"), default=str),
+                now,
+                now,
+            )
+            for key, value in items.items()
+        ]
+
+        def op() -> None:
+            with self._lock, closing(self._connect()) as con:
+                con.executemany(
+                    """INSERT INTO cache_entries(namespace, cache_key, value_json, created_at, accessed_at, hits)
+                       VALUES(?,?,?,?,?,0)
+                       ON CONFLICT(namespace, cache_key) DO UPDATE SET
+                         value_json=excluded.value_json,
+                         created_at=excluded.created_at,
+                         accessed_at=excluded.accessed_at""",
+                    rows,
+                )
+                writes_since_prune = self._writes_since_prune + len(rows)
+                if writes_since_prune >= self._prune_every_writes:
+                    count = con.execute(
+                        "SELECT COUNT(*) FROM cache_entries WHERE namespace=?",
+                        (self.namespace,),
+                    ).fetchone()[0]
+                    extra = int(count) - self.max_entries
+                    if extra > 0:
+                        con.execute(
+                            "DELETE FROM cache_entries WHERE rowid IN "
+                            "(SELECT rowid FROM cache_entries WHERE namespace=? "
+                            "ORDER BY accessed_at ASC LIMIT ?)",
+                            (self.namespace, extra + 32),
+                        )
+                    con.commit()
+                    self._writes_since_prune = 0
+                else:
+                    con.commit()
+                    self._writes_since_prune = writes_since_prune
+
+        self._safe(op, None)
+
     def delete(self, key: str) -> bool:
         def op() -> bool:
             with self._lock, closing(self._connect()) as con:
@@ -796,21 +887,15 @@ class TieredCache:
             return {}
 
         def lookup() -> dict[str, Any]:
-            results: dict[str, Any] = {}
-            missing_keys: list[str] = []
-            for key in keys:
-                value = self.l1.get(key)
-                if value is not None:
-                    self.l1_hits += 1
-                    results[key] = value
-                else:
-                    missing_keys.append(key)
+            results = self.l1.get_many(keys)
+            self.l1_hits += sum(1 for key in keys if key in results)
+            missing_keys = [key for key in keys if key not in results]
             if missing_keys:
                 l2_results = self.l2.get_many(missing_keys) if hasattr(self.l2, "get_many") else {}
-                for key, value in l2_results.items():
-                    self.l2_hits += 1
-                    self.l1.set(key, value)
-                    results[key] = value
+                if l2_results:
+                    self.l2_hits += len(l2_results)
+                    self.l1.set_many(l2_results)
+                    results.update(l2_results)
                 self.misses += len(missing_keys) - len(l2_results)
             return results
 
@@ -852,6 +937,33 @@ class TieredCache:
                 return
         self.l2.set(key, value)
         self.l1.set(key, value)
+
+    def set_many(self, items: Mapping[str, Any]) -> None:
+        """Store multiple entries while preserving coordinator failure handling."""
+        if not items:
+            return
+        if not hasattr(self.l2, "set_many"):
+            for key, value in items.items():
+                self.set(key, value)
+            return
+        if self._coordinator is not None:
+            try:
+                with self._coordinator.locked():
+                    generation, poisoned = self._coordinator.read_locked()
+                    self._sync_l1_generation(generation)
+                    if poisoned:
+                        recovered = self._recover_poisoned_namespace(generation)
+                        if recovered is None:
+                            return
+                    self.l2.set_many(items)
+                    self.l1.set_many(items)
+                return
+            except Exception:
+                self.l1.clear()
+                self._l1_generation = None
+                return
+        self.l2.set_many(items)
+        self.l1.set_many(items)
 
     def delete(self, key: str) -> bool:
         self.l1.delete(key)
