@@ -100,7 +100,7 @@ from .agent_verification import VerificationReceipt
 from .task_context import build_context_request, compose_task_context
 from .agent_learning import ImprovementCandidate, SLOObservation
 from .operation_contracts import normalize_transport_error
-from .search_pagination import MAX_HTTP_PAGE_RESPONSE_BYTES
+from .search_pagination import MAX_HTTP_PAGE_RESPONSE_BYTES, pagination_bounds_error
 from .json_utils import dumps as json_dumps, dumps_bytes as json_dumps_bytes, loads as json_loads
 from .process_utils import process_identity, process_owner_state, process_parent_pid
 
@@ -8360,11 +8360,23 @@ class Handler(BaseHTTPRequestHandler):
             if 'post_command_http_probe_1' in post_route_ids:
                 self._send(200, APP.services.http_probe(str(payload.get("url", "")), expected_status=int(payload.get("expected_status", 200)), json_path=payload.get("json_path"), timeout=float(payload.get("timeout", 5.0)), headers=payload.get("headers"))); return
             if 'post_callers_1' in post_route_ids:
-                self._send(200, APP.services.callers(str(payload.get("root", ".")), str(payload.get("symbol", "")), limit=int(payload.get("limit", 50)))); return
+                limit = payload.get("limit", 50); offset = payload.get("offset", 0)
+                bounds_error = pagination_bounds_error(limit, offset)
+                if bounds_error:
+                    self._send(400, {"success": False, "status_code": 400, "terminal": True, "retryable": False, "error": bounds_error}); return
+                self._send(200, APP.services.callers(str(payload.get("root", ".")), str(payload.get("symbol", "")), limit=limit, offset=offset)); return
             if 'post_callees_1' in post_route_ids:
-                self._send(200, APP.services.callees(str(payload.get("root", ".")), str(payload.get("symbol", "")), limit=int(payload.get("limit", 50)))); return
+                limit = payload.get("limit", 50); offset = payload.get("offset", 0)
+                bounds_error = pagination_bounds_error(limit, offset)
+                if bounds_error:
+                    self._send(400, {"success": False, "status_code": 400, "terminal": True, "retryable": False, "error": bounds_error}); return
+                self._send(200, APP.services.callees(str(payload.get("root", ".")), str(payload.get("symbol", "")), limit=limit, offset=offset)); return
             if 'post_implementations_1' in post_route_ids:
-                self._send(200, APP.services.code_find_implementations(str(payload.get("root", ".")), str(payload.get("symbol", "")), path=payload.get("path"))); return
+                limit = payload.get("limit", 50); offset = payload.get("offset", 0)
+                bounds_error = pagination_bounds_error(limit, offset)
+                if bounds_error:
+                    self._send(400, {"success": False, "status_code": 400, "terminal": True, "retryable": False, "error": bounds_error}); return
+                self._send(200, APP.services.code_find_implementations(str(payload.get("root", ".")), str(payload.get("symbol", "")), path=payload.get("path"), limit=limit, offset=offset)); return
             if 'post_declaration_1' in post_route_ids:
                 self._send(200, APP.services.code_find_declaration(str(payload.get("root", ".")), str(payload.get("symbol", "")), path=payload.get("path"))); return
             if 'post_repo_secret_scan_1' in post_route_ids:

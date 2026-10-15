@@ -2852,21 +2852,42 @@ class CodeIndex:
             return {"success": False, "error": f"Declaration of '{symbol_name}' not found"}
         return {"success": True, "declaration": symbols[0]}
 
-    def find_implementations(self, root: str, symbol_name: str, path: str | None = None) -> dict[str, Any]:
+    def find_implementations(
+        self, root: str, symbol_name: str, path: str | None = None, limit: int = 50, offset: int = 0,
+    ) -> dict[str, Any]:
+        bounds_error = pagination_bounds_error(limit, offset)
+        if bounds_error:
+            return {"success": False, "status_code": 400, "terminal": True, "retryable": False, "error": bounds_error}
+        if not isinstance(symbol_name, str) or not symbol_name.strip():
+            return {"success": False, "status_code": 400, "terminal": True, "retryable": False, "error": "symbol cannot be empty"}
         resolved_root = canonical_root(root)
         where = f"root=? AND {_root_archive_path_sql('path')} AND (lower(dst)=lower(?) OR dst LIKE ?) AND kind IN ('inherits', 'implements')"
         args: list[Any] = [resolved_root, symbol_name, f"%{symbol_name}%"]
         if path:
             where += " AND path=?"
             args.append(path.replace("\\", "/").strip("/"))
-        with self._lock, closing(self._connect()) as con:
-            edges = con.execute(
-                f"SELECT src, dst, kind, path, line FROM edges WHERE {where} LIMIT 50",
-                tuple(args),
-            ).fetchall()
+        try:
+            with self._lock, closing(self._connect()) as con:
+                deadline = time.monotonic() + 1.0
+                con.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
+                edges = con.execute(
+                    f"SELECT src, dst, kind, path, line FROM edges WHERE {where} ORDER BY path, line, src, dst, kind LIMIT ? OFFSET ?",
+                    (*args, limit + 1, offset),
+                ).fetchall()
+                con.set_progress_handler(None, 0)
+        except sqlite3.DatabaseError as exc:
+            busy = is_busy_error(exc)
+            return {
+                "success": False, "status_code": 503 if busy else 500,
+                "terminal": not busy, "retryable": busy, "error": str(exc), "busy": busy,
+                "implementations": [], "count": 0, "offset": offset, "limit": limit,
+                "coverage": {"complete": False, "returned": 0, "offset": offset, "limit": limit, "scope": "indexed_edges"},
+                "freshness": {"status": "not_checked"},
+            }
 
         implementations: list[dict[str, Any]] = []
-        for e in edges:
+        has_more = len(edges) > limit
+        for e in edges[:limit]:
             src_name = str(e["src"])
             p = str(e["path"])
             ln = int(e["line"])
@@ -2878,12 +2899,25 @@ class CodeIndex:
                 "line": ln,
             })
 
-        return {
+        result = {
             "success": True,
             "symbol": symbol_name,
             "implementations_count": len(implementations),
             "implementations": implementations,
+            "count": len(implementations),
+            "offset": offset,
+            "limit": limit,
+            "returned_count": len(implementations),
+            "has_more": has_more,
+            "truncated": has_more,
+            "coverage": {"complete": offset == 0 and not has_more, "returned": len(implementations), "limit": limit, "offset": offset, "scope": "indexed_edges"},
+            "freshness": {"status": "not_checked"},
         }
+        if not has_more and (offset == 0 or implementations):
+            result["total_matches"] = offset + len(implementations)
+        if has_more:
+            result["next_offset"] = offset + len(implementations)
+        return result
 
     def find_referencing_symbols(self, root: str, symbol_name: str, path: str | None = None) -> dict[str, Any]:
         resolved_root = canonical_root(root)
@@ -3603,109 +3637,167 @@ class CodeIndex:
         except sqlite3.DatabaseError as exc:
             return {"success": False, "healthy": False, "error": str(exc)}
 
-    def find_callers(self, root: str, symbol: str, limit: int = 50) -> dict[str, Any]:
+    def find_callers(self, root: str, symbol: str, limit: int = 50, offset: int = 0) -> dict[str, Any]:
         """Find all call sites and references to a symbol across repository AST."""
+        bounds_error = pagination_bounds_error(limit, offset)
+        if bounds_error:
+            return {"success": False, "status_code": 400, "terminal": True, "retryable": False, "error": bounds_error, "callers": []}
+        if not isinstance(symbol, str) or not symbol.strip():
+            return {"success": False, "status_code": 400, "terminal": True, "retryable": False, "error": "symbol cannot be empty", "callers": []}
         resolved = canonical_root(root)
-        if not symbol or not symbol.strip():
-            return {"success": False, "error": "symbol cannot be empty"}
         sym = symbol.strip()
-        result_limit = max(0, int(limit))
+        result_limit = limit
         escaped_sym = _escape_like_literal(sym)
         try:
             with closing(self._connect()) as con:
+                deadline = time.monotonic() + 1.0
+                con.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
+                con.execute("BEGIN")
+                index_available = con.execute(
+                    f"SELECT 1 FROM files WHERE root=? AND {_root_archive_path_sql('path')} LIMIT 1",
+                    (resolved,),
+                ).fetchone() is not None
                 rows = con.execute(
                     f"""SELECT src, dst, kind, path, line FROM edges
                        WHERE root=? AND kind=? AND dst_name=?
                          AND {_root_archive_path_sql("path")}
                          AND (dst=? OR dst LIKE ? ESCAPE '!' OR dst LIKE ? ESCAPE '!')
-                       ORDER BY path, line LIMIT ?""",
+                       ORDER BY path, line, src, dst, kind LIMIT ? OFFSET ?""",
                     (
                         resolved, "calls", _edge_endpoint_name(sym), sym,
-                        f"%/{escaped_sym}", f"%::{escaped_sym}", result_limit + 1,
+                        f"%/{escaped_sym}", f"%::{escaped_sym}", result_limit + 1, offset,
                     ),
                 ).fetchall()
+                con.set_progress_handler(None, 0)
         except sqlite3.DatabaseError as exc:
+            busy = is_busy_error(exc)
             return {
                 "success": False,
+                "status_code": 503 if busy else 500,
+                "terminal": not busy,
+                "retryable": busy,
                 "symbol": sym,
                 "callers": [],
                 "count": 0,
                 "root": resolved,
                 "error": str(exc),
-                "busy": is_busy_error(exc),
+                "busy": busy,
                 "truncated": False,
                 "truncation": {"callers": False},
-                "coverage": {"complete": False, "returned": 0, "limit": result_limit},
+                "offset": offset,
+                "limit": result_limit,
+                "coverage": {"complete": False, "returned": 0, "limit": result_limit, "offset": offset},
                 "freshness": {"status": "not_checked"},
+                "index_available": None,
             }
         truncated = len(rows) > result_limit
         callers = [
             {"caller": str(r["src"]), "callee": str(r["dst"]), "kind": str(r["kind"]), "path": str(r["path"]), "line": int(r["line"])}
             for r in rows[:result_limit]
         ]
-        return {
+        result = {
             "success": True,
             "symbol": sym,
             "callers": callers,
             "count": len(callers),
             "root": resolved,
+            "offset": offset,
+            "limit": result_limit,
+            "returned_count": len(callers),
+            "has_more": truncated,
             "truncated": truncated,
             "truncation": {"callers": truncated},
-            "coverage": {"complete": not truncated, "returned": len(callers), "limit": result_limit},
+            "coverage": {"complete": offset == 0 and not truncated, "returned": len(callers), "limit": result_limit, "offset": offset, "scope": "indexed_edges"},
             "freshness": {"status": "not_checked"},
+            "index_available": index_available,
         }
+        result["coverage"]["index_available"] = index_available
+        if not truncated and (offset == 0 or callers):
+            result["total_matches"] = offset + len(callers)
+        if truncated:
+            result["next_offset"] = offset + len(callers)
+        return result
 
-    def find_callees(self, root: str, symbol: str, limit: int = 50) -> dict[str, Any]:
+    def find_callees(self, root: str, symbol: str, limit: int = 50, offset: int = 0) -> dict[str, Any]:
         """Find all functions/methods called by a symbol."""
+        bounds_error = pagination_bounds_error(limit, offset)
+        if bounds_error:
+            return {"success": False, "status_code": 400, "terminal": True, "retryable": False, "error": bounds_error, "callees": []}
+        if not isinstance(symbol, str) or not symbol.strip():
+            return {"success": False, "status_code": 400, "terminal": True, "retryable": False, "error": "symbol cannot be empty", "callees": []}
         resolved = canonical_root(root)
-        if not symbol or not symbol.strip():
-            return {"success": False, "error": "symbol cannot be empty"}
         sym = symbol.strip()
-        result_limit = max(0, int(limit))
+        result_limit = limit
         escaped_sym = _escape_like_literal(sym)
         try:
             with closing(self._connect()) as con:
+                deadline = time.monotonic() + 1.0
+                con.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
+                con.execute("BEGIN")
+                index_available = con.execute(
+                    f"SELECT 1 FROM files WHERE root=? AND {_root_archive_path_sql('path')} LIMIT 1",
+                    (resolved,),
+                ).fetchone() is not None
                 rows = con.execute(
                     f"""SELECT src, dst, kind, path, line FROM edges
                        WHERE root=? AND kind=? AND src_name=?
                          AND {_root_archive_path_sql("path")}
                          AND (src=? OR src LIKE ? ESCAPE '!' OR src LIKE ? ESCAPE '!')
-                       ORDER BY path, line LIMIT ?""",
+                       ORDER BY path, line, src, dst, kind LIMIT ? OFFSET ?""",
                     (
                         resolved, "calls", _edge_endpoint_name(sym), sym,
-                        f"%/{escaped_sym}", f"%::{escaped_sym}", result_limit + 1,
+                        f"%/{escaped_sym}", f"%::{escaped_sym}", result_limit + 1, offset,
                     ),
                 ).fetchall()
+                con.set_progress_handler(None, 0)
         except sqlite3.DatabaseError as exc:
+            busy = is_busy_error(exc)
             return {
                 "success": False,
+                "status_code": 503 if busy else 500,
+                "terminal": not busy,
+                "retryable": busy,
                 "symbol": sym,
                 "callees": [],
                 "count": 0,
                 "root": resolved,
                 "error": str(exc),
-                "busy": is_busy_error(exc),
+                "busy": busy,
                 "truncated": False,
                 "truncation": {"callees": False},
-                "coverage": {"complete": False, "returned": 0, "limit": result_limit},
+                "offset": offset,
+                "limit": result_limit,
+                "coverage": {"complete": False, "returned": 0, "limit": result_limit, "offset": offset},
                 "freshness": {"status": "not_checked"},
+                "index_available": None,
             }
         truncated = len(rows) > result_limit
         callees = [
             {"caller": str(r["src"]), "callee": str(r["dst"]), "kind": str(r["kind"]), "path": str(r["path"]), "line": int(r["line"])}
             for r in rows[:result_limit]
         ]
-        return {
+        result = {
             "success": True,
             "symbol": sym,
             "callees": callees,
             "count": len(callees),
             "root": resolved,
+            "offset": offset,
+            "limit": result_limit,
+            "returned_count": len(callees),
+            "has_more": truncated,
             "truncated": truncated,
             "truncation": {"callees": truncated},
-            "coverage": {"complete": not truncated, "returned": len(callees), "limit": result_limit},
+            "coverage": {"complete": offset == 0 and not truncated, "returned": len(callees), "limit": result_limit, "offset": offset, "scope": "indexed_edges"},
             "freshness": {"status": "not_checked"},
+            "index_available": index_available,
         }
+        result["coverage"]["index_available"] = index_available
+        if not truncated and (offset == 0 or callees):
+            result["total_matches"] = offset + len(callees)
+        if truncated:
+            result["next_offset"] = offset + len(callees)
+        return result
 
 def python_module_import_graph(self, root: str) -> dict[str, Any]:
         """Return the fresh Python import edges already stored for one indexed root."""
