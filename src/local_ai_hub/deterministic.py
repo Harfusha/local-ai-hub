@@ -4954,23 +4954,78 @@ def test_{sym}_regression_edge_cases():
 
     def security_audit(self, root: str, limit: int = 50) -> dict[str, Any]:
         """Deterministic static security analysis (hardcoded secrets, unsafe deserialization, SQL injection)."""
+        if type(limit) is not int or not 1 <= limit <= 100000:
+            return {"success": False, "error": "limit must be an integer from 1 through 100000", "terminal": True, "retryable": False}
         resolved_root = Path(self._root(root))
         secret_patterns = _SECURITY_AUDIT_SECRETS
         code_smell_patterns = _SECURITY_AUDIT_SMELLS
 
         findings: list[dict[str, Any]] = []
         candidate_files = self.repo_tools.iter_files(str(resolved_root))
+        scanned_files = 0
+        eligible_files = 0
+        skipped_files = 0
+        scan_complete = True
+        limit_reached = False
+        scanned_bytes = 0
+        scan_errors: list[dict[str, str]] = []
+        deadline = time.monotonic() + 30.0
+        max_file_bytes = min(2_000_000, max(1, int(getattr(self.repo_tools, "max_file_bytes", 2_000_000))))
+        stop_reason = ""
+
 
         for f in candidate_files:
             if len(findings) >= limit:
+                limit_reached = True
+                scan_complete = False
+                stop_reason = "findings_limit"
+                break
+            if time.monotonic() >= deadline or scanned_bytes >= 32 * 1024 * 1024:
+                scan_complete = False
+                stop_reason = "time_or_byte_budget"
                 break
             if f.suffix.lower() not in {".py", ".ts", ".js", ".cs", ".go", ".rs", ".json", ".toml", ".yaml", ".yml", ".env"}:
+                skipped_files += 1
                 continue
+            eligible_files += 1
             rel = str(f.relative_to(resolved_root)).replace("\\", "/")
             try:
-                txt = f.read_text(encoding="utf-8", errors="replace")
+                target = f.resolve(strict=True)
+                target.relative_to(resolved_root)
+                import stat
+                flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+                descriptor = os.open(target, flags)
+                try:
+                    opened = os.fstat(descriptor)
+                    if not stat.S_ISREG(opened.st_mode):
+                        raise ValueError("security source is not a regular file")
+                    source = os.fdopen(descriptor, "rb")
+                    descriptor = -1
+                    with source:
+                        remaining_bytes = 32 * 1024 * 1024 - scanned_bytes
+                        read_bound = min(max_file_bytes, remaining_bytes)
+                        raw = source.read(read_bound + 1)
+                        after_read = os.fstat(source.fileno())
+                    target.resolve(strict=True).relative_to(resolved_root)
+                    current = target.stat()
+                    signature = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+                    if signature(opened) != signature(after_read) or signature(after_read) != signature(current):
+                        raise ValueError("security source changed during read")
+                finally:
+                    if descriptor >= 0:
+                        os.close(descriptor)
+                scanned_bytes += len(raw)
+                if len(raw) > read_bound:
+                    raise ValueError("security source exceeds file or aggregate byte bound")
+                txt = raw.decode("utf-8", errors="replace")
                 lines = txt.splitlines()
+                scanned_files += 1
                 for i, line in enumerate(lines, 1):
+                    if len(findings) >= limit or (i % 1024 == 0 and time.monotonic() >= deadline):
+                        scan_complete = False
+                        limit_reached = len(findings) >= limit
+                        stop_reason = "findings_limit" if limit_reached else "time_budget"
+                        break
                     stripped = line.strip()
                     if stripped.startswith(("#", "//", "/*", "*")):
                         continue
@@ -4983,15 +5038,23 @@ def test_{sym}_regression_edge_cases():
                                 "title": name,
                                 "path": rel,
                                 "line": i,
-                                "snippet": stripped[:120],
+                                "snippet": "[credential-like value omitted]",
                             })
                             break
 
                 for name, pat in code_smell_patterns:
+                    if len(findings) >= limit or time.monotonic() >= deadline:
+                        scan_complete = False
+                        limit_reached = len(findings) >= limit
+                        stop_reason = "findings_limit" if limit_reached else "time_budget"
+                        break
                     if name == "Unsafe eval/exec" and rel.lower().endswith(".py"):
                         try:
                             parsed = ast.parse(txt)
                         except (SyntaxError, ValueError):
+                            scan_complete = False
+                            if len(scan_errors) < 20:
+                                scan_errors.append({"path": rel, "error_type": "ASTParseError"})
                             line_numbers = []
                         else:
                             line_numbers = sorted(
@@ -5030,9 +5093,15 @@ def test_{sym}_regression_edge_cases():
                                 "snippet": matched_line[:120] or pat.pattern[:120],
                             })
                         if len(findings) >= limit:
+                            limit_reached = True
+                            scan_complete = False
+                            stop_reason = "findings_limit"
                             break
-            except Exception:
-                pass
+            except Exception as exc:
+                scan_complete = False
+                skipped_files += 1
+                if len(scan_errors) < 20:
+                    scan_errors.append({"path": rel, "error_type": type(exc).__name__})
 
         high_count = sum(1 for f in findings if f.get("severity") == "HIGH")
         med_count = sum(1 for f in findings if f.get("severity") == "MEDIUM")
@@ -5041,12 +5110,12 @@ def test_{sym}_regression_edge_cases():
             rel_path = str(finding.get("path", ""))
             is_test = rel_path.casefold().startswith("tests/") or Path(rel_path).name.casefold().startswith("test_")
             finding["is_test"] = is_test
+            finding["classification"] = "untriaged"
             if is_test:
-                finding["classification"] = "test_fixture"
                 test_findings.append(finding)
         untriaged_high = sum(
             1 for finding in findings
-            if finding.get("severity") == "HIGH" and finding.get("classification") != "test_fixture"
+            if finding.get("severity") == "HIGH"
         )
 
         return {
@@ -5057,7 +5126,20 @@ def test_{sym}_regression_edge_cases():
             "medium_severity_count": med_count,
             "untriaged_high_severity_count": untriaged_high,
             "test_findings_count": len(test_findings),
-            "is_clean": untriaged_high == 0,
+            "findings_present": bool(findings),
+            "release_blocking_findings": untriaged_high,
+            "triage_complete": not findings,
+            "scanned_files": scanned_files,
+            "eligible_files": eligible_files,
+            "eligible_files_total": None,
+            "skipped_files": skipped_files,
+            "scanned_bytes": scanned_bytes,
+            "scan_complete": scan_complete,
+            "limit_reached": limit_reached,
+            "stop_reason": stop_reason,
+            "scan_errors": scan_errors,
+            "coverage_scope": "project-filtered repository iterator; counts cover visited entries",
+            "is_clean": not findings and scan_complete,
             "findings": findings[:limit],
         }
 
