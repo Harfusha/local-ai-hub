@@ -12,12 +12,18 @@ import time
 import uuid
 from contextlib import closing
 from pathlib import Path
-from typing import Any, Callable, TypeVar
+from typing import Any, Callable, Iterator, Sequence, TypeVar
 
 
 _LOGGER = logging.getLogger(__name__)
 
 T = TypeVar("T")
+
+
+def sqlite_batches(items: Sequence[T]) -> Iterator[Sequence[T]]:
+    """Bound dynamic SQL lists, including pairs, below legacy SQLite limits."""
+    for offset in range(0, len(items), 250):
+        yield items[offset:offset + 250]
 
 
 def is_busy_error(exc: BaseException) -> bool:
