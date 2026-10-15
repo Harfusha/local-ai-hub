@@ -1745,6 +1745,7 @@ class MemoryStore:
         worktree_id: str | None = None,
         branch: str | None = None,
     ) -> list[MemoryRecord]:
+        scope = AgentScope.parse(scope) if scope is not None else None
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return []
         self._init_table()
@@ -1789,9 +1790,7 @@ class MemoryStore:
             sql += " AND (expires_at IS NULL OR expires_at > ?)"
             params.append(time.time())
         if scope is not None:
-            scope_val = scope.value if hasattr(scope, "value") else str(scope)
-            if scope_val.lower() == "repo":
-                scope_val = "repository"
+            scope_val = scope.value
             sql += " AND scope = ?"
             params.append(scope_val)
         elif len(identity_scopes) == 1:

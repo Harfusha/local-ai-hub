@@ -308,6 +308,8 @@ def test_local_app_wires_scoped_memory_adoption_on_create_and_resume(tmp_path: P
     app = app_with_agent_state(tmp_path)
     root = tmp_path / "repo"
     root.mkdir()
+    from local_ai_hub.project_config import resolve_project_context
+    repository_id = resolve_project_context(root, Path(app.agent_state.db_path).parent).coordination_id
     assert app.agent_tasks.state_store is app.agent_memory.state_store
 
     def record_memory(key: str, idempotency_key: str) -> MemoryRecord:
@@ -319,7 +321,7 @@ def test_local_app_wires_scoped_memory_adoption_on_create_and_resume(tmp_path: P
             value=key,
             status=MemoryStatus.CONFIRMED,
             source="user",
-            provenance={"root": str(root), "tenant": "tenant-a"},
+            provenance={"root": str(root), "repository_id": repository_id, "tenant": "tenant-a"},
         )
         return app.agent_memory.record(record, actor="user", idempotency_key=idempotency_key)
 
