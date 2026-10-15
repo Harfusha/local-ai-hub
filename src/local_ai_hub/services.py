@@ -7215,8 +7215,34 @@ class LocalAIServices:
     def batch_delegate(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
         tasks = args.get("tasks", [])
         if not isinstance(tasks, list) or not tasks:
-            return {"success": False, "error": "tasks must be a non-empty array"}
-        tasks = tasks[:16]
+            return {
+                "success": False,
+                "error": "tasks must be a non-empty array",
+                "terminal": True,
+                "retryable": False,
+                "request_not_sent": True,
+                "input_count": len(tasks) if isinstance(tasks, list) else 0,
+                "accepted_count": 0,
+                "rejected_count": 0,
+                "rejected_indices": [],
+                "results": [],
+            }
+        input_count = len(tasks)
+        if input_count > 16:
+            return {
+                "success": False,
+                "error": "batch exceeds the maximum of 16 tasks",
+                "terminal": True,
+                "retryable": False,
+                "request_not_sent": True,
+                "input_count": input_count,
+                "accepted_count": 0,
+                "rejected_count": input_count,
+                "rejected_range": {"start": 0, "end_exclusive": input_count},
+                "rejected_indices": list(range(min(input_count, 64))),
+                "rejected_indices_truncated": input_count > 64,
+                "results": [],
+            }
         prepared: list[tuple[int, str, dict[str, Any]]] = []
         for i, raw in enumerate(tasks):
             item = raw if isinstance(raw, dict) else {"task": str(raw)}
@@ -7245,31 +7271,50 @@ class LocalAIServices:
                     "error": f"batch item failed ({type(exc).__name__})",
                 }
             report_job_progress(100.0 * len(results) / len(prepared), f"batch:{len(results)}/{len(prepared)}")
-        return {"success": all(r.get("success", False) for r in results.values()), "results": [results[i] for i in range(len(results))]}
+        return {
+            "success": all(r.get("success", False) for r in results.values()),
+            "input_count": input_count,
+            "accepted_count": input_count,
+            "rejected_count": 0,
+            "rejected_indices": [],
+            "results": [results[i] for i in range(input_count)],
+        }
 
     def optimize_databases(self) -> dict[str, Any]:
-        """Perform WAL checkpointing, page pruning and VACUUM/optimize across all SQLite stores."""
+        """Checkpoint WAL files and run SQLite's optimize pragma for each store."""
         state_dir = Path(self.config["server"]["state_dir"])
         db_files = _active_sqlite_databases(state_dir)
-        optimized = []
+        details = []
         bytes_freed = 0
+        succeeded = 0
         for db in db_files:
             try:
                 before_size = db.stat().st_size
                 with closing(connect_sqlite(db, timeout_seconds=10.0)) as con:
-                    con.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                    checkpoint = con.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                    checkpoint_result = checkpoint.fetchone()
+                    if checkpoint_result and checkpoint_result[0]:
+                        raise RuntimeError("WAL checkpoint remained busy")
                     con.execute("PRAGMA optimize;")
                 after_size = db.stat().st_size
                 freed = max(0, before_size - after_size)
                 bytes_freed += freed
-                optimized.append({"db": db.name, "before_kb": before_size // 1024, "after_kb": after_size // 1024, "freed_kb": freed // 1024})
+                succeeded += 1
+                details.append({"db": db.name, "success": True, "before_kb": before_size // 1024, "after_kb": after_size // 1024, "freed_kb": freed // 1024})
             except Exception as exc:
-                optimized.append({"db": db.name, "error": str(exc)})
+                details.append({"db": db.name, "success": False, "error": f"{type(exc).__name__}: {str(exc)[:400]}"})
+        attempted = len(db_files)
+        failed = attempted - succeeded
         return {
-            "success": True,
-            "databases_optimized": len(optimized),
+            "success": failed == 0,
+            "partial": succeeded > 0 and failed > 0,
+            **({"error": f"{failed} of {attempted} database maintenance operations failed"} if failed else {}),
+            "databases_attempted": attempted,
+            "databases_succeeded": succeeded,
+            "databases_failed": failed,
+            "databases_optimized": succeeded,
             "total_freed_kb": bytes_freed // 1024,
-            "details": optimized,
+            "details": details,
         }
 
     def purge_stale_cache(self, days: int = 7) -> dict[str, Any]:
