@@ -19,6 +19,7 @@ Accounting rules:
 
 import hashlib
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping
@@ -61,7 +62,8 @@ def _safe_metadata_text(value: Any, *, limit: int = 160) -> str:
 
 def _safe_metadata_float(value: Any) -> float:
     try:
-        return round(max(0.0, float(value or 0)), 1)
+        number = float(value or 0)
+        return round(number, 1) if math.isfinite(number) and number >= 0 else 0.0
     except (TypeError, ValueError, OverflowError):
         return 0.0
 
