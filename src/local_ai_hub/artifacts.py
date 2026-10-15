@@ -562,34 +562,104 @@ class ArtifactStore:
             if self._initialized:
                 return
             full_schema = {
-                "artifact_id": ("TEXT", 1, 0), "created_at": ("REAL", 0, 1), "tenant": ("TEXT", 0, 1),
-                "tenant_identity": ("TEXT", 0, 0), "kind": ("TEXT", 0, 1), "text": ("TEXT", 0, 1),
-                "mime_type": ("TEXT", 0, 0), "encoding": ("TEXT", 0, 0), "blob": ("BLOB", 0, 0),
-                "size_bytes": ("INTEGER", 0, 0), "checksum": ("TEXT", 0, 0), "identity_json": ("TEXT", 0, 0),
+                "artifact_id": ("TEXT", 1, 0, None, 0), "created_at": ("REAL", 0, 1, None, 0),
+                "tenant": ("TEXT", 0, 1, None, 0), "tenant_identity": ("TEXT", 0, 0, None, 0),
+                "kind": ("TEXT", 0, 1, None, 0), "text": ("TEXT", 0, 1, "''", 0),
+                "mime_type": ("TEXT", 0, 0, None, 0), "encoding": ("TEXT", 0, 0, None, 0),
+                "blob": ("BLOB", 0, 0, None, 0), "size_bytes": ("INTEGER", 0, 0, None, 0),
+                "checksum": ("TEXT", 0, 0, None, 0), "identity_json": ("TEXT", 0, 0, None, 0),
+            }
+            canonical_sql = {
+                "artifacts": "CREATE TABLE ARTIFACTS ( ARTIFACT_ID TEXT PRIMARY KEY, CREATED_AT REAL NOT NULL, TENANT TEXT NOT NULL, TENANT_IDENTITY TEXT, KIND TEXT NOT NULL, TEXT TEXT NOT NULL DEFAULT '', MIME_TYPE TEXT, ENCODING TEXT, BLOB BLOB, SIZE_BYTES INTEGER, CHECKSUM TEXT, IDENTITY_JSON TEXT )",
+                "artifact_schema_meta": "CREATE TABLE ARTIFACT_SCHEMA_META ( KEY TEXT PRIMARY KEY, VALUE TEXT NOT NULL )",
             }
 
+            def _validate_connection(con: sqlite3.Connection) -> None:
+                objects = {
+                    str(row[0]): (str(row[1]), str(row[2] or ""))
+                    for row in con.execute(
+                        "SELECT name, type, sql FROM sqlite_master WHERE name IN ('artifacts', 'artifact_schema_meta')"
+                    )
+                }
+                if set(objects) != {"artifacts", "artifact_schema_meta"}:
+                    raise UnsupportedArtifactSchema("unsupported artifact database schema")
+                for name in objects:
+                    object_type, statement = objects[name]
+                    normalized = " ".join(statement.upper().split()).rstrip(";")
+                    normalized = normalized.replace("CREATE TABLE IF NOT EXISTS ", "CREATE TABLE ", 1)
+                    if (object_type != "table" or "WITHOUT ROWID" in normalized
+                            or normalized.startswith("CREATE VIRTUAL TABLE")):
+                        raise UnsupportedArtifactSchema("unsupported artifact table storage")
+                    if normalized != canonical_sql[name]:
+                        raise UnsupportedArtifactSchema("unsupported artifact table definition")
+                if con.execute("SELECT 1 FROM sqlite_master WHERE name='artifacts_v2'").fetchone():
+                    raise UnsupportedArtifactSchema("unsupported artifact database schema")
+                columns = list(con.execute("PRAGMA table_xinfo(artifacts)"))
+                actual = {
+                    str(row[1]): (
+                        str(row[2]).upper(), int(row[5]), int(row[3]), row[4], int(row[6]),
+                    ) for row in columns
+                }
+                if actual != full_schema:
+                    raise UnsupportedArtifactSchema("unsupported artifact database schema")
+                meta_columns = list(con.execute("PRAGMA table_xinfo(artifact_schema_meta)"))
+                actual_meta = {
+                    str(row[1]): (str(row[2]).upper(), int(row[5]), int(row[3]), row[4], int(row[6]))
+                    for row in meta_columns
+                }
+                if actual_meta != {
+                    "key": ("TEXT", 1, 0, None, 0),
+                    "value": ("TEXT", 0, 1, None, 0),
+                }:
+                    raise UnsupportedArtifactSchema("unsupported artifact schema metadata table")
+                markers = [str(row[0]) for row in con.execute(
+                    "SELECT value FROM artifact_schema_meta WHERE key='tenant_storage'"
+                )]
+                if markers != ["sha256-v1"]:
+                    raise UnsupportedArtifactSchema("unsupported artifact tenant storage marker")
+                deadline = time.monotonic() + MAX_ARTIFACT_READ_SECONDS
+                con.set_progress_handler(
+                    lambda: int(time.monotonic() >= deadline), 1000,
+                )
+                try:
+                    invalid = con.execute(
+                        """SELECT 1 FROM artifacts WHERE CASE
+                             WHEN typeof(tenant)='text' AND length(CAST(tenant AS BLOB))=64
+                               AND typeof(tenant_identity)='text'
+                               AND length(CAST(tenant_identity AS BLOB))=64
+                             THEN tenant GLOB '*[^0-9a-f]*' OR tenant_identity != tenant
+                             ELSE 1 END LIMIT 1"""
+                    ).fetchone()
+                except sqlite3.OperationalError as exc:
+                    if time.monotonic() >= deadline:
+                        raise UnsupportedArtifactSchema("artifact identity validation exceeded its time limit") from exc
+                    raise
+                finally:
+                    con.set_progress_handler(None, 0)
+                if invalid is not None:
+                    raise UnsupportedArtifactSchema("invalid artifact tenant identity")
+
             def _validate_existing() -> None:
-                with closing(sqlite3.connect(f"{self.path.resolve().as_uri()}?mode=ro", uri=True)) as con:
-                    tables = {str(row[0]) for row in con.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table'"
-                    )}
-                    if "artifacts_v2" in tables or not {"artifacts", "artifact_schema_meta"} <= tables:
-                        raise UnsupportedArtifactSchema("unsupported artifact database schema")
-                    columns = list(con.execute("PRAGMA table_info(artifacts)"))
-                    actual = {
-                        str(row[1]): (str(row[2]).upper(), int(row[5]), int(row[3])) for row in columns
-                    }
-                    if any(actual.get(name) != spec for name, spec in full_schema.items()):
-                        raise UnsupportedArtifactSchema("unsupported artifact database schema")
-                    markers = [str(row[0]) for row in con.execute(
-                        "SELECT value FROM artifact_schema_meta WHERE key='tenant_storage'"
-                    )]
-                    if markers != ["sha256-v1"]:
-                        raise UnsupportedArtifactSchema("unsupported artifact tenant storage marker")
-                    for tenant, identity in con.execute("SELECT tenant, tenant_identity FROM artifacts"):
-                        if (not isinstance(tenant, str) or not self._is_tenant_identity(tenant)
-                                or identity != tenant):
-                            raise UnsupportedArtifactSchema("invalid artifact tenant identity")
+                # SQLite may create -shm when a WAL-mode DB has no shared-memory file. With no
+                # WAL data present, immutable mode avoids that write; with only one sidecar,
+                # fail closed rather than let SQLite rebuild either file during inspection.
+                with self.path.open("rb") as source:
+                    header = source.read(20)
+                uri = f"{self.path.resolve().as_uri()}?mode=ro"
+                if (
+                    len(header) >= 20
+                    and header[:16] == b"SQLite format 3\x00"
+                    and header[18:20] == b"\x02\x02"
+                ):
+                    wal_path = self.path.with_name(self.path.name + "-wal")
+                    shm_path = self.path.with_name(self.path.name + "-shm")
+                    wal_exists, shm_exists = wal_path.exists(), shm_path.exists()
+                    if wal_exists != shm_exists:
+                        raise UnsupportedArtifactSchema("artifact WAL state cannot be inspected without side effects")
+                    if not wal_exists:
+                        uri += "&immutable=1"
+                with closing(sqlite3.connect(uri, uri=True)) as con:
+                    _validate_connection(con)
 
             fresh = not self.path.exists() or self.path.stat().st_size == 0
             if not fresh:
@@ -602,6 +672,9 @@ class ArtifactStore:
 
             def _setup() -> None:
                 with closing(self._connect()) as con:
+                    if not fresh:
+                        # Recheck after opening the writer handle to narrow the validation/write race.
+                        _validate_connection(con)
                     initialize_wal(con)
                     con.execute("BEGIN IMMEDIATE")
                     if fresh:

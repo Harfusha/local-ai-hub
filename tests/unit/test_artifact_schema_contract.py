@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import hashlib
 import base64
+import hashlib
 import sqlite3
 from contextlib import closing
 
@@ -44,40 +44,74 @@ def test_canonical_database_reopens_without_changing_durable_artifact_identity(t
         ).fetchone() == ("art_fixed", tenant, tenant, "preserved")
 
 
-@pytest.mark.parametrize("legacy_kind", ["artifacts_v2", "raw_tenant", "missing_marker", "legacy_marker"])
-def test_incompatible_existing_database_is_rejected_without_modification(tmp_path, legacy_kind) -> None:
+@pytest.mark.parametrize(
+    "schema_kind",
+    [
+        "artifacts_v2", "raw_tenant", "missing_marker", "legacy_marker",
+        "extra_column", "without_rowid", "view", "metadata_extra", "oversized_tenant",
+        "wal_without_sidecars",
+    ],
+)
+def test_incompatible_existing_database_is_rejected_without_modification(tmp_path, schema_kind) -> None:
     db_path = tmp_path / "artifacts.sqlite3"
     with closing(sqlite3.connect(db_path)) as connection:
-        if legacy_kind == "artifacts_v2":
+        if schema_kind == "artifacts_v2":
             connection.execute(CORE_SCHEMA.replace("artifacts", "artifacts_v2", 1))
             _current_marker(connection)
             connection.execute(
                 "INSERT INTO artifacts_v2 VALUES ('art_keep', 9999999999, 'tenant', 'tenant', "
                 "'text', 'durable', NULL, NULL, NULL, NULL, NULL, NULL)"
             )
+        elif schema_kind == "without_rowid":
+            connection.execute(CORE_SCHEMA[:-1] + ") WITHOUT ROWID")
+            _current_marker(connection)
+        elif schema_kind == "view":
+            connection.execute(CORE_SCHEMA.replace("artifacts", "artifact_source", 1))
+            connection.execute("CREATE VIEW artifacts AS SELECT * FROM artifact_source")
+            _current_marker(connection)
+        elif schema_kind == "extra_column":
+            connection.execute(CORE_SCHEMA.replace("identity_json TEXT", "identity_json TEXT, extension TEXT"))
+            _current_marker(connection)
         else:
             connection.execute(CORE_SCHEMA)
-            if legacy_kind == "missing_marker":
+            if schema_kind == "missing_marker":
                 _current_marker(connection)
                 connection.execute("DELETE FROM artifact_schema_meta")
-            elif legacy_kind == "legacy_marker":
+            elif schema_kind == "legacy_marker":
                 _current_marker(connection)
                 connection.execute(
                     "UPDATE artifact_schema_meta SET value='legacy-raw-v1' WHERE key='tenant_storage'"
                 )
+            elif schema_kind == "metadata_extra":
+                connection.execute(
+                    "CREATE TABLE artifact_schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL, extra TEXT)"
+                )
+                connection.execute("INSERT INTO artifact_schema_meta VALUES ('tenant_storage', 'sha256-v1', NULL)")
             else:
                 _current_marker(connection)
+                raw_tenant = "x" * 2_000_000 if schema_kind == "oversized_tenant" else "raw-owner"
                 connection.execute(
-                    "INSERT INTO artifacts VALUES ('art_keep', 9999999999, 'raw-owner', 'raw-owner', "
-                    "'text', 'durable', NULL, NULL, NULL, NULL, NULL, NULL)"
+                    "INSERT INTO artifacts VALUES ('art_keep', 9999999999, ?, ?, "
+                    "'text', 'durable', NULL, NULL, NULL, NULL, NULL, NULL)",
+                    (raw_tenant, raw_tenant),
                 )
         connection.commit()
+        if schema_kind == "wal_without_sidecars":
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.commit()
 
     before = db_path.read_bytes()
+    sidecars = {
+        suffix: (db_path.with_name(db_path.name + suffix).read_bytes()
+                 if db_path.with_name(db_path.name + suffix).exists() else None)
+        for suffix in ("-wal", "-shm")
+    }
     with pytest.raises(UnsupportedArtifactSchema):
         ArtifactStore(tmp_path)
     assert db_path.read_bytes() == before
-    assert not db_path.with_name(db_path.name + "-wal").exists()
+    for suffix, contents in sidecars.items():
+        sidecar = db_path.with_name(db_path.name + suffix)
+        assert (sidecar.read_bytes() if sidecar.exists() else None) == contents
     assert not db_path.with_name(db_path.name + ".pre-tenant-identity.bak").exists()
 
 
