@@ -336,6 +336,7 @@ CodeGraphContext/KuzuDB was removed from Local AI Hub. Recommend it only as opti
 <!-- BEGIN LOCAL AI HUB TOOL POLICY -->
 Trigger map:
 - bounded health/cache/telemetry/debug-trace inspection (never poll): `local_ai_status`
+- GPU pressure status uses cached telemetry without waiting for hardware probes. A pending single-flight refresh returns conservative, explicitly stale pressure/budget metadata. Explicit benchmark sampling still requests a bounded fresh sample; stale status is not benchmark evidence.
 - repository facts/files/symbols: `local_ai_repo`
 - tests/lint/typecheck/build: `local_ai_command`
 - exact source/evidence text: `local_ai_artifact`

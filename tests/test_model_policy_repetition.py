@@ -124,7 +124,7 @@ def test_vram_balancer_nominal_for_integrated_gpu():
         "vram_used_pct": 0.0,
     }
     with patch("local_ai_hub.vram_balancer.get_gpu_telemetry", return_value=mock_gpu):
-        st = balancer.status()
+        st = balancer.status(force=True)
         assert st["pressure_level"] == "nominal"
         assert st["context_budget_factor"] == 1.0
         assert st["throttle_background"] is False
