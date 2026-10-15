@@ -771,6 +771,7 @@ _CURRENT_ROOT_FAMILY_RESERVATION: contextvars.ContextVar[dict[str, Any] | None] 
     "_CURRENT_ROOT_FAMILY_RESERVATION", default=None
 )
 _STATUS_PROTECTED_KEYS = (
+    "guide_cards", "guide_scope", "guide_tips", "schema_token_reduction_verified",
     "success", "status_code", "error", "warning", "version", "hub_online", "ollama_online",
     "active_model", "queued", "inflight", "cache_hits", "coalesced_waiters",
     "net_cloud_token_delta_est", "vram_pressure", "context_budget_factor",
@@ -804,7 +805,7 @@ _COMPLEXITY_PROTECTED_KEYS = (
     "total_functions", "high_risk_count", "include_tests",
 )
 _COMMAND_PROTECTED_KEYS = (
-    "test_summary",
+    "test_summary", "cache_hit", "coalesced",
     "exit_code", "summary", "request_id", "execution_id", "artifact_id", "artifact_ids",
     "output_artifact_id", "output_truncated", "outcome_unknown", "request_not_sent", "in_progress", "timed_out",
 )
@@ -1134,6 +1135,11 @@ def _compact(
     if extra_fields is None:
         extra_fields = _CURRENT_EXTRA_FIELDS.get()
     options = _CURRENT_RESPONSE_OPTIONS.get()
+    if task_kind == "command":
+        extra_fields = list(dict.fromkeys([
+            *(extra_fields or ()), "cache_hit", "coalesced",
+            *(("classification",) if options.get("action") == "classify" else ()),
+        ]))
     rejection = _subminimum_budget_rejection(options)
     if rejection is not None:
         return rejection
@@ -1217,6 +1223,12 @@ def _compact(
         extra_fields=compact_extra_fields,
     )
     compacted = _preserve_contract_state(raw_value, compacted)
+    if task_kind == "status" and isinstance(raw_value, dict) and "guide_cards" in raw_value:
+        # Empty required-field arrays are meaningful in authored guide cards.
+        # Generic empty-value pruning must not invalidate their wire schema.
+        compacted.update({key: raw_value[key] for key in (
+            "guide_cards", "guide_scope", "guide_tips", "schema_token_reduction_verified",
+        ) if key in raw_value})
     if task_kind == "command" and isinstance(raw_value, dict) and isinstance(compacted, dict):
         if isinstance(raw_value.get("test_summary"), dict):
             compacted["test_summary"] = raw_value["test_summary"]
@@ -1944,6 +1956,7 @@ def _instrumented_tool():
             extra = arguments.get("extra_fields") or kwargs.get("extra_fields")
             token = _CURRENT_EXTRA_FIELDS.set(extra) if extra is not None else None
             response_token = _CURRENT_RESPONSE_OPTIONS.set({
+                "action": arguments.get("action", ""),
                 "max_response_tokens": arguments.get("max_response_tokens", 0),
                 "response_profile": arguments.get("response_profile", ""),
                 "reuse_key": arguments.get("reuse_key", ""),

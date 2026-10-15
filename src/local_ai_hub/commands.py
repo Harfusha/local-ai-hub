@@ -3227,6 +3227,12 @@ class CommandBroker:
         "grep", "ripgrep", "rg", "findstr", "select-string", "find", "head", "tail", "wc", "sort", "uniq", "cut", "tr", "jq", "yq",
         "cat", "type", "format-table", "select-object", "convertto-json", "convertfrom-json", "out-string", "out-null", "tee", "more", "less",
     }
+    # Repository snapshots cannot establish freshness for host/process/network
+    # observations. These commands remain allowed reads, never cached results.
+    VOLATILE_READS = frozenset({
+        "tasklist", "whoami", "hostname", "systeminfo", "ver", "ipconfig", "netstat",
+        "set", "env", "printenv",
+    })
     VALIDATORS = {
         "pytest", "phpunit", "phpstan", "ruff", "mypy", "eslint", "tsc", "cargo",
         "dotnet", "go", "npm", "pnpm", "yarn", "bun", "composer", "make", "cmake",
@@ -4830,7 +4836,7 @@ class CommandBroker:
                 return {"class": "unknown", "cacheable": False, "allowed": False, "reason": "ripgrep preprocessor may execute arbitrary programs"}
             if exe_base == "find" and any(flag in {"-exec", "-execdir", "-ok", "-okdir", "-delete"} for flag in lower):
                 return {"class": "unknown", "cacheable": False, "allowed": False, "reason": "find execution flags are not allowed"}
-            return {"class": "read", "cacheable": True, "allowed": bool(cfg.get("allow_read", True)), "reason": f"{exe_base} read command"}
+            return {"class": "read", "cacheable": exe_base not in self.VOLATILE_READS, "allowed": bool(cfg.get("allow_read", True)), "reason": f"{exe_base} read command"}
 
         if exe_base in {"python", "python3", "py"}:
             dash_m = None

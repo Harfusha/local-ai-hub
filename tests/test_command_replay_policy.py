@@ -17,6 +17,22 @@ def _broker(tmp_path) -> CommandBroker:
     )
 
 
+@pytest.mark.parametrize("command", [
+    'tasklist /FI "PID eq 3844" /FO CSV /NH',
+    'TASKLIST.EXE /FO CSV', 'netstat -ano', 'ipconfig /all',
+    'systeminfo', 'env', 'printenv', 'whoami',
+])
+def test_host_observations_are_allowed_but_never_repository_cached(tmp_path, command):
+    result = _broker(tmp_path).classify(command)
+    assert result["allowed"] is True
+    assert result["class"] == "read"
+    assert result["cacheable"] is False
+
+
+def test_repository_file_reads_retain_cache_support(tmp_path):
+    assert _broker(tmp_path).classify('rg -n needle src')["cacheable"] is True
+
+
 
 def _enable_local_transaction(broker: CommandBroker, tmp_path, monkeypatch) -> list[str]:
     target = tmp_path / "candidate.py"

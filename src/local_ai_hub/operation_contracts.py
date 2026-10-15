@@ -966,11 +966,11 @@ def operation_guide_cards(features: Any = None) -> dict[str, Any]:
     """Small, feature-aware examples derived from the same public action contracts."""
     examples = {
         "local_ai_status": {"detail": "guide"},
-        "local_ai_repo": {"action": "context", "root": "ABS_ROOT", "task": "Bounded repository question", "mode": "adaptive"},
+        "local_ai_repo": {"action": "context", "root": "ABS_ROOT", "query": "Bounded repository question", "mode": "adaptive"},
         "local_ai_command": {"action": "classify", "command": "python -m pytest tests/unit/ -q"},
         "local_ai_task": {"action": "delegate", "task": "Summarize supplied evidence", "context": "EVIDENCE"},
         "local_ai_rag": {"action": "search", "root": "ABS_ROOT", "query": "Meaning to retrieve"},
-        "local_ai_coord": {"action": "memo_search", "root": "ABS_ROOT", "query": "Known finding"},
+        "local_ai_coord": {"action": "memory_find", "root": "ABS_ROOT", "query": "Known finding"},
         "local_ai_artifact": {"action": "slice", "artifact_id": "ARTIFACT_ID", "offset": 0, "max_chars": 1000},
         "local_ai_work": {"action": "status", "work_id": "WORK_ID"},
     }
