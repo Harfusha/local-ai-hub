@@ -261,6 +261,13 @@ _ACTION_SCOPED_FIELDS = {
         "rev2": frozenset({"git_diff"}),
         "language": frozenset({"circular_dependencies", "resolve_imports"}),
     },
+    "local_ai_coord": {
+        "sync_action": frozenset({"task_sync"}),
+        "stream_id": frozenset({"task_sync"}),
+        "events": frozenset({"task_sync"}),
+        "limit": frozenset({"task_sync"}),
+        "after_seq": frozenset({"task_sync", "pubsub_poll"}),
+    },
 }
 OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
     "local_ai_status": _tool_contract(
@@ -667,6 +674,9 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "ask": ("root", "session_id"),
             "answer": ("root", "question_id", "answer"),
         },
+        allowed={
+            "task_sync": ("root", "sync_action", "stream_id", "after_seq", "limit", "events"),
+        },
         action_effects={name: "coordination_state" for name in _COORD_ACTIONS if name not in {
             "leases", "memo_get", "memo_search", "task_get", "task_list", "memory_get", "memory_find",
             "blackboard_get", "blackboard_list", "swarm_status", "swarm_list", "pubsub_poll", "verify_export",
@@ -688,6 +698,10 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "answer": {"type": "string", "default": "", "maxLength": 16_384},
             "ttl_seconds": {"type": "integer", "default": 0},
             "max_tokens": {"type": "integer", "default": 0},
+            "sync_action": {"type": "string", "enum": ["export", "import"], "default": "export"},
+            "stream_id": {"type": "string", "default": ""},
+            "events": {"type": "array", "items": {"type": "object"}},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 1000},
             "contract": {"type": "object"},
             "checkpoint": {
                 "type": "object",
@@ -1511,6 +1525,43 @@ def operation_parameters_schema(tool: str, features: Any = None) -> dict[str, An
                 "properties": {"max_chars": {"minimum": 512, "maximum": 12000}},
             },
         })
+    if tool == "local_ai_coord" and "task_sync" in available_actions:
+        parameters.setdefault("allOf", []).extend((
+            {
+                "if": {
+                    "properties": {
+                        selector_field: {"const": "task_sync"},
+                        "sync_action": {"const": "import"},
+                    },
+                    "required": [selector_field, "sync_action"],
+                },
+                "then": {"required": ["events"]},
+            },
+            {
+                "if": {
+                    "properties": {
+                        selector_field: {"const": "task_sync"},
+                        "sync_action": {"const": "export"},
+                    },
+                    "required": [selector_field, "sync_action"],
+                },
+                "then": {"not": {"required": ["events"]}},
+            },
+            {
+                "if": {
+                    "properties": {
+                        selector_field: {"const": "task_sync"},
+                        "sync_action": {"const": "import"},
+                    },
+                    "required": [selector_field, "sync_action"],
+                },
+                "then": {"not": {"anyOf": [
+                    {"required": ["stream_id"]},
+                    {"required": ["after_seq"]},
+                    {"required": ["limit"]},
+                ]}},
+            },
+        ))
     return parameters
 
 
@@ -1691,6 +1742,21 @@ def validate_operation_arguments(
             return "days must be an integer from 1 to 3650 for action='hotspots'"
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 50:
             return "limit must be an integer from 1 to 50 for action='hotspots'"
+    if tool == "local_ai_coord" and action == "task_sync":
+        sync_action = arguments.get("sync_action", "export")
+        if not isinstance(sync_action, str) or sync_action not in {"export", "import"}:
+            return "sync_action must be 'export' or 'import' for action='task_sync'"
+        if sync_action == "export" and "events" in arguments:
+            return "events is only valid for sync_action='import'"
+        if sync_action == "import":
+            if "events" not in arguments:
+                return "events is required for sync_action='import'"
+            irrelevant = {"stream_id", "after_seq", "limit"} & set(arguments)
+            if irrelevant:
+                return f"{sorted(irrelevant)[0]} is not valid for sync_action='import'"
+        limit = arguments.get("limit", 1000)
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
+            return "limit must be an integer from 1 to 1000 for action='task_sync'"
     if tool == "local_ai_artifact" and action == "source" and "max_chars" in arguments:
         max_chars = arguments["max_chars"]
         if isinstance(max_chars, bool) or not isinstance(max_chars, int) or not 512 <= max_chars <= 12000:
