@@ -49,11 +49,6 @@ def efficiency_metadata() -> dict[str, Any]:
     return dict(_efficiency_metadata.get())
 
 
-# Descriptive aliases keep integrations free to choose either terminology.
-set_efficiency_metadata = set_metadata
-reset_efficiency_metadata = reset_metadata
-
-
 def current() -> dict[str, Any]:
     value = {"request_id": _request_id.get(), "trace_id": _trace_id.get(), "agent": _agent.get(), "tenant": _tenant.get()}
     metadata = efficiency_metadata()
