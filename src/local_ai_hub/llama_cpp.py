@@ -1172,6 +1172,14 @@ class LlamaCppRouter:
         tool_state: dict[int, dict[str, Any]] = {}
         prompt_tokens = output_tokens = 0
         finish_reason: str | None = None
+        stream_complete = False
+        thinking_seen = False
+
+        def stream_failure(message: str, **metadata: Any) -> dict[str, Any]:
+            return {"success": False, "error": message, "_lah_provider": "llama.cpp-sycl",
+                    "_lah_partial_response": bool(text_parts or tool_state or thinking_seen),
+                    "retryable": False, **metadata}
+
         try:
             with _open_interruptible_response(req, deadline, should_stop) as response, _cancel_response_on_stop(response, should_stop, deadline):
                 response_lines = iter(response)
@@ -1199,13 +1207,16 @@ class LlamaCppRouter:
                         continue
                     data = line[5:].strip()
                     if data == "[DONE]":
+                        stream_complete = True
                         break
                     try:
                         chunk = json.loads(data)
                     except json.JSONDecodeError:
-                        continue
-                    if isinstance(chunk, dict) and chunk.get("error"):
-                        return {"error": f"llama.cpp: {chunk['error']}", "_lah_provider": "llama.cpp-sycl"}
+                        return stream_failure("llama.cpp returned malformed stream JSON")
+                    if not isinstance(chunk, dict):
+                        return stream_failure("llama.cpp returned a non-object stream event")
+                    if chunk.get("error"):
+                        return stream_failure(f"llama.cpp: {chunk['error']}")
                     usage = chunk.get("usage", {}) if isinstance(chunk, dict) else {}
                     if isinstance(usage, dict):
                         prompt_tokens = int(usage.get("prompt_tokens", prompt_tokens) or prompt_tokens)
@@ -1215,6 +1226,14 @@ class LlamaCppRouter:
                         continue
                     choice = choices[0] if isinstance(choices[0], dict) else {}
                     delta = choice.get("delta", {}) if isinstance(choice.get("delta"), dict) else {}
+                    thinking = delta.get("reasoning_content") or delta.get("reasoning")
+                    if thinking:
+                        thinking_seen = True
+                        if callable(on_thinking):
+                            try:
+                                on_thinking(str(thinking))
+                            except Exception:
+                                pass
                     content = delta.get("content")
                     if content:
                         text = str(content)
@@ -1240,9 +1259,20 @@ class LlamaCppRouter:
                                 accumulated["function"]["arguments"] += str(fn["arguments"])
                     if choice.get("finish_reason"):
                         finish_reason = str(choice["finish_reason"])
+                        stream_complete = True
         except HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")[:1000]
-            return {"error": f"llama.cpp HTTP {exc.code}: {detail}", "_lah_provider": "llama.cpp-sycl"}
+            try:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return stream_failure("llama.cpp HTTP error body deadline expired", timed_out=True)
+                _set_response_timeout(exc, remaining)
+                with _cancel_response_on_stop(exc, should_stop, deadline):
+                    detail = exc.read(1000).decode("utf-8", errors="replace")
+                return stream_failure(f"llama.cpp HTTP {exc.code}: {detail}")
+            except (OSError, TimeoutError):
+                return stream_failure(f"llama.cpp HTTP {exc.code}: error body unavailable")
+            finally:
+                exc.close()
         except (URLError, socket.timeout, TimeoutError) as exc:
             if stopped():
                 return {"success": False, "preempted": True, "error": "background request preempted by foreground work", "_lah_provider": "llama.cpp-sycl"}
@@ -1251,14 +1281,16 @@ class LlamaCppRouter:
             reason = getattr(exc, "reason", None)
             if isinstance(exc, (socket.timeout, TimeoutError)) or isinstance(reason, (socket.timeout, TimeoutError)):
                 return timed_out()
-            return {"error": f"llama.cpp request failed: {exc}", "_lah_provider": "llama.cpp-sycl"}
+            return stream_failure(f"llama.cpp request failed: {exc}")
         except Exception as exc:
             if stopped():
                 return {"success": False, "preempted": True, "error": "background request preempted by foreground work", "_lah_provider": "llama.cpp-sycl"}
             if time.monotonic() >= deadline:
                 return timed_out()
-            return {"error": f"llama.cpp request failed: {type(exc).__name__}: {exc}", "_lah_provider": "llama.cpp-sycl"}
+            return stream_failure(f"llama.cpp request failed: {type(exc).__name__}: {exc}")
 
+        if not stream_complete:
+            return stream_failure("llama.cpp stream ended before a completion marker", incomplete_stream=True)
         text = "".join(text_parts)
         result: dict[str, Any] = {
             "done": True,
