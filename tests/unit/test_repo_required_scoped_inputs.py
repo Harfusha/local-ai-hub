@@ -80,3 +80,42 @@ def test_missing_required_repo_query_still_fails_closed(monkeypatch, tmp_path, p
 
     assert result["success"] is False
     assert client.calls == []
+
+
+@pytest.mark.parametrize("public_wrapper", [False, True])
+def test_ast_refactor_rejects_supplied_diff_through_both_wrappers(
+    monkeypatch, tmp_path, public_wrapper,
+):
+    _activate_repo(monkeypatch)
+    client = _FakeClient()
+    monkeypatch.setattr(mcp_server, "CLIENT", client)
+    call = mcp_server.local_ai_repo if public_wrapper else mcp_server._local_ai_repo_impl
+
+    result = call(
+        action="ast_refactor", root=str(tmp_path.resolve()), path="src/a.py",
+        old_symbol="OldName", new_symbol="NewName", diff="renamed source",
+    )
+
+    assert result["success"] is False
+    assert client.calls == []
+
+
+@pytest.mark.parametrize(("retired_name", "retired_value"), [
+    ("query", "old selector"), ("task", "old selector"),
+])
+@pytest.mark.parametrize("public_wrapper", [False, True])
+def test_ast_outline_rejects_supplied_query_or_task_through_both_wrappers(
+    monkeypatch, tmp_path, retired_name, retired_value, public_wrapper,
+):
+    _activate_repo(monkeypatch)
+    client = _FakeClient()
+    monkeypatch.setattr(mcp_server, "CLIENT", client)
+    call = mcp_server.local_ai_repo if public_wrapper else mcp_server._local_ai_repo_impl
+
+    result = call(
+        action="ast_outline", root=str(tmp_path.resolve()), path="src/a.py",
+        **{retired_name: retired_value},
+    )
+
+    assert result["success"] is False
+    assert client.calls == []
