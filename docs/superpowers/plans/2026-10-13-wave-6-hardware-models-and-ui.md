@@ -1,6 +1,6 @@
 # Wave 6 Implementation Plan: Hardware, Models & Multimodal UI
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Governing workflow:** Follow [Simplified Worktree and Integration Process](../specs/2026-10-07-simplified-worktree-integration.md). The primary agent implements, reviews, and integrates on current `master`. Subagents and isolated worktrees are optional for independent implementation with disjoint scope; audits and routine work remain with the primary agent. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Provide browser headless UI inspection, local visual diffing via Qwen-VL, non-blocking GPU telemetry, and VRAM lifecycle management.
 
@@ -12,12 +12,21 @@
 
 ### Task 79: Expose `browser_bridge` Headless Inspection in MCP (#41)
 
+**2026-10-15 integrated source checkpoint — primary owner: Codex.** Commit `6ce835de` exposes `local_ai_task(action="browser", url=...)` through `/api/task/browser` in the shared HTTP daemon. The generated schema comes from `operation_contracts.py`; the old `mcp/local-ai/local_ai_task.json` file hint does not exist. Capture uses a bounded loopback-only proxy, two process slots, managed Windows process-tree cleanup, isolated profiles, bounded DOM/PNG output, and tenant-scoped atomic DOM/screenshot artifacts. Existing dirty T74–T78 work was preserved through selective staging.
+
+Validation on current integrated source with the preserved dirty overlay: `python -m pytest tests/unit/test_mcp_browser_bridge.py tests/unit/test_browser_headless_capture.py tests/test_mcp_agent_routing.py tests/test_browser_artifact_atomicity.py -q --tb=short` — **89 passed**, including the opt-in installed-Chrome test with `LOCAL_AI_BROWSER_RUNTIME_TEST=1` and `LOCAL_AI_CHROME=C:\Program Files\Google\Chrome\Application\chrome.exe`. Final narrower rerun after the accounting/cleanup edit: the two unit files — **14 passed**, same runtime environment, broker request `req_6420fc406304`. The installed Chrome test confirms actual DOM/PNG creation, blocked external subresource, artifact retrieval, and scratch cleanup using only temporary state. This proves the capture component, not deployment of a new shared daemon or final HTTP/MCP installed-runtime acceptance.
+
+**Remaining acceptance:** the historical T18 route-inventory tests still report source/fixture drift (including `post_repo_secret_scan_1`) outside this feature. Reconcile these under API coverage rather than relabeling the immutable preimage. Full release acceptance remains open; the source index returned zero callers for the new helper despite its explicit HTTP call, so that index result is not completeness evidence.
+
 **Files:**
 - Modify: `src/local_ai_hub/mcp_server.py:2330-2360`
-- Modify: `mcp/local-ai/local_ai_task.json`
+- Modify: `src/local_ai_hub/operation_contracts.py` (generated MCP schema source)
+- Modify: `src/local_ai_hub/browser_bridge.py`
+- Modify: `src/local_ai_hub/http_server.py`, `src/local_ai_hub/http_route_registry.py`
 - Test: `tests/unit/test_mcp_browser_bridge.py`
+- Test: `tests/unit/test_browser_headless_capture.py`
 
-- [ ] **Step 1: Write test verifying `local_ai_task(action="browser", url="http://localhost:3000")` calls `browser_bridge`**
+- [x] **Step 1: Write test verifying `local_ai_task(action="browser", url="http://localhost:3000")` calls `browser_bridge`**
 
 ```python
 # tests/unit/test_mcp_browser_bridge.py
@@ -28,9 +37,9 @@ def test_mcp_browser_bridge_action(monkeypatch):
     monkeypatch.setattr("local_ai_hub.browser_bridge.BrowserBridge", lambda *a: DummyBrowser())
 ```
 
-- [ ] **Step 2: Implement fix**
-Add `action="browser"` or `action="browser_snapshot"` to `local_ai_task` or `local_ai_repo`. Connect to `BrowserBridge.capture_page()`.
-- [ ] **Step 3: Run test and verify pass & Commit**
+- [x] **Step 2: Implement fix**
+Expose `local_ai_task(action="browser")` and connect to `BrowserBridge.capture_page()` through the shared HTTP daemon so adapters do not create separate browser capacity pools. Return DOM and PNG artifact references with bounded previews.
+- [x] **Step 3: Run test and verify pass & Commit**
 `git commit -m "feat(mcp): expose browser_bridge DOM snapshot and screenshot in local_ai_task"`
 
 ---

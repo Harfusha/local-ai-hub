@@ -1,6 +1,6 @@
 # Wave 5 Implementation Plan: Agent Coordination & Memory
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Governing workflow:** Follow [Simplified Worktree and Integration Process](../specs/2026-10-07-simplified-worktree-integration.md). The primary agent implements, reviews, and integrates on current `master`. Subagents and isolated worktrees are optional for independent implementation with disjoint scope; audits and routine work remain with the primary agent. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Provide rock-solid multi-agent execution, prevent race conditions in blackboard/memory, support Swarm DAG workflows, and protect git worktree integrity.
 

@@ -1,12 +1,12 @@
 # Subagent Dispatch Playbook: 100 Items Implementation
 
-> **Purpose:** Canonical orchestration guide for dispatching autonomous subagents to implement the 100 Local AI Hub improvements across all 6 waves.
+> **Status:** Optional dispatch reference, subordinate to [Simplified Worktree and Integration Process](../specs/2026-10-07-simplified-worktree-integration.md). The primary agent implements, reviews, and integrates on current `master`. Use a subagent only for independently bounded implementation with disjoint write scope or an explicit user request. Review and audit do not require separate agents.
 
 ---
 
 ## 1. Subagent Lifecycle & Worktree Setup
 
-Every task MUST be executed in an isolated git worktree to prevent workspace contamination and race conditions on untracked test databases.
+Use an isolated worktree only when parallel implementation or a concrete conflict boundary requires it. Routine tasks stay on current `master`. Unit databases always use `tmp_path` or `:memory:`, independently of checkout choice.
 
 ### Launch Script (PowerShell)
 
@@ -16,7 +16,7 @@ param(
     [string]$TaskId = "task-01"
 )
 
-$Branch = "feature/$Wave-$TaskId"
+$Branch = "codex/$Wave-$TaskId"
 $WorktreePath = "../lah-wt-$TaskId"
 
 Write-Host "Creating worktree at $WorktreePath on branch $Branch..."
@@ -34,13 +34,15 @@ param(
 
 $WorktreePath = "../lah-wt-$TaskId"
 Write-Host "Cleaning up worktree $WorktreePath..."
-git worktree remove --force $WorktreePath
+git worktree remove $WorktreePath
 git worktree prune
 ```
 
 ---
 
-## 2. Standard Subagent Prompts
+Before teardown, inspect dirty/untracked work, unique commits, and ownership; record the disposition in the existing plan and retain a recoverable ref. Do not remove a worktree merely because its task ended. The script above applies only after those checks pass.
+
+## 2. Optional Subagent Prompts
 
 ### A. Implementer Subagent Prompt
 
@@ -69,7 +71,7 @@ Compare the implementation commit against the task specification in:
 docs/superpowers/plans/2026-10-13-[WAVE_NAME].md
 
 CHECKLIST:
-- Did the subagent modify the EXACT files and lines specified in the task?
+- Does behavior satisfy the specified acceptance criteria in the current architecture? File/line hints may be stale; explain necessary integration changes.
 - Did they add tests verifying the required edge cases?
 - Did they preserve all existing unrelated comments and docstrings?
 - Are any unexpected files modified or added?
@@ -90,26 +92,21 @@ Reply with APPROVE or REQUEST_CHANGES.
 
 ---
 
-## 3. Wave Execution & Merge Sequence
+## 3. Bounded Implementation and Integration Sequence
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor Orchestrator as Main Agent / Orchestrator
-    participant Implementer as Implementer Subagent
-    participant SpecReview as Spec Reviewer Subagent
-    participant QualReview as Quality Reviewer Subagent
+    participant Implementer as Main Agent or Optional Independent Implementer
     participant Git as Git Master Branch
 
-    Orchestrator->>Implementer: Dispatch Task N with worktree & prompt
+    Orchestrator->>Implementer: Assign bounded Task N; isolate only when needed
     Implementer->>Implementer: TDD (Failing test -> Code -> Pass -> Commit)
     Implementer-->>Orchestrator: Commit ready
-    Orchestrator->>SpecReview: Verify commit against plan spec
-    SpecReview-->>Orchestrator: Spec compliance confirmed
-    Orchestrator->>QualReview: Review code quality & Windows safety
-    QualReview-->>Orchestrator: Approved
-    Orchestrator->>Git: Rebase / Squash-merge into master
-    Orchestrator->>Orchestrator: Teardown worktree & update task checklist
+    Orchestrator->>Orchestrator: Review specification, code quality, Windows safety
+    Orchestrator->>Git: Integrate reviewed change promptly; run targeted tests
+    Orchestrator->>Orchestrator: Update existing plan; classify leftovers before archival
 ```
 
 ---
