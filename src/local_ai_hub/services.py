@@ -4012,19 +4012,33 @@ class LocalAIServices:
         # Revalidate source hashes rather than reuse workspace-only export proof.
         return self.deterministic.resolve_imports(root, symbols, language)
 
-    def callers(self, root: str, symbol: str, limit: int = 50) -> dict[str, Any]:
+    def callers(self, root: str, symbol: str, limit: int = 50, offset: int = 0) -> dict[str, Any]:
+        bounds_error = pagination_bounds_error(limit, offset)
+        if bounds_error:
+            return {"success": False, "status_code": 400, "terminal": True, "retryable": False, "error": bounds_error}
         if self.code_index is not None:
-            ci_res = self.code_index.find_callers(root, symbol, limit)
-            if ci_res.get("success") and ci_res.get("count", 0) > 0:
-                return ci_res
-        return self.deterministic_operation("callers", root, {"symbol": symbol, "limit": limit}, lambda: self.deterministic.find_callers(root, symbol, limit))
+            ci_res = self.code_index.find_callers(root, symbol, limit, offset)
+            if ci_res.get("success"):
+                if ci_res.get("count", 0) > 0 or ci_res.get("index_available") is not False:
+                    return ci_res
+        return self.deterministic_operation(
+            "callers", root, {"symbol": symbol, "limit": limit, "offset": offset},
+            lambda: self.deterministic.find_callers(root, symbol, limit, offset),
+        )
 
-    def callees(self, root: str, symbol: str, limit: int = 50) -> dict[str, Any]:
+    def callees(self, root: str, symbol: str, limit: int = 50, offset: int = 0) -> dict[str, Any]:
+        bounds_error = pagination_bounds_error(limit, offset)
+        if bounds_error:
+            return {"success": False, "status_code": 400, "terminal": True, "retryable": False, "error": bounds_error}
         if self.code_index is not None:
-            ci_res = self.code_index.find_callees(root, symbol, limit)
-            if ci_res.get("success") and ci_res.get("count", 0) > 0:
-                return ci_res
-        return self.deterministic_operation("callees", root, {"symbol": symbol, "limit": limit}, lambda: getattr(self.deterministic, "find_callees", lambda r, s, l: {"success": True, "callees": [], "count": 0})(root, symbol, limit))
+            ci_res = self.code_index.find_callees(root, symbol, limit, offset)
+            if ci_res.get("success"):
+                if ci_res.get("count", 0) > 0 or ci_res.get("index_available") is not False:
+                    return ci_res
+        return self.deterministic_operation(
+            "callees", root, {"symbol": symbol, "limit": limit, "offset": offset},
+            lambda: self.deterministic.find_callees(root, symbol, limit, offset),
+        )
 
     def dead_code(self, root: str, limit: int = 200) -> dict[str, Any]:
         return self.deterministic_operation("dead-code", root, {"limit": int(limit)}, lambda: getattr(self.deterministic, "find_dead_code", getattr(self.deterministic, "detect_dead_code", None))(root, int(limit)))
@@ -4217,10 +4231,17 @@ class LocalAIServices:
             return {"success": False, "error": "code index disabled"}
         return self._repo_cached("ci:find_declaration", root, {"symbol": symbol, "path": path}, lambda: self.code_index.find_declaration(root, symbol, path=path))
 
-    def code_find_implementations(self, root: str, symbol: str, path: str | None = None) -> dict[str, Any]:
+    def code_find_implementations(self, root: str, symbol: str, path: str | None = None, limit: int = 50, offset: int = 0) -> dict[str, Any]:
         if self.code_index is None:
             return {"success": False, "error": "code index disabled"}
-        return self._repo_cached("ci:find_implementations", root, {"symbol": symbol, "path": path}, lambda: self.code_index.find_implementations(root, symbol, path=path))
+        bounds_error = pagination_bounds_error(limit, offset)
+        if bounds_error:
+            return {"success": False, "status_code": 400, "terminal": True, "retryable": False, "error": bounds_error}
+        return self._repo_cached(
+            "ci:find_implementations", root,
+            {"symbol": symbol, "path": path, "limit": limit, "offset": offset},
+            lambda: self.code_index.find_implementations(root, symbol, path=path, limit=limit, offset=offset),
+        )
 
     def code_find_referencing_symbols(self, root: str, symbol: str, path: str | None = None) -> dict[str, Any]:
         if self.code_index is None:

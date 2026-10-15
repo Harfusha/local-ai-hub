@@ -57,7 +57,7 @@ from local_ai_hub.ollama_subagents import OllamaSubagentCatalog
 from local_ai_hub.process_utils import canonical_root, canonical_workspace_id, is_rooted_path
 from local_ai_hub.token_accounting import account_projection, attach_accounting, context_digest, finalize_tool_accounting, json_tokens, pop_accounting, tool_request_tokens
 from local_ai_hub.trace_context import efficiency_metadata, reset_metadata, set_metadata
-from local_ai_hub.search_pagination import MAX_PAGE_SIZE
+from local_ai_hub.search_pagination import MAX_PAGE_SIZE, pagination_bounds_error
 from local_ai_hub.adoption_metrics import AdoptionMetricsStore
 from local_ai_hub.task_memory_wire import (
     mcp_wire_tokens as _task_memory_mcp_wire_tokens,
@@ -1052,7 +1052,82 @@ def _code_index_prefix_fitting(
     return None
 
 
-def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | None = None) -> Any:
+def _relation_page_with_prefix(
+    base: dict[str, Any], raw: dict[str, Any], page_key: str, items: list[Any], count: int,
+) -> dict[str, Any]:
+    """Keep relation page metadata aligned with the whole-item prefix that fits."""
+    candidate = copy.deepcopy(raw if raw.get("success") is True and base.get("success") is False else base)
+    candidate[page_key] = items[:count]
+    candidate["count"] = count
+    candidate["returned_count"] = count
+    if page_key == "implementations":
+        candidate["implementations_count"] = count
+    offset = raw.get("offset", 0)
+    if isinstance(offset, int) and not isinstance(offset, bool):
+        candidate["offset"] = offset
+    if "limit" in raw:
+        candidate["limit"] = raw["limit"]
+    if "total_matches" in raw:
+        candidate["total_matches"] = raw["total_matches"]
+    elif "total_matches" in candidate:
+        candidate.pop("total_matches", None)
+    total = raw.get("total_matches")
+    known_more = count < len(items)
+    if "has_more" in raw or known_more:
+        candidate["has_more"] = bool(raw.get("has_more")) or known_more or (
+            isinstance(total, int) and not isinstance(total, bool)
+            and isinstance(offset, int) and not isinstance(offset, bool)
+            and offset + count < total
+        )
+    elif "has_more" not in raw:
+        candidate.pop("has_more", None)
+    has_more = candidate.get("has_more") is True
+    if has_more and isinstance(offset, int) and not isinstance(offset, bool):
+        candidate["next_offset"] = offset + count
+    else:
+        candidate.pop("next_offset", None)
+    candidate["truncated"] = bool(raw.get("truncated")) or known_more or has_more
+    raw_truncation = raw.get("truncation")
+    truncation = dict(raw_truncation) if isinstance(raw_truncation, dict) else {}
+    truncation[page_key] = candidate["truncated"]
+    if "returned_count" in truncation:
+        truncation["returned_count"] = count
+    if truncation:
+        candidate["truncation"] = truncation
+    elif "truncation" in candidate:
+        candidate.pop("truncation", None)
+    raw_coverage = raw.get("coverage")
+    coverage = dict(raw_coverage) if isinstance(raw_coverage, dict) else {}
+    coverage.update({"returned": count, "offset": offset, "limit": raw.get("limit")})
+    if not isinstance(raw_coverage, dict) or raw_coverage.get("complete") is not True or count < len(items):
+        coverage["complete"] = False
+    candidate["coverage"] = coverage
+    return candidate
+
+
+def _relation_prefix_fitting(
+    base: dict[str, Any], raw: dict[str, Any], page_key: str, items: list[Any], requested: int,
+) -> dict[str, Any] | None:
+    for count in range(len(items), -1, -1):
+        candidate = _normalize_deterministic(account_projection(
+            raw, _relation_page_with_prefix(base, raw, page_key, items, count),
+        ))
+        if json_tokens(candidate) > requested:
+            continue
+        wire = {
+            "content": [{"type": "text", "text": json_dumps(candidate)}],
+            "structuredContent": candidate,
+            "isError": False,
+        }
+        if json_tokens(wire) <= requested:
+            return candidate
+    return None
+
+
+def _compact(
+    value: Any, task_kind: str = "general", extra_fields: list[str] | None = None,
+    *, page_key: str | None = None,
+) -> Any:
     # Capture measured savings before the projector intentionally removes internal
     # token_saving/runtime fields. Private accounting metadata is stripped by the
     # instrumented MCP boundary and never enters agent context.
@@ -1134,7 +1209,7 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
         max_evidence=MAX_EVIDENCE,
         max_items=(
             max(1, min(raw_value["limit"], MAX_PAGE_SIZE))
-            if task_kind in {"search", "code_index"} and isinstance(raw_value, dict)
+            if (task_kind in {"search", "code_index"} or page_key in {"callers", "callees", "implementations"}) and isinstance(raw_value, dict)
             and isinstance(raw_value.get("limit"), int)
             and not isinstance(raw_value.get("limit"), bool)
             else 50
@@ -1170,7 +1245,7 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
             *(_SECURITY_PROTECTED_KEYS if task_kind == "security" else ()),
             *(_COMPLEXITY_PROTECTED_KEYS if task_kind == "complexity" else ()),
             *(_TOPOLOGY_PROTECTED_KEYS if task_kind == "topology" else ()),
-            *(('offset', 'limit', 'total_matches', 'has_more') if task_kind in {"search", "code_index"} else ()),
+            *(('offset', 'limit', 'total_matches', 'has_more') if task_kind in {"search", "code_index"} or page_key in {"callers", "callees", "implementations"} else ()),
             *(('slices', 'truncated', 'budget_limited') if task_kind == "artifact" else ()),
             *(SOURCE_SLICE_FIELDS if source_slice and raw_value.get("success") is True else ()),
             *(_CONTEXT_PROTECTED_KEYS if task_kind in {"context", "context_compile"} else ()),
@@ -1217,6 +1292,26 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
                     "limit": raw_value.get("limit", 24),
                     "total_matches": raw_value.get("total_matches", 0),
                     "has_more": raw_value.get("has_more", False), "symbols": [],
+                }
+            else:
+                compacted = fitted
+    if (
+        page_key in {"callers", "callees", "implementations"}
+        and isinstance(raw_value, dict)
+        and raw_value.get("success") is True
+        and isinstance(raw_value.get(page_key), list)
+    ):
+        requested, _profile, _reuse_key, enabled = _response_budget(task_kind, options)
+        if enabled:
+            raw_items = raw_value[page_key]
+            fitted = _relation_prefix_fitting(compacted if isinstance(compacted, dict) else {}, raw_value, page_key, raw_items, requested)
+            if fitted is None or (raw_items and not fitted.get(page_key)):
+                compacted = {
+                    "success": False, "status_code": 413, "terminal": True,
+                    "retryable": False,
+                    "error": f"The first complete {page_key[:-1] if page_key.endswith('s') else page_key} result exceeds the configured response budget.",
+                    "offset": raw_value.get("offset", 0), "limit": raw_value.get("limit"),
+                    page_key: [], "count": 0, "returned_count": 0,
                 }
             else:
                 compacted = fitted
@@ -3346,17 +3441,32 @@ def _local_ai_repo_impl(
             "profile_path": profile_path, "top_n": max_tokens or 15,
         }, timeout=_timeout("quick")), "architecture")
     if action == "callers":
+        if not isinstance(query, str) or not query.strip() or task or path or isinstance(max_tokens, bool) or max_tokens != 0:
+            return contract_error("callers requires query and uses limit/offset; task, path, and max_tokens are not supported aliases")
+        bounds_error = pagination_bounds_error(limit, offset)
+        if bounds_error:
+            return contract_error(bounds_error)
         return _compact(CLIENT.post("/api/repo/callers", {
-            "root": root, "symbol": query or task or path, "limit": max_tokens or 50,
-        }, timeout=_timeout("quick")), "architecture")
+            "root": root, "symbol": query, "limit": limit, "offset": offset,
+        }, timeout=_timeout("quick")), "architecture", page_key="callers")
     if action == "callees":
+        if not isinstance(query, str) or not query.strip() or task or path or isinstance(max_tokens, bool) or max_tokens != 0:
+            return contract_error("callees requires query and uses limit/offset; task, path, and max_tokens are not supported aliases")
+        bounds_error = pagination_bounds_error(limit, offset)
+        if bounds_error:
+            return contract_error(bounds_error)
         return _compact(CLIENT.post("/api/code/callees", {
-            "root": root, "symbol": query or task or path, "limit": max_tokens or 50,
-        }, timeout=_timeout("quick")), "architecture")
+            "root": root, "symbol": query, "limit": limit, "offset": offset,
+        }, timeout=_timeout("quick")), "architecture", page_key="callees")
     if action == "implementations":
+        if not isinstance(query, str) or not query.strip() or task or isinstance(max_tokens, bool) or max_tokens != 0:
+            return contract_error("implementations requires query and uses limit/offset; task and max_tokens are not supported aliases")
+        bounds_error = pagination_bounds_error(limit, offset)
+        if bounds_error:
+            return contract_error(bounds_error)
         return _compact(CLIENT.post("/api/code/implementations", {
-            "root": root, "symbol": query or task or path, "path": path or None,
-        }, timeout=_timeout("quick")), "architecture")
+            "root": root, "symbol": query, "path": path or None, "limit": limit, "offset": offset,
+        }, timeout=_timeout("quick")), "architecture", page_key="implementations")
     if action == "declaration":
         return _compact(CLIENT.post("/api/code/declaration", {
             "root": root, "symbol": query or task or path, "path": path or None,
@@ -4653,6 +4763,45 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                 outer_metadata["returned_tokens"] = returned
                 if finalized > requested:
                     outer_metadata["returned_tokens"] = 0
+
+        relation_page_key = action if action in {"callers", "callees", "implementations"} else None
+        if (name == "local_ai_repo" and relation_page_key and isinstance(value, dict)
+                and value.get("success") is True and isinstance(value.get(relation_page_key), list)):
+            items = value[relation_page_key]
+            outer_metadata = {
+                "requested_tokens": requested,
+                "original_tokens": original_tokens,
+                "returned_tokens": 0,
+                "truncated": original_tokens > requested,
+                "reused": bool((value.get("response_budget") or {}).get("reused"))
+                if isinstance(value.get("response_budget"), dict) else False,
+                "unit": "estimated_tokens",
+            }
+            fitted_page = None
+            for count in range(len(items), -1, -1):
+                candidate = _normalize_deterministic(account_projection(
+                    value, _relation_page_with_prefix(value, value, relation_page_key, items, count),
+                ))
+                candidate["response_budget"] = dict(outer_metadata)
+                returned = json_tokens(_mcp_wire_view(candidate, structured=True))
+                candidate["response_budget"]["returned_tokens"] = returned
+                candidate["response_budget"]["truncated"] = returned < original_tokens
+                finalized = json_tokens(_mcp_wire_view(candidate, structured=True))
+                if finalized == returned and finalized <= requested:
+                    fitted_page = candidate
+                    break
+            if fitted_page is None or (items and not fitted_page.get(relation_page_key)):
+                failure = {
+                    "success": False, "status_code": 413, "terminal": True,
+                    "retryable": False,
+                    "error": f"The first complete {relation_page_key[:-1]} result exceeds the configured MCP response budget.",
+                }
+                bounded = _mcp_bounded_error(failure, requested)
+                if bounded is not None:
+                    return bounded
+            else:
+                content = [mcp_types.TextContent(type="text", text=json_dumps(fitted_page))]
+                return content, fitted_page
 
         if action in {"context", "context_compile"} and requested <= 128 and isinstance(value, dict):
             pack = value.get("adaptive_context_pack")

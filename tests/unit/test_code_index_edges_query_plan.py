@@ -193,9 +193,11 @@ def test_caller_order_and_limit_metadata_are_preserved(tmp_path):
     _insert_edge(index, root, "first_caller", "limited_target", path="a.py")
 
     limited = index.find_callers(root, "limited_target", limit=1)
-    empty = index.find_callers(root, "limited_target", limit=0)
+    next_page = index.find_callers(root, "limited_target", limit=1, offset=1)
 
     assert [row["caller"] for row in limited["callers"]] == ["first_caller"]
     assert limited["truncated"] is True
-    assert empty["callers"] == []
-    assert empty["truncated"] is True
+    assert [row["caller"] for row in next_page["callers"]] == ["later_caller"]
+    assert next_page["offset"] == 1
+    assert next_page["total_matches"] == 2
+    assert next_page["has_more"] is False
