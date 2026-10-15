@@ -13,6 +13,7 @@ _INVENTORY = json.loads(_FIXTURE.read_text(encoding="utf-8"))
 _CROSSWALK_FIXTURE = Path(__file__).parent / "fixtures" / "http_post_api_coverage_route_crosswalk_t18.json"
 _CROSSWALK = json.loads(_CROSSWALK_FIXTURE.read_text(encoding="utf-8"))
 _RETIRED_ROUTE_IDS = {"post_control_1"}
+_ADDED_ROUTE_IDS = {"post_task_browser_1"}
 
 
 def _rules_as_rows(registry):
@@ -28,7 +29,7 @@ def test_post_registry_matches_root_preimage_route_inventory_in_order() -> None:
         for row in _INVENTORY["post_route_rules"]
         if row["route_id"] not in _RETIRED_ROUTE_IDS
     ]
-    assert _rules_as_rows(POST_ROUTE_REGISTRY) == expected
+    assert _rules_as_rows(tuple(rule for rule in POST_ROUTE_REGISTRY if rule.route_id not in _ADDED_ROUTE_IDS)) == expected
 
 
 def test_candidate_and_root_preimages_have_route_path_and_priority_parity() -> None:
@@ -92,14 +93,14 @@ def test_do_post_registered_dispatch_branches_match_inventory_without_moving_gat
     ]
     early_routes = {"post_admin_mode_1", "post_bundle_import_1"}
     named_boundaries = set(POST_ROUTE_HANDLER_BOUNDARIES)
-    known_ids = set(expected_orders[0]) | set(expected_orders[1])
+    known_ids = set(expected_orders[0]) | set(expected_orders[1]) | _ADDED_ROUTE_IDS
     assert selected_ids
     assert len(selected_ids) == len(set(selected_ids))
     assert set(selected_ids) <= known_ids
     assert not (named_boundaries & set(selected_ids))
     assert all(select_post_handler((route_id,)) is None for route_id in early_routes)
     inventory_order = {route_id: index for index, route_id in enumerate(expected_orders[0])}
-    selected_order = [inventory_order[route_id] for route_id in selected_ids]
+    selected_order = [inventory_order[route_id] for route_id in selected_ids if route_id not in _ADDED_ROUTE_IDS]
     assert selected_order == sorted(selected_order)
 
     calls = [

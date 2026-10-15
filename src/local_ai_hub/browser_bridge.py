@@ -9,16 +9,431 @@ from __future__ import annotations
 
 import base64
 import binascii
+import ipaddress
 import json
+import os
+import select
+import shutil
+import socket
 import secrets
+import subprocess
+import tempfile
 import threading
 import time
 from datetime import datetime, timezone
 from collections.abc import Callable, Mapping
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
-from .artifacts import ArtifactBatchCancelled
+from .artifacts import ArtifactBatchCancelled, ArtifactStore, ArtifactTransportError
+from .process_utils import run_hidden
+
+
+class _PageTitleParser:
+    """Extract a bounded document title without retaining another DOM copy."""
+
+    def __init__(self) -> None:
+        from html.parser import HTMLParser
+
+        class Parser(HTMLParser):
+            def __init__(inner_self) -> None:
+                super().__init__(convert_charrefs=True)
+                inner_self.in_title = False
+                inner_self.parts: list[str] = []
+
+            def handle_starttag(inner_self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+                if tag.casefold() == "title":
+                    inner_self.in_title = True
+
+            def handle_endtag(inner_self, tag: str) -> None:
+                if tag.casefold() == "title":
+                    inner_self.in_title = False
+
+            def handle_data(inner_self, data: str) -> None:
+                if inner_self.in_title and sum(map(len, inner_self.parts)) < 512:
+                    inner_self.parts.append(data[:512])
+
+        self._parser = Parser()
+
+    def title(self, html: str) -> str:
+        self._parser.feed(html)
+        return " ".join(" ".join(self._parser.parts).split())[:512]
+
+
+class _LoopbackProxyHandler(BaseHTTPRequestHandler):
+    """Forward browser traffic only to literal loopback destinations."""
+
+    protocol_version = "HTTP/1.1"
+    MAX_HEADER_BYTES = 32_768
+    MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+
+    def log_message(self, _format: str, *_args: Any) -> None:
+        return
+
+    @staticmethod
+    def _target(host: str, port: int) -> tuple[str, int] | None:
+        normalized = host.casefold().rstrip(".")
+        if normalized == "localhost":
+            return "127.0.0.1", port
+        try:
+            address = ipaddress.ip_address(normalized)
+        except ValueError:
+            return None
+        if not address.is_loopback:
+            return None
+        return address.compressed, port
+
+    def _authority(self, authority: str, default_port: int) -> tuple[str, int] | None:
+        try:
+            parsed = urlsplit("//" + authority)
+            host = parsed.hostname or ""
+            port = parsed.port if parsed.port is not None else default_port
+        except ValueError:
+            return None
+        if parsed.username or parsed.password or not host or not 1 <= port <= 65535:
+            return None
+        return self._target(host, port)
+
+    def _deny(self) -> None:
+        self.close_connection = True
+        with self.server._connections_lock:
+            self.server.denied_requests += 1
+        try:
+            self.send_error(403, "browser proxy permits loopback destinations only")
+        except OSError:
+            pass
+
+    def do_CONNECT(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+        target = self._authority(self.path, 443)
+        if target is None:
+            self._deny()
+            return
+        try:
+            upstream = socket.create_connection(target, timeout=3.0)
+        except OSError:
+            self._deny()
+            return
+        try:
+            self.send_response(200, "Connection Established")
+            self.end_headers()
+            self.connection.settimeout(1.0)
+            upstream.settimeout(1.0)
+        except OSError:
+            upstream.close()
+            return
+        last_activity = time.monotonic()
+        deadline = last_activity + 60.0
+        transferred = 0
+        try:
+            while (time.monotonic() - last_activity < 15.0 and time.monotonic() < deadline
+                   and not self.server.stopping.is_set() and transferred < self.MAX_RESPONSE_BYTES):
+                readable, _, _ = select.select([self.connection, upstream], [], [], 0.25)
+                for source in readable:
+                    try:
+                        chunk = source.recv(16_384)
+                    except OSError:
+                        return
+                    if not chunk:
+                        return
+                    destination = upstream if source is self.connection else self.connection
+                    destination.sendall(chunk)
+                    transferred += len(chunk)
+                    last_activity = time.monotonic()
+        except (OSError, ValueError):
+            return
+        finally:
+            upstream.close()
+
+    def _forward_http(self) -> None:
+        if self.command not in {"GET", "HEAD", "OPTIONS"}:
+            self._deny()
+            return
+        try:
+            parsed = urlsplit(self.path)
+            if not parsed.scheme:
+                parsed = urlsplit("http://" + self.headers.get("Host", "") + self.path)
+            if parsed.scheme.casefold() != "http":
+                self._deny()
+                return
+            authority = parsed.netloc
+            target = self._authority(authority, 80)
+            body_length = int(self.headers.get("Content-Length", "0"))
+        except (TypeError, ValueError):
+            self._deny()
+            return
+        header_bytes = sum(len(name) + len(value) + 4 for name, value in self.headers.items())
+        if (target is None or body_length != 0 or self.headers.get("Transfer-Encoding")
+                or len(self.path) + header_bytes > self.MAX_HEADER_BYTES):
+            self._deny()
+            return
+        path = urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
+        upstream = None
+        try:
+            upstream = socket.create_connection(target, timeout=3.0)
+            upstream.settimeout(3.0)
+            request = [f"{self.command} {path} {self.request_version}\r\n"]
+            for name, value in self.headers.items():
+                if name.casefold() in {"connection", "proxy-connection", "proxy-authorization", "keep-alive"}:
+                    continue
+                request.append(f"{name}: {value}\r\n")
+            request.extend(("Connection: close\r\n", "\r\n"))
+            upstream.sendall("".join(request).encode("iso-8859-1"))
+            sent = 0
+            while sent < self.MAX_RESPONSE_BYTES and not self.server.stopping.is_set():
+                chunk = upstream.recv(min(16_384, self.MAX_RESPONSE_BYTES - sent))
+                if not chunk:
+                    break
+                self.connection.sendall(chunk)
+                sent += len(chunk)
+        except OSError:
+            self._deny()
+        finally:
+            try:
+                if upstream is not None:
+                    upstream.close()
+            except OSError:
+                pass
+            self.close_connection = True
+
+    do_GET = _forward_http
+    do_HEAD = _forward_http
+    do_OPTIONS = _forward_http
+
+
+class _LoopbackProxy(ThreadingHTTPServer):
+    daemon_threads = True
+    block_on_close = False
+    request_queue_size = 16
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.stopping = threading.Event()
+        self.denied_requests = 0
+        self._worker_slots = threading.BoundedSemaphore(16)
+        self._connections: set[socket.socket] = set()
+        self._connections_lock = threading.Lock()
+        super().__init__(*args, **kwargs)
+
+    def get_request(self) -> tuple[socket.socket, Any]:
+        request, address = super().get_request()
+        request.settimeout(3.0)
+        with self._connections_lock:
+            self._connections.add(request)
+        return request, address
+
+    def shutdown_request(self, request: socket.socket) -> None:
+        with self._connections_lock:
+            self._connections.discard(request)
+        super().shutdown_request(request)
+
+    def process_request(self, request: socket.socket, client_address: Any) -> None:
+        if not self._worker_slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._worker_slots.release()
+            raise
+
+    def process_request_thread(self, request: socket.socket, client_address: Any) -> None:
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._worker_slots.release()
+
+    def server_close(self) -> None:
+        self.stopping.set()
+        with self._connections_lock:
+            connections = list(self._connections)
+        for connection in connections:
+            try:
+                connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            connection.close()
+        super().server_close()
+
+
+class BrowserBridge:
+    """Capture a bounded DOM snapshot from an explicitly local web page."""
+
+    MAX_DOM_BYTES = 1_000_000
+    MAX_SCREENSHOT_BYTES = 8 * 1024 * 1024
+    _capture_slots = threading.BoundedSemaphore(2)
+
+    def __init__(self, executable: str | None = None, *, timeout_seconds: float = 20.0,
+                 scratch_dir: str | Path | None = None) -> None:
+        self.executable = executable or os.environ.get("LOCAL_AI_CHROME") or shutil.which("chrome") or shutil.which("chrome.exe")
+        self.timeout_seconds = max(1.0, min(float(timeout_seconds), 60.0))
+        self.scratch_dir = scratch_dir
+
+    @staticmethod
+    def _validate_local_url(url: str) -> str | None:
+        if not isinstance(url, str) or not url or len(url) > 4096 or any(ord(ch) < 0x20 for ch in url):
+            return "url must be a non-empty absolute HTTP URL of at most 4096 characters"
+        try:
+            parsed = urlsplit(url)
+            host = (parsed.hostname or "").casefold().rstrip(".")
+            _ = parsed.port
+        except ValueError:
+            return "url is malformed"
+        if parsed.scheme.casefold() not in {"http", "https"} or parsed.username or parsed.password:
+            return "only credential-free HTTP or HTTPS URLs are supported"
+        if host not in {"localhost", "127.0.0.1", "::1"}:
+            return "headless browser inspection is restricted to loopback URLs"
+        return None
+
+    def capture_page(self, url: str, *, viewport: Mapping[str, Any] | None = None, **_: Any) -> dict[str, Any]:
+        invalid = self._validate_local_url(url)
+        if invalid:
+            return _result_error("invalid_browser_url", invalid, status=400)
+        if viewport is not None and not isinstance(viewport, Mapping):
+            return _result_error("invalid_browser_viewport", "viewport must be an object", status=400)
+        if not self.executable:
+            return _result_error("browser_unavailable", "Chrome or Chromium was not found", status=503)
+        if not self._capture_slots.acquire(blocking=False):
+            return _result_error("browser_busy", "browser capture capacity is full", status=429, retryable=True, terminal=False)
+
+        proxy: _LoopbackProxy | None = None
+        proxy_thread: threading.Thread | None = None
+        temp_dir = None
+        try:
+            temp_dir = tempfile.mkdtemp(prefix="local-ai-browser-", dir=self.scratch_dir)
+            screenshot_path = os.path.join(temp_dir, "screenshot.png")
+            width, height = 1280, 800
+            if isinstance(viewport, Mapping):
+                try:
+                    candidate_width = int(viewport.get("width", width))
+                    candidate_height = int(viewport.get("height", height))
+                except (TypeError, ValueError, OverflowError):
+                    return _result_error("invalid_browser_viewport", "viewport width and height must be integers", status=400)
+                if not (320 <= candidate_width <= 3840 and 240 <= candidate_height <= 2160):
+                    return _result_error("invalid_browser_viewport", "viewport is outside supported bounds", status=400)
+                width, height = candidate_width, candidate_height
+            try:
+                proxy = _LoopbackProxy(("127.0.0.1", 0), _LoopbackProxyHandler)
+                proxy_thread = threading.Thread(target=proxy.serve_forever, name="local-ai-browser-proxy", daemon=True)
+                proxy_thread.start()
+            except OSError as exc:
+                if proxy is not None:
+                    proxy.server_close()
+                return _result_error("browser_proxy_unavailable", f"loopback proxy could not start ({type(exc).__name__})", status=503)
+
+            proxy_url = f"http://127.0.0.1:{proxy.server_address[1]}"
+            argv = [
+                self.executable,
+                "--headless=new",
+                "--disable-gpu",
+                "--disable-extensions",
+                "--disable-background-networking",
+                "--disable-sync",
+                "--disable-quic",
+                "--force-webrtc-ip-handling-policy=disable_non_proxied_udp",
+                "--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1",
+                "--no-first-run",
+                "--no-default-browser-check",
+                f"--proxy-server={proxy_url}",
+                "--proxy-bypass-list=<-loopback>",
+                f"--window-size={width},{height}",
+                f"--screenshot={screenshot_path}",
+                f"--user-data-dir={os.path.join(temp_dir, 'profile')}",
+                "--dump-dom",
+                url,
+            ]
+            try:
+                completed = run_hidden(
+                    argv,
+                    job_name="local-ai-browser-inspection",
+                    stdin=subprocess.DEVNULL,
+                    capture_output=True,
+                    timeout=self.timeout_seconds,
+                    max_output_bytes=self.MAX_DOM_BYTES,
+                )
+            except subprocess.TimeoutExpired:
+                return _result_error("browser_timeout", "headless browser exceeded its bounded timeout", status=504)
+            except (OSError, ValueError) as exc:
+                return _result_error("browser_start_failed", f"Chrome could not start ({type(exc).__name__})", status=503)
+            raw_dom = completed.stdout or b""
+            truncated = bool(getattr(completed, "stdout_truncated", False))
+            dom = raw_dom.decode("utf-8", errors="replace")
+            if completed.returncode != 0 or not dom.strip():
+                return _result_error("browser_capture_failed", "headless browser did not return a DOM snapshot", status=502,
+                                     exit_code=completed.returncode,
+                                     diagnostic=(completed.stderr or b"")[-4096:].decode("utf-8", errors="replace"))
+            try:
+                screenshot_size = os.path.getsize(screenshot_path)
+                if screenshot_size <= 0 or screenshot_size > self.MAX_SCREENSHOT_BYTES:
+                    return _result_error("browser_screenshot_invalid", "screenshot is empty or exceeds the 8 MiB limit", status=502)
+                with open(screenshot_path, "rb") as screenshot_file:
+                    screenshot_bytes = screenshot_file.read(self.MAX_SCREENSHOT_BYTES + 1)
+            except OSError:
+                return _result_error("browser_screenshot_missing", "headless browser did not produce a screenshot", status=502)
+            if (len(screenshot_bytes) != screenshot_size or len(screenshot_bytes) > self.MAX_SCREENSHOT_BYTES
+                    or not screenshot_bytes.startswith(b"\x89PNG\r\n\x1a\n")):
+                return _result_error("browser_screenshot_invalid", "screenshot changed or exceeded the 8 MiB limit", status=502)
+            return {
+                "success": True,
+                "url": url,
+                "title": _PageTitleParser().title(dom),
+                "dom_snapshot": dom,
+                "dom_truncated": truncated,
+                "screenshot_bytes": screenshot_bytes,
+                "screenshot_mime_type": "image/png",
+                "screenshot_size_bytes": screenshot_size,
+                "network_requests_denied": proxy.denied_requests,
+                "warnings": (["Some page requests were blocked or unavailable; the capture may be incomplete."]
+                             if proxy.denied_requests else []),
+                "terminal": True,
+                "retryable": False,
+            }
+        except OSError as exc:
+            return _result_error("browser_capture_unavailable", f"capture resources unavailable ({type(exc).__name__})", status=503)
+        finally:
+            try:
+                if proxy is not None:
+                    proxy.stopping.set()
+                    try:
+                        if proxy_thread is not None and proxy_thread.is_alive():
+                            proxy.shutdown()
+                    finally:
+                        proxy.server_close()
+                if proxy_thread is not None:
+                    proxy_thread.join(timeout=1.0)
+            finally:
+                try:
+                    if temp_dir is not None:
+                        shutil.rmtree(temp_dir)
+                finally:
+                    self._capture_slots.release()
+
+
+def capture_browser_page(url: str, *, artifacts: ArtifactStore, tenant: str,
+                         state_dir: str | Path, viewport: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """Run in the shared daemon and persist capture payloads outside the MCP envelope."""
+    scratch_dir = Path(state_dir) / "browser-captures"
+    try:
+        scratch_dir.mkdir(parents=True, exist_ok=True)
+        result = BrowserBridge(scratch_dir=scratch_dir).capture_page(url, viewport=viewport)
+        screenshot = result.pop("screenshot_bytes", None)
+        diagnostic = result.pop("diagnostic", "")
+        if not result.get("success"):
+            if diagnostic:
+                result["diagnostic_artifact_id"] = artifacts.put(diagnostic, tenant, "browser:diagnostic")
+            return result
+        if not isinstance(screenshot, bytes):
+            return _result_error("browser_screenshot_missing", "capture returned no screenshot bytes", status=502)
+        dom = str(result.get("dom_snapshot", ""))
+        with artifacts.batch(tenant) as batch:
+            dom_id = batch.put(dom, "browser:dom")
+            screenshot_id = batch.put_bytes(screenshot, "browser:screenshot", "image/png")
+        result.update(dom_artifact_id=dom_id, screenshot_artifact_id=screenshot_id,
+                      screenshot_mime_type="image/png", screenshot_size_bytes=len(screenshot),
+                      dom_snapshot=dom[:6000], dom_preview_truncated=len(dom) > 6000)
+        return result
+    except (OSError, ArtifactTransportError) as exc:
+        return _result_error("browser_artifact_failed", f"capture storage unavailable ({type(exc).__name__})", status=503)
 
 
 CAPTURE_ERROR_STATUSES = {
