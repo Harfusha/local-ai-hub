@@ -126,7 +126,7 @@ _COMMAND_ACTIONS = (
 _COORD_ACTIONS = (
     "claim", "renew", "release", "leases", "memo_put", "memo_get", "memo_search", "memo_delete",
     "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list",
-    "task_complete", "task_fail", "task_heartbeat", "memory_record", "memory_get", "memory_find",
+    "task_complete", "task_fail", "task_heartbeat", "ask", "answer", "memory_record", "memory_get", "memory_find",
     "memory_promote", "context_compile",
     "verify_receipt", "verify_completion", "verify_export", "negative_knowledge_record", "negative_knowledge_find", "incident_decision",
     "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_merge", "blackboard_delete",
@@ -507,6 +507,11 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "blackboard_get", "blackboard_list", "swarm_status", "swarm_list", "pubsub_poll", "verify_export",
         ),
         action_requirements={name: ("agent_os",) for name in _COORD_ACTIONS[8:]},
+        required={"ask": ("root", "session_id"), "answer": ("root", "question_id", "answer")},
+        non_empty={
+            "ask": ("root", "session_id"),
+            "answer": ("root", "question_id", "answer"),
+        },
         action_effects={name: "coordination_state" for name in _COORD_ACTIONS if name not in {
             "leases", "memo_get", "memo_search", "task_get", "task_list", "memory_get", "memory_find",
             "blackboard_get", "blackboard_list", "swarm_status", "swarm_list", "pubsub_poll", "verify_export",
@@ -520,7 +525,12 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
                 "record_id", "target_scope", "approver", "criterion", "board_id", "section", "scope",
                 "scope_id", "clone_id", "worktree_id", "branch", "repository_id", "session_id", "tenant",
                 "repository_revision", "phase", "preload_profile", "since_hash", "format",
+                "question_id", "question", "answer",
             )},
+            "session_id": {"type": "string", "default": "", "maxLength": 256},
+            "question_id": {"type": "string", "default": "", "maxLength": 80},
+            "question": {"type": "string", "default": "", "maxLength": 16_384},
+            "answer": {"type": "string", "default": "", "maxLength": 16_384},
             "ttl_seconds": {"type": "integer", "default": 0},
             "max_tokens": {"type": "integer", "default": 0},
             "contract": {"type": "object"},

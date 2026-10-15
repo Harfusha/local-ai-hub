@@ -1193,6 +1193,22 @@ def _memory_lookup_has_identity(*values: Any) -> bool:
     return any(str(value or "").strip() for value in values)
 
 
+def _agent_question_scope(
+    *, payload: Mapping[str, Any], authorized_root: str, authorized_tenant: str
+) -> tuple[str, str]:
+    """Bind question storage to the root and tenant authorized for this request."""
+    canonical_root = _strict_root_path(authorized_root)
+    requested_root = payload.get("root")
+    if requested_root not in (None, ""):
+        if _strict_root_path(requested_root) != canonical_root:
+            raise ValueError("root does not match authenticated scope")
+
+    requested_tenant = payload.get("tenant")
+    if requested_tenant not in (None, "") and str(requested_tenant).strip() != authorized_tenant:
+        raise ValueError("tenant does not match authenticated scope")
+    return str(canonical_root), authorized_tenant
+
+
 def _strict_root_path(raw: Any) -> Path:
     if not isinstance(raw, str) or not raw.strip() or len(raw.strip()) > 4096:
         raise ValueError("root is required")
@@ -6118,6 +6134,7 @@ class Handler(BaseHTTPRequestHandler):
                 known_task_actions = {
                     "create", "list", "get", "transition", "complete", "fail",
                     "checkpoint", "rollback", "resume", "heartbeat",
+                    "ask", "answer",
                     "cleanup_worktree", "task_cleanup_worktree", "reap",
                     "reap_expired", "zombie_reap", "recover_zombie_tasks",
                     "curate_dataset", "curate_training_dataset",
@@ -6132,6 +6149,7 @@ class Handler(BaseHTTPRequestHandler):
                 scoped_task_actions = {
                     "reap", "reap_expired", "zombie_reap", "recover_zombie_tasks",
                     "curate_dataset", "curate_training_dataset",
+                    "ask", "answer",
                 }
                 repo_root = str(getattr(self, "_authorization_root", "") or "")
                 tenant = self._tenant()
@@ -6176,10 +6194,60 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                 request_root = str(payload.get("root", ""))
                 request_tenant = str(payload.get("tenant") or self._tenant() or "")
+                if action in {"ask", "answer"}:
+                    try:
+                        request_root, request_tenant = _agent_question_scope(
+                            payload=payload,
+                            authorized_root=repo_root,
+                            authorized_tenant=tenant,
+                        )
+                    except ValueError as exc:
+                        self._send(403, {
+                            "success": False,
+                            "error": str(exc),
+                            "terminal": True,
+                            "retryable": False,
+                        }); return
                 task_id = str(payload.get("task_id", "")).strip()
                 if action not in {"create", "list", "reap", "curate_dataset", "curate_training_dataset"} and task_id:
                     if self._request_task(task_id, request_root, request_tenant) is None:
                         return
+                if action in {"ask", "answer"}:
+                    try:
+                        question_id = str(payload.get("question_id", "")).strip()
+                        if action == "ask":
+                            result = APP.agent_tasks.ask_question(
+                                root=request_root,
+                                tenant=request_tenant,
+                                session_id=payload.get("session_id", ""),
+                                question=payload.get("question", ""),
+                                task_id=task_id,
+                                actor=actor,
+                                question_id=question_id,
+                            )
+                        else:
+                            result = APP.agent_tasks.answer_question(
+                                question_id=question_id,
+                                root=request_root,
+                                tenant=request_tenant,
+                                answer=payload.get("answer", ""),
+                                actor=actor,
+                            )
+                        if result is None:
+                            self._send(404, {
+                                "success": False,
+                                "error": "question not found in this root, tenant and session",
+                                "terminal": True,
+                                "retryable": False,
+                            }); return
+                        self._send(200, {"success": True, "question": result}); return
+                    except (TypeError, ValueError, RuntimeError) as exc:
+                        self._send(400, {
+                            "success": False,
+                            "error": str(exc),
+                            "terminal": True,
+                            "retryable": False,
+                        }); return
                 if action == "create":
                     contract_data = payload.get("contract") or {}
                     if not contract_data:

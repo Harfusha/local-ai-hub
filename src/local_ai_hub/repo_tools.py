@@ -407,6 +407,11 @@ class RepositoryTools:
                     process.wait(timeout=1)
                 except (OSError, subprocess.TimeoutExpired):
                     pass
+            if process is not None and process.stdout is not None:
+                try:
+                    process.stdout.close()
+                except OSError:
+                    pass
             flight.release()
 
     def iter_files(

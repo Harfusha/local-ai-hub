@@ -55,7 +55,7 @@ _SAFE_TOOL_ACTIONS = frozenset({
     "vision", "transcribe", "batch", "submit", "status", "wait", "result", "cancel",
     # coord actions
     "task_create", "task_get", "task_checkpoint", "task_complete", "task_fail",
-    "task_list", "memory_record", "memory_get", "memory_find", "context_compile",
+    "task_list", "ask", "answer", "memory_record", "memory_get", "memory_find", "context_compile",
     "verify_receipt", "verify_completion", "negative_knowledge_record",
     "negative_knowledge_find", "lease_acquire", "lease_renew", "lease_release",
     "memo_record", "memo_search",

@@ -1465,6 +1465,18 @@ class HubClient:
 
     def coord(self, action: str, **kwargs: Any) -> dict[str, Any]:
         act = action.strip().lower().replace("-", "_")
+        if act in {"ask", "answer"}:
+            payload = {
+                "action": act,
+                "root": kwargs.get("root", "."),
+                "tenant": kwargs.get("tenant", ""),
+                "session_id": kwargs.get("session_id", ""),
+                "task_id": kwargs.get("task_id", ""),
+                "question_id": kwargs.get("question_id", ""),
+                "question": kwargs.get("question", ""),
+                "answer": kwargs.get("answer", ""),
+            }
+            return self.post("/api/agent-state/tasks", payload)
         if act.startswith("task_"):
             task_action = act.replace("task_", "")
             payload = {**kwargs, "action": task_action}

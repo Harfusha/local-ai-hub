@@ -207,6 +207,8 @@ class AgentStateStore:
     _LEGACY_EVENT_COLUMNS = [*_EVENT_COLUMNS[:-1], "schema_version", "created_at"]
     _SNAPSHOT_COLUMNS = ["snapshot_id", "stream_id", "seq", "state", "created_at"]
     _EXPECTED_OBJECT_SQL_HASHES = {
+        ("table", "agent_questions", "agent_questions"): "c072993f2caba4dd9b1c7b868a243f02ccbd9d6e71a7c38853f7d27b8b5b0a61",
+        ("index", "idx_agent_questions_session", "agent_questions"): "0b3b5075a62dc480a596b8ccd14d227b988c0e73236cbd1b70062a1ea46e9ae9",
         ("index", "idx_lease_waits_tenant", "lease_waits"): "dd609992da24cef67dfdcaecef49c82b6451892d43863c9a1ff152701068273a",
         ("index", "idx_leases_root", "leases"): "a0ede5303197cc5172c5583f33a72ee1636083712d84e9d618a642a34671cc85",
         ("table", "agent_state_migrations", "agent_state_migrations"): "c05fc94a41754f655038115d920ca125256bad65f5fd82bcc8ee4cdc8ce1c164",

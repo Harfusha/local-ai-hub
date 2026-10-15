@@ -54,7 +54,7 @@ def test_public_action_parameters_are_explicit_literals() -> None:
         "local_ai_command": {"run", "cancel", "classify", "discover", "stats", "repair_loop", "auto_fix", "run_affected", "format", "lint_fix", "spawn_daemon", "daemon_status", "stop_daemon", "http_probe", "stash_save", "stash_restore", "record_mock", "replay_mock", "diff_hunk_stage", "flaky_detect", "webhook_replay", "mock_server", "mock_server_start", "mock_server_stop", "mock_server_status", "patch_and_verify", "preflight", "speculative_lint", "patch", "fix", "repair", "fmt"},
     }
     expected["local_ai_task"].add("browser")
-    expected["local_ai_coord"].add("verify_export")
+    expected["local_ai_coord"].update({"ask", "answer", "verify_export"})
     if not local_ai_mcp.FEATURES.speculative_lint:
         expected["local_ai_command"].discard("speculative_lint")
     if not getattr(local_ai_mcp.FEATURES, "vision", False):
@@ -62,7 +62,8 @@ def test_public_action_parameters_are_explicit_literals() -> None:
     for name, values in expected.items():
         annotation = get_type_hints(getattr(local_ai_mcp, name))["action"]
         assert get_origin(annotation) is Literal, name
-        assert set(get_args(annotation)) == values, name
+        actual = set(get_args(annotation))
+        assert actual == values, (name, "unexpected", sorted(actual - values), "missing", sorted(values - actual))
     repo_action = get_type_hints(local_ai_mcp.local_ai_repo)["action"]
     assert get_origin(repo_action) is Literal
     assert ("batch_replace" in get_args(repo_action)) is local_ai_mcp.FEATURES.batch_replacement
