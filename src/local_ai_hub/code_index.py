@@ -14,6 +14,7 @@ import threading
 import time
 import weakref
 from contextlib import closing, contextmanager
+from collections import Counter
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -1667,8 +1668,40 @@ class CodeIndex:
             symbol.pop("_body_close_position", None)
         return syms, refs, edges
 
+    def _tree_source_key(self, root: str, path: str) -> str:
+        return stable_hash({"database": str(self.db_path.resolve()), "root": root,
+                            "path": path, "analyzer": _PARSER_ANALYZER_VERSION})
+
+    @staticmethod
+    def _sync_file_rows(con: sqlite3.Connection, table: str, root: str, path: str,
+                        rows: list[tuple[Any, ...]]) -> dict[str, int]:
+        """Retain identical metadata rows, including duplicate reference occurrences."""
+        columns = {
+            "symbols": "name,kind,line,end_line,container,name_path,signature,access,docstring",
+            "refs": "name,line,kind",
+            "edges": "src,dst,src_name,dst_name,kind,line",
+        }[table]
+        if table == "symbols":
+            # Match INSERT OR REPLACE's last occurrence for the existing primary key.
+            rows = list({(row[5], row[2]): row for row in rows}.values())
+        wanted = Counter(rows)
+        removed: list[tuple[int]] = []
+        retained = 0
+        for old in con.execute(f"SELECT rowid,{columns} FROM {table} WHERE root=? AND path=?", (root, path)):
+            value = tuple(old)[1:]
+            if wanted[value]:
+                wanted[value] -= 1
+                retained += 1
+            else:
+                removed.append((old[0],))
+        con.executemany(f"DELETE FROM {table} WHERE rowid=?", removed)
+        added = [(root, path, *value) for value, count in wanted.items() for _ in range(count)]
+        placeholders = ",".join("?" for _ in range(len(columns.split(",")) + 2))
+        con.executemany(f"INSERT INTO {table}(root,path,{columns}) VALUES({placeholders})", added)
+        return {"retained": retained, "deleted": len(removed), "inserted": len(added)}
+
     def _parse_file_content_report(
-        self, text: str, lang: str
+        self, text: str, lang: str, *, source_key: str | None = None
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
         parser_report: dict[str, Any] = {
             "status": "unavailable", "parser": "tree_sitter",
@@ -1676,7 +1709,8 @@ class CodeIndex:
         }
         try:
             from .treesitter_parser import parse_treesitter_with_status
-            parser_report = parse_treesitter_with_status(text, lang)
+            parser_report = (parse_treesitter_with_status(text, lang, source_key=source_key)
+                             if source_key is not None else parse_treesitter_with_status(text, lang))
             ts_res = parser_report.get("result")
             if ts_res is not None and (ts_res[0] or ts_res[2]):
                 diagnostic = {
@@ -1686,6 +1720,9 @@ class CodeIndex:
                     "syntax_error_count": int(parser_report.get("syntax_error_count", 0) or 0),
                     "syntax_error_count_truncated": bool(parser_report.get("syntax_error_count_truncated", False)),
                 }
+                for field in ("incremental", "tree_cache_hit", "tree_reused", "edit", "incremental_fallback"):
+                    if field in parser_report:
+                        diagnostic[field] = parser_report[field]
                 return (*ts_res, diagnostic)
         except Exception as exc:
             parser_report = {
@@ -1711,11 +1748,14 @@ class CodeIndex:
         }
         if parser_report.get("error_type"):
             diagnostic["error_type"] = str(parser_report["error_type"])
+        if "worker_cleanup_confirmed" in parser_report:
+            diagnostic["worker_cleanup_confirmed"] = bool(parser_report["worker_cleanup_confirmed"])
         return (*parsed, diagnostic)
 
 
-    def _parse_file_content(self, text: str, lang: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-        symbols, refs, edges, diagnostic = self._parse_file_content_report(text, lang)
+    def _parse_file_content(self, text: str, lang: str, *, source_key: str | None = None) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+        symbols, refs, edges, diagnostic = (self._parse_file_content_report(text, lang, source_key=source_key)
+                                          if source_key is not None else self._parse_file_content_report(text, lang))
         self._parse_diagnostic.value = diagnostic
         return symbols, refs, edges
 
@@ -1928,7 +1968,7 @@ class CodeIndex:
         parsed = parsed_with_report[0] if parsed_with_report is not None else None
         if parsed is None:
             text = "\n".join(lines)
-            syms, refs, edges = self._parse_file_content(text, lang)
+            syms, refs, edges = self._parse_file_content(text, lang, source_key=self._tree_source_key(str(base), path))
             parse_outcome = dict(getattr(self._parse_diagnostic, "value", {}))
             self._parse_blob_put(content_hash, lang, syms, refs, edges, parse_outcome)
         else:
@@ -1937,8 +1977,6 @@ class CodeIndex:
 
         with self._lock, closing(self._connect()) as con:
             con.execute("BEGIN IMMEDIATE")
-            for t in ("symbols", "refs", "edges"):
-                con.execute(f"DELETE FROM {t} WHERE root=? AND path=?", (str(base), path))
             con.execute(
                 "INSERT OR REPLACE INTO files(root,path,content_hash,analyzer_version,language,updated_at,mtime_ns,size_bytes) "
                 "VALUES(?,?,?,?,?,?,?,?)",
@@ -1948,21 +1986,17 @@ class CodeIndex:
                     target_stat.st_size if stat_is_current else None,
                 ),
             )
-            con.executemany(
-                "INSERT OR REPLACE INTO symbols(root, path, name, kind, line, end_line, container, name_path, signature, access, docstring) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                [(str(base), path, s["name"], s["kind"], s["line"], s["end_line"], s.get("container", ""), s.get("name_path", s["name"]), s.get("signature", ""), s.get("access", "public"), s.get("docstring", "")) for s in syms],
-            )
-            con.executemany("INSERT INTO refs(root, path, name, line, kind) VALUES(?,?,?,?,?)", [(str(base), path, r["name"], r["line"], r.get("kind", "call")) for r in refs])
-            con.executemany(
-                "INSERT INTO edges(root, src, dst, src_name, dst_name, kind, path, line) VALUES(?,?,?,?,?,?,?,?)",
-                [
-                    (
-                        str(base), e["src"], e["dst"], _edge_endpoint_name(e["src"]),
-                        _edge_endpoint_name(e["dst"]), e.get("kind", "reference"), path, e["line"],
-                    )
-                    for e in edges
-                ],
-            )
+            metadata_update = {
+                "symbols": self._sync_file_rows(con, "symbols", str(base), path, [
+                    (x["name"], x["kind"], x["line"], x["end_line"], x.get("container", ""),
+                     x.get("name_path", x["name"]), x.get("signature", ""), x.get("access", "public"),
+                     x.get("docstring", "")) for x in syms]),
+                "refs": self._sync_file_rows(con, "refs", str(base), path, [
+                    (x["name"], x["line"], x.get("kind", "call")) for x in refs]),
+                "edges": self._sync_file_rows(con, "edges", str(base), path, [
+                    (x["src"], x["dst"], _edge_endpoint_name(x["src"]), _edge_endpoint_name(x["dst"]),
+                     x.get("kind", "reference"), x["line"]) for x in edges]),
+            }
             con.commit()
 
         self._advance_query_cache_generation()
@@ -1971,6 +2005,7 @@ class CodeIndex:
             "success": True, "cached": False, "path": path,
             "symbols": len(syms), "refs": len(refs), "edges": len(edges),
             "parse_outcome": dict(parse_outcome),
+            "metadata_update": metadata_update,
         }
 
     def update_files_batch(self, root: str, items: list[str] | list[tuple[str, str]]) -> dict[str, Any]:
@@ -2139,7 +2174,7 @@ class CodeIndex:
             path, content_hash, lang, lines = cand
             parsed = blob_map.get((content_hash, lang))
             if parsed is None:
-                syms, refs, edges = self._parse_file_content("\n".join(lines), lang)
+                syms, refs, edges = self._parse_file_content("\n".join(lines), lang, source_key=self._tree_source_key(c_root, path))
                 diagnostic = dict(getattr(self._parse_diagnostic, "value", {}))
                 row_blob = (content_hash, _PARSER_ANALYZER_VERSION, lang, json_dumps({"symbols": syms, "refs": refs, "edges": edges, "parse_outcome": diagnostic}, ensure_ascii=False, separators=(",", ":")), now)
             else:
@@ -2176,6 +2211,8 @@ class CodeIndex:
                 for x in edges
             )
 
+        single_delta = len(files_to_insert) == 1 and not deleted_paths
+        metadata_update: dict[str, Any] = {}
         if files_to_insert or deleted_paths:
             with self._lock, closing(self._connect()) as con:
                 con.execute("BEGIN IMMEDIATE")
@@ -2187,20 +2224,33 @@ class CodeIndex:
                     for table in ("symbols", "refs", "edges"):
                         assert table in _IDX_TABLES
                         con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", deleted_paths)  # noqa: S608
-                for table in ("symbols", "refs", "edges"):
-                    assert table in _IDX_TABLES  # defence-in-depth whitelist
-                    con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", paths_to_clean)  # noqa: S608
+                if not single_delta:
+                    for table in ("symbols", "refs", "edges"):
+                        assert table in _IDX_TABLES
+                        con.executemany(f"DELETE FROM {table} WHERE root=? AND path=?", paths_to_clean)
                 con.executemany(
                     "INSERT OR REPLACE INTO files(root,path,content_hash,analyzer_version,language,updated_at,mtime_ns,size_bytes) "
                     "VALUES(?,?,?,?,?,?,?,?)",
                     files_to_insert,
                 )
-                con.executemany("INSERT OR REPLACE INTO symbols(root,path,name,kind,line,end_line,container,name_path,signature,access,docstring) VALUES(?,?,?,?,?,?,?,?,?,?,?)", syms_to_insert)
-                con.executemany("INSERT INTO refs(root,path,name,line,kind) VALUES(?,?,?,?,?)", refs_to_insert)
-                con.executemany(
-                    "INSERT INTO edges(root,src,dst,src_name,dst_name,kind,path,line) VALUES(?,?,?,?,?,?,?,?)",
-                    edges_to_insert,
-                )
+                if single_delta:
+                    changed_path = str(files_to_insert[0][1])
+                    metadata_update = {
+                        "symbols": self._sync_file_rows(con, "symbols", c_root, changed_path,
+                                                        [tuple(row[2:]) for row in syms_to_insert]),
+                        "refs": self._sync_file_rows(con, "refs", c_root, changed_path,
+                                                     [tuple(row[2:]) for row in refs_to_insert]),
+                        "edges": self._sync_file_rows(con, "edges", c_root, changed_path,
+                                                      [(row[1], row[2], row[3], row[4], row[5], row[7])
+                                                       for row in edges_to_insert]),
+                    }
+                else:
+                    con.executemany("INSERT OR REPLACE INTO symbols(root,path,name,kind,line,end_line,container,name_path,signature,access,docstring) VALUES(?,?,?,?,?,?,?,?,?,?,?)", syms_to_insert)
+                    con.executemany("INSERT INTO refs(root,path,name,line,kind) VALUES(?,?,?,?,?)", refs_to_insert)
+                    con.executemany(
+                        "INSERT INTO edges(root,src,dst,src_name,dst_name,kind,path,line) VALUES(?,?,?,?,?,?,?,?)",
+                        edges_to_insert,
+                    )
                 con.commit()
             self._advance_query_cache_generation()
         self._status_cache.pop(c_root, None)
@@ -2210,6 +2260,7 @@ class CodeIndex:
             "symbols": len(syms_to_insert), "refs": len(refs_to_insert), "edges": len(edges_to_insert),
             "parse_blob_hits": len(candidates) - len(parse_blob_rows),
             "parse_outcomes": self._parse_outcomes_for_paths(c_root, indexed_paths),
+            "metadata_update": metadata_update,
         }
 
     @staticmethod
