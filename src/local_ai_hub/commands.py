@@ -11004,21 +11004,47 @@ class CommandBroker:
             p_spec = Path(spec_path)
             if not p_spec.is_absolute():
                 p_spec = Path(resolved_root) / p_spec
-            if p_spec.is_file():
-                try:
-                    spec_data = json.loads(p_spec.read_text(encoding="utf-8"))
+            try:
+                if p_spec.is_symlink():
+                    raise ValueError("mock spec cannot be a symlink")
+                p_spec.resolve(strict=True).relative_to(Path(resolved_root))
+                with p_spec.open("rb") as handle:
+                    raw = handle.read(4_000_001)
+                if len(raw) > 4_000_000:
+                    raise ValueError("mock spec exceeds 4 MB")
+                spec_data = json.loads(raw)
+                if not isinstance(spec_data, dict):
+                    raise ValueError("mock spec must be an object")
+                if "routes" in spec_data:
+                    routes = spec_data["routes"]
+                    if not isinstance(routes, list) or len(routes) > 256 or any(not isinstance(route, dict) for route in routes):
+                        raise ValueError("mock routes must contain at most 256 objects")
+                    endpoints = [dict(route) for route in routes]
+                else:
                     paths = spec_data.get("paths", {})
+                    if not isinstance(paths, dict) or len(paths) > 256:
+                        raise ValueError("mock spec paths must be a bounded object")
                     for p_url, methods in paths.items():
-                        for m, defn in methods.items():
+                        if not isinstance(methods, dict):
+                            raise ValueError("mock path operations must be objects")
+                        for method, definition in methods.items():
+                            if method.lower() not in {"get", "post", "put", "delete", "patch", "head", "options"}:
+                                continue
+                            if not isinstance(definition, dict):
+                                raise ValueError("mock operation must be an object")
                             endpoints.append({
-                                "method": m.upper(),
-                                "path": p_url,
-                                "summary": defn.get("summary", ""),
-                                "responses": defn.get("responses", {}),
+                                "method": method.upper(), "path": p_url,
+                                "summary": definition.get("summary", ""), "responses": definition.get("responses", {}),
+                                "path_regex": definition.get("x-local-ai-path-regex"),
+                                "query_matchers": definition.get("x-local-ai-query-matchers", {}),
                             })
-                except Exception:
-                    pass
+                            if len(endpoints) > 256:
+                                raise ValueError("mock endpoint limit exceeded")
+            except (OSError, ValueError, TypeError) as exc:
+                return {"success": False, "error": str(exc)[:500]}
 
+        if spec_path and not endpoints:
+            return {"success": False, "error": "mock spec contains no supported routes"}
         if not endpoints:
             from .deterministic import DeterministicEngine
             det = DeterministicEngine(self.config)
@@ -11027,6 +11053,14 @@ class CommandBroker:
 
         if not endpoints:
             endpoints = [{"method": "GET", "path": "/api/health", "summary": "Health check"}]
+
+        from .mock_matching import compile_mock_matcher
+        if len(endpoints) > 256:
+            return {"success": False, "error": "mock endpoint limit exceeded"}
+        try:
+            matchers = [(endpoint, compile_mock_matcher(endpoint)) for endpoint in endpoints]
+        except (TypeError, ValueError) as exc:
+            return {"success": False, "error": str(exc)[:500]}
 
         raw_cors_origins = _network_config(self.config).get("mock_server_cors_origins", [])
         if isinstance(raw_cors_origins, str):
@@ -11038,6 +11072,10 @@ class CommandBroker:
         } if isinstance(raw_cors_origins, (list, tuple, set)) else set()
 
         class MockHandler(http.server.BaseHTTPRequestHandler):
+            def setup(self):
+                super().setup()
+                self.connection.settimeout(5.0)
+
             def log_message(self, format, *args):
                 pass
 
@@ -11061,21 +11099,27 @@ class CommandBroker:
             def do_DELETE(self):
                 self._handle("DELETE")
 
+            def do_PATCH(self):
+                self._handle("PATCH")
+
+            def do_HEAD(self):
+                self._handle("HEAD")
+
             def do_OPTIONS(self):
                 self.send_response(204)
                 self._send_cors_headers()
                 self.end_headers()
 
             def _handle(self, method: str):
+                if len(self.path) > 4096:
+                    self.send_error(414, "Mock request target exceeds 4096 characters")
+                    return
                 path_only = self.path.split("?", 1)[0]
                 matched = None
-                for ep in endpoints:
-                    if ep.get("method") == method:
-                        ep_path = ep.get("path", "")
-                        regex_p = "^" + re.sub(r"\{[a-zA-Z0-9_]+\}", "[^/]+", ep_path) + "$"
-                        if ep_path == path_only or re.match(regex_p, path_only):
-                            matched = ep
-                            break
+                for endpoint, matcher in matchers:
+                    if matcher.matches(method, self.path):
+                        matched = endpoint
+                        break
 
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
@@ -11089,7 +11133,8 @@ class CommandBroker:
                     "endpoint": matched or {"path": path_only, "synthetic": True},
                     "data": {"id": 1, "name": "mock_resource", "timestamp": time.time()},
                 }
-                self.wfile.write(json_dumps(resp).encode("utf-8"))
+                if method != "HEAD":
+                    self.wfile.write(json_dumps(resp).encode("utf-8"))
 
         class ReusableTCPServer(socketserver.TCPServer):
             allow_reuse_address = True
