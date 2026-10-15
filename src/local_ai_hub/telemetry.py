@@ -2042,13 +2042,20 @@ class TelemetryStore:
             # legacy rows when another row has overlapping input/output counters.
             unpriced_row = (
                 "gross_avoided_cloud_tokens > gross_input_tokens_avoided + gross_output_tokens_avoided "
-                "OR (net_cloud_token_delta <> 0 AND gross_input_tokens_avoided = 0 "
-                "AND gross_output_tokens_avoided = 0 AND tool_request_tokens = 0 AND tool_response_tokens = 0)"
+                "OR net_cloud_token_delta <> gross_avoided_cloud_tokens - tool_request_tokens - tool_response_tokens"
             )
             known_channel_rows = con.execute(
-                f"""SELECT COUNT(*), COALESCE(SUM(gross_avoided_cloud_tokens),0),
-                           COALESCE(SUM(gross_input_tokens_avoided),0),
-                           COALESCE(SUM(gross_output_tokens_avoided),0),
+                f"""SELECT COUNT(*),
+                           COALESCE(SUM(CASE
+                               WHEN gross_avoided_cloud_tokens = gross_input_tokens_avoided + gross_output_tokens_avoided
+                                   THEN gross_input_tokens_avoided
+                               WHEN gross_input_tokens_avoided > 0 THEN gross_input_tokens_avoided
+                               ELSE 0 END),0),
+                           COALESCE(SUM(CASE
+                               WHEN gross_avoided_cloud_tokens = gross_input_tokens_avoided + gross_output_tokens_avoided
+                                   THEN gross_output_tokens_avoided
+                               WHEN gross_input_tokens_avoided = 0 THEN gross_output_tokens_avoided
+                               ELSE 0 END),0),
                            COALESCE(SUM(tool_request_tokens),0), COALESCE(SUM(tool_response_tokens),0)
                     FROM events WHERE {pricing_event_window} AND NOT ({unpriced_row})""",
                 pricing_event_params,
@@ -2101,20 +2108,14 @@ class TelemetryStore:
         schema_adjusted_overhead = int(tool_accounting[12])
         savings_breakdown = {str(source)[:64]: max(0, int(tokens or 0)) for source, tokens in tool_breakdown_rows}
         priced_events = int(known_channel_rows[0])
-        priced_gross_tokens = int(known_channel_rows[1])
-        priced_input_tokens = int(known_channel_rows[2])
-        priced_output_tokens = int(known_channel_rows[3])
-        priced_tool_request_tokens = int(known_channel_rows[4])
-        priced_tool_response_tokens = int(known_channel_rows[5])
-        if priced_events and (priced_input_tokens or priced_output_tokens):
+        estimated_gross_input_tokens = int(known_channel_rows[1])
+        estimated_gross_output_tokens = int(known_channel_rows[2])
+        priced_tool_request_tokens = int(known_channel_rows[3])
+        priced_tool_response_tokens = int(known_channel_rows[4])
+        if priced_events and (estimated_gross_input_tokens or estimated_gross_output_tokens):
             # Tool responses are cloud input; tool calls are cloud output. Keep
-            # the token delta signed, but price each side with its own rate.
-            # Input/output counters can overlap (output compaction is diagnostic
-            # when an upstream input baseline won), so only sum them when they
-            # match the additive gross baseline.
-            additive_channels = priced_gross_tokens == priced_input_tokens + priced_output_tokens
-            estimated_gross_input_tokens = priced_input_tokens if additive_channels or priced_input_tokens else 0
-            estimated_gross_output_tokens = priced_output_tokens if additive_channels or not priced_input_tokens else 0
+            # the token delta signed, but price each side with its own rate. SQL
+            # selects overlapping channels per row before summing contributions.
             net_input_tokens = estimated_gross_input_tokens - priced_tool_response_tokens
             net_output_tokens = estimated_gross_output_tokens - priced_tool_request_tokens
             estimated_input_savings_usd = round(

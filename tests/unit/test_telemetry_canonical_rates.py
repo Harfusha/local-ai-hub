@@ -98,6 +98,34 @@ def test_channel_estimates_remain_separate_with_canonical_rates(telemetry_store)
     assert summary["estimated_savings_pricing_mode"] == "input_output"
 
 
+def test_mixed_overlap_and_additive_rows_keep_each_rows_priced_channels(telemetry_store):
+    telemetry_store.record_tool_accounting(
+        {
+            "gross_cloud_tokens_avoided_est": 150_000,
+            "gross_input_tokens_avoided_est": 100_000,
+            "gross_output_tokens_avoided_est": 100_000,
+            "net_cloud_token_delta_est": 150_000,
+        }
+    )
+    telemetry_store.record_tool_accounting(
+        {
+            "gross_cloud_tokens_avoided_est": 50_000,
+            "gross_output_tokens_avoided_est": 50_000,
+            "net_cloud_token_delta_est": 50_000,
+        }
+    )
+    assert telemetry_store.flush()
+
+    summary = telemetry_store.report(scope="process")["summary"]
+
+    assert summary["gross_cloud_tokens_avoided_est"] == 200_000
+    assert summary["gross_input_cloud_tokens_avoided_est"] + summary["gross_output_cloud_tokens_avoided_est"] == 250_000
+    assert summary["estimated_input_savings_usd"] == 0.2
+    assert summary["estimated_output_savings_usd"] == 0.4
+    assert summary["estimated_savings_usd"] == 0.6
+    assert summary["estimated_savings_pricing_mode"] == "input_output"
+
+
 def test_missing_row_coverage_stays_unknown_when_overlapping_channels_cancel_gap(telemetry_store):
     telemetry_store.record_tool_accounting(
         {"gross_cloud_tokens_avoided_est": 100, "net_cloud_token_delta_est": 100}
