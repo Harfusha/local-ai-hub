@@ -118,12 +118,18 @@ Add `idle_timeout_seconds` (default 300s). When timer expires, call Ollama API w
 
 ### Task 84: Calibrated Token Counter for Code (#40)
 
+**2026-10-15 implementation checkpoint — execution/calibration deferred.** The referenced `tokens.py` does not exist: aggregate protocol estimation is in `budget.py`, while `context_budget` used a separate character ratio and `token_economy` could silently fetch tokenizer files. Added `code_tokens` with lazy offline cl100k/o200k BPE construction from existing cache data only, validating the official SHA-256 rank-data hashes before loading. It never calls `get_encoding`, downloads, rewrites corrupt caches or changes global loader functions. Source: https://github.com/openai/tiktoken/blob/main/tiktoken_ext/openai_public.py ; cache layout: https://github.com/openai/tiktoken/blob/main/tiktoken/load.py . Missing data/package falls back to CamelCase/snake/numeric-aware source estimation, explicitly uncalibrated rather than claiming a 5% bound.
+
+`tokcount` retains its tuple/count CLI compatibility, exposes per-encoding provenance in JSON, distinguishes estimated/mixed output and treats special-token-looking code as ordinary text. `context_budget` now uses the same named-encoding counter, checks root/path policy, bounds input to 64 files/2 MB per file/8 MB total, and marks omitted source and heuristic slice recommendations. MCP preserves provenance. The aggregate serialized-response estimator remains unchanged because its `estimated_tokens` units are an existing wire-budget contract; this source change does not silently reinterpret protocol accounting as model-exact counts.
+
+Deferred cases forbid loading/downloading on missing or corrupt caches, preserve corrupt data, exercise path containment, and compare real installed cached tiktoken references across Python/TS/C#/Unicode/special-looking source. Missing real tokenizer data skips that reference case with an explicit NOT VERIFIED reason; a skip cannot satisfy final acceptance. No tokenizer import, tokenizer download, count benchmark or test ran now. The 5% target, estimator-only calibration, actual model-tokenizer compatibility, latency/RAM and any broader budget-consumer migration remain unverified final acceptance work.
+
 **Files:**
 - Modify: `src/local_ai_hub/tokens.py:40-80`
 - Test: `tests/unit/test_calibrated_tokenizer.py`
 
-- [ ] **Step 1: Write test verifying code token count is accurate within 5% of BPE tokenizers**
-- [ ] **Step 2: Implement fix**
+- [x] **Step 1: Write offline safety and real-reference accuracy regression source (execution deferred)**
+- [x] **Step 2: Implement offline named-BPE counts and explicit code fallback provenance (calibration pending)**
 Replace naive `len(text) // 4` with regex-aware subword estimator splitting identifiers on CamelCase and snake_case.
 - [ ] **Step 3: Run test and verify pass & Commit**
 `git commit -m "fix(tokens): calibrate code token estimator to eliminate budget truncation errors"`
