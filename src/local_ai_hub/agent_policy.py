@@ -84,6 +84,38 @@ class CapabilityGrant:
     expires_at: float | None = None
     max_delegation_depth: int = 1
 
+    def __post_init__(self) -> None:
+        if type(self.grant_id) is not str or not self.grant_id.strip():
+            raise ValueError("grant_id must be a nonempty string")
+        if type(self.task_id) is not str:
+            raise ValueError("task_id must be a string")
+        for field_name, values in (("allowed", self.allowed), ("denied", self.denied)):
+            if type(values) is not frozenset:
+                raise ValueError(f"{field_name} must be an immutable frozenset")
+            for value in values:
+                if (
+                    type(value) is not str
+                    or not value
+                    or value.strip() != value
+                    or "\x00" in value
+                ):
+                    raise ValueError(f"{field_name} entries must be nonempty canonical strings")
+        if (
+            isinstance(self.max_delegation_depth, bool)
+            or not isinstance(self.max_delegation_depth, int)
+            or self.max_delegation_depth < 0
+        ):
+            raise ValueError("max_delegation_depth must be a nonnegative integer")
+        if self.expires_at is not None:
+            if isinstance(self.expires_at, bool) or not isinstance(self.expires_at, numbers.Real):
+                raise ValueError("expires_at must be a finite numeric value or None")
+            try:
+                finite_expiry = math.isfinite(self.expires_at)
+            except (OverflowError, TypeError, ValueError):
+                finite_expiry = False
+            if not finite_expiry:
+                raise ValueError("expires_at must be a finite numeric value or None")
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "grant_id": self.grant_id,
@@ -96,13 +128,21 @@ class CapabilityGrant:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> CapabilityGrant:
+        if not isinstance(data, Mapping):
+            raise ValueError("capability grant data must be a mapping")
+        if "grant_id" not in data:
+            raise ValueError("grant_id is required")
+        allowed_data = data.get("allowed", [])
+        denied_data = data.get("denied", [])
+        if type(allowed_data) is not list or type(denied_data) is not list:
+            raise ValueError("allowed and denied must be JSON arrays")
         return cls(
-            grant_id=str(data["grant_id"]),
-            task_id=str(data.get("task_id", "")),
-            allowed=frozenset(data.get("allowed") or ()),
-            denied=frozenset(data.get("denied") or ()),
-            expires_at=float(data["expires_at"]) if data.get("expires_at") is not None else None,
-            max_delegation_depth=int(data.get("max_delegation_depth", 1)),
+            grant_id=data["grant_id"],
+            task_id=data.get("task_id", ""),
+            allowed=frozenset(allowed_data),
+            denied=frozenset(denied_data),
+            expires_at=data.get("expires_at"),
+            max_delegation_depth=data.get("max_delegation_depth", 1),
         )
 
 
