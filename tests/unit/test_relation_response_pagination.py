@@ -101,6 +101,36 @@ def test_deterministic_fallback_marks_parse_failures_incomplete(tmp_path):
     assert "has_more" not in result
 
 
+def test_deterministic_fallback_skips_archived_source_copies(tmp_path):
+    root = tmp_path / "repo"
+    (root / "src").mkdir(parents=True)
+    archived = root / "docs" / "integration" / "archive"
+    archived.mkdir(parents=True)
+    (root / "src" / "actual.py").write_text(
+        "def target():\n    pass\n\ndef actual_caller():\n    target()\n", encoding="utf-8",
+    )
+    (archived / "old_copy.py").write_text(
+        "def old_caller():\n    target()\n", encoding="utf-8",
+    )
+    engine = DeterministicEngine(
+        {"server": {"state_dir": str(tmp_path / "state")}}, repo_tools=_repo_tools(tmp_path),
+    )
+
+    result = engine.find_callers(str(root), "target")
+
+    assert [item["caller"] for item in result["callers"]] == ["src::actual_caller"]
+    assert result["coverage"]["scan_complete"] is True
+
+
+def test_relation_services_reject_nonstring_symbols_before_fallback():
+    service = object.__new__(LocalAIServices)
+    service.code_index = None
+    service.deterministic = object()
+
+    assert service.callers("/repo", None)["status_code"] == 400
+    assert service.callees("/repo", 42)["status_code"] == 400
+
+
 def test_service_keeps_known_empty_index_result_without_syntactic_fallback():
     class Index:
         def find_callers(self, *_args):
@@ -230,3 +260,24 @@ def test_registered_mcp_relation_wire_rejects_first_item_over_budget(monkeypatch
 
     assert "413" in str(response)
     assert "first complete" in str(response).lower()
+
+
+def test_registered_relation_budget_reaches_fixed_point_for_one_long_item(monkeypatch):
+    raw = {
+        "success": True,
+        "callers": [{"caller": "long_name", "callee": "target", "snippet": "x" * 900}],
+        "count": 1, "returned_count": 1, "offset": 0, "limit": 1,
+        "total_matches": 1, "has_more": False, "truncated": False,
+        "coverage": {"complete": True, "scope": "indexed_edges"},
+    }
+    monkeypatch.setattr(mcp_server, "_agent_output", lambda value, _name, _args: value)
+    content, structured = mcp_server._mcp_budget_payload("local_ai_repo", {
+        "action": "callers", "max_response_tokens": 512,
+    }, raw)
+
+    assert structured is not None
+    assert len(structured["callers"]) == 1
+    assert structured["response_budget"]["returned_tokens"] == json_tokens(
+        mcp_server._mcp_wire_view(structured, structured=True),
+    )
+    assert len(content) == 1

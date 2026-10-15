@@ -4783,12 +4783,25 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                     value, _relation_page_with_prefix(value, value, relation_page_key, items, count),
                 ))
                 candidate["response_budget"] = dict(outer_metadata)
-                returned = json_tokens(_mcp_wire_view(candidate, structured=True))
-                candidate["response_budget"]["returned_tokens"] = returned
-                candidate["response_budget"]["truncated"] = returned < original_tokens
-                finalized = json_tokens(_mcp_wire_view(candidate, structured=True))
-                if finalized == returned and finalized <= requested:
-                    fitted_page = candidate
+                for _ in range(16):
+                    returned = json_tokens(_mcp_wire_view(candidate, structured=True))
+                    candidate["response_budget"]["returned_tokens"] = returned
+                    candidate["response_budget"]["truncated"] = returned < original_tokens
+                    accounting = candidate.get("token_efficiency")
+                    if isinstance(accounting, dict):
+                        accounting["protocol_tokens_est"] = tool_request_tokens(name, arguments) + returned
+                        baseline = accounting.get("baseline_tokens_est")
+                        if isinstance(baseline, int) and not isinstance(baseline, bool):
+                            signed_delta = baseline - returned
+                            accounting["token_savings_delta_est"] = signed_delta
+                            accounting["avoided_payload_tokens_est"] = max(0, signed_delta)
+                    finalized = json_tokens(_mcp_wire_view(candidate, structured=True))
+                    if finalized == returned and finalized <= requested:
+                        fitted_page = candidate
+                        break
+                    if finalized > requested:
+                        break
+                if fitted_page is not None:
                     break
             if fitted_page is None or (items and not fitted_page.get(relation_page_key)):
                 failure = {
@@ -4799,6 +4812,11 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                 bounded = _mcp_bounded_error(failure, requested)
                 if bounded is not None:
                     return bounded
+                minimal_failure = {
+                    "success": False, "status_code": 413, "terminal": True,
+                    "retryable": False, "error": "response budget exceeded",
+                }
+                return [mcp_types.TextContent(type="text", text=json_dumps(minimal_failure))], None
             else:
                 content = [mcp_types.TextContent(type="text", text=json_dumps(fitted_page))]
                 return content, fitted_page

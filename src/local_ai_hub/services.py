@@ -4016,6 +4016,8 @@ class LocalAIServices:
         bounds_error = pagination_bounds_error(limit, offset)
         if bounds_error:
             return {"success": False, "status_code": 400, "terminal": True, "retryable": False, "error": bounds_error}
+        if not isinstance(symbol, str) or not symbol.strip():
+            return {"success": False, "status_code": 400, "terminal": True, "retryable": False, "error": "symbol must be a non-empty string"}
         if self.code_index is not None:
             ci_res = self.code_index.find_callers(root, symbol, limit, offset)
             if ci_res.get("success"):
@@ -4030,6 +4032,8 @@ class LocalAIServices:
         bounds_error = pagination_bounds_error(limit, offset)
         if bounds_error:
             return {"success": False, "status_code": 400, "terminal": True, "retryable": False, "error": bounds_error}
+        if not isinstance(symbol, str) or not symbol.strip():
+            return {"success": False, "status_code": 400, "terminal": True, "retryable": False, "error": "symbol must be a non-empty string"}
         if self.code_index is not None:
             ci_res = self.code_index.find_callees(root, symbol, limit, offset)
             if ci_res.get("success"):
