@@ -1501,7 +1501,7 @@ class HubClient:
         if act.startswith("task_"):
             task_action = act.replace("task_", "")
             payload = {**kwargs, "action": task_action}
-            if task_action == "checkpoint" and response_budget_tokens is not None:
+            if response_budget_tokens is not None:
                 payload["response_budget_tokens"] = response_budget_tokens
             return self.post("/api/agent-state/tasks", payload)
         if act in ("memo_put", "memo_get", "memo_search", "memo_delete"):

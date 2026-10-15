@@ -8,6 +8,7 @@ import math
 import ntpath
 import os
 import posixpath
+import re
 import sys
 import threading
 from pathlib import Path, PureWindowsPath
@@ -2091,6 +2092,99 @@ def get_git_worktree_ownership(
     return data if isinstance(data, dict) else None
 
 
+@dataclass(frozen=True)
+class PreparedGitWorktree:
+    """Read-only reservation consumed by create_git_worktree after response preflight."""
+
+    repo_root: str
+    base_commit_ref: str
+    base_commit_sha: str
+    branch: str
+    worktree_path: str
+    lease_id: str
+    worktree_id: str
+    task_id: str
+    owner: str
+    created_at: float
+    ttl_seconds: float
+    expires_at: float | None
+    creator_pid: int | None
+    creator_creation_identity: int | str | None
+    creator_creation_identity_type: str | None
+    creator_executable: str | None
+
+    def response_metadata(self) -> dict[str, Any]:
+        return {
+            "success": True, "lease_id": self.lease_id, "worktree_id": self.worktree_id,
+            "worktree_path": self.worktree_path, "branch": self.branch,
+            "base_commit": self.base_commit_sha, "repo_root": self.repo_root,
+            "task_id": self.task_id, "owner": self.owner, "created_at": self.created_at,
+            "ttl_seconds": self.ttl_seconds, "expires_at": self.expires_at,
+            "creator_pid": self.creator_pid,
+            "creator_creation_identity": self.creator_creation_identity,
+            "creator_creation_identity_type": self.creator_creation_identity_type,
+            "creator_executable": self.creator_executable,
+        }
+
+
+def prepare_git_worktree(
+    repo_root: str | Path,
+    branch_name: str | None = None,
+    base_commit: str = "HEAD",
+    *,
+    task_id: str = "",
+    owner: str = "",
+    created_at: float | None = None,
+    ttl_seconds: float = 86400.0,
+    expires_at: float | None = None,
+) -> PreparedGitWorktree:
+    """Reserve exact worktree response metadata using bounded read-only probes."""
+    import math
+
+    repo = Path(repo_root).expanduser().resolve(strict=False)
+    if not (repo / ".git").exists():
+        raise ValueError("not a git repository")
+    if not shutil.which("git"):
+        raise ValueError("git executable not found in PATH")
+    created = float(created_at) if created_at is not None else time.time()
+    ttl = float(ttl_seconds)
+    expiry = float(expires_at) if expires_at is not None else None
+    if not math.isfinite(created) or not math.isfinite(ttl) or (expiry is not None and not math.isfinite(expiry)):
+        raise ValueError("invalid worktree metadata: values must be finite")
+    ttl = max(60.0, min(ttl, 30 * 24 * 60 * 60.0))
+
+    lease_id = f"lease_{uuid.uuid4().hex[:12]}"
+    worktree_id = f"worktree_{uuid.uuid4().hex[:12]}"
+    branch = branch_name or f"lease/{lease_id}"
+    target = (Path(tempfile.gettempdir()).resolve(strict=False) / f"lah_wt_{worktree_id}")
+    try:
+        target.relative_to(Path(tempfile.gettempdir()).resolve(strict=False))
+    except ValueError as exc:
+        raise ValueError("worktree path escapes the temporary root") from exc
+    if target.exists() or target.is_symlink():
+        raise ValueError("reserved worktree path already exists")
+
+    base_result = run_hidden(
+        ["git", "-C", str(repo), "rev-parse", "--verify", f"{base_commit}^{{commit}}"],
+        capture_output=True, text=True, check=False, timeout=5, **hidden_run_kwargs(),
+    )
+    if base_result.returncode != 0:
+        raise ValueError("worktree base commit could not be resolved")
+    base_sha = base_result.stdout.strip()
+    if not base_sha:
+        raise ValueError("worktree base commit could not be resolved")
+    creator = process_identity(os.getpid()) or {}
+    return PreparedGitWorktree(
+        repo_root=str(repo), base_commit_ref=str(base_commit), base_commit_sha=base_sha,
+        branch=branch, worktree_path=str(target), lease_id=lease_id, worktree_id=worktree_id,
+        task_id=str(task_id), owner=str(owner), created_at=created, ttl_seconds=ttl,
+        expires_at=expiry, creator_pid=creator.get("pid"),
+        creator_creation_identity=creator.get("creation_identity"),
+        creator_creation_identity_type=creator.get("creation_identity_type"),
+        creator_executable=creator.get("executable"),
+    )
+
+
 def create_git_worktree(
     repo_root: str | Path,
     branch_name: str | None = None,
@@ -2102,6 +2196,7 @@ def create_git_worktree(
     created_at: float | None = None,
     ttl_seconds: float = 86400.0,
     expires_at: float | None = None,
+    prepared_plan: PreparedGitWorktree | None = None,
 ) -> dict[str, Any]:
     """Create an isolated temporary Git worktree for safe agent modifications."""
     repo = Path(repo_root).expanduser().resolve(strict=False)
@@ -2128,9 +2223,32 @@ def create_git_worktree(
     ):
         return {"success": False, "error": "invalid worktree metadata: values must be finite"}
     ttl_value = max(60.0, min(ttl_value, 30 * 24 * 60 * 60.0))
-    lease_id = f"lease_{uuid.uuid4().hex[:12]}"
-    worktree_id = f"worktree_{uuid.uuid4().hex[:12]}"
-    branch = branch_name or f"lease/{lease_id}"
+    if prepared_plan is not None:
+        if not isinstance(prepared_plan, PreparedGitWorktree):
+            return {"success": False, "error": "invalid prepared worktree plan"}
+        if (
+            prepared_plan.repo_root != str(repo)
+            or prepared_plan.base_commit_ref != str(base_commit)
+            or prepared_plan.task_id != task_id_value
+            or prepared_plan.owner != owner_value
+            or prepared_plan.created_at != created_at_value
+            or prepared_plan.ttl_seconds != ttl_value
+            or prepared_plan.expires_at != expires_at_value
+            or (branch_name is not None and branch_name != prepared_plan.branch)
+            or (worktree_path is not None and str(Path(worktree_path).expanduser().resolve(strict=False)) != prepared_plan.worktree_path)
+            or not re.fullmatch(r"lease_[0-9a-f]{12}", prepared_plan.lease_id)
+            or not re.fullmatch(r"worktree_[0-9a-f]{12}", prepared_plan.worktree_id)
+            or prepared_plan.worktree_path != str(Path(tempfile.gettempdir()).resolve(strict=False) / f"lah_wt_{prepared_plan.worktree_id}")
+            or (branch_name is None and prepared_plan.branch != f"lease/{prepared_plan.lease_id}")
+        ):
+            return {"success": False, "error": "prepared worktree plan does not match create request"}
+        lease_id = prepared_plan.lease_id
+        worktree_id = prepared_plan.worktree_id
+        branch = prepared_plan.branch
+    else:
+        lease_id = f"lease_{uuid.uuid4().hex[:12]}"
+        worktree_id = f"worktree_{uuid.uuid4().hex[:12]}"
+        branch = branch_name or f"lease/{lease_id}"
     temp_root = Path(tempfile.gettempdir()).resolve(strict=False)
     if not worktree_path:
         target_dir = temp_root / f"lah_wt_{worktree_id}"
@@ -2144,7 +2262,28 @@ def create_git_worktree(
     except ValueError:
         return {"success": False, "error": "worktree path escapes the temporary root"}
 
-    cmd = ["git", "-C", str(repo), "worktree", "add", "-b", branch, str(target_dir), base_commit]
+    if prepared_plan is not None:
+        if str(target_dir) != prepared_plan.worktree_path or target_dir.exists() or target_dir.is_symlink():
+            return {"success": False, "error": "prepared worktree target changed before creation"}
+        current_base = run_hidden(
+            ["git", "-C", str(repo), "rev-parse", "--verify", f"{base_commit}^{{commit}}"],
+            capture_output=True, text=True, check=False, timeout=5, **hidden_run_kwargs(),
+        )
+        current_creator = process_identity(os.getpid()) or {}
+        expected_creator = {
+            "pid": prepared_plan.creator_pid,
+            "creation_identity": prepared_plan.creator_creation_identity,
+            "creation_identity_type": prepared_plan.creator_creation_identity_type,
+            "executable": prepared_plan.creator_executable,
+        }
+        if (
+            current_base.returncode != 0
+            or current_base.stdout.strip() != prepared_plan.base_commit_sha
+            or any(current_creator.get(key) != value for key, value in expected_creator.items())
+        ):
+            return {"success": False, "error": "prepared worktree identity changed before creation"}
+    add_base = prepared_plan.base_commit_sha if prepared_plan is not None else base_commit
+    cmd = ["git", "-C", str(repo), "worktree", "add", "-b", branch, str(target_dir), add_base]
     created_checkout = False
     try:
         completed = run_hidden(cmd, capture_output=True, text=True, check=False, timeout=30, **hidden_run_kwargs())
@@ -2158,13 +2297,22 @@ def create_git_worktree(
         metadata_path = _worktree_ownership_path(target_dir)
         if metadata_path is None:
             raise RuntimeError("could not locate worktree administrative directory")
-        base_result = run_hidden(
-            ["git", "-C", str(repo), "rev-parse", "--verify", f"{base_commit}^{{commit}}"],
-            capture_output=True, text=True, check=False, timeout=5,
-            **hidden_run_kwargs(),
-        )
-        creator = process_identity(os.getpid())
-        base_sha = base_result.stdout.strip() if base_result.returncode == 0 else ""
+        if prepared_plan is not None:
+            creator = {
+                "pid": prepared_plan.creator_pid,
+                "creation_identity": prepared_plan.creator_creation_identity,
+                "creation_identity_type": prepared_plan.creator_creation_identity_type,
+                "executable": prepared_plan.creator_executable,
+            }
+            base_sha = prepared_plan.base_commit_sha
+        else:
+            base_result = run_hidden(
+                ["git", "-C", str(repo), "rev-parse", "--verify", f"{base_commit}^{{commit}}"],
+                capture_output=True, text=True, check=False, timeout=5,
+                **hidden_run_kwargs(),
+            )
+            creator = process_identity(os.getpid())
+            base_sha = base_result.stdout.strip() if base_result.returncode == 0 else ""
         metadata = {
             "schema_version": 1,
             "worktree_id": worktree_id,
