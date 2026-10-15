@@ -1571,19 +1571,35 @@ def _load_task_context(
             "error": "task context response must be a JSON object",
         }
     task_context = raw.get("task_context")
-    if not isinstance(task_context, dict):
-        # Keep legacy endpoint responses usable for callers that do not request
-        # repository context, while making the missing unified layer explicit.
-        task_context = {}
-    if not raw.get("success", False) or not raw.get("complete", bool(task_context)):
+    if type(raw.get("success")) is not bool or (
+        raw.get("success") is True and type(raw.get("complete")) is not bool
+    ):
+        return "", {
+            "success": False, "terminal": True, "retryable": False,
+            "error": "task context response requires explicit boolean success and completeness",
+        }
+    if raw["success"] is False or raw["complete"] is False:
         return "", {
             "success": False,
             "terminal": bool(raw.get("terminal", False)),
             "retryable": bool(raw.get("retryable", True)),
             "error": str(raw.get("error") or "task context is incomplete"),
-            "task_context": task_context,
+            "task_context": task_context if isinstance(task_context, dict) else {},
         }
-    task_text = str(task_context.get("text") or raw.get("text") or "").strip()
+    if not isinstance(task_context, dict) or (
+        task_context.get("success") is not True or task_context.get("complete") is not True
+    ):
+        return "", {
+            "success": False, "terminal": True, "retryable": False,
+            "error": "task context response requires a complete canonical task_context object",
+        }
+    task_text = task_context.get("text")
+    if not isinstance(task_text, str):
+        return "", {
+            "success": False, "terminal": True, "retryable": False,
+            "error": "task_context.text must be a string",
+        }
+    task_text = task_text.strip()
     if not task_text:
         return "", {
             "success": False,
@@ -1631,16 +1647,17 @@ def _quality_check_semantic_result(
     context: str,
     changed_paths: list[str] | None = None,
 ) -> Any:
-    if not isinstance(result, dict) or not result.get("success", "error" not in result):
+    if not isinstance(result, dict) or type(result.get("success")) is not bool:
+        return {
+            "success": False, "terminal": True, "retryable": False,
+            "error_code": "invalid_semantic_result",
+            "error": "Local semantic backend must return an object with explicit boolean success.",
+        }
+    if result["success"] is False:
         return result
     # A semantic success is only meaningful when it carries a usable payload.
     # Empty model output used to leak through as success=true and poisoned
     # caches/async handoffs with no evidence for the caller.
-    # ``answer`` is a legacy/provider-neutral text field and is valid content;
-    # normalize it so the public projection has one canonical text surface.
-    if result.get("answer") not in (None, "") and result.get("text") in (None, ""):
-        result = dict(result)
-        result["text"] = str(result.get("answer"))
     content_keys = ("text", "summary", "artifact_id", "job_id", "result", "results", "task_context", "candidate")
     has_content = any(
         key in result and result.get(key) not in (None, "", [], {})
