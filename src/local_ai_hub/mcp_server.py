@@ -3685,7 +3685,13 @@ def local_ai_repo(
             "local_ai_repo", resolved_action, operation_actions("local_ai_repo", FEATURES),
             "Use a canonical advertised repository action.",
         )
-    if resolved_action in {"search", "code_index"}:
+    if resolved_action in {"callers", "callees", "implementations"} and symbol is not None:
+        return {
+            "success": False, "status_code": 400, "terminal": True,
+            "retryable": False,
+            "error": "Relation actions require the canonical query argument; symbol is not accepted.",
+        }
+    if resolved_action in {"search", "code_index", "callers", "callees", "implementations"}:
         pagination_error = validate_operation_arguments(
             "local_ai_repo", resolved_action, {"limit": limit, "offset": offset}
         )
