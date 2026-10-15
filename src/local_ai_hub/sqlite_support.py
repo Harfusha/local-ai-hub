@@ -9,7 +9,7 @@ import stat
 import time
 import threading
 import weakref
-from contextlib import closing
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence, TypeVar
 
@@ -363,17 +363,63 @@ def require_canonical_agent_state_database(state_dir: Path | str) -> Path:
 def _is_readable_sqlite_database(path: Path) -> bool:
     """Check SQLite's header and schema with a bounded, read-only probe."""
     try:
-        if not path.is_file():
-            return False
-        with path.open("rb") as source:
-            if source.read(16) != b"SQLite format 3\x00":
-                return False
-        uri = f"{path.resolve().as_uri()}?mode=ro"
-        with closing(sqlite3.connect(uri, uri=True, timeout=0.5)) as con:
+        with readonly_sqlite_connection(path) as con:
             con.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
         return True
     except (OSError, sqlite3.Error, ValueError):
         return False
+
+
+@contextmanager
+def readonly_sqlite_connection(
+    path: Path | str,
+    *,
+    timeout_seconds: float = 0.5,
+    max_vm_steps: int = 250_000,
+) -> Iterator[sqlite3.Connection]:
+    """Open SQLite read-only without creating WAL sidecars during bounded inspection."""
+    database = Path(path)
+    if not database.is_file():
+        raise sqlite3.DatabaseError(f"not a regular SQLite file: {database}")
+    with database.open("rb") as source:
+        header = source.read(20)
+    if len(header) != 20 or header[:16] != b"SQLite format 3\x00":
+        raise sqlite3.DatabaseError(f"invalid SQLite database header: {database}")
+
+    wal_path = Path(f"{database}-wal")
+    shm_path = Path(f"{database}-shm")
+    wal_exists = wal_path.exists()
+    shm_exists = shm_path.exists()
+    wal_mode = header[18] == 2 or header[19] == 2
+    immutable = False
+    if wal_mode:
+        if wal_exists != shm_exists:
+            raise sqlite3.DatabaseError(f"incomplete SQLite WAL sidecars: {database}")
+        immutable = not wal_exists
+
+    uri = f"{database.resolve().as_uri()}?mode=ro"
+    if immutable:
+        uri += "&immutable=1"
+    connection = sqlite3.connect(
+        uri,
+        uri=True,
+        timeout=max(0.01, float(timeout_seconds)),
+    )
+    remaining_steps = [max(1, int(max_vm_steps))]
+
+    def _limit_vm_steps() -> int:
+        remaining_steps[0] -= 1000
+        return int(remaining_steps[0] < 0)
+
+    connection.set_progress_handler(_limit_vm_steps, 1000)
+    try:
+        yield connection
+    finally:
+        try:
+            connection.set_progress_handler(None, 0)
+        except sqlite3.Error:
+            pass
+        connection.close()
 
 
 def validate_durable_schema(

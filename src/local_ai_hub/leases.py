@@ -16,6 +16,7 @@ from .sqlite_support import (
     connect_sqlite,
     initialize_wal,
     require_canonical_agent_state_database,
+    readonly_sqlite_connection,
     retry_busy,
     validate_durable_schema,
 )
@@ -46,8 +47,7 @@ def _preflight_lease_schema(path: Path) -> None:
     """Check existing lease tables read-only before opening a writer connection."""
     if not path.is_file() or path.stat().st_size == 0:
         return
-    uri = f"{path.resolve().as_uri()}?mode=ro"
-    with closing(sqlite3.connect(uri, uri=True, timeout=0.5)) as con:
+    with readonly_sqlite_connection(path) as con:
         validate_durable_schema(
             con,
             path,
@@ -130,6 +130,7 @@ class ScopeLeaseStore:
                         self.path,
                         _LEASE_DURABLE_SCHEMA,
                         required_unique=_LEASE_REQUIRED_UNIQUE,
+                        backup_on_mismatch=False,
                     )
                     initialize_wal(con)
                     con.execute(
