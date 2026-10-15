@@ -24,7 +24,8 @@ from typing import Any, Mapping
 from .agent_events import AgentEvent, AgentStateStore
 from .agent_identity import AgentScope, ScopeContext
 from .sqlite_support import connect_sqlite, retry_busy
-from .token_accounting import json_tokens
+from .task_memory_wire import normalize_task_memory_response, task_memory_projection, task_memory_wire_tokens
+from .token_accounting import account_projection, json_tokens
 
 MAX_TASK_QUERY_SCAN_ROWS = 10_000
 MAX_AGENT_QUESTION_BYTES = 16_384
@@ -35,6 +36,15 @@ MAX_TRAINING_DATASET_BYTES = 16 * 1024 * 1024
 
 class CompletionGateError(RuntimeError):
     """Raised when task completion is attempted without verified criteria receipts."""
+
+
+class CheckpointResponseBudgetError(CompletionGateError):
+    """Raised before persistence when a checkpoint's full memory receipt cannot fit."""
+
+    def __init__(self, requested_tokens: int, required_tokens: int) -> None:
+        self.requested_tokens = requested_tokens
+        self.required_tokens = required_tokens
+        super().__init__("checkpoint_response_budget_too_small")
 
 
 class InvalidTransitionError(ValueError):
@@ -2386,10 +2396,17 @@ class TaskStore:
         task_id: str,
         checkpoint: TaskCheckpoint,
         *,
+        response_budget_tokens: int | None = None,
         capture_files: bool = False,
         actor: str = "agent",
         idempotency_key: str = "",
     ) -> TaskState:
+        if response_budget_tokens is not None and (
+            isinstance(response_budget_tokens, bool)
+            or not isinstance(response_budget_tokens, int)
+            or response_budget_tokens < 1
+        ):
+            raise ValueError("response_budget_tokens must be a positive integer")
         current = self.get(task_id)
         if not current:
             raise KeyError(f"Task {task_id} not found")
@@ -2402,6 +2419,7 @@ class TaskStore:
         return self._persist_checkpoint(
             current, checkpoint, capture_files=capture_files,
             actor=actor, idempotency_key=idempotency_key,
+            response_budget_tokens=response_budget_tokens,
         )
 
     def _persist_checkpoint(
@@ -2409,6 +2427,7 @@ class TaskStore:
         current: TaskState,
         checkpoint: TaskCheckpoint,
         *,
+        response_budget_tokens: int | None = None,
         capture_files: bool = False,
         actor: str = "agent",
         idempotency_key: str = "",
@@ -2439,15 +2458,6 @@ class TaskStore:
                 state_data=new_sd,
             )
 
-        if self.policy_engine and current.status == TaskStatus.ACTIVE:
-            budget = self.policy_engine.get_budget(task_id)
-            if budget.is_exhausted():
-                return self.fail(
-                    task_id,
-                    reason=f"TASK_BUDGET_EXCEEDED: used_tokens={budget.used_tokens}/{budget.max_tokens}, used_compute_seconds={budget.used_compute_seconds:.1f}/{budget.max_compute_seconds:.1f}s",
-                    actor="watchdog",
-                )
-
         now = time.time()
         heartbeat = now + self.default_heartbeat_ttl if current.status == TaskStatus.ACTIVE else current.heartbeat_expires_at
 
@@ -2464,6 +2474,24 @@ class TaskStore:
             checkpoint=checkpoint,
             verification_receipts=current.verification_receipts,
         )
+
+        if response_budget_tokens is not None:
+            raw_result = {"success": True, "task": updated.to_dict()}
+            projected = task_memory_projection(raw_result)
+            if projected is not None:
+                projected = normalize_task_memory_response(account_projection(raw_result, projected))
+                required_tokens = task_memory_wire_tokens(projected, response_budget_tokens)
+                if required_tokens > response_budget_tokens:
+                    raise CheckpointResponseBudgetError(response_budget_tokens, required_tokens)
+
+        if self.policy_engine and current.status == TaskStatus.ACTIVE:
+            budget = self.policy_engine.get_budget(task_id)
+            if budget.is_exhausted():
+                return self.fail(
+                    task_id,
+                    reason=f"TASK_BUDGET_EXCEEDED: used_tokens={budget.used_tokens}/{budget.max_tokens}, used_compute_seconds={budget.used_compute_seconds:.1f}/{budget.max_compute_seconds:.1f}s",
+                    actor="watchdog",
+                )
 
         event = AgentEvent.create(
             stream_id=f"task:{task_id}",

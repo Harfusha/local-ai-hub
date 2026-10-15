@@ -1473,7 +1473,13 @@ class HubClient:
         payload.update({"root": root, "query": query, "max_tokens": max_tokens, "mode": mode})
         return self.post("/api/context/pack", payload)
 
-    def coord(self, action: str, **kwargs: Any) -> dict[str, Any]:
+    def coord(
+        self,
+        action: str,
+        *,
+        response_budget_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
         act = action.strip().lower().replace("-", "_")
         if act in {"ask", "answer"}:
             payload = {
@@ -1490,6 +1496,8 @@ class HubClient:
         if act.startswith("task_"):
             task_action = act.replace("task_", "")
             payload = {**kwargs, "action": task_action}
+            if task_action == "checkpoint" and response_budget_tokens is not None:
+                payload["response_budget_tokens"] = response_budget_tokens
             return self.post("/api/agent-state/tasks", payload)
         if act in ("memo_put", "memo_get", "memo_search", "memo_delete"):
             if act == "memo_put":
@@ -1744,6 +1752,7 @@ class HubClient:
         next_action: str = "",
         affected_paths: list[str] | None = None,
         root: str | None = None,
+        response_budget_tokens: int | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
         payload = {
@@ -1754,6 +1763,8 @@ class HubClient:
             "next_action": next_action,
             "affected_paths": affected_paths or [],
         }
+        if response_budget_tokens is not None:
+            payload["response_budget_tokens"] = response_budget_tokens
         if root is not None:
             payload["root"] = root
         return self.post("/api/agent-state/tasks", payload)

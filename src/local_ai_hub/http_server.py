@@ -85,7 +85,14 @@ from .sqlite_support import is_busy_error
 from .agent_identity import AgentScope, ScopeContext
 from .project_config import resolve_project_context, _git_common_dir as _real_git_common_dir
 from .state_paths import configured_state_dir
-from .agent_tasks import CompletionGateError, GoalContract, InvalidTransitionError, TaskCheckpoint, TaskStatus
+from .agent_tasks import (
+    CheckpointResponseBudgetError,
+    CompletionGateError,
+    GoalContract,
+    InvalidTransitionError,
+    TaskCheckpoint,
+    TaskStatus,
+)
 from .agent_memory import ApprovalRequiredError, MAX_MEMORY_QUERY_LIMIT, MemoryKind, MemoryRecord, MemoryStatus
 from .agent_incidents import IncidentFingerprint, ToolOutcome, _incident_scope_key
 from .agent_verification import VerificationReceipt
@@ -6443,12 +6450,29 @@ class Handler(BaseHTTPRequestHandler):
                         task = APP.agent_tasks.checkpoint(
                             str(payload.get("task_id", "")),
                             checkpoint,
+                            response_budget_tokens=payload.get("response_budget_tokens"),
                             actor=actor,
                             idempotency_key=idempotency_key,
                         )
                         self._send(200, {"success": True, "task": task.to_dict()}); return
                     except KeyError as exc:
                         self._send(404, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+                    except CheckpointResponseBudgetError as exc:
+                        self._send(413, {
+                            "success": False,
+                            "error": str(exc),
+                            "terminal": True,
+                            "retryable": False,
+                            "mutation_applied": False,
+                            "operation_not_started": True,
+                            "response_budget": {
+                                "requested_tokens": exc.requested_tokens,
+                                "required_tokens": exc.required_tokens,
+                                "unit": "estimated_tokens",
+                            },
+                        }); return
+                    except ValueError as exc:
+                        self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                     except CompletionGateError as exc:
                         self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                 if action == "rollback":
