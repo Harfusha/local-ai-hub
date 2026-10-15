@@ -32,6 +32,7 @@ from .sqlite_support import (
     is_busy_error,
     quick_sanity_check,
     sqlite_batches,
+    SQLiteChangeObserver,
 )
 from .sqlite_counts import global_row_counts, initialize_row_counts
 
@@ -1010,6 +1011,25 @@ class CodeIndex:
         self._impact_candidate_count_l1 = MemoryLRUCache(max_entries=256, ttl_seconds=1800)
         self._query_cache_generation_key = str(self.db_path.resolve())
         self._init_db()
+        self._cache_observer = SQLiteChangeObserver(self.db_path)
+        self._cache_guard = threading.RLock()
+        self._observed_data_version: int | None = None
+
+    def _cache_generation(self) -> int:
+        with self._cache_guard:
+            version = self._cache_observer.version()
+            if version is None or version != self._observed_data_version:
+                for cache in (self._query_l1, self._parse_blob_l1, self._impact_result_l1, self._impact_path_format_l1, self._impact_candidate_count_l1):
+                    cache.clear()
+                self._status_cache.clear()
+                self._advance_query_cache_generation()
+            self._observed_data_version = version
+            return _query_cache_generation(self._query_cache_generation_key)
+
+    def close(self) -> None:
+        observer = getattr(self, "_cache_observer", None)
+        if observer is not None:
+            observer.close()
 
     def _advance_query_cache_generation(self) -> None:
         # A generation key makes in-flight pre-update queries unreachable after
@@ -2357,7 +2377,7 @@ class CodeIndex:
                 "truncated": False,
                 "parse_outcomes": {"scope": "returned_symbol_candidates", "files_examined": 0, "unknown_files": 0, "complete": False},
             }
-        cache_generation = _query_cache_generation(self._query_cache_generation_key)
+        cache_generation = self._cache_generation()
         cache_key = stable_hash({
             "root": resolved_root, "terms": terms, "limit": limit, "offset": offset,
             "generation": cache_generation,
@@ -3001,7 +3021,7 @@ class CodeIndex:
                 "truncation": {"changed_symbols": False, "likely_dependents": False, "suggested_tests": False},
             }
 
-        cache_generation = _query_cache_generation(self._query_cache_generation_key)
+        cache_generation = self._cache_generation()
         cache_key = stable_hash({
             "query": "impact",
             "root": resolved_root,
@@ -3155,7 +3175,7 @@ class CodeIndex:
                     and not import_graph_truncated and len(changed) <= 250
                 ):
                     changed_placeholders = ",".join("?" for _ in changed)
-                    path_generation = _query_cache_generation(self._query_cache_generation_key)
+                    path_generation = cache_generation
                     candidate_count_key = stable_hash({
                         "database": self._query_cache_generation_key,
                         "generation": path_generation,
@@ -3428,6 +3448,7 @@ class CodeIndex:
             return {"success": False, "error": str(exc), "candidate_count": 0, "dead_code": [], "dead_symbols": []}
 
     def status(self, root: str | None = None) -> dict[str, Any]:
+        self._cache_generation()
         now = time.monotonic()
         key = str(root or "__all__")
         cached = self._status_cache.get(key)

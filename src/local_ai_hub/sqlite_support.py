@@ -10,6 +10,8 @@ import sqlite3
 import stat
 import time
 import uuid
+import threading
+import weakref
 from contextlib import closing
 from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence, TypeVar
@@ -24,6 +26,62 @@ def sqlite_batches(items: Sequence[T]) -> Iterator[Sequence[T]]:
     """Bound dynamic SQL lists, including pairs, below legacy SQLite limits."""
     for offset in range(0, len(items), 250):
         yield items[offset:offset + 250]
+
+
+class SQLiteChangeObserver:
+    """Observe commits on one persistent, bounded, read-only SQLite connection."""
+
+    def __init__(self, path: Path | str) -> None:
+        self.path = Path(path)
+        self._lock = threading.Lock()
+        self._connection: sqlite3.Connection | None = None
+        self._finalizer: Any = None
+        self._identity: tuple[int, int, int] | None = None
+        self._data_version: int | None = None
+        self._epoch = 0
+        self._closed = False
+
+    def _disconnect_locked(self) -> None:
+        if self._finalizer is not None:
+            try:
+                self._finalizer()
+            except sqlite3.Error:
+                pass
+        self._finalizer = None
+        self._connection = None
+        self._data_version = None
+
+    def version(self) -> int | None:
+        """Return a local monotonic epoch, or None when cache reuse is unsafe."""
+        with self._lock:
+            if self._closed:
+                return None
+            try:
+                metadata = self.path.stat()
+                identity = (metadata.st_dev, metadata.st_ino, metadata.st_ctime_ns)
+                if identity != self._identity or self._connection is None:
+                    self._disconnect_locked()
+                    connection = sqlite3.connect(
+                        self.path.resolve().as_uri() + "?mode=ro", uri=True,
+                        timeout=0.05, check_same_thread=False,
+                    )
+                    self._connection = connection
+                    self._finalizer = weakref.finalize(self, sqlite3.Connection.close, connection)
+                    self._identity = identity
+                    self._epoch += 1
+                value = int(self._connection.execute("PRAGMA data_version").fetchone()[0])
+                if self._data_version is not None and value != self._data_version:
+                    self._epoch += 1
+                self._data_version = value
+                return self._epoch
+            except (OSError, sqlite3.Error, ValueError, TypeError, IndexError):
+                self._disconnect_locked()
+                return None
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            self._disconnect_locked()
 
 
 def is_busy_error(exc: BaseException) -> bool:

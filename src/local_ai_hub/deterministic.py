@@ -28,7 +28,10 @@ from . import __version__
 from .cache import MemoryLRUCache, SQLiteCache, stable_hash
 from .code_index import _mask_non_code
 from .normalizer import tokenize_query_terms
-from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, quick_sanity_check, sqlite_batches
+from .sqlite_support import (
+    SQLiteChangeObserver, connect_sqlite, initialize_wal, is_busy_error,
+    quick_sanity_check, sqlite_batches,
+)
 from .sqlite_counts import global_row_counts, initialize_row_counts
 from .diff_parsers import (
     extract_cs_diff_defs,
@@ -320,6 +323,23 @@ class DeterministicEngine:
         self._fact_blob_l1 = MemoryLRUCache(max_entries=4096, ttl_seconds=3600)
         self._manifest_blob_l1 = MemoryLRUCache(max_entries=1024, ttl_seconds=3600)
         self._init_db()
+        self._cache_observer = SQLiteChangeObserver(self.db_path)
+        self._observed_data_version: int | None = None
+
+    def close(self) -> None:
+        observer = getattr(self, "_cache_observer", None)
+        if observer is not None:
+            observer.close()
+
+    def _refresh_external_caches(self) -> bool:
+        with self._lock:
+            version = self._cache_observer.version()
+            if version is None or version != self._observed_data_version:
+                self._query_l1.clear()
+                self._fact_blob_l1.clear()
+                self._manifest_blob_l1.clear()
+            self._observed_data_version = version
+            return version is not None
 
     def _connect(self) -> sqlite3.Connection:
         con = connect_sqlite(self.db_path, timeout_seconds=5.0, row_factory=sqlite3.Row)
@@ -388,6 +408,29 @@ class DeterministicEngine:
         except sqlite3.OperationalError:
             pass
         initialize_row_counts(con, ("files", "facts", "dependencies", "scripts"))
+        # Source writes from any SQLite connection must invalidate both cache tiers,
+        # including raw external writes that do not call _bump_generation().
+        had_invalidation_triggers = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='det_cache_facts_update'"
+        ).fetchone() is not None
+        for table in ("files", "facts", "dependencies", "scripts", "test_source_links"):
+            for event in ("INSERT", "UPDATE", "DELETE"):
+                references = ("OLD", "NEW") if event == "UPDATE" else (("OLD",) if event == "DELETE" else ("NEW",))
+                statements = []
+                for reference in references:
+                    guard = " WHERE OLD.root<>NEW.root" if event == "UPDATE" and reference == "OLD" else " WHERE 1"
+                    statements.append(
+                        "INSERT INTO project_state(root,manifest_hash,generation,updated_at) "
+                        f"SELECT {reference}.root,'',1,CAST(strftime('%s','now') AS REAL){guard} "
+                        "ON CONFLICT(root) DO UPDATE SET generation=project_state.generation+1,updated_at=excluded.updated_at; "
+                        f"DELETE FROM query_cache WHERE root={reference}.root;"
+                    )
+                con.execute(
+                    f"CREATE TRIGGER IF NOT EXISTS det_cache_{table}_{event.lower()} AFTER {event} ON {table} "
+                    "BEGIN " + " ".join(statements) + " END"
+                )
+        if not had_invalidation_triggers:
+            con.execute("DELETE FROM query_cache")
 
     def record_test_source_links(self, root: str, links: list[tuple[str, str, float]]) -> None:
         if not links:
@@ -517,6 +560,8 @@ class DeterministicEngine:
         return generation
 
     def _query_cache_get(self, root: str, generation: int, key: str) -> dict[str, Any] | None:
+        if not self._refresh_external_caches():
+            return None
         now = time.time(); cache_key = (root, generation, key)
         with self._lock:
             row = self._query_l1.get(cache_key)
@@ -555,6 +600,10 @@ class DeterministicEngine:
         try:
             payload = json_dumps(value, ensure_ascii=False, separators=(",", ":"))
             with self._lock, closing(self._connect()) as con:
+                con.execute("BEGIN IMMEDIATE")
+                if self._generation(root, con) != generation:
+                    self._query_l1.pop(cache_key, None)
+                    return
                 con.execute(
                     "INSERT OR REPLACE INTO query_cache(root,generation,query_key,result_json,updated_at) VALUES(?,?,?,?,?)",
                     (root, generation, key, payload, now),
@@ -567,6 +616,10 @@ class DeterministicEngine:
                         (root, generation, count - self._query_l2_max_per_root),
                     )
                 con.commit()
+                # Cache-only commits do not change source generations. Acknowledge
+                # ours so the next read can reuse L1; concurrent source commits are
+                # still fenced by their transactional project generation.
+                self._observed_data_version = self._cache_observer.version()
         except (sqlite3.DatabaseError, TypeError, ValueError):
             pass
 
