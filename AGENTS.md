@@ -113,6 +113,8 @@ Local model policy: Model routing follows the active hardware profile and user o
 
 ## Architecture rules
 
+Canonical repository inputs: `context` takes its task description in `query`; `solve` and `delegate` use `task`. No field fallback is supported. Cross-project graph/symbol/impact use `cross_project_*`; distinct backend/frontend analysis remains `cross_repo_contract`. `synthesize_commit` may use explicit `task_id`, never inferred from a task-name string. Test matrix evidence describes current supported files within a bounded iterator scope and lexical case detection, never runtime test collection or success.
+
 - Python 3.11+; all runtime state belongs under the configured `server.state_dir` and must not be committed.
 - The public MCP surface stays compact. Add capability behind one of the eight existing tools unless a separate schema clearly saves more tokens than it costs.
 - For repository scanning, deterministic and indexed operations precede embeddings or model inference. Semantic generation, reasoning, review, independent second opinions and compression use `local_ai_task` after any needed evidence; local LLM calls remain excluded from architecture, security, mutations and open-ended coding.
