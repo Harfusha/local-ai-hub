@@ -552,6 +552,10 @@ def test_completed_succeeds_when_verified(
             current_mutation_generation,
             verification_rules,
             configured_criteria,
+            configured_commands,
+            project_config_digest,
+            configured_environment_sha256,
+            project_root,
         ):
             assert verification_rules == {}
             assert configured_criteria == ()
@@ -931,7 +935,7 @@ def test_completed_rejects_non_boolean_verifier_result(
             configured_environment_sha256,
             project_root,
         ):
-            return CompletionResult(task_id, complete, (), ("tests",), (), ())
+            return CompletionResult(task_id, complete, (), (), (), ())
 
     store.set_verification_store(MalformedResultVerifier())
 
@@ -1332,9 +1336,10 @@ def test_goal_contract_accepts_only_canonical_scope_values():
     assert c1.scope == AgentScope.TASK
     assert c1.to_dict()["scope"] == "task"
 
-    with pytest.raises(ValueError, match="not a valid AgentScope"):
-        GoalContract(goal="test 2", scope="code")
-    for scope in (None, ""):
+    assert GoalContract.from_dict({"goal": "default scope"}).scope is AgentScope.TASK
+    for scope in ("code", "TASK", " task ", None, "", False, [], 23):
+        with pytest.raises(ValueError):
+            GoalContract(goal="invalid direct scope", scope=scope)
         with pytest.raises(ValueError):
             GoalContract.from_dict({"goal": "test 3", "scope": scope})
 

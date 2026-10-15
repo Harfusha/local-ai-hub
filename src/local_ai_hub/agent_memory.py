@@ -1496,11 +1496,9 @@ class MemoryStore:
         branch: str | None = None,
         tenant_agnostic_global: bool = False,
     ) -> MemoryRecord | None:
+        requested_scope = AgentScope.parse(scope).value if scope is not None else ""
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return None
-        requested_scope = scope.value if hasattr(scope, "value") else str(scope or "")
-        if requested_scope.lower() == "repo":
-            requested_scope = AgentScope.REPOSITORY.value
         if (
             requested_scope == AgentScope.SESSION.value
             and not str(session_id or "").strip()

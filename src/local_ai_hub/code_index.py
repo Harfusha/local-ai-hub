@@ -3784,7 +3784,7 @@ class CodeIndex:
             result["next_offset"] = offset + len(callees)
         return result
 
-def python_module_import_graph(self, root: str) -> dict[str, Any]:
+    def python_module_import_graph(self, root: str) -> dict[str, Any]:
         """Return the fresh Python import edges already stored for one indexed root."""
         resolved_root = canonical_root(root)
         root_path = Path(resolved_root)

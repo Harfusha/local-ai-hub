@@ -78,12 +78,14 @@ def test_unconfirmed_consistency_guard_memory_is_management_only(tmp_path) -> No
         legacy_automatic.record_id,
         scope=AgentScope.REPOSITORY,
         root=str(root),
+        repository_id=coordination_id,
         tenant="tenant-a",
     ) == records[0]
     assert store.find(
         scope=AgentScope.REPOSITORY,
         record_id=legacy_automatic.record_id,
         root=str(root),
+        repository_id=coordination_id,
         tenant="tenant-a",
         semantic=False,
     ) == [records[0]]
