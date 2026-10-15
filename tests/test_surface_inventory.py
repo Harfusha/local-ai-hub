@@ -1107,8 +1107,12 @@ def test_check_mode_infers_task_id_and_preserves_matching_document(tmp_path, cap
     make_repo(tmp_path)
     task_id = "task-from-coverage-doc"
     coverage_path = tmp_path / "docs" / "API_COVERAGE.md"
-    write(tmp_path, "docs/API_COVERAGE.md", MODULE.render_coverage(MODULE.collect_inventory(tmp_path), task_id))
+    inventory = MODULE.collect_inventory(tmp_path)
+    write(tmp_path, "docs/API_COVERAGE.md", MODULE.render_coverage(inventory, task_id))
+    write(tmp_path, "docs/API_COVERAGE.json", MODULE.render_coverage_artifact(inventory, task_id))
     before = coverage_path.read_bytes()
+    artifact_path = tmp_path / "docs" / "API_COVERAGE.json"
+    artifact_before = artifact_path.read_bytes()
     before_mtime = coverage_path.stat().st_mtime_ns
     writes = []
     original_write_text = Path.write_text
@@ -1123,11 +1127,13 @@ def test_check_mode_infers_task_id_and_preserves_matching_document(tmp_path, cap
 
     assert result == 0
     assert coverage_path.read_bytes() == before
+    assert artifact_path.read_bytes() == artifact_before
     assert coverage_path.stat().st_mtime_ns == before_mtime
     assert writes == []
     assert coverage_path.read_text(encoding="utf-8") == MODULE.render_coverage(MODULE.collect_inventory(tmp_path), task_id)
     summary = json.loads(capsys.readouterr().out)
     assert summary["coverage_matches"] is True
+    assert summary["artifact_matches"] is True
     assert summary["drift"] == []
     assert "written" not in summary
 
@@ -1254,11 +1260,17 @@ def test_check_and_write_doc_are_rejected_before_mutating_coverage(tmp_path, cap
 
 def test_check_cli_accepts_coverage_without_writing_it(tmp_path):
     make_repo(tmp_path)
-    expected = MODULE.render_coverage(MODULE.collect_inventory(tmp_path))
+    inventory = MODULE.collect_inventory(tmp_path)
+    expected = MODULE.render_coverage(inventory)
+    expected_artifact = MODULE.render_coverage_artifact(inventory)
     write(tmp_path, "docs/API_COVERAGE.md", expected)
+    write(tmp_path, "docs/API_COVERAGE.json", expected_artifact)
     coverage_path = tmp_path / "docs" / "API_COVERAGE.md"
+    artifact_path = tmp_path / "docs" / "API_COVERAGE.json"
     before_bytes = coverage_path.read_bytes()
     before_mtime = coverage_path.stat().st_mtime_ns
+    artifact_before = artifact_path.read_bytes()
+    artifact_mtime = artifact_path.stat().st_mtime_ns
     command = [sys.executable, "tools/surface_inventory.py", "--root", str(tmp_path), "--check"]
 
     result = subprocess.run(
@@ -1272,8 +1284,11 @@ def test_check_cli_accepts_coverage_without_writing_it(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
     assert coverage_path.read_bytes() == before_bytes
     assert coverage_path.stat().st_mtime_ns == before_mtime
+    assert artifact_path.read_bytes() == artifact_before
+    assert artifact_path.stat().st_mtime_ns == artifact_mtime
     summary = json.loads(result.stdout)
     assert summary["coverage_matches"] is True
+    assert summary["artifact_matches"] is True
     assert "written" not in summary
 
 
@@ -1318,6 +1333,7 @@ def test_write_doc_cli_process_generates_coverage(tmp_path):
     coverage_path = tmp_path / "docs" / "API_COVERAGE.md"
     assert not coverage_path.exists()
     expected = MODULE.render_coverage(MODULE.collect_inventory(tmp_path), task_id=task_id)
+    expected_artifact = MODULE.render_coverage_artifact(MODULE.collect_inventory(tmp_path), task_id=task_id)
 
     command = [
         sys.executable,
@@ -1338,6 +1354,7 @@ def test_write_doc_cli_process_generates_coverage(tmp_path):
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert coverage_path.read_text(encoding="utf-8") == expected
+    assert (tmp_path / "docs" / "API_COVERAGE.json").read_text(encoding="utf-8") == expected_artifact
     summary = json.loads(result.stdout)
     assert summary["written"] == "docs/API_COVERAGE.md"
     assert summary["coverage_rows"] > 0
@@ -1348,12 +1365,15 @@ def test_write_doc_mode_updates_coverage(tmp_path, capsys):
     task_id = "task-write-coverage-test"
     coverage_path = tmp_path / "docs" / "API_COVERAGE.md"
     write(tmp_path, "docs/API_COVERAGE.md", "# Stale coverage\n")
-    expected = MODULE.render_coverage(MODULE.collect_inventory(tmp_path), task_id=task_id)
+    inventory = MODULE.collect_inventory(tmp_path)
+    expected = MODULE.render_coverage(inventory, task_id=task_id)
+    expected_artifact = MODULE.render_coverage_artifact(inventory, task_id=task_id)
 
     result = MODULE.main(["--root", str(tmp_path), "--write-doc", "--task-id", task_id])
 
     assert result == 0
     assert coverage_path.read_text(encoding="utf-8") == expected
+    assert (tmp_path / "docs" / "API_COVERAGE.json").read_text(encoding="utf-8") == expected_artifact
     summary = json.loads(capsys.readouterr().out)
     assert summary["written"] == "docs/API_COVERAGE.md"
     assert summary["coverage_rows"] > 0
@@ -1372,9 +1392,12 @@ def test_rendered_coverage_includes_task_id_for_every_finding(tmp_path):
             break
         data_rows.append(line)
 
-    assert lines[header_index].endswith("| Task ID |")
+    assert "coverage-task-id: " + task_id in rendered
+    assert lines[header_index] == "| Surface | Name | Evidence status | Owner | Operation ID |"
     assert data_rows
-    assert all(line.endswith(f"| `{task_id}` |") for line in data_rows)
+    artifact = json.loads(MODULE.render_coverage_artifact(MODULE.collect_inventory(tmp_path), task_id))
+    assert all(row.get("task_id") == task_id for row in artifact["coverage_rows"])
+    assert len(data_rows) == len(artifact["coverage_rows"])
 
 
 def test_inventory_finds_decorated_cli_operations_and_dataclass_feature_gates(tmp_path):
@@ -1620,10 +1643,9 @@ def test_inventory_contract_rows_include_required_machine_readable_fields(tmp_pa
         for row in rows for field in required_contract_fields
     )
     assert all(row.get("task_id") == task_id for row in rows)
-    rendered_header = MODULE.render_coverage(inventory, task_id).splitlines()[5]
-    assert "Test IDs" in rendered_header
-    assert "Test coverage" in rendered_header
-    assert "Behavioral disposition" in rendered_header
+    artifact = json.loads(MODULE.render_coverage_artifact(inventory, task_id))
+    assert all(row["test_ids"] and row["test_coverage"] for row in artifact["coverage_rows"])
+    assert all(row["behavioral_disposition"] for row in artifact["coverage_rows"])
     assert all(
         row["owner_task"] == (MODULE._operation_owner_task({**row, "owner_task": None}) or task_id)
         for row in rows

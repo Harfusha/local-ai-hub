@@ -3290,64 +3290,49 @@ def render_coverage(inventory: dict[str, Any], task_id: str | None = None) -> st
     check_command = "python tools/surface_inventory.py --check"
     if task_id:
         check_command += f" --task-id {task_id}"
-    header_cells = ["Surface", "Name", "Evidence status", "Owner", "Acceptance", "Reproduction", "Evidence"]
-    header_cells.extend([
-        "Operation ID", "State", "Owner task", "Handler", "Contract", "Contract gaps", "Fixtures",
-        "Access classification", "Cache key", "Tenant scope", "Provenance", "Test IDs", "Test coverage",
-        "Behavioral disposition", "Benchmark cohort",
-    ])
-    if task_id:
-        header_cells.append("Task ID")
     lines = [
         "# API surface coverage",
         "",
-        "Deterministic source inventory. Evidence status is confirmed, conditional, or refuted. Behavioral disposition separates asserted operation tests from metadata-only evidence. `test_operation_contract_metadata` checks inventory metadata only.",
+        "Deterministic source inventory. Status describes static evidence, not runtime health or asserted behavior. Full contracts, fixtures, provenance, and coverage details live in `API_COVERAGE.json`.",
         f"Reproduce with `{check_command}`.",
+        f"<!-- coverage-task-id: {task_id or ''} -->",
         "",
-        "| " + " | ".join(header_cells) + " |",
-        "|" + "|".join("---" for _ in header_cells) + "|",
+        "| Surface | Name | Evidence status | Owner | Operation ID |",
+        "|---|---|---|---|---|",
     ]
     for row in rows:
-        row_cells = [
-            row["surface"],
-            f"`{row['name']}`",
-            row["evidence_status"],
-            f"`{row['owner']}`",
-            row["acceptance"],
-            f"`{row['reproduction']}`",
-            f"`{', '.join(row['evidence'])}`",
-            f"`{row['operation_id']}`",
-            row["state"],
-            f"`{row['owner_task'] or 'unassigned'}`",
-            f"`{row['handler']}`",
-            "`" + json.dumps(row["contract"], sort_keys=True, separators=(",", ":")).replace("`", "\\u0060").replace("|", "\\|") + "`",
-            "`" + json.dumps(row["contract_gaps"], sort_keys=True, separators=(",", ":")).replace("`", "\\u0060").replace("|", "\\|") + "`",
-            json.dumps(row["fixtures"], separators=(",", ":")),
-            row["access_classification"],
-            f"`{row['cache_key']}`",
-            f"`{row['tenant_scope']}`",
-            json.dumps(row["provenance"], separators=(",", ":")),
-            json.dumps(row["test_ids"], separators=(",", ":")),
-            row["test_coverage"],
-            row["behavioral_disposition"],
-            row["benchmark_cohort"],
-        ]
-        if task_id:
-            row_cells.append(f"`{row['task_id']}`")
-        lines.append("| " + " | ".join(row_cells) + " |")
-    lines.extend(
-        [
-            "",
-            "Each row has a stable operation ID, task owner, handler, test IDs, execution classification, and an explicit contract; unobserved values remain marked as unknown.",
-            "Orphan client targets, unhandled generated MCP actions, source-only MCP tools, dynamic route registry entries, and generated schemas without source registrations fail `--check`.",
-            "",
-        ]
-    )
+        cells = (row["surface"], row["name"], row["evidence_status"], row["owner"], row["operation_id"])
+        lines.append("| " + " | ".join(_coverage_markdown_cell(value) for value in cells) + " |")
+    lines.extend(["", "Orphan client targets, unhandled generated MCP actions, source-only MCP tools, dynamic route registry entries, and generated schemas without source registrations fail `--check`.", ""])
     if inventory["drift"]:
         lines.extend(["## Detected drift", ""])
         lines.extend(f"- `{item}`" for item in inventory["drift"])
         lines.append("")
     return "\n".join(lines)
+
+
+def _coverage_markdown_cell(value: Any) -> str:
+    return str(value).replace("\\", "\\\\").replace("|", "\\|").replace("\n", " ")
+
+
+def render_coverage_artifact(inventory: dict[str, Any], task_id: str | None = None) -> str:
+    rows = coverage_rows(_findings(inventory), task_id)
+    machine_fields = (
+        "operation_id", "surface", "name", "status", "evidence_status", "owner", "owner_task",
+        "handler", "fixtures", "access_classification", "cache_key", "tenant_scope", "provenance",
+        "test_ids", "test_coverage", "behavioral_disposition", "benchmark_cohort", "state", "contract",
+        "acceptance", "condition", "reproduction", "evidence", "contract_gaps", "task_id",
+    )
+    artifact = {
+        "schema_version": 1,
+        "description": "Deterministic static API surface coverage; not runtime or behavioral verification.",
+        "task_id": task_id,
+        "coverage_rows": [
+            {field: row[field] for field in machine_fields if field in row}
+            for row in rows
+        ],
+    }
+    return json.dumps(artifact, indent=2, sort_keys=True) + "\n"
 
 
 def _coverage_table(text: str) -> list[str]:
@@ -3364,6 +3349,9 @@ def _coverage_table(text: str) -> list[str]:
 
 
 def _coverage_task_id(text: str) -> str | None:
+    marker = re.search(r"<!-- coverage-task-id: ([^>]*) -->", text)
+    if marker:
+        return marker.group(1).strip() or None
     lines = text.splitlines()
     start = next((index for index, line in enumerate(lines) if line.startswith("| Surface |")), None)
     if start is None or "Task ID" not in [cell.strip() for cell in lines[start].strip("|").split("|")]:
@@ -3375,15 +3363,24 @@ def _coverage_task_id(text: str) -> str | None:
     return cell or None
 
 
+def _coverage_artifact_task_id(text: str) -> str | None:
+    try:
+        artifact = json.loads(text)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    task_id = artifact.get("task_id") if isinstance(artifact, dict) else None
+    return task_id if isinstance(task_id, str) and task_id else None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument(
         "--check",
         action="store_true",
-        help="check coverage drift without modifying docs/API_COVERAGE.md",
+        help="check human and structured coverage artifact drift without writing files",
     )
-    parser.add_argument("--write-doc", action="store_true", help="write docs/API_COVERAGE.md from current AST evidence")
+    parser.add_argument("--write-doc", action="store_true", help="write human and structured coverage artifacts from current AST evidence")
     parser.add_argument("--task-id", help="record task identifier when one was assigned")
     args = parser.parse_args(argv)
     if args.check and args.write_doc:
@@ -3391,26 +3388,35 @@ def main(argv: list[str] | None = None) -> int:
 
     inventory = collect_inventory(args.root)
     doc_path = args.root / "docs" / "API_COVERAGE.md"
+    artifact_path = args.root / "docs" / "API_COVERAGE.json"
     if args.check:
         current_text = doc_path.read_text(encoding="utf-8") if doc_path.is_file() else ""
-        task_id = args.task_id or _coverage_task_id(current_text)
+        current_artifact = artifact_path.read_text(encoding="utf-8") if artifact_path.is_file() else ""
+        task_id = args.task_id or _coverage_task_id(current_text) or _coverage_artifact_task_id(current_artifact)
         expected_document = render_coverage(inventory, task_id)
+        expected_artifact = render_coverage_artifact(inventory, task_id)
         coverage_matches = current_text == expected_document
+        artifact_matches = current_artifact == expected_artifact
         if not coverage_matches:
             inventory["drift"].append("rendered coverage document differs from docs/API_COVERAGE.md")
+        if not artifact_matches:
+            inventory["drift"].append("rendered coverage artifact differs from docs/API_COVERAGE.json")
         inventory["drift"] = sorted(inventory["drift"])
         print(json.dumps({
             "success": not inventory["drift"],
             "coverage_matches": coverage_matches,
+            "artifact_matches": artifact_matches,
             "coverage_rows": len(coverage_rows(_findings(inventory), task_id)),
             "drift": inventory["drift"],
         }, sort_keys=True))
         return 1 if inventory["drift"] else 0
     if args.write_doc:
         doc_path.write_text(render_coverage(inventory, args.task_id), encoding="utf-8")
+        artifact_path.write_text(render_coverage_artifact(inventory, args.task_id), encoding="utf-8")
         print(json.dumps({
             "success": not inventory["drift"],
             "written": doc_path.relative_to(args.root).as_posix(),
+            "written_artifact": artifact_path.relative_to(args.root).as_posix(),
             "coverage_rows": len(coverage_rows(_findings(inventory), args.task_id)),
             "drift": inventory["drift"],
         }, sort_keys=True))
