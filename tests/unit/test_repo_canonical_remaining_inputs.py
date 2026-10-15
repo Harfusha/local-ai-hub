@@ -94,7 +94,7 @@ def test_registered_repo_handler_rejects_retired_fields_before_dispatch(
     ("delegate", {"root": ".", "task": "implement"}, ["query", "diff"]),
     ("investigate", {"root": ".", "query": "find"}, ["task", "diff"]),
     ("api_spec", {"root": "."}, ["task"]),
-    ("generate_tests_for_diff", {"root": ".", "diff": "patch"}, ["query", "task", "path"]),
+    ("generate_tests_for_diff", {"root": ".", "diff": "patch"}, ["query", "task"]),
     ("cross_repo_contract", {"root": ".", "path": "C:/frontend"}, ["query", "workspace", "task"]),
     ("circular_dependencies", {"root": ".", "language": "python"}, ["query", "task"]),
     ("skeletonize", {"root": ".", "path": "src/a.py"}, ["task", "diff"]),
@@ -133,6 +133,12 @@ def test_direct_repo_impl_rejects_alias_even_with_canonical_value(
 
 
 @pytest.mark.parametrize(("action", "fields", "url", "payload_key", "expected"), [
+    ("code_index", {}, "/api/repo/code-index", "query", ""),
+    ("route", {"path": "src/a.py"}, "/api/route", "query", ""),
+    ("refactor_impact", {"path": "src/a.py"}, "/api/refactor_impact", "symbol", ""),
+    ("generate_tests", {"path": "src/a.py"}, "/api/generate_tests", "symbol", ""),
+    ("cross_project_symbols", {}, "/api/cross_project_symbols", "query", ""),
+    ("generate_tests_for_diff", {"path": "src/a.py"}, "/api/repo/generate_tests_for_diff", "path", "src/a.py"),
     ("investigate", {"query": "find call"}, "/api/repo/investigate", "query", "find call"),
     ("diagnose", {"query": "traceback"}, "/api/repo/diagnose", "text", "traceback"),
     ("solve", {"task": "implement fix"}, "/api/solve/repo", "task", "implement fix"),
