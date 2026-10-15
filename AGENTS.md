@@ -113,7 +113,7 @@ Local model policy: Model routing follows the active hardware profile and user o
 
 ## Architecture rules
 
-Semantic MCP responses require an explicit boolean `success`; `answer` cannot substitute for `text`. Successful compiled task context requires explicit `success=true` and `complete=true` on both the response and nested `task_context`, whose `text` is a string. Top-level text cannot substitute for nested task context. Internal lexical `RepositoryTools.search` uses `limit`, never the retired `top_k` keyword; distinct RAG/context candidate parameters retain their own contracts.
+Semantic MCP responses require an explicit boolean `success`; `answer` cannot substitute for `text`. Successful compiled task context requires explicit `success=true` and `complete=true` on both the response and nested `task_context`, whose `text` is a string. Top-level text cannot substitute for nested task context. Internal lexical `RepositoryTools.search` uses `limit`, never the retired `top_k` keyword; distinct RAG/context candidate parameters retain their own contracts. Blackboard CAS updates accept only nonnegative integer `expected_version` (or omission); the retired `expected_etag` keyword rejects. Sections with different identities cannot merge.
 
 Coordination verification uses an explicit `receipt` object; never synthesize `passed=true` or derive receipt identity from checkpoint/status fields. Completion and export use `task_id`; completion may pin `repository_revision` to the exact fresh snapshot fingerprint (empty means no caller pin). Question IDs/text/answers use their dedicated fields; optional task association remains supported. Task sync uses `sync_action`, `stream_id`, `after_seq`, `limit`, and `events`, with strict export/import field exclusivity.
 

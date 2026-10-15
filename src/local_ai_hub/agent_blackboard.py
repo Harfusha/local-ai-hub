@@ -57,6 +57,8 @@ def merge_sections(s1: BlackboardSection, s2: BlackboardSection) -> BlackboardSe
     Uses vector clock domination with deterministic Last-Write-Wins (LWW) tie-breaking.
     The resulting vector clock is the element-wise supremum of both clocks.
     """
+    if s1.section != s2.section:
+        raise ValueError("Cannot merge sections with different names")
     all_keys = set(s1.clock) | set(s2.clock)
     merged_clock = {k: max(s1.clock.get(k, 0), s2.clock.get(k, 0)) for k in all_keys}
 
@@ -164,20 +166,19 @@ class BlackboardStore:
         expected_version: int | None = None,
         idempotency_key: str = "",
         *,
-        expected_etag: str | None = None,
         connection: sqlite3.Connection | None = None,
     ) -> dict[str, Any]:
         """CAS-update section; append change event in same transaction when stores share DB."""
+        if expected_version is not None and (
+            isinstance(expected_version, bool)
+            or not isinstance(expected_version, int)
+            or expected_version < 0
+        ):
+            raise ValueError("expected_version must be a nonnegative integer")
         self._ensure_schema()
         clean_board = str(board_id).strip()
         clean_section = str(section).strip()
         clean_author = str(author).strip() or "agent"
-        if expected_version is None and expected_etag is not None:
-            clean_etag = str(expected_etag).strip().lstrip("v\"").rstrip("\"")
-            try:
-                expected_version = int(clean_etag)
-            except ValueError:
-                pass
         if connection is not None:
             return self._update_in_transaction(
                 connection, clean_board, clean_section, content, clean_author,
