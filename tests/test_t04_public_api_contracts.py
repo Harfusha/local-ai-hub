@@ -333,86 +333,23 @@ def test_artifact_list_is_bounded_metadata_and_needs_no_id(live_api, monkeypatch
     assert len(public_result["artifacts"]) == 20
 
 
-def test_artifact_list_v2_hashes_and_isolates_tenants(tmp_path):
-    import hashlib
+def test_artifact_store_rejects_legacy_schema_without_rewriting(tmp_path):
     import sqlite3
     from contextlib import closing
 
-    from local_ai_hub.artifacts import ArtifactStore
+    from local_ai_hub.artifacts import ArtifactStore, UnsupportedArtifactSchema
 
     db_path = tmp_path / "artifacts.sqlite3"
     with closing(sqlite3.connect(db_path)) as con:
         con.execute(
-            "CREATE TABLE artifacts (artifact_id TEXT PRIMARY KEY, created_at REAL NOT NULL, tenant TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL)"
+            "CREATE TABLE artifacts (artifact_id TEXT PRIMARY KEY, created_at REAL NOT NULL, "
+            "tenant TEXT NOT NULL, kind TEXT NOT NULL, text TEXT NOT NULL)"
         )
-        con.executemany(
-            "INSERT INTO artifacts VALUES (?, ?, ?, ?, ?)",
-            [
-                ("tenant-a-artifact", 2.0, "tenant-a", "text", "a"),
-                ("tenant-b-artifact", 1.0, "tenant-b", "text", "b"),
-            ],
-        )
+        con.execute("INSERT INTO artifacts VALUES ('legacy-id', 9_999_999_999, 'tenant', 'text', 'kept')")
         con.commit()
 
-    store = ArtifactStore(tmp_path)
-
-    assert store._table == "artifacts_v2"
-    assert [item["artifact_id"] for item in store.list("tenant-a")] == ["tenant-a-artifact"]
-    assert [item["artifact_id"] for item in store.list("tenant-b")] == ["tenant-b-artifact"]
-    with closing(sqlite3.connect(db_path)) as con:
-        identities = con.execute(
-            "SELECT tenant, tenant_identity FROM artifacts_v2 ORDER BY artifact_id"
-        ).fetchall()
-    assert identities == [
-        (hashlib.sha256(b"tenant-a").hexdigest(), hashlib.sha256(b"tenant-a").hexdigest()),
-        (hashlib.sha256(b"tenant-b").hexdigest(), hashlib.sha256(b"tenant-b").hexdigest()),
-    ]
-
-
-def test_artifact_list_legacy_hashes_and_isolates_tenants(tmp_path):
-    import hashlib
-    import sqlite3
-    from contextlib import closing
-
-    from local_ai_hub.artifacts import ArtifactStore
-
-    db_path = tmp_path / "artifacts.sqlite3"
-    with closing(sqlite3.connect(db_path)) as con:
-        con.execute(
-            """CREATE TABLE artifacts (
-                artifact_id TEXT PRIMARY KEY,
-                created_at REAL NOT NULL,
-                tenant TEXT NOT NULL,
-                tenant_identity TEXT,
-                kind TEXT NOT NULL,
-                text TEXT NOT NULL DEFAULT '',
-                mime_type TEXT,
-                encoding TEXT,
-                blob BLOB,
-                size_bytes INTEGER,
-                checksum TEXT,
-                identity_json TEXT
-            )"""
-        )
-        con.executemany(
-            "INSERT INTO artifacts(artifact_id, created_at, tenant, tenant_identity, kind, text) VALUES(?, ?, ?, ?, ?, ?)",
-            [
-                ("tenant-a-artifact", 2.0, "tenant-a", "tenant-a", "text", "a"),
-                ("tenant-b-artifact", 1.0, "tenant-b", "tenant-b", "text", "b"),
-            ],
-        )
-        con.commit()
-
-    store = ArtifactStore(tmp_path)
-
-    assert store._table == "artifacts"
-    assert [item["artifact_id"] for item in store.list("tenant-a")] == ["tenant-a-artifact"]
-    assert [item["artifact_id"] for item in store.list("tenant-b")] == ["tenant-b-artifact"]
-    with closing(sqlite3.connect(db_path)) as con:
-        identities = con.execute(
-            "SELECT tenant, tenant_identity FROM artifacts ORDER BY artifact_id"
-        ).fetchall()
-    assert identities == [
-        (hashlib.sha256(b"tenant-a").hexdigest(), hashlib.sha256(b"tenant-a").hexdigest()),
-        (hashlib.sha256(b"tenant-b").hexdigest(), hashlib.sha256(b"tenant-b").hexdigest()),
-    ]
+    original = db_path.read_bytes()
+    with pytest.raises(UnsupportedArtifactSchema):
+        ArtifactStore(tmp_path)
+    assert db_path.read_bytes() == original
+    assert not db_path.with_name(db_path.name + "-wal").exists()

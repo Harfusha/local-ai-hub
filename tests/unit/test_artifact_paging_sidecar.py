@@ -14,16 +14,16 @@ def _tenant_identity(label: str) -> str:
     return hashlib.sha256(label.encode("utf-8")).hexdigest()
 
 
-def test_old_v2_core_uses_sidecar_and_preserves_nul_slices_and_id(tmp_path) -> None:
-    artifact_id = "art_durable_old_v2"
+def test_canonical_core_uses_sidecar_and_preserves_nul_slices_and_id(tmp_path) -> None:
+    artifact_id = "art_durable_canonical"
     text = "A\x00BCDEF\x00GHI"
     tenant = _tenant_identity("owner")
     db_path = tmp_path / "artifacts.sqlite3"
     with closing(sqlite3.connect(db_path)) as connection:
         connection.execute(
-            """CREATE TABLE artifacts_v2 (
+            """CREATE TABLE artifacts (
                 artifact_id TEXT PRIMARY KEY, created_at REAL NOT NULL,
-                tenant TEXT NOT NULL, tenant_identity TEXT NOT NULL, kind TEXT NOT NULL,
+                tenant TEXT NOT NULL, tenant_identity TEXT, kind TEXT NOT NULL,
                 text TEXT NOT NULL DEFAULT '', mime_type TEXT, encoding TEXT, blob BLOB,
                 size_bytes INTEGER, checksum TEXT, identity_json TEXT
             )"""
@@ -35,7 +35,7 @@ def test_old_v2_core_uses_sidecar_and_preserves_nul_slices_and_id(tmp_path) -> N
             "INSERT INTO artifact_schema_meta(key, value) VALUES('tenant_storage', 'sha256-v1')"
         )
         connection.execute(
-            "INSERT INTO artifacts_v2(artifact_id, created_at, tenant, tenant_identity, kind, text) "
+            "INSERT INTO artifacts(artifact_id, created_at, tenant, tenant_identity, kind, text) "
             "VALUES(?,?,?,?,?,?)",
             (artifact_id, time.time(), tenant, tenant, "text", text),
         )
@@ -56,9 +56,9 @@ def test_old_v2_core_uses_sidecar_and_preserves_nul_slices_and_id(tmp_path) -> N
 
     with closing(sqlite3.connect(db_path)) as connection:
         assert connection.execute(
-            "SELECT artifact_id, text FROM artifacts_v2 WHERE artifact_id=?", (artifact_id,),
+            "SELECT artifact_id, text FROM artifacts WHERE artifact_id=?", (artifact_id,),
         ).fetchone() == (artifact_id, text)
-        core_columns = {row[1] for row in connection.execute("PRAGMA table_info(artifacts_v2)")}
+        core_columns = {row[1] for row in connection.execute("PRAGMA table_info(artifacts)")}
         assert not {"char_count", "section_names", "page_text", "nul_mask"} & core_columns
         sidecar_id = connection.execute(
             "SELECT artifact_id FROM artifact_paging_metadata WHERE artifact_id=?", (artifact_id,),
@@ -66,16 +66,16 @@ def test_old_v2_core_uses_sidecar_and_preserves_nul_slices_and_id(tmp_path) -> N
     assert sidecar_id == (artifact_id,)
 
 
-def test_unindexed_legacy_row_is_read_without_sidecar_write_after_batch_limit(tmp_path) -> None:
+def test_unindexed_canonical_row_is_read_without_sidecar_write_after_batch_limit(tmp_path) -> None:
     artifact_id = "art_z_deferred"
     text = "before\x00after\x00end"
     tenant = _tenant_identity("owner")
     db_path = tmp_path / "artifacts.sqlite3"
     with closing(sqlite3.connect(db_path)) as connection:
         connection.execute(
-            """CREATE TABLE artifacts_v2 (
+            """CREATE TABLE artifacts (
                 artifact_id TEXT PRIMARY KEY, created_at REAL NOT NULL,
-                tenant TEXT NOT NULL, tenant_identity TEXT NOT NULL, kind TEXT NOT NULL,
+                tenant TEXT NOT NULL, tenant_identity TEXT, kind TEXT NOT NULL,
                 text TEXT NOT NULL DEFAULT '', mime_type TEXT, encoding TEXT, blob BLOB,
                 size_bytes INTEGER, checksum TEXT, identity_json TEXT
             )"""
@@ -88,7 +88,7 @@ def test_unindexed_legacy_row_is_read_without_sidecar_write_after_batch_limit(tm
         )
         now = time.time()
         connection.executemany(
-            "INSERT INTO artifacts_v2(artifact_id, created_at, tenant, tenant_identity, kind, text) "
+            "INSERT INTO artifacts(artifact_id, created_at, tenant, tenant_identity, kind, text) "
             "VALUES(?,?,?,?,?,?)",
             [
                 (f"art_{index:03d}", now + index, tenant, tenant, "text", f"row-{index}")
