@@ -429,6 +429,8 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
     import urllib.error
 
     from local_ai_hub import http_server
+    from local_ai_hub.project_config import resolve_project_context
+    from local_ai_hub.state_paths import configured_state_dir
 
     cfg_path = tmp_path / "config.toml"
     cfg_path.write_text(
@@ -441,6 +443,11 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
     repo_one.mkdir()
     repo_two.mkdir()
     app = LocalAIApp(str(cfg_path))
+    state_dir = configured_state_dir(app.config)
+    repo_one_id = resolve_project_context(repo_one, state_dir).coordination_id
+    repo_two_id = resolve_project_context(repo_two, state_dir).coordination_id
+    assert repo_one_id
+    assert repo_two_id
     for task_id, root, tenant in (
         ("task-one", repo_one, "api-token-default"),
         ("task-two", repo_two, "api-token-default"),
@@ -476,8 +483,8 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
         MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="session-one", key="shared", value="session-one", provenance={"tenant": "api-token-default"}),
         MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="session-two", key="shared", value="session-two", provenance={"tenant": "api-token-default"}),
         MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, key="shared", value="legacy-session"),
-        MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="tenant-1", key="tenant-shared", value="tenant-one", provenance={"tenant": "api-token-default"}),
-        MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="tenant-2", key="tenant-shared", value="tenant-two", provenance={"tenant": "api-token-default"}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="api-token-default", key="tenant-shared", value="tenant-one", provenance={"tenant": "api-token-default"}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="tenant-1", key="tenant-shared", value="tenant-two", provenance={"tenant": "tenant-1"}),
         MemoryRecord.create(
             kind="finding",
             scope=AgentScope.SESSION,
@@ -494,9 +501,9 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
         ),
         rich_record,
         MemoryRecord.create(kind="finding", scope=AgentScope.GLOBAL, key="global-tenant-independent", value="global-value", provenance={"root": str(repo_one), "repository_id": "repository-global"}),
-        MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one", provenance={"root": str(repo_one), "repository_id": "repository-one", "tenant": "api-token-default"}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one", provenance={"root": str(repo_one), "repository_id": repo_one_id, "tenant": "api-token-default"}),
         MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-one-missing-id", provenance={"root": str(repo_one), "tenant": "api-token-default"}),
-        MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-two", provenance={"root": str(repo_two), "repository_id": "repository-two", "tenant": "api-token-default"}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.REPOSITORY, key="shared", value="repo-two", provenance={"root": str(repo_two), "repository_id": repo_two_id, "tenant": "api-token-default"}),
         MemoryRecord.create(kind="finding", scope=AgentScope.GLOBAL, key="global-tenant-independent", value="global-value", provenance={"root": str(repo_one), "repository_id": "repository-global", "tenant": "legacy-tenant"}),
     )
     for record in records:
@@ -540,12 +547,12 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
         session_without_scope = get(session_id="session-one", key="shared", tenant="api-token-default")
         assert [item["value"] for item in session_without_scope["records"]] == ["session-one"]
         repo_without_scope = get(root=str(repo_one), key="shared")
-        assert {item["value"] for item in repo_without_scope["records"]} == {"repo-one", "repo-one-missing-id"}
+        assert [item["value"] for item in repo_without_scope["records"]] == ["repo-one"]
         other_repo_without_scope = get(root=str(repo_two), key="shared")
         assert [item["value"] for item in other_repo_without_scope["records"]] == ["repo-two"]
-        repository_id_without_scope = get(repository_id="repository-one", key="shared", root=str(repo_one))
+        repository_id_without_scope = get(repository_id=repo_one_id, key="shared", root=str(repo_one))
         assert [item["value"] for item in repository_id_without_scope["records"]] == ["repo-one"]
-        tenant_without_scope = get(scope="session", scope_id="tenant-1", key="tenant-shared", tenant="api-token-default")
+        tenant_without_scope = get(tenant="api-token-default", key="tenant-shared")
         assert [item["value"] for item in tenant_without_scope["records"]] == ["tenant-one"]
         global_record = next(record for record in records if record.scope is AgentScope.GLOBAL)
         global_for_principal = post({
