@@ -30,6 +30,7 @@ from local_ai_hub.agent_events import AgentEvent, AgentStateStore
 from local_ai_hub.agent_incidents import IncidentStore, ToolOutcome
 from local_ai_hub.agent_identity import AgentScope, ScopeContext
 from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStatus, MemoryStore
+import local_ai_hub.project_config as project_config_module
 from local_ai_hub.agent_tasks import CompletionGateError, GoalContract, TaskCheckpoint, TaskStatus, TaskStore
 from local_ai_hub.sqlite_support import connect_sqlite
 from local_ai_hub import trace_context
@@ -37,7 +38,7 @@ import local_ai_hub.agent_tasks as agent_tasks_module
 
 
 def build_task_store(tmp_path: Path) -> tuple[TaskStore, MemoryStore, IncidentStore]:
-    state = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    state = AgentStateStore(tmp_path / "agent_state.sqlite")
     tasks = TaskStore(state)
     memory = MemoryStore(state)
     incidents = IncidentStore(state)
@@ -47,6 +48,12 @@ def build_task_store(tmp_path: Path) -> tuple[TaskStore, MemoryStore, IncidentSt
         incident_store=incidents,
     )
     return tasks, memory, incidents
+
+
+def repository_id(memory: MemoryStore, root: Path) -> str:
+    return project_config_module.resolve_project_context(
+        root, Path(memory.state_store.db_path).parent
+    ).coordination_id
 
 
 def add_memory(
@@ -61,10 +68,21 @@ def add_memory(
     sensitivity: str = "normal",
     expires_at: float | None = None,
 ) -> MemoryRecord:
+    repo_id = (
+        repository_id(memory, root)
+        if root is not None and scope is AgentScope.REPOSITORY
+        else ""
+    )
     record = MemoryRecord.create(
         kind=MemoryKind.FACT,
         scope=scope,
-        scope_id=str(root) if scope is not None and scope is not AgentScope.GLOBAL else "",
+        scope_id=(
+            repo_id
+            if scope is AgentScope.REPOSITORY
+            else str(root)
+            if scope is not None and scope is not AgentScope.GLOBAL
+            else ""
+        ),
         key=text,
         value=text,
         status=status,
@@ -73,6 +91,7 @@ def add_memory(
         evidence_ids=("evidence-current",) if volatile else (),
         provenance={
             **({"root": str(root)} if root is not None else {}),
+            **({"repository_id": repo_id} if repo_id else {}),
             "tenant": tenant,
             "volatile": volatile,
         },
@@ -100,13 +119,13 @@ def seed_legacy_sensitive_memory(
     record = MemoryRecord.create(
         kind=MemoryKind.FACT,
         scope=AgentScope.REPOSITORY,
-        scope_id=str(root),
+        scope_id=repository_id(memory, root),
         key=text,
         value=text,
         status=MemoryStatus.CONFIRMED,
         source="user",
         sensitivity="secret",
-        provenance={"root": str(root), "tenant": tenant},
+        provenance={"root": str(root), "repository_id": repository_id(memory, root), "tenant": tenant},
     )
     with closing(connect_sqlite(memory.state_store.db_path, isolation_level=None)) as con:
         con.execute("BEGIN IMMEDIATE")
@@ -332,7 +351,7 @@ def test_task_memory_consumer_filters_foreign_tenant_from_leaky_store_results(
     tenantless = add_memory(memory, root=root, tenant="", text="unowned repository fact")
     task_id = "memory-consumer-tenant-filter"
     scoped_records = memory.find_for_context(
-        root=str(root), task_id=task_id, tenant="tenant-a"
+        root=str(root), task_id=task_id, tenant="tenant-a", coordination_id=repository_id(memory, root)
     )
     assert {record.record_id for record in scoped_records} == {current.record_id}
     compiler = ContextCompiler(
@@ -367,7 +386,13 @@ def test_task_memory_consumer_filters_foreign_tenant_from_leaky_store_results(
         )
         resumed = tasks.resume(task_id, actor="test", idempotency_key="tenant-resume")
         compiled = compiler.compile(
-            ContextRequest(task_id=task_id, root=str(root), tenant="tenant-a", repository_id=str(root))
+            ContextRequest(
+                task_id=task_id,
+                root=str(root),
+                tenant="tenant-a",
+                repository_id=str(root),
+                coordination_id=repository_id(memory, root),
+            )
         )
     finally:
         trace_context.reset_context(token)
@@ -384,6 +409,76 @@ def test_task_memory_consumer_filters_foreign_tenant_from_leaky_store_results(
             for item in state.checkpoint.state_data["memory_context"]["items"]
         }
         assert item_ids == {current.record_id}
+
+
+def test_task_memory_consumer_uses_shared_repository_namespace_and_tenant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    tasks, memory, _ = build_task_store(tmp_path)
+    root_a, root_b = tmp_path / "repo-a", tmp_path / "repo-b"
+    root_a.mkdir()
+    root_b.mkdir()
+    monkeypatch.setattr(
+        project_config_module,
+        "resolve_project_context",
+        lambda root, state_dir: SimpleNamespace(coordination_id="shared-repository"),
+    )
+    same_root = add_memory(memory, root=root_a, tenant="tenant-a", text="shared namespace fact one")
+    other_root_same_namespace = add_memory(
+        memory, root=root_b, tenant="tenant-a", text="shared namespace fact two"
+    )
+    different_namespace_record = MemoryRecord.create(
+        kind=MemoryKind.FACT,
+        scope=AgentScope.REPOSITORY,
+        scope_id="different-repository",
+        key="different namespace fact",
+        value="different namespace fact",
+        status=MemoryStatus.CONFIRMED,
+        source="user",
+        provenance={
+            "root": str(root_a),
+            "repository_id": "different-repository",
+            "tenant": "tenant-a",
+        },
+    )
+    different_namespace = memory.record(
+        different_namespace_record, actor="user", idempotency_key="different-namespace"
+    )
+    different_tenant = add_memory(
+        memory, root=root_a, tenant="tenant-b", text="different tenant fact"
+    )
+    records = (same_root, other_root_same_namespace, different_namespace, different_tenant)
+
+    class LeakyCompiler:
+        def compile(self, request):
+            assert request.coordination_id == "shared-repository"
+            return SimpleNamespace(
+                elements=tuple(
+                    SimpleNamespace(
+                        element_id=record.record_id,
+                        source_kind="memory_record",
+                        content=str(record.value),
+                    )
+                    for record in records
+                ),
+                warnings=(),
+            )
+
+    monkeypatch.setattr(memory, "find_for_context", lambda **kwargs: list(records))
+    tasks.set_memory_adoption(memory_store=memory, context_compiler=LeakyCompiler())
+    token = with_tenant("tenant-a")
+    try:
+        task = tasks.create(
+            GoalContract(goal="Use shared namespace facts"),
+            ScopeContext(repository_id=str(root_a), branch="main", task_id="namespace-task"),
+            task_id="namespace-memory-scope",
+            repo_root=str(root_a),
+        )
+    finally:
+        trace_context.reset_context(token)
+
+    item_ids = {item["id"] for item in task.checkpoint.state_data["memory_context"]["items"]}
+    assert item_ids == {same_root.record_id, other_root_same_namespace.record_id}
 
 def test_resume_refreshes_memory_and_checkpoint_keeps_audit_bundle(tmp_path: Path):
     tasks, memory, _ = build_task_store(tmp_path)
@@ -457,7 +552,7 @@ def test_lookup_bundle_respects_item_and_token_caps(tmp_path: Path):
 
 
 def test_corrupt_record_and_deadline_fail_open_with_warning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    tasks, _, _ = build_task_store(tmp_path)
+    tasks, memory, _ = build_task_store(tmp_path)
 
     class CorruptMemoryStore:
         def find_for_context(self, **kwargs):
@@ -465,7 +560,7 @@ def test_corrupt_record_and_deadline_fail_open_with_warning(tmp_path: Path, monk
                 record_id="corrupt-record",
                 status=MemoryStatus.CONFIRMED,
                 scope=AgentScope.REPOSITORY,
-                scope_id=str(tmp_path),
+                scope_id=repository_id(memory, tmp_path),
                 expires_at=None,
                 sensitivity="normal",
                 provenance=None,
@@ -523,29 +618,30 @@ def test_stale_and_expired_memory_are_skipped_with_bounded_warnings(tmp_path: Pa
 
 
 def test_correction_stale_transition_and_delete_preserve_provenance_lineage(tmp_path: Path):
-    memory = MemoryStore(AgentStateStore(tmp_path / "agent_state.sqlite3"))
+    memory = MemoryStore(AgentStateStore(tmp_path / "agent_state.sqlite"))
     root = tmp_path / "repo"
     root.mkdir()
     original = MemoryRecord.create(
         kind=MemoryKind.FINDING,
         scope=AgentScope.REPOSITORY,
-        scope_id=str(root),
+        scope_id=repository_id(memory, root),
         key="parser rule",
         value="old rule",
         status=MemoryStatus.CONFIRMED,
         source="user",
         provenance={
             "root": str(root),
+            "repository_id": repository_id(memory, root),
             "tenant": "tenant-a",
             "repository_revision": "rev-1",
             "path_refs": ["src/parser.py"],
         },
     )
     saved = memory.record(original, actor="user", idempotency_key="original-memory")
-    loaded_original = memory.get(saved.record_id, scope=AgentScope.REPOSITORY, scope_id=str(root), root=str(root), tenant="tenant-a")
+    loaded_original = memory.get(saved.record_id, scope=AgentScope.REPOSITORY, scope_id=repository_id(memory, root), root=str(root), repository_id=repository_id(memory, root), tenant="tenant-a")
     assert loaded_original is not None and loaded_original.provenance["tenant"] == "tenant-a"
     assert memory.mark_stale_for_revision(str(root), "rev-2", ["src/parser.py"]) == 1
-    stale = memory.get(saved.record_id, scope=AgentScope.REPOSITORY, scope_id=str(root), root=str(root), tenant="tenant-a")
+    stale = memory.get(saved.record_id, scope=AgentScope.REPOSITORY, scope_id=repository_id(memory, root), root=str(root), repository_id=repository_id(memory, root), tenant="tenant-a")
     assert stale is not None and stale.status is MemoryStatus.STALE
     assert stale.provenance["root"] == str(root)
     assert stale.provenance["tenant"] == "tenant-a"
@@ -555,13 +651,14 @@ def test_correction_stale_transition_and_delete_preserve_provenance_lineage(tmp_
         MemoryRecord.create(
             kind=MemoryKind.FINDING,
             scope=AgentScope.REPOSITORY,
-            scope_id=str(root),
+            scope_id=repository_id(memory, root),
             key="parser rule",
             value="corrected rule",
             status=MemoryStatus.CONFIRMED,
             source="user",
             provenance={
                 "root": str(root),
+                "repository_id": repository_id(memory, root),
                 "tenant": "tenant-a",
                 "repository_revision": "rev-2",
                 "path_refs": ["src/parser.py"],
@@ -570,12 +667,12 @@ def test_correction_stale_transition_and_delete_preserve_provenance_lineage(tmp_
         supersedes_record_id=saved.record_id,
     )
     correction = memory.record(corrected, actor="user", idempotency_key="corrected-memory")
-    loaded = memory.get(correction.record_id, scope=AgentScope.REPOSITORY, scope_id=str(root), root=str(root), tenant="tenant-a")
+    loaded = memory.get(correction.record_id, scope=AgentScope.REPOSITORY, scope_id=repository_id(memory, root), root=str(root), repository_id=repository_id(memory, root), tenant="tenant-a")
     assert loaded is not None and loaded.supersedes_record_id == saved.record_id
     assert loaded.provenance["root"] == str(root)
     assert loaded.provenance["tenant"] == "tenant-a"
-    assert memory.delete(correction.record_id, scope=AgentScope.REPOSITORY, scope_id=str(root), root=str(root), tenant="tenant-a") is True
-    assert memory.get(correction.record_id, scope=AgentScope.REPOSITORY, scope_id=str(root), root=str(root), tenant="tenant-a") is None
+    assert memory.delete(correction.record_id, scope=AgentScope.REPOSITORY, scope_id=repository_id(memory, root), root=str(root), repository_id=repository_id(memory, root), tenant="tenant-a") is True
+    assert memory.get(correction.record_id, scope=AgentScope.REPOSITORY, scope_id=repository_id(memory, root), root=str(root), repository_id=repository_id(memory, root), tenant="tenant-a") is None
 
 def test_volatile_memory_requires_checkpoint_source_check_and_bundle_survives_checkpoint(tmp_path: Path):
     tasks, memory, _ = build_task_store(tmp_path)
@@ -882,7 +979,13 @@ def test_unscoped_blackboard_is_unverified_and_cannot_bypass_task_memory_scope(t
             GoalContract(goal="Use current repository fact in scoped context"), context, task_id=task_id, repo_root=str(root_a)
         )
         compiled = compiler.compile(
-            ContextRequest(task_id=task_id, root=str(root_a), tenant="tenant-a", token_budget=1200)
+            ContextRequest(
+                task_id=task_id,
+                root=str(root_a),
+                tenant="tenant-a",
+                token_budget=1200,
+                coordination_id=repository_id(memory, root_a),
+            )
         )
         task_memory_ids = {item["id"] for item in task.checkpoint.state_data["memory_context"]["items"]}
         tasks.transition(task_id, TaskStatus.ACTIVE, reason="start", actor="test", idempotency_key="bb-start")
@@ -947,6 +1050,7 @@ def test_session_id_cannot_authorize_tenant_scoped_context_memory(tmp_path: Path
             tenant="",
             session_id="tenant-a",
             token_budget=1200,
+            coordination_id=repository_id(memory, root),
         )
     )
     visible_ids = {
