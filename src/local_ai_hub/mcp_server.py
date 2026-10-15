@@ -4280,6 +4280,10 @@ def local_ai_coord(
             "Unscoped memory maintenance and relations remain private until tenant-scoped storage is available.",
         )
     if action == "task_sync":
+        rejection = _subminimum_budget_rejection({"max_response_tokens": max_response_tokens})
+        if rejection is not None:
+            return rejection
+    if action == "task_sync":
         if status or key or task_id or ttl_seconds != 0 or max_tokens != 0 or record is not None:
             return contract_error("task_sync accepts only sync_action, stream_id, after_seq, limit, and events")
         sync_inputs = {

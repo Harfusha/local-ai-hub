@@ -1539,13 +1539,17 @@ def operation_parameters_schema(tool: str, features: Any = None) -> dict[str, An
             },
             {
                 "if": {
-                    "properties": {
-                        selector_field: {"const": "task_sync"},
-                        "sync_action": {"const": "export"},
-                    },
-                    "required": [selector_field, "sync_action"],
+                    "properties": {selector_field: {"const": "task_sync"}},
+                    "required": [selector_field],
                 },
-                "then": {"not": {"required": ["events"]}},
+                "then": {"allOf": [{
+                    "if": {
+                        "properties": {"sync_action": {"const": "import"}},
+                        "required": ["sync_action"],
+                    },
+                    "then": {},
+                    "else": {"not": {"required": ["events"]}},
+                }]},
             },
             {
                 "if": {
