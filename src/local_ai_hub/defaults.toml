@@ -420,7 +420,8 @@ allow_read = true
 allow_validation = true
 allow_build = true
 allow_mutating = true
-allow_unknown = true
+# Unknown commands require explicit operator opt-in and task-owned private execution.
+allow_unknown = false
 # User-whitelisted executable names for custom developer tooling:
 extra_allowed_tools = []
 timeout_seconds = 1800
