@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import gc
+import math
+import numbers
 import threading
 import time
 import weakref
@@ -14,11 +16,26 @@ _CUDA_MODELS: weakref.WeakSet[Any] = weakref.WeakSet()
 
 @contextmanager
 def acquire_locks(locks: tuple[Any, ...], timeout_seconds: float):
-    deadline = time.monotonic() + max(0.0, timeout_seconds)
+    if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, numbers.Real):
+        raise ValueError("timeout_seconds must be a finite nonnegative real number")
+    try:
+        timeout = float(timeout_seconds)
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise ValueError("timeout_seconds must be a finite nonnegative real number") from exc
+    if not math.isfinite(timeout) or timeout < 0:
+        raise ValueError("timeout_seconds must be a finite nonnegative real number")
+
+    timeout = min(timeout, threading.TIMEOUT_MAX)
+    deadline = time.monotonic() + timeout
     acquired: list[Any] = []
+    seen: set[int] = set()
     try:
         for lock in locks:
-            remaining = max(0.0, deadline - time.monotonic())
+            identity = id(lock)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            remaining = min(max(0.0, deadline - time.monotonic()), threading.TIMEOUT_MAX)
             if not lock.acquire(timeout=remaining):
                 yield False
                 return
@@ -39,9 +56,15 @@ def load_model(owner: Any, *, uses_cuda: bool, factory: Callable[[], Any]) -> An
     if not uses_cuda:
         return factory()
     with _CUDA_MODEL_LOCK:
-        model = factory()
-        _CUDA_MODELS.add(owner)
-        return model
+        already_tracked = owner in _CUDA_MODELS
+        if not already_tracked:
+            _CUDA_MODELS.add(owner)
+        try:
+            return factory()
+        except BaseException:
+            if not already_tracked:
+                _CUDA_MODELS.discard(owner)
+            raise
 
 
 def release_model(owner: Any, *, used_cuda: bool) -> bool:
