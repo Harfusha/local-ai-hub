@@ -898,6 +898,7 @@ _RELIABILITY_PROTECTED_KEYS = (
 )
 _VERIFY_PROTECTED_KEYS = ("missing_criteria", "unverified_criteria", "receipts")
 _COMMAND_PROTECTED_KEYS = (
+    "test_summary",
     "exit_code", "summary", "request_id", "execution_id", "artifact_id", "artifact_ids",
     "output_artifact_id", "output_truncated", "outcome_unknown", "request_not_sent", "in_progress", "timed_out",
 )
@@ -1202,6 +1203,9 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
         extra_fields=compact_extra_fields,
     )
     compacted = _preserve_contract_state(raw_value, compacted)
+    if task_kind == "command" and isinstance(raw_value, dict) and isinstance(compacted, dict):
+        if isinstance(raw_value.get("test_summary"), dict):
+            compacted["test_summary"] = raw_value["test_summary"]
     if task_kind == "security" and isinstance(raw_value, dict) and isinstance(compacted, dict):
         compacted.update({key: raw_value[key] for key in _SECURITY_PROTECTED_KEYS if key in raw_value})
     source_slice = task_kind == "artifact" and isinstance(raw_value, dict) and raw_value.get("action") == "source"
