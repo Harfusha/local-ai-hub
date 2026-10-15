@@ -2061,6 +2061,7 @@ class Handler(BaseHTTPRequestHandler):
         tenant_values: list[Any] | tuple[Any, ...] = (),
         *,
         allow_principal_header: bool = False,
+        require_configured_principal: bool = False,
     ) -> tuple[str, str] | None:
         supplied_tenants = {
             str(value).strip()
@@ -2108,6 +2109,8 @@ class Handler(BaseHTTPRequestHandler):
             canonical = _strict_root_path(root)
             if not _root_is_allowed(canonical, security.get("allowed_roots", [])):
                 raise ValueError("root is not allowed")
+            if require_configured_principal and not self._configured_principal_tenant():
+                raise ValueError("configured principal tenant is unavailable")
             principal = self._principal_identity_tenant()
             key = str(security.get("tenant_derivation_key") or security.get("api_token") or "")
             if not key:
@@ -2188,6 +2191,7 @@ class Handler(BaseHTTPRequestHandler):
                 roots[0],
                 [] if action == "record" else tenant_values,
                 allow_principal_header=True,
+                require_configured_principal=True,
             )
             if bound is None:
                 return False
@@ -2278,6 +2282,7 @@ class Handler(BaseHTTPRequestHandler):
                 root_values[0],
                 tenant_bindings,
                 allow_principal_header=True,
+                require_configured_principal=True,
             )
             if bound is None:
                 return False
@@ -2322,6 +2327,7 @@ class Handler(BaseHTTPRequestHandler):
         bound = self._bind_root_tenant(
             payload.get("root"),
             allow_principal_header=True,
+            require_configured_principal=True,
         )
         if bound is None:
             return False
@@ -2359,6 +2365,7 @@ class Handler(BaseHTTPRequestHandler):
             payload.get("root"),
             [payload.get("tenant")],
             allow_principal_header=True,
+            require_configured_principal=True,
         )
         if bound is None:
             return False
@@ -2374,6 +2381,7 @@ class Handler(BaseHTTPRequestHandler):
             payload.get("root"),
             [payload.get("tenant")],
             allow_principal_header=True,
+            require_configured_principal=True,
         )
         if bound is None:
             return False
@@ -2389,6 +2397,7 @@ class Handler(BaseHTTPRequestHandler):
             (query.get("root") or [None])[0],
             query.get("tenant", []),
             allow_principal_header=True,
+            require_configured_principal=True,
         )
         if bound is None:
             return False
@@ -2403,6 +2412,7 @@ class Handler(BaseHTTPRequestHandler):
             payload.get("root"),
             [payload.get("tenant")],
             allow_principal_header=True,
+            require_configured_principal=True,
         )
         if bound is None:
             return False
@@ -2429,6 +2439,7 @@ class Handler(BaseHTTPRequestHandler):
             raw_root,
             query.get("tenant", []),
             allow_principal_header=True,
+            require_configured_principal=True,
         )
         if bound is None:
             return False
@@ -2501,6 +2512,7 @@ class Handler(BaseHTTPRequestHandler):
                 root,
                 [payload.get("tenant")],
                 allow_principal_header=True,
+                require_configured_principal=True,
             )
             if bound is None:
                 return False
@@ -2517,6 +2529,7 @@ class Handler(BaseHTTPRequestHandler):
                     origin_root,
                     [payload.get("tenant")],
                     allow_principal_header=True,
+                    require_configured_principal=True,
                 )
                 if bound_origin is None:
                     return False
@@ -2587,6 +2600,7 @@ class Handler(BaseHTTPRequestHandler):
             task_root,
             tenant_values,
             allow_principal_header=True,
+            require_configured_principal=True,
         )
         if bound is None:
             return False
@@ -2617,6 +2631,7 @@ class Handler(BaseHTTPRequestHandler):
             (query.get("root") or [None])[0],
             query.get("tenant", []),
             allow_principal_header=True,
+            require_configured_principal=True,
         )
         if bound is None:
             return False
@@ -2643,6 +2658,7 @@ class Handler(BaseHTTPRequestHandler):
             payload.get("root"),
             [payload.get("tenant")],
             allow_principal_header=True,
+            require_configured_principal=True,
         )
         if bound is None:
             return False
@@ -2665,6 +2681,7 @@ class Handler(BaseHTTPRequestHandler):
             (query.get("root") or [None])[0],
             query.get("tenant", []),
             allow_principal_header=True,
+            require_configured_principal=True,
         )
         if bound is None:
             return False
@@ -2707,6 +2724,7 @@ class Handler(BaseHTTPRequestHandler):
             payload.get("root"),
             [payload.get("tenant")],
             allow_principal_header=True,
+            require_configured_principal=True,
         )
         if bound is None:
             return False
@@ -3174,9 +3192,9 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def _require_authorized(self, permission: str | None = None) -> bool:
-        if not self._reject_legacy_tenant_header():
-            return False
         if not self._validate_host_and_origin():
+            return False
+        if not self._reject_legacy_tenant_header():
             return False
         local_mode_read = (
             str(getattr(self, "command", "")).upper() == "GET"
@@ -4423,6 +4441,7 @@ class Handler(BaseHTTPRequestHandler):
                 (query.get("root") or [None])[0],
                 query.get("tenant", []),
                 allow_principal_header=True,
+                require_configured_principal=True,
             )
             if task_identity is None:
                 return
@@ -4476,6 +4495,7 @@ class Handler(BaseHTTPRequestHandler):
                                 requested_root,
                                 query.get("tenant", []),
                                 allow_principal_header=True,
+                                require_configured_principal=True,
                             )
                             if bound is None:
                                 return

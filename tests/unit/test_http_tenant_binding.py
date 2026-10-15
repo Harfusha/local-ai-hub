@@ -61,16 +61,73 @@ def test_tokenless_root_binding_uses_principal_instead_of_tenant_claim(
     assert responses[-1][1]["error_code"] == "tenant_binding_mismatch"
 
 
-def test_obsolete_tenant_header_is_rejected_before_authentication(monkeypatch):
+def test_configured_root_sandbox_requires_configured_principal(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        http_server,
+        "APP",
+        SimpleNamespace(
+            config={
+                "security": {
+                    "allowed_roots": [str(tmp_path)],
+                    "tenant_derivation_key": "test-key",
+                }
+            }
+        ),
+    )
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path = "/api/agent-state/tasks"
+    handler.headers = Message()
+    responses = []
+    handler._send = lambda status, payload: responses.append((status, payload))
+
+    assert handler._bind_root_tenant(
+        str(tmp_path), require_configured_principal=True
+    ) is None
+    assert responses[0][0] == 403
+
+
+def test_configured_root_sandbox_accepts_configured_principal(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        http_server,
+        "APP",
+        SimpleNamespace(
+            config={
+                "security": {
+                    "allowed_roots": [str(tmp_path)],
+                    "tenant_derivation_key": "test-key",
+                    "api_token_tenant": "configured-tenant",
+                }
+            }
+        ),
+    )
+    handler = http_server.Handler.__new__(http_server.Handler)
+    handler.path = "/api/agent-state/tasks"
+    handler.headers = Message()
+    responses = []
+    handler._send = lambda status, payload: responses.append((status, payload))
+
+    bound = handler._bind_root_tenant(
+        str(tmp_path), require_configured_principal=True
+    )
+    assert bound is not None
+    assert bound[0] == str(tmp_path.resolve())
+    assert bound[1] == handler._authorization_tenant
+    assert not responses
+
+
+def test_obsolete_tenant_header_is_rejected_after_host_validation(monkeypatch):
     handler = _handler(monkeypatch)
     handler.command = "POST"
     handler.headers["X-Tenant-ID"] = "caller-selected-tenant"
     responses = []
     handler._send = lambda status, payload: responses.append((status, payload))
-    handler._validate_host_and_origin = lambda: pytest.fail(
-        "obsolete header must stop before auth"
+    order = []
+    handler._validate_host_and_origin = lambda: order.append("host") or True
+    handler._authorized = lambda *args, **kwargs: pytest.fail(
+        "obsolete header must stop before authentication"
     )
 
     assert not handler._require_authorized()
+    assert order == ["host"]
     assert responses[0][0] == 400
     assert responses[0][1]["error_code"] == "unsupported_tenant_header"
