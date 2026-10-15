@@ -3,10 +3,12 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextlib import closing
 import hashlib
+import copy
 import stat
 import subprocess
 import tempfile
 import json
+import math
 import os
 import queue
 import sqlite3
@@ -18,6 +20,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from .json_utils import dumps as json_dumps
+from .pubsub_limits import bounded_name, snapshot_message
 from .sqlite_support import (
     DurableSchemaMismatchError,
     connect_sqlite,
@@ -1881,10 +1884,28 @@ class SwarmPubSub:
     _instance: SwarmPubSub | None = None
     _lock = threading.Lock()
 
-    def __init__(self, state_store: AgentStateStore | None = None, max_age_seconds: float = 3600.0):
+    def __init__(self, state_store: AgentStateStore | None = None, max_age_seconds: float = 3600.0,
+                 *, max_topics: int = 500, max_subscribers: int = 256,
+                 max_queue_slots: int = 4096, max_cached_bytes: int = 8_388_608,
+                 max_message_bytes: int = 65_536):
         self.state_store = state_store
         self.max_age_seconds = float(max_age_seconds)
+        if not math.isfinite(self.max_age_seconds) or self.max_age_seconds < 0:
+            raise ValueError("pubsub max_age_seconds must be finite and non-negative")
+        for name, value, ceiling in (
+            ("max_topics", max_topics, 4096), ("max_subscribers", max_subscribers, 4096),
+            ("max_queue_slots", max_queue_slots, 100_000), ("max_cached_bytes", max_cached_bytes, 67_108_864),
+            ("max_message_bytes", max_message_bytes, 1_048_576),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= ceiling:
+                raise ValueError(f"pubsub {name} must be an integer between 1 and {ceiling}")
+            setattr(self, name, value)
         self._topics: dict[str, list[dict[str, Any]]] = {}
+        self._topic_sizes: dict[str, list[int]] = {}
+        self._cached_bytes = 0
+        self._subscriber_count = 0
+        self._queue_slots = 0
+        self._ephemeral_retention_floor = 0.0
         self._subscribers: dict[str, dict[str, queue.Queue[dict[str, Any]]]] = {}
         self._mu = threading.Lock()
 
@@ -1898,27 +1919,62 @@ class SwarmPubSub:
             return cls._instance
 
     def subscribe(self, topic: str, maxsize: int = 100) -> tuple[str, queue.Queue[dict[str, Any]]]:
-        clean_topic = topic.strip().lower()
+        clean_topic = bounded_name(topic, "topic").lower()
         sub_id = f"sub_{uuid.uuid4().hex[:10]}"
-        q: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=max(10, min(int(maxsize), 1000)))
+        slots = max(10, min(int(maxsize), 1000))
         with self._mu:
+            if self._subscriber_count >= self.max_subscribers or self._queue_slots + slots > self.max_queue_slots:
+                raise ValueError("pubsub subscription capacity reached")
+            q: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=slots)
             self._subscribers.setdefault(clean_topic, {})[sub_id] = q
+            self._subscriber_count += 1
+            self._queue_slots += slots
         return sub_id, q
 
     def unsubscribe(self, topic: str, sub_id: str) -> bool:
-        clean_topic = topic.strip().lower()
+        clean_topic = bounded_name(topic, "topic").lower()
         with self._mu:
             subs = self._subscribers.get(clean_topic, {})
             if sub_id in subs:
+                self._queue_slots -= subs[sub_id].maxsize
+                self._subscriber_count -= 1
                 del subs[sub_id]
+                if not subs:
+                    self._subscribers.pop(clean_topic, None)
                 return True
         return False
 
-    def _prune_expired_locked(self, clean_topic: str, now: float) -> None:
+    def _prune_expired_locked(self, clean_topic: str, now: float) -> int:
         cutoff = now - self.max_age_seconds
         messages = self._topics.get(clean_topic, [])
-        if messages and messages[0]["timestamp"] < cutoff:
-            self._topics[clean_topic] = [message for message in messages if message["timestamp"] >= cutoff]
+        sizes = self._topic_sizes.get(clean_topic, [])
+        retained, retained_sizes = [], []
+        removed = 0
+        for message, size in zip(messages, sizes):
+            if message["timestamp"] < cutoff:
+                self._cached_bytes -= size
+                self._ephemeral_retention_floor = max(self._ephemeral_retention_floor, message["timestamp"])
+                removed += 1
+            else:
+                retained.append(message)
+                retained_sizes.append(size)
+        if retained:
+            self._topics[clean_topic] = retained
+            self._topic_sizes[clean_topic] = retained_sizes
+        else:
+            self._topics.pop(clean_topic, None)
+            self._topic_sizes.pop(clean_topic, None)
+        return removed
+
+    def compact(self, now: float | None = None) -> dict[str, int]:
+        tick = time.time() if now is None else float(now)
+        if not math.isfinite(tick):
+            raise ValueError("pubsub compaction time must be finite")
+        with self._mu:
+            before = len(self._topics)
+            removed = sum(self._prune_expired_locked(topic, tick) for topic in list(self._topics))
+            return {"topics_pruned": before - len(self._topics), "messages_evicted": removed,
+                    "subscribers_evicted": 0, "cached_bytes": self._cached_bytes}
 
     @staticmethod
     def _sequence_gap_ranges(dropped: list[dict[str, Any]]) -> list[dict[str, int]]:
@@ -1954,6 +2010,7 @@ class SwarmPubSub:
         while q.qsize() > q.maxsize - 2:
             try:
                 dropped.append(q.get_nowait())
+                q.task_done()
             except queue.Empty:
                 break
         gaps = cls._sequence_gap_ranges(dropped)
@@ -1987,9 +2044,20 @@ class SwarmPubSub:
         sender: str = "agent",
         idempotency_key: str = "",
     ) -> dict[str, Any]:
-        clean_topic = topic.strip().lower()
+        try:
+            clean_topic = bounded_name(topic, "topic").lower()
+            sender = bounded_name(sender, "sender", strip=False)
+            idempotency_key = bounded_name(idempotency_key, "idempotency_key", allow_empty=True, strip=False)
+            if not isinstance(message, (dict, str)):
+                raise ValueError("pubsub message must be a dictionary or string")
+            envelope, _size = snapshot_message(
+                {"sender": sender, "message": message if isinstance(message, dict) else {"text": message}},
+                self.max_message_bytes,
+            )
+            msg_payload = envelope["message"]
+        except (ValueError, TypeError, RuntimeError, OverflowError) as exc:
+            return {"success": False, "error": str(exc), "terminal": True, "retryable": False}
         now = time.time()
-        msg_payload = message if isinstance(message, dict) else {"text": str(message)}
         event_id = f"pub_{uuid.uuid4().hex[:12]}"
         sequence: int | None = None
         durable = bool(self.state_store is not None and self.state_store.enabled)
@@ -2048,13 +2116,28 @@ class SwarmPubSub:
             "kind": "pubsub.message",
         }
         with self._mu:
-            bucket = self._topics.setdefault(clean_topic, [])
-            bucket.append(event)
-            if len(bucket) > 200:
-                self._topics[clean_topic] = bucket[-200:]
-            self._prune_expired_locked(clean_topic, now)
+            event_bytes = len(json_dumps(event, allow_nan=False).encode("utf-8"))
+            if clean_topic not in self._topics or self._cached_bytes + event_bytes > self.max_cached_bytes:
+                for cached_topic in list(self._topics):
+                    self._prune_expired_locked(cached_topic, now)
+            bucket = self._topics.get(clean_topic, [])
+            sizes = self._topic_sizes.get(clean_topic, [])
+            reclaimed = sizes[0] if len(bucket) >= 200 else 0
+            cache_retained = (bool(bucket) or len(self._topics) < self.max_topics) and self._cached_bytes + event_bytes - reclaimed <= self.max_cached_bytes
+            if not cache_retained and not durable:
+                return {"success": False, "error": "pubsub ephemeral cache capacity reached", "durable": False,
+                        "replay_available": False, "terminal": True, "retryable": False}
+            if cache_retained:
+                if len(bucket) >= 200:
+                    dropped = bucket.pop(0)
+                    self._ephemeral_retention_floor = max(self._ephemeral_retention_floor, dropped["timestamp"])
+                    self._cached_bytes -= sizes.pop(0)
+                bucket.append(event)
+                sizes.append(event_bytes)
+                self._topics[clean_topic], self._topic_sizes[clean_topic] = bucket, sizes
+                self._cached_bytes += event_bytes
             for q in list(self._subscribers.get(clean_topic, {}).values()):
-                self._enqueue(q, event)
+                self._enqueue(q, copy.deepcopy(event))
         result = {
             "success": True,
             "topic": clean_topic,
@@ -2063,6 +2146,7 @@ class SwarmPubSub:
             "cursor": sequence,
             "durable": durable,
             "replay_available": durable,
+            "cache_retained": cache_retained,
         }
         if durable and persisted.duplicate:
             result["duplicate"] = True
@@ -2075,7 +2159,7 @@ class SwarmPubSub:
         limit: int = 50,
         after_seq: int = 0,
     ) -> dict[str, Any]:
-        clean_topic = topic.strip().lower()
+        clean_topic = bounded_name(topic, "topic").lower()
         page_limit = max(1, min(int(limit), 1000))
         durable = bool(self.state_store is not None and self.state_store.enabled)
         if durable:
@@ -2168,13 +2252,17 @@ class SwarmPubSub:
         with self._mu:
             self._prune_expired_locked(clean_topic, now)
             bucket = self._topics.get(clean_topic, [])
-            messages = [
+            selected = [
                 item for item in bucket
                 if item["timestamp"] > since_timestamp
                 and (after_seq <= 0 or (item.get("sequence") or 0) > after_seq)
-            ][:page_limit]
+            ]
+            messages = copy.deepcopy(selected[:page_limit])
             first_timestamp = bucket[0]["timestamp"] if bucket else None
-            retention_gap = bool(first_timestamp is not None and since_timestamp < first_timestamp and since_timestamp > 0)
+            retention_gap = bool(since_timestamp > 0 and (
+                since_timestamp < first_timestamp if first_timestamp is not None
+                else since_timestamp <= self._ephemeral_retention_floor
+            ))
         return {
             "success": True,
             "topic": clean_topic,
@@ -2184,7 +2272,7 @@ class SwarmPubSub:
             "after_seq": max(0, int(after_seq)),
             "first_retained_seq": None,
             "last_seq": None,
-            "has_more": False,
+            "has_more": len(selected) > page_limit,
             "gap_ranges": [],
             "gap": {
                 "reason": "ephemeral retention",
