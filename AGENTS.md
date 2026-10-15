@@ -113,6 +113,8 @@ Local model policy: Model routing follows the active hardware profile and user o
 
 ## Architecture rules
 
+Private tool-accounting events carry signed token evidence only; they do not fabricate USD costs with fixed rates. TelemetryStore owns configured channel pricing. Token-efficiency metadata uses canonical parent_task/activity/revision/reuse_state/cache_state fields; retired substitutes are not promoted. Trace metadata setters are set_metadata/reset_metadata only.
+
 Telemetry prices use independent finite nonnegative numeric `cloud_input_token_cost_usd_per_million` and `cloud_output_token_cost_usd_per_million` rates (default 3.0 each; zero remains valid). The combined-rate fallback is removed. Missing channel coverage, inconsistent row accounting, or missing boundary history makes total USD cost unknown; known raw-row channel subtotals remain separate. Cost-bearing daily rollups without channel provenance cannot establish complete pricing. Writer lease identifiers reject scalar coercion; lease paths require a sequence of strings, and corrupt live path scopes fail closed.
 
 Semantic MCP responses require an explicit boolean `success`; `answer` cannot substitute for `text`. Successful compiled task context requires explicit `success=true` and `complete=true` on both the response and nested `task_context`, whose `text` is a string. Top-level text cannot substitute for nested task context. Internal lexical `RepositoryTools.search` uses `limit`, never the retired `top_k` keyword; distinct RAG/context candidate parameters retain their own contracts. Blackboard CAS updates accept only nonnegative integer `expected_version` (or omission); the retired `expected_etag` keyword rejects. Sections with different identities cannot merge.

@@ -71,8 +71,7 @@ def test_synthesize_rules(tmp_path: Path) -> None:
     assert "rule_typescript_strict" in rule_ids
 
 
-def test_token_accounting_financial_savings() -> None:
-    # Test financial USD accounting calculation
+def test_token_accounting_retains_tokens_without_fabricating_prices() -> None:
     acct = finalize_tool_accounting(
         tool_name="local_ai_repo",
         arguments={"action": "solve"},
@@ -83,11 +82,13 @@ def test_token_accounting_financial_savings() -> None:
             "gross_output_tokens_avoided_est": 10000,
         },
     )
-    assert "net_savings_usd" in acct
-    assert "estimated_savings_usd" in acct
-    assert acct["estimated_savings_usd"] > 0
-    assert acct["estimated_input_savings_usd"] == round((40000 / 1_000_000.0) * 3.0, 4)
-    assert acct["estimated_output_savings_usd"] == round((10000 / 1_000_000.0) * 15.0, 4)
+    assert acct["gross_cloud_tokens_avoided_est"] == 50000
+    assert acct["gross_input_tokens_avoided_est"] == 40000
+    assert acct["gross_output_tokens_avoided_est"] == 10000
+    assert acct["net_cloud_token_delta_est"] == 50000 - acct["agent_protocol_tokens_est"]
+    for field in ("net_savings_usd", "estimated_savings_usd",
+                  "estimated_input_savings_usd", "estimated_output_savings_usd"):
+        assert field not in acct
 
 
 def test_speculative_draft_service(tmp_path: Path) -> None:

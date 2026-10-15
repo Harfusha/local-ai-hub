@@ -34,10 +34,6 @@ _TOKEN_EFFICIENCY_FIELDS = (
     "generated_output_tokens_est", "avoided_payload_tokens_est", "reuse_state", "cache_state",
     "queue_wait_ms", "bypass_reason", "fanout_count",
 )
-_METADATA_ALIASES = {
-    "parent_task_id": "parent_task", "activity_class": "activity", "repository_revision": "revision",
-    "reuse": "reuse_state", "cache": "cache_state",
-}
 
 
 def context_digest(value: Any) -> str:
@@ -81,9 +77,6 @@ def token_efficiency_metadata(metadata: Mapping[str, Any] | None = None, **field
     """Normalize future token metadata while excluding payload-bearing fields."""
     source = dict(metadata or {})
     source.update(fields)
-    for alias, canonical in _METADATA_ALIASES.items():
-        if canonical not in source and alias in source:
-            source[canonical] = source[alias]
 
     raw_input = max(
         _nonneg_int(source.get("raw_input_tokens_est", source.get("input_tokens_est", 0))),
@@ -415,11 +408,6 @@ def finalize_tool_accounting(
     schema_adjusted_delta = net_delta - schema
     gross_in = _nonneg_int(measured.get("gross_input_tokens_avoided_est"))
     gross_out = _nonneg_int(measured.get("gross_output_tokens_avoided_est"))
-    est_in_usd = round((gross_in / 1_000_000.0) * 3.0, 4)
-    est_out_usd = round((gross_out / 1_000_000.0) * 15.0, 4)
-    gross_usd = round(est_in_usd + est_out_usd, 4)
-    protocol_usd = round(((request_tokens / 1_000_000.0) * 3.0) + ((response_tokens / 1_000_000.0) * 15.0), 4)
-    net_usd = round(gross_usd - protocol_usd, 4)
 
     action = str(arguments.get("action", "")).strip().lower()
     if tool_name == "local_ai_repo":
@@ -490,10 +478,6 @@ def finalize_tool_accounting(
         "cloud_token_overhead_est": max(0, -net_delta),
         "net_after_schema_token_delta_est": schema_adjusted_delta,
         "schema_adjusted_overhead_est": max(0, -schema_adjusted_delta),
-        "net_savings_usd": net_usd,
-        "estimated_savings_usd": max(0.0, net_usd),
-        "estimated_input_savings_usd": est_in_usd,
-        "estimated_output_savings_usd": est_out_usd,
         "operation_category": category,
         "raw_response_tokens_est": _nonneg_int(measured.get("raw_response_tokens_est")),
         "projected_response_tokens_est": _nonneg_int(measured.get("projected_response_tokens_est")) or response_tokens,
