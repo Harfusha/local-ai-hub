@@ -22,7 +22,9 @@ Transport clients defer hardware inventory when `hardware.auto_tune=false`; serv
 
 Loopback connection establishment uses the smaller of `client.health_timeout_seconds` and the remaining request deadline. After connecting, response reads retain the remaining request deadline; an absent listener cannot consume that response budget before autostart.
 
-Compact context responses retain exact evidence citations and original success/error decisions. Source excerpts in `evidence.raw` stay behind evidence IDs for `local_ai_artifact`; they do not consume the protected metadata budget.
+Compact context responses retain exact evidence citations and original success/error decisions.
+
+Code-index pages may return fewer complete symbols than requested to fit the wire budget; follow next_offset when has_more is true. Unknown optional stale flags are omitted; consult freshness status instead of assuming current data. Complexity and secret scans report their bounded scope and incomplete coverage; success alone is not whole-repository acceptance. Source excerpts in `evidence.raw` stay behind evidence IDs for `local_ai_artifact`; they do not consume the protected metadata budget.
 
 Hugging Face embeddings and rerankers load cached model files offline by default. Set `models.allow_hf_downloads=true` only with explicit operator approval for missing model downloads; a cache error alone never authorizes a network retry. Existing cached CPU fallback models remain available without this opt-in.
 
@@ -527,3 +529,5 @@ Pubsub retains bounded optional live cache (500 topics, 8 MiB serialized charge)
 ## Local telemetry
 
 Basic aggregate telemetry remains enabled locally. Detailed request traces are disabled by default and can be toggled live in the dashboard. When enabled, they retain complete endpoint input/output locally, including sensitive values, within configured size and retention limits. Local telemetry and trace details stay on this device; only normal agent responses requested by cloud agents leave it.
+
+Install updates stage and verify payloads before swapping files. Existing-runtime stop uses the installed config and must be confirmed; failed or unknown stop blocks replacement and startup. File rollback can leave the runtime stopped and must be reported separately. Shared skills are replaced or removed only when their Hub ownership hash matches; preserve unmanaged or user-modified trees and report conflicts.

@@ -7,6 +7,29 @@ from local_ai_hub import deterministic
 from local_ai_hub.deterministic import DeterministicEngine
 
 
+def test_compact_complexity_response_retains_incomplete_scope():
+    from local_ai_hub import mcp_server
+
+    raw = {
+        "success": True, "complete": False, "scope": "bounded source sample",
+        "files_analyzed": 50, "eligible_files": 51,
+        "coverage": {"complete": False, "limits_hit": ["files"], "deadline_kind": "cooperative"},
+        "functions": [{"name": "example", "file": "src/example.py"}],
+    }
+    token = mcp_server._CURRENT_RESPONSE_OPTIONS.set({
+        "tool": "local_ai_repo", "max_response_tokens": 1800,
+        "response_profile": "compact",
+    })
+    try:
+        result = mcp_server._compact(raw, "complexity")
+    finally:
+        mcp_server._CURRENT_RESPONSE_OPTIONS.reset(token)
+    assert result["success"] is True
+    assert result["complete"] is False
+    assert result["coverage"] == raw["coverage"]
+    assert result["scope"] == raw["scope"]
+
+
 def test_source_files_rank_ahead_of_history_copies(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     (root / "src").mkdir(parents=True)
