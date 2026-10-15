@@ -28,11 +28,21 @@ class VRAMBalancer:
         self._pin_expires: float = 0.0
 
     def status(self, force: bool = False) -> dict[str, Any]:
+        """Read cached pressure without waiting; force explicitly requests a bounded refresh."""
         with self._condition:
             request_generation = self._status_generation
             now = time.monotonic()
             if not force and self._last_status and (now - self._last_check_time < 2.0):
                 return dict(self._last_status)
+
+            if not force:
+                if not self._sampling:
+                    self._start_sampling_locked()
+                result = self._sampling_timeout_fallback_locked()
+                result["telemetry_wait_timed_out"] = False
+                result["telemetry_error"] = "sample_pending" if self._sampling else "sample_start_failed"
+                result["telemetry_sampling"] = self._sampling
+                return result
 
             wait_deadline = time.monotonic() + self._sample_wait_timeout_seconds
             while self._sampling:
@@ -49,8 +59,12 @@ class VRAMBalancer:
             if not self._sampling:
                 if time.monotonic() >= wait_deadline:
                     return self._sampling_timeout_fallback_locked()
-                self._sampling = True
-                threading.Thread(target=self._sample_gpu_telemetry, daemon=True).start()
+                self._start_sampling_locked()
+                if not self._sampling:
+                    result = self._sampling_timeout_fallback_locked()
+                    result["telemetry_wait_timed_out"] = False
+                    result["telemetry_error"] = "sample_start_failed"
+                    return result
 
             while self._sampling:
                 remaining = wait_deadline - time.monotonic()
@@ -64,6 +78,15 @@ class VRAMBalancer:
             if not force and self._last_status and (time.monotonic() - self._last_check_time < 2.0):
                 return dict(self._last_status)
             return self._sampling_timeout_fallback_locked()
+
+    def _start_sampling_locked(self) -> None:
+        """Start at most one bounded probe; caller holds the state condition."""
+        self._sampling = True
+        try:
+            threading.Thread(target=self._sample_gpu_telemetry, daemon=True, name="vram-telemetry").start()
+        except RuntimeError:
+            self._sampling = False
+            self._condition.notify_all()
 
     def _sample_gpu_telemetry(self) -> None:
         try:

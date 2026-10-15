@@ -17,7 +17,7 @@ def test_vram_balancer_nominal_pressure():
         "vram_used_pct": 25.0,
     }
     with patch("local_ai_hub.vram_balancer.get_gpu_telemetry", return_value=mock_gpu):
-        st = balancer.status()
+        st = balancer.status(force=True)
         assert st["pressure_level"] == "nominal"
         assert st["context_budget_factor"] == 1.0
         assert st["throttle_background"] is False
@@ -31,7 +31,7 @@ def test_sample_vram_forces_fresh_snapshot():
     first = {"available": True, "gpu_name": "GPU", "vram_total_mb": 1000.0, "vram_used_mb": 100.0}
     second = {"available": True, "gpu_name": "GPU", "vram_total_mb": 1000.0, "vram_used_mb": 250.0}
     with patch("local_ai_hub.vram_balancer.get_gpu_telemetry", side_effect=[first, second]):
-        balancer.status()
+        balancer.status(force=True)
         snapshot = balancer.sample_vram()
 
     assert snapshot["vram_used_mb"] == 250.0
@@ -211,7 +211,7 @@ def test_vram_balancer_high_pressure_downscale():
         "vram_used_pct": 87.8,
     }
     with patch("local_ai_hub.vram_balancer.get_gpu_telemetry", return_value=mock_gpu):
-        st = balancer.status()
+        st = balancer.status(force=True)
         assert st["pressure_level"] == "high"
         assert st["context_budget_factor"] == 0.5
         assert st["throttle_background"] is True
@@ -230,7 +230,7 @@ def test_vram_balancer_critical_pressure():
         "vram_used_pct": 96.0,
     }
     with patch("local_ai_hub.vram_balancer.get_gpu_telemetry", return_value=mock_gpu):
-        st = balancer.status()
+        st = balancer.status(force=True)
         assert st["pressure_level"] == "critical"
         assert st["context_budget_factor"] == 0.25
         assert st["throttle_background"] is True
@@ -307,7 +307,7 @@ def test_status_wait_timeout_returns_conservative_stale_cache():
         "vram_used_pct": 12.5,
     }
     with patch("local_ai_hub.vram_balancer.get_gpu_telemetry", return_value=cached_gpu):
-        cached = balancer.status()
+        cached = balancer.status(force=True)
 
     balancer._sample_wait_timeout_seconds = 0.01
     sampling_started = threading.Event()
