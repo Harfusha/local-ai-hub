@@ -2151,7 +2151,8 @@ class LocalAIServices:
             target_text = " ".join(subprocess.list2cmdline([path]) for path in paths) if os.name == "nt" else " ".join(shlex.quote(path) for path in paths)
             command = f"ruff check {target_text}"
         elif biome_executable and daemon_mode:
-            command = f"{subprocess.list2cmdline([biome_executable]) if os.name == 'nt' else shlex.quote(biome_executable)} __run_server"
+            target_text = " ".join(subprocess.list2cmdline([path]) for path in paths) if os.name == "nt" else " ".join(shlex.quote(path) for path in paths)
+            command = f"{subprocess.list2cmdline([biome_executable]) if os.name == 'nt' else shlex.quote(biome_executable)} ci {target_text}"
         elif biome_executable:
             target_text = " ".join(subprocess.list2cmdline([path]) for path in paths) if os.name == "nt" else " ".join(shlex.quote(path) for path in paths)
             command = f"{subprocess.list2cmdline([biome_executable]) if os.name == 'nt' else shlex.quote(biome_executable)} ci {target_text}"
@@ -2164,9 +2165,7 @@ class LocalAIServices:
         if any(marker in lowered for marker in ("--fix", " -w ", "autopep8", "cargo fix", "gofmt -w")):
             return {"success": False, "error": "speculative lint rejects formatter or auto-fix commands", "terminal": True, "retryable": False}
         biome_daemon = bool(not custom and biome_executable and daemon_mode)
-        classification = ({"allowed": True, "class": "read_only", "source": "owned_biome_lsp"}
-                          if biome_daemon else
-                          self.commands.classify(command) if self.commands is not None else {"allowed": False, "class": "unknown"})
+        classification = self.commands.classify(command) if self.commands is not None else {"allowed": False, "class": "unknown"}
         if not classification.get("allowed", False) or classification.get("class") in {"mutating", "dangerous"}:
             return {"success": False, "error": "speculative lint requires an allowed read-only command", "classification": classification, "terminal": True, "retryable": False}
         if not custom and ruff_executable and all(Path(path).suffix.lower() == ".py" for path in paths) and daemon_mode:
@@ -2178,9 +2177,15 @@ class LocalAIServices:
             result.update({"paths": paths, "command": command})
             return result
         if biome_daemon:
+            daemon_timeout = args["timeout"] if "timeout" in args else lint_config.get("timeout_seconds", 120)
+            if (isinstance(daemon_timeout, bool) or not isinstance(daemon_timeout, (int, float))
+                    or not math.isfinite(daemon_timeout) or daemon_timeout <= 0):
+                return {"success": False, "provider": "biome", "daemon_mode": True,
+                        "transport": "owned_foreground_lsp", "error": "Biome timeout must be a positive finite number",
+                        "terminal": True, "retryable": False}
             result = self._biome_daemons.run(
                 biome_executable, root, tenant, paths,
-                timeout=float(args.get("timeout", lint_config.get("timeout_seconds", 120)) or 120),
+                timeout=daemon_timeout,
                 should_stop=current_job_should_stop,
             )
             result.update({"paths": paths, "command": command})
