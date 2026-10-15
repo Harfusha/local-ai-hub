@@ -46,6 +46,7 @@ def test_worker_pool_registers_initializer_without_running_it_in_parent(monkeypa
 def test_windows_worker_initializer_preserves_existing_wer_flags(monkeypatch):
     api = MagicMock()
     api.GetCurrentProcess.return_value = 1234
+    api.WerSetFlags.return_value = 0
 
     def get_flags(_process, out_flags):
         out_flags._obj.value = 0x0041
