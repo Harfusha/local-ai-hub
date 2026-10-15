@@ -5427,22 +5427,70 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def _handle_post_artifact_get(self, payload: dict[str, Any], tenant: str) -> None:
-        artifact_id = str(payload.get("artifact_id", ""))
+        allowed_fields = {"artifact_id", "offset", "max_chars", "section", "binary", "slices"}
+        if not isinstance(payload, dict) or set(payload) - allowed_fields:
+            self._send(400, {"success": False, "error": "artifact request contains unsupported fields"})
+            return
+        artifact_id = payload.get("artifact_id", "")
+        offset = payload.get("offset", 0)
+        max_chars = payload.get("max_chars", 6000)
+        section = payload.get("section", "")
+        binary = payload.get("binary", False)
+        if not isinstance(artifact_id, str) or not artifact_id:
+            self._send(400, {"success": False, "error": "artifact_id must be a non-empty string"})
+            return
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            self._send(400, {"success": False, "error": "offset must be a non-negative integer"})
+            return
+        if isinstance(max_chars, bool) or not isinstance(max_chars, int) or not 1 <= max_chars <= 50_000:
+            self._send(400, {"success": False, "error": "max_chars must be between 1 and 50000"})
+            return
+        if not isinstance(section, str) or len(section) > 512:
+            self._send(400, {"success": False, "error": "section must be a string of at most 512 characters"})
+            return
+        if not isinstance(binary, bool):
+            self._send(400, {"success": False, "error": "binary must be a boolean"})
+            return
+        if "slices" in payload and not isinstance(payload["slices"], list):
+            self._send(400, {"success": False, "error": "slices must be an array"})
+            return
         slices = payload.get("slices")
         if slices is not None:
-            if bool(payload.get("binary", False)) or str(payload.get("section", "")):
-                self._send(400, {"success": False, "error": "multi-slice retrieval does not support section or binary mode"})
+            if binary or set(payload) - {"artifact_id", "slices", "binary"}:
+                self._send(400, {"success": False, "error": "multi-slice retrieval accepts only artifact_id, slices, and binary=false"})
                 return
+            if not 1 <= len(slices) <= 16:
+                self._send(400, {"success": False, "error": "slices must contain 1 to 16 ranges"})
+                return
+            requested = 0
+            for item in slices:
+                if not isinstance(item, dict) or set(item) != {"offset", "max_chars"}:
+                    self._send(400, {"success": False, "error": "each slice must contain only offset and max_chars"})
+                    return
+                item_offset, item_max = item["offset"], item["max_chars"]
+                if isinstance(item_offset, bool) or not isinstance(item_offset, int) or item_offset < 0:
+                    self._send(400, {"success": False, "error": "slice offset must be a non-negative integer"})
+                    return
+                if isinstance(item_max, bool) or not isinstance(item_max, int) or not 1 <= item_max <= 50_000:
+                    self._send(400, {"success": False, "error": "slice max_chars must be between 1 and 50000"})
+                    return
+                requested += item_max
+                if requested > 50_000:
+                    self._send(400, {"success": False, "error": "combined slice max_chars cannot exceed 50000"})
+                    return
             self._send(200, APP.artifacts.get_slices(artifact_id, slices, tenant=tenant))
             return
-        if bool(payload.get("binary", False)):
+        if binary:
+            if section:
+                self._send(400, {"success": False, "error": "section is not valid for binary retrieval"})
+                return
             self._send(200, APP.artifacts.get_binary(artifact_id, tenant=tenant))
             return
         self._send(200, APP.artifacts.get(
             artifact_id,
-            int(payload.get("offset", 0)),
-            int(payload.get("max_chars", 6000)),
-            str(payload.get("section", "")),
+            offset,
+            max_chars,
+            section,
             tenant=tenant,
         ))
 

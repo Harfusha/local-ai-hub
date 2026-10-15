@@ -599,9 +599,9 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
                 "path": {"type": "string", "maxLength": 32768, "default": ""},
                 "line_start": {"type": "integer", "minimum": 1, "maximum": 2147483647, "default": 1},
                 "line_end": {"type": "integer", "minimum": 0, "maximum": 2147483647, "default": 0},
-                "section": {"type": "string", "default": ""},
+                "section": {"type": "string", "maxLength": 512, "default": ""},
                 "offset": {"type": "integer", "minimum": 0, "default": 0},
-                "max_chars": {"type": "integer", "minimum": 512, "maximum": 12000, "default": 4000},
+                "max_chars": {"type": "integer", "minimum": 1, "maximum": 50000, "default": 4000},
                 "extra_fields": {"type": "array", "items": {"type": "string"}},
                 "binary": {"type": "boolean", "default": False},
                 "slices": {
@@ -1344,6 +1344,16 @@ def operation_parameters_schema(tool: str, features: Any = None) -> dict[str, An
             }
             for action, row in required_actions
         ]
+    if tool == "local_ai_artifact":
+        parameters.setdefault("allOf", []).append({
+            "if": {
+                "properties": {selector_field: {"const": "source"}},
+                "required": [selector_field],
+            },
+            "then": {
+                "properties": {"max_chars": {"minimum": 512, "maximum": 12000}},
+            },
+        })
     return parameters
 
 
@@ -1517,6 +1527,10 @@ def validate_operation_arguments(
         )
         if bounds_error:
             return bounds_error
+    if tool == "local_ai_artifact" and action == "source" and "max_chars" in arguments:
+        max_chars = arguments["max_chars"]
+        if isinstance(max_chars, bool) or not isinstance(max_chars, int) or not 512 <= max_chars <= 12000:
+            return "max_chars must be between 512 and 12000 for action='source'"
     for field in action_contract["required"]:
         if field not in arguments or (field in action_contract["non_empty"] and not arguments[field]):
             return f"{field} is required for action='{action}'"

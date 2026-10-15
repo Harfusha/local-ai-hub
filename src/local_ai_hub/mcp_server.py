@@ -4261,9 +4261,14 @@ def local_ai_artifact(action: ArtifactAction = "get", artifact_id: str = "", off
     validation_error = validate_operation_arguments("local_ai_artifact", action, validation_arguments)
     if validation_error is not None:
         return {"success": False, "error": validation_error}
+    if action in {"get", "slice"}:
+        if not isinstance(binary, bool):
+            return {"success": False, "error": "binary must be a boolean"}
+        if slices is None and not binary and max_chars > min(MAX_TEXT, 50_000):
+            return {"success": False, "error": f"max_chars cannot exceed the MCP text limit of {min(MAX_TEXT, 50_000)}"}
     if slices is not None:
-        if section or binary:
-            return {"success": False, "error": "multi-slice retrieval does not support section or binary mode"}
+        if section or binary or offset != 0 or max_chars != 4000:
+            return {"success": False, "error": "multi-slice retrieval cannot be combined with section, binary, offset, or max_chars"}
     if action == "list":
         return _compact(CLIENT.post("/api/artifact/list", {"limit": 20}), "artifact")
     if artifact_id.startswith("E"):
@@ -4279,9 +4284,9 @@ def local_ai_artifact(action: ArtifactAction = "get", artifact_id: str = "", off
     result = CLIENT.post("/api/artifact/get", {
         "artifact_id": artifact_id,
         "offset": offset,
-        "max_chars": min(MAX_TEXT, max(512, min(max_chars, 12000))),
+        "max_chars": max_chars,
         "section": section,
-        "binary": bool(binary),
+        "binary": binary,
     })
     if binary and isinstance(result, dict) and result.get("success"):
         result = {key: value for key, value in result.items() if key != "data_base64"}
