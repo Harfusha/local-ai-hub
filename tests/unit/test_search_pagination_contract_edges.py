@@ -155,6 +155,7 @@ def test_code_index_compaction_keeps_largest_whole_symbol_prefix_with_continuati
             "path": f"src/{index:03}.py", "name": f"symbol_{index:03}",
             "kind": "function", "line": index + 1,
             "signature": f"def symbol_{index:03}(value: str) -> str",
+            "matched_terms": ["symbol"] if index % 2 else ["function"],
         }
         for index in range(40)
     ]
@@ -198,13 +199,32 @@ def test_registered_code_index_wire_keeps_prefix_and_final_wire_accounting(
             "path": f"src/{index:03}.py", "name": f"symbol_{index:03}",
             "kind": "function", "line": index + 1,
             "signature": f"def symbol_{index:03}(value: str) -> str",
+            "matched_terms": ["symbol"] if index % 2 else ["function"],
         }
         for index in range(40)
     ]
     raw = {
         "success": True, "root": str(tmp_path), "symbols": page, "limit": 40,
         "offset": 40, "total_matches": 100, "returned_count": 40,
-        "matches_count": 40, "has_more": True,
+        "matches_count": 40, "has_more": True, "terms": ["symbol", "function"],
+        "observed_match_count": 100, "truncated": True, "stale": False,
+        "coverage": {
+            "query_term_count": 2, "matched_term_count": 2,
+            "matched_terms": ["function", "symbol"], "query_term_coverage": 1.0,
+            "candidate_match_count": 100, "returned_symbol_count": 40,
+            "complete": False, "scope": "indexed_symbol_candidates",
+        },
+        "freshness": {
+            "status": "not_checked", "scope": "returned_symbol_candidates",
+            "checked_paths": 0, "stale_paths": [],
+            "unknown_paths": [symbol["path"] for symbol in page], "complete": False,
+        },
+        "truncation": {
+            "result_limit": 40, "returned_count": 40,
+            "observed_match_count": 100, "candidate_cap": 256,
+            "candidate_cap_reached": False,
+        },
+        "parse_outcomes": {"scope": "returned_symbol_candidates", "files_examined": 40},
     }
 
     class DummyClient:
@@ -214,6 +234,14 @@ def test_registered_code_index_wire_keeps_prefix_and_final_wire_accounting(
 
     monkeypatch.setattr(mcp_server, "CLIENT", DummyClient())
     monkeypatch.setattr(mcp_server, "_workspace", str(tmp_path))
+    monkeypatch.setattr(
+        mcp_server, "budget_response",
+        lambda *_args, **_kwargs: {
+            "success": False, "status_code": 413, "terminal": True,
+            "retryable": False, "failure_kind": "response_budget_rejected",
+            "error": "page clipped", "response_budget": {"rejected": True},
+        },
+    )
     monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, "record", lambda *args, **kwargs: None)
     monkeypatch.setattr(mcp_server.CONTEXT_LEDGER, "record", lambda **kwargs: None)
     monkeypatch.setattr(
@@ -239,8 +267,23 @@ def test_registered_code_index_wire_keeps_prefix_and_final_wire_accounting(
     assert payload["symbols"] == page[:len(payload["symbols"])]
     assert payload["success"] is True
     assert not (payload.get("success") is True and payload.get("status_code") == 413)
+    assert "failure_kind" not in payload
+    assert payload["response_budget"].get("rejected") is not True
     assert payload["returned_count"] == payload["returned_limit"] == len(payload["symbols"])
     assert payload["total_matches"] == 100
+    prefix_terms = sorted({term for symbol in payload["symbols"] for term in symbol["matched_terms"]})
+    assert payload["coverage"]["matched_terms"] == prefix_terms
+    assert payload["coverage"]["matched_term_count"] == len(prefix_terms)
+    assert payload["coverage"]["returned_symbol_count"] == len(payload["symbols"])
+    assert payload["coverage"]["candidate_match_count"] == 100
+    assert payload["freshness"]["unknown_paths"] == [symbol["path"] for symbol in payload["symbols"]]
+    assert payload["stale"] is None
+    assert "parse_outcomes" not in payload
+    assert "parse_outcomes" in payload["omitted_fields"]
+    assert payload["truncation"]["returned_count"] == len(payload["symbols"])
+    assert payload["truncation"]["observed_match_count"] == 100
+    assert payload["truncation"]["candidate_cap"] == 256
+    assert payload["observed_match_count"] == 100
     assert payload["has_more"] is True
     assert payload["next_offset"] == 40 + len(payload["symbols"])
     assert wire_tokens <= requested
