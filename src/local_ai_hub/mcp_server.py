@@ -3604,8 +3604,8 @@ def _local_ai_repo_impl(
 @_instrumented_tool()
 def local_ai_repo(
     action: RepoAction,
-    root: str | None = None,
-    query: str | None = None,
+    root: str = ".",
+    query: str = "",
     diff: str = "",
     task: str = "",
     workspace: str = "",
@@ -3651,10 +3651,6 @@ def local_ai_repo(
     directory_hints: list[str] | None = None,
     exclude_paths: list[str] | None = None,
     force_include_paths: list[str] | None = None,
-    paths: list[str] | None = None,
-    files: list[str] | None = None,
-    cwd: str | None = None,
-    symbol: str | None = None,
     *,
     limit: int = 24,
     offset: int = 0,
@@ -3666,12 +3662,6 @@ def local_ai_repo(
     rev2: str | None = None,
 ) -> dict[str, Any]:
     """Primary bounded repository worker. Use when: indexed repository evidence is needed. Skip when: fresh evidence already answers it."""
-    root = root if root is not None else cwd if cwd is not None else "."
-    query = query if query is not None else symbol if symbol is not None else ""
-    changed_paths = (
-        changed_paths if changed_paths is not None else
-        paths if paths is not None else files
-    )
     forward: dict[str, Any] = {}
     context_controls = {
         "path_hints": path_hints,
@@ -3685,12 +3675,6 @@ def local_ai_repo(
             "local_ai_repo", resolved_action, operation_actions("local_ai_repo", FEATURES),
             "Use a canonical advertised repository action.",
         )
-    if resolved_action in {"callers", "callees", "implementations"} and symbol is not None:
-        return {
-            "success": False, "status_code": 400, "terminal": True,
-            "retryable": False,
-            "error": "Relation actions require the canonical query argument; symbol is not accepted.",
-        }
     if resolved_action in {"search", "code_index", "callers", "callees", "implementations"}:
         pagination_error = validate_operation_arguments(
             "local_ai_repo", resolved_action, {"limit": limit, "offset": offset}

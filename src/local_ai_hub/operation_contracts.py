@@ -246,8 +246,8 @@ _ACTION_SCOPED_FIELDS = {
         "is_worktree": frozenset({"preprocess"}),
         "parent_root": frozenset({"preprocess"}),
         "path_hints": frozenset({"search", "context"}),
-        "limit": frozenset({"search", "code_index"}),
-        "offset": frozenset({"search", "code_index"}),
+        "limit": frozenset({"search", "code_index", "callers", "callees", "implementations"}),
+        "offset": frozenset({"search", "code_index", "callers", "callees", "implementations"}),
         "directory_hints": frozenset({"context"}),
         "exclude_paths": frozenset({"context"}),
         "force_include_paths": frozenset({"context"}),
@@ -286,9 +286,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
         properties={
             "action": {"type": "string"},
             "root": {"type": "string", "default": "."},
-            "cwd": {"type": "string"},
             "query": {"type": "string", "default": ""},
-            "symbol": {"type": "string"},
             "old_symbol": {"type": ["string", "null"], "default": None, "maxLength": 512},
             "new_symbol": {"type": ["string", "null"], "default": None, "maxLength": 512},
             "old_code": {"type": ["string", "null"], "default": None, "maxLength": 1_048_576},
@@ -341,8 +339,6 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "preload_profile": {"type": "string", "default": ""},
             "guarded": {"type": "boolean", "default": False},
             "changed_paths": {"type": "array", "items": {"type": "string"}},
-            "paths": {"type": "array", "items": {"type": "string"}},
-            "files": {"type": "array", "items": {"type": "string"}},
             "since_hash": {"type": "string", "default": ""},
             "approval": {"type": ["boolean", "string"], "default": ""},
             "override_reason": {"type": "string", "default": ""},
@@ -1520,7 +1516,7 @@ def validate_operation_arguments(
             for field in ("path_hints", "directory_hints", "exclude_paths", "force_include_paths"):
                 if field in arguments:
                     return f"{field} requires mode='adaptive' for action='context'"
-    if tool == "local_ai_repo" and action in {"search", "code_index"}:
+    if tool == "local_ai_repo" and action in {"search", "code_index", "callers", "callees", "implementations"}:
         bounds_error = pagination_bounds_error(
             arguments.get("limit", properties.get("limit", {}).get("default", 24)),
             arguments.get("offset", properties.get("offset", {}).get("default", 0)),

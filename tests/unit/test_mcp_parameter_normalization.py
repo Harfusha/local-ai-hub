@@ -36,7 +36,7 @@ def test_command_root_alias_maps_to_cwd(monkeypatch, tmp_path):
     assert captured["payload"]["root"] == str(tmp_path)
 
 
-def test_repo_preserves_legacy_positional_root_and_query(monkeypatch, tmp_path):
+def test_repo_accepts_canonical_positional_root_and_query(monkeypatch, tmp_path):
     captured = {}
 
     def capture(action, root, query, *args, **kwargs):
@@ -50,7 +50,7 @@ def test_repo_preserves_legacy_positional_root_and_query(monkeypatch, tmp_path):
     assert captured == {"action": "search", "root": str(tmp_path), "query": "needle"}
 
 
-def test_repo_preserves_legacy_positional_diff(monkeypatch, tmp_path):
+def test_repo_accepts_canonical_positional_diff(monkeypatch, tmp_path):
     captured = {}
 
     class DummyClient:
@@ -110,93 +110,50 @@ def test_command_preserves_legacy_positional_timeout(monkeypatch, tmp_path):
     assert captured["payload"]["timeout"] == 27
 
 
-def test_repo_paths_alias_maps_to_changed_paths(monkeypatch, tmp_path):
-    captured = {}
+@pytest.mark.parametrize("alias,value", [
+    ("cwd", "."), ("symbol", "Widget.run"), ("paths", ["module.py"]), ("files", ["module.py"]),
+])
+def test_repo_registered_wrapper_rejects_aliases_before_client(monkeypatch, alias, value):
+    calls = []
 
     class DummyClient:
         def post(self, url, payload, **kwargs):
-            if url == "/api/context/pack":
-                captured.update(url=url, payload=payload)
-            return {"success": True, "context": "ok"}
-
-    monkeypatch.setattr("local_ai_hub.mcp_server.CLIENT", DummyClient())
-
-    result = _call_tool("local_ai_repo", {
-        "action": "context", "root": str(tmp_path), "query": "find foo.py",
-        "paths": ["foo.py"],
-        "guarded": True,
-    })
-
-    assert captured.get("url") == "/api/context/pack", repr(result)
-    assert captured["payload"]["changed_paths"] == ["foo.py"]
-
-
-def test_repo_canonical_empty_changed_paths_precedes_aliases(monkeypatch, tmp_path):
-    captured = {}
-
-    class DummyClient:
-        def post(self, url, payload, **kwargs):
-            if url == "/api/context/pack":
-                captured.update(payload=payload)
-            return {"success": True, "context": "ok"}
-
-    monkeypatch.setattr("local_ai_hub.mcp_server.CLIENT", DummyClient())
-
-    _call_tool("local_ai_repo", {
-        "action": "context", "root": str(tmp_path),
-        "query": "find files",
-        "changed_paths": [], "paths": ["alias.py"], "files": ["other.py"],
-        "guarded": True,
-    })
-
-    assert captured["payload"]["changed_paths"] == []
-
-
-def test_repo_cwd_files_and_symbol_aliases(monkeypatch, tmp_path):
-    captured = {}
-
-    class DummyClient:
-        def post(self, url, payload, **kwargs):
-            if url == "/api/repo/dependency_slice":
-                captured.update(url=url, payload=payload)
+            calls.append((url, payload))
             return {"success": True}
 
     monkeypatch.setattr("local_ai_hub.mcp_server.CLIENT", DummyClient())
-
-    _call_tool("local_ai_repo", {
-        "action": "dependency_slice", "cwd": str(tmp_path),
-        "files": ["module.py"], "symbol": "Widget.run",
+    result = _call_tool("local_ai_repo", {
+        "action": "search", "root": ".", "query": "Widget.run", alias: value,
     })
 
-    assert captured["url"] == "/api/repo/dependency_slice"
-    assert captured["payload"]["root"] == str(tmp_path)
-    assert captured["payload"]["symbol"] == "Widget.run"
+    assert calls == []
+    assert "unsupported" in str(result).lower() or "unexpected" in str(result).lower()
 
 
-def test_repo_preserves_full_legacy_positional_alias_tail(monkeypatch, tmp_path):
-    captured = {}
+@pytest.mark.parametrize("alias,value", [
+    ("cwd", "."), ("symbol", "Widget.run"), ("paths", ["module.py"]), ("files", ["module.py"]),
+])
+def test_repo_direct_python_call_rejects_alias_keyword(alias, value):
+    with pytest.raises(TypeError):
+        mcp_server.local_ai_repo(action="search", root=".", query="Widget.run", **{alias: value})
 
-    class DummyClient:
-        def post(self, url, payload, **kwargs):
-            if url == "/api/context/pack":
-                captured.update(url=url, payload=payload)
-            return {"success": True, "context": "ok"}
 
-    monkeypatch.setattr(mcp_server, "CLIENT", DummyClient())
-
-    result = mcp_server.local_ai_repo(
-        "context", None, None, "", "", "", "", "HEAD", False, False, 0,
-        None, "adaptive", "", "auto", "", None, "", False, False, None,
-        None, 0, "", "", False, "", "", "", "", "", "", None, "",
-        None, "", False, "", "", "", 0, False, "", None, None, None, None,
-        None, ["changed.py"], ["fallback.py"], str(tmp_path), "Widget.run",
+def test_repo_schema_excludes_aliases_and_allows_relation_pagination():
+    from local_ai_hub.operation_contracts import (
+        operation_parameters_schema, operation_tool_input_schema, validate_operation_arguments,
     )
 
-    assert result.get("success") is True, repr(result)
-    assert captured["url"] == "/api/context/pack"
-    assert captured["payload"]["root"] == str(tmp_path)
-    assert captured["payload"]["query"] == "Widget.run"
-    assert captured["payload"]["changed_paths"] == ["changed.py"]
+    properties = operation_parameters_schema("local_ai_repo")["properties"]
+    assert not {"cwd", "symbol", "paths", "files"} & set(properties)
+    input_schema = operation_tool_input_schema("local_ai_repo")
+    assert input_schema["additionalProperties"] is False
+    for action in ("callers", "callees", "implementations"):
+        assert validate_operation_arguments(
+            "local_ai_repo", action, {"limit": 2, "offset": 4},
+        ) is None
+        assert validate_operation_arguments(
+            "local_ai_repo", action, {"limit": True, "offset": 0},
+        ) is not None
 
 
 def test_command_changed_paths_alias_maps_to_format_paths(monkeypatch, tmp_path):
