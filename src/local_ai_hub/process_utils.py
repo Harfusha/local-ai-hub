@@ -1862,6 +1862,23 @@ def canonical_root(path: str | Path) -> str:
     return str(resolved)
 
 
+def canonical_path(path: str | Path) -> str:
+    """Normalize path spelling lexically without resolving filesystem links.
+
+    Windows drive and UNC spellings are recognized independently of the host OS.
+    Other paths use POSIX lexical rules so backslashes remain ordinary filename
+    characters instead of being rewritten as separators.
+    """
+    raw = os.fspath(path)
+    if re.match(r"^[A-Za-z]:", raw) or raw.startswith(("\\\\", "//")):
+        normalized = ntpath.normpath(raw)
+        drive, tail = ntpath.splitdrive(normalized)
+        if re.fullmatch(r"[A-Za-z]:", drive):
+            drive = f"{drive[0].upper()}:"
+        return f"{drive}{tail}".replace("\\", "/")
+    return posixpath.normpath(raw)
+
+
 def canonical_workspace_id(root: str | Path) -> str:
     """Return the stable RAG workspace ID for a canonical project root."""
     resolved = canonical_root(root)
