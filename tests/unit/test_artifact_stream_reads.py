@@ -52,6 +52,9 @@ def test_streaming_reads_round_trip_unicode_nul_and_distant_spans(tmp_path, enco
     single = store.get("art_stream", offset=65_531, max_chars=256, tenant="owner")
     assert single["success"] is True
     assert single["text"] == text[65_531:65_531 + 256]
+    one_char = store.get("art_stream", offset=0, max_chars=1, tenant="owner")
+    assert one_char["success"] is True
+    assert one_char["text"] == "x"
     with closing(sqlite3.connect(db_path)) as connection:
         assert connection.execute(
             "SELECT 1 FROM artifact_paging_metadata WHERE artifact_id='art_stream'",
@@ -175,6 +178,73 @@ def test_missing_json_metadata_reports_bounded_names_and_rejects_duplicate_keys(
     )
     assert oversized_request["success"] is False
     assert oversized_request["error_code"] == "artifact_section_invalid"
+
+
+@pytest.mark.parametrize(
+    ("encoding", "key_prefix"),
+    [("UTF-8", "a" * 124), ("UTF-16le", "a" * 61), ("UTF-16be", "a" * 61)],
+)
+def test_json_prefix_decode_preserves_multibyte_boundary(tmp_path, encoding, key_prefix) -> None:
+    db_path = tmp_path / "artifacts.sqlite3"
+    if encoding != "UTF-8":
+        with closing(sqlite3.connect(db_path)) as connection:
+            connection.execute(f"PRAGMA encoding='{encoding}'")
+    store = ArtifactStore(tmp_path)
+    key = key_prefix + "😀"
+    _insert_text(store, "art_json_boundary", '{"' + key + '":1}')
+
+    result = store.get("art_json_boundary", tenant="owner")
+    assert result["success"] is True
+    assert result["sections"] == [f"json:{key}"]
+
+
+def test_oversized_sidecar_is_not_materialized_and_sections_recompute_from_text(tmp_path) -> None:
+    store = ArtifactStore(tmp_path)
+    artifact_id = store.put("## Alpha\nbody", "owner", "text")
+    oversized_sidecar = "x" * (128 * 1024 + 1)
+    with closing(sqlite3.connect(store.path)) as connection:
+        connection.execute(
+            "UPDATE artifact_paging_metadata SET section_names=? WHERE artifact_id=?",
+            (oversized_sidecar, artifact_id),
+        )
+        connection.commit()
+
+    statements: list[str] = []
+    connect = store._connect
+
+    def traced_connect():
+        connection = connect()
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    store._connect = traced_connect
+    result = store.get(artifact_id, tenant="owner")
+    assert result["success"] is True
+    assert result["sections"] == ["alpha"]
+    assert any(
+        "case when length(cast(p.section_names as blob)) <= 131072" in statement.lower()
+        for statement in statements
+    )
+    with closing(sqlite3.connect(store.path)) as connection:
+        assert connection.execute(
+            "SELECT length(section_names) FROM artifact_paging_metadata WHERE artifact_id=?",
+            (artifact_id,),
+        ).fetchone() == (len(oversized_sidecar),)
+
+
+@pytest.mark.parametrize(
+    ("offset", "max_chars", "section"),
+    [
+        ("1", 1, ""), (1.5, 1, ""), (True, 1, ""), (-1, 1, ""),
+        (0, "1", ""), (0, 1.5, ""), (0, True, ""), (0, 0, ""), (0, 50_001, ""),
+        (0, 1, None), (0, 1, 7),
+    ],
+)
+def test_get_rejects_noncanonical_arguments_without_coercion(tmp_path, offset, max_chars, section) -> None:
+    store = ArtifactStore(tmp_path)
+    result = store.get("absent", offset=offset, max_chars=max_chars, section=section)
+    assert result["success"] is False
+    assert result["error_code"] == "artifact_read_invalid"
 
 
 def test_expired_wrong_tenant_and_binary_rows_do_not_stream_text(tmp_path, monkeypatch) -> None:

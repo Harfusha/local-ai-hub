@@ -31,6 +31,7 @@ MAX_ARTIFACT_BACKFILL_BYTES = 1_000_000
 MAX_ARTIFACT_SECTION_JSON_CHARS = 250_000
 MAX_ARTIFACT_HEADING_CHARS = 512
 MAX_ARTIFACT_SECTION_NAMES = 50
+MAX_ARTIFACT_SECTION_METADATA_BYTES = 128 * 1024
 MAX_ARTIFACT_JSON_SECTION_KEYS_SCANNED = 256
 MAX_ARTIFACT_READ_SECONDS = 5.0
 _ARTIFACT_MIGRATION_BACKUP_SUFFIX = ".pre-tenant-identity.bak"
@@ -390,7 +391,8 @@ class ArtifactStore:
             with con.blobopen(self._table, "text", rowid, readonly=True) as text_blob:
                 if len(text_blob) > MAX_ARTIFACT_BACKFILL_BYTES:
                     return None
-                prefix = text_blob.read(min(128, len(text_blob))).decode(codec, errors="strict")
+                decoder = codecs.getincrementaldecoder(codec)(errors="strict")
+                prefix = decoder.decode(text_blob.read(min(128, len(text_blob))), final=False)
         except (sqlite3.Error, UnicodeError):
             return None
         self._check_read_deadline(deadline)
@@ -1043,9 +1045,15 @@ class ArtifactStore:
         return result
 
     def get(self, artifact_id: str, offset: int = 0, max_chars: int = 6000, section: str = "", tenant: str | None = None) -> dict[str, Any]:
-        offset = max(0, int(offset))
-        max_chars = max(256, min(int(max_chars), 50_000))
-        section = str(section or "").strip()
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            return {"success": False, "error": "artifact offset must be a non-negative integer",
+                    "error_code": "artifact_read_invalid", "artifact_id": artifact_id}
+        if isinstance(max_chars, bool) or not isinstance(max_chars, int) or not 1 <= max_chars <= 50_000:
+            return {"success": False, "error": "artifact max_chars must be between 1 and 50000",
+                    "error_code": "artifact_read_invalid", "artifact_id": artifact_id}
+        if not isinstance(section, str):
+            return {"success": False, "error": "artifact section must be a string",
+                    "error_code": "artifact_read_invalid", "artifact_id": artifact_id}
         cutoff = time.time() - self.ttl_seconds
         deadline = time.monotonic() + MAX_ARTIFACT_READ_SECONDS
         tenant_identity = self._tenant_identity(tenant) if tenant is not None else None
@@ -1059,7 +1067,9 @@ class ArtifactStore:
                 con.execute("BEGIN")
                 params: list[Any] = [artifact_id, cutoff]
                 query = (
-                    f"SELECT a.rowid, a.kind, a.mime_type, typeof(a.text), p.section_names "
+                    f"SELECT a.rowid, a.kind, a.mime_type, typeof(a.text), "
+                    f"CASE WHEN length(CAST(p.section_names AS BLOB)) <= {MAX_ARTIFACT_SECTION_METADATA_BYTES} "
+                    "THEN p.section_names END "
                     f"FROM {self._table} AS a LEFT JOIN {_ARTIFACT_PAGING_TABLE} AS p "
                     "ON p.artifact_id=a.artifact_id WHERE a.artifact_id=? AND a.created_at>=?"
                 )
@@ -1194,7 +1204,9 @@ class ArtifactStore:
                 con.execute("BEGIN")
                 params: list[Any] = [artifact_id, cutoff]
                 query = (
-                    f"SELECT a.rowid, a.kind, a.mime_type, typeof(a.text), p.section_names "
+                    f"SELECT a.rowid, a.kind, a.mime_type, typeof(a.text), "
+                    f"CASE WHEN length(CAST(p.section_names AS BLOB)) <= {MAX_ARTIFACT_SECTION_METADATA_BYTES} "
+                    "THEN p.section_names END "
                     f"FROM {self._table} AS a LEFT JOIN {_ARTIFACT_PAGING_TABLE} AS p "
                     "ON p.artifact_id=a.artifact_id WHERE a.artifact_id=? AND a.created_at>=?"
                 )
