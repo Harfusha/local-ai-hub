@@ -866,6 +866,7 @@ def test_completed_requires_repository_revision_for_active_project_rule(
     task = prepare_project_rule_completion(
         store, tmp_path, monkeypatch, with_revision=False
     )
+<<<<<<< HEAD
     calls = []
     verifier = VerificationStore(store.state_store, task_store=store)
     evaluate = verifier.completion
@@ -876,6 +877,9 @@ def test_completed_requires_repository_revision_for_active_project_rule(
 
     monkeypatch.setattr(verifier, "completion", record_completion)
     store.set_verification_store(verifier)
+=======
+    store.set_verification_store(VerificationStore(store.state_store, task_store=store))
+>>>>>>> acc622e9 (test: align task fixtures with current contracts)
 
     with pytest.raises(CompletionGateError, match="trusted repository_revision is unavailable"):
         store.transition(
@@ -935,7 +939,11 @@ def test_completed_rejects_non_boolean_verifier_result(
             configured_environment_sha256,
             project_root,
         ):
+<<<<<<< HEAD
             return CompletionResult(task_id, complete, (), (), (), ())
+=======
+            return CompletionResult(task_id, complete, (), ("tests",), (), ())
+>>>>>>> acc622e9 (test: align task fixtures with current contracts)
 
     store.set_verification_store(MalformedResultVerifier())
 
@@ -1336,10 +1344,16 @@ def test_goal_contract_accepts_only_canonical_scope_values():
     assert c1.scope == AgentScope.TASK
     assert c1.to_dict()["scope"] == "task"
 
+<<<<<<< HEAD
     assert GoalContract.from_dict({"goal": "default scope"}).scope is AgentScope.TASK
     for scope in ("code", "TASK", " task ", None, "", False, [], 23):
         with pytest.raises(ValueError):
             GoalContract(goal="invalid direct scope", scope=scope)
+=======
+    with pytest.raises(ValueError, match="not a valid AgentScope"):
+        GoalContract(goal="test 2", scope="code")
+    for scope in (None, ""):
+>>>>>>> acc622e9 (test: align task fixtures with current contracts)
         with pytest.raises(ValueError):
             GoalContract.from_dict({"goal": "test 3", "scope": scope})
 
