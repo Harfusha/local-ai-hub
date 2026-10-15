@@ -85,10 +85,11 @@ class CapabilityGrant:
     max_delegation_depth: int = 1
 
     def __post_init__(self) -> None:
-        if type(self.grant_id) is not str or not self.grant_id.strip():
+        for name, value in (("grant_id", self.grant_id), ("task_id", self.task_id)):
+            if type(value) is not str or value.strip() != value or "\x00" in value:
+                raise ValueError(f"{name} must be a canonical string")
+        if not self.grant_id:
             raise ValueError("grant_id must be a nonempty string")
-        if type(self.task_id) is not str:
-            raise ValueError("task_id must be a string")
         for field_name, values in (("allowed", self.allowed), ("denied", self.denied)):
             if type(values) is not frozenset:
                 raise ValueError(f"{field_name} must be an immutable frozenset")
@@ -136,6 +137,10 @@ class CapabilityGrant:
         denied_data = data.get("denied", [])
         if type(allowed_data) is not list or type(denied_data) is not list:
             raise ValueError("allowed and denied must be JSON arrays")
+        for values in (allowed_data, denied_data):
+            for value in values:
+                if type(value) is not str:
+                    raise ValueError("allowed and denied entries must be strings")
         return cls(
             grant_id=data["grant_id"],
             task_id=data.get("task_id", ""),
