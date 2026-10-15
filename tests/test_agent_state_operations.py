@@ -277,6 +277,9 @@ def test_project_bundle_roundtrips_agent_state_memory_metadata(tmp_path: Path):
         assert restored is not None
         expected_provenance = dict(provenance)
         expected_provenance["root"] = target_repo.as_posix()
+        expected_provenance["repository_id"] = resolve_project_context(
+            target_repo, tmp_path / "target-app" / "state"
+        ).coordination_id
         expected_provenance["source_root"] = str(source_repo)
         assert restored.provenance == expected_provenance
         assert restored.confidence == 0.71
