@@ -390,52 +390,45 @@ def test_local_ai_coord_blackboard_get_forwards_board_and_section(monkeypatch):
     calls = backend.calls
     assert calls == [(
         "/api/agent-state/blackboard",
-        {"action": "get", "board_id": "board-17", "section": "planning",
-         "content": "", "author": "agent", "remote_sections": {},
-         "expected_version": None},
+        {"action": "get", "root": ".", "board_id": "board-17", "section": "planning"},
         {"timeout": mcp_server._timeout("quick")},
     )]
 
 
-def test_local_ai_coord_blackboard_list_forwards_board_and_section(monkeypatch):
+def test_local_ai_coord_blackboard_list_uses_task_scoped_default(monkeypatch):
     backend = _prepare_coord_api(monkeypatch)
-    result = mcp_server.local_ai_coord(action='blackboard_list', board_id="board-18", section="open")
+    result = mcp_server.local_ai_coord(action='blackboard_list')
     assert result["success"] is True
     calls = backend.calls
     assert calls[0][0] == "/api/agent-state/blackboard"
     assert calls[0][1] == {
-        "action": "list", "board_id": "board-18", "section": "open",
-        "content": "", "author": "agent", "remote_sections": {},
-        "expected_version": None,
+        "action": "list", "root": ".",
     }
     assert calls[0][2] == {"timeout": mcp_server._timeout("quick")}
 
 
-def test_local_ai_coord_blackboard_merge_forwards_sections_and_version(monkeypatch):
+def test_local_ai_coord_blackboard_merge_forwards_remote_sections(monkeypatch):
     remote = {"remote": {"summary": "preserve"}}
     backend = _prepare_coord_api(monkeypatch)
-    result = mcp_server.local_ai_coord(action='blackboard_merge', board_id="board-19", section="all", record=remote, checkpoint={"expected_version": 6}, approver="reviewer")
+    result = mcp_server.local_ai_coord(action='blackboard_merge', board_id="board-19", remote_sections=remote)
     assert result["success"] is True
     calls = backend.calls
     assert calls[0][0] == "/api/agent-state/blackboard"
     assert calls[0][1] == {
-        "action": "merge", "board_id": "board-19", "section": "all",
-        "content": remote, "author": "reviewer", "remote_sections": remote,
-        "expected_version": 6,
+        "action": "merge", "root": ".", "board_id": "board-19",
+        "remote_sections": remote,
     }
     assert calls[0][2] == {"timeout": mcp_server._timeout("quick")}
 
 
-def test_local_ai_coord_blackboard_delete_forwards_board_and_version(monkeypatch):
+def test_local_ai_coord_blackboard_delete_forwards_board_and_section(monkeypatch):
     backend = _prepare_coord_api(monkeypatch)
-    result = mcp_server.local_ai_coord(action='blackboard_delete', board_id="board-20", section="archive", status="8")
+    result = mcp_server.local_ai_coord(action='blackboard_delete', board_id="board-20", section="archive")
     assert result["success"] is True
     calls = backend.calls
     assert calls[0][0] == "/api/agent-state/blackboard"
     assert calls[0][1] == {
-        "action": "delete", "board_id": "board-20", "section": "archive",
-        "content": "", "author": "agent", "remote_sections": {},
-        "expected_version": 8,
+        "action": "delete", "root": ".", "board_id": "board-20", "section": "archive",
     }
     assert calls[0][2] == {"timeout": mcp_server._timeout("quick")}
 
@@ -486,18 +479,16 @@ def test_local_ai_coord_memory_reap_is_private(monkeypatch, tmp_path):
     assert backend.calls == []
 
 
-def test_local_ai_coord_negative_knowledge_find_forwards_query_scope(monkeypatch, tmp_path):
+def test_local_ai_coord_negative_knowledge_find_forwards_query_and_limit(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
     backend = _prepare_coord_api(monkeypatch)
-    result = mcp_server.local_ai_coord(action='negative_knowledge_find', root=root, key="TimeoutError", query="retry exhausted", scope="task", scope_id="task-5", reason="connection reset", status="retry locally", record_id="incident-5")
+    result = mcp_server.local_ai_coord(action='negative_knowledge_find', root=root, query="retry exhausted", limit=12)
     assert result["success"] is True
     calls = backend.calls
     assert calls == [(
         "/api/agent-state/incidents",
-        {"action": "find", "error_class": "TimeoutError",
-         "message": "retry exhausted", "query": "retry exhausted", "root": root,
-         "root_cause": "connection reset", "verified_fix": "retry locally",
-         "incident_id": "incident-5"},
+        {"action": "find", "root": root, "tenant": "",
+         "query": "retry exhausted", "limit": 12},
         {"timeout": mcp_server._timeout("quick")},
     )]
 
@@ -505,15 +496,16 @@ def test_local_ai_coord_negative_knowledge_find_forwards_query_scope(monkeypatch
 def test_local_ai_coord_negative_knowledge_record_forwards_verified_fix(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
     backend = _prepare_coord_api(monkeypatch)
-    result = mcp_server.local_ai_coord(action='negative_knowledge_record', root=root, key="ValueError", value="invalid payload", query="payload validation", reason="caller omitted field", status="validate before retry", record_id="incident-6")
+    record = {
+        "operation_class": "ValueError", "message": "invalid payload",
+        "root_cause": "caller omitted field", "verified_fix": "validate before retry",
+    }
+    result = mcp_server.local_ai_coord(action='negative_knowledge_record', root=root, record=record)
     assert result["success"] is True
     calls = backend.calls
     assert calls == [(
         "/api/agent-state/incidents",
-        {"action": "record", "error_class": "ValueError",
-         "message": "invalid payload", "query": "payload validation", "root": root,
-         "root_cause": "caller omitted field", "verified_fix": "validate before retry",
-         "incident_id": "incident-6"},
+        {**record, "action": "record", "root": root, "tenant": ""},
         {"timeout": mcp_server._timeout("quick")},
     )]
 
@@ -521,12 +513,12 @@ def test_local_ai_coord_negative_knowledge_record_forwards_verified_fix(monkeypa
 def test_local_ai_coord_pubsub_poll_forwards_topic_and_cursor(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
     backend = _prepare_coord_rpc(monkeypatch)
-    result = mcp_server.local_ai_coord(action='pubsub_poll', root=root, key="build-status", approver="worker-3", ttl_seconds=9)
+    result = mcp_server.local_ai_coord(action='pubsub_poll', root=root, topic="build-status", limit=9, after_ts=173.5)
     assert result["success"] is True
     calls = backend.calls
     assert calls == [{
         "action": "pubsub_poll", "topic": "build-status", "after_seq": None,
-        "limit": 9, "root": root,
+        "limit": 9, "since_timestamp": 173.5, "root": root,
     }]
 
 
@@ -534,7 +526,7 @@ def test_local_ai_coord_pubsub_publish_forwards_topic_message_and_publisher(monk
     root = str(tmp_path.resolve())
     message = {"state": "ready", "revision": "r8"}
     backend = _prepare_coord_rpc(monkeypatch)
-    result = mcp_server.local_ai_coord(action='pubsub_publish', root=root, key="build-status", value=message, approver="worker-2")
+    result = mcp_server.local_ai_coord(action='pubsub_publish', root=root, topic="build-status", message=message, publisher="worker-2")
     assert result["success"] is True
     calls = backend.calls
     assert calls == [{
@@ -630,7 +622,7 @@ def test_local_ai_coord_swarm_step_forwards_role_action_and_payload(monkeypatch,
     payload = {"patch": "diff --git a/a b/a"}
     backend = _prepare_coord_api(monkeypatch)
     root = str(tmp_path.resolve())
-    result = mcp_server.local_ai_coord(action='swarm_step', root=root, task_id="swarm-54", target_scope="Reviewer", query="approve_patch", record=payload)
+    result = mcp_server.local_ai_coord(action='swarm_step', root=root, swarm_id="swarm-54", role="Reviewer", swarm_action="approve_patch", payload=payload)
     assert result["success"] is True
     calls = backend.calls
     assert calls == [(
@@ -791,7 +783,7 @@ def test_local_ai_coord_verify_completion_forwards_task_revision(monkeypatch, tm
 def test_local_ai_coord_worktree_lease_forwards_root_and_branch(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
     backend = _prepare_coord_rpc(monkeypatch)
-    result = mcp_server.local_ai_coord(action='worktree_lease', root=root, key="feature/coord")
+    result = mcp_server.local_ai_coord(action='worktree_lease', root=root, branch="feature/coord")
     assert result["success"] is True
     calls = backend.calls
     assert calls == [{
@@ -802,7 +794,7 @@ def test_local_ai_coord_worktree_lease_forwards_root_and_branch(monkeypatch, tmp
 def test_local_ai_coord_worktree_release_forwards_path_and_branch_policy(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
     backend = _prepare_coord_rpc(monkeypatch)
-    result = mcp_server.local_ai_coord(action='worktree_release', root=root, value="C:/worktrees/coord", key="feature/coord", status="false")
+    result = mcp_server.local_ai_coord(action='worktree_release', root=root, worktree_path="C:/worktrees/coord", branch="feature/coord", delete_branch=False)
     assert result["success"] is True
     calls = backend.calls
     assert calls == [{
@@ -815,7 +807,7 @@ def test_local_ai_coord_worktree_release_forwards_path_and_branch_policy(monkeyp
 
 def test_local_ai_coord_curate_dataset_forwards_output_policy(monkeypatch):
     backend = _prepare_coord_api(monkeypatch)
-    result = mcp_server.local_ai_coord(action='curate_dataset', key="dataset.jsonl", status="3", target_scope="jsonl")
+    result = mcp_server.local_ai_coord(action='curate_dataset', output_path="dataset.jsonl", min_receipts=3, format="jsonl")
     assert result["success"] is True
     calls = backend.calls
     assert calls == [(
@@ -843,15 +835,15 @@ def test_local_ai_coord_blackboard_update_posts_content_and_version(monkeypatch,
     backend = _prepare_coord_api(monkeypatch)
     tool_result = asyncio.run(mcp_server.mcp.call_tool(
         "local_ai_coord", {"action": "blackboard_update", "root": root,
-         "board_id": "board-61", "section": "release", "value": "ready",
-         "approver": "reviewer", "status": "5"}
+         "board_id": "board-61", "section": "release", "content": "ready",
+         "author": "reviewer", "expected_version": 5}
     ))
     result = _mcp_coord_json(tool_result)
     assert result["success"] is True
     assert backend.calls == [(
         "/api/agent-state/blackboard",
         {"action": "update", "board_id": "board-61", "section": "release",
-         "content": "ready", "author": "reviewer", "remote_sections": {},
+         "root": root, "content": "ready", "author": "reviewer",
          "expected_version": 5},
         {"timeout": mcp_server._timeout("quick")},
     )]
@@ -960,7 +952,7 @@ def test_local_ai_coord_simulate_merge_forwards_branch_pair(monkeypatch, tmp_pat
     backend = _prepare_coord_rpc(monkeypatch)
     tool_result = asyncio.run(mcp_server.mcp.call_tool(
         "local_ai_coord", {"action": "simulate_merge", "root": root,
-         "key": "feature/source", "target_scope": "main"}
+         "source_branch": "feature/source", "target_branch": "main"}
     ))
     result = _mcp_coord_json(tool_result)
     assert result["success"] is True
@@ -1034,15 +1026,18 @@ def test_local_ai_coord_context_compile_dispatch_with_task_id(monkeypatch, tmp_p
 def test_local_ai_coord_negative_knowledge_record_dispatch(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
     backend = _prepare_coord_api(monkeypatch)
+    record = {
+        "operation_class": "ValueError", "message": "bad input",
+        "root_cause": "missing field",
+    }
     tool_result = mcp_server.local_ai_coord(
-        action="negative_knowledge_record", root=root, key="ValueError", value="bad input",
-        reason="missing field"
+        action="negative_knowledge_record", root=root, record=record,
     )
     result = _mcp_coord_json(tool_result)
     assert result["success"] is True
     assert backend.calls[0][0] == "/api/agent-state/incidents"
     assert backend.calls[0][1]["action"] == "record"
-    assert backend.calls[0][1]["error_class"] == "ValueError"
+    assert backend.calls[0][1]["operation_class"] == "ValueError"
     assert backend.calls[0][1]["root_cause"] == "missing field"
 
 
@@ -1050,7 +1045,7 @@ def test_local_ai_coord_negative_knowledge_find_dispatch(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
     backend = _prepare_coord_api(monkeypatch)
     tool_result = mcp_server.local_ai_coord(
-        action="negative_knowledge_find", root=root, key="ValueError", query="bad input"
+        action="negative_knowledge_find", root=root, query="bad input"
     )
     result = _mcp_coord_json(tool_result)
     assert result["success"] is True
