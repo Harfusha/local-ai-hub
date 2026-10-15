@@ -1,5 +1,7 @@
 # Generic Agent Update & Upgrade Prompt for Local AI Hub
 
+HTTP identity comes from authenticated/configured server state or its stable tokenless principal. `X-LocalAI-Tenant` is only a claim; obsolete `X-Tenant-ID` is rejected after host/origin validation and before authorization. Reauthorization clears cached principal/root identity. Agent State client sandbox activation matches the server; enabled sandboxes keep configured-principal, derivation-secret and nonempty allowlist requirements. Repository memory lookup uses server-resolved project identity, never a caller's replacement repository ID. Updating these contracts does not rewrite operator configuration.
+
 Omitted retrieval mode selects `adaptive` consistently in MCP, HTTP context packs, Agent OS context compile, and client/service entry points. Explicit `fast` and `full` select current distinct strategies; invalid modes reject before retrieval. Query, focus, changed paths, or omitted guarded fields never silently select an older mode. Pubsub adapters use the current full poll signature, preserving both sequence and timestamp cursors without adapting old providers or coercing client cursor values.
 
 Event and incident storage accepts only current durable schemas. Older event layouts, payload-version override tables, incident ID fabrication and automatic column upgrades are rejected rather than converted. Current producer definitions govern schema validation; prior fingerprints are not compatibility alternatives. Existing durable data is retained for explicit recovery.
