@@ -2324,12 +2324,13 @@ class Handler(BaseHTTPRequestHandler):
             if not self._validate_memory_task_identity(canonical_root, effective_tenant, task_ids):
                 return False
             if scope is AgentScope.SESSION:
-                for name in ("session_id", "scope_id"):
-                    supplied = (query.get(name) or [None])[0]
-                    if supplied not in (None, "", effective_tenant):
-                        self._send(403, {"success": False, "error": "session identity does not match root scope", "error_code": "tenant_binding_mismatch", "terminal": True, "retryable": False})
-                        return False
-                query.update(scope_id=[effective_tenant], session_id=[effective_tenant])
+                session_id = (query.get("session_id") or [None])[0]
+                scope_id = (query.get("scope_id") or [None])[0]
+                if session_id and scope_id and session_id != scope_id:
+                    self._send(400, {"success": False, "error": "conflicting session identity", "terminal": True, "retryable": False})
+                    return False
+                session_identity = session_id or scope_id or effective_tenant
+                query.update(scope_id=[session_identity], session_id=[session_identity])
             return True
         if scope in {AgentScope.TASK, AgentScope.REPOSITORY, AgentScope.CLONE, AgentScope.WORKTREE, AgentScope.BRANCH} or any(str(value or "").strip() for value in scoped_values):
             self._send(400, {"success": False, "error": "root is required for repository or task memory", "error_code": "root_required", "terminal": True, "retryable": False})
@@ -2339,7 +2340,15 @@ class Handler(BaseHTTPRequestHandler):
         principal = self._authorization_tenant or self._principal_tenant()
         security = (getattr(APP, "config", {}) or {}).get("security", {}) if APP is not None else {}
         shared_token_configured = bool(security.get("api_token")) if isinstance(security, dict) else False
-        if scope is None or (scope is AgentScope.GLOBAL and shared_token_configured):
+        if scope is None:
+            session_id = (query.get("session_id") or [None])[0]
+            scope_id = (query.get("scope_id") or [None])[0]
+            if session_id and scope_id and session_id != scope_id:
+                self._send(400, {"success": False, "error": "conflicting session identity", "terminal": True, "retryable": False})
+                return False
+            session_identity = session_id or scope_id or principal
+            query.update(scope=[AgentScope.SESSION.value], scope_id=[session_identity], session_id=[session_identity], tenant=[principal])
+        elif scope is AgentScope.GLOBAL and shared_token_configured:
             query.update(scope=[AgentScope.SESSION.value], scope_id=[principal], session_id=[principal], tenant=[principal])
         else:
             query["tenant"] = [principal]
@@ -2792,8 +2801,11 @@ class Handler(BaseHTTPRequestHandler):
     def _get_bound_memory_record(self, payload: dict[str, Any], record_id: str) -> Any | None:
         scope_val = _parse_memory_scope(payload.get("scope"))
         scope_id_val = payload.get("scope_id")
-        root_val = payload.get("root")
-        repository_id_val = payload.get("repository_id")
+        requested_root = payload.get("root")
+        project_identity = self._memory_project_identity(requested_root)
+        if requested_root and project_identity is None:
+            return None
+        root_val, repository_id_val = project_identity or (None, None)
         tenant_val = payload.get("tenant")
         task_id_val = payload.get("task_id")
         session_id_val = payload.get("session_id")
@@ -7111,6 +7123,11 @@ class Handler(BaseHTTPRequestHandler):
                     )
                     if ambiguous_scope:
                         return None, "ambiguous memory scope identity"
+                    scope_id_val = self._bound_memory_scope_id(scope_val, scope_id_val, task_id_val)
+                    if scope_val is AgentScope.TASK:
+                        task_id_val = scope_id_val
+                    elif scope_val is AgentScope.SESSION:
+                        session_id_val = scope_id_val
                     if not _memory_lookup_has_identity(
                         scope_id_val,
                         root_val,

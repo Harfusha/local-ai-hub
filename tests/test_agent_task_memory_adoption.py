@@ -398,9 +398,9 @@ def test_task_memory_consumer_filters_foreign_tenant_from_leaky_store_results(
         trace_context.reset_context(token)
 
     compiled_ids = {
-        item.provenance["record_id"]
+        item.element_id
         for item in compiled.elements
-        if item.provenance and item.provenance.get("record_id")
+        if item.source_kind == "memory_record"
     }
     assert compiled_ids == {current.record_id}
     for state in (task, resumed):
@@ -711,9 +711,9 @@ def test_volatile_memory_requires_checkpoint_source_check_and_bundle_survives_ch
     with pytest.raises(CompletionGateError, match="requires checkpoint memory_audit"):
         tasks.transition(task.task_id, TaskStatus.COMPLETED, reason="complete", actor="test", idempotency_key="complete-no-audit")
     missing_source = TaskCheckpoint(state_data={"memory_audit": {"used_ids": [volatile.record_id]}})
-    with pytest.raises(CompletionGateError, match="lacks current-source check"):
+    with pytest.raises(CompletionGateError, match="lacks a current-source check"):
         tasks.checkpoint(task.task_id, missing_source, actor="test", idempotency_key="audit-without-source")
-    with pytest.raises(CompletionGateError, match="lacks current-source check"):
+    with pytest.raises(CompletionGateError, match="lacks a current-source check"):
         tasks.transition(task.task_id, TaskStatus.COMPLETED, reason="complete", actor="test", idempotency_key="complete-no-source", checkpoint=missing_source)
     invalid_source = TaskCheckpoint(state_data={
             "memory_audit": {
@@ -721,9 +721,9 @@ def test_volatile_memory_requires_checkpoint_source_check_and_bundle_survives_ch
                 "source_checks": {volatile.record_id: {"evidence_ids": "not-an-evidence-list"}},
             },
         })
-    with pytest.raises(CompletionGateError, match="lacks current-source check"):
+    with pytest.raises(CompletionGateError, match="lacks a current-source check"):
         tasks.checkpoint(task.task_id, invalid_source, actor="test", idempotency_key="audit-invalid-source")
-    with pytest.raises(CompletionGateError, match="lacks current-source check"):
+    with pytest.raises(CompletionGateError, match="lacks a current-source check"):
         tasks.transition(task.task_id, TaskStatus.COMPLETED, reason="complete", actor="test", idempotency_key="complete-invalid-source", checkpoint=invalid_source)
     tasks.checkpoint(
         task.task_id,
@@ -996,9 +996,9 @@ def test_unscoped_blackboard_is_unverified_and_cannot_bypass_task_memory_scope(t
 
     blackboard_element = next(item for item in compiled.elements if item.source_kind == "blackboard")
     compiled_memory_ids = {
-        item.provenance["record_id"]
+        item.element_id
         for item in compiled.elements
-        if item.provenance and item.provenance.get("record_id")
+        if item.source_kind == "memory_record"
     }
     assert blackboard_element.confidence < 0.5
     assert "unverified shared collaboration note" in blackboard_element.content.lower()

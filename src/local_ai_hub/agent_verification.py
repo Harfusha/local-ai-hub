@@ -921,6 +921,12 @@ class VerificationStore:
                 set_verification_store(self)
             else:
                 task_store.verification_store = self
+        # The verification schema is part of the task profile even when the
+        # caller does not attach task-completion integration callbacks.
+        if task_store is None:
+            from .agent_tasks import TaskStore
+
+            TaskStore(state_store)
         self._lock = threading.RLock()
         self._initialized = False
         self._init_tables()

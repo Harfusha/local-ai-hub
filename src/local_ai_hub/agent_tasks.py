@@ -811,11 +811,14 @@ class TaskStore:
                     if scope == "global":
                         if record_tenant and record_tenant != tenant:
                             continue
+                    elif scope == "repository":
+                        if (not tenant or record_tenant != tenant or not coordination_id
+                                or provenance.get("repository_id") != coordination_id):
+                            continue
                     else:
                         if (tenant and record_tenant != tenant) or (not tenant and record_tenant):
                             continue
                         expected_scope_ids = {
-                            "repository": root,
                             "clone": context.clone_id,
                             "worktree": context.worktree_id,
                             "branch": context.branch,
@@ -824,16 +827,10 @@ class TaskStore:
                         }
                         expected_scope_id = str(expected_scope_ids.get(str(scope), "") or "")
                         record_scope_id = str(getattr(record, "scope_id", "") or "")
-                        record_root = provenance.get("root") or provenance.get("repository_root")
-                        effective_scope_id = record_scope_id or str(record_root or "")
-                        if not expected_scope_id or (
-                            scope == "repository"
-                            and self._canonical_memory_root(expected_scope_id)
-                            != self._canonical_memory_root(effective_scope_id)
-                        ) or (scope != "repository" and expected_scope_id != record_scope_id):
+                        if not expected_scope_id or expected_scope_id != record_scope_id:
                             continue
                     record_root = provenance.get("root") or provenance.get("repository_root")
-                    if record_root and (
+                    if scope != "repository" and record_root and (
                         not root
                         or self._canonical_memory_root(record_root) != self._canonical_memory_root(root)
                     ):

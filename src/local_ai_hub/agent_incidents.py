@@ -278,13 +278,14 @@ class IncidentStore:
         with self._lock:
             if self._initialized or not self.state_store.enabled:
                 return
-            if self.state_store._initialized and self.state_store.db_path.exists():
-                if self.state_store.db_path.stat().st_size > 0:
-                    self.state_store._preflight_schema_read_only()
             self.state_store._ensure_schema()
             def _setup() -> None:
+                # Snapshot drift from another initializer is a transient busy
+                # result and belongs inside the existing bounded retry budget.
+                self.state_store._preflight_schema_read_only()
                 con = connect_sqlite(self.state_store.db_path)
                 try:
+                    con.execute("BEGIN IMMEDIATE")
                     with con:
                         con.execute(
                             """

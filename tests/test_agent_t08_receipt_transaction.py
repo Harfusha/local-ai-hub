@@ -169,7 +169,12 @@ def test_command_receipt_is_durable_and_allows_task_completion(tmp_path, monkeyp
 def test_failed_command_does_not_create_passed_verification_receipt(tmp_path):
     task_id = "failed-command-no-receipt"
     broker, verifier, _artifacts = _command_broker_for_task(tmp_path, task_id)
-    command = f'"{sys.executable}" -c "raise SystemExit(7)"'
+    command = _passing_test_command(tmp_path)
+    (tmp_path / "tests" / "test_receipt_fixture.py").write_text(
+        "import unittest\nclass FailingReceiptFixture(unittest.TestCase):\n"
+        "    def test_failure(self):\n        self.fail('intentional failure')\n",
+        encoding="utf-8",
+    )
 
     result = broker.run(
         command,
@@ -180,7 +185,7 @@ def test_failed_command_does_not_create_passed_verification_receipt(tmp_path):
     )
 
     assert result["success"] is False
-    assert result["exit_code"] == 7
+    assert result["exit_code"] == 1
     assert "verification_receipt" not in result
     assert "verification_receipt_warning" not in result
     completion = verifier.completion(task_id)

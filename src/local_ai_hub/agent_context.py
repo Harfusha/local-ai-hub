@@ -608,6 +608,7 @@ class ContextCompiler:
                 try:
                     records = find_for_context(
                         root=request.root,
+                        coordination_id=request.coordination_id,
                         task_id=request.task_id,
                         tenant=request.tenant,
                         session_id=request.session_id,
