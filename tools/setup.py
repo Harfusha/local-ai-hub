@@ -33,6 +33,9 @@ replace_install_payload = _update_transaction_module.replace_install_payload
 stop_existing_runtime = _update_transaction_module.stop_existing_runtime
 
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
+# Keep the lexical path for safety checks; ``resolve()`` would erase evidence of
+# a junction or symlink in one of the source checkout's ancestors.
+UPDATE_SOURCE_ROOT = Path(__file__).absolute().parents[1]
 SRC = SOURCE_ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
@@ -68,16 +71,22 @@ def log(message: str) -> None:
     print(f"[local-ai-hub] {message}")
 
 
-def run(cmd: list[str], *, check: bool = True, timeout: int | None = 120, capture: bool = False) -> subprocess.CompletedProcess[str]:
+def run(
+    cmd: list[str], *, check: bool = True, timeout: int | None = 120,
+    capture: bool = False, env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     # Windows CreateProcess does not resolve PATHEXT (notably npm.cmd).
     cmd = [shutil.which(str(cmd[0])) or str(cmd[0]), *cmd[1:]]
     log("$ " + " ".join(f'\"{x}\"' if " " in str(x) else str(x) for x in cmd))
-    return subprocess.run(
-        [str(x) for x in cmd], text=True, check=check, timeout=timeout,
-        stdout=subprocess.PIPE if capture else sys.stdout,
-        stderr=subprocess.PIPE if capture else sys.stderr,
-        encoding="utf-8", errors="replace",
-    )
+    options: dict[str, Any] = {
+        "text": True, "check": check, "timeout": timeout,
+        "stdout": subprocess.PIPE if capture else sys.stdout,
+        "stderr": subprocess.PIPE if capture else sys.stderr,
+        "encoding": "utf-8", "errors": "replace",
+    }
+    if env is not None:
+        options["env"] = env
+    return subprocess.run([str(x) for x in cmd], **options)
 
 
 def verify_source_revision(expected_revision: str, *, source_root: Path = SOURCE_ROOT) -> str:
@@ -171,7 +180,7 @@ def copy_install_tree(
         "RELEASE.json", "CONTRIBUTING.md", "SECURITY.md", "install.ps1", "install.sh",
     )
     success, detail = replace_install_payload(
-        SOURCE_ROOT, install_dir, config_source, file_names, before_commit=before_commit,
+        UPDATE_SOURCE_ROOT, install_dir, config_source, file_names, before_commit=before_commit,
     )
     log(detail if success else f"ERROR: {detail}")
     return success

@@ -65,6 +65,43 @@ class UpdateTransactionTests(unittest.TestCase):
         self.assertIn("not confirmed", unknown_detail)
         self.assertEqual(len(called), 1)
 
+    def test_stop_uses_installed_config_and_preserves_other_environment(self) -> None:
+        python = self.install / ".venv" / "python.exe"
+        service = self.install / "tools" / "service.py"
+        python.write_text("fake python", encoding="utf-8")
+        service.write_text("fake service", encoding="utf-8")
+        captured: dict[str, object] = {}
+
+        def runner(*args: object, **kwargs: object) -> SimpleNamespace:
+            captured.update(kwargs)
+            return SimpleNamespace(returncode=0)
+
+        with patch.dict("os.environ", {"LOCAL_AI_CONFIG": "foreign-config", "F31_KEEP": "keep-me"}):
+            stopped, detail = update_transaction.stop_existing_runtime(self.install, python, service, runner)
+
+        self.assertTrue(stopped, detail)
+        self.assertEqual(captured["env"]["LOCAL_AI_CONFIG"], str(self.install / "config.toml"))
+        self.assertEqual(captured["env"]["F31_KEEP"], "keep-me")
+
+    def test_stop_requires_regular_installed_config(self) -> None:
+        python = self.install / ".venv" / "python.exe"
+        service = self.install / "tools" / "service.py"
+        python.write_text("fake python", encoding="utf-8")
+        service.write_text("fake service", encoding="utf-8")
+        (self.install / "config.toml").unlink()
+        called = False
+
+        def runner(*args: object, **kwargs: object) -> SimpleNamespace:
+            nonlocal called
+            called = True
+            return SimpleNamespace(returncode=0)
+
+        stopped, detail = update_transaction.stop_existing_runtime(self.install, python, service, runner)
+
+        self.assertFalse(stopped)
+        self.assertIn("no regular installed config.toml", detail)
+        self.assertFalse(called)
+
     def test_staging_copy_failure_leaves_existing_payload_untouched(self) -> None:
         original_copytree = update_transaction.shutil.copytree
         stop_called = False
@@ -112,6 +149,45 @@ class UpdateTransactionTests(unittest.TestCase):
         self.assertEqual((self.install / "state" / "state.db").read_text(encoding="utf-8"), "state\n")
         self.assertEqual((self.install / "models" / "user.gguf").read_text(encoding="utf-8"), "model\n")
         self.assertEqual((self.install / ".venv" / "marker").read_text(encoding="utf-8"), "runtime\n")
+
+    def test_swap_rollback_reports_runtime_stays_stopped(self) -> None:
+        real_replace = update_transaction.os.replace
+
+        def fail_skills_swap(source: str | Path, destination: str | Path) -> None:
+            if Path(source).parent.name == "payload" and Path(source).name == "skills":
+                raise OSError("simulated payload swap failure")
+            real_replace(source, destination)
+
+        with patch.object(update_transaction.os, "replace", side_effect=fail_skills_swap):
+            success, detail = update_transaction.replace_install_payload(
+                self.source, self.install, self.config, ("requirements.txt",),
+                before_commit=lambda: (True, "stop confirmed"),
+            )
+
+        self.assertFalse(success)
+        self.assertIn("runtime remains stopped after rollback", detail)
+        self.assertIn("service restart skipped", detail)
+
+    def test_rejects_linked_install_and_source_ancestors(self) -> None:
+        install_alias = self.root / "install-alias"
+        source_alias = self.root / "source-alias"
+        try:
+            install_alias.symlink_to(self.install, target_is_directory=True)
+            source_alias.symlink_to(self.source, target_is_directory=True)
+        except OSError as exc:
+            self.skipTest(f"directory symlinks unavailable: {exc}")
+
+        unsafe_install, install_detail = update_transaction.replace_install_payload(
+            self.source, install_alias, self.config, ("requirements.txt",),
+        )
+        unsafe_source, source_detail = update_transaction.replace_install_payload(
+            source_alias, self.install, self.config, ("requirements.txt",),
+        )
+
+        self.assertFalse(unsafe_install)
+        self.assertIn("link or junction", install_detail)
+        self.assertFalse(unsafe_source)
+        self.assertIn("link or junction", source_detail)
 
     def test_stop_failure_blocks_live_swap_and_keeps_old_payload(self) -> None:
         success, detail = update_transaction.replace_install_payload(
