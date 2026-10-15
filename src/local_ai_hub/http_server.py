@@ -8079,6 +8079,13 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, APP.agent_state_store.import_delta(events)); return
             if 'post_task_vision_1' in post_route_ids:
                 self._send(200, APP.services.vision(payload, tenant)); return
+            if 'post_task_browser_1' in post_route_ids:
+                from .browser_bridge import capture_browser_page
+                result = capture_browser_page(
+                    payload.get("url", ""), artifacts=APP.artifacts, tenant=tenant,
+                    state_dir=APP.config["server"]["state_dir"], viewport=payload.get("viewport"),
+                )
+                self._send(200, result); return
             if 'post_repo_split_changes_1' in post_route_ids:
                 root = str(payload.get("root", "."))
                 paths = payload.get("paths", payload.get("changed_files"))

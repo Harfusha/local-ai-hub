@@ -112,7 +112,7 @@ _REPO_ACTIONS = (
 _TASK_ACTIONS = (
     "delegate", "explore", "reason", "continue", "review", "second_opinion", "compress", "route", "batch",
     "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report", "submit", "status", "wait",
-    "result", "cancel", "candidate_create", "candidate_promote", "speculative_draft", "vision", "transcribe",
+    "result", "cancel", "candidate_create", "candidate_promote", "speculative_draft", "vision", "transcribe", "browser",
     "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold",
 )
 _RAG_ACTIONS = ("index", "search", "list", "docset_index", "docset_search", "ingest_document", "ingest_diagram")
@@ -228,6 +228,7 @@ _REPO_CONDITIONS = {
 }
 _ACTION_SCOPED_FIELDS = {
     "local_ai_task": {
+        "url": frozenset({"browser"}),
         **{
             name: frozenset({"delegate", "explore", "reason", "review", "second_opinion", "compress"})
             for name in ("phase", "focus", "preload_profile", "repository_revision", "changed_paths")
@@ -395,9 +396,11 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
         action_effects={
             "submit": "durable_job", "cancel": "durable_job", "candidate_create": "candidate_store",
             "candidate_promote": "candidate_store", "evaluation_record": "evaluation_store",
+            "browser": "browser_capture",
         },
         properties={
             "action": {"type": "string"},
+            "url": {"type": "string", "maxLength": 4096, "description": "Loopback HTTP(S) URL for bounded DOM and screenshot capture in the shared daemon."},
             "delivery": {"type": "string", "enum": ["sync", "async", "auto"], "default": "sync"},
             "phase": {"type": "string", "default": ""},
             "focus": {"type": "array", "items": {"type": "string"}},

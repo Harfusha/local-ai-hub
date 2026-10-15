@@ -2097,6 +2097,7 @@ def local_ai_task(
     computed_style_data: str | dict[str, Any] | None = None,
     runtime_context: str | dict[str, Any] | None = None,
     viewport: dict[str, Any] | None = None,
+    url: str = "",
     page: dict[str, Any] | None = None,
     complexity: str = "auto",
     max_tokens: int = 0,
@@ -2425,6 +2426,15 @@ def local_ai_task(
             if value is not None:
                 payload[name] = value
         return _compact(CLIENT.post("/api/task/vision", payload, timeout=_timeout("model")), "delegate")
+    if action == "browser":
+        capture = CLIENT.post("/api/task/browser", {"url": url, "viewport": viewport}, timeout=_timeout("quick"))
+        return _compact(
+            capture,
+            "general",
+            extra_fields=["url", "title", "dom_snapshot", "dom_truncated", "dom_preview_truncated",
+                          "dom_artifact_id", "screenshot_artifact_id", "screenshot_mime_type", "screenshot_size_bytes",
+                          "network_requests_denied"],
+        )
     if action == "transcribe":
         transcribe_payload = {
             "audio_path": candidate or context or task or prompt,

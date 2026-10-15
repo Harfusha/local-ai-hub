@@ -207,6 +207,7 @@ Trigger map:
 - symbol or code-relationship questions: `local_ai_repo` semantic actions (Serena symbol navigation); indexed fallback remains available
 - Agent OS task and incident state: `local_ai_status(detail="agent_state")`
 - image understanding/frontend review via `qwen3-vl:4b`: `local_ai_task(action="vision")`
+- headless DOM and screenshot capture: `local_ai_task(action="browser", url="http://localhost:3000")`. The shared daemon runs at most two captures, using installed Chrome/Chromium (`LOCAL_AI_CHROME` may select its executable). A controlled proxy restricts HTTP(S) destinations, redirects, and subresources to literal loopback addresses; HTTP inspection permits GET/HEAD/OPTIONS without request bodies. Each capture has a 20-second browser timeout, a 1 MB DOM cap, and an 8 MiB PNG cap. The response contains a bounded DOM preview, `dom_artifact_id`, and `screenshot_artifact_id`; retrieve complete stored payloads with `local_ai_artifact`. Optional `viewport` dimensions are bounded to 320–3840 by 240–2160. No browser installation or model pull occurs automatically.
 - audio transcription: `local_ai_task(action="transcribe")`
 - local-model or device benchmarking: `local_ai_task` benchmark actions
 - model/prompt evaluation and drift checks: `local_ai_task` evaluation actions
