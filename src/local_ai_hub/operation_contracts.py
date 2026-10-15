@@ -232,6 +232,11 @@ _ACTION_SCOPED_FIELDS = {
     },
     "local_ai_repo": {
         **{
+            name: frozenset({"git_history_search"})
+            for name in ("max_commits", "author", "since", "until")
+        },
+        "days": frozenset({"hotspots"}),
+        **{
             name: frozenset({"context_compile", "context"})
             for name in (
                 "include_diagnostics", "clone_id", "worktree_id", "branch",
@@ -242,7 +247,7 @@ _ACTION_SCOPED_FIELDS = {
         "is_worktree": frozenset({"preprocess"}),
         "parent_root": frozenset({"preprocess"}),
         "path_hints": frozenset({"search", "context"}),
-        "limit": frozenset({"search", "code_index", "callers", "callees", "implementations"}),
+        "limit": frozenset({"search", "code_index", "callers", "callees", "implementations", "hotspots"}),
         "offset": frozenset({"search", "code_index", "callers", "callees", "implementations"}),
         "directory_hints": frozenset({"context"}),
         "exclude_paths": frozenset({"context"}),
@@ -278,7 +283,6 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
         "local_ai_repo", "repo", "action", _REPO_ACTIONS, timeout="action-specific: search max 120s, other quick 180s, context 600s, model 1800s, long 2400s",
         projection="repository result", action_requirements=_REPO_CONDITIONS,
         required={
-            "git_history_search": ("query",),
             "verify_receipt": ("receipt",),
             "ast_outline": ("path",),
             "profile_digest": ("path",),
@@ -306,7 +310,6 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "type_stubs": ("path",),
         },
         non_empty={
-            "git_history_search": ("query",),
             "ast_outline": ("path",),
             "profile_digest": ("path",),
             "generate_types": ("path",),
@@ -337,6 +340,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "git_history_search": (
                 "root", "query", "max_commits", "author", "since", "until", "path",
             ),
+            "hotspots": ("root", "days", "limit"),
             "ast_outline": ("root", "path"),
             "affected_tests": ("root", "path"),
             "code_invariants": ("root", "path"),
@@ -414,6 +418,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "task_id": {"type": "string", "default": ""},
             "include_code": {"type": "boolean", "default": False},
             "limit": {"type": "integer", "minimum": 1, "maximum": MAX_PAGE_SIZE, "default": 24},
+            "days": {"type": "integer", "minimum": 1, "maximum": 3650, "default": 30},
             "offset": {"type": "integer", "minimum": 0, "maximum": MAX_PAGE_WINDOW - 1, "default": 0},
             "include_diagnostics": {"type": "boolean", "default": False},
             **{name: {"type": "string", "default": ""} for name in (
@@ -1456,6 +1461,19 @@ def operation_parameters_schema(tool: str, features: Any = None) -> dict[str, An
             }
             for action, row in required_actions
         ]
+    if tool == "local_ai_repo" and "hotspots" in available_actions:
+        parameters.setdefault("allOf", []).append({
+            "if": {
+                "properties": {selector_field: {"const": "hotspots"}},
+                "required": [selector_field],
+            },
+            "then": {
+                "properties": {
+                    "days": {"type": "integer", "minimum": 1, "maximum": 3650, "default": 30},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 20},
+                },
+            },
+        })
     if tool == "local_ai_artifact":
         parameters.setdefault("allOf", []).append({
             "if": {
@@ -1639,6 +1657,13 @@ def validate_operation_arguments(
         )
         if bounds_error:
             return bounds_error
+    if tool == "local_ai_repo" and action == "hotspots":
+        days = arguments.get("days", 30)
+        limit = arguments.get("limit", 20)
+        if isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= 3650:
+            return "days must be an integer from 1 to 3650 for action='hotspots'"
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 50:
+            return "limit must be an integer from 1 to 50 for action='hotspots'"
     if tool == "local_ai_artifact" and action == "source" and "max_chars" in arguments:
         max_chars = arguments["max_chars"]
         if isinstance(max_chars, bool) or not isinstance(max_chars, int) or not 512 <= max_chars <= 12000:

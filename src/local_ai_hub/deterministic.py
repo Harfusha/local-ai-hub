@@ -497,9 +497,6 @@ class DeterministicEngine:
             CREATE INDEX IF NOT EXISTS idx_test_source_links_src ON test_source_links(root, source_path);
             CREATE INDEX IF NOT EXISTS idx_test_source_links_test ON test_source_links(root, test_path);
 
-            CREATE TABLE IF NOT EXISTS hotspots_cache(
-              root TEXT NOT NULL, days INTEGER NOT NULL, cached_at REAL NOT NULL,
-              data_json TEXT NOT NULL, PRIMARY KEY(root, days));
             """
         )
         try:
@@ -4421,9 +4418,14 @@ class DeterministicEngine:
                 opened_path.relative_to(canonical_root)
                 source = os.fdopen(fd, "rb", buffering=0)
                 fd = -1
+                deadline_expired_during_read = False
                 with source:
                     remaining_read = reservation
                     while remaining_read:
+                        if time.monotonic() >= deadline:
+                            incomplete.add("analysis_deadline")
+                            deadline_expired_during_read = True
+                            break
                         chunk = source.read(min(65_536, remaining_read))
                         if not chunk:
                             break
@@ -4431,6 +4433,8 @@ class DeterministicEngine:
                         total_bytes += len(chunk)
                         remaining_read -= len(chunk)
                     after = os.fstat(source.fileno())
+                if deadline_expired_during_read:
+                    continue
                 current_path_stat = os.stat(full_p, follow_symlinks=False)
                 current_path = full_p.resolve(strict=True)
                 current_path.relative_to(canonical_root)
@@ -4464,9 +4468,15 @@ class DeterministicEngine:
                     os.close(fd)
             comp_score = 1
             loc = 0
+            if time.monotonic() >= deadline:
+                incomplete.add("analysis_deadline")
+                continue
             try:
                 loc = len(content.splitlines())
                 if full_p.suffix == ".py":
+                    if time.monotonic() >= deadline:
+                        incomplete.add("analysis_deadline")
+                        continue
                     tree = ast.parse(content, filename=file_rel)
                     for node in ast.walk(tree):
                         if isinstance(node, (ast.If, ast.For, ast.While, ast.Try, ast.ExceptHandler, ast.With, ast.Match)):
