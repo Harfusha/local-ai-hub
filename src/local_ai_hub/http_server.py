@@ -90,6 +90,7 @@ from .agent_tasks import (
     CompletionGateError,
     GoalContract,
     InvalidTransitionError,
+    TaskWorktreeError,
     TaskCheckpoint,
     TaskStatus,
 )
@@ -6265,6 +6266,12 @@ class Handler(BaseHTTPRequestHandler):
                             "retryable": False,
                         }); return
                 if action == "create":
+                    auto_worktree = payload.get("auto_worktree", False)
+                    if not isinstance(auto_worktree, bool):
+                        self._send(400, {
+                            "success": False, "error": "auto_worktree must be a boolean",
+                            "terminal": True, "retryable": False,
+                        }); return
                     contract_data = payload.get("contract") or {}
                     if not contract_data:
                         goal = str(
@@ -6274,7 +6281,6 @@ class Handler(BaseHTTPRequestHandler):
                             or payload.get("summary")
                             or payload.get("intent")
                             or payload.get("prompt")
-                            or payload.get("value")
                             or payload.get("query")
                             or payload.get("task")
                             or (f"Task {payload.get('task_id')}" if payload.get("task_id") else "")
@@ -6306,7 +6312,6 @@ class Handler(BaseHTTPRequestHandler):
                             or contract_data.get("intent")
                             or payload.get("goal")
                             or payload.get("title")
-                            or payload.get("value")
                             or payload.get("query")
                             or payload.get("task")
                             or ""
@@ -6328,7 +6333,7 @@ class Handler(BaseHTTPRequestHandler):
                             task_id=str(payload.get("task_id", "") or ""),
                             actor=actor,
                             idempotency_key=idempotency_key,
-                            auto_worktree=bool(payload.get("auto_worktree", False)),
+                            auto_worktree=auto_worktree,
                             repo_root=str(payload.get("repo_root", "")),
                             response_budget_tokens=payload.get("response_budget_tokens"),
                         )
@@ -6340,20 +6345,31 @@ class Handler(BaseHTTPRequestHandler):
                                                 "required_tokens": exc.required_tokens,
                                                 "unit": "estimated_tokens"},
                         }); return
+                    except TaskWorktreeError as exc:
+                        error_payload = {
+                            "success": False, "error": str(exc), "terminal": True, "retryable": False,
+                        }
+                        if exc.mutation_applied is not None:
+                            error_payload["mutation_applied"] = exc.mutation_applied
+                        error_payload["operation_not_started"] = exc.operation_not_started
+                        if exc.outcome_unknown:
+                            error_payload["outcome_unknown"] = True
+                        if exc.cleanup_succeeded is not None:
+                            error_payload["cleanup_succeeded"] = exc.cleanup_succeeded
+                        self._send(409 if exc.operation_not_started else 500, error_payload); return
                     except ValueError as exc:
                         self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                     # A prediction is optional and must never fail task persistence.
-                    warmup_scheduled = False
                     try:
                         warm = getattr(APP.services, "schedule_task_context_warmup", None)
                         if callable(warm):
                             paths = payload.get("changed_paths")
                             if paths is not None and (not isinstance(paths, list) or any(not isinstance(p, str) for p in paths)):
                                 paths = None
-                            warmup_scheduled = warm(task, root=repo_root, tenant=tenant, changed_paths=paths)
+                            warm(task, root=repo_root, tenant=tenant, changed_paths=paths)
                     except Exception:
                         pass
-                    self._send(200, {"success": True, "task": task.to_dict(), "context_warmup_scheduled": bool(warmup_scheduled)}); return
+                    self._send(200, {"success": True, "task": task.to_dict()}); return
                 if action == "get":
                     task = APP.agent_tasks.get(str(payload.get("task_id", "")))
                     if not task:
@@ -6437,7 +6453,7 @@ class Handler(BaseHTTPRequestHandler):
                             root=root,
                             state_dir=verification_store.state_store.db_path.parent,
                             current_revision=current_revision,
-                            reason=str(payload.get("reason", payload.get("value", "completed by agent"))),
+                            reason=str(payload.get("reason", "completed by agent")),
                             actor=actor,
                             idempotency_key=idempotency_key,
                             response_budget_tokens=payload.get("response_budget_tokens"),
@@ -6457,7 +6473,7 @@ class Handler(BaseHTTPRequestHandler):
                     try:
                         task = APP.agent_tasks.fail(
                             str(payload.get("task_id", "")),
-                            reason=str(payload.get("reason", payload.get("value", payload.get("error", "failed by agent")))),
+                            reason=str(payload.get("reason", "failed by agent")),
                             actor=actor,
                             idempotency_key=idempotency_key,
                             response_budget_tokens=payload.get("response_budget_tokens"),
@@ -6474,16 +6490,12 @@ class Handler(BaseHTTPRequestHandler):
                     except (KeyError, ValueError, CompletionGateError) as exc:
                         self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
                 if action == "checkpoint":
-                    chk_data = payload.get("checkpoint") or {}
-                    if not chk_data:
-                        chk_data = {
-                            "phase": str(payload.get("phase") or payload.get("value") or payload.get("status") or ""),
-                            "next_action": str(payload.get("next_action") or payload.get("query") or ""),
-                            "affected_paths": payload.get("affected_paths") or payload.get("paths") or [],
-                            "evidence_ids": payload.get("evidence_ids") or [],
-                            "blockers": payload.get("blockers") or [],
-                            "state_data": payload.get("state_data") or {},
-                        }
+                    chk_data = payload.get("checkpoint")
+                    if not isinstance(chk_data, dict):
+                        self._send(400, {
+                            "success": False, "error": "checkpoint must be an object",
+                            "terminal": True, "retryable": False,
+                        }); return
                     checkpoint = TaskCheckpoint.from_dict(chk_data)
                     try:
                         task = APP.agent_tasks.checkpoint(

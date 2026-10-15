@@ -3970,11 +3970,11 @@ def local_ai_coord(
             "root": root, "ttl_seconds": ttl_seconds, "include_stale": include_stale,
         }
         if action in {"task_create", "task_checkpoint", "task_fail", "task_transition", "task_complete"}:
-            requested, _, _, budget_enabled = _response_budget("task_checkpoint", {
+            requested, _, _, budget_enabled = _response_budget(action, {
                 "max_response_tokens": max_response_tokens,
                 "response_profile": response_profile,
                 "reuse_key": reuse_key,
-                "tool": "local_ai_coord",
+                "tool": action,
             })
             try:
                 explicit_limit = int(max_response_tokens or 0)

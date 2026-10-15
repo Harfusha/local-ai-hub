@@ -2174,6 +2174,11 @@ def prepare_git_worktree(
     if not base_sha:
         raise ValueError("worktree base commit could not be resolved")
     creator = process_identity(os.getpid()) or {}
+    required_creator_fields = (
+        "pid", "creation_identity", "creation_identity_type", "executable",
+    )
+    if any(not creator.get(key) for key in required_creator_fields):
+        raise ValueError("worktree creator identity could not be established")
     return PreparedGitWorktree(
         repo_root=str(repo), base_commit_ref=str(base_commit), base_commit_sha=base_sha,
         branch=branch, worktree_path=str(target), lease_id=lease_id, worktree_id=worktree_id,
@@ -2201,9 +2206,13 @@ def create_git_worktree(
     """Create an isolated temporary Git worktree for safe agent modifications."""
     repo = Path(repo_root).expanduser().resolve(strict=False)
     if not (repo / ".git").exists():
-        return {"success": False, "error": f"not a git repository: {repo}"}
+        return {"success": False, "error": f"not a git repository: {repo}",
+                "mutation_applied": False, "operation_not_started": True,
+                "outcome_unknown": False}
     if not shutil.which("git"):
-        return {"success": False, "error": "git executable not found in PATH"}
+        return {"success": False, "error": "git executable not found in PATH",
+                "mutation_applied": False, "operation_not_started": True,
+                "outcome_unknown": False}
 
     import math
     import tempfile
@@ -2215,17 +2224,23 @@ def create_git_worktree(
         task_id_value = str(task_id)
         owner_value = str(owner)
     except Exception as exc:
-        return {"success": False, "error": f"invalid worktree metadata: {exc}"}
+        return {"success": False, "error": f"invalid worktree metadata: {exc}",
+                "mutation_applied": False, "operation_not_started": True,
+                "outcome_unknown": False}
     if (
         not math.isfinite(created_at_value)
         or not math.isfinite(ttl_value)
         or (expires_at_value is not None and not math.isfinite(expires_at_value))
     ):
-        return {"success": False, "error": "invalid worktree metadata: values must be finite"}
+        return {"success": False, "error": "invalid worktree metadata: values must be finite",
+                "mutation_applied": False, "operation_not_started": True,
+                "outcome_unknown": False}
     ttl_value = max(60.0, min(ttl_value, 30 * 24 * 60 * 60.0))
     if prepared_plan is not None:
         if not isinstance(prepared_plan, PreparedGitWorktree):
-            return {"success": False, "error": "invalid prepared worktree plan"}
+            return {"success": False, "error": "invalid prepared worktree plan",
+                    "mutation_applied": False, "operation_not_started": True,
+                    "outcome_unknown": False}
         if (
             prepared_plan.repo_root != str(repo)
             or prepared_plan.base_commit_ref != str(base_commit)
@@ -2241,7 +2256,9 @@ def create_git_worktree(
             or prepared_plan.worktree_path != str(Path(tempfile.gettempdir()).resolve(strict=False) / f"lah_wt_{prepared_plan.worktree_id}")
             or (branch_name is None and prepared_plan.branch != f"lease/{prepared_plan.lease_id}")
         ):
-            return {"success": False, "error": "prepared worktree plan does not match create request"}
+            return {"success": False, "error": "prepared worktree plan does not match create request",
+                    "mutation_applied": False, "operation_not_started": True,
+                    "outcome_unknown": False}
         lease_id = prepared_plan.lease_id
         worktree_id = prepared_plan.worktree_id
         branch = prepared_plan.branch
@@ -2255,21 +2272,35 @@ def create_git_worktree(
     else:
         raw_target = Path(worktree_path).expanduser()
         if ".." in raw_target.parts:
-            return {"success": False, "error": "worktree path traversal is not allowed"}
+            return {"success": False, "error": "worktree path traversal is not allowed",
+                    "mutation_applied": False, "operation_not_started": True,
+                    "outcome_unknown": False}
         target_dir = raw_target.resolve(strict=False)
     try:
         target_dir.relative_to(temp_root)
     except ValueError:
-        return {"success": False, "error": "worktree path escapes the temporary root"}
+        return {"success": False, "error": "worktree path escapes the temporary root",
+                "mutation_applied": False, "operation_not_started": True,
+                "outcome_unknown": False}
 
     if prepared_plan is not None:
         if str(target_dir) != prepared_plan.worktree_path or target_dir.exists() or target_dir.is_symlink():
-            return {"success": False, "error": "prepared worktree target changed before creation"}
-        current_base = run_hidden(
-            ["git", "-C", str(repo), "rev-parse", "--verify", f"{base_commit}^{{commit}}"],
-            capture_output=True, text=True, check=False, timeout=5, **hidden_run_kwargs(),
-        )
-        current_creator = process_identity(os.getpid()) or {}
+            return {"success": False, "error": "prepared worktree target changed before creation",
+                    "mutation_applied": False, "operation_not_started": True,
+                    "outcome_unknown": False}
+        try:
+            current_base = run_hidden(
+                ["git", "-C", str(repo), "rev-parse", "--verify", f"{base_commit}^{{commit}}"],
+                capture_output=True, text=True, check=False, timeout=5, **hidden_run_kwargs(),
+            )
+            current_creator = process_identity(os.getpid()) or {}
+        except Exception as exc:
+            return {
+                "success": False,
+                "error": f"prepared worktree identity could not be revalidated: {type(exc).__name__}",
+                "mutation_applied": False, "operation_not_started": True,
+                "outcome_unknown": False,
+            }
         expected_creator = {
             "pid": prepared_plan.creator_pid,
             "creation_identity": prepared_plan.creator_creation_identity,
@@ -2279,9 +2310,13 @@ def create_git_worktree(
         if (
             current_base.returncode != 0
             or current_base.stdout.strip() != prepared_plan.base_commit_sha
-            or any(current_creator.get(key) != value for key, value in expected_creator.items())
+            or any(not value or current_creator.get(key) != value for key, value in expected_creator.items())
         ):
-            return {"success": False, "error": "prepared worktree identity changed before creation"}
+            return {
+                "success": False, "error": "prepared worktree identity changed before creation",
+                "mutation_applied": False, "operation_not_started": True,
+                "outcome_unknown": False,
+            }
     add_base = prepared_plan.base_commit_sha if prepared_plan is not None else base_commit
     cmd = ["git", "-C", str(repo), "worktree", "add", "-b", branch, str(target_dir), add_base]
     created_checkout = False
@@ -2292,6 +2327,9 @@ def create_git_worktree(
                 "success": False,
                 "error": completed.stderr.strip() or "failed to create git worktree",
                 "exit_code": completed.returncode,
+                "mutation_applied": None,
+                "operation_not_started": False,
+                "outcome_unknown": True,
             }
         created_checkout = True
         metadata_path = _worktree_ownership_path(target_dir)
@@ -2353,16 +2391,33 @@ def create_git_worktree(
             "creator_executable": creator.get("executable") if creator else None,
         }
     except Exception as exc:
+        cleanup_succeeded = False
+        cleanup_outcome_unknown = False
         if created_checkout:
-            run_hidden(
-                ["git", "-C", str(repo), "worktree", "remove", str(target_dir)],
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=30,
-                **hidden_run_kwargs(),
-            )
-        return {"success": False, "error": str(exc)}
+            try:
+                removed = run_hidden(
+                    ["git", "-C", str(repo), "worktree", "remove", str(target_dir)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    timeout=30,
+                    **hidden_run_kwargs(),
+                )
+                # `worktree remove` leaves the created branch in place. Report
+                # the attempted cleanup honestly; deleting a branch here could
+                # erase work another actor added after worktree creation.
+                cleanup_succeeded = False
+                cleanup_outcome_unknown = removed.returncode != 0
+            except Exception:
+                cleanup_outcome_unknown = True
+        return {
+            "success": False,
+            "error": str(exc),
+            "mutation_applied": True if created_checkout else None,
+            "operation_not_started": False,
+            "outcome_unknown": cleanup_outcome_unknown or not created_checkout,
+            "cleanup_succeeded": cleanup_succeeded if created_checkout else None,
+        }
 
 
 def _git_value(
