@@ -292,8 +292,19 @@ class LlamaCppManagedRuntime:
         fast_model = str((self.config.get("models", {}) or {}).get("fast_code", "qwen2.5-coder:1.5b"))
         if isinstance(configured, dict) and isinstance(configured.get(fast_model), dict):
             default_alias = str(configured[fast_model].get("served_model", fast_model))
-        for alias, _logical in aliases:
-            sections.extend([f"[{alias}]", f'model = "{path_value}"', f'alias = "{alias}"', f"load-on-startup = {'true' if alias == default_alias else 'false'}", ""])
+        for alias, logical in aliases:
+            entry = configured.get(logical, {}) if isinstance(configured, dict) else {}
+            raw_context = entry.get("context_length", 0) if isinstance(entry, dict) else 0
+            try:
+                context_length = int(raw_context or 0)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"Invalid llama.cpp context_length for {logical}") from exc
+            if context_length < 0 or isinstance(raw_context, bool):
+                raise ValueError(f"Invalid llama.cpp context_length for {logical}")
+            sections.extend([f"[{alias}]", f'model = "{path_value}"', f'alias = "{alias}"', f"load-on-startup = {'true' if alias == default_alias else 'false'}"])
+            if context_length:
+                sections.append(f"ctx-size = {context_length}")
+            sections.append("")
         (self.runtime_dir / "hub.models.ini").write_text("\n".join(sections), encoding="utf-8")
 
     def _port_and_url(self) -> tuple[int, str]:
