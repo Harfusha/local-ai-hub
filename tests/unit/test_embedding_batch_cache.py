@@ -111,6 +111,48 @@ def test_embedding_encode_cold_batch_uses_one_sqlite_batch_read(tmp_path: Path, 
     assert per_key_reads == []
 
 
+def test_embedding_encode_rejects_cache_without_batch_write_contract(tmp_path: Path):
+    from local_ai_hub.embeddings import EmbeddingModel
+
+    class DeterministicBackend:
+        prompts = {}
+
+    model = EmbeddingModel(
+        {
+            "server": {"state_dir": str(tmp_path)},
+            "models": {"embedding": "test-model", "embedding_backend": "sentence-transformers"},
+            "cache": {"embeddings": True},
+        }
+    )
+    model._model = DeterministicBackend()
+    model._active_cache_identity = "sentence-transformers:cpu:test-model"
+    model.active_backend = "sentence-transformers"
+    model.active_device = "cpu"
+    model._loaded_model_name = "test-model"
+    model._encode_st_batch = lambda texts, **_kwargs: (
+        [[float(len(text)), 1.0] for text in texts],
+        "sentence-transformers",
+    )
+    single_writes: list[tuple[str, object]] = []
+
+    underlying_cache = model.cache
+
+    class SingleWriteOnlyCache:
+        def get_many(self, keys):
+            return underlying_cache.get_many(keys)
+
+        def set(self, key, value):
+            single_writes.append((key, value))
+
+    model.cache = SingleWriteOnlyCache()
+
+    result = model.encode(["contract check"])
+
+    assert result["success"] is False
+    assert "batch writes" in result["error"]
+    assert single_writes == []
+
+
 def test_embedding_encode_invalid_final_vector_writes_no_cache_cohort(tmp_path: Path, monkeypatch):
     from local_ai_hub.embeddings import EmbeddingModel
 

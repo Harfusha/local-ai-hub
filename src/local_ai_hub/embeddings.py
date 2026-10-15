@@ -891,11 +891,13 @@ class EmbeddingModel:
             )
         if pending_cache_writes:
             batch_writer = getattr(self.cache, "set_many", None)
-            if callable(batch_writer):
-                batch_writer(pending_cache_writes)
-            else:
-                for key, cached_vector in pending_cache_writes.items():
-                    self.cache.set(key, cached_vector)
+            if not callable(batch_writer):
+                return {
+                    "success": False,
+                    "error": "embedding cache does not support batch writes",
+                    "model": self.model_name,
+                }
+            batch_writer(pending_cache_writes)
         execution_snapshot = getattr(self._execution_local, "snapshot", None)
         provenance = self._model_provenance(response_cache_identity)
         if used_backend == "ollama":
