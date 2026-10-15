@@ -254,6 +254,8 @@ _ACTION_SCOPED_FIELDS = {
         "receipt": frozenset({"verify_receipt"}),
         "old_symbol": frozenset({"ast_refactor"}),
         "new_symbol": frozenset({"ast_refactor"}),
+        "old_code": frozenset({"semantic_diff"}),
+        "new_code": frozenset({"semantic_diff"}),
     },
 }
 OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
@@ -288,6 +290,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "symbol": {"type": "string"},
             "old_symbol": {"type": ["string", "null"], "default": None, "maxLength": 512},
             "new_symbol": {"type": ["string", "null"], "default": None, "maxLength": 512},
+            "old_code": {"type": ["string", "null"], "default": None, "maxLength": 1_048_576},
+            "new_code": {"type": ["string", "null"], "default": None, "maxLength": 1_048_576},
             "path": {"type": "string", "default": ""},
             "task": {"type": "string", "default": ""},
             "task_id": {"type": "string", "default": ""},

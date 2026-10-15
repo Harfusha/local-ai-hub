@@ -2810,6 +2810,8 @@ def _local_ai_repo_impl(
     offset: int = 0,
     old_symbol: str | None = None,
     new_symbol: str | None = None,
+    old_code: str | None = None,
+    new_code: str | None = None,
 ) -> dict[str, Any]:
     """Primary bounded repository worker for the main agent.
 
@@ -3268,6 +3270,16 @@ def _local_ai_repo_impl(
     if action in {"cross_project_impact", "cross_repo_impact"}:
         return _compact(CLIENT.post("/api/cross_project_impact", {"roots": [root] if root else [], "symbol": query or task}, timeout=_timeout("quick")), "impact")
     if action in {"call_graph_diff", "semantic_diff"}:
+        if action == "semantic_diff" and (old_code is not None or new_code is not None):
+            if old_code is None or new_code is None:
+                return contract_error("semantic_diff requires both old_code and new_code")
+            return _compact(CLIENT.post("/api/repo/call_graph_diff", {
+                "root": root, "old_code": old_code, "new_code": new_code,
+            }, timeout=_timeout("quick")), "impact", extra_fields=[
+                "changes", "tree", "summary", "source_hashes", "structural_equal", "formatting_only",
+                "logic_edits_detected", "behavior_equivalence_proven", "changes_total", "changes_returned",
+                "artifact_id", "truncated", "tree_in_artifact", "ambiguous_rename_groups", "ambiguous_identity_groups",
+            ])
         return _compact(CLIENT.post("/api/repo/call_graph_diff", {"root": root or ".", "diff": diff or "" if diff else None}, timeout=_timeout("quick")), "impact")
     if action == "code_invariants":
         return _compact(CLIENT.post("/api/repo/code_invariants", {
@@ -3467,6 +3479,8 @@ def local_ai_repo(
     offset: int = 0,
     old_symbol: str | None = None,
     new_symbol: str | None = None,
+    old_code: str | None = None,
+    new_code: str | None = None,
 ) -> dict[str, Any]:
     """Primary bounded repository worker. Use when: indexed repository evidence is needed. Skip when: fresh evidence already answers it."""
     root = root if root is not None else cwd if cwd is not None else "."
@@ -3523,7 +3537,7 @@ def local_ai_repo(
         include_diagnostics, clone_id, worktree_id, branch, repository_id, session_id, repository_revision,
         changed_paths, phase, focus, preload_profile, guarded, since_hash, approval, override_reason,
         token_budget, is_worktree, parent_root, steps, limit=limit, offset=offset,
-        old_symbol=old_symbol, new_symbol=new_symbol, **forward,
+        old_symbol=old_symbol, new_symbol=new_symbol, old_code=old_code, new_code=new_code, **forward,
     )
 
 

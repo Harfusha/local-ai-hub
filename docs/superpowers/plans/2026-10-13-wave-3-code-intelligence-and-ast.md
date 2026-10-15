@@ -238,12 +238,16 @@ In `resolve_imports`, verify that the imported symbol is present in the target m
 
 ### Task 49: Visual AST Diff for Structural Refactoring (#60)
 
+**2026-10-15 source implementation — no execution/validation yet.** Added bounded Python `ast_diff(old_code,new_code)` in a dedicated module, exposed through `DeterministicEngine.ast_diff` and the existing `semantic_diff` MCP/HTTP path. The explicit source-pair fields are action-scoped; omission retains the existing call-graph diff. Matching uses exact own-structure fingerprints under qualified identities and unique rename fingerprints, excluding nested definitions from their parent's own-logic fingerprint. Reordering compares surviving siblings so insertion alone does not invent moves. Duplicate/ambiguous correspondences remain conservative additions/removals. Results include source hashes, locations, change counts and a qualified-scope tree; `behavior_equivalence_proven` is always false. Module-level edits remain visible.
+
+Inputs are capped at 1 MiB UTF-8 each, 20,000 AST nodes, AST depth 128, definition depth 32 and 1,000 definitions per side. The shared HTTP daemon stores the full result in a tenant-scoped artifact and returns a bounded preview (up to 32 changes/8,000 preview characters). Syntax/limit and artifact-storage failures remain explicit. INSTALL/UPDATE prompts match. Deferred sources: `tests/unit/test_visual_ast_diff.py` and `tests/unit/test_mcp_structural_ast_diff.py`; neither has run. Current source comparison is Python-specific; do not infer TypeScript/C#/Go/Rust AST-diff coverage or live HTTP/MCP correctness from this implementation checkpoint.
+
 **Files:**
 - Modify: `src/local_ai_hub/deterministic.py:6100-6160`
 - Test: `tests/unit/test_visual_ast_diff.py`
 
-- [ ] **Step 1: Write test comparing two code versions and classifying changes into rename, reorder, modification**
-- [ ] **Step 2: Implement fix**
+- [x] **Step 1: Write classification/transport regression source (execution deferred)**
+- [x] **Step 2: Implement Python structural path (source reviewed; validation pending)**
 Add `ast_diff(old_code: str, new_code: str)` returning structural diff tree identifying pure moves/renames vs logic edits.
 - [ ] **Step 3: Run test and verify pass & Commit**
 `git commit -m "feat(ast): add visual AST diff analysis for structural refactorings"`
