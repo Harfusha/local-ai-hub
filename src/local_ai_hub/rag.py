@@ -68,12 +68,13 @@ def _fine_cosine_scores(matrix: Any, query_vector: Any) -> Any:
     import numpy as np
 
     norms = np.linalg.norm(matrix, axis=1)
-    scores = np.zeros(len(norms), dtype=np.float32)
     valid = np.isfinite(norms) & (norms > 1e-9)
     if valid.any():
         dot_scores = np.dot(matrix, query_vector)
-        scores[valid] = dot_scores[valid] / norms[valid]
-    return np.where(np.isfinite(scores), scores, 0.0)
+        np.divide(dot_scores, norms, out=norms, where=valid)
+    norms[~valid] = 0.0
+    norms[~np.isfinite(norms)] = 0.0
+    return norms
 
 
 def _decode_centroid_vector(raw: Any, dimension: int, np: Any) -> Any | None:
