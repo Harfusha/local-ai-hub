@@ -179,7 +179,7 @@ def test_coord_forwards_explicit_receipt_criterion_and_blackboard_identity(monke
         action="verify_receipt", receipt=receipt_payload
     )
     board = local_ai_mcp.local_ai_coord(
-        action="blackboard_update", board_id="board-1", section="review", value="finding"
+        action="blackboard_update", board_id="board-1", section="review", content="finding"
     )
     assert receipt["success"] is True
     assert board["success"] is True
