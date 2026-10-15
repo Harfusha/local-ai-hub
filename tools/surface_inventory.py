@@ -3323,7 +3323,7 @@ def render_coverage_artifact(inventory: dict[str, Any], task_id: str | None = No
         "task_id": task_id,
         "coverage_rows": rows,
     }
-    return json.dumps(artifact, indent=2, sort_keys=True) + "\n"
+    return json.dumps(artifact, separators=(",", ":"), sort_keys=True) + "\n"
 
 
 def _coverage_table(text: str) -> list[str]:
