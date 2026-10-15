@@ -126,7 +126,7 @@ def test_async_jobs_tick_reclaims_stuck_running_job(tmp_path: Path):
     manager.close()
 
 
-def test_windows_batch_execution(tmp_path: Path):
+def test_windows_batch_requires_explicit_mutation_authorization(tmp_path: Path):
     if os.name != "nt":
         pytest.skip("Windows-specific batch execution test")
 
@@ -135,8 +135,11 @@ def test_windows_batch_execution(tmp_path: Path):
 
     broker = CommandBroker({"commands": {"allow_validation": True, "allow_read": True, "allow_unknown": True}})
     res = broker.run(f'"{bat_file}"', cwd=str(tmp_path))
-    assert res.get("success") is True, f"Command failed: {res}"
-    assert "windows_batch_ok" in res["stdout"]
+    assert res.get("success") is False
+    assert res.get("terminal") is True
+    assert res.get("retryable") is False
+    assert "mutation authorization" in res.get("error", "").lower()
+    assert "windows_batch_ok" not in res.get("stdout", "")
 
 
 def test_client_mutating_endpoints_not_replay_safe():
