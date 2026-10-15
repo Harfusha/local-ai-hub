@@ -121,7 +121,26 @@ def test_fresh_store_uses_one_canonical_durable_table(tmp_path) -> None:
     result = store.get_binary(artifact_id, tenant="owner")
     assert result["success"] is True
     assert base64.b64decode(result["data_base64"]) == b"image"
+    reopened = ArtifactStore(tmp_path)
+    assert reopened.get_binary(artifact_id, tenant="owner")["success"] is True
     with closing(sqlite3.connect(store.path)) as connection:
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         assert "artifacts" in tables
         assert "artifacts_v2" not in tables
+
+
+def test_formatting_equivalent_canonical_schema_is_accepted(tmp_path) -> None:
+    db_path = tmp_path / "artifacts.sqlite3"
+    with closing(sqlite3.connect(db_path)) as connection:
+        connection.execute(
+            "CREATE TABLE artifacts(artifact_id TEXT PRIMARY KEY, created_at REAL NOT NULL, "
+            "tenant TEXT NOT NULL, tenant_identity TEXT, kind TEXT NOT NULL, text TEXT NOT NULL DEFAULT '', "
+            "mime_type TEXT, encoding TEXT, blob BLOB, size_bytes INTEGER, checksum TEXT, identity_json TEXT)"
+        )
+        connection.execute(
+            "CREATE TABLE artifact_schema_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL)"
+        )
+        connection.execute("INSERT INTO artifact_schema_meta VALUES('tenant_storage','sha256-v1')")
+        connection.commit()
+
+    assert ArtifactStore(tmp_path).list() == []
