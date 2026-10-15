@@ -13,14 +13,15 @@ def _engine(tmp_path: Path) -> DeterministicEngine:
 
 
 def test_test_matrix_uses_only_current_regular_contained_test_files(tmp_path: Path, monkeypatch) -> None:
-    test_dir = tmp_path / "tests"
+    repo_root = tmp_path / "repo"
+    test_dir = repo_root / "tests"
     test_dir.mkdir()
     current = test_dir / "test_current.py"
     current.write_text("def test_current_case(): pass\n", encoding="utf-8")
-    outside = tmp_path.parent / "test_outside.py"
+    outside = tmp_path / "test_outside.py"
     outside.write_text("def test_outside_case(): pass\n", encoding="utf-8")
     missing = test_dir / "test_deleted.py"
-    engine = _engine(tmp_path)
+    engine = _engine(repo_root)
     snapshot_stat = current.stat()
 
     def candidates(*_args, **_kwargs):
@@ -31,7 +32,7 @@ def test_test_matrix_uses_only_current_regular_contained_test_files(tmp_path: Pa
     monkeypatch.setattr(engine.repo_tools, "_iter_files_with_stat", candidates)
     monkeypatch.setattr(engine, "_connect", lambda: (_ for _ in ()).throw(AssertionError("stale index consulted")))
 
-    result = engine.test_matrix(str(tmp_path))
+    result = engine.test_matrix(str(repo_root))
 
     assert [item["path"] for item in result["test_files"]] == ["tests/test_current.py"]
     assert result["test_files"][0]["cases"] == ["test_current_case"]
@@ -70,7 +71,7 @@ def test_test_matrix_omits_reparse_point_and_unreadable_file(tmp_path: Path, mon
 def test_test_matrix_omits_changed_file_and_mixed_language_wrong_runner(tmp_path: Path, monkeypatch) -> None:
     test_dir = tmp_path / "tests"
     test_dir.mkdir()
-    python_test = test_dir / "test_py.py"
+    python_test = test_dir / "test py.py"
     python_test.write_text("def test_py_case(): pass\n", encoding="utf-8")
     cs_test = test_dir / "TestCs.cs"
     cs_test.write_text("public class TestCs { [Fact] public void Works() {} }\n", encoding="utf-8")
@@ -83,9 +84,11 @@ def test_test_matrix_omits_changed_file_and_mixed_language_wrong_runner(tmp_path
 
     monkeypatch.setattr(engine.repo_tools, "_iter_files_with_stat", candidates)
     result = engine.test_matrix(str(tmp_path))
-    commands = {item["path"]: item["run_command"] for item in result["test_files"]}
-    assert commands["tests/test_py.py"] == "python -m pytest tests/test_py.py"
-    assert commands["tests/TestCs.cs"] == ""
+    files = {item["path"]: item for item in result["test_files"]}
+    assert files["tests/test py.py"]["run_command"] == ""
+    assert files["tests/test py.py"]["run_argv"] == ["python", "-m", "pytest", "--", "tests/test py.py"]
+    assert files["tests/TestCs.cs"]["run_command"] == ""
+    assert files["tests/TestCs.cs"]["run_argv"] == []
 
     original_read = engine.repo_tools._read_snapshot
 
@@ -97,7 +100,7 @@ def test_test_matrix_omits_changed_file_and_mixed_language_wrong_runner(tmp_path
 
     monkeypatch.setattr(engine.repo_tools, "_read_snapshot", changed_read)
     result = engine.test_matrix(str(tmp_path))
-    assert "tests/test_py.py" not in [item["path"] for item in result["test_files"]]
+    assert "tests/test py.py" not in [item["path"] for item in result["test_files"]]
     assert result["coverage"]["scan_complete"] is False
 
 

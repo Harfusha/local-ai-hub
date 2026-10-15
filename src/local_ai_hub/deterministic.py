@@ -4568,7 +4568,9 @@ def test_{sym}_regression_edge_cases():
                         incomplete = True
                         warnings.append("test_file_invalid_or_too_large_skipped")
                         continue
-                    if current_stat.st_size != snapshot_stat.st_size or current_stat.st_mtime_ns != snapshot_stat.st_mtime_ns:
+                    if (current_stat.st_dev, current_stat.st_ino, current_stat.st_size, current_stat.st_mtime_ns) != (
+                        snapshot_stat.st_dev, snapshot_stat.st_ino, snapshot_stat.st_size, snapshot_stat.st_mtime_ns,
+                    ):
                         incomplete = True
                         warnings.append("test_file_changed_during_enumeration")
                         continue
@@ -4597,40 +4599,65 @@ def test_{sym}_regression_edge_cases():
                     raise TimeoutError("test matrix read deadline exceeded")
                 digest, lines = self.repo_tools._read_snapshot(f, stat=before, max_bytes=max_file_bytes)
                 txt = "\n".join(lines)
+                lstat_after = f.lstat()
                 after = f.stat()
-                if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                if stat.S_ISLNK(lstat_after.st_mode) or (getattr(lstat_after, "st_file_attributes", 0) & 0x400):
+                    raise OSError("file became a reparse point during bounded read")
+                f.resolve(strict=True).relative_to(resolved_root)
+                if not stat.S_ISREG(after.st_mode) or (
+                    before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns,
+                ) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
                     raise OSError("file changed during bounded read")
                 if f.suffix.lower() == ".py":
                     for ln in txt.splitlines():
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError("test matrix case scan deadline exceeded")
                         if ln.strip().startswith("def test_"):
                             cases.append(ln.strip().split("(")[0].replace("def ", "").strip())
+                            if len(cases) > 15:
+                                break
                 elif f.suffix.lower() == ".cs":
-                    for match in re.finditer(r"\[(?:Test|UnityTest|Fact)\].*?void\s+([A-Za-z0-9_]+)", txt, re.S):
-                        cases.append(match.group(1))
+                    attribute_pending = 0
+                    for line in txt.splitlines():
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError("test matrix case scan deadline exceeded")
+                        if re.search(r"\[(?:Test|UnityTest|Fact)\b", line):
+                            attribute_pending = 20
+                        if attribute_pending and (method := re.search(r"\bvoid\s+([A-Za-z0-9_]+)", line)):
+                            cases.append(method.group(1))
+                            attribute_pending = 0
+                            if len(cases) > 15:
+                                break
+                        elif attribute_pending:
+                            attribute_pending -= 1
             except Exception as exc:
                 return {"_omitted": type(exc).__name__}
 
-            # Commands are suggestions only when the file language and its
-            # corresponding project manifest establish a compatible runner.
+            # Keep arguments structured. Display strings include only simple
+            # shell tokens; paths needing quoting remain available as argv.
             suffix = f.suffix.lower()
             if suffix == ".py" and framework == "pytest":
-                run_file_cmd = f"python -m pytest {rel}"
+                run_argv = ["python", "-m", "pytest", "--", rel]
             elif suffix == ".cs" and framework == "dotnet":
-                run_file_cmd = f"dotnet test --filter FullyQualifiedName~{f.stem}"
+                run_argv = ["dotnet", "test", "--filter", f"FullyQualifiedName~{f.stem}"]
             elif suffix in {".js", ".jsx", ".ts", ".tsx"} and framework == "npm":
-                run_file_cmd = f"npm test -- {rel}"
+                run_argv = ["npm", "test", "--", rel]
             elif suffix == ".go" and framework == "go":
-                run_file_cmd = f"go test ./{str(Path(rel).parent).replace(chr(92), '/')}"
+                run_argv = ["go", "test", f"./{str(Path(rel).parent).replace(chr(92), '/')}"]
             elif suffix == ".rs" and framework == "cargo":
-                run_file_cmd = "cargo test"
+                run_argv = ["cargo", "test"]
             else:
-                run_file_cmd = ""
+                run_argv = []
+            safe_tokens = all(re.fullmatch(r"[A-Za-z0-9_./\\:-]+", arg) for arg in run_argv)
+            run_file_cmd = " ".join(run_argv) if safe_tokens else ""
             return {
                 "path": rel,
                 "cases_count": len(cases),
                 "cases": cases[:15],
                 "run_command": run_file_cmd,
+                "run_argv": run_argv,
                 "content_sha256": digest,
+                "cases_truncated": len(cases) > 15,
             }
 
         selected: list[tuple[str, Path, os.stat_result]] = []
@@ -4650,6 +4677,9 @@ def test_{sym}_regression_edge_cases():
                         incomplete = True
                         warnings.append("test_file_read_failed")
                         continue
+                    if row.get("cases_truncated"):
+                        incomplete = True
+                        warnings.append("test_case_result_limit_reached")
                     test_files.append(row)
 
         return {
