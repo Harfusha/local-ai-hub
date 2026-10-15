@@ -7,8 +7,36 @@ import json
 import math
 import threading
 import time
+from collections.abc import Mapping
+from numbers import Real
 from pathlib import Path
 from typing import Any
+
+from .state_paths import configured_state_dir
+
+
+def _finite_config_number(value: Any, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        raise ValueError(f"autotune.{field} must be a finite number")
+    try:
+        number = float(value)
+    except (OverflowError, TypeError, ValueError):
+        raise ValueError(f"autotune.{field} must be a finite number") from None
+    if not math.isfinite(number):
+        raise ValueError(f"autotune.{field} must be a finite number")
+    return number
+
+
+def _finite_nonnegative_metric(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, Real):
+        return None
+    try:
+        number = float(value)
+    except (OverflowError, TypeError, ValueError):
+        return None
+    if not math.isfinite(number) or number < 0:
+        return None
+    return number
 
 
 class RuntimeTuner:
@@ -18,17 +46,29 @@ class RuntimeTuner:
     explicitly quality-equivalent resident candidates, preserving requested quality gates.
     """
 
-    def __init__(self, config: dict[str, Any]):
+    def __init__(self, config: Mapping[str, Any]):
+        if not isinstance(config, Mapping):
+            raise TypeError("config must be a mapping")
         cfg = config.get("autotune", {})
+        if not isinstance(cfg, Mapping):
+            raise TypeError("config.autotune must be a mapping")
         self.enabled = bool(cfg.get("enabled", True))
-        self.alpha = min(1.0, max(0.01, float(cfg.get("ema_alpha", 0.20))))
-        self.min_samples = max(1, int(cfg.get("min_samples", 2)))
-        self.resident_latency_ratio = max(0.5, float(cfg.get("resident_latency_ratio", 1.15)))
+        alpha = _finite_config_number(cfg.get("ema_alpha", 0.20), "ema_alpha")
+        resident_ratio = _finite_config_number(
+            cfg.get("resident_latency_ratio", 1.15), "resident_latency_ratio"
+        )
+        persist_interval = _finite_config_number(
+            cfg.get("persist_interval_seconds", 15.0), "persist_interval_seconds"
+        )
+        min_samples = max(1, int(cfg.get("min_samples", 2)))
+        self.alpha = min(1.0, max(0.01, alpha))
+        self.min_samples = min_samples
+        self.resident_latency_ratio = max(0.5, resident_ratio)
         self._lock = threading.RLock()
         self._models: dict[str, dict[str, float]] = {}
         self._persist_enabled = bool(cfg.get("persist", True))
-        self._persist_interval_seconds = max(0.0, float(cfg.get("persist_interval_seconds", 15.0)))
-        state_dir = Path(str(config.get("server", {}).get("state_dir", "~/.local-ai-hub/state"))).expanduser()
+        self._persist_interval_seconds = max(0.0, persist_interval)
+        state_dir = configured_state_dir(config, create=False)
         self._state_path = state_dir / "runtime-tuner.json"
         self._last_persist_seconds = 0.0
         self._load_state()
@@ -37,15 +77,18 @@ class RuntimeTuner:
     def _profile(data: Any) -> dict[str, float] | None:
         if not isinstance(data, dict):
             return None
-        try:
-            profile = {
-                key: float(data[key])
-                for key in ("latency_ms", "load_ms", "tps", "samples")
-            }
-        except (KeyError, TypeError, ValueError):
-            return None
-        if any(not math.isfinite(value) or value < 0 for value in profile.values()):
-            return None
+        profile: dict[str, float] = {}
+        for key in ("latency_ms", "load_ms", "tps", "samples"):
+            raw_value = data.get(key)
+            if key not in data or isinstance(raw_value, bool):
+                return None
+            try:
+                value = float(raw_value)
+            except (OverflowError, TypeError, ValueError):
+                return None
+            if not math.isfinite(value) or value < 0:
+                return None
+            profile[key] = value
         return profile
 
     def _load_state(self) -> None:
@@ -88,21 +131,40 @@ class RuntimeTuner:
             except OSError:
                 pass
 
-    def observe(self, model: str, result: dict[str, Any], elapsed_ms: float) -> None:
-        if not self.enabled or not model:
+    def observe(self, model: str, result: Mapping[str, Any], elapsed_ms: float) -> None:
+        if not self.enabled:
             return
-        load_ms = float(result.get("load_duration_ns", 0) or 0) / 1e6
-        tokens = float(result.get("eval_count", 0) or 0)
-        eval_seconds = float(result.get("eval_duration_ns", 0) or 0) / 1e9
-        tps = tokens / max(0.001, eval_seconds) if tokens else 0.0
+        if not isinstance(model, str) or not model.strip() or not isinstance(result, Mapping):
+            return
+        latency_ms = _finite_nonnegative_metric(elapsed_ms)
+        if latency_ms is None:
+            return
+        metrics = {}
+        for key in ("load_duration_ns", "eval_count", "eval_duration_ns"):
+            value = _finite_nonnegative_metric(result[key]) if key in result else 0.0
+            if value is None:
+                return
+            metrics[key] = value
+        load_ms = metrics["load_duration_ns"] / 1e6
+        tokens = metrics["eval_count"]
+        eval_seconds = metrics["eval_duration_ns"] / 1e9
+        if tokens == 0 or eval_seconds == 0:
+            tps = 0.0
+        else:
+            try:
+                tps = tokens / max(0.001, eval_seconds)
+            except (OverflowError, ZeroDivisionError):
+                return
+            if not math.isfinite(tps):
+                return
         with self._lock:
             current = self._models.setdefault(
                 model,
-                {"latency_ms": float(elapsed_ms), "load_ms": load_ms, "tps": tps, "samples": 0.0},
+                {"latency_ms": latency_ms, "load_ms": load_ms, "tps": tps, "samples": 0.0},
             )
             samples_before = float(current.get("samples", 0.0))
             alpha = self.alpha
-            for key, value in (("latency_ms", float(elapsed_ms)), ("load_ms", load_ms), ("tps", tps)):
+            for key, value in (("latency_ms", latency_ms), ("load_ms", load_ms), ("tps", tps)):
                 current[key] = (1 - alpha) * float(current[key]) + alpha * value
             current["samples"] = float(current.get("samples", 0.0)) + 1.0
             self._persist_locked(force=samples_before < self.min_samples <= current["samples"])
