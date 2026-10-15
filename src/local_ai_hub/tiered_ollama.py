@@ -239,8 +239,10 @@ class TieredOllamaRuntime:
     def unload(self, model: str) -> bool:
         return self.unload_model(model)
 
-    def unload_model(self, model: str) -> bool:
+    def unload_model(self, model: str, *, should_stop: Any | None = None, deadline: float | None = None) -> bool:
         _, target, _ = self._runtime_for_model(model)
+        if should_stop is not None or deadline is not None:
+            return bool(target.unload_model(model, should_stop=should_stop, deadline=deadline))
         return bool(target.unload_model(model))
 
     def unload_configured_models(

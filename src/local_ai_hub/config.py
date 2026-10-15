@@ -167,6 +167,7 @@ def validate_config(data: dict[str, Any]) -> None:
 
     scheduler = data.get("scheduler", {})
     _number(scheduler, "model_switch_failure_cooldown_seconds", minimum=1, maximum=3600)
+    _number(scheduler, "idle_timeout_seconds", minimum=0, maximum=86400)
     _number(scheduler, "max_caller_wait_timeout_seconds", minimum=1, maximum=86400)
 
     resilience = data.get("resilience", {})
