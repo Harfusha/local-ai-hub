@@ -57,7 +57,19 @@ def test_windows_worker_initializer_preserves_existing_wer_flags(monkeypatch):
 
     module._initialize_isolated_worker()
 
-    api.WerSetFlags.assert_called_once_with(0x0061, 1234)
+    api.WerSetFlags.assert_called_once_with(0x0061)
+
+
+def test_windows_worker_initializer_rejects_null_current_process(monkeypatch):
+    api = MagicMock()
+    api.GetCurrentProcess.return_value = None
+    monkeypatch.setattr(module, "_worker_runtime_is_windows", lambda: True)
+    monkeypatch.setattr(module, "_load_worker_windows_api", lambda: api)
+
+    with pytest.raises(OSError, match="null process handle"):
+        module._initialize_isolated_worker()
+
+    api.WerGetFlags.assert_not_called()
 
 
 @pytest.mark.parametrize("failed_call", ["WerGetFlags", "WerSetFlags"])

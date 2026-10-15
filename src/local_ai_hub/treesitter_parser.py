@@ -156,6 +156,8 @@ def _initialize_isolated_worker() -> None:
     get_current_process.argtypes = []
     get_current_process.restype = handle_type
     process = get_current_process()
+    if not process:
+        raise OSError("GetCurrentProcess returned a null process handle")
 
     get_flags = api.WerGetFlags
     get_flags.argtypes = [handle_type, ctypes.POINTER(dword_type)]
@@ -166,10 +168,10 @@ def _initialize_isolated_worker() -> None:
         raise OSError(f"WerGetFlags failed with HRESULT 0x{result & 0xFFFFFFFF:08X}")
 
     set_flags = api.WerSetFlags
-    set_flags.argtypes = [dword_type, handle_type]
+    set_flags.argtypes = [dword_type]
     set_flags.restype = hresult_type
     updated_flags = flags.value | _WER_FAULT_REPORTING_NO_UI
-    result = set_flags(updated_flags, process)
+    result = set_flags(updated_flags)
     if result < 0:
         raise OSError(f"WerSetFlags failed with HRESULT 0x{result & 0xFFFFFFFF:08X}")
 
