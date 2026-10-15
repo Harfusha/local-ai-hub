@@ -6,6 +6,7 @@ import pytest
 
 from local_ai_hub.lint_daemon import read_lsp_message
 from local_ai_hub import lint_daemon
+from local_ai_hub.services import LocalAIServices
 from local_ai_hub.speculative_lint import SpeculativeLintQueue
 
 
@@ -137,3 +138,54 @@ def test_debounce_only_cancels_same_tenant_and_project(tmp_path):
     queue.submit("b", str(tmp_path), ["x.py"])
     queue.submit("a", str(tmp_path), ["x.py"])
     assert jobs.cancelled == [("a", "1")]
+
+
+class _LintCommands:
+    def __init__(self):
+        self.calls = []
+
+    def classify(self, command):
+        return {"allowed": True, "class": "read_only"}
+
+    def run(self, command, root, **kwargs):
+        self.calls.append((command, root, kwargs))
+        return {"success": True, "exit_code": 0}
+
+
+def _lint_service(monkeypatch, tmp_path, *, daemon_mode):
+    service = LocalAIServices.__new__(LocalAIServices)
+    service.config = {"speculative_lint": {"daemon_mode": daemon_mode}}
+    service.commands = _LintCommands()
+
+    class NoDaemon:
+        def run(self, *args, **kwargs):
+            raise AssertionError("Biome must not enter the Ruff daemon pool")
+
+    service._lint_daemons = NoDaemon()
+    monkeypatch.setattr("local_ai_hub.services.shutil.which", lambda name: {"ruff": None, "biome": "biome.exe", "eslint": "eslint.exe"}.get(name))
+    return service
+
+
+def test_biome_daemon_mode_reports_shared_daemon_ownership_as_unsupported(tmp_path, monkeypatch):
+    service = _lint_service(monkeypatch, tmp_path, daemon_mode=True)
+
+    result = service.speculative_lint({"root": str(tmp_path), "paths": ["src/app.ts"]}, "tenant-a")
+
+    assert not result["success"] and result["unsupported"]
+    assert result["provider"] == "biome"
+    assert result["daemon_mode"] is True
+    assert result["transport"] == "unsupported_shared_daemon_ownership"
+    assert result["terminal"] and not result["retryable"]
+    assert not service.commands.calls
+
+
+def test_biome_non_daemon_mode_uses_explicit_read_only_one_shot_ci(tmp_path, monkeypatch):
+    service = _lint_service(monkeypatch, tmp_path, daemon_mode=False)
+
+    result = service.speculative_lint({"root": str(tmp_path), "paths": ["src/app.ts"]}, "tenant-a")
+
+    assert result["success"]
+    assert result["provider"] == "biome"
+    assert result["daemon_mode"] is False and result["transport"] == "one_shot"
+    assert service.commands.calls[0][0] == "biome.exe ci src/app.ts"
+    assert service.commands.calls[0][2]["auto_fix"] is False
