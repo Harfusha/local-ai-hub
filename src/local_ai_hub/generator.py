@@ -101,8 +101,7 @@ def context_pack_guidance() -> str:
         "local models may rank, select, or compress structured evidence only and must not invent repository facts. "
         "Guarded scope or drift overrides require an explicit `override_reason` and approval when requested. "
         "Omit raw model/debug fields unless explicitly requested through `extra_fields`; responses remain compact; "
-        "aggregate response budget defaults to approximately 3200 tokens. Omitting guarded fields preserves legacy "
-        "`mode=fast|full` behavior. This is the default adaptive context pack."
+        "aggregate response budget defaults to approximately 3200 tokens. The canonical adaptive context pack is the default."
     )
 
 

@@ -168,7 +168,7 @@ def test_generated_repo_schema_declares_guarded_context_and_compact_controls():
 
     guidance = schema["description"].lower()
     for phrase in (
-        "default adaptive context pack",
+        "canonical adaptive context pack is the default",
         "planning, edit, review or test",
         "evidence ids",
         "reuse candidates first",
