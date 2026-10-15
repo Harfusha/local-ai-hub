@@ -17,6 +17,10 @@ from .process_utils import popen_managed, terminate_tree
 _MAX_FRAME = 4_000_000
 
 
+class LintDaemonAdmissionTimeout(TimeoutError):
+    """This caller never owned the session, so must not terminate another call."""
+
+
 def read_lsp_message(stream: Any) -> dict[str, Any] | None:
     length = None
     for _ in range(16):
@@ -56,6 +60,8 @@ class RuffLintDaemon:
         self._process_guard = threading.Lock()
         self._closed = False
         self._cleanup_pending = threading.Event()
+        self._cleanup_done = threading.Event()
+        self._cleanup_done.set()
         self._cleanup_failed = False
         self._proc: Any = None
         self._readers: tuple[threading.Thread, ...] = ()
@@ -75,6 +81,7 @@ class RuffLintDaemon:
             self._documents.clear()
             if proc is not None:
                 self._cleanup_pending.set()
+                self._cleanup_done.clear()
         if proc is not None:
             # Cleanup operates on held process handles and old-generation buffers.
             def reap() -> None:
@@ -89,12 +96,24 @@ class RuffLintDaemon:
                     with self._process_guard:
                         self._cleanup_failed = not confirmed
                         self._cleanup_pending.clear()
+                        self._cleanup_done.set()
             threading.Thread(target=reap, name="lint-daemon-reaper", daemon=True).start()
 
     def close(self) -> None:
         with self._process_guard:
             self._closed = True
         self._detach()
+
+    def cleanup_confirmed(self, timeout: float = 0.0) -> bool:
+        self._cleanup_done.wait(max(0.0, min(1.0, timeout)))
+        with self._process_guard:
+            return not self._cleanup_pending.is_set() and not self._cleanup_failed
+
+    def idle(self) -> bool:
+        if not self._lock.acquire(blocking=False):
+            return False
+        self._lock.release()
+        return True
 
     def _spawn(self, deadline: float, should_stop: Callable[[], bool]) -> None:
         with self._process_guard:
@@ -232,12 +251,14 @@ class RuffLintDaemon:
         deadline = time.monotonic() + max(0.05, min(120.0, float(timeout)))
         while not self._lock.acquire(timeout=min(0.1, max(0.001, deadline - time.monotonic()))):
             if time.monotonic() >= deadline or should_stop() or self._closed:
-                raise TimeoutError("lint daemon admission cancelled or timed out")
+                raise LintDaemonAdmissionTimeout("lint daemon admission cancelled or timed out")
         output: list[dict[str, Any]] = []
         try:
+            if not paths or len(paths) > 64:
+                raise ValueError("lint daemon requires between 1 and 64 paths")
             self._spawn(deadline, should_stop)
             total_bytes = 0
-            for path in paths[:64]:
+            for path in paths:
                 target = (self.root / path).resolve(strict=True)
                 target.relative_to(self.root)
                 if target.suffix.lower() != ".py":
@@ -278,3 +299,65 @@ class RuffLintDaemon:
             raise
         finally:
             self._lock.release()
+
+
+class RuffDaemonPool:
+    """Bounded tenant/project sessions. Retiring processes retain their slot."""
+
+    def __init__(self, *, max_sessions: int = 4, idle_ttl: float = 300.0):
+        self.max_sessions = max(1, min(16, int(max_sessions)))
+        self.idle_ttl = max(1.0, min(3600.0, float(idle_ttl)))
+        self._lock = threading.Lock()
+        self._closed = False
+        self._sessions: dict[tuple[str, str], dict[str, Any]] = {}
+
+    def run(self, executable: str, root: str, tenant: str, paths: list[str], *,
+            timeout: float = 30, should_stop: Callable[[], bool] = lambda: False) -> dict[str, Any]:
+        key = (tenant, os.path.normcase(str(Path(root).resolve(strict=True))))
+        tick = time.monotonic()
+        base = {"daemon_mode": True, "transport": "stdio_lsp", "read_only": True, "auto_fix": False}
+        with self._lock:
+            if self._closed:
+                return {**base, "success": False, "error": "lint daemon pool is closed", "terminal": True, "retryable": False}
+            for old_key, entry in list(self._sessions.items()):
+                daemon = entry["daemon"]
+                if entry["retiring"]:
+                    if daemon.cleanup_confirmed():
+                        del self._sessions[old_key]
+                elif not entry["users"] and tick - entry["last_used"] >= self.idle_ttl:
+                    entry["retiring"] = True
+                    daemon.close()
+                    if daemon.cleanup_confirmed():
+                        del self._sessions[old_key]
+            entry = self._sessions.get(key)
+            if entry is not None and entry["retiring"]:
+                return {**base, "success": False, "error": "lint session cleanup is pending", "terminal": True, "retryable": False}
+            if entry is None:
+                if len(self._sessions) >= self.max_sessions:
+                    return {**base, "success": False, "error": "lint daemon session capacity reached", "terminal": True, "retryable": False}
+                entry = {"daemon": RuffLintDaemon(executable, root), "last_used": tick, "users": 0, "retiring": False}
+                self._sessions[key] = entry
+            entry["users"] += 1
+            daemon = entry["daemon"]
+        try:
+            diagnostics = daemon.diagnostics(paths, timeout=timeout, should_stop=should_stop)
+            return {**base, "success": not diagnostics, "exit_code": 1 if diagnostics else 0,
+                    "diagnostics": diagnostics, "diagnostic_count": len(diagnostics)}
+        except LintDaemonAdmissionTimeout as exc:
+            # Never terminate the other request that currently owns this session.
+            return {**base, "success": False, "error": str(exc), "terminal": True, "retryable": False}
+        except Exception as exc:
+            confirmed = daemon.cleanup_confirmed(timeout=1.0)
+            return {**base, "success": False, "error": str(exc)[:500], "terminal": True,
+                    "retryable": False, "cleanup_unconfirmed": not confirmed, "outcome_unknown": not confirmed}
+        finally:
+            with self._lock:
+                entry["users"] -= 1
+                entry["last_used"] = time.monotonic()
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            sessions = [entry["daemon"] for entry in self._sessions.values()]
+        for daemon in sessions:
+            daemon.close()

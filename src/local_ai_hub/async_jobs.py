@@ -20,6 +20,12 @@ from .process_utils import terminate_tree
 
 
 _JOB_PROGRESS: ContextVar[Callable[[float, str], bool] | None] = ContextVar("async_job_progress", default=None)
+_JOB_CANCELLED: ContextVar[Callable[[], bool] | None] = ContextVar("async_job_cancelled", default=None)
+
+
+def current_job_should_stop() -> bool:
+    callback = _JOB_CANCELLED.get()
+    return callback() if callback is not None else False
 
 
 def report_job_progress(progress_percent: float, current_stage: str) -> bool:
@@ -952,6 +958,30 @@ class AsyncJobManager:
             self._event(job_id).set()
 
 
+    def _cancellation_callback(self, job_id: str, tenant: str, attempt: int) -> Callable[[], bool]:
+        last_check, cancelled = float("-inf"), False
+
+        def check() -> bool:
+            nonlocal last_check, cancelled
+            if cancelled or self._shutdown.is_set():
+                return True
+            tick = time.monotonic()
+            if tick - last_check < 0.2:
+                return False
+            last_check = tick
+            try:
+                with self._lock, closing(self._connect()) as con:
+                    row = con.execute(
+                        "SELECT state,cancel_requested,attempts,lease_until FROM async_jobs WHERE job_id=? AND tenant=?",
+                        (job_id, tenant),
+                    ).fetchone()
+                cancelled = (row is None or row[0] != "running" or bool(row[1])
+                             or int(row[2]) != attempt or float(row[3]) <= time.time())
+            except sqlite3.DatabaseError:
+                cancelled = True
+            return cancelled
+        return check
+
     def _progress_callback(self, job_id: str, tenant: str, attempt: int) -> Callable[[float, str], bool]:
         guard = threading.Lock()
         last_write = float("-inf")
@@ -1035,6 +1065,7 @@ class AsyncJobManager:
             except Exception:
                 pass
         progress_token = _JOB_PROGRESS.set(self._progress_callback(job_id, tenant, int(row["attempts"]) + 1))
+        cancel_token = _JOB_CANCELLED.set(self._cancellation_callback(job_id, tenant, int(row["attempts"]) + 1))
         try:
             result = self._invoke_executor_if_allowed(job_id, action, payload, tenant)
             report_job_progress(99.0, "finalizing")
@@ -1048,6 +1079,7 @@ class AsyncJobManager:
             result = {"success": False, "error": str(exc), "retryable": True}
         finally:
             _JOB_PROGRESS.reset(progress_token)
+            _JOB_CANCELLED.reset(cancel_token)
             cleanup_confirmed = self._cleanup_processes(job_id)
         deferred_for_resource_release = False
         if result.get("success") and str(result.get("state", "")) in {"queued", "running"}:
@@ -1055,7 +1087,7 @@ class AsyncJobManager:
         with self._lock, closing(self._connect()) as con:
             cur_cancel = con.execute("SELECT cancel_requested FROM async_jobs WHERE job_id=?", (job_id,)).fetchone()
             cancelled = bool(cur_cancel[0]) if cur_cancel else False
-            if not cleanup_confirmed:
+            if not cleanup_confirmed or result.get("cleanup_unconfirmed") or result.get("outcome_unknown"):
                 final = {
                     "success": False,
                     "state": "outcome_unknown",

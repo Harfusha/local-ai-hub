@@ -42,6 +42,8 @@ from .sqlite_support import connect_sqlite
 from .adoption_metrics import AdoptionMetricsStore
 from .state_paths import configured_state_dir
 from .speculative_lint import normalize_changed_paths
+from .lint_daemon import RuffDaemonPool
+from .async_jobs import current_job_should_stop
 from .telemetry import TelemetryStore
 from .trace_context import observer
 from .treesitter_parser import parse_treesitter
@@ -579,6 +581,11 @@ class LocalAIServices:
         self.deterministic = deterministic
         self.external_tools = external_tools
         self.commands: Any | None = None
+        lint_config = config.get("speculative_lint", {})
+        self._lint_daemons = RuffDaemonPool(
+            max_sessions=lint_config.get("max_daemon_sessions", 4),
+            idle_ttl=lint_config.get("daemon_idle_ttl_seconds", 300),
+        )
         self.task_store: Any | None = None
         self.verification_store: Any | None = None
         self.incident_store: Any | None = None
@@ -2094,12 +2101,13 @@ class LocalAIServices:
         except ValueError as exc:
             return {"success": False, "error": str(exc), "terminal": True, "retryable": False}
         custom = str(args.get("command", "")).strip()
+        ruff_executable = shutil.which("ruff")
         if custom:
             target_text = " ".join(subprocess.list2cmdline([path]) for path in paths) if os.name == "nt" else " ".join(shlex.quote(path) for path in paths)
             command = custom.replace("{paths}", target_text)
             if command == custom:
                 command = f"{custom} {target_text}"
-        elif shutil.which("ruff"):
+        elif ruff_executable and all(Path(path).suffix.lower() == ".py" for path in paths):
             target_text = " ".join(subprocess.list2cmdline([path]) for path in paths) if os.name == "nt" else " ".join(shlex.quote(path) for path in paths)
             command = f"ruff check {target_text}"
         elif shutil.which("eslint"):
@@ -2113,6 +2121,14 @@ class LocalAIServices:
         classification = self.commands.classify(command) if self.commands is not None else {"allowed": False, "class": "unknown"}
         if not classification.get("allowed", False) or classification.get("class") in {"mutating", "dangerous"}:
             return {"success": False, "error": "speculative lint requires an allowed read-only command", "classification": classification, "terminal": True, "retryable": False}
+        if not custom and ruff_executable and all(Path(path).suffix.lower() == ".py" for path in paths) and self.config.get("speculative_lint", {}).get("daemon_mode", True):
+            result = self._lint_daemons.run(
+                ruff_executable, root, tenant, paths,
+                timeout=float(args.get("timeout", self.config.get("speculative_lint", {}).get("timeout_seconds", 120)) or 120),
+                should_stop=current_job_should_stop,
+            )
+            result.update({"paths": paths, "command": command})
+            return result
         result = self.commands.run(
             command,
             str(Path(root).expanduser().resolve(strict=False)),
@@ -2123,7 +2139,11 @@ class LocalAIServices:
             bypass_cache=True,
         )
         result.update({"read_only": True, "auto_fix": False, "paths": paths, "command": command})
+        result.update({"daemon_mode": False, "transport": "one_shot"})
         return result
+
+    def close_lint_daemons(self) -> None:
+        self._lint_daemons.close()
 
     def task_scaffold(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
         """Generate boilerplate code, DTOs, interfaces, or unit test scaffolds using local model."""
