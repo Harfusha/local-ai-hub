@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any, Iterable, Mapping
+import uuid
 
 
 class AgentScope(str, Enum):
@@ -75,6 +76,17 @@ class ScopeContext:
     task_id: str = ""
     session_id: str = ""
 
+    def __post_init__(self) -> None:
+        def _c(val: Any) -> str:
+            return str(val or "").replace("\x00", "").strip()
+
+        object.__setattr__(self, "repository_id", _c(self.repository_id))
+        object.__setattr__(self, "clone_id", _c(self.clone_id))
+        object.__setattr__(self, "worktree_id", _c(self.worktree_id))
+        object.__setattr__(self, "branch", _c(self.branch))
+        object.__setattr__(self, "task_id", _c(self.task_id))
+        object.__setattr__(self, "session_id", _c(self.session_id))
+
     def matches(self, scope: AgentScope | str, scope_id: str = "") -> bool:
         parsed_scope = AgentScope.parse(scope)
         if parsed_scope == AgentScope.GLOBAL:
@@ -103,6 +115,41 @@ class ScopeContext:
             self.session_id,
         ))
 
+    def has_task(self) -> bool:
+        return bool(self.task_id)
+
+    def has_session(self) -> bool:
+        return bool(self.session_id)
+
+    def has_repository(self) -> bool:
+        return bool(self.repository_id)
+
+    def has_worktree(self) -> bool:
+        return bool(self.worktree_id)
+
+    def has_branch(self) -> bool:
+        return bool(self.branch)
+
+    def with_task(self, task_id: str) -> ScopeContext:
+        return ScopeContext(
+            repository_id=self.repository_id,
+            clone_id=self.clone_id,
+            worktree_id=self.worktree_id,
+            branch=self.branch,
+            task_id=task_id,
+            session_id=self.session_id,
+        )
+
+    def with_session(self, session_id: str) -> ScopeContext:
+        return ScopeContext(
+            repository_id=self.repository_id,
+            clone_id=self.clone_id,
+            worktree_id=self.worktree_id,
+            branch=self.branch,
+            task_id=self.task_id,
+            session_id=session_id,
+        )
+
     def to_dict(self) -> dict[str, str]:
         return {
             "repository_id": self.repository_id,
@@ -112,6 +159,19 @@ class ScopeContext:
             "task_id": self.task_id,
             "session_id": self.session_id,
         }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> ScopeContext:
+        if not isinstance(data, Mapping):
+            raise TypeError("ScopeContext data must be a mapping")
+        return cls(
+            repository_id=str(data.get("repository_id", "")),
+            clone_id=str(data.get("clone_id", "")),
+            worktree_id=str(data.get("worktree_id", "")),
+            branch=str(data.get("branch", "")),
+            task_id=str(data.get("task_id", "")),
+            session_id=str(data.get("session_id", "")),
+        )
 
 
 @dataclass(frozen=True)
@@ -127,6 +187,95 @@ class ScopedRecord:
     status: str = "active"
     sensitivity: str = "normal"
     provenance: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        rid = str(self.record_id or "").replace("\x00", "").strip()
+        if not rid:
+            rid = f"rec_{uuid.uuid4().hex[:12]}"
+        sc = self.scope
+        if not isinstance(sc, AgentScope):
+            sc = AgentScope.parse(sc)
+        sid = str(self.scope_id or "").replace("\x00", "").strip()
+        k = str(self.key or "").replace("\x00", "").strip()
+
+        try:
+            conf = float(self.confidence)
+            if not math.isfinite(conf):
+                conf = 0.0
+            else:
+                conf = max(0.0, min(1.0, conf))
+        except (ValueError, TypeError):
+            conf = 0.0
+
+        ev_list: list[str] = []
+        if self.evidence_ids:
+            for item in self.evidence_ids:
+                s = str(item or "").replace("\x00", "").strip()
+                if s:
+                    ev_list.append(s)
+
+        try:
+            ca = float(self.created_at)
+            ca = max(0.0, ca) if math.isfinite(ca) else 0.0
+        except (ValueError, TypeError):
+            ca = 0.0
+
+        st = str(self.status or "active").replace("\x00", "").strip()
+        sens = str(self.sensitivity or "normal").replace("\x00", "").strip()
+        prov = dict(self.provenance) if isinstance(self.provenance, Mapping) else {}
+
+        object.__setattr__(self, "record_id", rid)
+        object.__setattr__(self, "scope", sc)
+        object.__setattr__(self, "scope_id", sid)
+        object.__setattr__(self, "key", k)
+        object.__setattr__(self, "confidence", conf)
+        object.__setattr__(self, "evidence_ids", tuple(ev_list))
+        object.__setattr__(self, "created_at", ca)
+        object.__setattr__(self, "status", st)
+        object.__setattr__(self, "sensitivity", sens)
+        object.__setattr__(self, "provenance", prov)
+
+    def is_active(self) -> bool:
+        return self.status in ("active", "confirmed")
+
+    def is_tombstone(self) -> bool:
+        return self.status == "tombstone"
+
+    def has_evidence(self) -> bool:
+        return bool(self.evidence_ids)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "record_id": self.record_id,
+            "scope": self.scope.value,
+            "scope_id": self.scope_id,
+            "key": self.key,
+            "value": self.value,
+            "confidence": self.confidence,
+            "evidence_ids": list(self.evidence_ids),
+            "created_at": self.created_at,
+            "status": self.status,
+            "sensitivity": self.sensitivity,
+            "provenance": dict(self.provenance),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> ScopedRecord:
+        if not isinstance(data, Mapping):
+            raise TypeError("ScopedRecord data must be a mapping")
+        return cls(
+            record_id=str(data.get("record_id", "")),
+            scope=AgentScope.parse(data.get("scope", AgentScope.GLOBAL.value)),
+            scope_id=str(data.get("scope_id", "")),
+            key=str(data.get("key", "")),
+            value=data.get("value"),
+            confidence=float(data.get("confidence", 1.0)),
+            evidence_ids=tuple(data.get("evidence_ids") or ()),
+            created_at=float(data.get("created_at", 0.0)),
+            status=str(data.get("status", "active")),
+            sensitivity=str(data.get("sensitivity", "normal")),
+            provenance=dict(data.get("provenance") or {}),
+        )
 
 
 class ScopeResolver:
@@ -179,12 +328,45 @@ class ScopeResolver:
 
         return results
 
+    def resolve_one(
+        self,
+        records: Iterable[ScopedRecord] | None,
+        context: ScopeContext | None,
+        key: str,
+    ) -> ScopedRecord | None:
+        if records is None:
+            return None
+        clean_key = str(key or "").replace("\x00", "").strip()
+        filtered = [r for r in records if (r.key or r.record_id) == clean_key]
+        resolved = self.resolve(filtered, context)
+        return resolved[0] if resolved else None
+
 
 @dataclass(frozen=True)
 class RepositoryIdentity:
     family_id: str
     normalized_name: str
     repo_id: str
+
+    def is_local(self) -> bool:
+        return "local" in self.family_id or "local" in self.repo_id
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "family_id": self.family_id,
+            "normalized_name": self.normalized_name,
+            "repo_id": self.repo_id,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> RepositoryIdentity:
+        if not isinstance(data, Mapping):
+            raise TypeError("RepositoryIdentity data must be a mapping")
+        return cls(
+            family_id=str(data.get("family_id", "")),
+            normalized_name=str(data.get("normalized_name", "")),
+            repo_id=str(data.get("repo_id", "")),
+        )
 
     @classmethod
     def derive(
@@ -276,6 +458,18 @@ class EnvironmentCapsule:
                 ):
                     sanitized[key_str] = list(v)
         return cls(values=sanitized)
+
+    def is_empty(self) -> bool:
+        return len(self.values) == 0
+
+    def contains(self, key: str) -> bool:
+        return key in self.values
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self.values.get(key, default)
+
+    def keys(self) -> tuple[str, ...]:
+        return tuple(self.values.keys())
 
     def to_dict(self) -> dict[str, Any]:
         return dict(self.values)
