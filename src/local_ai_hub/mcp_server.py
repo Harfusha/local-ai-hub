@@ -4394,7 +4394,7 @@ def local_ai_coord(
     if action in {"ask", "answer"}:
         question_payload = {
             "action": action, "root": root, "tenant": tenant,
-            "question_id": question_id,
+            "question_id": question_id, "task_id": task_id,
         }
         if action == "ask":
             question_payload.update(session_id=session_id, question=question)
