@@ -716,7 +716,11 @@ class SQLiteCache:
                     rows,
                 )
                 writes_since_prune = self._writes_since_prune + len(rows)
-                if writes_since_prune >= self._prune_every_writes:
+                prune_due = (
+                    writes_since_prune >= self._prune_every_writes
+                    or len(rows) >= self.max_entries
+                )
+                if prune_due:
                     count = con.execute(
                         "SELECT COUNT(*) FROM cache_entries WHERE namespace=?",
                         (self.namespace,),
@@ -726,8 +730,8 @@ class SQLiteCache:
                         con.execute(
                             "DELETE FROM cache_entries WHERE rowid IN "
                             "(SELECT rowid FROM cache_entries WHERE namespace=? "
-                            "ORDER BY accessed_at ASC LIMIT ?)",
-                            (self.namespace, extra + 32),
+                            "ORDER BY accessed_at ASC, rowid ASC LIMIT ?)",
+                            (self.namespace, extra),
                         )
                     con.commit()
                     self._writes_since_prune = 0
