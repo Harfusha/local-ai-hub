@@ -4413,7 +4413,8 @@ class DeterministicEngine:
                 opened = os.fstat(fd)
                 if (
                     not stat.S_ISREG(opened.st_mode)
-                    or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
+                    or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+                    != (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns)
                 ):
                     raise ValueError("file_identity_changed")
                 opened_path = Path(full_p).resolve(strict=True)

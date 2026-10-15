@@ -90,7 +90,8 @@ def test_history_search_rejects_invalid_filter_before_git(tmp_path, monkeypatch,
     assert result["success"] is False
 
 
-def test_hotspots_apply_ninety_day_half_life_and_report_raw_churn(tmp_path, monkeypatch):
+@pytest.mark.parametrize("handle_difference", [None, "st_ctime_ns", "st_ino", "st_size", "st_mtime_ns"])
+def test_hotspots_preserve_file_identity_and_apply_ninety_day_half_life(tmp_path, monkeypatch, handle_difference):
     from local_ai_hub import deterministic
 
     repo = tmp_path / "repo"
@@ -100,6 +101,18 @@ def test_hotspots_apply_ninety_day_half_life_and_report_raw_churn(tmp_path, monk
     # On Windows path ctime can be birth time while handle ctime follows mtime.
     # Deliberately separate those timestamps without changing file identity.
     os.utime(source, ns=(1_800_000_000_000_000_000, 1_800_000_000_000_000_000))
+    if handle_difference is not None:
+        original_fstat = os.fstat
+
+        def changed_handle_stat(fd):
+            observed = original_fstat(fd)
+            fields = {name: getattr(observed, name) for name in (
+                "st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns",
+            )}
+            fields[handle_difference] += 1
+            return SimpleNamespace(**fields)
+
+        monkeypatch.setattr(deterministic.os, "fstat", changed_handle_stat)
     now = 1_800_000_000.0
     timestamp = int(now - 90 * 86_400)
     output = b"\0LAH_HOTSPOT:" + str(timestamp).encode() + b"\0\0\nsrc/a.py\0"
@@ -114,6 +127,11 @@ def test_hotspots_apply_ninety_day_half_life_and_report_raw_churn(tmp_path, monk
     )
 
     result = _engine(tmp_path).find_hotspots(str(repo), days=180, limit=10)
+    if handle_difference not in (None, "st_ctime_ns"):
+        assert result["complete"] is False
+        assert "file_identity_changed" in result["incomplete_reasons"]
+        assert result["hotspots"] == []
+        return
     assert result["complete"] is True
     assert result["algorithm"] == "git-recency-half-life-90d-v1"
     assert result["hotspots"][0]["churn_commits"] == 1
