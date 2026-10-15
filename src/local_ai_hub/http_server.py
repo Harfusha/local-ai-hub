@@ -5488,6 +5488,14 @@ class Handler(BaseHTTPRequestHandler):
             tenant=tenant,
         ))
 
+    @staticmethod
+    def _context_retrieval_mode(payload: Mapping[str, Any]) -> str | None:
+        raw_mode = payload.get("mode", "adaptive")
+        if not isinstance(raw_mode, str):
+            return None
+        mode = raw_mode.strip().lower()
+        return mode if mode in {"adaptive", "fast", "full"} else None
+
     def do_POST(self) -> None:
         path = urlparse(self.path).path
         post_route_ids = select_http_routes("POST", path)
@@ -7199,6 +7207,14 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
                 action = str(payload.get("action", "")).strip().lower().replace("-", "_")
                 if action == "compile":
+                    requested_mode = self._context_retrieval_mode(payload)
+                    if requested_mode is None:
+                        self._send(400, {
+                            "success": False,
+                            "error": "context mode must be adaptive, full or fast",
+                            "terminal": True,
+                            "retryable": False,
+                        }); return
                     req = build_context_request(
                         payload,
                         tenant=tenant,
@@ -7218,18 +7234,10 @@ class Handler(BaseHTTPRequestHandler):
                     if root:
                         from .agent_consistency import ConsistencyRequest
 
-                        # A task context request often carries its intent only in
-                        # focus. Feed that intent into repository retrieval instead
-                        # of silently running an empty fast search. Focused task
-                        # context gets the complete deterministic-first pack; callers
-                        # can still force the bounded fast mode explicitly.
                         repository_query = str(payload.get("query", "")).strip()
                         if not repository_query:
                             repository_query = " ".join(req.focus[:8])
-                        requested_mode = str(payload.get("mode", "")).strip().lower()
-                        repository_mode = requested_mode if requested_mode in {"fast", "full"} else (
-                            "full" if (repository_query or req.focus or req.changed_paths) else "fast"
-                        )
+                        repository_mode = requested_mode
 
                         repository_request = ConsistencyRequest(
                             root=root,
@@ -7871,8 +7879,8 @@ class Handler(BaseHTTPRequestHandler):
                 if raw_max_tokens and not 128 <= raw_max_tokens <= 20_000:
                     self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "max_tokens must be 0 or between 128 and 20000"}); return
                 max_tokens = raw_max_tokens or max(128, min(int(configured_tokens or 8000), 20_000))
-                mode = str(payload.get("mode", "adaptive")).strip().lower()
-                if mode not in {"full", "fast", "adaptive"}:
+                mode = self._context_retrieval_mode(payload)
+                if mode is None:
                     self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "context mode must be adaptive, full or fast"}); return
                 if "project_config_digest" in payload:
                     self._send(400, {

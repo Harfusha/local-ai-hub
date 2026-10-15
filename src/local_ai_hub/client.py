@@ -1469,6 +1469,15 @@ class HubClient:
         mode: str = "adaptive",
         **options: Any,
     ) -> dict[str, Any]:
+        if not isinstance(mode, str) or mode.strip().lower() not in {"adaptive", "fast", "full"}:
+            return {
+                "success": False,
+                "status_code": 400,
+                "terminal": True,
+                "retryable": False,
+                "error": "context mode must be adaptive, full or fast",
+            }
+        mode = mode.strip().lower()
         payload = dict(options)
         payload.update({"root": root, "query": query, "max_tokens": max_tokens, "mode": mode})
         return self.post("/api/context/pack", payload)

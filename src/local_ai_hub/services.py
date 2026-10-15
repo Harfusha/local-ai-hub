@@ -4565,10 +4565,16 @@ class LocalAIServices:
         if worker is not None:
             worker.close()
 
-    def adaptive_context_pack(self, request: ConsistencyRequest, *, mode: str = "fast", since_hash: str = "") -> dict[str, Any]:
+    def adaptive_context_pack(self, request: ConsistencyRequest, *, mode: str = "adaptive", since_hash: str = "") -> dict[str, Any]:
         """Build deterministic context plus bounded, soft consistency findings."""
         if not isinstance(request, ConsistencyRequest):
             raise TypeError("guarded context request must be ConsistencyRequest")
+        if not isinstance(mode, str) or mode.strip().lower() not in {"adaptive", "fast", "full"}:
+            return {
+                "success": False, "terminal": True, "retryable": False,
+                "error": "context mode must be adaptive, full or fast",
+            }
+        mode = mode.strip().lower()
         try:
             memory_revision = self._adaptive_memory_revision(request)
         except Exception as exc:
