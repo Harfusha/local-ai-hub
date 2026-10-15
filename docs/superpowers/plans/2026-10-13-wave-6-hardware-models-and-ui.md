@@ -210,12 +210,16 @@ Add `progress_percent: float` and `current_stage: str` to job state record.
 
 ### Task 90: Local LLM OOM Fallback & VRAM Context Scaling (#55)
 
+**2026-10-15 Ollama-path implementation checkpoint — execution deferred.** The selected Ollama streaming attempt loop now recognizes memory-allocation errors and halves `options.num_ctx` at most once, within the original attempt count and absolute deadline. Caller payload, operator configuration and device selection are preserved. A conservative serialized-input byte budget plus generation reserve refuses recovery if the smaller context cannot retain the input; it never drops task/evidence text silently. Recovery metadata reports original/effective context and explicitly says input/device were unchanged. Generic model-load failures without memory evidence do not trigger a guessed GPU/CPU change. This implementation applies to the selected Ollama path; llama.cpp/SYCL route recovery and live OOM behavior still need separate assessment before closing the overall criterion.
+
+Source review also found an explicit stream error could leave an earlier successful fragment in `final`, causing a false-success return. Explicit stream errors now prevent that return. Output, chat or thinking fragments prevent retries; thinking callbacks count as emitted output. Deferred in-memory provider cases cover context halving, caller-input preservation, partial-fragment failure and thinking non-replay, plus the retained-input budget refusal. No provider/model, test, build or benchmark was executed. Real VRAM recovery, actual context fit and runtime acceptance remain pending the full bundle.
+
 **Files:**
 - Modify: `src/local_ai_hub/ollama.py:220-260`
 - Test: `tests/unit/test_llm_oom_fallback.py`
 
-- [ ] **Step 1: Write test simulating context OOM and verifying automatic context truncation and retry**
-- [ ] **Step 2: Implement fix**
+- [x] **Step 1: Write Ollama OOM/partial-stream regression source (execution deferred)**
+- [ ] **Step 2: Ollama-path implementation present; assess selected llama.cpp route before closure**
 Catch `CUDA out of memory` / `model load failed`. Automatically reduce `num_ctx` by 50% or fall back to CPU offload.
 - [ ] **Step 3: Run test and verify pass & Commit**
 `git commit -m "fix(ollama): automatically scale context window down on VRAM OOM error"`
