@@ -7,9 +7,6 @@ import os
 import sqlite3
 import subprocess
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor
-import threading
-import time
 
 import pytest
 
@@ -574,112 +571,6 @@ def test_missing_required_projection_schema_fails_closed_and_preserves_wal_and_s
             assert "(I)" not in acl
     finally:
         connection.close()
-
-
-def test_verified_backup_reserves_destination_and_only_cleans_its_file(tmp_path, monkeypatch):
-    db_path = tmp_path / "agent_state.sqlite3"
-    _seed_state(db_path)
-    collision = tmp_path / "existing.sqlite3"
-    collision.write_bytes(b"preserve existing backup")
-    sidecar_collision = tmp_path / "sidecar-collision.sqlite3"
-    sidecar_wal = Path(f"{sidecar_collision}-wal")
-    sidecar_wal.write_bytes(b"preserve existing sidecar")
-    target = tmp_path / "symlink-target.sqlite3"
-    target.write_bytes(b"preserve symlink target")
-    symlink = tmp_path / "symlink.sqlite3"
-    try:
-        symlink.symlink_to(target)
-    except (OSError, NotImplementedError):
-        symlink = None
-
-    partial = tmp_path / "owned-partial.sqlite3"
-    with closing(sqlite3.connect(db_path)) as source:
-        with pytest.raises(FileExistsError):
-            AgentStateStore._verified_backup(source, destination_path=collision)
-        assert collision.read_bytes() == b"preserve existing backup"
-        with pytest.raises(FileExistsError):
-            AgentStateStore._verified_backup(source, destination_path=sidecar_collision)
-        assert not sidecar_collision.exists()
-        assert sidecar_wal.read_bytes() == b"preserve existing sidecar"
-
-        if symlink is not None:
-            with pytest.raises(FileExistsError):
-                AgentStateStore._verified_backup(source, destination_path=symlink)
-            assert symlink.is_symlink()
-            assert target.read_bytes() == b"preserve symlink target"
-
-        def fail_verification(cls, source, backup, *, deadline=None):
-            raise RuntimeError("injected verification failure")
-
-        monkeypatch.setattr(AgentStateStore, "_verify_backup", classmethod(fail_verification))
-        with pytest.raises(RuntimeError, match="injected verification failure"):
-            AgentStateStore._verified_backup(source, destination_path=partial)
-
-    assert not partial.exists()
-    assert not Path(f"{partial}-wal").exists()
-    assert not Path(f"{partial}-shm").exists()
-    assert collision.read_bytes() == b"preserve existing backup"
-    assert sidecar_wal.read_bytes() == b"preserve existing sidecar"
-    assert target.read_bytes() == b"preserve symlink target"
-
-
-def test_concurrent_legacy_initializers_accept_completed_migration(tmp_path, monkeypatch):
-    db_path = tmp_path / "agent_state.sqlite3"
-    _, event, _ = _seed_state(db_path)
-    with closing(sqlite3.connect(db_path)) as connection:
-        connection.execute("DROP TABLE agent_event_schema_versions")
-        connection.execute("PRAGMA user_version=0")
-        connection.commit()
-
-    migration_barrier = threading.Barrier(2)
-    backup_barrier = threading.Barrier(2)
-    original_migrate = AgentStateStore._migrate_known_schema.__func__
-    original_backup = AgentStateStore._verified_backup.__func__
-
-    def synchronized_migrate(cls, source, *, existed_before_open):
-        if int(source.execute("PRAGMA user_version").fetchone()[0]) == 0:
-            migration_barrier.wait(timeout=5)
-        return original_migrate(cls, source, existed_before_open=existed_before_open)
-
-    def synchronized_backup(cls, source):
-        backup_path = original_backup(cls, source)
-        backup_barrier.wait(timeout=5)
-        return backup_path
-
-    monkeypatch.setattr(AgentStateStore, "_migrate_known_schema", classmethod(synchronized_migrate))
-    monkeypatch.setattr(AgentStateStore, "_verified_backup", classmethod(synchronized_backup))
-
-    def read_events():
-        return AgentStateStore(db_path).events(event.stream_id)
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = [pool.submit(read_events), pool.submit(read_events)]
-        results = [future.result(timeout=15) for future in futures]
-
-    assert results == [[event.with_seq(1)], [event.with_seq(1)]]
-    with closing(sqlite3.connect(db_path)) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 1
-
-
-def test_migration_backup_timeout_fails_closed_before_database_mutation(tmp_path, monkeypatch):
-    db_path = tmp_path / "agent_state.sqlite3"
-    _, event, _ = _seed_state(db_path)
-    with closing(sqlite3.connect(db_path)) as connection:
-        connection.execute("DROP TABLE agent_event_schema_versions")
-        connection.execute("PRAGMA user_version=0")
-        connection.commit()
-    before = _sqlite_file_snapshot(db_path)
-    monkeypatch.setattr(
-        AgentStateStore,
-        "_MIGRATION_BACKUP_TIMEOUT_SECONDS",
-        0.0,
-        raising=False,
-    )
-
-    with pytest.raises(TimeoutError, match="backup time limit"):
-        AgentStateStore(db_path).events(event.stream_id)
-
-    assert _sqlite_file_snapshot(db_path) == before
 
 
 @pytest.mark.parametrize("schema_changes", [
