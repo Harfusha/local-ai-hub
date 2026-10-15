@@ -131,15 +131,22 @@ def test_windows_batch_requires_explicit_mutation_authorization(tmp_path: Path):
         pytest.skip("Windows-specific batch execution test")
 
     bat_file = tmp_path / "test_echo.bat"
-    bat_file.write_text("@echo OFF\necho windows_batch_ok\n", encoding="utf-8")
+    marker_file = tmp_path / "batch_executed.marker"
+    bat_file.write_text(
+        f'@echo OFF\necho windows_batch_ok\necho executed>"{marker_file}"\n',
+        encoding="utf-8",
+    )
 
     broker = CommandBroker({"commands": {"allow_validation": True, "allow_read": True, "allow_unknown": True}})
     res = broker.run(f'"{bat_file}"', cwd=str(tmp_path))
     assert res.get("success") is False
     assert res.get("terminal") is True
     assert res.get("retryable") is False
+    assert res.get("request_not_sent") is True
+    assert res.get("execution_authorized") is False
     assert "mutation authorization" in res.get("error", "").lower()
     assert "windows_batch_ok" not in res.get("stdout", "")
+    assert not marker_file.exists()
 
 
 def test_client_mutating_endpoints_not_replay_safe():
