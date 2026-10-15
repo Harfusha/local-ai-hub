@@ -81,7 +81,7 @@ def test_http_registered_secret_scan_rejects_legacy_git_history_field(monkeypatc
     assert responses[0][1]["retryable"] is False
 
 
-def test_registered_mcp_secret_scan_requires_staged_toggle_and_explicit_path(monkeypatch):
+def test_registered_mcp_secret_scan_allows_whole_history_and_literal_path_filter(monkeypatch):
     calls = []
 
     def post(url, payload, **kwargs):
@@ -90,16 +90,16 @@ def test_registered_mcp_secret_scan_requires_staged_toggle_and_explicit_path(mon
 
     monkeypatch.setattr(mcp_server.CLIENT, "post", post)
 
-    mcp_server.local_ai_repo(
-        action="secret_scan", root="/repo", path="config.env", query="git history", staged=True,
-    )
+    mcp_server.local_ai_repo(action="secret_scan", root="/repo", staged=True)
+    mcp_server.local_ai_repo(action="secret_scan", root="/repo", path="config.env", staged=True)
 
-    assert calls[0][0] == "/api/repo/secret_scan"
-    assert calls[0][1]["scan_git_history"] is True
-    assert calls[0][1]["path"] == "config.env"
+    assert [(call[0], call[1]["path"], call[1]["scan_git_history"]) for call in calls] == [
+        ("/api/repo/secret_scan", None, True),
+        ("/api/repo/secret_scan", "config.env", True),
+    ]
 
 
-def test_registered_mcp_secret_scan_preserves_query_filename_and_validates_toggle(monkeypatch):
+def test_registered_mcp_secret_scan_requires_path_field_for_filters_and_validates_toggle(monkeypatch):
     calls = []
     monkeypatch.setattr(
         mcp_server.CLIENT,
@@ -107,17 +107,19 @@ def test_registered_mcp_secret_scan_preserves_query_filename_and_validates_toggl
         lambda url, payload, **kwargs: calls.append((url, payload)) or {"success": True},
     )
 
-    mcp_server.local_ai_repo(action="secret_scan", root="/repo", query="config.env")
+    query_alias = mcp_server.local_ai_repo(action="secret_scan", root="/repo", query="config.env")
+    task_alias = mcp_server.local_ai_repo(action="secret_scan", root="/repo", task="config.env")
+    mcp_server.local_ai_repo(action="secret_scan", root="/repo", path="config.env")
     invalid = mcp_server.local_ai_repo(action="secret_scan", root="/repo", staged="false")
-    missing_path = mcp_server.local_ai_repo(action="secret_scan", root="/repo", staged=True)
 
     assert calls[0][1]["path"] == "config.env"
     assert calls[0][1]["scan_git_history"] is False
     assert len(calls) == 1
+    assert query_alias["status_code"] == 400
+    assert task_alias["status_code"] == 400
     assert invalid["status_code"] == 400
     assert invalid["terminal"] is True
     assert invalid["retryable"] is False
-    assert missing_path["status_code"] == 400
 
 
 def test_registered_mcp_secret_scan_does_not_treat_filename_substrings_as_controls(monkeypatch):
@@ -129,11 +131,10 @@ def test_registered_mcp_secret_scan_does_not_treat_filename_substrings_as_contro
     )
 
     for filename in ("digital.env", "history.env"):
-        mcp_server.local_ai_repo(action="secret_scan", root="/repo", query=filename)
-    mcp_server.local_ai_repo(
-        action="secret_scan", root="/repo", path="config.env", query="git history", staged=True,
-    )
+        mcp_server.local_ai_repo(action="secret_scan", root="/repo", path=filename)
+    whole_repo_history = mcp_server.local_ai_repo(action="secret_scan", root="/repo", staged=True)
 
     assert [(call["path"], call["scan_git_history"]) for call in calls] == [
-        ("digital.env", False), ("history.env", False), ("config.env", True),
+        ("digital.env", False), ("history.env", False), (None, True),
     ]
+    assert whole_repo_history["success"] is True

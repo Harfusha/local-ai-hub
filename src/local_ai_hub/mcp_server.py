@@ -3370,10 +3370,10 @@ def _local_ai_repo_impl(
     if action == "secret_scan":
         if not isinstance(staged, bool):
             return _context_input_error("staged must be boolean for secret_scan")
-        if staged and (not isinstance(path, str) or not path.strip()):
-            return _context_input_error("path is required when staged history scanning is enabled")
+        if query or task:
+            return _context_input_error("secret_scan accepts path; query and task are not path aliases")
         return _compact(CLIENT.post("/api/repo/secret_scan", {
-            "root": root, "path": path or query or task or None,
+            "root": root, "path": path or None,
             "scan_git_history": staged,
         }, timeout=_timeout("quick")), "security")
     if action == "schema_inspect":
