@@ -526,6 +526,21 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "candidate_promote": "candidate_store", "evaluation_record": "evaluation_store",
             "browser": "browser_capture",
         },
+        allowed={
+            "hardware_benchmark": ("model", "prompt", "max_tokens"),
+            "speculative_draft": ("task", "candidate", "context", "root"),
+            "vision": (
+                "prompt", "candidate", "model", "image_artifact_id", "screenshot_artifact_id",
+                "baseline_screenshot_artifact_id", "bundle_artifact_id", "dom_artifact_id",
+                "accessibility_artifact_id", "computed_styles_artifact_id", "runtime_artifact_id",
+                "network_artifact_id", "source", "cloud_fallback", "root", "dom", "accessibility",
+                "computed_styles", "runtime", "viewport", "page", "bundle", "html",
+                "accessibility_snapshot", "computed_style_data", "runtime_context", "json_schema",
+            ),
+            "eval_drift": ("task",),
+            "complete_code": ("prompt", "candidate", "max_tokens"),
+            "scaffold": ("prompt", "context", "language", "max_tokens", "model"),
+        },
         properties={
             "action": {"type": "string"},
             "url": {"type": "string", "maxLength": 4096, "description": "Loopback HTTP(S) URL for bounded DOM and screenshot capture in the shared daemon."},

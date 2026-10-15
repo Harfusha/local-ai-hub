@@ -2302,6 +2302,39 @@ def local_ai_task(
             operation_actions("local_ai_task", FEATURES),
             "Use Local AI Hub only for bounded local-model work; use Codex-owned orchestration for peer subagents.",
         )
+    retired_inputs = {
+        "hardware_benchmark": {"task"},
+        "speculative_draft": {"prompt", "workspace"},
+        "vision": {"task", "context"},
+        "eval_drift": {"prompt"},
+        "complete_code": {"context", "task"},
+        "scaffold": {"task", "candidate"},
+    }
+    input_values = {
+        "task": task, "prompt": prompt, "context": context,
+        "candidate": candidate, "workspace": workspace, "model": model,
+        "root": root, "language": language,
+    }
+    for field in retired_inputs.get(action, ()):
+        if input_values[field] not in (None, ""):
+            return {
+                "success": False, "terminal": True, "retryable": False,
+                "error": f"{action} accepts its canonical input; {field} is not an alias",
+            }
+    canonical_string_fields = {
+        "hardware_benchmark": ("prompt", "model"),
+        "speculative_draft": ("task", "candidate", "context", "root"),
+        "vision": ("prompt", "candidate"),
+        "eval_drift": ("task",),
+        "complete_code": ("prompt", "candidate"),
+        "scaffold": ("prompt", "context", "language", "model"),
+    }
+    for field in canonical_string_fields.get(action, ()):
+        if not isinstance(input_values[field], str):
+            return {
+                "success": False, "terminal": True, "retryable": False,
+                "error": f"{action} {field} must be a string",
+            }
     try:
         from local_ai_hub.operational_mode import (
             load_operational_mode,
@@ -2522,7 +2555,7 @@ def local_ai_task(
     if action == "benchmark":
         return _compact(CLIENT.post("/api/benchmark", {}, timeout=_timeout("long")), "status")
     if action == "hardware_benchmark":
-        return _compact(CLIENT.post("/api/benchmark/run", {"model": model or "", "prompt": prompt or task, "num_tokens": max_tokens or 40}, timeout=_timeout("long")), "status")
+        return _compact(CLIENT.post("/api/benchmark/run", {"model": model or "", "prompt": prompt, "num_tokens": max_tokens or 40}, timeout=_timeout("long")), "status")
     if action == "evaluation_record":
         return _compact(CLIENT.post("/api/evaluation", {
             "action": "record", "task_id": evaluation_task_id, "cohort": evaluation_cohort,
@@ -2532,12 +2565,12 @@ def local_ai_task(
         return _compact(CLIENT.post("/api/evaluation", {"action": "report", "days": evaluation_days}), "status")
     if action == "speculative_draft":
         return _compact(CLIENT.post("/api/task/speculative_draft", {
-            "task": task or prompt, "file": candidate or workspace, "context": context, "root": root,
+            "task": task, "file": candidate, "context": context, "root": root,
         }, timeout=_timeout("model")), "delegate")
     if action == "vision":
         payload = {
-            "prompt": prompt or task,
-            "image": candidate or context,
+            "prompt": prompt,
+            "image": candidate,
             "model": model,
             "image_artifact_id": image_artifact_id,
             "screenshot_artifact_id": screenshot_artifact_id,
@@ -2611,15 +2644,15 @@ def local_ai_task(
         }, timeout=_timeout("model")), "delegate")
     if action == "eval_drift":
         return _compact(CLIENT.post("/api/task/eval_drift", {
-            "suite_name": task or prompt or "default",
+            "suite_name": task or "default",
         }, timeout=_timeout("long")), "status")
     if action == "complete_code":
         return _compact(CLIENT.post("/api/complete", {
-            "prefix": prompt or context or "", "suffix": task or candidate or "", "max_tokens": max_tokens or 80,
+            "prefix": prompt, "suffix": candidate, "max_tokens": max_tokens or 80,
         }, timeout=_timeout("quick")), "status")
     if action == "scaffold":
         return _compact(CLIENT.post("/api/task/scaffold", {
-            "spec": prompt or task, "context": context, "language": language if (language and language != "auto") else (candidate or "python"),
+            "spec": prompt, "context": context, "language": language if language and language.casefold() != "auto" else "python",
             "max_tokens": max_tokens or 4096, "model": model,
         }, timeout=_timeout("model")), "delegate")
     return _invalid_action("local_ai_task", action, tuple(TaskAction.__args__), "Use Local AI Hub only for bounded local-model work; use Codex-owned orchestration for peer subagents.")
