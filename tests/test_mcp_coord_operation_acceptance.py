@@ -395,7 +395,7 @@ def test_local_ai_coord_blackboard_get_forwards_board_and_section(monkeypatch):
     )]
 
 
-def test_local_ai_coord_blackboard_list_uses_task_scoped_default(monkeypatch):
+def test_local_ai_coord_blackboard_list_forwards_action_and_root(monkeypatch):
     backend = _prepare_coord_api(monkeypatch)
     result = mcp_server.local_ai_coord(action='blackboard_list')
     assert result["success"] is True
@@ -568,7 +568,7 @@ def test_local_ai_coord_renew_forwards_lease_identity_and_ttl(monkeypatch):
 def test_local_ai_coord_swarm_cancel_forwards_reason(monkeypatch, tmp_path):
     backend = _prepare_coord_api(monkeypatch)
     root = str(tmp_path.resolve())
-    result = mcp_server.local_ai_coord(action='swarm_cancel', root=root, task_id="swarm-52", reason="scope closed")
+    result = mcp_server.local_ai_coord(action='swarm_cancel', root=root, swarm_id="swarm-52", reason="scope closed")
     assert result["success"] is True
     calls = backend.calls
     assert calls == [(
@@ -582,7 +582,7 @@ def test_local_ai_coord_swarm_dispatch_forwards_goal_paths_and_test_command(monk
     root = str(tmp_path.resolve())
     paths = ["src/worker.py", "tests/test_worker.py"]
     backend = _prepare_coord_api(monkeypatch)
-    result = mcp_server.local_ai_coord(action='swarm_dispatch', root=root, task="review worker", paths=paths, command="pytest -q tests/test_worker.py", approver="reviewer")
+    result = mcp_server.local_ai_coord(action='swarm_dispatch', root=root, goal="review worker", target_paths=paths, test_command="pytest -q tests/test_worker.py", author="reviewer")
     assert result["success"] is True
     calls = backend.calls
     assert calls == [(
@@ -597,7 +597,7 @@ def test_local_ai_coord_swarm_dispatch_forwards_goal_paths_and_test_command(monk
 def test_local_ai_coord_swarm_list_forwards_state_filter(monkeypatch, tmp_path):
     backend = _prepare_coord_api(monkeypatch)
     root = str(tmp_path.resolve())
-    result = mcp_server.local_ai_coord(action='swarm_list', root=root, status="active")
+    result = mcp_server.local_ai_coord(action='swarm_list', root=root, state="active")
     assert result["success"] is True
     calls = backend.calls
     assert calls == [(
@@ -609,7 +609,7 @@ def test_local_ai_coord_swarm_list_forwards_state_filter(monkeypatch, tmp_path):
 def test_local_ai_coord_swarm_status_forwards_swarm_identity(monkeypatch, tmp_path):
     backend = _prepare_coord_api(monkeypatch)
     root = str(tmp_path.resolve())
-    result = mcp_server.local_ai_coord(action='swarm_status', root=root, task_id="swarm-53")
+    result = mcp_server.local_ai_coord(action='swarm_status', root=root, swarm_id="swarm-53")
     assert result["success"] is True
     calls = backend.calls
     assert calls == [(
@@ -872,20 +872,23 @@ def test_local_ai_coord_context_compile_posts_scope_and_budget(monkeypatch, tmp_
     )]
 
 
-def test_local_ai_coord_incident_decision_forwards_fingerprint_and_outcome(monkeypatch, tmp_path):
+def test_local_ai_coord_incident_decision_forwards_fingerprint_and_revision(monkeypatch, tmp_path):
     root = str(tmp_path.resolve())
-    fingerprint = {"error_class": "TimeoutError", "scope": "task"}
-    outcome = {"attempted": True, "recovered": False}
+    fingerprint = {
+        "error_class": "TimeoutError", "operation_class": "artifact_read",
+        "signature_hash": "timeout-fingerprint-1",
+    }
+    state_revision = "revision-17"
     backend = _prepare_coord_rpc(monkeypatch)
     tool_result = asyncio.run(mcp_server.mcp.call_tool(
         "local_ai_coord", {"action": "incident_decision", "root": root,
-         "fingerprint": fingerprint, "tool_outcome": outcome}
+         "fingerprint": fingerprint, "state_revision": state_revision}
     ))
     result = _mcp_coord_json(tool_result)
     assert result["success"] is True
     assert backend.calls == [{
         "action": "incident_decision", "fingerprint": fingerprint,
-        "tool_outcome": outcome, "root": root,
+        "state_revision": state_revision, "root": root, "tenant": "",
     }]
 
 
