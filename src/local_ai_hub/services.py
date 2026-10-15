@@ -2682,8 +2682,24 @@ class LocalAIServices:
         try:
             self._touch_project(root)
             state = self._repo_cache_state(root) or {}
-            key = stable_hash({"op": operation, "state": state.get("fingerprint"), "params": params})
-            raw, hit, coalesced = self.repo_flight.get_or_compute(key, compute)
+            fingerprint = state.get("fingerprint")
+            if not isinstance(fingerprint, str) or not fingerprint.strip():
+                raw = compute()
+                hit = coalesced = False
+                cache_degraded = True
+                cache_reason = "missing_or_invalid_fingerprint"
+            else:
+                # Physical-root identity isolates clean clones with otherwise
+                # identical fingerprints while collapsing lexical aliases.
+                key = stable_hash({
+                    "op": operation,
+                    "root": canonical_root(root),
+                    "state": fingerprint,
+                    "params": params,
+                })
+                raw, hit, coalesced = self.repo_flight.get_or_compute(key, compute)
+                cache_degraded = bool(state.get("degraded", False))
+                cache_reason = state.get("reason")
         except (FileNotFoundError, ValueError) as exc:
             return {"success": False, "stale_root": True, "error": str(exc), "error_type": type(exc).__name__, "operation": operation}
         if isinstance(raw, dict):
@@ -2695,7 +2711,8 @@ class LocalAIServices:
         result["workspace_cache"] = {
             "hit": bool(hit), "coalesced": bool(coalesced), "operation": operation,
             "fingerprint": state.get("fingerprint"), "kind": state.get("kind"),
-            "degraded": bool(state.get("degraded", False)), "stale": bool(state.get("stale", False)),
+            "degraded": cache_degraded, "reason": cache_reason,
+            "stale": bool(state.get("stale", False)),
         }
         # Promote mechanical cache reuse to the common HTTP contract. This lets
         # clients reuse repository answers and makes endpoint cache hit telemetry
