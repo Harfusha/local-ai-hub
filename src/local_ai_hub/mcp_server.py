@@ -2136,56 +2136,30 @@ def local_ai_status(detail: StatusDetail = "brief", scope: str = "process", extr
             return _compact({"success": False, "error": str(exc)[:500]}, "status")
         return _compact(report, "status")
 
-    if action and detail not in {"agent_state", "telemetry"}:
-        status = CLIENT.get(f"/api/live/status?light=1&scope={scope}")
-        runtime_stats = status.get("runtime_stats") if isinstance(status, dict) else {}
-        if not isinstance(runtime_stats, dict):
-            runtime_stats = {}
-        if detail == "full":
-            if not isinstance(status, dict):
-                return contract_error("full status endpoint returned an invalid payload", status_code=502)
-            status = dict(status)
-            status["capabilities"] = CLIENT.get("/api/capabilities")
-            return _compact(status, "status")
-        if detail == "telemetry":
-            try:
-                report = CLIENT.get(f"/api/telemetry/report?days=30&scope={scope}")
-            except Exception as exc:
-                return _compact(_telemetry_failure(exc), "status")
-            projected = _telemetry_status_projection(report)
-            safe_state = _sanitize_telemetry_payload(report)
-            if isinstance(safe_state, dict) and "error" in projected:
-                safe_state["error"] = projected["error"]
-            projected = _preserve_contract_state(safe_state, projected)
-            return _compact(projected, "status")
-        if detail == "agent_state":
-            return _compact(CLIENT.status(detail="agent_state"), "status")
-    else:
-        if detail == "agent_state":
-            return _compact(CLIENT.status(detail="agent_state"), "status")
-        if detail == "telemetry":
-            try:
-                report = CLIENT.get(f"/api/telemetry/report?days=30&scope={scope}")
-            except Exception as exc:
-                return _compact(_telemetry_failure(exc), "status")
-            projected = _telemetry_status_projection(report)
-            safe_state = _sanitize_telemetry_payload(report)
-            if isinstance(safe_state, dict) and "error" in projected:
-                safe_state["error"] = projected["error"]
-            projected = _preserve_contract_state(safe_state, projected)
-            return _compact(projected, "status")
-        if detail == "full":
-            status = CLIENT.get(f"/api/status?scope={scope}")
-            if not isinstance(status, dict):
-                return contract_error("full status endpoint returned an invalid payload", status_code=502)
-            status = dict(status)
-            status["capabilities"] = CLIENT.get("/api/capabilities")
-            return _compact(status, "status")
-        # Brief and cache stay on the bounded, cached live status path.
-        status = CLIENT.get(f"/api/live/status?light=1&scope={scope}")
-        runtime_stats = status.get("runtime_stats") if isinstance(status, dict) else {}
-        if not isinstance(runtime_stats, dict):
-            runtime_stats = {}
+    if detail == "agent_state":
+        return _compact(CLIENT.status(detail="agent_state"), "status")
+    if detail == "telemetry":
+        try:
+            report = CLIENT.get(f"/api/telemetry/report?days=30&scope={scope}")
+        except Exception as exc:
+            return _compact(_telemetry_failure(exc), "status")
+        projected = _telemetry_status_projection(report)
+        safe_state = _sanitize_telemetry_payload(report)
+        if isinstance(safe_state, dict) and "error" in projected:
+            safe_state["error"] = projected["error"]
+        projected = _preserve_contract_state(safe_state, projected)
+        return _compact(projected, "status")
+    if detail == "full":
+        status = CLIENT.get(f"/api/status?scope={scope}")
+        if not isinstance(status, dict):
+            return contract_error("full status endpoint returned an invalid payload", status_code=502)
+        status = dict(status)
+        status["capabilities"] = CLIENT.get("/api/capabilities")
+        return _compact(status, "status")
+    # Brief and cache stay on the bounded, cached live status path.
+    status = CLIENT.get(f"/api/live/status?light=1&scope={scope}")
+    runtime_stats = status.get("runtime_stats") if isinstance(status, dict) else {}
+    if not isinstance(runtime_stats, dict):
         runtime_stats = {}
     if detail == "cache":
         projected = {

@@ -640,6 +640,8 @@ class AgentConsistencyGuard:
         try:
             from .agent_identity import AgentScope
             from .agent_memory import MemoryKind, MemoryRecord, MemoryStatus
+            from .project_config import resolve_project_context
+            from .state_paths import configured_state_dir
 
             memory_kind = kind if isinstance(kind, MemoryKind) else MemoryKind(str(kind).lower())
             bounded_evidence = tuple(dict.fromkeys(_text(item, 200) for item in evidence_ids if item))[:24]
@@ -648,6 +650,15 @@ class AgentConsistencyGuard:
             task = _text(related_task or (request_obj.task_id if request_obj else ""), 160)
             repository_root = canonical_root(request_obj.root if request_obj else root) if (request_obj and request_obj.root) or root else ""
             tenant = _text(request_obj.tenant if request_obj else "", 160).strip()
+            if not repository_root or not tenant:
+                return None
+            project = resolve_project_context(
+                repository_root,
+                configured_state_dir(getattr(self.repository_tools, "config", {}), create=False),
+            )
+            repository_id = project.coordination_id
+            if not repository_id:
+                return None
             root_token = hashlib.sha256(repository_root.encode("utf-8", "replace")).hexdigest()[:16] if repository_root else "noroot"
             tenant_token = hashlib.sha256(tenant.encode("utf-8", "replace")).hexdigest()[:16] if tenant else "notenant"
             stable = _redact_memory_text(stable_key, 240) or hashlib.sha256(
@@ -660,6 +671,7 @@ class AgentConsistencyGuard:
             expires_at = now + min(retention, float(_MEMORY_RETENTION_SECONDS))
             provenance = {
                 "root": repository_root[:400],
+                "repository_id": repository_id,
                 "tenant": tenant,
                 "guard": "agent_consistency",
                 "phase": _text(request_obj.phase if request_obj else phase, 80),
@@ -673,6 +685,7 @@ class AgentConsistencyGuard:
             record = MemoryRecord.create(
                 kind=memory_kind,
                 scope=AgentScope.REPOSITORY,
+                scope_id=repository_id,
                 key=record_key,
                 value=_memory_value(value),
                 confidence=max(0.0, min(1.0, float(confidence))),
@@ -687,10 +700,7 @@ class AgentConsistencyGuard:
                 related_task=task or None,
             )
             idempotency_key = f"{record_key}:{revision_token}"
-            try:
-                return store.record(record, actor=actor, idempotency_key=idempotency_key)
-            except TypeError:
-                return store.record(record)
+            return store.record(record, actor=actor, idempotency_key=idempotency_key)
         except Exception:
             return None
 
@@ -1516,13 +1526,21 @@ class AgentConsistencyGuard:
 
         memory_rows = list(_bounded_sequence(records, _MAX_ITEMS))
         if not memory_rows and self.memory_store is not None:
-            finder = getattr(self.memory_store, "find_for_context", None) or getattr(self.memory_store, "find", None)
-            if callable(finder):
+            finder = getattr(self.memory_store, "find_for_context", None)
+            if callable(finder) and request_obj is not None and request_obj.root and request_obj.tenant:
                 try:
-                    if finder.__name__ == "find_for_context":
-                        memory_rows = list(finder(root=request_obj.root if request_obj else "", task_id=request_obj.task_id if request_obj else "", limit=24))
-                    else:
-                        memory_rows = list(finder(root=request_obj.root if request_obj else None, task_id=request_obj.task_id if request_obj else None, limit=24, semantic=False))
+                    from .project_config import resolve_project_context
+                    from .state_paths import configured_state_dir
+
+                    project = resolve_project_context(
+                        request_obj.root,
+                        configured_state_dir(getattr(self.repository_tools, "config", {}), create=False),
+                    )
+                    if project.coordination_id:
+                        memory_rows = list(finder(
+                            root=request_obj.root, task_id=request_obj.task_id,
+                            tenant=request_obj.tenant, coordination_id=project.coordination_id, limit=24,
+                        ))
                 except Exception:
                     memory_rows = []
         reuse_decisions: list[dict[str, Any]] = []

@@ -4,7 +4,6 @@ from datetime import datetime, timedelta, timezone
 import json
 import inspect
 from pathlib import Path
-import subprocess
 import threading
 import urllib.request
 
@@ -138,22 +137,13 @@ def test_http_adoption_endpoint_returns_aggregates_only(tmp_path):
         server.shutdown(); server.server_close(); http_server.APP = previous; app.close()
 
 
-def test_dashboard_renders_adoption_response_body():
+def test_dashboard_does_not_poll_removed_adoption_panel():
     from local_ai_hub import dashboard
 
-    script = r'''
-const html=require('fs').readFileSync(process.argv[1],'utf8');
-const boxes={}; global.$=(id)=>boxes[id]||(boxes[id]={textContent:'',children:[],replaceChildren(){this.children=[]},append(...items){this.children.push(...items)}});
-global.document={createElement:(tag)=>({tag,textContent:'',children:[],append(...items){this.children.push(...items)}})};
-global.apiToken=''; global.prompt=()=>'';
-global.nativeFetch=async()=>new Response(JSON.stringify({available:true,adoption:{totals:{used:3,bypassed:2,blocked:1,failed:4},action_adoption:[{tool:'local_ai_repo',action:'search',outcome:'used',count:3}],dormant_actions:['local_ai_repo:context'],blocked_reasons:[],terminal_failures:[],latency_buckets:[],output_size_buckets:[]}}));
-const api=html.slice(html.indexOf('async function apiFetch'),html.indexOf('const rows='));
-const adoption=html.slice(html.indexOf('function renderAdoption'),html.indexOf('function render(s)'));
-eval(api); eval(adoption);
-(async()=>{await refreshAdoption();const row=boxes.adoptionActions.children[0];if(boxes.adoptionUsed.textContent!=='3 / 2'||boxes.adoptionBlocked.textContent!=='1 / 4'||String(boxes.adoptionDormant.textContent)!=='1'||!row||row.children[0].textContent!=='local_ai_repo'||row.children[1].textContent!=='search')process.exit(1)})();
-'''
-    result = subprocess.run(["node", "-e", script, str(Path(dashboard.__file__))], capture_output=True, text=True, timeout=10)
-    assert result.returncode == 0, result.stderr
+    html = dashboard.DASHBOARD_HTML
+    assert "refreshAdoption" not in html
+    assert "adoptionActions" not in html
+    assert "'/api/adoption'" not in html
 
 
 def test_mcp_explicit_bypass_report_uses_target_without_inference(tmp_path, monkeypatch):

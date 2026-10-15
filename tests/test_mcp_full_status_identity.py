@@ -10,7 +10,7 @@ from local_ai_hub.operation_contracts import validate_operation_output
 
 
 @pytest.mark.parametrize("degraded", [False, True])
-@pytest.mark.parametrize("selector", [{"detail": "full"}, {"action": "full"}])
+@pytest.mark.parametrize("selector", [{"detail": "full"}])
 def test_full_status_keeps_required_identity_through_live_mcp_projection(monkeypatch, degraded, selector):
     payload = {
         "success": not degraded,
