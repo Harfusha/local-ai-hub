@@ -562,6 +562,8 @@ Pubsub retains bounded optional live cache (500 topics, 8 MiB serialized charge)
 
 ## Local telemetry
 
+On Windows Python 3.13+, native Tree-sitter parsing runs in an isolated worker. A worker crash, timeout, or execution failure disables further worker dispatch for that Hub process lifetime; later calls report the disabling cause and use the existing deterministic fallback. Do not recreate the worker repeatedly or execute the native parser in the main process after failure. This containment does not establish that the underlying native crash is repaired. Source changes require activation before they affect an already running Hub.
+
 Basic aggregate telemetry remains enabled locally. Detailed request traces are disabled by default and can be toggled live in the dashboard. When enabled, they retain complete endpoint input/output locally, including sensitive values, within configured size and retention limits. Local telemetry and trace details stay on this device; only normal agent responses requested by cloud agents leave it.
 
 Install updates stage and verify payloads before swapping files. Existing-runtime stop uses the installed config and must be confirmed; failed or unknown stop blocks replacement and startup. File rollback can leave the runtime stopped and must be reported separately. Shared skills are replaced or removed only when their Hub ownership hash matches; preserve unmanaged or user-modified trees and report conflicts.
