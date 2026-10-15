@@ -104,3 +104,40 @@ assert.ok(elements.overviewHistorySummary.textContent.includes((2404).toLocaleSt
 renderOverviewHealth(base,now-200000,now);
 assert.equal(elements.overviewHealthLevel.textContent,'Status stale');
 """)
+
+
+def test_repository_selection_is_an_empty_state_not_a_load_failure():
+    source=extract('function renderAgentOsLoadErrors(', "$('agentOsRefresh')")
+    run_javascript(source, """
+const elements=Object.fromEntries(['agentOsRoot','agentOsState','agentOsSummary','agentOsTasksBody','agentOsMemoryBody','agentOsIncBody'].map(id=>[id,{value:''}]));
+const $=id=>elements[id],esc=String;
+const agentOsLoadErrors={tasks:'Choose a repository root above',memory:'Choose a repository root above',incidents:'Choose a repository root above'};
+renderAgentOsLoadErrors();
+assert.equal(elements.agentOsState.textContent,'Select a repository');
+assert.doesNotMatch(elements.agentOsSummary.textContent,/failed|could not|unavailable/i);
+assert.doesNotMatch(elements.agentOsTasksBody.innerHTML,/Unavailable|warn-t/);
+""")
+
+
+def test_http_delivery_success_does_not_hide_operation_failure():
+    run_javascript(extract('function requestOutcome(', 'function workRecentRequestRow('), """
+assert.equal(requestOutcome({success:false,status_code:200}).label,'Failed · HTTP 200');
+assert.equal(requestOutcome({success:true,status_code:503}).failed,true);
+assert.equal(requestOutcome({success:true,status_code:200}).label,'Succeeded · HTTP 200');
+assert.equal(requestOutcome({}).label,'Result unreported');
+""")
+
+
+def test_navigation_starts_new_pages_at_their_heading():
+    source=extract('function switchTab(', "\ndocument.querySelectorAll('.tabbtn').forEach(b=>")
+    run_javascript(source, """
+let current='overview',scrolls=0,focused=0;
+const pages=['overview','config'].map(id=>({id,classList:{toggle:(name,active)=>{if(active)current=id}}}));
+const tabs=pages.map(p=>({dataset:{tab:p.id},classList:{toggle:()=>{}},setAttribute:()=>{}}));
+const $=id=>({querySelector:()=>({focus:()=>focused++})});
+const document={querySelector:()=>({id:current}),querySelectorAll:selector=>selector==='.page'?pages:tabs};
+const window={scrollTo:()=>scrolls++},localStorage={setItem:()=>{}},location={hash:'#overview'},history={replaceState:()=>{}};
+const loadConfigView=()=>{},loadAgentOsView=()=>{},loadRagWorkspaces=()=>{},loadActiveLeases=()=>{},loadWorktrees=()=>{},loadLogsTail=()=>{};
+switchTab('config');assert.equal(scrolls,1);assert.equal(focused,1);
+switchTab('config');assert.equal(scrolls,1);
+""")

@@ -458,7 +458,7 @@ def test_dashboard_ux_refinements_and_empty_states() -> None:
     # 6. Reliability tab auto-tail
     assert "if(tabId==='reliability')loadLogsTail();" in DASHBOARD_HTML
     # 7. Bundles table wrap
-    assert '<div class="table-wrap"><table><thead><tr><th>Repository identity</th>' in DASHBOARD_HTML
+    assert '<div class="table-wrap"><table class="bundle-table"><thead><tr><th>Repository identity</th>' in DASHBOARD_HTML
 
 
 def test_trajectory_inspector_uses_bounded_cursor_pages() -> None:

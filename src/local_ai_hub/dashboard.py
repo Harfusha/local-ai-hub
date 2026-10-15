@@ -139,6 +139,22 @@ tbody tr.click:hover{background:#162338}
 .spark-canvas{width:100%;height:32px;display:block;margin-top:6px}
 @media(max-width:980px){.split{grid-template-columns:1fr}.event,.event-header{grid-template-columns:72px 90px 1fr}.hide-sm{display:none}.page{padding:8px}.value{font-size:17px}}
 @media(max-width:700px){.toolbar{padding:8px;gap:6px}.toolbar .brand{font-size:12px}.toolbar>.tiny{display:none}.control-menu{margin-left:0}.control-popover{position:fixed;left:8px;right:8px;top:72px;min-width:0}.tabs{padding:0 6px 6px}.tabbtn{padding:6px 8px}.project-toolbar{align-items:stretch}.project-toolbar input:not([type=checkbox]):not([type=radio]){flex-basis:100%}.project-summary{margin-left:0;width:100%}}
+
+.settings-options{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:16px}
+.settings-options label{display:flex;align-items:center;gap:10px;padding:13px 14px;border:1px solid var(--line);border-radius:8px;background:#111c29;cursor:pointer;min-width:0;font-size:13px}
+.settings-options label:has(input:checked){border-color:#2c5c79;background:#102336}
+.settings-options label:has(input:disabled){cursor:not-allowed;opacity:.6}
+.feature-details summary{font-size:13px}.feature-details .label{display:none}
+@media(max-width:900px){.settings-options{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:600px){.settings-options{grid-template-columns:1fr}.event-header{display:none}.event{grid-template-columns:72px minmax(0,1fr) auto;gap:8px 12px;padding:14px}.event>span:nth-child(1){grid-area:1/1}.event>span:nth-child(2){grid-area:1/2}.event>span:nth-child(7){grid-area:1/3}.event>span:nth-child(3){grid-area:2/1;font-size:11px;color:var(--muted)}.event>span:nth-child(4){grid-area:2/2}.event>span:nth-child(6){grid-area:2/3}.event>span:nth-child(5){display:none}}
+
+.bundle-layout{grid-template-columns:minmax(0,1.8fr) minmax(290px,1fr);align-items:start}
+.bundle-table{table-layout:fixed}.bundle-table th:nth-child(1){width:35%}.bundle-table th:nth-child(2){width:22%}.bundle-table th:nth-child(3){width:24%}.bundle-table th:nth-child(4){width:19%}
+.bundle-table td{white-space:normal;overflow-wrap:anywhere;font-size:12px}.bundle-table td .btn{white-space:normal;padding:7px 9px;font-size:12px}
+.bundle-table td:nth-child(1)>div{font-size:11px}.bundle-table td:nth-child(3){color:var(--muted)}
+input[type=file]{padding:7px;line-height:1.5}input[type=file]::file-selector-button{font:inherit;color:var(--fg);background:#22354b;border:1px solid #405671;border-radius:5px;padding:5px 9px;margin-right:10px;cursor:pointer}
+@media(max-width:1000px){.bundle-layout{grid-template-columns:1fr}}
+@media(max-width:600px){.bundle-table,.bundle-table tbody{display:block;width:100%}.bundle-table thead{display:none}.bundle-table tr{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));padding:12px 0;border-bottom:1px solid var(--line);gap:8px 12px}.bundle-table td{display:block;padding:0;border:0;min-width:0}.bundle-table td:first-child,.bundle-table td:last-child{grid-column:1/-1}.bundle-table td:last-child .btn{width:100%;justify-content:center}}
 </style><style>
 .system-card .value{font-size:15px}
 .trace-running{color:var(--accent)}
@@ -255,43 +271,67 @@ tbody tr.click:hover{background:#162338}
 .copy-btn{background:#192535;border:1px solid #2b3d54;border-radius:4px;color:var(--fg);padding:2px 7px;font-size:10px;cursor:pointer}
 .copy-btn:hover{background:#23354a;color:#fff}
 .code-box{background:#0b1017;border:1px solid #212e3e;border-radius:6px;padding:10px;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;font-size:11px;color:#d7e2ef;max-height:280px;overflow:auto;white-space:pre-wrap;word-break:break-word}
-/* Shared dashboard rhythm and accessible controls, including narrow screens. */
-body{font-size:13px;line-height:1.5}
-.page{padding:20px;max-width:1800px;margin-inline:auto}
-.toolbar{gap:10px;padding:12px 20px}
-.toolbar>label.tiny{display:flex;align-items:center;gap:6px}
-.tabs{padding-inline:20px;scrollbar-width:thin}
-.tabbtn{padding:9px 13px;min-height:38px}
-.btn{min-height:32px;padding:6px 12px;font-size:12px}
+/* Shared dashboard visual system. */
+body{font-size:14px;line-height:1.55}
+.page{padding:28px 24px 48px;max-width:1480px;margin-inline:auto;min-width:0}
+.page-heading{margin:0 0 24px;max-width:85ch}
+.page-heading h1{font-size:28px;line-height:1.2;letter-spacing:-.035em;margin:0 0 7px;color:var(--fg-bright);font-weight:700}
+.page-heading p{margin:0;color:var(--muted);font-size:14px;line-height:1.6}
+.toolbar,.tabs{max-width:1480px;margin-inline:auto}
+.toolbar{gap:12px;padding:14px 24px}
+.brand{font-size:16px}.toolbar>label.tiny{display:flex;align-items:center;gap:8px}
+.tabs{padding:0 24px 12px;scrollbar-width:thin;gap:4px}
+.tabbtn{padding:10px 12px;min-height:40px;font-size:13px}
+.btn,.action-btn-sm,.copy-btn,.subtab-btn{min-height:36px;padding:7px 12px;font-size:13px;line-height:1.35;border-radius:7px}
+.btn.primary{background:#173b59;border-color:#317eaf;color:#e0f2fe;font-weight:600}
+.btn.primary:hover{background:#205173;border-color:var(--accent)}
 .btn:disabled,button:disabled{opacity:.5;cursor:not-allowed}
 button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--accent);outline-offset:3px}
-input:not([type=checkbox]):not([type=radio]),select{min-height:32px;max-width:100%}
-.grid{gap:14px}.grid>*{min-width:0}
+input:not([type=checkbox]):not([type=radio]),select,textarea{background:#111c29;color:var(--fg);border:1px solid #34465e;border-radius:7px;padding:8px 11px;font:inherit;font-size:13px;min-height:36px;max-width:100%}
+input::placeholder,textarea::placeholder{color:#8d9db3;opacity:1}
+input[type=checkbox],input[type=radio]{accent-color:var(--accent);width:16px;height:16px;flex:0 0 auto;margin:0;vertical-align:middle}
+.project-toolbar input:not([type=checkbox]):not([type=radio]),.project-toolbar select,.request-filter input,.request-filter select,.modal-form input,.modal-form select,.modal-form textarea,.toolbar select{font-size:13px;padding:8px 11px;background:#111c29;border-color:#34465e;border-radius:7px}
+.project-toolbar,.request-filter{padding:14px 16px;gap:10px}
+.project-toolbar label{display:inline-flex;align-items:center;gap:8px;white-space:nowrap}
+.project-summary,.request-summary{font-size:12px;color:var(--muted)}
+.grid{gap:16px}.grid>*{min-width:0}
 .grid-2{grid-template-columns:repeat(auto-fit,minmax(min(100%,320px),1fr))}
 .grid-3{grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr))}
 .grid-4{grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr))}
-.grid-6{grid-template-columns:repeat(auto-fit,minmax(min(100%,230px),1fr))}
-.card{padding:17px;min-height:116px;border-radius:11px;gap:7px}
-.label{font-size:11px;letter-spacing:.045em}.value{font-size:25px;line-height:1.25;margin-top:2px}
-.sub,.tiny,.muted{font-size:12px}.sub{line-height:1.55}
-.section{margin-top:16px;border-radius:11px}
-.section h2{padding:13px 16px;font-size:14px;flex-wrap:wrap}
-table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
-.group-title{flex-wrap:wrap;gap:8px;line-height:1.5}
-.action-btn-sm,.copy-btn,.subtab-btn{min-height:30px;font-size:11px}.project-actions{flex-wrap:wrap}
-.arena-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
-.arena-grid>*{min-width:0}
-.split>*{min-width:0}
-@media(max-width:600px){.arena-grid{grid-template-columns:1fr}.control-popover{min-width:0;width:min(340px,calc(100vw - 24px));max-height:calc(100dvh - 140px);overflow:auto}.kv{grid-template-columns:minmax(100px,40%) minmax(0,1fr)}.project-toolbar input:not([type=checkbox]):not([type=radio]){min-width:min(180px,100%)}.reliability-footer>div{flex-wrap:wrap}}
-.metric-status{margin:0 0 12px;color:var(--muted);font-size:12px}
-.metric-status.warn-t{color:var(--warn)}
-.metric-details{margin-top:12px;padding:12px 16px;border:1px solid var(--line);border-radius:9px;color:var(--muted);background:var(--panel)}
-.metric-details summary{cursor:pointer;color:var(--fg);font-weight:600}
-.metric-details p{max-width:90ch}.metric-details pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.7 ui-monospace,Consolas,monospace;margin-bottom:0}
+.grid-6{grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr))}
+.card{padding:20px;min-height:132px;border-radius:12px;gap:8px;justify-content:flex-start}
+.label{font-size:11px;letter-spacing:.055em}.value,.primary-metric{font-size:27px;line-height:1.25;margin-top:4px;letter-spacing:-.025em}
+.card .sub{margin-top:auto;padding-top:8px}.sub,.tiny,.muted{font-size:12px}.sub{line-height:1.6}
+.dash-group{margin-bottom:24px}.group-title{flex-wrap:wrap;gap:8px;margin-bottom:12px;font-size:12px;line-height:1.5}
+.group-title>.tiny{text-transform:none;font-weight:400;letter-spacing:0}
+.section{margin-top:20px;border-radius:12px}.section h2{padding:16px 18px;font-size:15px;flex-wrap:wrap;line-height:1.5}
+.section h2>.tiny{font-weight:400;max-width:70ch}
+.section .section{margin-top:0}.split{gap:20px}.split>*{min-width:0}
+.table-wrap{max-height:580px;scrollbar-width:thin;overscroll-behavior:contain}
+table{font-size:13px}th,td{padding:12px 14px;vertical-align:top}th{font-size:12px;font-weight:600}tbody tr:hover{background:#142135}
+.project-table{table-layout:fixed;min-width:1100px}.project-table th:nth-child(1){width:25%}.project-table th:nth-child(2){width:27%}.project-table th:nth-child(3){width:21%}.project-table th:nth-child(4){width:12%}.project-table th:nth-child(5){width:15%}
+.project-name,.project-root,.project-activity{max-width:100%;overflow-wrap:anywhere;white-space:normal;line-height:1.55}.project-name{overflow:visible}
+.project-actions{gap:6px;flex-wrap:wrap}.project-actions .action-btn-sm{padding:6px 9px;font-size:12px;min-height:32px}
+.project-progress{min-width:0}.project-progress-line{font-size:11px;gap:8px}.project-progress-line b{white-space:normal}.project-index{gap:7px;font-size:12px}
+.empty{padding:32px 18px;font-size:13px;line-height:1.6;text-align:center}
+.kv{font-size:13px;padding:16px 18px;gap:12px 20px;grid-template-columns:minmax(140px,34%) minmax(0,1fr)}
+.chip,.badge-status,.pill{font-size:11px;line-height:1.45}.chip{padding:3px 7px}.badge-status{padding:4px 9px}
+.subtabs{padding:12px 16px;gap:8px}.subtab-btn{font-size:12px}
+.control-menu summary{font-size:13px;min-height:36px;padding:8px 12px}.control-popover{padding:16px;gap:10px;width:370px;min-width:0;max-height:calc(100dvh - 110px);overflow:auto}
+.control-popover .tiny.muted{font-size:11px;text-transform:uppercase;letter-spacing:.06em;padding-top:8px}
+.control-notice{font-size:12px;line-height:1.6}.diag-banner{padding:14px 16px;font-size:13px;flex-wrap:wrap;line-height:1.55}
+.arena-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.arena-grid>*{min-width:0}
+.metric-status{margin:0 0 14px;color:var(--muted);font-size:13px}.metric-status.warn-t{color:var(--warn)}
+.metric-details{margin-top:16px;padding:15px 18px;border:1px solid var(--line);border-radius:10px;color:var(--muted);background:var(--panel)}
+.metric-details summary{cursor:pointer;color:var(--fg);font-weight:600}.metric-details p{max-width:85ch}.metric-details pre{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.8 ui-monospace,Consolas,monospace;margin-bottom:0}
+.modal-head{padding:16px 18px}.modal-form label{font-size:13px}.modal-form .form-hint{font-size:12px;line-height:1.55}.modal-actions-bar{gap:10px;flex-wrap:wrap}
+.event,.event-header{font-size:12px;padding:12px 14px;align-items:start}.event>span,.event-header>span{min-width:0;overflow-wrap:anywhere;white-space:normal}
+pre,.code-box{font-size:12px;line-height:1.7;tab-size:2}
 @media(min-width:1100px){.grid-6{grid-template-columns:repeat(3,minmax(0,1fr))}}
-@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
-@media(max-width:600px){.page{padding:12px}.toolbar{padding:10px 12px}.tabs{padding-inline:12px}.toolbar>.spacer{flex-basis:100%;margin-left:0}.grid-6{grid-template-columns:repeat(2,minmax(0,1fr))}.card{padding:12px;min-height:116px}.value{font-size:21px}.group-title>.tiny{display:none}.section h2 .spacer{margin-left:0}.modal-bg{padding:8px}.modal{max-height:94vh}}
+@media(max-width:1000px){.split{grid-template-columns:1fr}.group-title>.tiny{width:100%}.section h2>.tiny{width:100%}}
+@media(max-width:600px){.page{padding:20px 14px 32px}.page-heading{margin-bottom:20px}.page-heading h1{font-size:24px}.page-heading p{font-size:13px}.toolbar{padding:12px 14px;gap:8px}.tabs{padding:0 14px 10px}.tabbtn{font-size:12px;padding:9px 11px}.toolbar>.spacer{flex-basis:100%;margin-left:0}.control-menu{margin-left:auto}.control-popover{position:fixed;left:12px;right:12px;top:110px;width:auto;min-width:0;max-height:calc(100dvh - 134px)}.grid-6{grid-template-columns:repeat(2,minmax(0,1fr))}.card{padding:16px;min-height:132px}.value,.primary-metric{font-size:23px}.group-title>.tiny{display:none}.section h2{padding:14px 16px}.section h2 .spacer{margin-left:0}.project-toolbar,.request-filter{padding:12px}.project-toolbar input:not([type=checkbox]):not([type=radio]),.request-filter input{min-width:0;flex-basis:100%}.project-toolbar select,.request-filter select{flex:1;min-width:130px}.project-toolbar .project-summary{width:100%}.arena-grid{grid-template-columns:1fr}.kv{grid-template-columns:1fr;gap:4px}.kv>div:nth-child(even){margin-bottom:12px}.modal-bg{padding:8px}.modal{max-height:94dvh}.modal-form{grid-template-columns:1fr}.reliability-footer{align-items:stretch!important}.reliability-footer>div{flex-wrap:wrap}.reliability-footer .btn{white-space:normal}}
 @media(max-width:380px){.grid-6{grid-template-columns:1fr}}
+@media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
 </style></head><body>
 <div class="top">
   <div class="toolbar">
@@ -340,6 +380,7 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
 </div>
 
 <div id="overview" class="page active">
+  <header class="page-heading"><h1 tabindex="-1" id="page-title-overview">Overview</h1><p>Current runtime, workload and token efficiency.</p></header>
   <section id="overviewHealthSummary" class="section" style="margin-bottom:12px;padding:14px;border-left:4px solid var(--accent)">
     <div class="label">Current runtime health</div>
     <div class="value primary-metric" id="overviewHealthLevel">Loading runtime health…</div>
@@ -380,13 +421,13 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
     </div>
   </div>
 
-  <div class="section" style="margin-top:12px;padding:12px 14px">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+  <details class="metric-details feature-details"><summary>Enabled capabilities</summary>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin:12px 0 8px">
       <div><span class="label" style="font-size:11.5px">Configured Feature Modules</span><span class="tiny muted" style="margin-left:8px">Granular subsystem status &amp; tool projection</span></div>
-      <span class="tiny muted" id="featStatusText">All modules active</span>
+      <span class="tiny muted" id="featStatusText">Loading capability settings…</span>
     </div>
     <div id="featurePills" style="display:flex;gap:8px;flex-wrap:wrap"></div>
-  </div>
+  </details>
 
   <div class="split" style="margin-top:12px">
     <section class="section"><h2>Current workload <span class="tiny" id="currentSummary"></span></h2><div class="table-wrap"><table><thead><tr><th>State</th><th>Agent</th><th>Source</th><th>Model</th><th>Wait</th><th>Processing</th><th>Reason</th></tr></thead><tbody id="overviewJobs"></tbody></table></div></section>
@@ -395,15 +436,17 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
 </div>
 
 <div id="work" class="page">
+  <header class="page-heading"><h1 tabindex="-1" id="page-title-work">Queue &amp; requests</h1><p>Follow live work and inspect retained request history.</p></header>
   <section class="section"><h2>Live scheduler work <span class="tiny" id="queueSummary">Current queue only; not request history.</span></h2><div class="table-wrap"><table><thead><tr><th>State</th><th>Job</th><th>Agent</th><th>Source</th><th>Model</th><th>Priority</th><th>Wait</th><th>Processing</th><th>Reason</th></tr></thead><tbody id="jobs"></tbody></table></div></section>
   <section class="section"><h2>Active API requests <span class="tiny">monitoring endpoints excluded</span></h2><div class="table-wrap"><table><thead><tr><th>Request</th><th>Agent</th><th>Tenant</th><th>Action</th><th>Age</th></tr></thead><tbody id="activeReq"></tbody></table></div></section>
   <section class="section"><h2>Request history — Recent API requests <span class="tiny">Persisted API telemetry; distinct from scheduler work and Agent OS task runs.</span></h2><div class="request-filter"><input id="requestHistorySearch" aria-label="Search request history" type="search" placeholder="Search request ID, route, project, agent, error…" autocomplete="off"><select id="requestHistoryAction" aria-label="Filter by endpoint"><option value="">All endpoints</option></select><select id="requestHistoryStatus" aria-label="Filter by status"><option value="">All results</option><option value="failed">Failed</option><option value="2xx">2xx</option><option value="4xx">4xx</option><option value="5xx">5xx</option></select><select id="requestHistoryPeriod" aria-label="Filter by time"><option value="">All loaded</option><option value="3600">Last hour</option><option value="86400">Last 24 hours</option><option value="604800">Last 7 days</option><option value="2592000">Last 30 days</option></select><button class="btn" id="requestHistoryReset">Reset</button><span class="tiny request-summary" id="requestHistorySummary">0 requests</span></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Request</th><th>Project</th><th>Agent</th><th>Tenant</th><th>Action</th><th>Status</th><th>Trace availability</th><th>Duration</th></tr></thead><tbody id="recentReq"></tbody></table></div></section>
 </div>
 
 <div id="agentos" class="page">
+  <header class="page-heading"><h1 tabindex="-1" id="page-title-agentos">Agent OS</h1><p>Tasks, memory and incident knowledge for a selected repository.</p></header>
   <div id="agentOsDisabledBanner" class="diag-banner bad" style="display:none">⚠️ <b>Agent OS feature is disabled in configuration</b> (<code>features.agent_os = false</code>). Durable task tracking and memory are inactive.</div>
   <section class="section">
-    <h2><span style="display:flex;align-items:center;gap:8px">Agent Operating System <span class="tiny" id="agentOsState">0 active · 0 total tasks · 0 memories</span></span><div style="display:flex;gap:6px;align-items:center"><button class="btn ok" id="agentOsRefresh" style="padding:4px 10px;font-size:11px">↻ Refresh</button><button class="btn warn" id="agentOsCleanup" style="padding:4px 10px;font-size:11px">🧹 Cleanup stale state</button></div></h2>
+    <h2><span style="display:flex;align-items:center;gap:8px">Agent Operating System <span class="tiny" id="agentOsState">0 active · 0 total tasks · 0 memories</span></span><div style="display:flex;gap:6px;align-items:center"><button class="btn primary" id="agentOsRefresh" style="padding:4px 10px;font-size:11px">↻ Refresh</button><button class="btn warn" id="agentOsCleanup" style="padding:4px 10px;font-size:11px">🧹 Cleanup stale state</button></div></h2>
     <div class="project-toolbar"><input id="agentOsRoot" list="worktreeRoots" aria-label="Repository root for Agent OS" placeholder="Choose or enter repository root"><span class="tiny muted">Select a repository and use Refresh. Access stays scoped to the current client.</span></div>
     <div class="subtabs">
       <button class="subtab-btn active" id="subtabTasks" data-agentos-tab="tasks">Tasks &amp; Contracts</button>
@@ -419,7 +462,7 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
       <div class="project-toolbar">
         <input id="agentOsSearch" aria-label="Search tasks" type="search" placeholder="Search tasks by ID, goal, next action..." autocomplete="off">
         <select id="agentOsTaskStatus" aria-label="Task status filter"><option value="">All task statuses</option><option value="planned">Planned</option><option value="active">Active</option><option value="verifying">Verifying</option><option value="completed">Completed</option><option value="failed">Failed</option><option value="blocked">Blocked</option></select>
-        <button class="btn ok" id="agentOsCreateTaskBtn" style="padding:5px 9px">+ Create Task</button>
+        <button class="btn primary" id="agentOsCreateTaskBtn" style="padding:5px 9px">+ Create Task</button>
         <span class="tiny project-summary" id="agentOsSummary"></span>
       </div>
       <div class="table-wrap"><table><thead><tr><th>Status</th><th>Task ID</th><th>Goal</th><th>Scope</th><th>Phase / Next Action</th><th>Criteria</th><th>Updated</th></tr></thead><tbody id="agentOsTasksBody"></tbody></table></div>
@@ -478,15 +521,17 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
 
 
 <div id="projects" class="page">
+  <header class="page-heading"><h1 tabindex="-1" id="page-title-projects">Projects</h1><p>Manage registered repositories and follow indexing progress.</p></header>
   <div id="prepDiagnosticBar" class="diag-banner info" style="display:none"></div>
   <section class="section">
-    <h2><span style="display:flex;align-items:center;gap:8px">Projects <span class="tiny" id="prepState">0 registered projects · global running</span></span><div style="display:flex;gap:6px;align-items:center"><button class="btn warn" id="prepAllToggle" style="padding:4px 10px;font-size:11px">Pause all projects</button><button class="btn ok" id="regProjectBtn" style="padding:4px 10px;font-size:11px">+ Register</button><button class="btn warn" id="cleanMissingBtn" style="padding:4px 10px;font-size:11px">🧹 Clean missing</button></div></h2>
+    <h2><span style="display:flex;align-items:center;gap:8px">Projects <span class="tiny" id="prepState">0 registered projects · global running</span></span><div style="display:flex;gap:6px;align-items:center"><button class="btn warn" id="prepAllToggle" style="padding:4px 10px;font-size:11px">Pause all projects</button><button class="btn primary" id="regProjectBtn" style="padding:4px 10px;font-size:11px">+ Register</button><button class="btn warn" id="cleanMissingBtn" style="padding:4px 10px;font-size:11px">🧹 Clean missing</button></div></h2>
     <div class="project-toolbar"><input id="projectSearch" aria-label="Search projects" type="search" placeholder="Search repository identity, project, or worktree…" autocomplete="off"><select id="projectFilter" aria-label="Project status"><option value="all">All states</option><option value="running">Running</option><option value="waiting">Waiting</option><option value="error">Error</option><option value="paused">Paused</option><option value="ready">Ready</option></select><label class="tiny"><input id="projectGroupWorktrees" type="checkbox" checked> Group worktrees</label><select id="projectSort" aria-label="Project sort"><option value="priority">Operational priority</option><option value="name">Name</option><option value="progress">Progress</option><option value="recent">Recent activity</option></select><span class="tiny project-summary" id="projectSummary">0 of 0 projects</span></div>
     <div class="table-wrap"><table class="project-table"><thead><tr><th>Project</th><th>State &amp; activity</th><th>Phase &amp; progress</th><th>Indexes</th><th>Actions</th></tr></thead><tbody id="projectsBody"></tbody></table></div>
   </section>
 </div>
 
 <div id="commands" class="page">
+  <header class="page-heading"><h1 tabindex="-1" id="page-title-commands">Commands</h1><p>Running commands, broker activity and repository worktrees.</p></header>
   <div id="cmdDisabledBanner" class="diag-banner bad" style="display:none">⚠️ <b>Commands feature is disabled in configuration</b> (<code>features.commands = false</code>). Command classification and execution are blocked.</div>
   <section class="section"><h2>Running commands <span class="tiny" id="commandState">0 running</span></h2><div class="table-wrap"><table><thead><tr><th>Command</th><th>CWD</th><th>Tenant</th><th>Class</th><th>Age</th><th>Timeout</th></tr></thead><tbody id="activeCommands"></tbody></table></div></section>
   <div class="split"><section class="section"><h2>Command broker statistics <span class="tiny">Since restart</span></h2><div id="commandStats" class="kv"></div></section><section class="section"><h2>Blocked by policy</h2><div class="table-wrap"><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody id="blockedReasons"></tbody></table></div></section></div>
@@ -495,7 +540,7 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
     <div class="project-toolbar">
       <input id="worktreeRoot" aria-label="Repository root for worktrees" placeholder="Choose or enter repository root" list="worktreeRoots" style="flex:1;min-width:220px">
       <datalist id="worktreeRoots"></datalist>
-      <button class="btn ok" id="refreshWorktreesBtn">↻ Refresh Worktrees</button>
+      <button class="btn primary" id="refreshWorktreesBtn">↻ Refresh Worktrees</button>
       <button class="btn warn" id="pruneWorktreesBtn">🧹 Prune Stale Worktrees</button>
       <span class="tiny muted project-summary">Isolated worktrees prevent concurrent file write collisions</span>
     </div>
@@ -510,6 +555,7 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
 
 
 <div id="performance" class="page">
+  <header class="page-heading"><h1 tabindex="-1" id="page-title-performance">Models &amp; RAG</h1><p>Model performance, semantic indexes and execution profiles.</p></header>
   <section class="section">
     <h2>Telemetry snapshots <span class="tiny" id="performanceMetricsScope">Selected metrics period · retained samples</span></h2>
     <div style="padding:12px">
@@ -533,8 +579,8 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
     <h2>Local Model Arena <span class="tiny">Side-by-side prompt testbed comparing fast tier vs smart tier</span></h2>
     <div style="padding:12px">
       <div style="display:flex;gap:8px;margin-bottom:10px;flex-wrap:wrap">
-        <input type="text" id="arenaPromptInput" aria-label="Arena test prompt" placeholder="Test prompt (e.g. Write a Python function with LRU cache to solve knapsack problem)..." style="flex:1;min-width:min(320px,100%);background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:8px 12px;font-size:12px">
-        <button class="btn ok" id="arenaRunBtn">Run Arena Benchmark</button>
+        <input type="text" id="arenaPromptInput" aria-label="Arena test prompt" placeholder="Test prompt (e.g. Write a Python function with LRU cache to solve knapsack problem)..." style="flex:1;min-width:min(320px,100%)">
+        <button class="btn primary" id="arenaRunBtn">Run Arena Benchmark</button>
       </div>
       <div class="arena-grid">
         <div class="card" style="min-height:180px">
@@ -560,6 +606,7 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
 </div>
 
 <div id="reliability" class="page">
+  <header class="page-heading"><h1 tabindex="-1" id="page-title-reliability">Reliability &amp; logs</h1><p>Current service checks, recorded errors and process history.</p></header>
   <section class="section" id="reliabilitySummary"><h2>Runtime health &amp; recorded history <span class="tiny">Current checks and historical totals are independent.</span></h2><div id="reliabilityHeadline" class="kv"></div><div class="reliability-footer" style="padding:10px 14px;border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap"><div class="tiny muted" id="reliabilityTrend">Historical telemetry loading…</div><button class="btn" id="reliabilityAction">Open request history</button></div></section>
   <div class="split">
     <section class="section"><h2>Recent error fingerprints</h2><div class="table-wrap"><table><thead><tr><th>Component</th><th>Operation</th><th>Diagnostic</th><th>Count</th><th>Recovered</th><th>Last seen</th></tr></thead><tbody id="errors"></tbody></table></div></section>
@@ -577,39 +624,42 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
     </div>
   </section>
   <section class="section">
-    <h2><span>Operational log tail</span><div style="display:flex;gap:6px;align-items:center"><input type="text" id="logFilterInput" aria-label="Filter operational logs" placeholder="Filter logs…" style="background:#0d141c;color:var(--fg);border:1px solid #334355;border-radius:5px;padding:3px 7px;font-size:11px;width:150px"><select id="logLinesSelect" aria-label="Log line count" style="background:#0d141c;color:var(--fg);border:1px solid #334355;border-radius:5px;padding:3px 6px;font-size:11px"><option value="100">100 lines</option><option value="250" selected>250 lines</option><option value="500">500 lines</option></select><button class="btn" id="loadLogs" style="padding:3px 8px">Refresh</button><button class="btn" id="copyLogsBtn" style="padding:3px 8px">Copy</button></div></h2>
+    <h2><span>Operational log tail</span><div style="display:flex;gap:6px;align-items:center"><input type="text" id="logFilterInput" aria-label="Filter operational logs" placeholder="Filter logs…" style="width:150px"><select id="logLinesSelect" aria-label="Log line count" ><option value="100">100 lines</option><option value="250" selected>250 lines</option><option value="500">500 lines</option></select><button class="btn" id="loadLogs" style="padding:3px 8px">Refresh</button><button class="btn" id="copyLogsBtn" style="padding:3px 8px">Copy</button></div></h2>
     <pre id="logTail" style="margin:0;padding:12px;white-space:pre-wrap;max-height:420px;overflow:auto;background:#0d1219;color:#c9d6e4;font-size:11px">Click Refresh to load logs.</pre>
   </section>
 </div>
 
 <div id="config" class="page">
+  <header class="page-heading"><h1 tabindex="-1" id="page-title-config">Configuration</h1><p>Review settings and save deliberate changes to the Hub.</p></header>
   <section class="section">
-    <h2>Runtime configuration <span class="tiny">safe override sidecar · restart required after save</span></h2>
+    <h2>Runtime configuration <span class="tiny">Saved changes apply after restart</span></h2>
     <div style="padding:14px">
-      <div class="dash-group"><div class="group-title">Hardware &amp; Engine</div><div class="kv" style="padding:0;margin-bottom:12px"><div>Hardware profile</div><div><select id="cfgProfile" aria-label="Hardware profile" style="background:#172233;color:var(--fg);border:1px solid #2e405a;border-radius:6px;padding:6px 10px"><option>auto</option><option>cpu</option><option>integrated</option><option>low</option><option>balanced</option><option>high</option><option>max</option></select></div></div></div>
-      <div class="dash-group"><div class="group-title">Core MCP Tools</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-bottom:12px"><label><input type="checkbox" id="cfgFeatStatus"> status (local_ai_status)</label><label><input type="checkbox" id="cfgFeatRepo"> repo (local_ai_repo)</label><label><input type="checkbox" id="cfgFeatTasks"> tasks (local_ai_task &amp; Ollama)</label><label><input type="checkbox" id="cfgFeatRag"> rag (local_ai_rag)</label><label><input type="checkbox" id="cfgFeatCommands"> commands (local_ai_command)</label><label><input type="checkbox" id="cfgFeatCoord"> coord (local_ai_coord)</label><label><input type="checkbox" id="cfgFeatArtifacts"> artifacts (local_ai_artifact)</label></div></div>
-      <div class="dash-group"><div class="group-title">Code Intelligence &amp; Indexing</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-bottom:12px"><label><input type="checkbox" id="cfgPreprocess"> Preprocessing enabled</label><label><input type="checkbox" id="cfgIntel"> Managed code intelligence</label><label><input type="checkbox" id="cfgSerena"> Serena backend</label></div></div>
-      <div class="dash-group"><div class="group-title">Advanced Subsystems</div><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-bottom:12px"><label><input type="checkbox" id="cfgFeatSubagents"> Subagents (Ollama workers)</label><label><input type="checkbox" id="cfgFeatAgentOs"> Agent OS (durable memory/receipts)</label><label><input type="checkbox" id="cfgFeatDashboard"> Web Dashboard</label></div></div>
-      <div class="tiny muted" style="margin:4px 0 7px">Scope and impact: saves only dashboard-managed overrides. Restart applies changes; reset removes only those overrides.</div><div style="display:flex;gap:8px;flex-wrap:wrap;padding-top:6px"><button class="btn ok" id="cfgSave">Save overrides (restart required)</button><button class="btn" id="cfgReload">Reload view</button><button class="btn warn" id="cfgReset">Reset dashboard overrides</button><span class="tiny" id="cfgStatus" role="status"></span></div>
+      <div class="dash-group"><div class="group-title">Hardware &amp; Engine</div><div class="kv" style="padding:0;margin-bottom:12px"><div>Hardware profile</div><div><select id="cfgProfile" aria-label="Hardware profile" ><option>auto</option><option>cpu</option><option>integrated</option><option>low</option><option>balanced</option><option>high</option><option>max</option></select></div></div></div>
+      <div class="dash-group"><div class="group-title">Core MCP Tools</div><div class="settings-options"><label><input type="checkbox" id="cfgFeatStatus"> Status checks</label><label><input type="checkbox" id="cfgFeatRepo"> Repository tools</label><label><input type="checkbox" id="cfgFeatTasks"> Local AI tasks</label><label><input type="checkbox" id="cfgFeatRag"> RAG search</label><label><input type="checkbox" id="cfgFeatCommands"> Command broker</label><label><input type="checkbox" id="cfgFeatCoord"> Coordination</label><label><input type="checkbox" id="cfgFeatArtifacts"> Artifacts</label></div></div>
+      <div class="dash-group"><div class="group-title">Code Intelligence &amp; Indexing</div><div class="settings-options"><label><input type="checkbox" id="cfgPreprocess"> Preprocessing enabled</label><label><input type="checkbox" id="cfgIntel"> Managed code intelligence</label><label><input type="checkbox" id="cfgSerena"> Serena backend</label></div></div>
+      <div class="dash-group"><div class="group-title">Advanced Subsystems</div><div class="settings-options"><label><input type="checkbox" id="cfgFeatSubagents"> Local AI workers</label><label><input type="checkbox" id="cfgFeatAgentOs"> Agent OS</label><label><input type="checkbox" id="cfgFeatDashboard"> Dashboard</label></div></div>
+      <div class="tiny muted" style="margin:4px 0 7px">Scope and impact: saves only dashboard-managed overrides. Restart applies changes; reset removes only those overrides.</div><div style="display:flex;gap:8px;flex-wrap:wrap;padding-top:6px"><button class="btn primary" id="cfgSave">Save overrides (restart required)</button><button class="btn" id="cfgReload">Reload view</button><button class="btn warn" id="cfgReset">Reset dashboard overrides</button><span class="tiny" id="cfgStatus" role="status"></span></div>
     </div>
   </section>
-  <section class="section"><h2>Effective configuration <span class="tiny" id="cfgPath"></span></h2><pre id="cfgPreview" style="margin:0;padding:14px;white-space:pre-wrap;max-height:520px;overflow:auto;background:#090d14;color:#c9d6e4;font-size:11px"></pre></section>
+  <details class="metric-details"><summary>Advanced: effective configuration <span class="tiny" id="cfgPath"></span></summary><pre id="cfgPreview" style="margin:12px 0 0;padding:14px;white-space:pre-wrap;max-height:520px;overflow:auto;background:#090d14;color:#c9d6e4;font-size:12px"></pre></details>
 </div>
 
 <div id="bundles" class="page">
+  <header class="page-heading"><h1 tabindex="-1" id="page-title-bundles">Bundles</h1><p>Export available indexes or import a repository bundle.</p></header>
   <section class="section">
     <h2>Project Bundles — Export &amp; Import</h2>
     <div style="padding:12px">
       <p class="tiny muted">Bundles compress preprocessed index (AST, deterministic facts, RAG vectors and semantic cards) for instant restore on a different machine without re-indexing.</p>
-      <div class="split" style="margin-top:10px">
-        <div class="card" style="padding:12px"><h3 style="font-size:12px;margin:0 0 8px">Export Bundle</h3><div class="table-wrap"><table><thead><tr><th>Repository identity</th><th>Bundle readiness</th><th>Index contents</th><th>Action</th></tr></thead><tbody id="bundleExportTable"></tbody></table></div></div>
-        <div class="card" style="padding:12px"><h3 style="font-size:12px;margin:0 0 8px">Import Bundle</h3><div style="display:flex;flex-direction:column;gap:8px"><input type="file" id="bundleFile" aria-label="Bundle ZIP file" accept=".zip,application/zip" style="color:var(--fg);font-size:12px"><input type="text" id="bundleTargetRoot" aria-label="Target repository root" placeholder="Optional target repository root" style="background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:7px;font-size:11px"><button class="btn" id="bundleImport">Import selected ZIP</button><div id="bundleImportStatus" class="tiny muted"></div></div></div>
+      <div class="split bundle-layout" style="margin-top:10px">
+        <div class="card" style="padding:12px"><h3 style="font-size:12px;margin:0 0 8px">Export Bundle</h3><div class="table-wrap"><table class="bundle-table"><thead><tr><th>Repository identity</th><th>Bundle readiness</th><th>Index contents</th><th>Action</th></tr></thead><tbody id="bundleExportTable"></tbody></table></div></div>
+        <div class="card" style="padding:12px"><h3 style="font-size:12px;margin:0 0 8px">Import Bundle</h3><div style="display:flex;flex-direction:column;gap:8px"><input type="file" id="bundleFile" aria-label="Bundle ZIP file" accept=".zip,application/zip" ><input type="text" id="bundleTargetRoot" aria-label="Target repository root" placeholder="Optional target repository root" ><button class="btn primary" id="bundleImport">Import selected ZIP</button><div id="bundleImportStatus" class="tiny muted"></div></div></div>
       </div>
     </div>
   </section>
 </div>
 
-<div id="events" class="page"><section class="section"><h2>Live activity <span class="tiny">RAM ring buffer · display pause does not pause runtime</span></h2><div class="project-toolbar"><select id="eventSeverity" aria-label="Event severity"><option value="">All severities</option><option value="failure">Failures</option><option value="warning">Warnings</option><option value="success">Successful</option><option value="info">Informational / result unreported</option></select><input id="eventSource" type="search" placeholder="Event source, agent, action…" aria-label="Event source"><span class="tiny" id="eventSummary">No events received.</span></div><div class="event-header"><span>Time</span><span>Agent</span><span>Type</span><span>Action / Stage</span><span class="hide-sm">Model / Tenant</span><span>Duration</span><span>Status</span></div><div id="eventList" class="events"></div></section></div>
+<div id="events" class="page">
+  <header class="page-heading"><h1 tabindex="-1" id="page-title-events">Live events</h1><p>Recent activity from the runtime event buffer.</p></header><section class="section"><h2>Live activity <span class="tiny">RAM ring buffer · display pause does not pause runtime</span></h2><div class="project-toolbar"><select id="eventSeverity" aria-label="Event severity"><option value="">All severities</option><option value="failure">Failures</option><option value="warning">Warnings</option><option value="success">Successful</option><option value="info">Informational / result unreported</option></select><input id="eventSource" type="search" placeholder="Event source, agent, action…" aria-label="Event source"><span class="tiny" id="eventSummary">No events received.</span></div><div class="event-header"><span>Time</span><span>Agent</span><span>Type</span><span>Action / Stage</span><span class="hide-sm">Model / Tenant</span><span>Duration</span><span>Status</span></div><div id="eventList" class="events"></div></section></div>
 
 <div id="modalBg" class="modal-bg" role="dialog" aria-modal="true" aria-labelledby="modalTitle"><div class="modal"><div class="modal-head"><strong id="modalTitle">Details</strong><span id="modalLive" class="tiny" style="margin-left:10px"></span><button class="btn spacer" id="modalClose">Close</button></div><div id="modalBody"></div></div></div>
 <div id="visionReviewModal" class="modal-bg" role="dialog" aria-modal="true" aria-label="Frontend vision review"><div class="modal vision-review-modal"><div class="modal-head"><strong>Frontend vision review</strong><span class="tiny" id="visionReviewStatus" aria-live="polite"></span><button class="btn spacer" id="visionReviewClose">Close</button></div><div id="visionReviewBody" class="modal-body-wrap"><div class="modal-card"><div class="modal-card-head"><span>Review input</span><span class="tiny">PNG/JPEG or current-tab evidence</span></div><div class="modal-card-body"><label class="modal-form"><span>Screenshot</span><input id="visionScreenshot" aria-label="Screenshot for frontend review" type="file" accept="image/png,image/jpeg,image/webp"></label><label class="modal-form"><span>Prompt</span><textarea id="visionPrompt" aria-label="Frontend review instructions" rows="4" maxlength="20000" placeholder="What should the visual critic inspect?"></textarea></label><div class="modal-actions-bar"><button class="btn" id="visionCaptureCurrentTab" type="button">Capture current tab</button><span id="visionCaptureState" class="trace-capture-state not-captured" data-capture-state="not_captured">Capture state · Not captured</span></div><div id="visionCaptureError" class="diag-banner bad" role="alert" style="display:none"></div><input id="visionFindingId" type="hidden"><button class="btn ok" id="visionReviewSubmit" type="button">Run vision review</button></div></div><div id="visionReviewResult" aria-live="polite"></div></div></div></div>
@@ -762,7 +812,7 @@ function renderOverviewHealth(snapshot={},receivedAt=Date.now(),now=Date.now()){
   level.className='value primary-metric '+(health.level==='healthy'?'ok':health.level==='attention'?'warn-t':'bad-t');
   evidence.textContent=evidenceText;
   const history=$('overviewHistorySummary'),o=snapshot.observability||{};
-  if(history)history.textContent=o.enabled===false||o.data_available!==true||o.stale===true?'Historical telemetry unavailable · current runtime checks shown above.':`${telemetryPeriod(o)} · retained samples · ${Number(o.cohorts?.agent_http?.failures||0).toLocaleString()} recorded request failures · ${Number(o.cohorts?.policy_rejection?.events||0).toLocaleString()} policy rejections. Historical totals do not determine current health.`;
+  if(history)history.textContent=o.enabled===false||o.data_available!==true||o.stale===true?'Historical telemetry unavailable · current runtime checks shown above.':`Recorded history · ${telemetryPeriod(o)} · ${Number(o.cohorts?.agent_http?.failures||0).toLocaleString()} request failures · ${Number(o.cohorts?.policy_rejection?.events||0).toLocaleString()} policy rejections (retained samples).`;
   freshnessEl.textContent=freshness.ageMs===null?freshness.label:`${freshness.label} · updated ${age(freshness.ageMs)} ago`;
   freshnessEl.className='tiny '+(freshness.state==='stale'?'warn-t':'muted');
   summary.style.borderLeftColor=health.level==='healthy'?'var(--ok)':health.level==='attention'?'var(--warn)':'var(--bad)';
@@ -3917,8 +3967,9 @@ document.addEventListener('keydown',e=>{
 
 function switchTab(tabId){
   if(!tabId||!$(tabId))return;
+  const changed=document.querySelector('.page.active')?.id!==tabId;
   if($('controlMenu'))$('controlMenu').open=false;
-  document.querySelectorAll('.tabbtn').forEach(x=>x.classList.toggle('active',x.dataset.tab===tabId));
+  document.querySelectorAll('.tabbtn').forEach(x=>{const active=x.dataset.tab===tabId;x.classList.toggle('active',active);x.setAttribute('aria-current',active?'page':'false');});
   document.querySelectorAll('.page').forEach(x=>x.classList.toggle('active',x.id===tabId));
   try{localStorage.setItem('activeTab',tabId)}catch{}
   if(location.hash.replace('#','')!==tabId)history.replaceState(null,'','#'+tabId);
@@ -3927,6 +3978,7 @@ function switchTab(tabId){
   if(tabId==='performance'){loadRagWorkspaces();loadActiveLeases();}
   if(tabId==='commands')loadWorktrees();
   if(tabId==='reliability')loadLogsTail();
+  if(changed){window.scrollTo({top:0,left:0,behavior:'instant'});$(tabId).querySelector('.page-heading h1')?.focus({preventScroll:true});}
 }
 
 document.querySelectorAll('.tabbtn').forEach(b=>b.onclick=()=>switchTab(b.dataset.tab));
@@ -4219,7 +4271,7 @@ function renderProjects(items){
   rows('projectsBody',visible,x=>{
     const state=projectState(x),tot=Math.max(1,Number(x.files||0)),ragFiles=Number(x.rag_files||0),cards=Number(x.file_cards||0),ragPct=Math.round(ragFiles/tot*100),cardPct=Math.round(cards/tot*100),overall=Math.max(0,Math.min(100,Number(x.overall_progress_pct||0))),phasePct=Math.max(0,Math.min(100,Number(x.phase_progress_pct||0))),isComplete=state==='ready',isWorktree=x.is_worktree===true;
     const badge={running:['badge-running','Running','<span class="pulse-dot"></span>'],waiting:['badge-waiting','Waiting',''],paused:['badge-paused','Paused',''],error:['badge-error','Error',''],ready:['badge-complete','Ready','✓ ']}[state]||['badge-waiting','Queued',''];
-    const activityText=x.active_detail||(isComplete?'100% synchronized · real-time sync':state==='paused'?(x.global_paused?'Globally paused':'Project paused'):state==='waiting'?'Waiting for preprocessing slot':state==='error'?(x.last_error_short||'Pipeline error'):'Processing queue');
+    const activityText=isComplete?'Indexing complete · last reported snapshot':x.active_detail||(state==='paused'?(x.global_paused?'Globally paused':'Project paused'):state==='waiting'?'Waiting for preprocessing slot':state==='error'?(x.last_error_short||'Pipeline error'):'Processing queue');
     const activityCls=isComplete?'ok':state==='error'?'bad-t':state==='paused'?'warn-t':state==='waiting'?'muted':'';
     const progressAge=Number(x.progress_age_seconds),progressHint=Number.isFinite(progressAge)?(progressAge<5?'live checkpoint':`${durSec(progressAge)} since last checkpoint`):'';
     const phaseObj=PHASES.find(ph=>ph.id===x.phase)||(isComplete?PHASES[PHASES.length-1]:{name:x.phase||'Inventory',icon:'⚙️'}),phaseTitle=isComplete?`${PHASES.length}/${PHASES.length} Ready`:`${n(x.phase_index||1)}/${PHASES.length} ${phaseObj.icon} ${phaseObj.name}`;
@@ -4307,7 +4359,12 @@ function requestTraceAvailability(request){
   if(request.trace_available===false)return {label:'No trace recorded',className:'muted',trace:null};
   return {label:'No trace retained',className:'muted',trace:null};
 }
-function workRecentRequestRow(request){const trace=requestTrace(request),availability=requestTraceAvailability(request),failed=request.success===false||Number(request.status_code||0)>=400,context=trace?traceContextLabel(trace):(request.error_type||availability.label),requestId=String(request.request_id||'—'),project=traceProjectLabel(request.project||request.workspace||request.root||trace?.project)||'—',inner=`<td>${request.created_at?new Date(request.created_at*1000).toLocaleString():'—'}</td><td><strong>${esc(requestId.slice(-12))}</strong><div class="tiny">${trace?'Trace linked · '+esc(String(trace.trace_id||'').slice(-8)):'Request-only record'}</div></td><td><strong>${esc(project)}</strong></td><td>${esc(request.agent||'—')}</td><td>${esc(request.tenant||'—')}</td><td><strong>${esc(request.action||'—')}</strong><div class="tiny">${esc(context)}</div></td><td><span class="${failed?'bad-t':'ok'}">${n(request.status_code)||'—'}</span>${request.error_type?`<div class="tiny">${esc(request.error_type)}</div>`:''}</td><td><span class="${availability.className}">${esc(availability.label)}</span></td><td>${ms(request.duration_ms)}</td>`;return requestRow(request,inner,9)}
+function requestOutcome(request={}){
+  const code=Number(request.status_code)||0,failed=request.success===false||code>=400;
+  const label=failed?'Failed':request.success===true?'Succeeded':code?'HTTP result':'Result unreported';
+  return {failed,label:label+(code?' · HTTP '+code:'')};
+}
+function workRecentRequestRow(request){const trace=requestTrace(request),availability=requestTraceAvailability(request),outcome=requestOutcome(request),failed=outcome.failed,context=trace?traceContextLabel(trace):(request.error_type||''),requestId=String(request.request_id||'—'),project=traceProjectLabel(request.project||request.workspace||request.root||trace?.project)||'—',inner=`<td>${request.created_at?new Date(request.created_at*1000).toLocaleString():'—'}</td><td><strong>${esc(requestId.slice(-12))}</strong><div class="tiny">${trace?'Trace linked · '+esc(String(trace.trace_id||'').slice(-8)):'Request-only record'}</div></td><td><strong>${esc(project)}</strong></td><td>${esc(request.agent||'—')}</td><td>${esc(request.tenant||'—')}</td><td><strong>${esc(request.action||'—')}</strong><div class="tiny">${esc(context)}</div></td><td><span class="${failed?'bad-t':'ok'}">${esc(outcome.label)}</span>${request.error_type?`<div class="tiny">${esc(request.error_type)}</div>`:''}</td><td><span class="${availability.className}">${esc(availability.label)}</span></td><td>${ms(request.duration_ms)}</td>`;return requestRow(request,inner,9)}
 
 function render(s){
   last=s;
@@ -4435,7 +4492,7 @@ function render(s){
     if(agState.enabled&&s.features?.agent_os!==false){
       const act=agState.active_tasks_count||0,mem=agState.memory_records_count;
       $('agentStateVal').innerHTML='<span>Enabled</span>';
-      $('agentStateSub').textContent='Hub-wide inventory · '+n(act)+' active task'+(act===1?'':'s')+(mem!==undefined?' · '+n(mem)+' memories':'')+' · inspector uses selected repository and client';
+      $('agentStateSub').textContent='Hub-wide · '+n(act)+' active task'+(act===1?'':'s')+(mem!==undefined?' · '+n(mem)+' memories':'');
     }else{
       $('agentStateVal').textContent=agState.enabled===false||s.features?.agent_os===false?'Disabled':'Unavailable';
       $('agentStateSub').textContent=agState.enabled===false||s.features?.agent_os===false?'Agent OS is disabled':'Hub-wide Agent OS inventory unavailable';
@@ -4863,6 +4920,14 @@ function renderAgentOsView(){
 }
 
 function renderAgentOsLoadErrors(){
+  if(!$('agentOsRoot')?.value?.trim()){
+    if($('agentOsState'))$('agentOsState').textContent='Select a repository';
+    if($('agentOsSummary'))$('agentOsSummary').textContent='Choose a repository above, then refresh to view its records.';
+    for(const [id,columns] of [['agentOsTasksBody',7],['agentOsMemoryBody',7],['agentOsIncBody',8]]){
+      if($(id))$(id).innerHTML=`<tr><td colspan="${columns}" class="empty">Choose a repository to view its records.</td></tr>`;
+    }
+    return;
+  }
   const failed=Object.keys(agentOsLoadErrors);
   if(failed.length){
     if($('agentOsState'))$('agentOsState').textContent=$('agentOsRoot')?.value?.trim()?'Partially unavailable · '+failed.join(', '):'Select a repository';

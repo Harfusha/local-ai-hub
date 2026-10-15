@@ -56,3 +56,9 @@ The scope audit covers all ten pages:
 - Configuration edits remain separate from loaded runtime state and require Save; load failures leave editing disabled.
 - Bundles does not declare an errored project ready merely because progress is 100 percent.
 - Live events distinguishes explicit success, failure, warning and informational events with no reported result.
+
+## Shared visual layout
+
+All ten primary pages have a clear page heading and short purpose statement. Content uses a bounded desktop width, consistent typography, spacing, form fields and keyboard focus. Configuration options use labeled cards; advanced capability details are collapsed on Overview. Long repository identities wrap, tables scroll inside their panels and mobile events use compact two-row records. Empty repository selection is a neutral prompt, separate from failed loading. Request outcomes identify operation failure even when HTTP delivery returned 200.
+
+Visual checks cover the deployed dashboard at desktop and phone widths. Passing source/script regressions does not establish that destructive maintenance, configuration saves, imports or model benchmarks were executed.
