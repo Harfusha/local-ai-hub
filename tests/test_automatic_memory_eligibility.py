@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from local_ai_hub import project_config
 from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_identity import AgentScope
 from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStatus, MemoryStore
@@ -10,8 +11,16 @@ from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStatus, Me
 def test_unconfirmed_consistency_guard_memory_is_management_only(tmp_path) -> None:
     root = tmp_path / "repository"
     root.mkdir()
-    store = MemoryStore(AgentStateStore(tmp_path / "agent_state.sqlite3"))
-    provenance = {"root": str(root), "tenant": "tenant-a"}
+    store = MemoryStore(AgentStateStore(tmp_path / "agent_state.sqlite"))
+    coordination_id = project_config.resolve_project_context(
+        root, tmp_path / "state"
+    ).coordination_id
+    assert coordination_id
+    provenance = {
+        "root": str(root),
+        "tenant": "tenant-a",
+        "repository_id": coordination_id,
+    }
 
     legacy_automatic = MemoryRecord.create(
         kind=MemoryKind.DECISION,
@@ -49,7 +58,7 @@ def test_unconfirmed_consistency_guard_memory_is_management_only(tmp_path) -> No
         store._save_record(record)
 
     context_records = store.find_for_context(
-        root=str(root), tenant="tenant-a", limit=20
+        root=str(root), tenant="tenant-a", coordination_id=coordination_id, limit=20
     )
     context_ids = {record.record_id for record in context_records}
     assert legacy_automatic.record_id not in context_ids
@@ -59,7 +68,7 @@ def test_unconfirmed_consistency_guard_memory_is_management_only(tmp_path) -> No
     # Eligibility filtering must happen before LIMIT, even when the excluded
     # automatic record is the newest row.
     bounded_context = store.find_for_context(
-        root=str(root), tenant="tenant-a", limit=1
+        root=str(root), tenant="tenant-a", coordination_id=coordination_id, limit=1
     )
     assert [record.record_id for record in bounded_context] == [manual_active.record_id]
 

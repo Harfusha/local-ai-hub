@@ -9,7 +9,7 @@ from local_ai_hub.agent_incidents import IncidentStore, ToolOutcome
 
 @pytest.fixture
 def store(tmp_path: Path) -> IncidentStore:
-    state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    state_store = AgentStateStore(tmp_path / "agent_state.sqlite")
     return IncidentStore(state_store)
 
 
@@ -64,7 +64,7 @@ def test_find_negative_knowledge_by_query(store: IncidentStore, tmp_path: Path):
 
 def test_command_broker_skips_unscoped_known_pitfalls(tmp_path: Path):
     from local_ai_hub.commands import CommandBroker
-    state_store = AgentStateStore(tmp_path / "agent_state.sqlite3")
+    state_store = AgentStateStore(tmp_path / "agent_state.sqlite")
     store = IncidentStore(state_store)
 
     store.capture(ToolOutcome(

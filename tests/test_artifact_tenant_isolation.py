@@ -1,11 +1,12 @@
-import hashlib
 import sqlite3
 from contextlib import closing
 
-from local_ai_hub.artifacts import ArtifactStore
+import pytest
+
+from local_ai_hub.artifacts import ArtifactStore, UnsupportedArtifactSchema
 
 
-def test_legacy_artifact_list_filters_hashed_tenant_identity(tmp_path):
+def test_legacy_artifact_schema_rejected_without_rewriting_tenant_identity(tmp_path):
     db_path = tmp_path / "artifacts.sqlite3"
     with closing(sqlite3.connect(db_path)) as con:
         con.execute(
@@ -33,16 +34,23 @@ def test_legacy_artifact_list_filters_hashed_tenant_identity(tmp_path):
         )
         con.commit()
 
-    store = ArtifactStore(tmp_path)
+    with pytest.raises(UnsupportedArtifactSchema):
+        ArtifactStore(tmp_path)
 
-    assert store._table == "artifacts"
-    assert [item["artifact_id"] for item in store.list("tenant-a")] == ["tenant-a-artifact"]
-    assert [item["artifact_id"] for item in store.list("tenant-b")] == ["tenant-b-artifact"]
     with closing(sqlite3.connect(db_path)) as con:
         identities = con.execute(
             "SELECT tenant, tenant_identity FROM artifacts ORDER BY artifact_id"
         ).fetchall()
     assert identities == [
-        (hashlib.sha256(b"tenant-a").hexdigest(), hashlib.sha256(b"tenant-a").hexdigest()),
-        (hashlib.sha256(b"tenant-b").hexdigest(), hashlib.sha256(b"tenant-b").hexdigest()),
+        ("tenant-a", "tenant-a"),
+        ("tenant-b", "tenant-b"),
     ]
+
+
+def test_current_artifact_schema_isolates_tenant_listing(tmp_path):
+    store = ArtifactStore(tmp_path)
+    artifact_a = store.put("tenant a payload", "tenant-a", "text")
+    artifact_b = store.put("tenant b payload", "tenant-b", "text")
+
+    assert [item["artifact_id"] for item in store.list("tenant-a")] == [artifact_a]
+    assert [item["artifact_id"] for item in store.list("tenant-b")] == [artifact_b]
