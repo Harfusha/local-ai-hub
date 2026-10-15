@@ -35,17 +35,36 @@ class CircuitBreakerRegistry:
     clean recovery boundary and persistent health history remains in telemetry.
     """
 
-    def __init__(self, failure_threshold: int = 3, cooldown_seconds: float = 20.0, probe_timeout_seconds: float = 30.0):
+    def __init__(self, failure_threshold: int = 3, cooldown_seconds: float = 20.0, probe_timeout_seconds: float = 30.0, max_breakers: int = 256):
         self.failure_threshold = max(1, int(failure_threshold))
         self.cooldown_seconds = max(0.01, float(cooldown_seconds))
         self.probe_timeout_seconds = max(0.01, float(probe_timeout_seconds))
+        self.max_breakers = max(1, min(4096, int(max_breakers)))
         self._lock = threading.RLock()
         self._states: dict[str, BreakerState] = {}
 
+    @staticmethod
+    def _clean_key(key: str) -> str:
+        if not isinstance(key, str) or not key.strip() or len(key) > 512:
+            raise ValueError("circuit breaker key must be a non-empty string of at most 512 characters")
+        return key.strip()
+
+    def _get_or_create_locked(self, key: str) -> BreakerState | None:
+        state = self._states.get(key)
+        if state is None and len(self._states) < self.max_breakers:
+            state = BreakerState()
+            self._states[key] = state
+        return state
+
     def allow(self, key: str) -> bool:
+        key = self._clean_key(key)
         now = time.monotonic()
         with self._lock:
-            state = self._states.setdefault(key, BreakerState())
+            state = self._get_or_create_locked(key)
+            if state is None:
+                # Unknown resources fail closed at capacity. Never evict an
+                # open circuit or a live probe to admit a fresh resource name.
+                return False
             if not state.opened_at:
                 return True
             if now - state.opened_at < self.cooldown_seconds:
@@ -61,12 +80,17 @@ class CircuitBreakerRegistry:
             return True
 
     def success(self, key: str) -> None:
+        key = self._clean_key(key)
         with self._lock:
-            self._states[key] = BreakerState()
+            if self._get_or_create_locked(key) is not None:
+                self._states[key] = BreakerState()
 
     def failure(self, key: str) -> None:
+        key = self._clean_key(key)
         with self._lock:
-            state = self._states.setdefault(key, BreakerState())
+            state = self._get_or_create_locked(key)
+            if state is None:
+                return
             state.failures += 1
             state.half_open_probe = False
             if state.failures >= self.failure_threshold:
@@ -80,7 +104,7 @@ class CircuitBreakerRegistry:
                     "failures": state.failures,
                     "open": bool(state.opened_at and now - state.opened_at < self.cooldown_seconds),
                     "cooldown_remaining_seconds": round(max(0.0, self.cooldown_seconds - (now - state.opened_at)), 2) if state.opened_at else 0.0,
-                    "half_open_probe": state.half_open_probe,
+                    "half_open_probe": bool(state.half_open_probe and now - state.half_open_probe_since <= self.probe_timeout_seconds),
                 }
                 for key, state in self._states.items()
             }
