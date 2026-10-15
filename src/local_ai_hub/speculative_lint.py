@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -41,7 +42,7 @@ class SpeculativeLintQueue:
         self.debounce_seconds = max(0.0, min(30.0, float(cfg.get("debounce_seconds", 1.0))))
         self.max_paths = max(1, min(256, int(cfg.get("max_paths", 64))))
         self._lock = threading.RLock()
-        self._root_jobs: dict[str, str] = {}
+        self._root_jobs: OrderedDict[tuple[str, str], str] = OrderedDict()
 
     def submit(self, tenant: str, root: str, paths: list[str] | tuple[str, ...], command: str = "") -> dict[str, Any]:
         if not self.enabled:
@@ -55,8 +56,9 @@ class SpeculativeLintQueue:
             }
         normalized_root = str(Path(root).expanduser().resolve(strict=False))
         normalized_paths = normalize_changed_paths(normalized_root, list(paths)[: self.max_paths])
+        key = (tenant, os.path.normcase(normalized_root))
         with self._lock:
-            previous = self._root_jobs.get(normalized_root)
+            previous = self._root_jobs.get(key)
             if previous:
                 self.async_jobs.cancel(tenant, previous)
             result = self.async_jobs.submit(
@@ -66,7 +68,10 @@ class SpeculativeLintQueue:
                 dispatch_delay_seconds=self.debounce_seconds,
             )
             if result.get("job_id"):
-                self._root_jobs[normalized_root] = str(result["job_id"])
+                self._root_jobs[key] = str(result["job_id"])
+                self._root_jobs.move_to_end(key)
+                while len(self._root_jobs) > 512:
+                    self._root_jobs.popitem(last=False)
         result.update({"read_only": True, "auto_fix": False, "paths": normalized_paths, "debounce_seconds": self.debounce_seconds})
         return result
 

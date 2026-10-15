@@ -429,6 +429,9 @@ timeout_seconds = 1800
 coalesced_wait_seconds = 180
 
 [speculative_lint]
+daemon_mode = true
+max_daemon_sessions = 4
+daemon_idle_ttl_seconds = 300
 # Opt-in only. Runs read-only lint after a quiet period against caller-supplied changed paths.
 enabled = false
 debounce_seconds = 1.0

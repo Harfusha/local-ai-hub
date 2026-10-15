@@ -5,6 +5,8 @@ import json
 import pytest
 
 from local_ai_hub.lint_daemon import read_lsp_message
+from local_ai_hub import lint_daemon
+from local_ai_hub.speculative_lint import SpeculativeLintQueue
 
 
 def _frame(message):
@@ -39,3 +41,99 @@ def test_partial_pipe_reads_reconstruct_exact_frame():
             return super().read(min(count, 3))
     message = {"id": 9, "result": {"kind": "full", "items": []}}
     assert read_lsp_message(Partial(_frame(message))) == message
+
+
+def _fake_daemon(monkeypatch):
+    created = []
+
+    class FakeDaemon:
+        def __init__(self, executable, root):
+            self.calls, self.closed = [], False
+            self.confirmed = True
+            self.failure = None
+            created.append(self)
+
+        def diagnostics(self, paths, **kwargs):
+            self.calls.append(paths)
+            if self.failure:
+                raise self.failure
+            return []
+
+        def close(self):
+            self.closed = True
+
+        def cleanup_confirmed(self, timeout=0):
+            return self.confirmed
+
+    monkeypatch.setattr(lint_daemon, "RuffLintDaemon", FakeDaemon)
+    return created
+
+
+def test_pool_reuses_session_but_separates_tenants_and_roots(tmp_path, monkeypatch):
+    created = _fake_daemon(monkeypatch)
+    other = tmp_path / "other"
+    other.mkdir()
+    pool = lint_daemon.RuffDaemonPool(max_sessions=3)
+    for root, tenant in [(tmp_path, "a"), (tmp_path, "a"), (tmp_path, "b"), (other, "a")]:
+        assert pool.run("ruff", str(root), tenant, ["x.py"])["success"]
+    assert len(created) == 3
+    assert len(created[0].calls) == 2
+    pool.close()
+    assert all(daemon.closed for daemon in created)
+    assert not pool.run("ruff", str(tmp_path), "a", ["x.py"])["success"]
+
+
+def test_unconfirmed_retirement_keeps_capacity_reserved(tmp_path, monkeypatch):
+    created = _fake_daemon(monkeypatch)
+    pool = lint_daemon.RuffDaemonPool(max_sessions=1, idle_ttl=1)
+    assert pool.run("ruff", str(tmp_path), "a", ["x.py"])["success"]
+    created[0].confirmed = False
+    next(iter(pool._sessions.values()))["last_used"] = float("-inf")
+    assert not pool.run("ruff", str(tmp_path), "b", ["x.py"])["success"]
+    assert created[0].closed
+    assert len(created) == 1
+    created[0].confirmed = True
+    assert pool.run("ruff", str(tmp_path), "b", ["x.py"])["success"]
+    assert len(created) == 2
+
+
+def test_pool_preserves_unknown_cleanup_without_fallback(tmp_path, monkeypatch):
+    created = _fake_daemon(monkeypatch)
+    pool = lint_daemon.RuffDaemonPool()
+    pool.run("ruff", str(tmp_path), "a", ["x.py"])
+    created[0].failure = TimeoutError("deadline")
+    created[0].confirmed = False
+    result = pool.run("ruff", str(tmp_path), "a", ["x.py"])
+    assert result["outcome_unknown"] and result["cleanup_unconfirmed"]
+    assert result["terminal"] and not result["retryable"]
+    assert len(created) == 1
+
+
+def test_admission_timeout_does_not_close_another_requests_session(tmp_path, monkeypatch):
+    created = _fake_daemon(monkeypatch)
+    pool = lint_daemon.RuffDaemonPool()
+    pool.run("ruff", str(tmp_path), "a", ["x.py"])
+    created[0].failure = lint_daemon.LintDaemonAdmissionTimeout("busy")
+    result = pool.run("ruff", str(tmp_path), "a", ["x.py"])
+    assert not result["success"] and not result.get("outcome_unknown")
+    assert not created[0].closed
+
+
+def test_debounce_only_cancels_same_tenant_and_project(tmp_path):
+    class Jobs:
+        def __init__(self):
+            self.cancelled, self.number = [], 0
+
+        def cancel(self, tenant, job_id):
+            self.cancelled.append((tenant, job_id))
+
+        def submit(self, tenant, action, payload, **kwargs):
+            self.number += 1
+            return {"success": True, "job_id": str(self.number)}
+
+    jobs = Jobs()
+    queue = SpeculativeLintQueue(jobs, {"speculative_lint": {"enabled": True}})
+    queue.submit("a", str(tmp_path), ["x.py"])
+    queue.submit("b", str(tmp_path), ["x.py"])
+    queue.submit("a", str(tmp_path), ["x.py"])
+    assert jobs.cancelled == [("a", "1")]

@@ -526,6 +526,8 @@ For indexed symbol lookup, use `local_ai_repo(action="code_index", root=ABS_ROOT
 
 Follow the published typed action/detail enums. Optional `speculative_lint` and Agent OS actions are exposed only when their modules are enabled.
 
+Speculative lint remains opt-in (`speculative_lint.enabled=false`). With `daemon_mode=true`, default Python lint uses the installed Ruff native server over persistent read-only LSP pipes, isolated by tenant and absolute project root. `max_daemon_sessions=4` caps sessions; `daemon_idle_ttl_seconds=300` permits idle retirement on subsequent admission. No model or linter installation is implicit. Custom commands and other languages retain explicit `transport="one_shot"`; Biome daemon acceptance is still pending. Cancellation or transport failure terminates the owned process generation; unconfirmed cleanup blocks replacement and reports `outcome_unknown`. Source integration does not establish installed capability or performance.
+
 ## Local telemetry
 
 Basic aggregate telemetry remains enabled locally. Detailed request traces are disabled by default and can be toggled live in the dashboard. When enabled, they retain complete endpoint input/output locally, including sensitive values, within configured size and retention limits. Local telemetry and trace details stay on this device; only normal agent responses requested by cloud agents leave it.
