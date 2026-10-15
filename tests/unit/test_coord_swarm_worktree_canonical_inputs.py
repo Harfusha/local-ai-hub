@@ -134,8 +134,17 @@ def test_canonical_actions_reject_nonempty_retired_fields(monkeypatch, action, c
 
 def test_verify_export_omitted_format_keeps_markdown_default(monkeypatch, tmp_path) -> None:
     fake = _client(monkeypatch)
+    monkeypatch.setattr(
+        mcp_server, "load_operational_mode",
+        lambda *_args, **_kwargs: mcp_server.OperationalModeSnapshot("active", 1, None),
+    )
+    monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_kwargs: None)
+    monkeypatch.setattr(mcp_server, "_record_adoption", lambda *_args, **_kwargs: None)
     mcp_server.local_ai_coord(action="verify_export", task_id="task-1", root=str(tmp_path))
-    assert fake.calls[0][2]["format"] == "markdown"
+    assert fake.calls[0][1] == "/api/agent-state/verification"
+    assert fake.calls[0][2] == {
+        "action": "export", "task_id": "task-1", "root": str(tmp_path), "format": "markdown",
+    }
 
 
 def test_hub_client_coord_fallbacks_forward_canonical_fields_only() -> None:
