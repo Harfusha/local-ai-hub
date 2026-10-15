@@ -190,7 +190,7 @@ def test_biome_daemon_mode_uses_owned_provider_contract(tmp_path, monkeypatch):
     assert len(calls) == 1
     executable, root, tenant, paths, kwargs = calls[0]
     assert (executable, root, tenant, paths) == ("biome.exe", str(tmp_path), "tenant-a", ["src/app.ts"])
-    assert kwargs["timeout"] == 120.0 and callable(kwargs["should_stop"])
+    assert kwargs["timeout"] == 120 and callable(kwargs["should_stop"])
 
 
 def test_biome_non_daemon_mode_uses_explicit_read_only_one_shot_ci(tmp_path, monkeypatch):
@@ -203,3 +203,17 @@ def test_biome_non_daemon_mode_uses_explicit_read_only_one_shot_ci(tmp_path, mon
     assert result["daemon_mode"] is False and result["transport"] == "one_shot"
     assert service.commands.calls[0][0] == "biome.exe ci src/app.ts"
     assert service.commands.calls[0][2]["auto_fix"] is False
+
+
+@pytest.mark.parametrize("timeout", [True, 0, float("nan"), "1"])
+def test_biome_daemon_rejects_invalid_timeout_before_provider_admission(tmp_path, monkeypatch, timeout):
+    service = _lint_service(monkeypatch, tmp_path, daemon_mode=True)
+
+    class MustNotAdmit:
+        def run(self, *args, **kwargs):
+            raise AssertionError("invalid Biome timeout must be rejected before session admission")
+
+    service._biome_daemons = MustNotAdmit()
+    result = service.speculative_lint({"root": str(tmp_path), "paths": ["src/app.ts"], "timeout": timeout}, "tenant-a")
+    assert result["success"] is False
+    assert result["terminal"] is True and result["retryable"] is False

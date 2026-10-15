@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import queue
 import subprocess
@@ -379,32 +380,53 @@ class OwnedBiomeDaemonPool:
 
         base = {"provider": "biome", "daemon_mode": True, "transport": "owned_foreground_lsp",
                 "read_only": True, "auto_fix": False}
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not math.isfinite(timeout) or timeout <= 0:
+            return {**base, "success": False, "error": "Biome timeout must be a positive finite number",
+                    "terminal": True, "retryable": False}
+        deadline = time.monotonic() + min(120.0, float(timeout))
         if not OwnedBiomeDaemon.supported_here():
             return {**base, "success": False, "unsupported": True,
                     "transport": "unsupported_unowned_platform", "terminal": True,
                     "retryable": False, "error": "owned Biome named-pipe transport is supported only on Windows"}
         key = os.path.normcase(str(Path(executable).resolve(strict=True)))
         now = time.monotonic()
+        retiring: list[tuple[str, dict[str, Any]]] = []
         with self._lock:
             if self._closed:
                 return {**base, "success": False, "error": "Biome daemon pool is closed", "terminal": True,
                         "retryable": False}
             for old_key, entry in list(self._servers.items()):
-                if now - entry["last_used"] >= self.idle_ttl and not entry["busy"]:
-                    if entry["daemon"].close():
+                if (not entry["busy"] and
+                        (entry.get("retiring") or now - entry["last_used"] >= self.idle_ttl)):
+                    entry["retiring"] = True
+                    entry["busy"] = True
+                    retiring.append((old_key, entry))
+        for old_key, old_entry in retiring:
+            confirmed = old_entry["daemon"].close(deadline=deadline)
+            with self._lock:
+                old_entry["busy"] = False
+                if confirmed:
+                    if self._servers.get(old_key) is old_entry:
                         del self._servers[old_key]
-                elif not entry["busy"]:
-                    entry["daemon"].prune_sessions(self.idle_ttl)
+            if not confirmed:
+                return {**base, "success": False, "error": "Biome daemon cleanup is pending or unconfirmed",
+                        "cleanup_unconfirmed": True, "terminal": True, "retryable": False}
+        with self._lock:
             entry = self._servers.get(key)
+            if entry is not None and entry.get("retiring"):
+                return {**base, "success": False, "error": "Biome daemon cleanup is pending or unconfirmed",
+                        "cleanup_unconfirmed": True, "terminal": True, "retryable": False}
             if entry is None:
                 if len(self._servers) >= self.max_sessions:
                     return {**base, "success": False, "error": "Biome daemon capacity reached", "terminal": True,
                             "retryable": False}
-                entry = {"daemon": OwnedBiomeDaemon(key), "last_used": now, "busy": False}
+                entry = {"daemon": OwnedBiomeDaemon(key), "last_used": now, "busy": False, "retiring": False}
                 self._servers[key] = entry
             if not entry["daemon"].has_session(tenant, root):
                 current_sessions = sum(item["daemon"].session_count for item in self._servers.values())
                 if current_sessions >= self.max_sessions:
+                    if entry["daemon"].session_count == 0:
+                        self._servers.pop(key, None)
                     return {**base, "success": False, "error": "Biome LSP session capacity reached",
                             "terminal": True, "retryable": False}
             if entry["busy"]:
@@ -412,20 +434,27 @@ class OwnedBiomeDaemonPool:
                         "retryable": False}
             entry["busy"] = True
         try:
-            diagnostics = entry["daemon"].diagnostics(tenant, root, paths, timeout=timeout, should_stop=should_stop)
+            entry["daemon"].prune_sessions(self.idle_ttl, deadline=deadline)
+            diagnostics = entry["daemon"].diagnostics(tenant, root, paths, deadline=deadline, should_stop=should_stop)
             return {**base, "success": not diagnostics, "exit_code": 1 if diagnostics else 0,
                     "diagnostics": diagnostics, "diagnostic_count": len(diagnostics)}
         except BiomeOwnershipError as exc:
-            confirmed = entry["daemon"].close()
+            confirmed = entry["daemon"].close(deadline=deadline)
             with self._lock:
-                self._servers.pop(key, None)
+                if confirmed:
+                    self._servers.pop(key, None)
+                else:
+                    entry["retiring"] = True
             return {**base, "success": False, "unsupported": True, "terminal": True,
                     "retryable": False, "cleanup_unconfirmed": not confirmed,
                     "outcome_unknown": not confirmed, "error": str(exc)[:500]}
         except Exception as exc:
-            confirmed = entry["daemon"].close()
+            confirmed = entry["daemon"].close(deadline=deadline)
             with self._lock:
-                self._servers.pop(key, None)
+                if confirmed:
+                    self._servers.pop(key, None)
+                else:
+                    entry["retiring"] = True
             return {**base, "success": False, "terminal": True, "retryable": False,
                     "cleanup_unconfirmed": not confirmed, "outcome_unknown": not confirmed,
                     "error": str(exc)[:500]}

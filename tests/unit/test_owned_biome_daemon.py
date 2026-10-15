@@ -8,6 +8,8 @@ import types
 import ctypes
 import json
 import queue
+import threading
+import time
 
 import pytest
 
@@ -42,6 +44,15 @@ def test_lsp_framing_is_bounded_and_roundtrips_complete_json_object():
     assert biome._read(io.BytesIO(wire)) == {"jsonrpc": "2.0", "id": 1, "result": {"ready": True}}
     with pytest.raises(ValueError, match="frame limit"):
         biome._frame({"payload": "x" * biome._MAX_FRAME})
+
+
+def test_diagnostic_flood_and_malformed_envelopes_fail_instead_of_truncating():
+    with pytest.raises(ValueError, match="response budget"):
+        biome._normalize_diagnostics([{"message": "x"}] * 513, "app.ts")
+    with pytest.raises(ValueError, match="severity"):
+        biome._normalize_diagnostics([{"message": "x", "severity": True}], "app.ts")
+    with pytest.raises(ValueError, match="range"):
+        biome._normalize_diagnostics([{"message": "x", "range": {"start": {"line": True}}}], "app.ts")
 
 
 def test_server_launch_uses_only_owned_foreground_entrypoint(monkeypatch):
@@ -113,6 +124,7 @@ def test_unknown_peer_is_rejected_before_pipe_becomes_a_stream(monkeypatch):
 
     class FakeKernel:
         CreateFileW = FakeFunction(lambda *args: 11)
+        WaitNamedPipeW = FakeFunction(lambda *args: 1)
         GetNamedPipeServerProcessId = FakeFunction(lambda handle, pointer: setattr(pointer._obj, "value", 42) or 1)
         CloseHandle = FakeFunction(lambda handle: closed.append(handle) or 1)
 
@@ -120,9 +132,57 @@ def test_unknown_peer_is_rejected_before_pipe_becomes_a_stream(monkeypatch):
     monkeypatch.setattr(biome, "os", types.SimpleNamespace(name="nt", O_RDWR=os.O_RDWR, O_BINARY=getattr(os, "O_BINARY", 0)))
     monkeypatch.setattr(biome, "msvcrt_open_osfhandle", lambda handle: opened.append(handle))
     with pytest.raises(biome.BiomeOwnershipError):
-        biome._windows_pipe(r"\\.\pipe\biome-service-2.5.15", expected_pid=41)
+        biome._windows_pipe(r"\\.\pipe\biome-service-2.5.15", expected_pid=41, deadline=time.monotonic() + 1)
     assert opened == []
     assert closed == [11]
+
+
+def test_blocked_fake_pipe_write_times_out_and_cleanup_closes_only_owned_stream(tmp_path, monkeypatch):
+    class FakeProcess:
+        pid = 56
+
+        def __init__(self):
+            self.alive = True
+
+        def poll(self):
+            return None if self.alive else 0
+
+        def wait(self, timeout=None):
+            self.alive = False
+            return 0
+
+    class BlockingPipe:
+        def __init__(self):
+            self.release = threading.Event()
+            self.incoming = queue.Queue()
+            self.closed = False
+
+        def write(self, data):
+            self.release.wait()
+            return len(data)
+
+        def flush(self):
+            pass
+
+        def close(self):
+            self.closed = True
+            self.release.set()
+            self.incoming.put(None)
+
+    process = FakeProcess()
+    pipe = BlockingPipe()
+    daemon = biome.OwnedBiomeDaemon("biome")
+    daemon._proc, daemon._version = process, "2.5.15"
+    monkeypatch.setattr(daemon, "_ensure_server", lambda deadline: (process, "2.5.15"))
+    monkeypatch.setattr(biome, "_windows_pipe", lambda path, expected_pid, *, deadline: pipe)
+    monkeypatch.setattr(biome, "_read", lambda stream: stream.incoming.get(timeout=2))
+    monkeypatch.setattr(biome, "terminate_tree", lambda *args, **kwargs: True)
+
+    with pytest.raises(TimeoutError, match="write timed out"):
+        daemon.diagnostics("tenant-a", str(tmp_path), ["src/app.ts"],
+                           deadline=time.monotonic() + 0.05, should_stop=lambda: False)
+    assert pipe.closed
+    assert daemon.close() is True
 
 
 def test_verified_client_session_reuses_pipe_and_versions_documents(tmp_path, monkeypatch):
@@ -144,19 +204,28 @@ def test_verified_client_session_reuses_pipe_and_versions_documents(tmp_path, mo
             self.incoming = queue.Queue()
             self.sent = []
             self.closed = False
+            self.buffer = bytearray()
 
         def write(self, data):
-            body = data.split(b"\r\n\r\n", 1)[1]
-            message = json.loads(body)
-            self.sent.append(message)
-            method = message.get("method")
-            if method == "initialize":
-                self.incoming.put({"jsonrpc": "2.0", "id": message["id"], "result": {"capabilities": {}}})
-            elif method in {"textDocument/didOpen", "textDocument/didChange"}:
-                text_doc = message["params"]["textDocument"]
-                self.incoming.put({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics",
-                                   "params": {"uri": text_doc["uri"], "version": text_doc["version"], "diagnostics": []}})
-            return len(data)
+            count = min(13, len(data))
+            self.buffer.extend(data[:count])
+            while b"\r\n\r\n" in self.buffer:
+                header, body = bytes(self.buffer).split(b"\r\n\r\n", 1)
+                length = int(header.split(b":", 1)[1].strip())
+                if len(body) < length:
+                    break
+                del self.buffer[:len(header) + 4 + length]
+                message = json.loads(body[:length])
+                self.sent.append(message)
+                method = message.get("method")
+                if method == "initialize":
+                    self.incoming.put({"jsonrpc": "2.0", "method": "window/logMessage", "params": {"message": "ready"}})
+                    self.incoming.put({"jsonrpc": "2.0", "id": message["id"], "result": {"capabilities": {}}})
+                elif method in {"textDocument/didOpen", "textDocument/didChange"}:
+                    text_doc = message["params"]["textDocument"]
+                    self.incoming.put({"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics",
+                                       "params": {"uri": text_doc["uri"], "version": text_doc["version"], "diagnostics": []}})
+            return count
 
         def flush(self):
             pass
@@ -171,7 +240,8 @@ def test_verified_client_session_reuses_pipe_and_versions_documents(tmp_path, mo
     monkeypatch.setattr(daemon, "_ensure_server", lambda deadline: (process, "2.5.15"))
     pipes = []
 
-    def connect(path, expected_pid):
+    def connect(path, expected_pid, *, deadline):
+        assert deadline > time.monotonic()
         assert expected_pid == process.pid
         pipe = FakePipe()
         pipes.append(pipe)
@@ -183,8 +253,12 @@ def test_verified_client_session_reuses_pipe_and_versions_documents(tmp_path, mo
     path = tmp_path / "app.ts"
     path.write_text("const answer = 42;\n", encoding="utf-8")
 
-    for _ in range(2):
-        assert daemon.diagnostics("tenant-a", str(tmp_path), [str(path)], timeout=1, should_stop=lambda: False) == []
+    call_deadlines = [time.monotonic() + 1, time.monotonic() + 2]
+    for call_deadline in call_deadlines:
+        assert daemon.diagnostics("tenant-a", str(tmp_path), [str(path)], deadline=call_deadline,
+                                  should_stop=lambda: False) == []
+    session_key = ("tenant-a", os.path.normcase(str(tmp_path.resolve())))
+    assert daemon._sessions[session_key]["deadline"] == call_deadlines[-1]
 
     assert len(pipes) == 1
     methods = [item.get("method") for item in pipes[0].sent]
@@ -194,5 +268,12 @@ def test_verified_client_session_reuses_pipe_and_versions_documents(tmp_path, mo
     versions = [item["params"]["textDocument"]["version"] for item in pipes[0].sent
                 if item.get("method") in {"textDocument/didOpen", "textDocument/didChange"}]
     assert versions == [1, 2]
+
+    path.write_bytes(b"x" * 2_000_001)
+    with pytest.raises(ValueError, match="source budget"):
+        daemon.diagnostics("tenant-a", str(tmp_path), [str(path)], deadline=time.monotonic() + 1,
+                           should_stop=lambda: False)
+    methods_after_oversized_change = [item.get("method") for item in pipes[0].sent]
+    assert methods_after_oversized_change.count("textDocument/didChange") == 1
     daemon.close()
 
