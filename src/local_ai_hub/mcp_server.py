@@ -4257,6 +4257,10 @@ def local_ai_coord(
     expected_version: int | None = None,
     after_seq: int | None = None,
     format: str = "markdown",
+    sync_action: str | None = None,
+    stream_id: str | None = None,
+    events: list[dict[str, Any]] | None = None,
+    limit: int | None = None,
 ) -> dict[str, Any]:
     """Cross-agent coordination for the main agent and bounded Hub workers. ask persists a root/tenant/session-scoped question; retrieve it later with the same question_id, root, tenant and session_id. answer records an operator response under the authenticated root and tenant. Public actions are limited to the contract enum; unscoped memory relation/reaping storage remains private. Claim overlapping edit paths before concurrent Hub work. Search/get memos before repeating expensive investigation and store concise reusable findings after discovery. Native peer subagents are coordinated by Codex rather than by this Hub tool."""
     if not FEATURES.coord:
@@ -4275,27 +4279,51 @@ def local_ai_coord(
             tuple(CoordAction.__args__),
             "Unscoped memory maintenance and relations remain private until tenant-scoped storage is available.",
         )
+    if action == "task_sync":
+        if status or key or task_id or ttl_seconds != 0 or max_tokens != 0 or record is not None:
+            return contract_error("task_sync accepts only sync_action, stream_id, after_seq, limit, and events")
+        sync_inputs = {
+            name: value for name, value in {
+                "sync_action": sync_action,
+                "stream_id": stream_id,
+                "after_seq": after_seq,
+                "limit": limit,
+                "events": events,
+            }.items() if value is not None
+        }
+        sync_error = validate_operation_arguments("local_ai_coord", action, sync_inputs)
+        if sync_error is not None:
+            return contract_error(sync_error, status_code=400)
+        sync_act = "export" if sync_action is None else sync_action
+        if sync_act == "export":
+            sync_stream = "" if stream_id is None else stream_id
+            sync_after_seq = 0 if after_seq is None else after_seq
+            sync_limit = 1000 if limit is None else limit
+            return _compact(CLIENT.post("/api/agent-state/events/delta", {
+                "action": "export", "stream_id": sync_stream,
+                "after_seq": sync_after_seq, "limit": sync_limit,
+            }, timeout=_timeout("quick")), "status")
+        return _compact(CLIENT.post("/api/agent-state/events/delta", {
+            "action": "import", "events": events,
+        }, timeout=_timeout("quick")), "status")
+    sync_only_inputs = {
+        name: value for name, value in {
+            "sync_action": sync_action,
+            "stream_id": stream_id,
+            "events": events,
+            "limit": limit,
+        }.items() if value is not None
+    }
+    if sync_only_inputs:
+        sync_error = validate_operation_arguments("local_ai_coord", action, sync_only_inputs)
+        if sync_error is not None:
+            return contract_error(sync_error, status_code=400)
     requested_root = str(root or "").strip()
     root = _client_root(root)
     if action.startswith("task_"):
         rejection = _subminimum_budget_rejection({"max_response_tokens": max_response_tokens})
         if rejection is not None:
             return rejection
-    if action == "task_sync":
-        requested_sync_action = str(status or "").strip().lower()
-        sync_act = requested_sync_action if requested_sync_action in {"export", "import"} else "export"
-        if sync_act == "export":
-            # `after_seq` is the public cursor. Keep the historical
-            # ttl_seconds fallback for older callers, but never let it
-            # override an explicit cursor.
-            sync_after_seq = after_seq if after_seq is not None else int(ttl_seconds or 0)
-            return _compact(CLIENT.post("/api/agent-state/events/delta", {
-                "action": "export", "stream_id": key or task_id or "", "after_seq": sync_after_seq, "limit": max_tokens or 1000,
-            }, timeout=_timeout("quick")), "status")
-        else:
-            return _compact(CLIENT.post("/api/agent-state/events/delta", {
-                "action": "import", "events": record or [],
-            }, timeout=_timeout("quick")), "status")
     if action == "task_zombie_reap":
         return _compact(CLIENT.post("/api/agent-state/tasks", {
             "action": "reap_expired", "auto_recover": True,
