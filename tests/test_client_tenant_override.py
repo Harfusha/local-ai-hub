@@ -63,6 +63,32 @@ def _expected_root_tenant(client: HubClient, root: Path) -> str:
     return f"root-{digest}"
 
 
+@pytest.mark.parametrize("route", ["/api/repo/callers", "/api/repo/impact", "/api/search"])
+@pytest.mark.parametrize("configured", [False, True])
+def test_repository_transport_uses_server_principal_instead_of_workspace_label(tmp_path, monkeypatch, route, configured):
+    (tmp_path / ".git").mkdir()
+    overrides = {} if configured else {
+        "api_token": None, "api_token_tenant": None, "api_token_principal": None,
+        "tenant_derivation_key": None, "allowed_roots": [],
+    }
+    client = _client(tmp_path, tenant="codex:workspace-label", security_overrides=overrides)
+    captured = []
+
+    def open_request(method, path, body, headers, timeout, **kwargs):
+        captured.append(headers["X-LocalAI-Tenant"])
+        return b'{"success":true}'
+
+    monkeypatch.setattr(client, "_open", open_request)
+    result = client.post(route, {"root": str(tmp_path)})
+    expected = "fixed-principal" if configured else "http-default"
+    assert result["success"] is True, result
+    assert captured == [expected]
+    rejected = client.post(route, {"root": str(tmp_path)}, tenant="codex:workspace-label")
+    assert rejected["success"] is False
+    assert rejected["error_code"] == "tenant_binding_mismatch"
+    assert captured == [expected]
+
+
 def test_start_lock_identity_lookup_failure_uses_live_pid_fallback(tmp_path, monkeypatch):
     lock_path = tmp_path / "hub.start.lock"
     lock_path.write_text("123 1 test_start_id 7", encoding="ascii")
@@ -305,7 +331,7 @@ def test_root_scoped_post_accepts_only_matching_tenant_hints(tmp_path, monkeypat
     assert client.tenant == "tenant-default"
 
 
-def test_post_without_tenant_override_keeps_client_default(tmp_path, monkeypatch):
+def test_post_without_tenant_override_uses_configured_principal(tmp_path, monkeypatch):
     client = _client(tmp_path)
     observed = []
 
@@ -322,7 +348,7 @@ def test_post_without_tenant_override_keeps_client_default(tmp_path, monkeypatch
     assert len(observed) == 1
     assert observed[0][0] == "/api/search"
     assert observed[0][1] == payload
-    assert observed[0][2]["X-LocalAI-Tenant"] == "tenant-default"
+    assert observed[0][2]["X-LocalAI-Tenant"] == "fixed-principal"
     assert observed[0][2]["X-LocalAI-Request-ID"] == "request-default"
     rejected = client.post(
         "/api/search",
@@ -337,7 +363,7 @@ def test_post_without_tenant_override_keeps_client_default(tmp_path, monkeypatch
     assert client.tenant == "tenant-default"
 
 
-def test_empty_client_tenant_omits_tenant_header(tmp_path, monkeypatch):
+def test_empty_client_label_still_uses_configured_principal(tmp_path, monkeypatch):
     client = _client(tmp_path, tenant="")
     observed = []
     monkeypatch.setattr(
@@ -350,7 +376,7 @@ def test_empty_client_tenant_omits_tenant_header(tmp_path, monkeypatch):
 
     assert result == {"success": True}
     assert len(observed) == 1
-    assert "X-LocalAI-Tenant" not in observed[0]
+    assert observed[0]["X-LocalAI-Tenant"] == "fixed-principal"
     assert not any(value.startswith("agent-") for value in observed[0].values())
 
 
@@ -419,10 +445,10 @@ def test_tokenless_agent_state_uses_server_principal_not_client_tenant(tmp_path)
         tmp_path,
         tenant="client-selected-tenant",
         security_overrides={
-            "api_token": "",
-            "api_token_tenant": "",
-            "api_token_principal": "",
-            "tenant_derivation_key": "",
+            "api_token": None,
+            "api_token_tenant": None,
+            "api_token_principal": None,
+            "tenant_derivation_key": None,
             "allowed_roots": [],
         },
     )
@@ -446,7 +472,7 @@ def test_tokenless_agent_state_uses_server_principal_not_client_tenant(tmp_path)
 def test_configured_token_with_empty_allowlist_rejects_root_scoped_request(tmp_path):
     client = _client(
         tmp_path,
-        security_overrides={"allowed_roots": [], "tenant_derivation_key": ""},
+        security_overrides={"allowed_roots": [], "tenant_derivation_key": None},
     )
 
     tenant, error = client._request_tenant(

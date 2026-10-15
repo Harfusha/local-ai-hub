@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .http_identity import request_principal_tenant
+
 import hashlib
 import base64
 import hmac
@@ -2019,20 +2021,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def _principal_tenant(self) -> str:
         path = str(getattr(self, "path", ""))
-        principal = self._configured_principal_tenant()
-        if principal:
-            return principal
         config = getattr(APP, "config", {}) if APP is not None else {}
-        security = config.get("security", {}) if isinstance(config, dict) else {}
-        if isinstance(security, dict) and security.get("api_token"):
-            fallback = "api-token-default"
-        elif path.startswith("/api/agent-state/") or path.startswith("/api/agent_state/"):
-            fallback = "api-token-default"
-        else:
-            fallback = "http-default"
-        if APP is not None and (path.startswith("/api/browser/") or path == "/api/vision/review"):
-            return str(APP.config.get("browser_bridge", {}).get("tenant", fallback) or fallback)
-        return fallback
+        return request_principal_tenant(config if isinstance(config, dict) else {}, path)
 
     def _root_sandbox_enabled(self) -> bool:
         config = getattr(APP, "config", {}) if APP is not None else {}

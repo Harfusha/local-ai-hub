@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .http_identity import request_principal_tenant
+
 from .json_utils import dumps as json_dumps
 
 import copy
@@ -919,12 +921,13 @@ class HubClient:
         task_route = route == "/api/agent-state/tasks"
         memory_route = route == "/api/agent-state/memory"
         if not task_route and not memory_route:
-            if tenant_hint is not None and tenant_hint != self.tenant:
+            principal = request_principal_tenant(self.config, route)
+            if tenant_hint is not None and tenant_hint != principal:
                 return None, self._identity_preflight(
                     "tenant override cannot select request scope",
                     "tenant_binding_mismatch",
                 )
-            return self.tenant or None, None
+            return principal, None
 
         request_payload = payload if isinstance(payload, dict) else {}
         query_values = query or {}
