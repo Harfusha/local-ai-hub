@@ -5315,6 +5315,8 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
             if path == "/api/git/history_search":
+                from .deterministic import _git_history_pathspec, _git_history_timestamp
+
                 root = (query.get("root") or ["."])[0]
                 q = (query.get("query") or [""])[0]
                 raw_max_c = (query.get("max_commits") or ["20"])[0]
@@ -5323,16 +5325,51 @@ class Handler(BaseHTTPRequestHandler):
                 max_c = int(raw_max_c)
                 if not 1 <= max_c <= 100:
                     self._send(400, {"success": False, "error": "max_commits must be an integer from 1 to 100", "terminal": True, "retryable": False}); return
+                filters = {
+                    name: (query.get(name) or [None])[0]
+                    for name in ("author", "since", "until", "path")
+                }
+                if (
+                    not isinstance(q, str)
+                    or not q.strip()
+                    or len(q) > 512
+                    or any(ord(char) < 32 or ord(char) == 127 for char in q)
+                ):
+                    self._send(400, {"success": False, "error": "query must be a bounded literal string", "terminal": True, "retryable": False}); return
+                for name, value in filters.items():
+                    maximum = 256 if name == "author" else 64 if name in {"since", "until"} else 4096
+                    if value is not None and (
+                        not isinstance(value, str)
+                        or len(value) > maximum
+                        or any(ord(char) < 32 or ord(char) == 127 for char in value)
+                    ):
+                        self._send(400, {"success": False, "error": f"{name} must be a bounded string", "terminal": True, "retryable": False}); return
+                try:
+                    since_epoch, _since = _git_history_timestamp(filters["since"], "since", upper_bound=False)
+                    until_epoch, _until = _git_history_timestamp(filters["until"], "until", upper_bound=True)
+                    _git_history_pathspec(root, filters["path"])
+                except (OSError, RuntimeError, TypeError, ValueError, OverflowError) as exc:
+                    self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
+                if since_epoch is not None and until_epoch is not None and since_epoch > until_epoch:
+                    self._send(400, {"success": False, "error": "since must be earlier than or equal to until", "terminal": True, "retryable": False}); return
                 if APP.deterministic is not None:
-                    self._send(200, APP.services.git_history_search(
+                    result = APP.services.git_history_search(
                         root,
                         q,
                         max_commits=max_c,
-                        author=(query.get("author") or [None])[0],
-                        since=(query.get("since") or [None])[0],
-                        until=(query.get("until") or [None])[0],
-                        path=(query.get("path") or [None])[0],
-                    ))
+                        author=filters["author"],
+                        since=filters["since"],
+                        until=filters["until"],
+                        path=filters["path"],
+                    )
+                    result_status = result.get("status_code") if isinstance(result, dict) else None
+                    status = (
+                        result_status
+                        if isinstance(result_status, int) and not isinstance(result_status, bool)
+                        and 400 <= result_status <= 599
+                        else 200
+                    )
+                    self._send(status, result)
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
