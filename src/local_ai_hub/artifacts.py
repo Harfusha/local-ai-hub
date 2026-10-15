@@ -6,10 +6,8 @@ import base64
 import codecs
 import hashlib
 import json
-import os
 import re
 import sqlite3
-import tempfile
 import threading
 import time
 from contextlib import closing
@@ -22,7 +20,6 @@ from .sqlite_support import connect_sqlite, initialize_wal, retry_busy
 DEFAULT_MAX_BINARY_BYTES = 4_000_000
 DEFAULT_MAX_JSON_BYTES = 4_000_000
 _ARTIFACT_TABLE = "artifacts"
-_ARTIFACT_V2_TABLE = "artifacts_v2"
 _ARTIFACT_PAGING_TABLE = "artifact_paging_metadata"
 MAX_ARTIFACT_SLICES = 16
 MAX_ARTIFACT_SLICE_CHARS = 50_000
@@ -34,7 +31,9 @@ MAX_ARTIFACT_SECTION_NAMES = 50
 MAX_ARTIFACT_SECTION_METADATA_BYTES = 128 * 1024
 MAX_ARTIFACT_JSON_SECTION_KEYS_SCANNED = 256
 MAX_ARTIFACT_READ_SECONDS = 5.0
-_ARTIFACT_MIGRATION_BACKUP_SUFFIX = ".pre-tenant-identity.bak"
+
+class UnsupportedArtifactSchema(sqlite3.DatabaseError):
+    """An existing artifact database does not use the current durable schema."""
 
 
 class ArtifactTransportError(ValueError):
@@ -207,7 +206,8 @@ class ArtifactStore:
         self.max_json_bytes = max(1, int(max_json_bytes))
         self._last_purge = 0.0
         self._purge_interval = 1800.0
-        state_dir.mkdir(parents=True, exist_ok=True)
+        if not self.path.exists():
+            state_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self._initialized = False
         self._table = _ARTIFACT_TABLE
@@ -224,6 +224,12 @@ class ArtifactStore:
 
     def _ensure_paging_metadata(self, con: sqlite3.Connection) -> None:
         table = self._table
+        sidecar_columns = {
+            str(row[1]) for row in con.execute(f"PRAGMA table_info({_ARTIFACT_PAGING_TABLE})")
+        }
+        expected_sidecar_columns = {"artifact_id", "char_count", "section_names", "page_text", "nul_mask"}
+        if sidecar_columns and sidecar_columns != expected_sidecar_columns:
+            con.execute(f"DROP TABLE {_ARTIFACT_PAGING_TABLE}")
         con.execute(
             f"""CREATE TABLE IF NOT EXISTS {_ARTIFACT_PAGING_TABLE} (
                 artifact_id TEXT PRIMARY KEY,
@@ -549,278 +555,72 @@ class ArtifactStore:
     def _is_tenant_identity(value: str) -> bool:
         return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
-    @staticmethod
-    def _database_content_digest(database: sqlite3.Connection) -> bytes:
-        digest = hashlib.sha256()
-        for statement in database.iterdump():
-            digest.update(statement.encode("utf-8"))
-            digest.update(b"\n")
-        return digest.digest()
-
-    def _create_migration_backup(self) -> None:
-        """Create and verify one pre-migration SQLite backup without using the writer connection."""
-        backup_path = self.path.with_name(self.path.name + _ARTIFACT_MIGRATION_BACKUP_SUFFIX)
-        if backup_path.exists():
-            if not backup_path.is_file():
-                raise sqlite3.DatabaseError("artifact migration backup path is not a file")
-            if not backup_path.is_symlink() and not backup_path.samefile(self.path):
-                with closing(sqlite3.connect(str(backup_path))) as existing:
-                    integrity = existing.execute("PRAGMA integrity_check").fetchone()
-                    if integrity != ("ok",):
-                        raise sqlite3.DatabaseError("artifact migration backup integrity check failed")
-                    with closing(sqlite3.connect(str(self.path))) as current:
-                        if self._database_content_digest(existing) == self._database_content_digest(current):
-                            return
-
-        file_descriptor, temporary_name = tempfile.mkstemp(
-            prefix=backup_path.name + ".",
-            suffix=".tmp",
-            dir=str(backup_path.parent),
-        )
-        os.close(file_descriptor)
-        temporary_path = Path(temporary_name)
-        try:
-            # Use a second source connection: SQLite backup on the active writer can stall.
-            with closing(sqlite3.connect(str(self.path))) as source, closing(
-                sqlite3.connect(str(temporary_path))
-            ) as backup:
-                source.backup(backup)
-                backup.commit()
-                integrity = backup.execute("PRAGMA integrity_check").fetchone()
-            if integrity != ("ok",):
-                raise sqlite3.DatabaseError("artifact migration backup integrity check failed")
-            os.replace(temporary_path, backup_path)
-            with closing(sqlite3.connect(str(backup_path))) as verified:
-                integrity = verified.execute("PRAGMA integrity_check").fetchone()
-            if integrity != ("ok",):
-                raise sqlite3.DatabaseError("artifact migration backup integrity check failed")
-        except BaseException:
-            try:
-                temporary_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-            raise
-
     def _init_db(self) -> None:
         if self._initialized:
             return
         with self._lock:
             if self._initialized:
                 return
+            full_schema = {
+                "artifact_id": ("TEXT", 1, 0), "created_at": ("REAL", 0, 1), "tenant": ("TEXT", 0, 1),
+                "tenant_identity": ("TEXT", 0, 0), "kind": ("TEXT", 0, 1), "text": ("TEXT", 0, 1),
+                "mime_type": ("TEXT", 0, 0), "encoding": ("TEXT", 0, 0), "blob": ("BLOB", 0, 0),
+                "size_bytes": ("INTEGER", 0, 0), "checksum": ("TEXT", 0, 0), "identity_json": ("TEXT", 0, 0),
+            }
+
+            def _validate_existing() -> None:
+                with closing(sqlite3.connect(f"{self.path.resolve().as_uri()}?mode=ro", uri=True)) as con:
+                    tables = {str(row[0]) for row in con.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    )}
+                    if "artifacts_v2" in tables or not {"artifacts", "artifact_schema_meta"} <= tables:
+                        raise UnsupportedArtifactSchema("unsupported artifact database schema")
+                    columns = list(con.execute("PRAGMA table_info(artifacts)"))
+                    actual = {
+                        str(row[1]): (str(row[2]).upper(), int(row[5]), int(row[3])) for row in columns
+                    }
+                    if any(actual.get(name) != spec for name, spec in full_schema.items()):
+                        raise UnsupportedArtifactSchema("unsupported artifact database schema")
+                    markers = [str(row[0]) for row in con.execute(
+                        "SELECT value FROM artifact_schema_meta WHERE key='tenant_storage'"
+                    )]
+                    if markers != ["sha256-v1"]:
+                        raise UnsupportedArtifactSchema("unsupported artifact tenant storage marker")
+                    for tenant, identity in con.execute("SELECT tenant, tenant_identity FROM artifacts"):
+                        if (not isinstance(tenant, str) or not self._is_tenant_identity(tenant)
+                                or identity != tenant):
+                            raise UnsupportedArtifactSchema("invalid artifact tenant identity")
+
+            fresh = not self.path.exists() or self.path.stat().st_size == 0
+            if not fresh:
+                try:
+                    _validate_existing()
+                except sqlite3.Error as exc:
+                    if isinstance(exc, UnsupportedArtifactSchema):
+                        raise
+                    raise UnsupportedArtifactSchema("unable to inspect artifact database schema") from exc
+
             def _setup() -> None:
                 with closing(self._connect()) as con:
                     initialize_wal(con)
                     con.execute("BEGIN IMMEDIATE")
-                    meta_exists = bool(con.execute(
-                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='artifact_schema_meta'"
-                    ).fetchone())
-                    marker = con.execute(
-                        "SELECT value FROM artifact_schema_meta WHERE key=?",
-                        ("tenant_storage",),
-                    ).fetchone() if meta_exists else None
-                    marker_value = str(marker[0]) if marker else ""
-                    v2_exists = bool(con.execute(
-                        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
-                        (_ARTIFACT_V2_TABLE,),
-                    ).fetchone())
-                    full_schema = {
-                        "artifact_id", "created_at", "tenant", "tenant_identity", "kind", "text",
-                        "mime_type", "encoding", "blob", "size_bytes", "checksum", "identity_json",
-                    }
-                    table_info = list(con.execute("PRAGMA table_info(artifacts)"))
-                    existing_columns = {str(row[1]) for row in table_info}
-                    if marker_value not in {"", "legacy-raw-v1", "sha256-v1"}:
-                        raise sqlite3.DatabaseError("unsupported artifact tenant storage marker")
-
-                    primary_identity_conflict = False
-                    if marker_value == "sha256-v1" and full_schema.issubset(existing_columns):
-                        primary_identity_conflict = any(
-                            not self._is_tenant_identity(str(tenant))
-                            or str(tenant_identity) != str(tenant)
-                            for tenant, tenant_identity in con.execute(
-                                "SELECT tenant, tenant_identity FROM artifacts"
-                            )
-                        )
-                    v2_repair_needed = False
-                    if (
-                        marker_value == "sha256-v1"
-                        and v2_exists
-                        and existing_columns
-                        and not full_schema.issubset(existing_columns)
-                    ):
-                        source_tenants = {
-                            str(artifact_id): str(tenant)
-                            for artifact_id, tenant in con.execute("SELECT artifact_id, tenant FROM artifacts")
-                        }
-                        v2_repair_needed = any(
-                            not self._is_tenant_identity(source_tenant)
-                            for source_tenant in source_tenants.values()
-                        )
-                        v2_columns = {str(row[1]) for row in con.execute("PRAGMA table_info(artifacts_v2)")}
-                        if {"artifact_id", "tenant", "tenant_identity"}.issubset(v2_columns):
-                            for artifact_id, tenant, tenant_identity in con.execute(
-                                "SELECT artifact_id, tenant, tenant_identity FROM artifacts_v2"
-                            ):
-                                source_tenant = source_tenants.get(str(artifact_id))
-                                if source_tenant is not None and (
-                                    not self._is_tenant_identity(source_tenant)
-                                    or str(tenant) != source_tenant
-                                    or str(tenant_identity) != source_tenant
-                                ):
-                                    v2_repair_needed = True
-                                    break
-                    migration_needs_backup = bool(existing_columns or v2_exists) and (
-                        marker_value in {"", "legacy-raw-v1"}
-                        or (
-                            bool(existing_columns)
-                            and not full_schema.issubset(existing_columns)
-                            and not v2_exists
-                        )
-                        or v2_repair_needed
-                        or primary_identity_conflict
-                    )
-                    if migration_needs_backup:
-                        self._create_migration_backup()
-                    if primary_identity_conflict:
-                        raise sqlite3.IntegrityError("artifact migration conflict for primary table tenant identity")
-
-                    con.execute(
-                        "CREATE TABLE IF NOT EXISTS artifact_schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-                    )
-                    if not existing_columns and not v2_exists:
+                    if fresh:
                         con.execute(
-                            """CREATE TABLE IF NOT EXISTS artifacts (
-                            artifact_id TEXT PRIMARY KEY,
-                            created_at REAL NOT NULL,
-                            tenant TEXT NOT NULL,
-                            tenant_identity TEXT,
-                            kind TEXT NOT NULL,
-                            text TEXT NOT NULL DEFAULT '',
-                            mime_type TEXT,
-                            encoding TEXT,
-                            blob BLOB,
-                            size_bytes INTEGER,
-                            checksum TEXT,
-                            identity_json TEXT
-                        )"""
-                        )
-                        self._table = _ARTIFACT_TABLE
-                    elif full_schema.issubset(existing_columns):
-                        self._table = _ARTIFACT_TABLE
-                    else:
-                        con.execute(
-                            """CREATE TABLE IF NOT EXISTS artifacts_v2 (
-                                artifact_id TEXT PRIMARY KEY,
-                                created_at REAL NOT NULL,
-                                tenant TEXT NOT NULL,
-                                tenant_identity TEXT NOT NULL,
-                                kind TEXT NOT NULL,
-                                text TEXT NOT NULL DEFAULT '',
-                                mime_type TEXT,
-                                encoding TEXT,
-                                blob BLOB,
-                                size_bytes INTEGER,
-                                checksum TEXT,
-                                identity_json TEXT
+                            """CREATE TABLE artifacts (
+                                artifact_id TEXT PRIMARY KEY, created_at REAL NOT NULL,
+                                tenant TEXT NOT NULL, tenant_identity TEXT, kind TEXT NOT NULL,
+                                text TEXT NOT NULL DEFAULT '', mime_type TEXT, encoding TEXT, blob BLOB,
+                                size_bytes INTEGER, checksum TEXT, identity_json TEXT
                             )"""
                         )
-                        if existing_columns:
-                            optional_columns = (
-                                "mime_type", "encoding", "blob", "size_bytes", "checksum", "identity_json",
-                            )
-                            copied_columns = ["artifact_id", "created_at", "tenant", "kind", "text"]
-                            copied_columns.extend(column for column in optional_columns if column in existing_columns)
-                            selected_columns = ", ".join(copied_columns)
-                            legacy_rows = list(con.execute(f"SELECT {selected_columns} FROM artifacts"))
-                            for legacy_row in legacy_rows:
-                                values = dict(zip(copied_columns, legacy_row))
-                                source_tenant = str(values["tenant"])
-                                if marker_value == "sha256-v1" and not self._is_tenant_identity(source_tenant):
-                                    raise sqlite3.IntegrityError(
-                                        f"artifact migration conflict for {values['artifact_id']}"
-                                    )
-                                optional_values = [values.get(column) for column in optional_columns]
-                                existing = con.execute(
-                                    """SELECT tenant, tenant_identity, kind, text, mime_type, encoding,
-                                              blob, size_bytes, checksum, identity_json
-                                       FROM artifacts_v2 WHERE artifact_id=?""",
-                                    (values["artifact_id"],),
-                                ).fetchone()
-                                if existing is not None:
-                                    expected_payload = (
-                                        values["kind"], values["text"], *optional_values,
-                                    )
-                                    if tuple(existing[2:]) != expected_payload:
-                                        raise sqlite3.IntegrityError(
-                                            f"artifact migration conflict for {values['artifact_id']}"
-                                        )
-                                    existing_tenants_match = all(
-                                        str(stored_tenant) == source_tenant
-                                        or self._tenant_identity(str(stored_tenant)) == source_tenant
-                                        for stored_tenant in existing[:2]
-                                    )
-                                    if not existing_tenants_match:
-                                        raise sqlite3.IntegrityError(
-                                            f"artifact migration conflict for {values['artifact_id']}"
-                                        )
-                                    # Same-owner raw/hash representations are normalized below.
-                                    continue
-                                con.execute(
-                                    """INSERT INTO artifacts_v2(
-                                        artifact_id, created_at, tenant, tenant_identity, kind, text,
-                                        mime_type, encoding, blob, size_bytes, checksum, identity_json
-                                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
-                                    (
-                                        values["artifact_id"], values["created_at"], source_tenant, source_tenant,
-                                        values["kind"], values["text"], *optional_values,
-                                    ),
-                                )
-                        self._table = _ARTIFACT_V2_TABLE
-                    def _repair_tenants(table: str, *, has_identity: bool) -> None:
-                        rows = list(con.execute(f"SELECT rowid, tenant FROM {table}"))
-                        for rowid, tenant in rows:
-                            digest = self._tenant_identity(str(tenant))
-                            if has_identity:
-                                con.execute(
-                                    f"UPDATE {table} SET tenant=?, tenant_identity=? WHERE rowid=?",
-                                    (digest, digest, rowid),
-                                )
-                            else:
-                                con.execute(
-                                    f"UPDATE {table} SET tenant=? WHERE rowid=?",
-                                    (digest, rowid),
-                                )
-
-                    if marker_value in {"", "legacy-raw-v1"}:
-                        if existing_columns:
-                            _repair_tenants(
-                                _ARTIFACT_TABLE,
-                                has_identity=full_schema.issubset(existing_columns),
-                            )
-                        if v2_exists or self._table == _ARTIFACT_V2_TABLE:
-                            _repair_tenants(_ARTIFACT_V2_TABLE, has_identity=True)
-                    elif marker_value == "sha256-v1" and v2_exists and existing_columns and not full_schema.issubset(existing_columns):
-                        source_tenants = {
-                            str(artifact_id): str(tenant)
-                            for artifact_id, tenant in con.execute("SELECT artifact_id, tenant FROM artifacts")
-                        }
-                        for rowid, artifact_id, tenant, tenant_identity in con.execute(
-                            "SELECT rowid, artifact_id, tenant, tenant_identity FROM artifacts_v2"
-                        ):
-                            source_tenant = source_tenants.get(str(artifact_id))
-                            if source_tenant is None:
-                                continue
-                            if str(tenant) != source_tenant or str(tenant_identity) != source_tenant:
-                                repaired = source_tenant if str(tenant) == source_tenant else self._tenant_identity(str(tenant))
-                                con.execute(
-                                    "UPDATE artifacts_v2 SET tenant=?, tenant_identity=? WHERE rowid=?",
-                                    (repaired, repaired, rowid),
-                                )
-                    con.execute(
-                        "INSERT OR REPLACE INTO artifact_schema_meta(key, value) VALUES(?, ?)",
-                        ("tenant_storage", "sha256-v1"),
-                    )
-                    con.execute(f"CREATE INDEX IF NOT EXISTS idx_{self._table}_created ON {self._table}(created_at)")
+                        con.execute(
+                            "CREATE TABLE artifact_schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+                        )
+                        con.execute(
+                            "INSERT INTO artifact_schema_meta(key, value) VALUES('tenant_storage', 'sha256-v1')"
+                        )
+                    con.execute("CREATE INDEX IF NOT EXISTS idx_artifacts_created ON artifacts(created_at)")
+                    self._table = _ARTIFACT_TABLE
                     self._ensure_paging_metadata(con)
                     con.commit()
             retry_busy(_setup, retries=5, base_delay_seconds=0.02)
@@ -1272,16 +1072,10 @@ class ArtifactStore:
             lim = max(1, min(limit, 100))
             if tenant:
                 tenant_identity = self._tenant_identity(tenant)
-                if self._table == _ARTIFACT_V2_TABLE:
-                    rows = con.execute(
-                        "SELECT artifact_id, kind, size_bytes, created_at, mime_type FROM artifacts_v2 WHERE tenant_identity=? ORDER BY created_at DESC LIMIT ?",
-                        (tenant_identity, lim),
-                    ).fetchall()
-                else:
-                    rows = con.execute(
-                        "SELECT artifact_id, kind, size_bytes, created_at, mime_type FROM artifacts WHERE tenant_identity=? ORDER BY created_at DESC LIMIT ?",
-                        (tenant_identity, lim),
-                    ).fetchall()
+                rows = con.execute(
+                    "SELECT artifact_id, kind, size_bytes, created_at, mime_type FROM artifacts WHERE tenant_identity=? ORDER BY created_at DESC LIMIT ?",
+                    (tenant_identity, lim),
+                ).fetchall()
             else:
                 table = self._table
                 rows = con.execute(
