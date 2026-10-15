@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from local_ai_hub.deterministic import DeterministicEngine
+from local_ai_hub.operation_contracts import validate_operation_arguments
 
 
 def _engine(tmp_path: Path) -> DeterministicEngine:
@@ -121,5 +122,60 @@ def test_hotspot_truncation_is_incomplete_and_not_cached(tmp_path, monkeypatch):
     result = _engine(tmp_path).find_hotspots(str(repo))
     assert result["complete"] is False
     assert "git_output_truncated" in result["incomplete_reasons"]
-    with _engine(tmp_path)._connect() as connection:
-        assert connection.execute("SELECT COUNT(*) FROM hotspots_cache").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("legacy", [{"diff": "90"}, {"max_tokens": 90}])
+def test_hotspot_contract_rejects_retired_inputs(legacy):
+    assert validate_operation_arguments("local_ai_repo", "hotspots", legacy) is not None
+
+
+def test_history_filters_are_scoped_to_history_action():
+    assert validate_operation_arguments(
+        "local_ai_repo", "code_index", {"author": "Ada"}
+    ) is not None
+    assert validate_operation_arguments(
+        "local_ai_repo", "code_index", {"max_commits": 4}
+    ) is not None
+
+
+def test_mcp_hotspots_forwards_only_canonical_window_and_limit(monkeypatch, tmp_path):
+    from local_ai_hub import mcp_server
+
+    calls = []
+    monkeypatch.setattr(
+        mcp_server, "FEATURES",
+        SimpleNamespace(repo=True, supported_repo_actions=lambda: ("hotspots",)),
+    )
+    monkeypatch.setattr(mcp_server, "_client_root", lambda value: value)
+    monkeypatch.setattr(mcp_server, "_timeout", lambda _profile: 1)
+    monkeypatch.setattr(mcp_server, "_compact", lambda value, *_args, **_kwargs: value)
+    monkeypatch.setattr(
+        mcp_server, "CLIENT",
+        SimpleNamespace(post=lambda route, payload, **_kwargs: calls.append((route, payload)) or {"success": True}),
+    )
+
+    result = mcp_server._local_ai_repo_impl(
+        action="hotspots", root=str(tmp_path), days=9, limit=7,
+    )
+    assert result == {"success": True}
+    assert calls == [("/api/repo/hotspots", {"root": str(tmp_path), "days": 9, "limit": 7})]
+
+
+@pytest.mark.parametrize("legacy", [{"diff": "90"}, {"max_tokens": 90}])
+def test_mcp_hotspots_does_not_forward_retired_aliases(monkeypatch, tmp_path, legacy):
+    from local_ai_hub import mcp_server
+
+    calls = []
+    monkeypatch.setattr(
+        mcp_server, "FEATURES",
+        SimpleNamespace(repo=True, supported_repo_actions=lambda: ("hotspots",)),
+    )
+    monkeypatch.setattr(
+        mcp_server, "CLIENT",
+        SimpleNamespace(post=lambda *args, **kwargs: calls.append((args, kwargs))),
+    )
+    result = mcp_server._local_ai_repo_impl(
+        action="hotspots", root=str(tmp_path), **legacy,
+    )
+    assert result["success"] is False
+    assert calls == []

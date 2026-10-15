@@ -2946,7 +2946,7 @@ def _local_ai_repo_impl(
     exclude_paths: list[str] | None = None,
     force_include_paths: list[str] | None = None,
     *,
-    limit: int = 24,
+    limit: int | None = None,
     offset: int = 0,
     old_symbol: str | None = None,
     new_symbol: str | None = None,
@@ -2954,10 +2954,11 @@ def _local_ai_repo_impl(
     new_code: str | None = None,
     rev1: str | None = None,
     rev2: str | None = None,
-    max_commits: int = 50,
-    author: str = "",
-    since: str = "",
-    until: str = "",
+    max_commits: int | None = None,
+    author: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    days: int | None = None,
 ) -> dict[str, Any]:
     """Primary bounded repository worker for the main agent.
 
@@ -2978,6 +2979,12 @@ def _local_ai_repo_impl(
         return {**contract_error("local_ai_repo is disabled in configuration", status_code=403), "unsupported": True}
     if not isinstance(phase, str) or phase not in REPO_PHASES:
         return contract_error(f"phase must be one of: {', '.join(REPO_PHASES[1:])}")
+    max_commits = 50 if max_commits is None else max_commits
+    author = "" if author is None else author
+    since = "" if since is None else since
+    until = "" if until is None else until
+    days = 30 if days is None else days
+    limit = (20 if action == "hotspots" else 24) if limit is None else limit
     for numeric_name, numeric_value in (
         ("max_tokens", max_tokens),
         ("max_response_tokens", max_response_tokens),
@@ -3672,9 +3679,14 @@ def _local_ai_repo_impl(
             "count", "commits", "complete", "incomplete_reasons",
         ])
     if action == "hotspots":
-        days_val = int(diff) if (diff and diff.isdigit()) else 30
+        if diff or max_tokens:
+            return contract_error("hotspots accepts only canonical days and limit fields")
+        if isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= 3650:
+            return contract_error("days must be an integer from 1 to 3650 for action='hotspots'")
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 50:
+            return contract_error("limit must be an integer from 1 to 50 for action='hotspots'")
         return _compact(CLIENT.post("/api/repo/hotspots", {
-            "root": root, "days": days_val, "limit": max_tokens or 20,
+            "root": root, "days": days, "limit": limit,
         }, timeout=_timeout("quick")), "architecture", extra_fields=[
             *(extra_fields or []), "days", "algorithm", "recency_half_life_days",
             "recency_weighting", "complete", "incomplete_reasons", "analysis", "hotspots",
@@ -3765,7 +3777,7 @@ def local_ai_repo(
     exclude_paths: list[str] | None = None,
     force_include_paths: list[str] | None = None,
     *,
-    limit: int = 24,
+    limit: int | None = None,
     offset: int = 0,
     old_symbol: str | None = None,
     new_symbol: str | None = None,
@@ -3773,10 +3785,11 @@ def local_ai_repo(
     new_code: str | None = None,
     rev1: str | None = None,
     rev2: str | None = None,
-    max_commits: int = 50,
-    author: str = "",
-    since: str = "",
-    until: str = "",
+    max_commits: int | None = None,
+    author: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    days: int | None = None,
 ) -> dict[str, Any]:
     """Primary bounded repository worker. Use when: indexed repository evidence is needed. Skip when: fresh evidence already answers it."""
     forward: dict[str, Any] = {}
@@ -3792,12 +3805,39 @@ def local_ai_repo(
             "local_ai_repo", resolved_action, operation_actions("local_ai_repo", FEATURES),
             "Use a canonical advertised repository action.",
         )
+    scoped_arguments = {
+        "max_commits": max_commits,
+        "author": author,
+        "since": since,
+        "until": until,
+        "days": days,
+        "limit": limit,
+    }
+    scoped_validation = validate_operation_arguments(
+        "local_ai_repo", resolved_action,
+        {name: value for name, value in scoped_arguments.items() if value is not None},
+    )
+    if scoped_validation is not None:
+        return {"success": False, "error": scoped_validation, "status_code": 400,
+                "terminal": True, "retryable": False}
+    if resolved_action == "hotspots" and (diff or max_tokens):
+        return {"success": False, "error": "hotspots accepts only canonical days and limit fields",
+                "status_code": 400, "terminal": True, "retryable": False}
     if resolved_action in {"search", "code_index", "callers", "callees", "implementations"}:
+        effective_limit = 24 if limit is None else limit
         pagination_error = validate_operation_arguments(
-            "local_ai_repo", resolved_action, {"limit": limit, "offset": offset}
+            "local_ai_repo", resolved_action, {"limit": effective_limit, "offset": offset}
         )
         if pagination_error is not None:
             return {"success": False, "error": pagination_error, "status_code": 400,
+                    "terminal": True, "retryable": False}
+    if resolved_action == "hotspots":
+        hotspot_error = validate_operation_arguments(
+            "local_ai_repo", resolved_action,
+            {"days": 30 if days is None else days, "limit": 20 if limit is None else limit},
+        )
+        if hotspot_error is not None:
+            return {"success": False, "error": hotspot_error, "status_code": 400,
                     "terminal": True, "retryable": False}
     if resolved_action == "git_history_search":
         if (
@@ -3811,8 +3851,10 @@ def local_ai_repo(
         history_error = validate_operation_arguments(
             "local_ai_repo", resolved_action,
             {
-                "query": query, "max_commits": max_commits, "author": author,
-                "since": since, "until": until, "path": path,
+                "query": query, "max_commits": 50 if max_commits is None else max_commits,
+                "author": "" if author is None else author,
+                "since": "" if since is None else since,
+                "until": "" if until is None else until, "path": path,
             },
         )
         if history_error is not None:
@@ -3852,7 +3894,7 @@ def local_ai_repo(
         changed_paths, phase, focus, preload_profile, guarded, since_hash, approval, override_reason,
         token_budget, is_worktree, parent_root, steps, limit=limit, offset=offset,
         old_symbol=old_symbol, new_symbol=new_symbol, old_code=old_code, new_code=new_code, rev1=rev1, rev2=rev2,
-        max_commits=max_commits, author=author, since=since, until=until, **forward,
+        max_commits=max_commits, author=author, since=since, until=until, days=days, **forward,
     )
 
 
