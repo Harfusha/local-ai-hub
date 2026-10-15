@@ -3,6 +3,7 @@ from __future__ import annotations
 import threading
 import time
 import math
+import numbers
 from typing import Any
 
 from .gpu_monitor import get_gpu_telemetry
@@ -170,19 +171,163 @@ class VRAMBalancer:
     def _status_from_telemetry(self, gpu: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
             now = time.monotonic()
-            available = bool(gpu.get("available", False))
-            is_integrated = bool(gpu.get("integrated", False)) or bool(gpu.get("shared_memory", False))
-            total_mb = float(gpu.get("vram_total_mb", 0) or gpu.get("unified_memory_mb", 0) or 0)
-            used_mb = float(gpu.get("vram_used_mb", 0) or 0)
-            avail_mb = max(0.0, total_mb - used_mb) if total_mb > 0 else 0.0
-            used_pct = float(gpu.get("vram_used_pct", 0) or (round(100.0 * used_mb / max(1.0, total_mb), 1) if total_mb > 0 else 0.0))
+            def unknown_sample(reason: str) -> dict[str, Any]:
+                result = self._sampling_timeout_fallback_locked()
+                result["telemetry_wait_timed_out"] = False
+                result["telemetry_error"] = reason
+                self._last_status = result
+                self._last_check_time = now
+                self._status_generation += 1
+                return result
 
-            if not available or total_mb <= 0 or is_integrated:
-                level = "nominal"
-                factor = 1.0
-                strategy = "full_capacity"
-                throttle = False
-            elif used_pct >= 95.0 or avail_mb < 1024:
+            if not isinstance(gpu, dict):
+                return unknown_sample("sample_invalid")
+            if gpu.get("available") is False:
+                return unknown_sample("sample_unavailable")
+            if gpu.get("available") is not True:
+                return unknown_sample("sample_invalid")
+            available = True
+
+            for key in ("integrated", "shared_memory"):
+                if key in gpu and not isinstance(gpu[key], bool):
+                    return unknown_sample("sample_invalid")
+            is_integrated = gpu.get("integrated", False) or gpu.get("shared_memory", False)
+
+            metric_names = (
+                "vram_total_mb",
+                "unified_memory_mb",
+                "reported_adapter_memory_mb",
+                "vram_used_mb",
+                "unified_memory_used_mb",
+                "shared_memory_used_mb",
+                "vram_available_mb",
+                "unified_memory_available_mb",
+                "shared_memory_available_mb",
+                "vram_used_pct",
+                "unified_memory_used_pct",
+                "shared_memory_used_pct",
+            )
+            metrics: dict[str, float | None] = {}
+            for key in metric_names:
+                if key not in gpu or gpu[key] is None:
+                    metrics[key] = None
+                    continue
+                raw_value = gpu[key]
+                if isinstance(raw_value, bool) or not isinstance(raw_value, numbers.Real):
+                    return unknown_sample("sample_invalid")
+                try:
+                    value = float(raw_value)
+                except (OverflowError, TypeError, ValueError):
+                    return unknown_sample("sample_invalid")
+                if not math.isfinite(value) or value < 0:
+                    return unknown_sample("sample_invalid")
+                if key.endswith("_pct") and value > 100:
+                    return unknown_sample("sample_invalid")
+                metrics[key] = value
+
+            dedicated_keys = (
+                "vram_used_mb",
+                "vram_available_mb",
+                "vram_used_pct",
+            )
+            shared_keys = (
+                "unified_memory_used_mb",
+                "shared_memory_used_mb",
+                "unified_memory_available_mb",
+                "shared_memory_available_mb",
+                "unified_memory_used_pct",
+                "shared_memory_used_pct",
+            )
+
+            def has_measured_pool(keys: tuple[str, ...]) -> bool:
+                return any(metrics[key] is not None for key in keys)
+
+            # Never compare usage from one memory pool with another pool's capacity.
+            # Windows' reported adapter size and zeroed VRAM fields are inventory only.
+            if "reported_adapter_memory_mb" in gpu and not is_integrated:
+                pool_keys: tuple[str, ...] = ()
+                total_mb = 0.0
+                measurement_basis = "inventory_only"
+            elif is_integrated:
+                if (
+                    metrics["unified_memory_mb"] is not None
+                    and metrics["unified_memory_mb"] > 0
+                    and has_measured_pool(shared_keys)
+                ):
+                    pool_keys = shared_keys
+                    total_mb = metrics["unified_memory_mb"]
+                    measurement_basis = "shared_unified_observed"
+                elif (
+                    metrics["vram_total_mb"] is not None
+                    and metrics["vram_total_mb"] > 0
+                    and has_measured_pool(dedicated_keys)
+                ):
+                    pool_keys = dedicated_keys
+                    total_mb = metrics["vram_total_mb"]
+                    measurement_basis = "dedicated_observed"
+                else:
+                    pool_keys = ()
+                    total_mb = 0.0
+                    measurement_basis = "unmeasured"
+            elif (
+                metrics["vram_total_mb"] is not None
+                and metrics["vram_total_mb"] > 0
+                and has_measured_pool(dedicated_keys)
+            ):
+                pool_keys = dedicated_keys
+                total_mb = metrics["vram_total_mb"]
+                measurement_basis = "dedicated_observed"
+            elif (
+                metrics["unified_memory_mb"] is not None
+                and metrics["unified_memory_mb"] > 0
+                and has_measured_pool(shared_keys)
+            ):
+                pool_keys = shared_keys
+                total_mb = metrics["unified_memory_mb"]
+                measurement_basis = "shared_unified_observed"
+            else:
+                pool_keys = ()
+                total_mb = 0.0
+                measurement_basis = "unmeasured"
+
+            if total_mb <= 0 or not pool_keys:
+                return unknown_sample("sample_unavailable")
+
+            measured_percentages = [
+                metrics[key]
+                for key in pool_keys
+                if key.endswith("_pct") and metrics[key] is not None
+            ]
+            measured_used = [
+                metrics[key]
+                for key in pool_keys
+                if key.endswith("_used_mb") and metrics[key] is not None
+            ]
+            measured_available = [
+                metrics[key]
+                for key in pool_keys
+                if key.endswith("_available_mb") and metrics[key] is not None
+            ]
+            pressure_percentages = list(measured_percentages)
+            for used_value in measured_used:
+                if used_value > total_mb:
+                    return unknown_sample("sample_invalid")
+                pressure_percentages.append(100.0 * used_value / total_mb)
+            for available_value in measured_available:
+                if available_value > total_mb:
+                    return unknown_sample("sample_invalid")
+                pressure_percentages.append(100.0 * (total_mb - available_value) / total_mb)
+
+            policy_pressure_pct = max(pressure_percentages)
+            policy_headroom_mb = min(
+                total_mb * (1.0 - value / 100.0) for value in pressure_percentages
+            )
+            # Preserve telemetry as reported. Policy bounds above may combine
+            # contradictory measurements conservatively, but are never raw readings.
+            used_pct = policy_pressure_pct
+            avail_mb = policy_headroom_mb
+
+            if used_pct >= 95.0 or avail_mb < 1024:
                 level = "critical"
                 factor = 0.25
                 strategy = "fast_tier_throttled"
@@ -215,9 +360,16 @@ class VRAMBalancer:
                 "gpu_name": gpu.get("gpu_name", "GPU"),
                 "vendor": gpu.get("vendor", "unknown"),
                 "vram_total_mb": total_mb,
-                "vram_used_mb": used_mb,
-                "vram_available_mb": avail_mb,
-                "vram_used_pct": used_pct,
+                "vram_used_mb": metrics["vram_used_mb"],
+                "vram_available_mb": metrics["vram_available_mb"],
+                "vram_used_pct": metrics["vram_used_pct"],
+                "policy_pressure_pct": policy_pressure_pct,
+                "policy_headroom_mb": policy_headroom_mb,
+                "policy_measurement_basis": measurement_basis,
+                "policy_pressure_is_derived": (
+                    not bool(measured_percentages)
+                    or policy_pressure_pct > max(measured_percentages)
+                ),
                 "pressure_level": level,
                 "context_budget_factor": factor,
                 "dynamic_context_tokens": dynamic_context,
