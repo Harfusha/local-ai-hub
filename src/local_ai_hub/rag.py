@@ -380,7 +380,10 @@ def _regex_ast_chunks(text: str, language: str, size: int = 4500) -> list[str]:
                 # its body. Brace balancing alone cannot distinguish that type
                 # from the body, so retain this source as one safe unit.
                 header = text[segment_start:index]
-                if re.search(r"\bfunction\b[^;{}]*\)[ \t]*:[ \t]*$", header):
+                suffix = header[-512:]
+                if len(header) > 512 and re.search(r"\)[ \t]*:[ \t]*$", suffix):
+                    return [text] if text.strip() else []
+                if re.search(r"\bfunction\b[^;{}]*\)[ \t]*:[ \t]*$", suffix):
                     return [text] if text.strip() else []
             if len(braces) >= _REGEX_AST_MAX_BLOCK_DEPTH:
                 return [text] if text.strip() else []
@@ -411,31 +414,40 @@ def _regex_ast_chunks(text: str, language: str, size: int = 4500) -> list[str]:
         return [text] if text.strip() else []
 
     chunks: list[str] = []
-    pending = ""
+    pending_parts: list[str] = []
+    pending_chars = 0
     for start, end in spans:
+        if time.monotonic() >= deadline:
+            return [text] if text.strip() else []
         block = text[start:end]
-        if pending and len(pending) + len(block) > size:
-            chunks.append(pending)
-            pending = ""
+        if pending_parts and pending_chars + len(block) > size:
+            chunks.append("".join(pending_parts))
+            pending_parts = []
+            pending_chars = 0
         if len(block) > size:
-            if pending:
-                chunks.append(pending)
-                pending = ""
+            if pending_parts:
+                chunks.append("".join(pending_parts))
+                pending_parts = []
+                pending_chars = 0
             chunks.append(block)
         else:
-            pending += block
+            pending_parts.append(block)
+            pending_chars += len(block)
     # Unbraced declarations/expressions in the tail have no proven safe split.
     # Keep the entire tail together even when it exceeds the requested size.
     if segment_start < text_length:
         tail = text[segment_start:]
-        if pending and len(pending) + len(tail) <= size:
-            pending += tail
+        if pending_parts and pending_chars + len(tail) <= size:
+            pending_parts.append(tail)
+            pending_chars += len(tail)
         else:
-            if pending:
-                chunks.append(pending)
-            pending = tail
-    if pending:
-        chunks.append(pending)
+            if pending_parts:
+                chunks.append("".join(pending_parts))
+            pending_parts = [tail]
+    if time.monotonic() >= deadline:
+        return [text] if text.strip() else []
+    if pending_parts:
+        chunks.append("".join(pending_parts))
     return chunks
 
 

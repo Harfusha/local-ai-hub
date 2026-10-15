@@ -112,6 +112,15 @@ def test_typescript_structural_return_type_keeps_function_together() -> None:
     assert chunks == [source]
 
 
+def test_long_typescript_structural_return_header_uses_bounded_fallback() -> None:
+    parameters = ", ".join(f"arg{index}: number" for index in range(80))
+    source = f"function shape({parameters}): {{ x: number }} {{ return {{ x: 1 }}; }}\n"
+
+    chunks = _regex_ast_chunks(source, "typescript", size=48)
+
+    assert chunks == [source]
+
+
 def test_ambiguous_csharp_interpolation_keeps_source_together() -> None:
     source = 'class C { string M() { return $"{Call(\"}\")}"; } }\n'
 
