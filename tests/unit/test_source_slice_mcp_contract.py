@@ -85,7 +85,7 @@ def test_source_file_and_line_bounds_are_explicit(tmp_path):
 
 def test_source_accepts_stable_file_when_path_and_handle_ctime_differ(tmp_path, monkeypatch):
     source = tmp_path / "sample.py"
-    source.write_text("unchanged\n", encoding="utf-8")
+    source.write_text("unchanged\n", encoding="utf-8", newline="\n")
     real_fstat = os.fstat
 
     def handle_stat(fd):
@@ -102,7 +102,7 @@ def test_source_accepts_stable_file_when_path_and_handle_ctime_differ(tmp_path, 
 
 def test_source_rejects_handle_for_different_path_identity(tmp_path, monkeypatch):
     source = tmp_path / "sample.py"
-    source.write_text("unchanged\n", encoding="utf-8")
+    source.write_text("unchanged\n", encoding="utf-8", newline="\n")
     real_fstat = os.fstat
 
     def other_handle_stat(fd):
@@ -119,7 +119,7 @@ def test_source_rejects_handle_for_different_path_identity(tmp_path, monkeypatch
 
 def test_source_rejects_path_identity_change_during_read(tmp_path, monkeypatch):
     source = tmp_path / "sample.py"
-    source.write_text("unchanged\n", encoding="utf-8")
+    source.write_text("unchanged\n", encoding="utf-8", newline="\n")
     real_stat = Path.stat
     source_stat_calls = 0
 
