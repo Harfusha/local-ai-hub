@@ -18,6 +18,7 @@ def _record(
     scope_id: str = "",
     root: Path | None = None,
     tenant: str = "",
+    repository_id: str = "",
     key: str,
 ) -> MemoryRecord:
     provenance = {}
@@ -25,6 +26,8 @@ def _record(
         provenance["root"] = str(root)
     if tenant:
         provenance["tenant"] = tenant
+    if repository_id:
+        provenance["repository_id"] = repository_id
     return MemoryRecord.create(
         kind=MemoryKind.FACT,
         scope=scope,
@@ -54,8 +57,8 @@ def test_find_for_context_filters_explicit_foreign_tenant_for_repository_and_glo
     root = tmp_path / "repo"
     root.mkdir()
     records = {
-        "repo_current": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, tenant="tenant-a", key="repo-current"),
-        "repo_foreign": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, tenant="tenant-b", key="repo-foreign"),
+        "repo_current": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, tenant="tenant-a", repository_id="repo-id", key="repo-current"),
+        "repo_foreign": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, tenant="tenant-b", repository_id="repo-id", key="repo-foreign"),
         "repo_tenantless": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, key="repo-tenantless"),
         "task_current": _record(scope=AgentScope.TASK, scope_id="shared-task", root=root, tenant="tenant-a", key="task-current"),
         "task_foreign": _record(scope=AgentScope.TASK, scope_id="shared-task", root=root, tenant="tenant-b", key="task-foreign"),
@@ -69,7 +72,7 @@ def test_find_for_context_filters_explicit_foreign_tenant_for_repository_and_glo
         for record in records.values():
             memory.record(record, actor="user")
 
-    found = memory.find_for_context(root=str(root), task_id="shared-task", tenant="tenant-a")
+    found = memory.find_for_context(root=str(root), task_id="shared-task", tenant="tenant-a", coordination_id="repo-id")
 
     assert _ids(found) == {
         records["repo_current"].record_id,
@@ -86,7 +89,7 @@ def test_find_for_context_without_tenant_returns_only_tenantless_global(tmp_path
     root.mkdir()
     records = {
         "repo_tenantless": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, key="repo-tenantless"),
-        "repo_owned": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, tenant="tenant-a", key="repo-owned"),
+        "repo_owned": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, tenant="tenant-a", repository_id="repo-id", key="repo-owned"),
         "task_tenantless": _record(scope=AgentScope.TASK, scope_id="shared-task", root=root, key="task-tenantless"),
         "global_tenantless": _record(scope=AgentScope.GLOBAL, key="global-tenantless"),
         "global_owned": _record(scope=AgentScope.GLOBAL, tenant="tenant-a", key="global-owned"),
@@ -105,8 +108,8 @@ def test_context_compiler_filters_foreign_tenant_before_returning_memory(tmp_pat
     root = tmp_path / "repo"
     root.mkdir()
     records = {
-        "repo_current": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, tenant="tenant-a", key="repo-current"),
-        "repo_foreign": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, tenant="tenant-b", key="repo-foreign"),
+        "repo_current": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, tenant="tenant-a", repository_id="repo-id", key="repo-current"),
+        "repo_foreign": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, tenant="tenant-b", repository_id="repo-id", key="repo-foreign"),
         "task_current": _record(scope=AgentScope.TASK, scope_id="shared-task", root=root, tenant="tenant-a", key="task-current"),
         "task_foreign": _record(scope=AgentScope.TASK, scope_id="shared-task", root=root, tenant="tenant-b", key="task-foreign"),
         "global_current": _record(scope=AgentScope.GLOBAL, tenant="tenant-a", key="global-current"),
@@ -121,7 +124,7 @@ def test_context_compiler_filters_foreign_tenant_before_returning_memory(tmp_pat
     compiler = ContextCompiler(state, memory_store=memory)
 
     compiled = compiler.compile(
-        ContextRequest(task_id="shared-task", root=str(root), tenant="tenant-a")
+        ContextRequest(task_id="shared-task", root=str(root), tenant="tenant-a", coordination_id="repo-id")
     )
 
     memory_ids = {
@@ -160,9 +163,12 @@ def test_task_create_and_resume_exclude_same_root_foreign_tenant_memory(tmp_path
     )
     root = tmp_path / "repo"
     root.mkdir()
+    from local_ai_hub.project_config import resolve_project_context
+
+    coordination_id = resolve_project_context(root, state.db_path.parent).coordination_id
     records = {
-        "repo_current": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, tenant="tenant-a", key="repo-current"),
-        "repo_foreign": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, tenant="tenant-b", key="repo-foreign"),
+        "repo_current": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, tenant="tenant-a", repository_id=coordination_id, key="repo-current"),
+        "repo_foreign": _record(scope=AgentScope.REPOSITORY, scope_id=str(root), root=root, tenant="tenant-b", repository_id=coordination_id, key="repo-foreign"),
         "global_current": _record(scope=AgentScope.GLOBAL, tenant="tenant-a", key="global-current"),
         "global_foreign": _record(scope=AgentScope.GLOBAL, tenant="tenant-b", key="global-foreign"),
         "global_tenantless": _record(scope=AgentScope.GLOBAL, key="global-tenantless"),
