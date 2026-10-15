@@ -61,7 +61,32 @@ def test_caller_generator_consumption_is_bounded():
     result = fuse_ranked_paths({"lexical": many_paths()}, limit=1)
 
     assert len(result) == 1
-    assert consumed <= 128
+    assert consumed <= 4096
+
+
+def test_late_cross_backend_agreement_survives_small_output_limit():
+    late_group = [f"other/{index}.py" for index in range(300)] + ["src/shared.py"]
+
+    result = dict(fuse_ranked_paths({
+        "deterministic": ["src/shared.py"],
+        "lexical": late_group,
+    }, limit=3))
+
+    expected = round(1.25 / 61.0 + 0.80 / 361.0 + 0.018, 6)
+    assert result["src/shared.py"] == expected
+
+
+def test_iterator_creation_failure_skips_only_malformed_backend_group():
+    class BrokenIterable:
+        def __iter__(self):
+            raise RuntimeError("backend iterator unavailable")
+
+    result = fuse_ranked_paths({
+        "broken": BrokenIterable(),
+        "lexical": ["src/available.py"],
+    })
+
+    assert [path for path, _score in result] == ["src/available.py"]
 
 
 @pytest.mark.parametrize("bad_limit", [None, True, False, 0, -1, "2"])

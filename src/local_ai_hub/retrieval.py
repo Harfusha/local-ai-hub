@@ -157,7 +157,9 @@ def fuse_ranked_paths(
             backend_weights[source_name] *= weight_scale
     scores: dict[str, float] = defaultdict(float)
     sources: dict[str, set[str]] = defaultdict(set)
-    per_backend_cap = min(_MAX_FUSION_PATHS_PER_GROUP, max(128, limit * 8))
+    # Keep cross-backend agreement discoverable even when a path ranks late
+    # in one bounded backend response.
+    per_backend_cap = _MAX_FUSION_PATHS_PER_GROUP
     # Backend results can arrive in different completion orders. Stable source
     # iteration prevents floating-point accumulation from reordering tied paths.
     for source, paths in sorted(
@@ -173,7 +175,7 @@ def fuse_ranked_paths(
         seen: set[str] = set()
         try:
             iterator = iter(paths)
-        except (TypeError, ValueError):
+        except Exception:
             continue
         for rank in range(per_backend_cap):
             try:
