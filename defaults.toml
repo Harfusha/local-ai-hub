@@ -215,6 +215,8 @@ max_other_model_wait_seconds = 120 # anti-starvation safety valve; 0 disables it
 switch_cooldown_seconds = 1
 # A failed model load fails queued callers immediately and briefly opens a circuit breaker.
 model_switch_failure_cooldown_seconds = 20
+# Release a scheduler-owned model after idle time; 0 disables the timer.
+idle_timeout_seconds = 300
 # Absolute ceiling for any scheduler caller, including accidental unbounded waits.
 max_caller_wait_timeout_seconds = 1800
 # Status payloads stay bounded; truncation is reported explicitly.
@@ -418,7 +420,8 @@ allow_read = true
 allow_validation = true
 allow_build = true
 allow_mutating = true
-allow_unknown = true
+# Unknown commands require explicit operator opt-in and task-owned private execution.
+allow_unknown = false
 # User-whitelisted executable names for custom developer tooling:
 extra_allowed_tools = []
 timeout_seconds = 1800
@@ -427,6 +430,9 @@ timeout_seconds = 1800
 coalesced_wait_seconds = 180
 
 [speculative_lint]
+daemon_mode = true
+max_daemon_sessions = 4
+daemon_idle_ttl_seconds = 300
 # Opt-in only. Runs read-only lint after a quiet period against caller-supplied changed paths.
 enabled = false
 debounce_seconds = 1.0
@@ -755,6 +761,8 @@ max_bytes = 268435456
 
 # ---------------- Idle project preprocessing ----------------
 [preprocessing]
+# Optional bounded task-goal prediction; normal cache/freshness gates still apply.
+task_context_warmup = true
 # Opportunistic whole-project warmup. Every expensive unit is a low-priority,
 # checkpointed micro-job and yields as soon as foreground work appears.
 enabled = true

@@ -3262,7 +3262,8 @@ class CommandBroker:
         self.repo_state = repo_state
         cfg = config.get("commands", {})
         self.enabled = bool(cfg.get("enabled", True))
-        self.policy_blocking = bool(cfg.get("policy_blocking", False))
+        # Classification denial is mandatory; legacy policy_blocking=false cannot authorize execution.
+        self.policy_blocking = True
         self.timeout = int(cfg.get("timeout_seconds", 1800))
         self.max_output_chars = int(cfg.get("max_output_chars", 2_000_000))
         self.max_output_bytes = int(cfg.get("max_output_bytes", 8_000_000))
@@ -7799,7 +7800,27 @@ class CommandBroker:
         classification_started = time.perf_counter()
         classification = self.classify(argv_override if argv_override is not None else original_command)
         phase_timings_ms["command_classification_ms"] = round((time.perf_counter() - classification_started) * 1000, 3)
-        is_mutating = classification.get("class") == "mutating"
+        command_class = classification.get("class")
+        classification_allowed = classification.get("allowed") is True
+        unknown_authorized = command_class != "unknown" or bool(
+            self.config.get("commands", {}).get("allow_mutating", False)
+        )
+        if command_class == "dangerous" or not classification_allowed or not unknown_authorized:
+            reason = str(classification.get("reason") or "command policy denied execution")[:120]
+            if classification_allowed and not unknown_authorized:
+                reason = "unknown command requires explicit mutation authorization"
+            with self._lock:
+                self.blocked += 1
+                self._blocked_by_reason[reason] = self._blocked_by_reason.get(reason, 0) + 1
+            return {
+                "success": False, "error": f"command blocked: {reason}",
+                "classification": classification, "classification_allowed": classification_allowed,
+                "execution_authorized": False, "policy_blocked": True,
+                "request_not_sent": True, "terminal": True, "retryable": False,
+            }
+        # Unknown code may mutate regardless of the classifier's lexical heuristics.
+        # Its opt-in still requires task/worktree/write-set/fence and private execution.
+        is_mutating = command_class in {"mutating", "unknown"}
         tool_identity_started = time.perf_counter()
         if argv_override is not None:
             tool_identity = self._tool_identity(command, cwd, argv_override=argv_override)
@@ -7818,19 +7839,6 @@ class CommandBroker:
                 result = dict(suppressed)
                 result.update({"suppression_cache_hit": True, "classification": classification})
                 return self._compact(result, tenant, command)
-        is_dangerous = classification.get("class") == "dangerous"
-        if is_dangerous or (not classification["allowed"] and self.policy_blocking):
-            with self._lock:
-                self.blocked += 1
-                reason = str(classification.get("reason", "policy"))[:120]
-                self._blocked_by_reason[reason] = self._blocked_by_reason.get(reason, 0) + 1
-            result = {
-                "success": False, "error": f"command blocked: {classification['reason']}",
-                "classification": classification, "policy_blocked": True, "terminal": True, "retryable": False,
-            }
-            if not force and not bypass_cache and not is_mutating:
-                self.suppression_cache.set(attempt_key, result)
-            return result
         cwd_path = Path(cwd).expanduser().resolve(strict=False)
         if not cwd_path.is_dir():
             result = {

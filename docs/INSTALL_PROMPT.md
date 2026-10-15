@@ -4,6 +4,8 @@ Use this prompt with any AI coding agent (Claude Code, Codex, Cursor, Windsurf, 
 
 ## Current security and tool contract
 
+Command execution is fail-closed: `allowed=false` is always rejected before cache reuse or process creation, including legacy `policy_blocking=false`. Unknown commands default to denied; explicit `commands.allow_unknown=true` does not authorize host execution. They also require mutation permission, a task-owned worktree, declared paths, a current work-attempt fence, and the private transaction boundary. Operator configuration is not rewritten when updating packaged defaults.
+
 Transport clients defer hardware inventory when `hardware.auto_tune=false`; servers still inventory devices, and automatic tuning preserves its hardware-derived overlay. On Windows, a newly started shared supervisor receives a retained Job Object handle so it survives adapter exit; failed startup uses the owned Job Object to clean up descendants.
 
 Loopback connection establishment uses the smaller of `client.health_timeout_seconds` and the remaining request deadline. After connecting, response reads retain the remaining request deadline; an absent listener cannot consume that response budget before autostart.
