@@ -3409,6 +3409,72 @@ class Handler(BaseHTTPRequestHandler):
                 fields = ", ".join(retired_fields)
                 raise RequestBodyError(f"unsupported blackboard field(s): {fields}")
 
+        if path == "/api/agent-state/incidents":
+            action = payload.get("action")
+            retired_by_action = {
+                "decision": {"revision"},
+                "record": {
+                    "reason", "fix", "status", "redacted_message", "value",
+                    "tool_name", "key", "paths", "revision", "error_class",
+                },
+                "find": {"key"},
+            }
+            retired = sorted(retired_by_action.get(action, set()).intersection(payload))
+            if retired:
+                raise RequestBodyError(f"unsupported incident field(s): {', '.join(retired)}")
+            if action in retired_by_action:
+                allowed_fields = {
+                    "decision": {"action", "root", "tenant", "fingerprint", "state_revision"},
+                    "record": {
+                        "action", "root", "tenant", "root_cause", "verified_fix", "message",
+                        "operation_class", "exit_code", "state_revision", "evidence_ids", "affected_paths",
+                    },
+                    "find": {"action", "root", "tenant", "query", "limit"},
+                }[action]
+                unexpected = sorted(set(payload) - allowed_fields)
+                if unexpected:
+                    raise RequestBodyError(f"unsupported incident field(s): {', '.join(unexpected)}")
+                if "root" in payload:
+                    text(payload["root"], "root", 4096)
+                if "tenant" in payload:
+                    text(payload["tenant"], "tenant", 160)
+            if action == "decision":
+                fingerprint = payload.get("fingerprint")
+                if not isinstance(fingerprint, dict):
+                    raise RequestBodyError("fingerprint must be an object")
+                expected = {"error_class", "operation_class", "signature_hash"}
+                if set(fingerprint) != expected:
+                    raise RequestBodyError("fingerprint must contain error_class, operation_class, and signature_hash")
+                for field, maximum in (("error_class", 160), ("operation_class", 160), ("signature_hash", 128)):
+                    value = text(fingerprint[field], f"fingerprint.{field}", maximum)
+                    if not value.strip():
+                        raise RequestBodyError(f"fingerprint.{field} is required")
+                if "state_revision" in payload:
+                    text(payload["state_revision"], "state_revision", 256)
+            elif action == "record":
+                for field, maximum in (
+                    ("root_cause", 4096), ("verified_fix", 4096), ("message", 4096),
+                    ("operation_class", 160), ("state_revision", 256),
+                ):
+                    if field in payload:
+                        text(payload[field], field, maximum)
+                if "exit_code" in payload:
+                    bounded_integer(payload["exit_code"], "exit_code", -32768, 32767)
+                for field, maximum_items, maximum_chars in (("evidence_ids", 64, 256), ("affected_paths", 128, 4096)):
+                    if field not in payload:
+                        continue
+                    values = payload[field]
+                    if not isinstance(values, list) or len(values) > maximum_items:
+                        raise RequestBodyError(f"{field} must be a list of at most {maximum_items} entries")
+                    for item in values:
+                        text(item, f"{field} item", maximum_chars)
+            elif action == "find":
+                if "query" not in payload:
+                    raise RequestBodyError("query is required")
+                if not text(payload["query"], "query", 4096).strip():
+                    raise RequestBodyError("query is required")
+                bounded_integer(payload.get("limit", 100), "limit", 1, 100)
+
         if path == "/api/embed":
             values = payload.get("texts", payload.get("input", []))
             values = [values] if isinstance(values, str) else values
@@ -7170,8 +7236,8 @@ class Handler(BaseHTTPRequestHandler):
                 if action not in {"decision", "record", "find"}:
                     self._send(403, {"success": False, "error": "incident action requires a scoped mutation contract", "terminal": True, "retryable": False}); return
                 if action == "decision":
-                    fp = IncidentFingerprint.from_dict(payload.get("fingerprint") or {})
-                    rev = str(payload.get("state_revision", payload.get("revision", "")))
+                    fp = IncidentFingerprint.from_dict(payload["fingerprint"])
+                    rev = payload.get("state_revision", "")
                     decision = APP.agent_incidents.retry_decision(
                         fp,
                         rev,
@@ -7180,16 +7246,15 @@ class Handler(BaseHTTPRequestHandler):
                     )
                     self._send(200, {"success": True, "decision": decision.to_dict()}); return
                 if action == "record":
-                    root_cause = str(payload.get("root_cause", payload.get("reason", "")))
-                    verified_fix = str(payload.get("verified_fix", payload.get("fix", payload.get("status", ""))))
-                    msg = str(payload.get("message", payload.get("redacted_message", payload.get("value", ""))))
-                    op = str(payload.get("operation_class", payload.get("tool_name", payload.get("key", "agent"))))
-                    rev = str(payload.get("state_revision", payload.get("revision", "")))
-                    evidence_ids = tuple(payload.get("evidence_ids") or ())
-                    raw_paths = payload.get("affected_paths") or payload.get("paths") or []
-                    aff_paths = tuple(str(p) for p in raw_paths) if isinstance(raw_paths, (list, tuple)) else ()
+                    root_cause = payload.get("root_cause", "")
+                    verified_fix = payload.get("verified_fix", "")
+                    msg = payload.get("message", "")
+                    op = payload.get("operation_class", "agent")
+                    rev = payload.get("state_revision", "")
+                    evidence_ids = tuple(payload.get("evidence_ids", ()))
+                    aff_paths = tuple(payload.get("affected_paths", ()))
                     outcome = ToolOutcome(
-                        tool_name=op, error=msg or "recorded incident", exit_code=int(payload.get("exit_code", 1)),
+                        tool_name=op, error=msg or "recorded incident", exit_code=payload.get("exit_code", 1),
                         state_revision=rev, evidence_ids=evidence_ids,
                         metadata={"root_cause": root_cause, "verified_fix": verified_fix},
                         affected_paths=aff_paths,
@@ -7201,8 +7266,8 @@ class Handler(BaseHTTPRequestHandler):
                         inc = APP.agent_incidents.resolve(inc.incident_id, verified_fix=verified_fix or "resolved", root_cause=root_cause or None)
                     self._send(200, {"success": True, "incident": inc.to_dict() if inc else None}); return
                 if action == "find":
-                    query_str = str(payload.get("query", payload.get("key", ""))).strip().lower()
-                    limit_val = int(payload.get("limit", 100))
+                    query_str = payload["query"].strip().lower()
+                    limit_val = payload.get("limit", 100)
                     scoped = APP.agent_incidents.find_negative_knowledge(
                         query_str,
                         limit=limit_val,
