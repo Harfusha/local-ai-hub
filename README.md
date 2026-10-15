@@ -40,7 +40,7 @@ Local AI Hub features deep static intelligence, deterministic AST extraction, co
 
 ## Key Features & Cloud Agent Impact
 
-Local AI Hub is engineered to maximize **Quality**, **Speed**, and **Token Economics** for frontier cloud models (Claude 3.5 Sonnet, GPT-4o, Gemini 1.5 Pro) by executing heavy, repetitive, and deterministic work locally:
+Local AI Hub is engineered to maximize **Quality**, **Speed**, and **Token Economics** for cloud coding agents by executing heavy, repetitive, and deterministic work locally:
 
 | Capability / Feature | Core Mechanism | Quality Impact | Speed & Latency Impact | Cloud Context & Cost Savings |
 |---|---|---|---|---|
@@ -50,9 +50,9 @@ Local AI Hub is engineered to maximize **Quality**, **Speed**, and **Token Econo
 | **Unified 8-Tool MCP Surface** (Managed Serena) | Serena (LSP) runs under `local_ai_repo` without separate schemas; built-in AST indexes provide code relationships | Provides symbols and cross-file links where the selected backend and language coverage support them. | Managed processes can reuse warm state; cold-start and query latency depend on the host and index state. | The eight-tool interface limits catalog size; token impact varies by client and is not a fixed per-turn saving. |
 | **Agent Operating System** (`local_ai_coord`) | Durable execution state, scoped KV memory, negative knowledge incidents, verification receipts, path leases | Surfaces prior decisions and verification receipts; callers still decide how to use them. | Restores persisted task and memory state when available, reducing repeated conversation discovery. | Context compilation applies the requested token budget; savings depend on selected state and a measured baseline. |
 | **Single-Flight Command Broker** (`local_ai_command`) | Deduplicated test/lint execution, SHA256 caching, ANSI removal, verification receipt generation | Reuses matching cached results and avoids duplicate identical concurrent work; validity depends on the cache key and repository revision. | A cache hit skips process execution; actual latency depends on broker, cache, and transport. | Omitted output may reduce context; avoided tokens depend on the command output and an explicit measured baseline. |
-| **Optional Local Inference** (`local_ai_task`) | Profile-aware tiers: integrated uses 0.5B preprocessing, 1.5B fast, 3B involved, 7B hard, and Qwen3-VL 4B vision; balanced uses 1.5B preprocessing, 3B fast, 7B ordinary/hard, and 9B extreme/vision through an already-configured local backend | **Advisory second opinion**: Local models review diffs and draft AST fixes without cloud context contamination; deterministic evidence remains authoritative. | **Local concurrency**: Local generation runs in parallel with cloud agent high-level planning. | **100% free (0 cloud tokens)**: Offloads routine microtasks, file summaries, and formatting repairs completely off cloud bills. |
-| **Whole-Task Delegation** (`local_ai_work`) | Autonomous closed-loop execution: local plan, transactional patch staging, rollback journal, verification | **Transactional safety**: Automatic rollback on test failure prevents partially broken codebase commits. | **Autonomous iteration**: Iterates through 10–30 test-fix cycles locally without internet or cloud rate limits. | **Massive savings (95%+)**: Compresses multi-turn cloud exchanges (50k–200k tokens, $1–$5) into a single <350 token handoff. |
-| **Hardware-Aware Scheduling & NPU Acceleration** | Automatic hardware profiling (`integrated` to `max`), Vulkan/CUDA offloading, Intel NPU OpenVINO retrieval | **Rock-solid stability**: Never crashes host system with OOMs; scheduler throttles background work gracefully. | **NPU/iGPU offload**: Frees primary CPU cores for IDE responsiveness and build tools while searching vectors. | **Zero cloud dependency**: Enables fast local semantic search and embeddings on standard laptops without paid APIs. |
+| **Optional Local Inference** (`local_ai_task`) | Configured profile routes and installed local models; see [model capabilities](docs/MODEL_CAPABILITIES.md). The 1.5B tier is preprocessing-only. | Local output is advisory; exact repository evidence and final decisions remain with the primary agent. | Local generation can overlap independent cloud planning, subject to admission and available hardware. | Local inference avoids a cloud generation call; tool requests, schemas and returned context still consume cloud tokens. Savings require a measured baseline. |
+| **Whole-Task Delegation** (`local_ai_work`) | Explicitly requested bounded work with transactional staging, journals and verification receipts | Mutation and recovery depend on ownership, write-set and fence validation; unknown cleanup is reported explicitly. | Iteration is bounded by the configured work budget and available backend. | A compact handoff can reduce repeated context; no fixed percentage or price saving is guaranteed. |
+| **Hardware-Aware Scheduling & NPU Acceleration** | Configured hardware profiles, admission controls and supported optional device backends | Resource limits and bounded recovery reduce allocation risk; OOM and backend failures remain possible and must be reported. | CPU, GPU and NPU performance depends on installed backends, models and measured workload. | Semantic processing can stay local where the selected backend is available; latency and avoided cloud tokens need cohort-specific evidence. |
 
 ## Installation & One-Command Setup
 
@@ -123,11 +123,11 @@ profile = "auto"
 auto_tune = true
 
 [models]
-background_code = "qwen2.5-coder:0.5b" # preprocessing only
-fast_code = "qwen2.5-coder:1.5b" # quick requests
-heavy_code = "qwen2.5-coder:3b" # more involved code tasks
-reasoning = "qwen2.5-coder:7b" # hard reasoning; balanced auto profile promotes extreme reasoning to qwen3.5:9b
-general = "qwen2.5-coder:3b" # ordinary requests
+background_code = "qwen2.5-coder:3b" # bounded background advisory tasks
+fast_code = "qwen2.5-coder:3b" # quick requests
+heavy_code = "qwen2.5-coder:7b" # involved code tasks
+reasoning = "qwen3.5:9b" # hardest reasoning, subject to installed inventory
+general = "qwen2.5-coder:7b" # ordinary requests
 
 [code_intelligence]
 enabled = true
