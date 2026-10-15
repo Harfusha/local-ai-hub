@@ -1078,7 +1078,7 @@ class LocalAIServices:
         elif semantic_query:
             semantic_query = normalize_query(semantic_query)
 
-        execution_scope = execution_profile.cache_scope()
+        execution_scope = {**execution_profile.cache_scope(), "stream_completion_contract": 2}
         norm_context_fp = stable_hash(normalize_context_for_hash(semantic_context_fingerprint)) if semantic_context_fingerprint else "no-context"
         cache_key = generation_cache_key(
             model=model,
@@ -1279,6 +1279,14 @@ class LocalAIServices:
                             mode_pause_result = mode_rejection
                             return mode_rejection
                         response = request_candidate()
+                    if response.get("outcome_unknown") or response.get("cleanup_unconfirmed") or response.get("_lah_partial_response"):
+                        return {"success": False, "error": response.get("error") or "model response was interrupted",
+                                "model": candidate_model, "terminal": True, "retryable": False,
+                                "_lah_partial_response": bool(response.get("_lah_partial_response")),
+                                "outcome_unknown": bool(response.get("outcome_unknown")),
+                                "cleanup_unconfirmed": bool(response.get("cleanup_unconfirmed")),
+                                "context_recovery": response.get("context_recovery"),
+                                "_lah_retry_count": int(response.get("_lah_retry_count", 0) or 0)}
                     if (cancel_event is not None and cancel_event.is_set()) or response.get("preempted") is True:
                         return cancelled_result()
                     if response.get("_lah_repetition_loop_detected"):
@@ -1319,6 +1327,10 @@ class LocalAIServices:
                             "retryable": retryable, "terminal": not retryable,
                             "error_code": "local_backend_transport" if retryable else "local_model_error",
                             "_lah_retry_count": int(response.get("_lah_retry_count", 0) or 0),
+                            "_lah_partial_response": bool(response.get("_lah_partial_response")),
+                            "outcome_unknown": bool(response.get("outcome_unknown")),
+                            "cleanup_unconfirmed": bool(response.get("cleanup_unconfirmed")),
+                            "context_recovery": response.get("context_recovery"),
                         }
                     raw_text = response.get("response", "")
                     clean_text, parsed_thinking = postprocess_model_output(raw_text, role=role)
@@ -1334,8 +1346,10 @@ class LocalAIServices:
                         "eval_duration_ns": response.get("eval_duration", 0), "total_duration_ns": response.get("total_duration", 0),
                         "_lah_retry_count": int(response.get("_lah_retry_count", 0) or 0),
                         "execution_profile": candidate_profile.cache_scope(),
+                        **({"context_recovery": response["context_recovery"]} if response.get("context_recovery") is not None else {}),
+                        "_lah_provider": response.get("_lah_provider", "ollama"),
                         "_lah_cache_origin": "ollama", "fallback_used": candidate_model != requested_model,
-                        "_cacheable": candidate_model == requested_model and bool(clean_text.strip()),
+                        "_cacheable": candidate_model == requested_model and bool(clean_text.strip()) and not response.get("context_recovery"),
                     }
 
                 try:
@@ -1381,6 +1395,15 @@ class LocalAIServices:
                         self.fallback_count += 1
                     record_attempt_failures(recovered=True)
                     return result
+                if result.get("_lah_partial_response") or result.get("outcome_unknown") or result.get("cleanup_unconfirmed"):
+                    self.breakers.failure(breaker_key)
+                    attempt_failures.append({"error": str(result.get("error", "model response interrupted")),
+                                             "error_type": "model_attempt_interrupted", "error_code": "model_attempt_interrupted",
+                                             "retryable": False})
+                    self.telemetry.record_stage(tenant=tenant, action=source, stage="model_attempt", model=candidate,
+                                                success=False, degraded=index > 0, error_type="model_attempt_interrupted")
+                    record_attempt_failures(recovered=False)
+                    return {**result, "terminal": True, "retryable": False, "_cacheable": False}
                 if result.get("preempted"):
                     preempted_error = True
                     errors.append(f"{candidate}: {result.get('error') or 'model request cancelled'}")
@@ -1402,7 +1425,7 @@ class LocalAIServices:
                     break
 
             # Same exact prompt may be served stale only as a resilience fallback.
-            if use_cache and bool(resilience.get("serve_stale_on_error", True)):
+            if use_cache and not preempted_error and not cancel_requested and not timeout_error and bool(resilience.get("serve_stale_on_error", True)):
                 stale = self.stale_generation_cache.get(cache_key)
                 if isinstance(stale, dict):
                     reused = copy.deepcopy(stale)
@@ -1446,7 +1469,7 @@ class LocalAIServices:
                     reused["_lah_semantic_similarity"] = semantic_score
                     return reused
                 result = compute_inner()
-                if isinstance(result, dict) and result.get("success", "error" not in result) and not result.get("fallback_used", False):
+                if isinstance(result, dict) and result.get("success", "error" not in result) and not result.get("fallback_used", False) and result.get("_cacheable", True) and not result.get("context_recovery"):
                     clean = {k: v for k, v in result.items() if not str(k).startswith("_lah_")}
                     try:
                         self.semantic_cache.set(semantic_scope, semantic_query, clean)
@@ -1478,7 +1501,7 @@ class LocalAIServices:
         else:
             cache_layer = "ollama"
 
-        if use_cache and isinstance(raw, dict) and raw.get("success", "error" not in raw) and origin != "stale" and not raw.get("fallback_used", False):
+        if use_cache and isinstance(raw, dict) and raw.get("success", "error" not in raw) and origin != "stale" and not raw.get("fallback_used", False) and not raw.get("context_recovery") and raw.get("final_response_produced", True):
             clean_stale = {k: v for k, v in raw.items() if not str(k).startswith("_lah_")}
             try:
                 self.stale_generation_cache.set(cache_key, clean_stale)

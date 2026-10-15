@@ -17,15 +17,18 @@ import ssl
 import threading
 import time
 from contextlib import contextmanager
+from contextvars import ContextVar
 from http.client import HTTPConnection, HTTPResponse
 from io import BytesIO
-from typing import Any
+from typing import Any, Iterator
 from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
 from urllib.request import Request, getproxies, proxy_bypass, urlopen
 from .json_utils import dumps as json_dumps
+from .llm_context_recovery import fit_recovered_context, memory_allocation_error
 
 _ORIGINAL_URLOPEN = urlopen
+_MODEL_LOAD_FAILED: ContextVar[bool] = ContextVar("llama_model_load_failed", default=False)
 
 
 def _response_socket(response: Any) -> Any | None:
@@ -561,8 +564,11 @@ def _loopback_url(value: Any) -> str:
 class LlamaCppRouter:
     """Translate mapped Ollama chat/generate calls to local OpenAI-compatible APIs."""
 
-    def __init__(self, config: dict[str, Any]):
+    def __init__(self, config: dict[str, Any], managed_runtime: Any | None = None):
         self.config = config
+        self.managed_runtime = managed_runtime
+        self._generation_lock = threading.RLock()
+        self._active_recoveries: dict[str, dict[str, Any]] = {}
         self.settings = config.get("llama_cpp", {}) if isinstance(config.get("llama_cpp", {}), dict) else {}
         self._health_lock = threading.Lock()
         self._health: dict[str, tuple[float, bool]] = {}
@@ -592,7 +598,51 @@ class LlamaCppRouter:
         url = _loopback_url(raw.get("url"))
         if not url:
             return None
-        return raw, url
+        return dict(self._valid_recovery_entry(str(model).strip()) or raw), url
+
+    def _valid_recovery_entry(self, model: str) -> dict[str, Any] | None:
+        configured_models = self.settings.get("models", {})
+        configured = configured_models.get(model) if isinstance(configured_models, dict) else None
+        if not isinstance(configured, dict):
+            return None
+        alias = str(configured.get("served_model") or model)
+        entry = self._active_recoveries.get(model)
+        if entry is not None and entry.get("recovery_original_alias") != alias:
+            return None
+        if entry is None:
+            entry = next((candidate for candidate in self._active_recoveries.copy().values()
+                          if candidate.get("recovery_original_alias") == alias), None)
+        if entry is None or self.managed_runtime is None:
+            return None
+        prepared = self.managed_runtime.recovery_entry(model)
+        if prepared is None or prepared.get("served_model") != entry.get("served_model"):
+            return None
+        return entry
+
+    def recovery_alias_for_model(self, model: str) -> str | None:
+        direct = self._valid_recovery_entry(model)
+        if direct is not None:
+            return str(direct["served_model"])
+        for logical, entry in self._active_recoveries.copy().items():
+            if model in {logical, entry.get("recovery_original_alias")} and self._valid_recovery_entry(logical) is not None:
+                return str(entry["served_model"])
+        return None
+
+    @contextmanager
+    def _managed_slot(self, deadline: float, should_stop: Any | None) -> Iterator[bool]:
+        if self.managed_runtime is None:
+            yield True
+            return
+        acquired = False
+        try:
+            while time.monotonic() < deadline and not _stop_requested(should_stop):
+                if self._generation_lock.acquire(timeout=min(0.05, max(0.001, deadline - time.monotonic()))):
+                    acquired = True
+                    break
+            yield acquired
+        finally:
+            if acquired:
+                self._generation_lock.release()
 
     def supports_model(self, model: str) -> bool:
         models = self.settings.get("models", {})
@@ -719,6 +769,16 @@ class LlamaCppRouter:
         return alias in self._model_info(url, should_stop=should_stop, deadline=deadline)
 
     def ensure_model(
+        self, model: str, timeout: float | None = None, should_stop: Any | None = None,
+        *, deadline: float | None = None,
+    ) -> bool:
+        limit = time.monotonic() + min(300.0, max(0.05, float(timeout if timeout is not None else 60.0)))
+        if deadline is not None:
+            limit = min(limit, float(deadline))
+        with self._managed_slot(limit, should_stop) as acquired:
+            return bool(acquired and self._ensure_model_once(model, timeout, should_stop, deadline=limit))
+
+    def _ensure_model_once(
         self,
         model: str,
         timeout: float | None = None,
@@ -772,6 +832,7 @@ class LlamaCppRouter:
                 with _open_interruptible_response(req, deadline, should_stop) as response, _cancel_response_on_stop(response, should_stop, deadline):
                     loaded = json.loads(_read_response_body(response, deadline, should_stop).decode("utf-8", errors="replace") or "{}")
                 if isinstance(loaded, dict) and loaded.get("success") is False:
+                    _MODEL_LOAD_FAILED.set(True)
                     return False
             except Exception:
                 return False
@@ -790,6 +851,7 @@ class LlamaCppRouter:
             if value == "loaded":
                 return True
             if current_status.get("failed"):
+                _MODEL_LOAD_FAILED.set(True)
                 return False
             time.sleep(min(0.25, remaining()))
         return False
@@ -811,7 +873,7 @@ class LlamaCppRouter:
                 continue
             selected = self._entry(str(model))
             if selected and self._healthy(selected[1], 0.6, should_stop=should_stop, deadline=deadline):
-                alias = str(entry.get("served_model") or model)
+                alias = str(selected[0].get("served_model") or model)
                 if alias in self._model_info(selected[1], should_stop=should_stop, deadline=deadline):
                     available.append(str(model))
         return available
@@ -887,9 +949,15 @@ class LlamaCppRouter:
                     if state not in {"loaded", "loading", "unloaded", "failed", "unavailable"}:
                         raise ValueError("llama.cpp model inventory omitted a usable load status")
                     if state in {"loaded", "loading"}:
+                        logical_name = served_id
+                        for logical, recovery in self._active_recoveries.copy().items():
+                            if recovery.get("served_model") == served_id and self._valid_recovery_entry(logical) is not None:
+                                logical_name = str(recovery.get("recovery_original_alias") or logical)
+                                break
                         active_rows.append({
-                            "name": served_id,
-                            "model": served_id,
+                            "name": logical_name,
+                            "model": logical_name,
+                            "served_model": served_id,
                             "status": state,
                             "parameter_size": "",
                             "quantization": "GGUF",
@@ -957,6 +1025,23 @@ class LlamaCppRouter:
         }
 
     def unload_model(
+        self, model: str, *, endpoint_url: str | None = None,
+        should_stop: Any | None = None, deadline: float | None = None,
+    ) -> bool:
+        limit = min(time.monotonic() + 5.0, float(deadline)) if deadline is not None else time.monotonic() + 5.0
+        with self._managed_slot(limit, should_stop) as acquired:
+            if not acquired:
+                return False
+            recovery_alias = self.recovery_alias_for_model(model)
+            stopped = self._unload_model_once(model, endpoint_url=endpoint_url, should_stop=should_stop, deadline=limit)
+            if stopped:
+                for logical, entry in list(self._active_recoveries.items()):
+                    if logical == model or entry.get("served_model") in {model, recovery_alias} or entry.get("recovery_original_alias") == model:
+                        self._active_recoveries.pop(logical, None)
+                self._models.pop("__loaded_details__", None)
+            return stopped
+
+    def _unload_model_once(
         self,
         model: str,
         *,
@@ -1086,7 +1171,94 @@ class LlamaCppRouter:
             })
         return calls
 
+    def _quiesce_for_recovery(self, model: str, url: str, deadline: float, should_stop: Any | None) -> bool:
+        try:
+            selected = self._entry(model)
+            if selected is None:
+                return False
+            alias = str(selected[0].get("served_model") or model)
+
+            def state() -> str:
+                rows = self._model_info(url, deadline=deadline, should_stop=should_stop, force_refresh=True, strict=True)
+                status = rows.get(alias, {}).get("status", {})
+                return str(status.get("value", "")).lower() if isinstance(status, dict) else ""
+
+            if state() in {"unloaded", "failed"}:
+                return True
+            if not self.unload_model(model, should_stop=should_stop, deadline=deadline):
+                return False
+            return state() in {"unloaded", "failed"}
+        except Exception:
+            return False
+
     def request_stream(
+        self, endpoint: str, payload: dict[str, Any] | None, on_chunk: Any,
+        timeout: float | None = None, should_stop: Any | None = None,
+        on_thinking: Any | None = None, deadline: float | None = None,
+    ) -> dict[str, Any] | None:
+        if endpoint not in {"/api/chat", "/api/generate"} or not isinstance(payload, dict):
+            return None
+        model = str(payload.get("model", "")).strip()
+        selected = self._entry(model)
+        if selected is None:
+            return None
+        limit = time.monotonic() + max(0.05, float(timeout if timeout is not None else self.config.get("server", {}).get("request_timeout_seconds", 300)))
+        if deadline is not None:
+            limit = min(limit, float(deadline))
+        token = _MODEL_LOAD_FAILED.set(False)
+        try:
+            with self._managed_slot(limit, should_stop) as acquired:
+                if not acquired:
+                    return {"success": False, "error": "llama.cpp generation admission cancelled or timed out",
+                            "preempted": _stop_requested(should_stop), "timed_out": time.monotonic() >= limit}
+                original_entry = self.settings.get("models", {}).get(model, {})
+                original_context = int(original_entry.get("context_length", 0) or 0)
+                active = self._valid_recovery_entry(model)
+                recovery = None
+                current_payload = payload
+                if active is not None:
+                    original_context = int(active.get("recovery_original_context", original_context))
+                    current_payload, recovery = fit_recovered_context(payload, original_context, int(active["context_length"]))
+                    if current_payload is None:
+                        return {"success": False, "error": "input does not fit recovered llama.cpp context", "context_recovery": recovery, "retryable": False}
+                result = self._request_stream_once(endpoint, current_payload, on_chunk, timeout,
+                                                   should_stop, on_thinking, limit)
+                if recovery is not None and isinstance(result, dict):
+                    result["context_recovery"] = recovery
+                if active is not None or self.managed_runtime is None or not isinstance(result, dict):
+                    return result
+                if result.get("_lah_partial_response") or any(result.get(key) for key in ("timed_out", "preempted", "cancelled", "outcome_unknown")):
+                    return result
+                if not (result.get("model_load_failed") or memory_allocation_error(result.get("error", ""))):
+                    return result
+                if time.monotonic() >= limit or _stop_requested(should_stop):
+                    return result
+                fallback = self.managed_runtime.recovery_entry(model)
+                if fallback is None:
+                    return result
+                original_context = int(fallback.get("recovery_original_context", original_context))
+                adjusted, recovery = fit_recovered_context(payload, original_context, int(fallback["context_length"]))
+                if adjusted is None:
+                    return {**result, "context_recovery": recovery, "retryable": False}
+                if not self._quiesce_for_recovery(model, selected[1], limit, should_stop):
+                    return {"success": False, "error": "llama.cpp recovery cannot confirm original model unload",
+                            "outcome_unknown": True, "cleanup_unconfirmed": True,
+                            "context_recovery": recovery, "terminal": True, "retryable": False}
+                self._active_recoveries[model] = fallback
+                self._models.pop(selected[1], None)
+                self._models.pop("__loaded_details__", None)
+                _MODEL_LOAD_FAILED.set(False)
+                retried = self._request_stream_once(endpoint, adjusted, on_chunk, timeout,
+                                                    should_stop, on_thinking, limit)
+                if isinstance(retried, dict):
+                    if retried.get("_lah_backend_unavailable") or retried.get("model_load_failed"):
+                        self._active_recoveries.pop(model, None)
+                    retried.update({"context_recovery": recovery, "_lah_retry_count": 1})
+                return retried
+        finally:
+            _MODEL_LOAD_FAILED.reset(token)
+
+    def _request_stream_once(
         self,
         endpoint: str,
         payload: dict[str, Any] | None,
@@ -1153,6 +1325,9 @@ class LlamaCppRouter:
                     "timed_out": True,
                     "_lah_provider": "llama.cpp-sycl",
                 }
+            if _MODEL_LOAD_FAILED.get():
+                return {"success": False, "error": "llama.cpp model load failed", "model_load_failed": True,
+                        "_lah_provider": "llama.cpp-sycl", "retryable": False}
             return {"_lah_backend_unavailable": "local llama.cpp SYCL server is not ready"}
         remaining = deadline - time.monotonic()
         if remaining <= 0:

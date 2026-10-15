@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 from .process_utils import hidden_run_kwargs, pid_alive, popen_managed, process_executable, terminate_tree
+from .llm_context_recovery import recovery_route
 
 LLAMA_VERSION = "b10964"
 MODEL_REVISION = "38f6bab61d341b23a6c00226f32c0d6148bf9f43"
@@ -95,6 +96,9 @@ class LlamaCppManagedRuntime:
         self._managed_process: subprocess.Popen[Any] | None = None
         self._retry_after = 0.0
         self._last_error = ""
+        self._recovery_routes: dict[str, dict[str, Any]] = {}
+        self._prepared_recovery_routes: dict[str, dict[str, Any]] = {}
+        self._recovery_process: subprocess.Popen[Any] | None = None
 
     @staticmethod
     def _host_platform() -> tuple[str, str]:
@@ -270,11 +274,11 @@ class LlamaCppManagedRuntime:
             for logical, entry in models.items():
                 if not isinstance(entry, dict):
                     continue
+                if "vl" in str(logical).lower():
+                    continue
                 url = urlsplit(str(entry.get("url", "")))
                 if url.hostname in {"localhost", "127.0.0.1", "::1"}:
                     port = int(url.port or (443 if url.scheme == "https" else 80))
-                if "vl" in str(logical).lower():
-                    continue
                 alias = str(entry.get("served_model", logical)).strip()
                 if alias and alias not in {item[0] for item in rows}:
                     rows.append((alias, str(logical)))
@@ -289,6 +293,8 @@ class LlamaCppManagedRuntime:
         sections = ["version = 1", "", "[*]", "n-gpu-layers = 99", "models-max = 1", ""]
         default_alias = aliases[0][0]
         configured = self.llama_config.get("models", {})
+        recoveries: dict[str, dict[str, Any]] = {}
+        alias_contexts: dict[str, int] = {}
         fast_model = str((self.config.get("models", {}) or {}).get("fast_code", "qwen2.5-coder:1.5b"))
         if isinstance(configured, dict) and isinstance(configured.get(fast_model), dict):
             default_alias = str(configured[fast_model].get("served_model", fast_model))
@@ -297,15 +303,52 @@ class LlamaCppManagedRuntime:
             raw_context = entry.get("context_length", 0) if isinstance(entry, dict) else 0
             try:
                 context_length = int(raw_context or 0)
-            except (TypeError, ValueError) as exc:
+            except (TypeError, ValueError, OverflowError) as exc:
                 raise ValueError(f"Invalid llama.cpp context_length for {logical}") from exc
-            if context_length < 0 or isinstance(raw_context, bool):
+            if context_length < 0 or isinstance(raw_context, bool) or (isinstance(raw_context, float) and not raw_context.is_integer()):
                 raise ValueError(f"Invalid llama.cpp context_length for {logical}")
+            alias_contexts[alias] = context_length
             sections.extend([f"[{alias}]", f'model = "{path_value}"', f'alias = "{alias}"', f"load-on-startup = {'true' if alias == default_alias else 'false'}"])
             if context_length:
                 sections.append(f"ctx-size = {context_length}")
             sections.append("")
+            fallback = recovery_route(logical, entry)
+            if fallback is not None:
+                fallback_alias = fallback["served_model"]
+                sections.extend([f"[{fallback_alias}]", f'model = "{path_value}"',
+                                 "load-on-startup = false", f"ctx-size = {fallback['context_length']}", ""])
+                recoveries[logical] = fallback
+        if isinstance(configured, dict):
+            for logical, entry in configured.items():
+                if not isinstance(entry, dict) or "vl" in str(logical).lower():
+                    continue
+                alias = str(entry.get("served_model", logical)).strip()
+                if alias not in alias_contexts:
+                    continue
+                try:
+                    declared = int(entry.get("context_length", 0) or 0)
+                except (TypeError, ValueError, OverflowError) as exc:
+                    raise ValueError(f"Invalid llama.cpp context_length for {logical}") from exc
+                raw_context = entry.get("context_length")
+                if isinstance(raw_context, bool) or (isinstance(raw_context, float) and not raw_context.is_integer()) or declared != alias_contexts[alias]:
+                    raise ValueError(f"Conflicting context_length for shared llama.cpp alias {alias}")
+                fallback = recovery_route(str(logical), entry)
+                if fallback is not None:
+                    recoveries[str(logical)] = fallback
         (self.runtime_dir / "hub.models.ini").write_text("\n".join(sections), encoding="utf-8")
+        self._recovery_routes = recoveries
+
+    def recovery_entry(self, model: str) -> dict[str, Any] | None:
+        process = self._managed_process
+        if process is None or process is not self._recovery_process or process.poll() is not None:
+            return None
+        entry = self._prepared_recovery_routes.get(model)
+        if entry is not None:
+            address = urlsplit(str(entry.get("url", "")))
+            managed_port, _url = self._port_and_url()
+            if address.scheme != "http" or address.hostname not in {"127.0.0.1", "localhost", "::1"} or (address.port or 80) != managed_port:
+                return None
+        return dict(entry) if entry is not None else None
 
     def _port_and_url(self) -> tuple[int, str]:
         port, _ = self._configured_routes()
@@ -459,6 +502,8 @@ class LlamaCppManagedRuntime:
                         return False
                 if proc is not None and self._ready(url, wait_seconds, proc):
                     self._managed_process = proc
+                    self._recovery_process = proc
+                    self._prepared_recovery_routes = dict(self._recovery_routes)
                     self.mode_path.write_text(device, encoding="utf-8")
                     self._last_error = ""
                     self._retry_after = 0.0

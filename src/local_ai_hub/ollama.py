@@ -22,6 +22,7 @@ _ORIGINAL_URLOPEN = urlopen
 from . import model_quality
 from .llama_cpp import LlamaCppRouter, _cancel_response_on_stop, _open_interruptible_response, _read_response_body, _set_response_timeout, _stop_requested
 from .llama_cpp_runtime import LlamaCppManagedRuntime, llama_cpp_backend_selection, llama_cpp_managed_selected
+from .llm_context_recovery import fit_recovered_context
 from .json_utils import dumps as json_dumps
 
 
@@ -37,7 +38,6 @@ def _oom_context_request(payload: dict[str, Any], default_context: int) -> tuple
     options = dict(raw_options or {})
     try:
         original = int(options.get("num_ctx", default_context))
-        predicted = int(options.get("num_predict", 256))
     except (TypeError, ValueError, OverflowError):
         return None, {"reason": "invalid_context_options"}
     reduced = original // 2
@@ -45,18 +45,17 @@ def _oom_context_request(payload: dict[str, Any], default_context: int) -> tuple
                 "input_truncated": False, "device_changed": False}
     if reduced < 1024:
         return None, {**metadata, "reason": "context_floor"}
-    input_values = {key: payload[key] for key in ("prompt", "system", "messages", "images", "suffix") if key in payload}
-    input_bytes = len(json_dumps(input_values, ensure_ascii=False).encode("utf-8"))
-    reserve = max(256, predicted if predicted > 0 else 1024) + 256
-    if input_bytes + reserve > reduced:
-        return None, {**metadata, "reason": "retained_input_exceeds_reduced_budget",
-                      "input_budget_basis": "serialized_utf8_bytes_plus_generation_reserve"}
-    options["num_ctx"] = reduced
-    return {**payload, "options": options}, {**metadata, "reason": "oom_context_halved"}
+    adjusted, recovery = fit_recovered_context(payload, original, reduced)
+    if recovery.get("reason") == "native_preset_context_halved":
+        recovery["reason"] = "oom_context_halved"
+    return adjusted, recovery
 
 
 def _read_http_error_body(error: HTTPError) -> str:
-    raw = error.read(_HTTP_ERROR_BODY_LIMIT + 1)
+    try:
+        raw = error.read(_HTTP_ERROR_BODY_LIMIT + 1)
+    finally:
+        error.close()
     truncated = len(raw) > _HTTP_ERROR_BODY_LIMIT
     body = raw[:_HTTP_ERROR_BODY_LIMIT].decode("utf-8", errors="replace")
     return body + ("\n...[truncated]" if truncated else "")
@@ -255,8 +254,10 @@ class OllamaRuntime:
         self._managed_owner: dict[str, Any] | None = None
         self._managed_process: subprocess.Popen[Any] | None = None
         self.model_policy = ModelExecutionPolicy(config)
-        self.llama_cpp = LlamaCppRouter(config)
         self.llama_cpp_managed = LlamaCppManagedRuntime(config)
+        self.llama_cpp = LlamaCppRouter(config, managed_runtime=(
+            self.llama_cpp_managed if llama_cpp_managed_selected(config) else None
+        ))
         self._meta_cache: dict[str, Any] = {}
         self._meta_cache_at: dict[str, float] = {}
         self._ensure_lock = threading.Lock()
@@ -448,6 +449,45 @@ class OllamaRuntime:
         return {"error": last_error, "_lah_retry_count": max(0, attempts_used - 1), "timed_out": time.monotonic() >= request_deadline, "_lah_provider": "ollama"}
 
     def request_stream(
+        self, endpoint: str, payload: dict[str, Any] | None, on_chunk: Any,
+        timeout: float | None = None, *, on_thinking: Any | None = None,
+        should_stop: Any | None = None, deadline: float | None = None,
+    ) -> dict[str, Any]:
+        return self._request_stream_tracked(endpoint, payload, on_chunk, timeout,
+                                            on_thinking=on_thinking, should_stop=should_stop, deadline=deadline)
+
+    def _request_stream_tracked(
+        self, endpoint: str, payload: dict[str, Any] | None, on_chunk: Any,
+        timeout: float | None = None, *, on_thinking: Any | None = None,
+        should_stop: Any | None = None, deadline: float | None = None,
+        single_attempt: bool = False,
+    ) -> dict[str, Any]:
+        emitted = False
+
+        def forward(text: str) -> None:
+            nonlocal emitted
+            emitted = emitted or bool(text)
+            if callable(on_chunk):
+                on_chunk(text)
+
+        def forward_thinking(text: str) -> None:
+            nonlocal emitted
+            emitted = emitted or bool(text)
+            if callable(on_thinking):
+                on_thinking(text)
+
+        try:
+            result = self._request_stream_impl(endpoint, payload, forward, timeout,
+                                               on_thinking=forward_thinking, should_stop=should_stop, deadline=deadline,
+                                               single_attempt=single_attempt)
+        except Exception as exc:
+            return {"success": False, "error": f"{type(exc).__name__}: {exc}",
+                    "_lah_partial_response": emitted, "terminal": True, "retryable": False}
+        if emitted and "error" in result:
+            return {**result, "_lah_partial_response": True}
+        return result
+
+    def _request_stream_impl(
         self,
         endpoint: str,
         payload: dict[str, Any] | None,
@@ -457,6 +497,7 @@ class OllamaRuntime:
         on_thinking: Any | None = None,
         should_stop: Any | None = None,
         deadline: float | None = None,
+        single_attempt: bool = False,
     ) -> dict[str, Any]:
         started = time.monotonic()
         timeout_budget = max(0.05, float(timeout if timeout is not None else self.timeout))
@@ -510,13 +551,14 @@ class OllamaRuntime:
         clean["stream"] = True
         body = json_dumps(clean).encode("utf-8")
         headers = {"Content-Type": "application/json"}
-        attempts = max(1, int(self.config.get("ollama", {}).get("request_attempts", 2)))
+        attempts = 1 if single_attempt else max(1, int(self.config.get("ollama", {}).get("request_attempts", 2)))
         retry_delay = max(0.0, float(self.config.get("ollama", {}).get("retry_delay_seconds", 0.6)))
         deadline = request_deadline
         last_error = "unknown Ollama error"
         timed_out = False
         context_recovery: dict[str, Any] | None = None
-        for attempt in range(1, attempts + 1):
+        allowed_attempts = attempts
+        for attempt in range(1, attempts + 2):
             remaining = request_deadline - time.monotonic()
             if remaining <= 0:
                 timed_out = True
@@ -589,9 +631,11 @@ class OllamaRuntime:
                         try:
                             chunk = json.loads(raw_text)
                         except json.JSONDecodeError:
-                            continue
+                            last_error, stream_error = "Ollama returned malformed stream JSON", True
+                            break
                         if not isinstance(chunk, dict):
-                            continue
+                            last_error, stream_error = "Ollama returned a non-object stream event", True
+                            break
                         if chunk.get("error"):
                             last_error = str(chunk["error"])
                             stream_error = True
@@ -656,13 +700,17 @@ class OllamaRuntime:
                     final["message"] = message
                 if thinking_parts:
                     final["thinking"] = "".join(thinking_parts)
-                if final and not final.get("error") and not stream_error:
+                if final.get("done") is True and not final.get("error") and not stream_error:
                     final["_lah_retry_count"] = max(0, attempt - 1)
                     if context_recovery is not None:
                         final["context_recovery"] = context_recovery
                     if backend_fallback:
                         final["_lah_backend_fallback"] = backend_fallback
                     return final
+                if not stream_error:
+                    return {"error": "Ollama stream ended before a completion marker", "incomplete_stream": True,
+                            "retryable": False, "_lah_partial_response": bool(generated or chat or thinking_parts),
+                            "_lah_retry_count": max(0, attempt - 1)}
             except HTTPError as exc:
                 raw = _read_http_error_body(exc)
                 last_error = f"HTTP {exc.code}: {raw}"
@@ -704,7 +752,7 @@ class OllamaRuntime:
                 "out of memory", "not enough memory", "insufficient memory", "failed to allocate",
             ))
             if memory_error:
-                if context_recovery is not None or attempt >= attempts:
+                if context_recovery is not None:
                     break
                 model = str(clean.get("model", ""))
                 try:
@@ -718,8 +766,11 @@ class OllamaRuntime:
                     break
                 clean = adjusted
                 body = json_dumps(clean).encode("utf-8")
+                allowed_attempts = max(attempts, attempt + 1)
+            if attempt >= allowed_attempts:
+                break
             remaining = request_deadline - time.monotonic()
-            if attempt < attempts and remaining > 0 and retry_delay:
+            if attempt < allowed_attempts and remaining > 0 and retry_delay:
                 time.sleep(min(retry_delay, remaining))
         return {"error": last_error, "_lah_retry_count": max(0, attempt - 1),
                 "timed_out": timed_out or time.monotonic() >= deadline,
@@ -1434,181 +1485,18 @@ class OllamaRuntime:
         }
 
     def request_interruptible(
-        self,
-        endpoint: str,
-        payload: dict[str, Any] | None,
-        should_stop: Any,
-        *,
-        timeout: float | None = None,
-        deadline: float | None = None,
+        self, endpoint: str, payload: dict[str, Any] | None, should_stop: Any,
+        *, timeout: float | None = None, deadline: float | None = None,
     ) -> dict[str, Any]:
-        """Execute an Ollama streaming request that can yield to foreground work.
+        """Use shared streaming with one generic attempt and bounded OOM recovery.
 
-        Background preprocessing uses Ollama's NDJSON streaming mode so it can inspect
-        cancellation between chunks. The dedicated background server is also killed by
-        the foreground preemption hook, which interrupts a blocking socket read even
-        before the next token arrives. This method intentionally does not retry: once a
-        background request is cancelled or its server is recycled, retry belongs to the
-        durable preprocessing scheduler rather than this network call.
+        Cancellation, partial output and transport failures are never replayed here.
+        A confirmed pre-output allocation failure may use the single reduced-context
+        attempt within the original deadline, as on the foreground streaming path.
         """
-        try:
-            if bool(should_stop()):
-                return {"success": False, "preempted": True, "error": "background request preempted before start"}
-        except Exception:
-            pass
-
-        started = time.monotonic()
-        timeout_budget = max(0.05, float(timeout if timeout is not None else self.timeout))
-        request_deadline = started + timeout_budget
-        if deadline is not None:
-            request_deadline = min(request_deadline, float(deadline))
-        total_timeout = max(0.0, request_deadline - started)
-        remaining = request_deadline - time.monotonic()
-        if remaining <= 0:
-            return {"error": "Ollama request deadline expired", "timed_out": True, "_lah_provider": "ollama"}
-
-        llama_router = getattr(self, "llama_cpp", None)
-        llama_selected = not bool(self.config.get("ollama", {}).get("enabled", False))
-        llama_result = (
-            llama_router.request_stream(
-                endpoint, payload, lambda _chunk: None, timeout=remaining, should_stop=should_stop,
-                deadline=request_deadline,
-            )
-            if llama_selected and llama_router is not None else None
-        )
-        if not (isinstance(llama_result, dict) and (llama_result.get("preempted") or llama_result.get("timed_out"))):
-            if _stop_requested(should_stop):
-                return {"success": False, "preempted": True, "error": "background request preempted before backend fallback", "_lah_provider": "llama.cpp" if llama_selected else "ollama"}
-            if time.monotonic() >= request_deadline:
-                return {"error": "Ollama request deadline expired before backend fallback", "timed_out": True, "_lah_provider": "llama.cpp" if llama_selected else "ollama"}
-        if llama_result is not None:
-            if "_lah_backend_unavailable" not in llama_result:
-                if llama_cpp_managed_selected(self.config):
-                    device = str(self.llama_cpp_managed.status().get("mode", ""))
-                    llama_result["_lah_provider"] = "llama.cpp-cpu" if device == "none" else "llama.cpp-sycl" if device else "llama.cpp"
-                return llama_result
-            if llama_selected:
-                if _stop_requested(should_stop):
-                    return {"success": False, "preempted": True, "error": "background request preempted while llama.cpp was unavailable", "_lah_provider": "llama.cpp"}
-                if time.monotonic() >= request_deadline:
-                    return {"error": "Ollama request deadline expired while llama.cpp was unavailable", "timed_out": True, "_lah_provider": "llama.cpp"}
-                return {"error": f"llama.cpp unavailable: {llama_result['_lah_backend_unavailable']}", "_lah_provider": "llama.cpp"}
-        elif llama_selected:
-            if _stop_requested(should_stop):
-                return {"success": False, "preempted": True, "error": "background request preempted while llama.cpp route was unavailable", "_lah_provider": "llama.cpp"}
-            if time.monotonic() >= request_deadline:
-                return {"error": "Ollama request deadline expired while llama.cpp route was unavailable", "timed_out": True, "_lah_provider": "llama.cpp"}
-            return {"error": "Selected llama.cpp route is unavailable for this model", "_lah_provider": "llama.cpp"}
-
-        clean = _normalise_keep_alive(payload) or {}
-        clean = dict(clean)
-        clean.setdefault("stream", True)
-        body = json_dumps(clean).encode("utf-8")
-        req = Request(f"{self.base_url}{endpoint}", data=body, headers={"Content-Type": "application/json"})
-        deadline = request_deadline
-        text_parts: list[str] = []
-        message_parts: list[str] = []
-        final: dict[str, Any] = {}
-        watchdog = RepetitionWatchdog(max_repeat=3)
-        try:
-            if _stop_requested(should_stop):
-                return {"success": False, "preempted": True, "error": "background request preempted before Ollama request", "_lah_provider": "ollama"}
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return {"error": f"Ollama request timed out after {total_timeout:g}s", "timed_out": True}
-            with _open_interruptible_response(req, deadline, should_stop) as response, _cancel_response_on_stop(response, should_stop, deadline):
-                response_lines = iter(response)
-                while True:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        return {"error": f"Ollama request timed out after {total_timeout:g}s", "timed_out": True}
-                    if _stop_requested(should_stop):
-                        return {"success": False, "preempted": True, "error": "background request preempted by foreground work", "_lah_provider": "ollama"}
-                    _set_response_timeout(response, remaining)
-                    try:
-                        raw_line = next(response_lines)
-                    except StopIteration:
-                        break
-                    except socket.timeout:
-                        if _stop_requested(should_stop):
-                            return {"success": False, "preempted": True, "error": "background request preempted by foreground work", "_lah_provider": "ollama"}
-                        return {"error": f"Ollama request timed out after {total_timeout:g}s", "timed_out": True}
-                    if time.monotonic() >= deadline:
-                        return {"error": f"Ollama request timed out after {total_timeout:g}s", "timed_out": True}
-                    if _stop_requested(should_stop):
-                        return {"success": False, "preempted": True, "error": "background request preempted by foreground work", "_lah_provider": "ollama"}
-                    raw_line = raw_line.strip()
-                    if not raw_line:
-                        continue
-                    try:
-                        chunk = json.loads(raw_line.decode("utf-8", errors="replace"))
-                    except json.JSONDecodeError:
-                        continue
-                    if not isinstance(chunk, dict):
-                        continue
-                    if chunk.get("error"):
-                        return {"error": str(chunk.get("error"))}
-                    token = chunk.get("response")
-                    if token is not None:
-                        text = str(token)
-                        text_parts.append(text)
-                        if watchdog.push(text):
-                            final["_lah_repetition_loop_detected"] = True
-                            break
-                    message = chunk.get("message")
-                    if isinstance(message, dict) and message.get("content") is not None:
-                        text = str(message.get("content"))
-                        message_parts.append(text)
-                        if watchdog.push(text):
-                            final["_lah_repetition_loop_detected"] = True
-                            break
-                    final.update(chunk)
-                    if chunk.get("done") is True:
-                        break
-        except HTTPError as exc:
-            raw = _read_http_error_body(exc)
-            return {"error": f"HTTP {exc.code}: {raw}"}
-        except URLError as exc:
-            if _stop_requested(should_stop):
-                return {"success": False, "preempted": True, "error": "background request preempted by foreground work", "_lah_provider": "ollama"}
-            reason = getattr(exc, "reason", None)
-            if isinstance(reason, (socket.timeout, TimeoutError)):
-                return {"error": f"Ollama request timed out: {reason}", "timed_out": True}
-            return {"error": f"Ollama unavailable: {exc.reason}"}
-        except (socket.timeout, TimeoutError) as exc:
-            if _stop_requested(should_stop):
-                return {"success": False, "preempted": True, "error": "background request preempted by foreground work", "_lah_provider": "ollama"}
-            if time.monotonic() >= deadline:
-                return {"error": f"Ollama request timed out after {total_timeout:g}s", "timed_out": True}
-            return {"error": f"Ollama request timed out: {exc}", "timed_out": True}
-        except Exception as exc:
-            if _stop_requested(should_stop):
-                return {"success": False, "preempted": True, "error": "background request preempted by foreground work", "_lah_provider": "ollama"}
-            if time.monotonic() >= deadline:
-                return {"error": f"Ollama request timed out after {total_timeout:g}s", "timed_out": True}
-            return {"error": f"{type(exc).__name__}: {exc}"}
-
-        if watchdog.loop_detected:
-            return {
-                "error": "model output repetition loop detected",
-                "_lah_repetition_loop_detected": True,
-                "_lah_retry_count": 0,
-                "model": str(clean.get("model", "")),
-            }
-        if text_parts:
-            resp_text = "".join(text_parts)
-            if watchdog.loop_detected:
-                resp_text = watchdog.trim_trailing_loop(resp_text)
-            final["response"] = resp_text
-        if message_parts:
-            message = dict(final.get("message") or {})
-            chat_text = "".join(message_parts)
-            if watchdog.loop_detected:
-                chat_text = watchdog.trim_trailing_loop(chat_text)
-            message["content"] = chat_text
-            final["message"] = message
-        final["_lah_retry_count"] = 0
-        return final
+        return self._request_stream_tracked(endpoint, payload, None, timeout,
+                                            should_stop=should_stop, deadline=deadline,
+                                            single_attempt=True)
 
     def is_online(self) -> bool:
         now = time.monotonic()
@@ -2361,7 +2249,12 @@ class OllamaRuntime:
             return ok
         endpoint_url = str(row.get("endpoint_id") or row.get("endpoint_url") or "").strip()
         if backend == "llama.cpp-sycl" and endpoint_url:
-            return bool(self.llama_cpp.unload_model(name, endpoint_url=endpoint_url, should_stop=should_stop, deadline=deadline))
+            served = str(row.get("served_model") or name).strip()
+            if served != name:
+                resolve = getattr(self.llama_cpp, "recovery_alias_for_model", None)
+                if not callable(resolve) or resolve(name) != served:
+                    return False
+            return bool(self.llama_cpp.unload_model(served, endpoint_url=endpoint_url, should_stop=should_stop, deadline=deadline))
         return False
 
     def unload_configured_models(
