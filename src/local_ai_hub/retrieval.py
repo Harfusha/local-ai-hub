@@ -11,20 +11,38 @@ _SOURCE_QUERY = re.compile(
     r"trace|function|symbol|definition|defined|behavior|code)\b",
     re.IGNORECASE,
 )
-_DOCUMENT_QUERY = re.compile(
+_DOCUMENT_OBJECT = re.compile(
     r"\b(?:docs?|documentation|readme|guides?|manuals?|reference|prompts?|coverage|plans?|roadmap)\b",
     re.IGNORECASE,
+)
+_DOCUMENT_ACTION = re.compile(
+    r"\b(?:update|edit|write|create|draft|rewrite|explain|summari[sz]e|describe|review|find|show|open|read|document)\b",
+    re.IGNORECASE,
+)
+_DOCUMENT_PATH = re.compile(r"(?:^|\s)[\w./\\-]+\.(?:md|rst|adoc)(?:$|\s)", re.IGNORECASE)
+_SOURCE_ACTION = re.compile(
+    r"\b(?:implement\w*|fix|debug|diagnos\w*|trace|audit|refactor)\b", re.IGNORECASE,
 )
 _SOURCE_SUFFIXES = {
     ".py", ".pyi", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".go",
     ".rs", ".java", ".cs", ".cpp", ".cc", ".c", ".h", ".hpp", ".sql",
 }
+_CONFIG_SUFFIXES = {".toml", ".yaml", ".yml", ".json"}
 
 
 def is_source_context_query(query: str) -> bool:
-    """Recognize narrow source-work requests without changing doc-query behavior."""
+    """Recognize source work while reserving clear documentation requests."""
     text = str(query or "")
-    return bool(_SOURCE_QUERY.search(text)) and not bool(_DOCUMENT_QUERY.search(text))
+    if not _SOURCE_QUERY.search(text):
+        return False
+    mentions_document = bool(_DOCUMENT_OBJECT.search(text) or _DOCUMENT_PATH.search(text))
+    explicit_document_task = (
+        mentions_document
+        and bool(_DOCUMENT_ACTION.search(text))
+        and not bool(_SOURCE_ACTION.search(text))
+    )
+    path_only_document_query = bool(_DOCUMENT_PATH.search(text)) and len(text.split()) <= 3
+    return not (explicit_document_task or path_only_document_query)
 
 
 def source_context_path_tier(path: str) -> int:
@@ -40,6 +58,20 @@ def source_context_path_tier(path: str) -> int:
         return 2
     suffix = "." + name.rsplit(".", 1)[-1] if "." in name else ""
     if suffix in _SOURCE_SUFFIXES:
+        return 0
+    runtime_config = (
+        suffix in _CONFIG_SUFFIXES
+        and (
+            (parts and parts[0] in {"config", "configs"})
+            or (len(parts) == 1 and name in {
+                "config.toml", "config.yaml", "config.yml", "config.json",
+                ".gitlab-ci.yml", "azure-pipelines.yml",
+            })
+            or parts[:2] == [".github", "workflows"]
+            or parts[:2] == [".circleci", "config.yml"]
+        )
+    )
+    if runtime_config:
         return 0
     return 1
 
