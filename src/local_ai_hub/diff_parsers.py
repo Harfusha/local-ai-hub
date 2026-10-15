@@ -31,16 +31,18 @@ def extract_py_diff_defs(lines: list[str]) -> dict[str, dict[str, Any]]:
                 stmt += " " + _clean_line(lines[i])
                 paren_count = stmt.count("(") - stmt.count(")")
             try:
-                to_parse = stmt
-                if not to_parse.endswith(":"):
-                    to_parse += ":"
-                to_parse += "\n    pass"
-                tree = ast.parse(to_parse)
+                try:
+                    tree = ast.parse(stmt)
+                except SyntaxError:
+                    # Bare definition headers need a synthetic body. Parsing the
+                    # original first preserves valid one-line function/class bodies.
+                    body_suffix = "\n    pass" if stmt.rstrip().endswith(":") else ":\n    pass"
+                    tree = ast.parse(stmt + body_suffix)
                 for node in tree.body:
                     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                         if node.name.startswith("_") and node.name not in ("__init__", "__call__", "__getitem__", "__enter__", "__exit__"):
                             continue
-                        pos_args = [a.arg for a in node.args.args]
+                        pos_args = [a.arg for a in (*node.args.posonlyargs, *node.args.args)]
                         clean_args = [a for a in pos_args if a not in ("self", "cls")]
                         defaults_count = len(node.args.defaults)
                         req_total = len(pos_args) - defaults_count
