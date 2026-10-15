@@ -1400,6 +1400,7 @@ _AGENT_TASK_ACTIONS = frozenset({
     "cleanup_worktree", "reap_expired", "curate_dataset",
 })
 _AGENT_VERIFICATION_ACTIONS = frozenset({"receipt", "completion", "export"})
+_AGENT_BLACKBOARD_RETIRED_FIELDS = frozenset({"key", "value", "approver", "sections", "record"})
 
 
 def _agent_action_selector(payload: Mapping[str, Any], default: str | None = None) -> str | None:
@@ -2730,6 +2731,16 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def _bind_task_board_payload(self, payload: dict[str, Any]) -> bool:
+        retired_fields = sorted(_AGENT_BLACKBOARD_RETIRED_FIELDS.intersection(payload))
+        if retired_fields:
+            fields = ", ".join(retired_fields)
+            self._send(400, {
+                "success": False,
+                "error": f"unsupported blackboard field(s): {fields}",
+                "terminal": True,
+                "retryable": False,
+            })
+            return False
         action = self._agent_action_or_error(payload, "get")
         if action is None:
             return False
@@ -2744,7 +2755,7 @@ class Handler(BaseHTTPRequestHandler):
         task_id = str(payload.get("task_id", "") or "").strip()
         if self._require_scoped_task(task_id) is None:
             return False
-        board_id = str(payload.get("board_id") or payload.get("key") or task_id).strip()
+        board_id = str(payload.get("board_id", task_id)).strip()
         if not self._task_board_id_allowed(board_id, task_id):
             self._send(403, {"success": False, "error": "blackboard access requires task-owned board id", "terminal": True, "retryable": False})
             return False
@@ -3384,6 +3395,12 @@ class Handler(BaseHTTPRequestHandler):
                 raise RequestBodyError("unknown task action")
             if path == "/api/agent-state/verification" and action not in _AGENT_VERIFICATION_ACTIONS:
                 raise RequestBodyError("unknown verification action")
+
+        if path == "/api/agent-state/blackboard":
+            retired_fields = sorted(_AGENT_BLACKBOARD_RETIRED_FIELDS.intersection(payload))
+            if retired_fields:
+                fields = ", ".join(retired_fields)
+                raise RequestBodyError(f"unsupported blackboard field(s): {fields}")
 
         if path == "/api/embed":
             values = payload.get("texts", payload.get("input", []))
@@ -7412,11 +7429,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not getattr(APP, "agent_blackboard", None):
                     self._send(503, {"success": False, "error": "blackboard unavailable"}); return
                 action = payload.get("action", "get")
-                board_id = str(payload.get("board_id", payload.get("task_id", payload.get("key", "default"))))
+                board_id = str(payload.get("board_id", payload.get("task_id", "default")))
                 if action == "update":
-                    section = str(payload.get("section", payload.get("key", "main")))
-                    content = payload.get("content", payload.get("value"))
-                    author = str(payload.get("author", payload.get("approver", tenant or "agent")))
+                    section = str(payload.get("section", "main"))
+                    content = payload.get("content")
+                    author = str(payload.get("author", tenant or "agent"))
                     clock = payload.get("clock")
                     exp_v = payload.get("expected_version")
                     exp_v_int = int(exp_v) if exp_v is not None else None
@@ -7430,7 +7447,7 @@ class Handler(BaseHTTPRequestHandler):
                     boards = APP.agent_blackboard.list_boards()
                     self._send(200, {"success": True, "boards": boards, "count": len(boards)}); return
                 if action == "merge":
-                    remote = payload.get("remote_sections", payload.get("sections", payload.get("record", {})))
+                    remote = payload.get("remote_sections", {})
                     res = APP.agent_blackboard.merge(board_id, remote)
                     self._send(200, res); return
                 if action == "delete":
