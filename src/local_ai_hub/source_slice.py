@@ -66,10 +66,12 @@ def read_source_slice(
         current_target.relative_to(root)
         current = current_target.stat()
         identity = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+        same_file_identity = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns)
         if (
             current_target != target
             or identity(path_before) != identity(current)
             or identity(before) != identity(after)
+            or same_file_identity(path_before) != same_file_identity(before)
         ):
             return failure("source changed while reading; slice not returned")
         if b"\x00" in data:
