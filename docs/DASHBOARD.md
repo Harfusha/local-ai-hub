@@ -10,6 +10,12 @@ Command execution uses the same fail-closed broker as agents. The dashboard cann
 
 Operational telemetry is metadata-only; repository/model payloads are not written to telemetry.
 
+The metrics period selector applies to the overview: since restart or the last 30 days. Missing or stale telemetry displays `Unavailable`; dropped records and writer errors mark estimates incomplete and raise the operational health warning. An observed zero remains a zero, with `No accounted calls yet` when no tool-accounting evidence exists. Small USD estimates retain four decimal places. Open **How token savings are estimated** for baseline sources, protocol cost, schema exposure, local compute reuse, pricing rates and writer health. Process-session history uses the same signed tool-accounting delta as the overview, rather than local inference context reduction.
+
+The dark layout shares readable typography, consistent controls, visible keyboard focus and responsive cards. Configuration controls stay disabled until the current settings load; failed loading leaves saving disabled and allows a reload.
+
+Status metadata refreshes in the background before its 15-second validity window expires, so the 30-day telemetry aggregation can exceed the short per-probe deadline without blanking every subsequent poll. Expired results remain unavailable. Project inventory failures are shown explicitly, bulk controls stay disabled until status recovers, and project counts are displayed separately from concurrent preprocessing capacity.
+
 If another request is building the first status snapshot, the overview shows `warming`, keeps prior rendered status when available, and retries through its bounded poll backoff.
 
 ## Agent debug traces

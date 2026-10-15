@@ -111,7 +111,7 @@ def _online_probe_status(value: Any, healthy: bool) -> str:
     return "online" if bool(value) else "offline"
 
 
-_STATUS_METADATA_CACHE_SECONDS = 5.0
+_STATUS_METADATA_CACHE_SECONDS = 15.0
 _STATUS_METADATA_KEYS = frozenset(
     f"{view}:{scope}:{name}"
     for view in ("live", "full") for scope in ("process", "window")
@@ -133,6 +133,8 @@ def _schedule_status_dependency(callback, fallback, *, key, lock, inflight, slot
             diagnostic["error_type"] = type(error).__name__
 
     submitted = None
+    refresh_entry = None
+    refresh_age = 0.0
     remaining = deadline - time.monotonic()
     if remaining <= 0:
         mark_degraded("deadline_exhausted")
@@ -145,13 +147,22 @@ def _schedule_status_dependency(callback, fallback, *, key, lock, inflight, slot
         if cached is not None:
             age = max(0.0, time.monotonic() - cached["completed_at"])
             if age < _STATUS_METADATA_CACHE_SECONDS:
-                if diagnostic is not None:
-                    diagnostic.update(dependency_cached=True, dependency_age_ms=int(age * 1000))
-                return {"entry": cached, "fallback": fallback}
-            del completed_cache[key]
+                if age < _STATUS_METADATA_CACHE_SECONDS / 3:
+                    if diagnostic is not None:
+                        diagnostic.update(dependency_cached=True, dependency_age_ms=int(age * 1000))
+                    return {"entry": cached, "fallback": fallback}
+                # Refresh inside the validity window. A report slower than the
+                # per-probe deadline must not make every dashboard poll fail.
+                refresh_entry, refresh_age = cached, age
+            else:
+                del completed_cache[key]
         entry = inflight.get(key)
         if entry is None:
             if not slots.acquire(blocking=False):
+                if refresh_entry is not None:
+                    if diagnostic is not None:
+                        diagnostic.update(dependency_cached=True, dependency_age_ms=int(refresh_age * 1000), dependency_refreshing=False)
+                    return {"entry": refresh_entry, "fallback": fallback}
                 mark_degraded("worker_capacity_exhausted")
                 return {"fallback": fallback, "healthy": False}
             entry = {"completed": threading.Event(), "outcome": {}}
@@ -199,6 +210,10 @@ def _schedule_status_dependency(callback, fallback, *, key, lock, inflight, slot
                 entry["completed"].set()
 
         submitted.add_done_callback(submission_finished)
+    if refresh_entry is not None:
+        if diagnostic is not None:
+            diagnostic.update(dependency_cached=True, dependency_age_ms=int(refresh_age * 1000), dependency_refreshing=True)
+        return {"entry": refresh_entry, "fallback": fallback}
     return {"entry": entry, "fallback": fallback}
 
 

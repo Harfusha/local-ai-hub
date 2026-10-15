@@ -515,6 +515,10 @@ class TelemetryStore:
         if not self.path.exists():
             return
         declarations = {
+            "root": "TEXT NOT NULL DEFAULT ''",
+            "db_wait_ms": "REAL NOT NULL DEFAULT 0",
+            "exec_ms": "REAL NOT NULL DEFAULT 0",
+            "serialization_ms": "REAL NOT NULL DEFAULT 0",
             "queue_age_ms": "REAL NOT NULL DEFAULT 0",
             "bypass_reason": "TEXT NOT NULL DEFAULT ''",
             "terminal": "INTEGER NOT NULL DEFAULT -1",
@@ -741,6 +745,10 @@ class TelemetryStore:
         # Route labels are safe only when exact-listed, regardless of event kind.
         # This keeps useful action labels in tool-result events without exposing IDs.
         preserve_route = True
+        # Error categories are composed sanitized labels, not MCP selectors.
+        # Continue redacting paths/secrets without treating component:operation
+        # (for example inference:generate) as an unknown tool route.
+        preserve_action_route = not (event_type == "error" and ":" in str(event.get("action", "")))
         safe_root = ""
         if event.get("root"):
             raw_root = str(event["root"]).replace("\\", "/").rstrip("/")
@@ -752,7 +760,7 @@ class TelemetryStore:
             "agent": _safe_metadata(event.get("agent", ""), 80),
             "request_id": _safe_metadata(event.get("request_id", ""), 96),
             "trace_id": _safe_metadata(event.get("trace_id", ""), 96),
-            "action": _safe_metadata(event.get("action", "unknown"), preserve_route=preserve_route),
+            "action": _safe_metadata(event.get("action", "unknown"), preserve_route=preserve_action_route),
             "stage": _safe_metadata(event.get("stage", ""), 80),
             "task_type": _safe_metadata(event.get("task_type", ""), 80),
             "complexity": _safe_metadata(event.get("complexity", ""), 40),
@@ -891,8 +899,13 @@ class TelemetryStore:
             try:
                 report = self.report(bounded_days, recent_errors=12, scope=scope, _flush=False)
                 report["recent_http"] = self.recent_http(200, _flush=False)
+                report["summary"] = {**report.get("summary", {}), "data_available": self.enabled, "stale": False}
             except Exception:
                 report = dict(cached) if cached else {"summary": {"enabled": self.enabled}}
+                report["summary"] = {
+                    **report.get("summary", {}), "data_available": False,
+                    "stale": bool(cached), "degraded": True,
+                }
             self._dashboard_cache[key] = report
             self._dashboard_cache_at[key] = now
             while len(self._dashboard_cache) > _DASHBOARD_CACHE_LIMIT:
@@ -934,6 +947,10 @@ class TelemetryStore:
         report = self.dashboard_report(30, scope=scope) if self.enabled else {"summary": {}}
         history = report.get("summary", {}) if isinstance(report, dict) else {}
         return {
+            "enabled": self.enabled,
+            "data_available": bool(history.get("data_available", self.enabled and "net_cloud_token_delta_est" in history)),
+            "stale": bool(history.get("stale", False)),
+            "writer": history.get("writer", {}),
             "scope": str(history.get("scope", scope) or scope),
             "process_started_at": history.get("process_started_at") if scope == "process" else None,
             "window_events": len(events), "live_inference_events": len(inference),
@@ -964,6 +981,11 @@ class TelemetryStore:
             "tool_accounting_events": int(history.get("tool_accounting_events", 0) or 0),
             "cloud_token_cost_usd_per_million": float(history.get("cloud_token_cost_usd_per_million", self.cloud_token_cost_usd_per_million) or 0.0),
             "estimated_savings_usd": float(history.get("estimated_savings_usd", 0.0) or 0.0),
+            "estimated_input_savings_usd": float(history.get("estimated_input_savings_usd", 0.0) or 0.0),
+            "estimated_output_savings_usd": float(history.get("estimated_output_savings_usd", 0.0) or 0.0),
+            "estimated_savings_pricing_mode": str(history.get("estimated_savings_pricing_mode", "blended")),
+            "cloud_input_token_cost_usd_per_million": float(history.get("cloud_input_token_cost_usd_per_million", self.cloud_input_token_cost_usd_per_million) or 0.0),
+            "cloud_output_token_cost_usd_per_million": float(history.get("cloud_output_token_cost_usd_per_million", self.cloud_output_token_cost_usd_per_million) or 0.0),
             "fallback_count": int(history.get("fallback_count", 0) or 0),
             "degraded_count": int(history.get("degraded_count", 0) or 0),
             "retry_count": int(history.get("retry_count", 0) or 0),
@@ -1200,7 +1222,7 @@ class TelemetryStore:
                               COALESCE(SUM(cache_hit), 0),
                               COALESCE(SUM(CASE WHEN event_type='inference' THEN 1 ELSE 0 END), 0),
                               COALESCE(SUM(CASE WHEN event_type='inference' AND cache_hit=1 THEN 1 ELSE 0 END), 0),
-                              COALESCE(SUM(avoided_cloud_tokens), 0),
+                              COALESCE(SUM(CASE WHEN event_type='tool_accounting' THEN net_cloud_token_delta ELSE 0 END), 0),
                               COALESCE(SUM(CASE WHEN success=0 THEN 1 ELSE 0 END), 0)
                        FROM events WHERE created_at>=? AND created_at<=?""",
                     (started_at, end_time),
