@@ -3776,7 +3776,10 @@ def local_ai_rag(
     """Fallback semantic retrieval after deterministic and indexed repository evidence. Search defaults workspace to the explicit repository root. Document ingestion requires non-empty content; title and metadata are optional. Diagram ingestion requires image_path; caption and metadata are optional. Raster diagrams are indexed as metadata-only; SVG text nodes are indexed with their extraction provenance. Use when: cheaper indexed paths are insufficient. Skip when: deterministic or indexed evidence already answers the question."""
     if not FEATURES.rag:
         return {"success": False, "unsupported": True, "error": "RAG backend is disabled (features.rag=false in config.toml)"}
-    action = action.strip().lower().replace("-", "_")
+    valid_actions = tuple(RagAction.__args__)
+    if not isinstance(action, str) or action not in valid_actions:
+        action_label = action if isinstance(action, str) else f"<{type(action).__name__}>"
+        return _invalid_action("local_ai_rag", action_label, valid_actions, "Use RAG only when cheaper Local AI Hub evidence is insufficient.")
     if action in {"index", "search", "docset_index"}:
         explicit_root = str(root or "").strip()
         if not is_rooted_path(explicit_root):
@@ -4299,9 +4302,10 @@ def local_ai_work(
     """Whole-task local execution with durable verified handoff. See dynamic description for policy and response projection."""
     if not getattr(FEATURES, "work_orchestrator", False):
         return {"success": False, "unsupported": True, "error": "local_ai_work is disabled in configuration"}
-    action = action.strip().lower().replace("-", "_")
-    if action not in WorkAction.__args__:
-        return _invalid_action("local_ai_work", action, tuple(WorkAction.__args__), "Use submit for a closed task and one bounded wait/get for handoff.")
+    valid_actions = tuple(WorkAction.__args__)
+    if not isinstance(action, str) or action not in valid_actions:
+        action_label = action if isinstance(action, str) else f"<{type(action).__name__}>"
+        return _invalid_action("local_ai_work", action_label, valid_actions, "Use submit for a closed task and one bounded wait/get for handoff.")
     payload: dict[str, Any] = {
         "action": action, "root": _client_root(root), "task": task, "work_id": work_id,
         "acceptance_criteria": acceptance_criteria or [], "constraints": constraints or [], "mode": mode,
