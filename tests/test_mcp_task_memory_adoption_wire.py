@@ -37,6 +37,7 @@ import mcp.client.stdio as stdio
 import pytest
 
 from local_ai_hub.operation_contracts import validate_operation_output
+from local_ai_hub.task_memory_wire import task_memory_original_tokens
 from local_ai_hub.token_accounting import json_tokens
 
 
@@ -341,6 +342,7 @@ def test_registered_mcp_checkpoint_preflight_allows_full_memory_wire(tmp_path, m
     assert payload["success"] is True
     assert payload["request_id"] == calls[-1]["request_id"]
     assert payload["task"]["checkpoint"]["state_data"]["memory_audit"] == audit
+    assert payload["response_budget"]["original_tokens"] == task_memory_original_tokens(payload)
     assert tasks.get(TASK_ID).checkpoint.state_data["memory_audit"] == audit
     assert tasks.state_store.event_page(f"task:{TASK_ID}")["last_seq"] == 2
     assert calls[-1]["body"]["response_budget_tokens"] == 3200
@@ -415,6 +417,22 @@ def test_stdio_default_budget_delivers_memory_without_extra_fields(tmp_path, mon
     payload = results[0].structuredContent
     assert payload["response_budget"]["requested_tokens"] == 3200
     assert payload["task"]["checkpoint"]["state_data"]["memory_context"] == expected
+
+
+@pytest.mark.parametrize("profile", ["compact", "minimal", "delta", "debug"])
+def test_task_memory_original_metadata_is_canonical_across_wrappers(tmp_path, monkeypatch, profile):
+    expected, _, results = _round_trip(tmp_path, [{
+        "action": "task_create", "contract": {"goal": "canonical task memory"},
+        "response_profile": profile, "reuse_key": f"canonical-memory:{profile}",
+        "max_response_tokens": 512,
+    }], monkeypatch)
+    result = results[0]
+    payload = result.structuredContent
+    assert payload["success"] is True, payload
+    assert payload["task"]["checkpoint"]["state_data"]["memory_context"] == expected
+    assert payload["response_budget"]["original_tokens"] == task_memory_original_tokens(payload)
+    assert payload["response_budget"]["returned_tokens"] == json_tokens(
+        result.model_dump(mode="json", by_alias=True, exclude_none=True))
 
 
 def test_stdio_subminimum_quota_rejected_before_task_side_effect(tmp_path, monkeypatch):

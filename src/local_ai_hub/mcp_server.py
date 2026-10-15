@@ -63,6 +63,7 @@ from local_ai_hub.task_memory_wire import (
     normalize_task_memory_response as _normalize_task_memory_response,
     task_memory_audit_projection as _task_memory_audit_projection,
     task_memory_essential_response as _task_memory_essential_response,
+    task_memory_original_tokens as _task_memory_original_tokens,
     task_memory_projection as _task_memory_projection,
 )
 from local_ai_hub.routing import semantic_handoff_hint
@@ -1185,7 +1186,7 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
             if profile == "delta" and previous is not None and not repeated:
                 current = memory_projection
                 memory_projection = delta_response(previous, current, result_id=result_id(current))
-                for key in ("task", "task_id", "context_id"):
+                for key in ("task", "task_id", "context_id", "request_id"):
                     if key in current:
                         memory_projection[key] = current[key]
                 # Carry the authoritative task once, also when memory did not
@@ -4431,7 +4432,8 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
 
     def _mcp_task_memory_wire(value: dict[str, Any], requested: int) -> Any:
         """Fit complete adoption advice or explicitly reject its delivery."""
-        original = json_tokens(_mcp_wire_view(value, structured=True))
+        canonical = _normalize_task_memory_response(_task_memory_projection(value) or value)
+        original = _task_memory_original_tokens(canonical)
 
         def emit(payload: dict[str, Any], *, compact_error_text: bool = False,
                  minimal_error_text: bool = False) -> Any:
@@ -4453,7 +4455,7 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                     return [mcp_types.TextContent(type="text", text=text)], payload
             return None
 
-        essential = _task_memory_essential_response(value)
+        essential = _task_memory_essential_response(canonical)
         # Strip only optional task metadata. The complete memory bundle remains
         # byte-for-byte equivalent JSON in every successful candidate.
         for source in (value, essential):
