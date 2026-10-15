@@ -173,6 +173,7 @@ def test_coord_forwards_explicit_receipt_criterion_and_blackboard_identity(monke
     monkeypatch.setattr(local_ai_mcp, "CLIENT", _Client())
     receipt_payload = {
         "task_id": "task-1", "criterion": "criterion-1", "passed": True,
+        "evidence_id": "mock-command-evidence-1",
     }
     receipt = local_ai_mcp.local_ai_coord(
         action="verify_receipt", receipt=receipt_payload

@@ -993,7 +993,7 @@ def test_local_ai_coord_verify_receipt_forwards_criterion_and_pass_state(monkeyp
     tool_result = asyncio.run(mcp_server.mcp.call_tool(
         "local_ai_coord", {"action": "verify_receipt", "root": root,
          "receipt": {"task_id": "task-67", "criterion": "selector passed",
-                     "passed": True}}
+                     "passed": True, "evidence_id": "mock-command-evidence-67"}}
     ))
     result = _mcp_coord_json(tool_result)
     assert result["success"] is True
