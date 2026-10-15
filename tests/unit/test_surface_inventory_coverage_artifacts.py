@@ -36,13 +36,17 @@ def test_write_and_check_cover_human_index_and_structured_rows(tmp_path: Path, m
     markdown = tmp_path / "docs" / "API_COVERAGE.md"
     artifact = tmp_path / "docs" / "API_COVERAGE.json"
     parsed = json.loads(artifact.read_text(encoding="utf-8"))
+    expected_row = surface_inventory.coverage_rows([finding], "F19-test")[0]
     assert output["written_artifact"] == "docs/API_COVERAGE.json"
     assert "Contract gaps" not in markdown.read_text(encoding="utf-8")
     assert parsed["task_id"] == "F19-test"
-    assert parsed["coverage_rows"][0]["contract"] == finding["contract"]
+    assert parsed["coverage_rows"][0] == expected_row
+    for key, value in finding["contract"].items():
+        assert parsed["coverage_rows"][0]["contract"][key] == value
     assert parsed["coverage_rows"][0]["fixtures"] == finding["fixtures"]
     assert parsed["coverage_rows"][0]["condition"] == finding["condition"]
     assert parsed["coverage_rows"][0]["task_id"] == "F19-test"
+    assert "contract_gaps" in parsed["coverage_rows"][0]
     assert "not runtime" in parsed["description"]
 
     assert surface_inventory.main(["--root", str(tmp_path), "--check"]) == 0
