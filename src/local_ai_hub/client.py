@@ -28,7 +28,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .config import load_config
-from .operation_contracts import normalize_transport_error, operation_actions
+from .operation_contracts import normalize_transport_error, operation_actions, validate_operation_arguments
 
 
 CURRENT_REQUEST_CANCEL_EVENT: contextvars.ContextVar[threading.Event | None] = contextvars.ContextVar(
@@ -1569,6 +1569,20 @@ class HubClient:
             mem_action = act.replace("memory_", "")
             payload = {**kwargs, "action": mem_action}
             return self.post("/api/agent-state/memory", payload)
+        if act in {"incident_decision", "negative_knowledge_record", "negative_knowledge_find"}:
+            validation_error = validate_operation_arguments(
+                "local_ai_coord",
+                act,
+                {**kwargs, "root": kwargs.get("root", "."), "tenant": kwargs.get("tenant", "")},
+            )
+            if validation_error:
+                return {
+                    "success": False,
+                    "status_code": 400,
+                    "terminal": True,
+                    "retryable": False,
+                    "error": validation_error,
+                }
         if act == "incident_decision":
             return self.post("/api/agent-state/incidents", {
                 "action": "decision",

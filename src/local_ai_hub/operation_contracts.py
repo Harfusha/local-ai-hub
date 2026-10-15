@@ -12,6 +12,20 @@ from .search_pagination import MAX_PAGE_SIZE, MAX_PAGE_WINDOW, pagination_bounds
 REPO_PHASES = ("", "plan", "edit", "review", "test", "handoff")
 MAX_REPO_PIPELINE_PARALLEL_STEPS = 4
 MAX_EVENT_SEQUENCE = (1 << 63) - 1
+_INCIDENT_RECORD_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "root_cause": {"type": "string", "maxLength": 4096},
+        "verified_fix": {"type": "string", "maxLength": 4096},
+        "message": {"type": "string", "maxLength": 4096},
+        "operation_class": {"type": "string", "maxLength": 160},
+        "exit_code": {"type": "integer", "minimum": -(1 << 31), "maximum": (1 << 32) - 1},
+        "state_revision": {"type": "string", "maxLength": 256},
+        "evidence_ids": {"type": "array", "maxItems": 64, "items": {"type": "string", "maxLength": 256}},
+        "affected_paths": {"type": "array", "maxItems": 128, "items": {"type": "string", "maxLength": 4096}},
+    },
+    "additionalProperties": False,
+}
 REPO_PIPELINE_MUTATING_ACTIONS = frozenset({
     "batch_replace", "ast_refactor", "preprocess", "preprocess_refresh",
     "preprocess_pause", "preprocess_resume", "preprocess_cancel", "preprocess_unregister",
@@ -852,20 +866,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
                     }},
                 }},
             },
-            "record": {
-                "type": "object",
-                "properties": {
-                    "root_cause": {"type": "string", "maxLength": 4096},
-                    "verified_fix": {"type": "string", "maxLength": 4096},
-                    "message": {"type": "string", "maxLength": 4096},
-                    "operation_class": {"type": "string", "maxLength": 160},
-                    "exit_code": {"type": "integer", "minimum": -32768, "maximum": 32767},
-                    "state_revision": {"type": "string", "maxLength": 256},
-                    "evidence_ids": {"type": "array", "maxItems": 64, "items": {"type": "string", "maxLength": 256}},
-                    "affected_paths": {"type": "array", "maxItems": 128, "items": {"type": "string", "maxLength": 4096}},
-                },
-                "additionalProperties": False,
-            },
+            "record": {"type": "object"},
             "fingerprint": {
                 "type": "object",
                 "properties": {
@@ -1738,6 +1739,14 @@ def operation_parameters_schema(tool: str, features: Any = None) -> dict[str, An
                 },
             },
         })
+    if tool == "local_ai_coord" and "negative_knowledge_record" in available_actions:
+        parameters.setdefault("allOf", []).append({
+            "if": {
+                "properties": {selector_field: {"const": "negative_knowledge_record"}},
+                "required": [selector_field],
+            },
+            "then": {"properties": {"record": deepcopy(_INCIDENT_RECORD_SCHEMA)}},
+        })
     return parameters
 
 
@@ -1940,7 +1949,8 @@ def validate_operation_arguments(
     if tool == "local_ai_coord" and action in {"negative_knowledge_record", "incident_decision"}:
         field = "record" if action == "negative_knowledge_record" else "fingerprint"
         if field in arguments:
-            nested_error = _validate_nested_schema(arguments[field], properties[field], field, action)
+            nested_schema = _INCIDENT_RECORD_SCHEMA if action == "negative_knowledge_record" else properties[field]
+            nested_error = _validate_nested_schema(arguments[field], nested_schema, field, action)
             if nested_error:
                 return nested_error
     if tool == "local_ai_artifact" and action == "source" and "max_chars" in arguments:

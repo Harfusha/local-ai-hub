@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from local_ai_hub import http_server, mcp_server
 from local_ai_hub.client import HubClient
-from local_ai_hub.operation_contracts import operation_parameters_schema
+from local_ai_hub.operation_contracts import operation_parameters_schema, validate_operation_arguments
 
 
 FINGERPRINT = {
@@ -74,10 +74,19 @@ def test_http_incident_canonical_payload_shapes_are_accepted():
         http_server.Handler._validate_payload("/api/agent-state/incidents", payload)
 
 
+def test_http_incident_accepts_windows_access_violation_exit_codes():
+    for exit_code in (3221225477, -1073741819):
+        http_server.Handler._validate_payload("/api/agent-state/incidents", {
+            "action": "record", "operation_class": "command", "exit_code": exit_code,
+            "root": ".", "tenant": "tenant-x",
+        })
+
+
 def test_http_incident_fields_reject_coercion_and_unbounded_find():
     invalid_payloads = [
         {"action": "decision", "fingerprint": {**FINGERPRINT, "error_class": 12}},
         {"action": "record", "exit_code": "1"},
+        {"action": "record", "exit_code": True},
         {"action": "record", "evidence_ids": "evidence-1"},
         {"action": "find", "query": "timeout", "limit": True},
         {"action": "find", "query": "timeout", "limit": 101},
@@ -204,7 +213,7 @@ def test_sdk_coord_keeps_record_scope_outside_record_object():
 
     HubClient.coord(
         client, action="negative_knowledge_record",
-        record={"operation_class": "command", "message": "failed", "root": "injected", "tenant": "injected"},
+        record={"operation_class": "command", "message": "failed"},
         root="C:/repo", tenant="tenant-x",
     )
     HubClient.coord(
@@ -222,3 +231,44 @@ def test_sdk_coord_keeps_record_scope_outside_record_object():
             "root": "C:/repo", "tenant": "tenant-x",
         }),
     ]
+
+
+def test_sdk_incident_actions_reject_ignored_aliases_before_dispatch():
+    client = object.__new__(HubClient)
+    calls = []
+    client.post = lambda path, payload: calls.append((path, payload)) or {"success": True}
+
+    invalid = [
+        {"action": "incident_decision", "fingerprint": FINGERPRINT, "state_revision": "r1", "revision": "old"},
+        {"action": "negative_knowledge_find", "query": "timeout", "key": "old"},
+        {"action": "negative_knowledge_record", "record": {"message": "x", "reason": "old"}},
+    ]
+    for arguments in invalid:
+        result = HubClient.coord(client, **arguments)
+        assert result["success"] is False
+        assert result["status_code"] == 400
+    assert calls == []
+
+
+def test_incident_record_constraints_are_action_scoped_and_windows_bounded():
+    schema = operation_parameters_schema("local_ai_coord")
+    assert schema["properties"]["record"] == {"type": "object"}
+    record_condition = next(
+        item for item in schema["allOf"]
+        if item.get("if", {}).get("properties", {}).get("action", {}).get("const") == "negative_knowledge_record"
+    )
+    assert record_condition["then"]["properties"]["record"]["properties"]["exit_code"] == {
+        "type": "integer", "minimum": -(1 << 31), "maximum": (1 << 32) - 1,
+    }
+    for exit_code in (3221225477, -1073741819):
+        assert validate_operation_arguments("local_ai_coord", "negative_knowledge_record", {
+            "record": {"message": "failure", "exit_code": exit_code},
+        }) is None
+    assert validate_operation_arguments("local_ai_coord", "negative_knowledge_record", {
+        "record": {"message": "failure", "exit_code": True},
+    }) is not None
+
+
+def test_global_coord_record_schema_does_not_restrict_other_action_objects():
+    properties = operation_parameters_schema("local_ai_coord")["properties"]
+    assert properties["record"] == {"type": "object"}
