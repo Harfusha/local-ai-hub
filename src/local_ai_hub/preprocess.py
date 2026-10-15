@@ -219,6 +219,7 @@ class ProjectPreprocessor:
             "deterministic_hot_query_hits": 0, "rag_steps": 0, "hot_queries": 0, "major_invalidations": 0,
             "code_index_files": 0, "deterministic_files": 0, "external_indexes": 0, "external_index_failures": 0,
             "project_step_contention": 0, "watcher_restarts": 0, "watcher_errors": 0,
+            "lost_error_count": 0,
         }
         self._speed_tracker: dict[str, list[tuple[float, int]]] = {}
         try:
@@ -2026,6 +2027,30 @@ class ProjectPreprocessor:
                 (now,),
             ).fetchone()
 
+    def _record_failure_telemetry(self, current: sqlite3.Row | dict[str, Any] | None, error: Exception) -> None:
+        """Keep telemetry callback failures separate from project recovery."""
+        if self.telemetry is None:
+            return
+        try:
+            # sqlite3.Row supports indexing and keys(), but has no dict.get().
+            raw_phase = current["phase"] if current is not None else "step"
+        except (KeyError, IndexError, TypeError):
+            raw_phase = "step"
+        phase = str(raw_phase or "step")
+        if phase not in {"inventory", "files", "modules", "project", "hot_queries", "rag", "complete"}:
+            phase = "step"
+        try:
+            self.telemetry.record_error("preprocess", phase, error, retryable=True, recovered=False)
+        except Exception as telemetry_exc:
+            # Metadata only: no exception message, repository path or payload.
+            fingerprint = stable_hash(f"preprocess:{phase}:{type(telemetry_exc).__name__}")[:20]
+            with self._stats_lock:
+                self._stats["lost_error_count"] = self._stats.get("lost_error_count", 0) + 1
+            logger.warning(
+                "Preprocessing telemetry write failed (phase=%s type=%s fingerprint=%s)",
+                phase, type(telemetry_exc).__name__, fingerprint,
+            )
+
     def _cpu_loop(self) -> None:
         set_current_thread_priority(self.cpu_priority)
         startup_delay = max(0.0, float(self.cfg.get("startup_delay_seconds", 2.0)))
@@ -2072,6 +2097,7 @@ class ProjectPreprocessor:
             except Exception as exc:
                 with self._stats_lock:
                     self._stats["errors"] += 1
+                current = None
                 try:
                     current = self._project_row(root)
                     prev = 0
@@ -2085,13 +2111,10 @@ class ProjectPreprocessor:
                     errors = prev + 1
                     backoff = min(float(self.cfg.get("max_error_backoff_seconds", 300)), 2 ** min(errors, 8))
                     self._set_project(root, status="error", last_error=str(exc)[:1000], retry_after=time.time() + backoff, stats_json=json_dumps({"consecutive_errors": errors}))
-                    if self.telemetry is not None:
-                        try:
-                            self.telemetry.record_error("preprocess", str((current or {}).get("phase") or "step"), exc, retryable=True, recovered=True)
-                        except Exception as telemetry_exc:
-                            logger.warning("Preprocessing telemetry write failed (%s)", type(telemetry_exc).__name__)
                 except Exception as record_exc:
                     logger.error("Could not record preprocessing failure state (%s)", type(record_exc).__name__)
+                finally:
+                    self._record_failure_telemetry(current, exc)
 
     def _gpu_loop(self) -> None:
         startup_delay = max(0.0, float(self.cfg.get("startup_delay_seconds", 2.5)))
