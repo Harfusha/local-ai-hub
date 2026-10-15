@@ -2312,11 +2312,14 @@ def local_ai_task(
         "transcribe": {"context", "task", "prompt"},
         "eval_suite": {"prompt"},
         "prompt_eval": {"task", "context"},
+        "candidate_create": {"task", "candidate", "prompt", "evaluation_task_id"},
+        "candidate_promote": {"task", "prompt", "evaluation_task_id", "candidate_data"},
     }
     input_values = {
         "task": task, "prompt": prompt, "context": context,
         "candidate": candidate, "workspace": workspace, "model": model,
         "root": root, "language": language, "candidate_data": candidate_data,
+        "evaluation_task_id": evaluation_task_id,
     }
     for field in retired_inputs.get(action, ()):
         if input_values[field] not in (None, ""):
@@ -2346,6 +2349,18 @@ def local_ai_task(
             "success": False, "status_code": 400, "terminal": True, "retryable": False,
             "error": "prompt_eval candidate_data must be an object",
         }
+    if action == "candidate_create" and not isinstance(candidate_data, dict):
+        return {
+            "success": False, "status_code": 400, "terminal": True, "retryable": False,
+            "error": "candidate_create requires candidate_data object",
+        }
+    if action == "candidate_promote":
+        for field, value in (("candidate", candidate), ("approver", approver)):
+            if not isinstance(value, str) or not value.strip():
+                return {
+                    "success": False, "status_code": 400, "terminal": True, "retryable": False,
+                    "error": f"candidate_promote requires non-empty {field}",
+                }
     try:
         from local_ai_hub.operational_mode import (
             load_operational_mode,
@@ -2415,12 +2430,11 @@ def local_ai_task(
         max_tokens = max(160, int(max_tokens))
     if action in {"candidate_create", "candidate_promote"}:
         if action == "candidate_create":
-            cand = candidate_data or ({"name": task, "baseline_version": "baseline", "candidate_version": "candidate"} if not candidate else {"name": candidate, "baseline_version": "baseline", "candidate_version": "candidate"})
             return _compact(CLIENT.post("/api/agent-state/learning", {
-                "action": "create_candidate", "candidate": cand,
+                "action": "create_candidate", "candidate": candidate_data,
             }, timeout=_timeout("quick")), "status")
         return _compact(CLIENT.post("/api/agent-state/learning", {
-            "action": "promote", "candidate_id": candidate or evaluation_task_id or task, "approver": approver or "user",
+            "action": "promote", "candidate_id": candidate, "approver": approver,
         }, timeout=_timeout("quick")), "status")
     if not FEATURES.tasks or not FEATURES.has_any_model():
         return {"success": False, "unsupported": True, "error": "Local model execution is disabled (features.tasks=false or no Ollama runtime configured)"}

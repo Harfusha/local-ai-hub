@@ -46,6 +46,12 @@ class DummyClient:
     ("eval_suite", {"task": "suite"}, {"prompt": "old suite"}),
     ("prompt_eval", {"prompt": "template"}, {"task": "old template"}),
     ("prompt_eval", {"prompt": "template"}, {"context": "old variables"}),
+    ("candidate_create", {"candidate_data": {"name": "candidate-a"}}, {"task": "old name"}),
+    ("candidate_create", {"candidate_data": {"name": "candidate-a"}}, {"candidate": "old name"}),
+    ("candidate_create", {"candidate_data": {"name": "candidate-a"}}, {"prompt": "old name"}),
+    ("candidate_promote", {"candidate": "cand-a", "approver": "user"}, {"task": "old id"}),
+    ("candidate_promote", {"candidate": "cand-a", "approver": "user"}, {"evaluation_task_id": "old id"}),
+    ("candidate_promote", {"candidate": "cand-a", "approver": "user"}, {"prompt": "old id"}),
 ])
 def test_registered_task_handler_rejects_retired_aliases_before_dispatch(
     action, canonical, retired, monkeypatch,
@@ -55,6 +61,22 @@ def test_registered_task_handler_rejects_retired_aliases_before_dispatch(
 
     result = asyncio.run(mcp_server.mcp.call_tool(
         "local_ai_task", {"action": action, **canonical, **retired},
+    ))
+
+    assert client.calls == []
+    assert "400" in str(result)
+
+
+@pytest.mark.parametrize(("action", "arguments"), [
+    ("candidate_create", {}),
+    ("candidate_promote", {"candidate": "cand-a"}),
+])
+def test_registered_candidate_handler_requires_canonical_fields(action, arguments, monkeypatch):
+    client = DummyClient()
+    monkeypatch.setattr(mcp_server, "CLIENT", client)
+
+    result = asyncio.run(mcp_server.mcp.call_tool(
+        "local_ai_task", {"action": action, **arguments},
     ))
 
     assert client.calls == []
@@ -87,6 +109,13 @@ def test_registered_task_handler_rejects_retired_aliases_before_dispatch(
     ("eval_suite", {}, "/api/task/eval_suite", {"suite_name": "default"}),
     ("prompt_eval", {"prompt": "template", "candidate_data": {}}, "/api/task/prompt_eval",
      {"template": "template", "variables": {}}),
+    ("candidate_create", {"candidate_data": {
+        "name": "candidate-a", "baseline_version": "v1", "candidate_version": "v2",
+    }}, "/api/agent-state/learning", {"action": "create_candidate", "candidate": {
+        "name": "candidate-a", "baseline_version": "v1", "candidate_version": "v2",
+    }}),
+    ("candidate_promote", {"candidate": "cand-a", "approver": "user"}, "/api/agent-state/learning",
+     {"action": "promote", "candidate_id": "cand-a", "approver": "user"}),
 ])
 def test_registered_task_handler_dispatches_canonical_inputs(
     action, arguments, path, expected, monkeypatch,
@@ -129,6 +158,8 @@ def test_vision_contract_keeps_distinct_artifact_inputs():
     ("transcribe", {"candidate": "audio.wav"}, {"prompt": "old audio"}),
     ("eval_suite", {"task": "suite"}, {"prompt": "old suite"}),
     ("prompt_eval", {"prompt": "template"}, {"context": "old variables"}),
+    ("candidate_create", {"candidate_data": {}}, {"task": "old name"}),
+    ("candidate_promote", {"candidate": "cand-a", "approver": "user"}, {"evaluation_task_id": "old id"}),
 ])
 def test_direct_task_impl_rejects_retired_aliases(action, arguments, alias, monkeypatch):
     client = DummyClient()
@@ -158,7 +189,20 @@ def test_task_action_contract_accepts_canonical_task_inputs_and_rejects_aliases(
         ("transcribe", {"candidate": "audio.wav"}, {"context": "alias"}),
         ("eval_suite", {"task": "suite"}, {"prompt": "alias"}),
         ("prompt_eval", {"prompt": "template"}, {"task": "alias"}),
+        ("candidate_create", {"candidate_data": {}}, {"candidate": "alias"}),
+        ("candidate_promote", {"candidate": "cand-a", "approver": "user"}, {"task": "alias"}),
     ]
     for action, canonical, alias in cases:
         assert validate_operation_arguments("local_ai_task", action, canonical) is None
         assert validate_operation_arguments("local_ai_task", action, {**canonical, **alias}) is not None
+
+
+def test_candidate_action_schema_requires_canonical_inputs():
+    assert validate_operation_arguments("local_ai_task", "candidate_create", {"candidate_data": {}}) is None
+    assert validate_operation_arguments("local_ai_task", "candidate_create", {}) is not None
+    assert validate_operation_arguments("local_ai_task", "candidate_promote", {
+        "candidate": "cand-a", "approver": "user",
+    }) is None
+    assert validate_operation_arguments("local_ai_task", "candidate_promote", {
+        "candidate": "cand-a",
+    }) is not None
