@@ -15,6 +15,7 @@ from typing import Any, Callable, Iterator, Sequence, TypeVar
 
 
 _LOGGER = logging.getLogger(__name__)
+_MAX_DURABLE_SCHEMA_SQL_BYTES = 8192
 
 T = TypeVar("T")
 
@@ -434,10 +435,27 @@ def validate_durable_schema(
 ) -> None:
     """Fail closed on existing durable table drift, preserving a verified backup."""
     objects = {
-        str(row[0]): (str(row[1]), str(row[2] or ""))
-        for row in con.execute("SELECT name, type, sql FROM sqlite_master")
+        str(row[0]): (str(row[1]), "")
+        for row in con.execute("SELECT name, type FROM sqlite_master")
         if not str(row[0]).startswith("sqlite_")
     }
+    oversized_definitions: set[str] = set()
+    expected_names = tuple(expected_tables)
+    for batch in sqlite_batches(expected_names):
+        placeholders = ",".join("?" for _ in batch)
+        rows = con.execute(
+            "SELECT name, CASE WHEN length(CAST(sql AS BLOB)) <= ? THEN sql END, "
+            "length(CAST(sql AS BLOB)) FROM sqlite_master "
+            f"WHERE name IN ({placeholders})",
+            (_MAX_DURABLE_SCHEMA_SQL_BYTES, *batch),
+        )
+        for row in rows:
+            name = str(row[0])
+            if row[2] is not None and int(row[2]) > _MAX_DURABLE_SCHEMA_SQL_BYTES:
+                oversized_definitions.add(name)
+            else:
+                object_type = objects.get(name, ("", ""))[0]
+                objects[name] = (object_type, str(row[1] or ""))
     existing = {name for name, (object_type, _sql) in objects.items() if object_type == "table"}
     mismatches: list[str] = []
     for group in complete_groups:
@@ -447,6 +465,11 @@ def validate_durable_schema(
             mismatches.append(f"incomplete durable table group; missing={','.join(missing)}")
     for table, expected_columns in expected_tables.items():
         object_info = objects.get(table)
+        if table in oversized_definitions:
+            mismatches.append(
+                f"durable table definition exceeds {_MAX_DURABLE_SCHEMA_SQL_BYTES} bytes: {table}"
+            )
+            continue
         if object_info is not None and object_info[0] != "table":
             mismatches.append(
                 f"unsupported durable schema object type for {table}: {object_info[0]}"
