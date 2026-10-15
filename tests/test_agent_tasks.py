@@ -866,7 +866,6 @@ def test_completed_requires_repository_revision_for_active_project_rule(
     task = prepare_project_rule_completion(
         store, tmp_path, monkeypatch, with_revision=False
     )
-<<<<<<< HEAD
     calls = []
     verifier = VerificationStore(store.state_store, task_store=store)
     evaluate = verifier.completion
@@ -877,9 +876,6 @@ def test_completed_requires_repository_revision_for_active_project_rule(
 
     monkeypatch.setattr(verifier, "completion", record_completion)
     store.set_verification_store(verifier)
-=======
-    store.set_verification_store(VerificationStore(store.state_store, task_store=store))
->>>>>>> acc622e9 (test: align task fixtures with current contracts)
 
     with pytest.raises(CompletionGateError, match="trusted repository_revision is unavailable"):
         store.transition(
