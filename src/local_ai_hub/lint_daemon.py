@@ -361,3 +361,82 @@ class RuffDaemonPool:
             sessions = [entry["daemon"] for entry in self._sessions.values()]
         for daemon in sessions:
             daemon.close()
+
+
+class OwnedBiomeDaemonPool:
+    """Bounded pool of owned Biome foreground servers (Windows transport only)."""
+
+    def __init__(self, *, max_sessions: int = 4, idle_ttl: float = 300.0):
+        self.max_sessions = max(1, min(16, int(max_sessions)))
+        self.idle_ttl = max(1.0, min(3600.0, float(idle_ttl)))
+        self._lock = threading.Lock()
+        self._closed = False
+        self._servers: dict[str, dict[str, Any]] = {}
+
+    def run(self, executable: str, root: str, tenant: str, paths: list[str], *,
+            timeout: float = 30, should_stop: Callable[[], bool] = lambda: False) -> dict[str, Any]:
+        from .biome_owned_ipc import BiomeOwnershipError, OwnedBiomeDaemon
+
+        base = {"provider": "biome", "daemon_mode": True, "transport": "owned_foreground_lsp",
+                "read_only": True, "auto_fix": False}
+        if not OwnedBiomeDaemon.supported_here():
+            return {**base, "success": False, "unsupported": True,
+                    "transport": "unsupported_unowned_platform", "terminal": True,
+                    "retryable": False, "error": "owned Biome named-pipe transport is supported only on Windows"}
+        key = os.path.normcase(str(Path(executable).resolve(strict=True)))
+        now = time.monotonic()
+        with self._lock:
+            if self._closed:
+                return {**base, "success": False, "error": "Biome daemon pool is closed", "terminal": True,
+                        "retryable": False}
+            for old_key, entry in list(self._servers.items()):
+                if now - entry["last_used"] >= self.idle_ttl and not entry["busy"]:
+                    if entry["daemon"].close():
+                        del self._servers[old_key]
+                elif not entry["busy"]:
+                    entry["daemon"].prune_sessions(self.idle_ttl)
+            entry = self._servers.get(key)
+            if entry is None:
+                if len(self._servers) >= self.max_sessions:
+                    return {**base, "success": False, "error": "Biome daemon capacity reached", "terminal": True,
+                            "retryable": False}
+                entry = {"daemon": OwnedBiomeDaemon(key), "last_used": now, "busy": False}
+                self._servers[key] = entry
+            if not entry["daemon"].has_session(tenant, root):
+                current_sessions = sum(item["daemon"].session_count for item in self._servers.values())
+                if current_sessions >= self.max_sessions:
+                    return {**base, "success": False, "error": "Biome LSP session capacity reached",
+                            "terminal": True, "retryable": False}
+            if entry["busy"]:
+                return {**base, "success": False, "error": "Biome daemon session is busy", "terminal": True,
+                        "retryable": False}
+            entry["busy"] = True
+        try:
+            diagnostics = entry["daemon"].diagnostics(tenant, root, paths, timeout=timeout, should_stop=should_stop)
+            return {**base, "success": not diagnostics, "exit_code": 1 if diagnostics else 0,
+                    "diagnostics": diagnostics, "diagnostic_count": len(diagnostics)}
+        except BiomeOwnershipError as exc:
+            confirmed = entry["daemon"].close()
+            with self._lock:
+                self._servers.pop(key, None)
+            return {**base, "success": False, "unsupported": True, "terminal": True,
+                    "retryable": False, "cleanup_unconfirmed": not confirmed,
+                    "outcome_unknown": not confirmed, "error": str(exc)[:500]}
+        except Exception as exc:
+            confirmed = entry["daemon"].close()
+            with self._lock:
+                self._servers.pop(key, None)
+            return {**base, "success": False, "terminal": True, "retryable": False,
+                    "cleanup_unconfirmed": not confirmed, "outcome_unknown": not confirmed,
+                    "error": str(exc)[:500]}
+        finally:
+            with self._lock:
+                entry["busy"] = False
+                entry["last_used"] = time.monotonic()
+
+    def close(self) -> None:
+        with self._lock:
+            self._closed = True
+            servers = [entry["daemon"] for entry in self._servers.values()]
+        for daemon in servers:
+            daemon.close()

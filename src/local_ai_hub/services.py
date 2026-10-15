@@ -42,7 +42,7 @@ from .sqlite_support import connect_sqlite
 from .adoption_metrics import AdoptionMetricsStore
 from .state_paths import configured_state_dir
 from .speculative_lint import normalize_changed_paths
-from .lint_daemon import RuffDaemonPool
+from .lint_daemon import RuffDaemonPool, OwnedBiomeDaemonPool
 from .async_jobs import current_job_should_stop
 from .telemetry import TelemetryStore
 from .trace_context import observer
@@ -588,6 +588,10 @@ class LocalAIServices:
         self.commands: Any | None = None
         lint_config = config.get("speculative_lint", {})
         self._lint_daemons = RuffDaemonPool(
+            max_sessions=lint_config.get("max_daemon_sessions", 4),
+            idle_ttl=lint_config.get("daemon_idle_ttl_seconds", 300),
+        )
+        self._biome_daemons = OwnedBiomeDaemonPool(
             max_sessions=lint_config.get("max_daemon_sessions", 4),
             idle_ttl=lint_config.get("daemon_idle_ttl_seconds", 300),
         )
@@ -2147,19 +2151,7 @@ class LocalAIServices:
             target_text = " ".join(subprocess.list2cmdline([path]) for path in paths) if os.name == "nt" else " ".join(shlex.quote(path) for path in paths)
             command = f"ruff check {target_text}"
         elif biome_executable and daemon_mode:
-            return {
-                "success": False,
-                "unsupported": True,
-                "provider": "biome",
-                "daemon_mode": True,
-                "transport": "unsupported_shared_daemon_ownership",
-                "read_only": True,
-                "auto_fix": False,
-                "paths": paths,
-                "error": "persistent Biome LSP is unsupported because lsp-proxy connects to Biome's daemon server, whose ownership and cleanup this process cannot prove; set speculative_lint.daemon_mode=false for explicit one-shot Biome CI checks",
-                "terminal": True,
-                "retryable": False,
-            }
+            command = f"{subprocess.list2cmdline([biome_executable]) if os.name == 'nt' else shlex.quote(biome_executable)} __run_server"
         elif biome_executable:
             target_text = " ".join(subprocess.list2cmdline([path]) for path in paths) if os.name == "nt" else " ".join(shlex.quote(path) for path in paths)
             command = f"{subprocess.list2cmdline([biome_executable]) if os.name == 'nt' else shlex.quote(biome_executable)} ci {target_text}"
@@ -2171,13 +2163,24 @@ class LocalAIServices:
         lowered = command.lower()
         if any(marker in lowered for marker in ("--fix", " -w ", "autopep8", "cargo fix", "gofmt -w")):
             return {"success": False, "error": "speculative lint rejects formatter or auto-fix commands", "terminal": True, "retryable": False}
-        classification = self.commands.classify(command) if self.commands is not None else {"allowed": False, "class": "unknown"}
+        biome_daemon = bool(not custom and biome_executable and daemon_mode)
+        classification = ({"allowed": True, "class": "read_only", "source": "owned_biome_lsp"}
+                          if biome_daemon else
+                          self.commands.classify(command) if self.commands is not None else {"allowed": False, "class": "unknown"})
         if not classification.get("allowed", False) or classification.get("class") in {"mutating", "dangerous"}:
             return {"success": False, "error": "speculative lint requires an allowed read-only command", "classification": classification, "terminal": True, "retryable": False}
         if not custom and ruff_executable and all(Path(path).suffix.lower() == ".py" for path in paths) and daemon_mode:
             result = self._lint_daemons.run(
                 ruff_executable, root, tenant, paths,
                 timeout=float(args.get("timeout", self.config.get("speculative_lint", {}).get("timeout_seconds", 120)) or 120),
+                should_stop=current_job_should_stop,
+            )
+            result.update({"paths": paths, "command": command})
+            return result
+        if biome_daemon:
+            result = self._biome_daemons.run(
+                biome_executable, root, tenant, paths,
+                timeout=float(args.get("timeout", lint_config.get("timeout_seconds", 120)) or 120),
                 should_stop=current_job_should_stop,
             )
             result.update({"paths": paths, "command": command})
@@ -2199,6 +2202,7 @@ class LocalAIServices:
 
     def close_lint_daemons(self) -> None:
         self._lint_daemons.close()
+        self._biome_daemons.close()
 
     def task_scaffold(self, args: dict[str, Any], tenant: str) -> dict[str, Any]:
         """Generate boilerplate code, DTOs, interfaces, or unit test scaffolds using local model."""

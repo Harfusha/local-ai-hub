@@ -166,17 +166,31 @@ def _lint_service(monkeypatch, tmp_path, *, daemon_mode):
     return service
 
 
-def test_biome_daemon_mode_reports_shared_daemon_ownership_as_unsupported(tmp_path, monkeypatch):
+def test_biome_daemon_mode_uses_owned_provider_contract(tmp_path, monkeypatch):
     service = _lint_service(monkeypatch, tmp_path, daemon_mode=True)
+    calls = []
+
+    class FakeOwnedBiomePool:
+        def run(self, executable, root, tenant, paths, **kwargs):
+            calls.append((executable, root, tenant, paths, kwargs))
+            return {"success": True, "provider": "biome", "daemon_mode": True,
+                    "transport": "owned_foreground_lsp", "read_only": True, "auto_fix": False,
+                    "diagnostics": [], "diagnostic_count": 0}
+
+    service._biome_daemons = FakeOwnedBiomePool()
 
     result = service.speculative_lint({"root": str(tmp_path), "paths": ["src/app.ts"]}, "tenant-a")
 
-    assert not result["success"] and result["unsupported"]
+    assert result["success"]
     assert result["provider"] == "biome"
     assert result["daemon_mode"] is True
-    assert result["transport"] == "unsupported_shared_daemon_ownership"
-    assert result["terminal"] and not result["retryable"]
+    assert result["transport"] == "owned_foreground_lsp"
+    assert result["read_only"] and not result["auto_fix"]
     assert not service.commands.calls
+    assert len(calls) == 1
+    executable, root, tenant, paths, kwargs = calls[0]
+    assert (executable, root, tenant, paths) == ("biome.exe", str(tmp_path), "tenant-a", ["src/app.ts"])
+    assert kwargs["timeout"] == 120.0 and callable(kwargs["should_stop"])
 
 
 def test_biome_non_daemon_mode_uses_explicit_read_only_one_shot_ci(tmp_path, monkeypatch):
