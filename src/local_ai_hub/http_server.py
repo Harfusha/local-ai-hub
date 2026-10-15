@@ -1157,10 +1157,7 @@ def _completion_revision_or_stop(root: Any, repo_tools: Any, repo_state: Any = N
     fingerprint = getattr(tracker, "fingerprint", None)
     if root_value and callable(fingerprint):
         try:
-            try:
-                state = fingerprint(root_value, force=True)
-            except TypeError:
-                state = fingerprint(root_value)
+            state = fingerprint(root_value, force=True)
             revision = str(state.get("fingerprint", "") if isinstance(state, dict) else "").strip()
             if (
                 isinstance(state, dict)
@@ -1195,6 +1192,11 @@ def _completion_revision_or_stop(root: Any, repo_tools: Any, repo_state: Any = N
             "error": "completion requires a repository snapshot with a non-empty revision",
         }
     return revision, None
+
+
+def _completion_revision_pin_matches(requested: Any, current: str) -> bool:
+    """Compare an already validated caller pin with the fresh revision."""
+    return requested == current
 
 
 def _memory_lookup_has_identity(*values: Any) -> bool:
@@ -3395,6 +3397,17 @@ class Handler(BaseHTTPRequestHandler):
                 raise RequestBodyError("unknown task action")
             if path == "/api/agent-state/verification" and action not in _AGENT_VERIFICATION_ACTIONS:
                 raise RequestBodyError("unknown verification action")
+            if path == "/api/agent-state/verification" and action == "completion" and "repository_revision" in payload:
+                revision = payload["repository_revision"]
+                if (
+                    not isinstance(revision, str)
+                    or not revision
+                    or len(revision) > 256
+                    or revision != revision.strip()
+                ):
+                    raise RequestBodyError(
+                        "repository_revision must be a non-empty opaque revision of at most 256 characters"
+                    )
 
         if path == "/api/agent-state/blackboard":
             retired_fields = sorted(_AGENT_BLACKBOARD_RETIRED_FIELDS.intersection(payload))
@@ -7245,7 +7258,8 @@ class Handler(BaseHTTPRequestHandler):
                         return
                     current_revision = ""
                     root = str(payload.get("root", "")).strip()
-                    requested_revision = str(payload.get("repository_revision", "")).strip()
+                    has_requested_revision = "repository_revision" in payload
+                    requested_revision = payload.get("repository_revision", "")
                     repo_tools = getattr(APP, "repo_tools", None)
                     if root or requested_revision:
                         current_revision, revision_stop = _completion_revision_or_stop(
@@ -7253,6 +7267,16 @@ class Handler(BaseHTTPRequestHandler):
                         )
                         if revision_stop:
                             self._send(409, revision_stop); return
+                    if has_requested_revision and not _completion_revision_pin_matches(
+                        requested_revision, current_revision
+                    ):
+                        self._send(409, {
+                            "success": False,
+                            "terminal": True,
+                            "retryable": False,
+                            "stop_code": "completion_repository_revision_mismatch",
+                            "error": "requested repository revision does not match the current repository revision",
+                        }); return
                     res = APP.agent_verification.completion(task_id, current_revision=current_revision)
                     if not current_revision and any(
                         str(getattr(receipt, "repository_revision", "") or "").strip()
