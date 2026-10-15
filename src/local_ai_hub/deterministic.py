@@ -48,6 +48,7 @@ from .process_utils import (
     ProcessCancelledError, ProcessCleanupUnverifiedError, canonical_root,
     clean_git_env, hidden_run_kwargs, run_hidden,
 )
+from .repo_tools import is_root_archive_path
 from .state_paths import configured_state_dir
 
 
@@ -5775,8 +5776,8 @@ def test_{sym}_regression_edge_cases():
         p_root = Path(self._root(root)).resolve()
         if not p_root.is_dir():
             return {"success": False, "error": f"root not found: {root}", "terminal": True, "retryable": False}
-        if not symbol or not symbol.strip():
-            return {"success": False, "error": "symbol cannot be empty", "terminal": True, "retryable": False}
+        if not isinstance(symbol, str) or not symbol.strip():
+            return {"success": False, "status_code": 400, "error": "symbol must be a non-empty string", "terminal": True, "retryable": False}
 
         sym = symbol.strip()
         if (direction == "callers" and ("::" in sym or "." in sym)) or (direction == "callees" and "." in sym):
@@ -5862,6 +5863,9 @@ def test_{sym}_regression_edge_cases():
                     continue
                 else:
                     continue
+                relative = path.relative_to(p_root).as_posix()
+                if is_root_archive_path(relative):
+                    continue
                 source_files_seen += 1
                 if source_files_seen > max_files:
                     incomplete = True
@@ -5893,7 +5897,6 @@ def test_{sym}_regression_edge_cases():
                     incomplete_reasons.add("file_read_or_parse_error")
                     continue
 
-                relative = path.relative_to(p_root).as_posix()
                 module_name = relative[:-3].replace("/", ".")
                 if module_name.endswith(".__init__"):
                     module_name = module_name[:-9]
