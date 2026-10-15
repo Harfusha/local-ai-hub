@@ -91,7 +91,7 @@ def _action_contracts(
     return result
 
 
-_STATUS_ACTIONS = ("brief", "cache", "telemetry", "full", "agent_state", "traces")
+_STATUS_ACTIONS = ("brief", "cache", "telemetry", "full", "agent_state", "traces", "guide")
 _REPO_ACTIONS = (
     "profile", "search", "map", "code_index", "deterministic", "context", "route", "delegate",
     "solve", "review_diff", "impact", "refactor_impact", "resolve_imports", "generate_tests",
@@ -631,6 +631,57 @@ def operation_contract(tool: str) -> dict[str, Any] | None:
     return OPERATION_CONTRACTS.get(tool)
 
 
+def operation_guide_cards(features: Any = None) -> dict[str, Any]:
+    """Small, feature-aware examples derived from the same public action contracts."""
+    examples = {
+        "local_ai_status": {"detail": "guide"},
+        "local_ai_repo": {"action": "context", "root": "ABS_ROOT", "task": "Bounded repository question", "mode": "adaptive"},
+        "local_ai_command": {"action": "classify", "command": "python -m pytest tests/unit/ -q"},
+        "local_ai_task": {"action": "delegate", "task": "Summarize supplied evidence", "context": "EVIDENCE"},
+        "local_ai_rag": {"action": "search", "root": "ABS_ROOT", "query": "Meaning to retrieve"},
+        "local_ai_coord": {"action": "memo_search", "root": "ABS_ROOT", "query": "Known finding"},
+        "local_ai_artifact": {"action": "slice", "artifact_id": "ARTIFACT_ID", "offset": 0, "max_chars": 1000},
+        "local_ai_work": {"action": "status", "work_id": "WORK_ID"},
+    }
+    tips = {
+        "local_ai_status": "One bounded check; guide is local and does not query runtime health.",
+        "local_ai_repo": "Context first; reuse evidence; fetch exact slices only when needed.",
+        "local_ai_command": "Reuse cached receipts; full output is artifact-backed when available.",
+        "local_ai_task": "Supply bounded evidence; deterministic tools establish exact facts.",
+        "local_ai_rag": "Use after indexed retrieval is insufficient; scope the repository.",
+        "local_ai_coord": "Reuse existing tasks and findings; preserve ownership and scope.",
+        "local_ai_artifact": "Slice exact evidence rather than replaying full payloads.",
+        "local_ai_work": "Closed delegation only when explicitly requested; reuse the work ID.",
+    }
+    cards = []
+    for tool, example in examples.items():
+        if not operation_enabled(features, tool):
+            continue
+        contract = OPERATION_CONTRACTS[tool]
+        selector = contract["selector_field"]
+        selected = str(example.get(selector, ""))
+        enabled = operation_actions(tool, features)
+        if selected not in enabled:
+            continue
+        action_contract = contract["actions"][selected]
+        cards.append({
+            "tool": tool, "selector": selector,
+            "required": ([selector] if contract["selector_required"] else []) + list(action_contract["required"]),
+            "required_scope": selected,
+            "example": dict(example),
+            "action_count": len(enabled),
+            "tip": tips[tool],
+        })
+    return {
+        "success": True, "guide_cards": cards,
+        "guide_scope": "enabled_tools_and_example_action_requirements",
+        "guide_tips": ["Use response_profile=compact and stable reuse_key.",
+                       "Examples contain placeholders; guide calls execute none of them.",
+                       "Full schemas remain authoritative for other actions and optional fields."],
+        "schema_token_reduction_verified": False,
+    }
+
+
 def operation_actions(tool: str, features: Any = None) -> tuple[str, ...]:
     """Return selector values enabled by a feature snapshot, in stable order."""
     contract = operation_contract(tool)
@@ -814,6 +865,22 @@ def _status_output_variants(action: str) -> list[dict[str, Any]]:
         "properties": {"success": {"const": False}, "error": {"type": "string"}},
         "additionalProperties": True,
     }
+    if action == "guide":
+        return [{
+            "type": "object", "required": ["success", "guide_cards", "guide_scope"],
+            "properties": {
+                "success": {"const": True}, "guide_scope": {"type": "string"},
+                "guide_cards": {"type": "array", "maxItems": 8, "items": {
+                    "type": "object", "required": ["tool", "selector", "required", "example", "tip"],
+                    "properties": {
+                        "tool": {"type": "string"}, "selector": {"type": "string"},
+                        "required": {"type": "array", "items": {"type": "string"}},
+                        "example": {"type": "object"}, "tip": {"type": "string"},
+                    }, "additionalProperties": True,
+                }},
+                "schema_token_reduction_verified": {"const": False},
+            }, "additionalProperties": True,
+        }, failure]
     if action == "brief":
         return [{
             "type": "object",

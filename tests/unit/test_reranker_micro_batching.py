@@ -92,3 +92,46 @@ def test_concurrent_reranks_interleave_between_two_pair_micro_batches(tmp_path: 
     assert all(len(batch) <= 2 for batch in model.calls)
     assert model.calls[0] == ["A0", "A1"]
     assert model.calls[1] == ["B0"]
+
+
+def test_foreground_rerank_enters_between_background_batches_with_real_gate(tmp_path, monkeypatch):
+    """Use production gate and predict lock; only model inference is replaced."""
+    reranker = Reranker({
+        "server": {"state_dir": str(tmp_path)},
+        "models": {"reranker": "fake-reranker", "reranker_device": "cpu"},
+        "features": {"reranker": True}, "cache": {"reranker": False},
+    })
+    first_batch = threading.Event()
+    foreground_waiting = threading.Event()
+    calls: list[list[str]] = []
+    condition = reranker._cpu_gate._cond
+    original_wait = condition.wait
+
+    def observed_wait(timeout=None):
+        if reranker._cpu_gate._foreground_waiters:
+            foreground_waiting.set()
+        return original_wait(timeout)
+
+    monkeypatch.setattr(condition, "wait", observed_wait)
+
+    class Model:
+        def predict(self, pairs, **_kwargs):
+            docs = [document for _query, document in pairs]
+            calls.append(docs)
+            if docs == ["A0", "A1"]:
+                first_batch.set()
+                assert foreground_waiting.wait(timeout=3)
+            return [0.5] * len(pairs)
+
+    reranker._model = Model()
+    monkeypatch.setattr(reranker, "_ensure_model", lambda **_kwargs: True)
+    monkeypatch.setattr(reranker, "_candidate_specs", lambda: [])
+    monkeypatch.setattr(reranker, "_execution_identity", lambda: "same-backend")
+    monkeypatch.setattr(reranker, "_cache_identity", lambda **_kwargs: None)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        background = pool.submit(reranker.rerank, "background", ["A0", "A1", "A2", "A3"], priority=0)
+        assert first_batch.wait(timeout=3)
+        foreground = pool.submit(reranker.rerank, "foreground", ["B0"], priority=3)
+        assert foreground.result(timeout=5)["success"]
+        assert background.result(timeout=5)["success"]
+    assert calls == [["A0", "A1"], ["B0"], ["A2", "A3"]]
