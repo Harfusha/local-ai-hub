@@ -2808,6 +2808,8 @@ def _local_ai_repo_impl(
     *,
     limit: int = 24,
     offset: int = 0,
+    old_symbol: str | None = None,
+    new_symbol: str | None = None,
 ) -> dict[str, Any]:
     """Primary bounded repository worker for the main agent.
 
@@ -3067,8 +3069,13 @@ def _local_ai_repo_impl(
     if action == "topology":
         return _compact(CLIENT.post("/api/repo/topology", {"root": root}, timeout=_timeout("quick")), "architecture")
     if action == "ast_refactor":
+        old_name = old_symbol if old_symbol is not None else query or task
+        new_name = new_symbol if new_symbol is not None else diff
+        if any(not isinstance(name, str) or not name.strip() or "\x00" in name or len(name) > 512
+               for name in (old_name, new_name)):
+            return contract_error("ast_refactor requires non-empty old_symbol and new_symbol (at most 512 characters each)")
         return _compact(CLIENT.post("/api/code/ast_rename", {
-            "root": root, "file": path, "old_symbol": query or task, "new_symbol": diff, "apply": staged,
+            "root": root, "file": path, "old_symbol": old_name.strip(), "new_symbol": new_name.strip(), "apply": staged,
         }, timeout=_timeout("quick")), "verify")
     if action == "generate_mocks":
         return _compact(CLIENT.post("/api/code/generate_mocks", {
@@ -3458,6 +3465,8 @@ def local_ai_repo(
     *,
     limit: int = 24,
     offset: int = 0,
+    old_symbol: str | None = None,
+    new_symbol: str | None = None,
 ) -> dict[str, Any]:
     """Primary bounded repository worker. Use when: indexed repository evidence is needed. Skip when: fresh evidence already answers it."""
     root = root if root is not None else cwd if cwd is not None else "."
@@ -3513,7 +3522,8 @@ def local_ai_repo(
         include_code, include_tests, edits, extra_fields, max_response_tokens, response_profile, reuse_key,
         include_diagnostics, clone_id, worktree_id, branch, repository_id, session_id, repository_revision,
         changed_paths, phase, focus, preload_profile, guarded, since_hash, approval, override_reason,
-        token_budget, is_worktree, parent_root, steps, limit=limit, offset=offset, **forward,
+        token_budget, is_worktree, parent_root, steps, limit=limit, offset=offset,
+        old_symbol=old_symbol, new_symbol=new_symbol, **forward,
     )
 
 

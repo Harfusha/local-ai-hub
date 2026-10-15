@@ -252,6 +252,8 @@ _ACTION_SCOPED_FIELDS = {
         "exclude_paths": frozenset({"context"}),
         "force_include_paths": frozenset({"context"}),
         "receipt": frozenset({"verify_receipt"}),
+        "old_symbol": frozenset({"ast_refactor"}),
+        "new_symbol": frozenset({"ast_refactor"}),
     },
 }
 OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
@@ -284,6 +286,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "cwd": {"type": "string"},
             "query": {"type": "string", "default": ""},
             "symbol": {"type": "string"},
+            "old_symbol": {"type": ["string", "null"], "default": None, "maxLength": 512},
+            "new_symbol": {"type": ["string", "null"], "default": None, "maxLength": 512},
             "path": {"type": "string", "default": ""},
             "task": {"type": "string", "default": ""},
             "task_id": {"type": "string", "default": ""},

@@ -264,12 +264,14 @@ When patch changes a single function, reparse only that function's line range us
 
 ### Task 51: Parameter Normalization in `ast_refactor` (#92)
 
+**2026-10-15 reassessment and implementation — validation deferred.** The previous adapter still required `query/task` and `diff`; explicit symbols were absent from both MCP signatures and the generated contract. Added keyword-only nullable `old_symbol`/`new_symbol` through both wrapper layers, scoped to `ast_refactor` in the contract. Explicit values win; omission preserves existing mappings, while explicitly empty/invalid names fail before HTTP dispatch. Both names are bounded to 512 characters and reject null bytes. Existing HTTP rename/apply semantics are unchanged. INSTALL/UPDATE prompts match. Deferred MCP-wire and precedence cases: `tests/unit/test_ast_refactor_parameters.py`, not executed.
+
 **Files:**
 - Modify: `src/local_ai_hub/mcp_server.py:2980-3000`
 - Test: `tests/unit/test_ast_refactor_parameters.py`
 
-- [ ] **Step 1: Write test verifying `ast_refactor(old_symbol="foo", new_symbol="bar")` passes**
-- [ ] **Step 2: Implement fix**
+- [x] **Step 1: Write explicit-symbol/precedence regression source (execution deferred)**
+- [x] **Step 2: Implement fix (source reviewed; validation pending)**
 Map `old_symbol` and `new_symbol` directly in `mcp_server.py` without forcing agent to pass new symbol in `diff`.
 - [ ] **Step 3: Run test and verify pass & Commit**
 `git commit -m "fix(mcp): normalize old_symbol and new_symbol parameters for ast_refactor"`
