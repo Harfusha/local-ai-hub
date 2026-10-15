@@ -42,6 +42,7 @@ from .diff_parsers import (
     extract_rust_diff_defs,
     extract_ts_diff_defs,
 )
+from .secret_history import parse_git_patch_output
 from .process_utils import (
     ProcessCancelledError, ProcessCleanupUnverifiedError, canonical_root,
     clean_git_env, hidden_run_kwargs, run_hidden,
@@ -6030,12 +6031,38 @@ def test_{sym}_regression_edge_cases():
         commit_depth: int = 20,
     ) -> dict[str, Any]:
         """Scan repository or specific file for leaked secrets, API keys, and credentials."""
+        if scan_git_history and (
+            not isinstance(commit_depth, int) or isinstance(commit_depth, bool)
+            or not 1 <= commit_depth <= 100
+        ):
+            return {
+                "success": False, "error": "commit_depth must be an integer from 1 to 100",
+                "error_code": "invalid_commit_depth",
+                "scan_complete": False, "clean": False, "scanned_git_history": False,
+                "git_history_status": "invalid_commit_depth",
+            }
         p_root = Path(self._root(root))
         if not p_root.is_dir():
             return {"success": False, "error": f"root not found: {root}"}
         scan_root = p_root.resolve(strict=True)
         started = time.monotonic()
         deadline = started + _SECRET_SCAN_MAX_SECONDS
+        history_pathspec: str | None = None
+        if scan_git_history and path is not None:
+            requested_history_path = Path(path)
+            history_target = requested_history_path if requested_history_path.is_absolute() else scan_root / requested_history_path
+            try:
+                normalized_history_path = history_target.resolve(strict=False)
+                history_pathspec = normalized_history_path.relative_to(scan_root).as_posix()
+                if not history_pathspec or history_pathspec == ".":
+                    raise ValueError
+            except (OSError, ValueError):
+                return {
+                    "success": False, "error": "history path must resolve within scan root",
+                    "error_code": "invalid_pathspec",
+                    "scan_complete": False, "clean": False, "scanned_git_history": False,
+                    "git_history_status": "invalid_pathspec",
+                }
         excluded = {".git", "node_modules", "venv", ".venv", "tool-envs", "state", "build", "dist", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox"}
         binary_suffixes = {".png", ".jpg", ".jpeg", ".exe", ".bin", ".whl", ".pyc", ".db", ".sqlite3", ".zip", ".tar", ".gz", ".lock", ".wasm"}
         findings: list[dict[str, Any]] = []
@@ -6047,10 +6074,6 @@ def test_{sym}_regression_edge_cases():
         bytes_read = 0
         limits_hit: list[str] = []
         complete = True
-        history_depth_valid = (
-            isinstance(commit_depth, int) and not isinstance(commit_depth, bool)
-            and 1 <= commit_depth <= 100
-        )
         patterns = _SECRET_SCAN_PATTERNS
         placeholders = {"EXAMPLE", "DUMMY", "SAMPLE", "PLACEHOLDER", "CHANGE_ME", "REPLACE_ME", "YOUR_KEY", "YOUR_API_KEY", "YOUR_SECRET", "MY_SECRET", "FAKETOKEN", "123456789", "ABCDEFGHIJKL"}
 
@@ -6074,8 +6097,12 @@ def test_{sym}_regression_edge_cases():
             raw_line: bytes, rel: str, line_no: int, *,
             source: str = "working_tree", git_commit: str | None = None,
             git_change: str | None = None,
-        ) -> None:
+        ) -> bool:
             nonlocal complete
+            if len(findings) >= _SECRET_SCAN_MAX_FINDINGS:
+                limits_hit.append("findings")
+                complete = False
+                return True
             line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
             is_test = _is_test_file(rel)
             for rule_name, label, pattern, severity in patterns:
@@ -6097,7 +6124,8 @@ def test_{sym}_regression_edge_cases():
                     if len(findings) >= _SECRET_SCAN_MAX_FINDINGS:
                         limits_hit.append("findings")
                         complete = False
-                        return
+                        return True
+            return False
 
         if path is not None:
             requested = Path(path)
@@ -6286,41 +6314,31 @@ def test_{sym}_regression_edge_cases():
                 "History scanning covers at most the requested commit depth, not all refs or unreachable objects.",
                 "Shallow-history boundaries and commits unreachable from HEAD may omit older or alternate history.",
             ]
-            history_pathspec: str | None = None
-            pathspec_ok = True
-            if path is not None:
-                raw_pathspec = str(path).replace("\\", "/")
-                parts = raw_pathspec.split("/")
-                pathspec_ok = bool(raw_pathspec) and not raw_pathspec.startswith(("/", ":", "-")) and not any(
-                    part in {"", ".", ".."} for part in parts
-                ) and not any(ord(char) < 32 for char in raw_pathspec)
-                if pathspec_ok:
-                    history_pathspec = raw_pathspec
-            history_coverage["requested_commit_depth"] = commit_depth if history_depth_valid else None
-            if not history_depth_valid:
-                history_status = "invalid_commit_depth"
-                _record_error("git_history_invalid_commit_depth")
-            elif not pathspec_ok:
-                history_status = "invalid_pathspec"
-                _record_error("git_history_invalid_pathspec")
+            history_coverage["requested_commit_depth"] = commit_depth
+            if len(findings) >= _SECRET_SCAN_MAX_FINDINGS:
+                history_status = "finding_limit_reached"
+                limits_hit.append("findings")
+                complete = False
+                _record_error("git_history_finding_limit_reached")
             else:
                 remaining_time = deadline - time.monotonic()
                 remaining_bytes = _SECRET_SCAN_MAX_TOTAL_BYTES - bytes_read
-                per_stream_limit = min(8 * 1024 * 1024, max(1024, remaining_bytes // 2))
                 if remaining_time <= 0:
                     history_status = "time_budget_exhausted"
                     limits_hit.append("time")
                     _record_error("git_history_not_scanned_within_budget")
-                elif remaining_bytes <= 0:
+                elif remaining_bytes < 2048:
                     history_status = "aggregate_byte_budget_exhausted"
                     limits_hit.append("aggregate_bytes")
                     _record_error("git_history_not_scanned_within_budget")
                 else:
+                    per_stream_limit = min(8 * 1024 * 1024, remaining_bytes // 2)
                     argv = [
                         "git", "--literal-pathspecs", "--no-pager", "-C", str(scan_root),
                         "-c", "core.quotePath=true", "-c", "color.ui=false",
                         "log", "--no-color", "--no-ext-diff", "--no-textconv",
                         "--no-renames", "--no-notes", "--no-decorate", "--no-show-signature",
+                        "--src-prefix=a/", "--dst-prefix=b/", "--unified=3",
                         "--patch", "--max-count=" + str(commit_depth),
                         "--format=%x00LAH_SECRET_SCAN_COMMIT:%H PARENTS:%P%x00", "--end-of-options", "HEAD", "--",
                     ]
@@ -6340,6 +6358,9 @@ def test_{sym}_regression_edge_cases():
                         stdout = process_result.stdout if stdout_ok else b""
                         stderr = process_result.stderr if stderr_ok else b""
                         history_coverage["bytes_read"] = len(stdout) + len(stderr)
+                        history_coverage["discarded_output_bytes"] = int(
+                            getattr(process_result, "discarded_output_bytes", 0) or 0
+                        )
                         capture_bad = bool(
                             getattr(process_result, "stdout_truncated", False)
                             or getattr(process_result, "stderr_truncated", False)
@@ -6354,184 +6375,41 @@ def test_{sym}_regression_edge_cases():
                             history_status = "output_capture_incomplete"
                             limits_hit.append("history_output_bytes")
                             _record_error("git_history_capture_incomplete")
+                        elif process_result.returncode != 0:
+                            history_status = "command_failed"
+                            _record_error("git_history_command_failed")
                         else:
-                            history_command_completed = process_result.returncode == 0
-                            if process_result.returncode:
-                                history_status = "command_failed"
-                                _record_error("git_history_command_failed")
-                            else:
-                                history_status = "scanned"
-                            stdout_lines = io.BytesIO(stdout)
-                            commit_id: str | None = None
-                            history_path = "<history path unavailable>"
-                            path_known = False
-                            old_line = new_line = 0
-                            in_hunk = False
-                            unsupported_patch = False
-                            commit_ids: set[str] = set()
-
-                            def parse_diff_path(header: bytes) -> str | None:
-                                payload = header[len(b"diff --git "):]
-                                def quoted_token(offset: int) -> tuple[bytes, int] | None:
-                                    if offset >= len(payload) or payload[offset:offset + 1] != b'"':
-                                        return None
-                                    offset += 1
-                                    decoded = bytearray()
-                                    escapes = {ord('"'): b'"', ord("\\"): b"\\", ord("a"): b"\a", ord("b"): b"\b",
-                                               ord("t"): b"\t", ord("n"): b"\n", ord("v"): b"\v", ord("f"): b"\f", ord("r"): b"\r"}
-                                    while offset < len(payload):
-                                        byte = payload[offset]
-                                        offset += 1
-                                        if byte == ord('"'):
-                                            return bytes(decoded), offset
-                                        if byte != ord("\\"):
-                                            decoded.append(byte)
-                                            continue
-                                        if offset >= len(payload):
-                                            return None
-                                        escaped = payload[offset]
-                                        offset += 1
-                                        if escaped in escapes:
-                                            decoded.extend(escapes[escaped])
-                                        elif ord("0") <= escaped <= ord("7") and offset + 1 < len(payload):
-                                            octal = bytes((escaped, payload[offset], payload[offset + 1]))
-                                            if any(byte < ord("0") or byte > ord("7") for byte in octal):
-                                                return None
-                                            decoded.append(int(octal, 8))
-                                            offset += 2
-                                        else:
-                                            return None
-                                    return None
-
-                                quoted_old = quoted_token(0)
-                                quoted_new = quoted_token(quoted_old[1] + 1) if quoted_old and payload[quoted_old[1]:quoted_old[1] + 1] == b" " else None
-                                if quoted_old and quoted_new and quoted_new[1] == len(payload):
-                                    left, right = quoted_old[0], quoted_new[0]
-                                elif payload.startswith(b'"'):
-                                    return None
-                                else:
-                                    separators = [index for index in range(len(payload)) if payload.startswith(b" b/", index)]
-                                    if len(separators) != 1:
-                                        return None
-                                    split = separators[0]
-                                    left, right = payload[:split], payload[split + 1:]
-                                if not left.startswith(b"a/") or not right.startswith(b"b/"):
-                                    return None
-                                old_raw, new_raw = left[2:], right[2:]
-                                if old_raw != new_raw or not old_raw or any(byte < 32 for byte in old_raw):
-                                    return None
-                                try:
-                                    value = old_raw.decode("utf-8", errors="strict")
-                                except UnicodeDecodeError:
-                                    return None
-                                if value.startswith(("/", "-", ":")) or any(part in {"", ".", ".."} for part in value.split("/")):
-                                    return None
-                                return value
-
-                            hunk_pattern = re.compile(rb"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: |$)")
-                            for history_line in iter(stdout_lines.readline, b""):
-                                history_line = history_line.rstrip(b"\r\n")
-                                if time.monotonic() >= deadline:
-                                    history_status = "time_budget_exhausted"
-                                    limits_hit.append("time")
-                                    _record_error("git_history_parse_time_budget_exhausted")
-                                    break
-                                marker = re.match(rb"^\x00LAH_SECRET_SCAN_COMMIT:([0-9a-f]{40,64}) PARENTS:((?:[0-9a-f]{40,64}(?: [0-9a-f]{40,64})*)?)\x00$", history_line)
-                                if marker:
-                                    commit_id = marker.group(1).decode("ascii")
-                                    commit_ids.add(commit_id)
-                                    if len(marker.group(2).split()) > 1:
-                                        history_status = "incomplete_patch"
-                                        _record_error("git_history_merge_commit_omitted")
-                                    history_path = "<history path unavailable>"
-                                    path_known = False
-                                    in_hunk = False
-                                    unsupported_patch = False
-                                    continue
-                                if history_line.startswith((b"diff --git ", b"diff --cc ", b"diff --combined ")):
-                                    in_hunk = False
-                                    if commit_id is None:
-                                        history_status = "incomplete_patch"
-                                        _record_error("git_history_commit_context_missing")
-                                    unsupported_patch = history_line.startswith((b"diff --cc ", b"diff --combined "))
-                                    if unsupported_patch:
-                                        history_status = "incomplete_patch"
-                                        _record_error("git_history_combined_patch_omitted")
-                                    else:
-                                        parsed_path = parse_diff_path(history_line)
-                                        path_known = parsed_path is not None
-                                        history_path = parsed_path or "<history path unavailable>"
-                                        if not path_known:
-                                            history_status = "incomplete_patch"
-                                            _record_error("git_history_path_unresolved")
-                                    continue
-                                if history_line.startswith(b"diff "):
-                                    in_hunk = False
-                                    history_status = "incomplete_patch"
-                                    _record_error("git_history_malformed_diff_header")
-                                    continue
-                                if history_line.startswith((b"Binary files ", b"GIT binary patch")):
-                                    in_hunk = False
-                                    history_status = "incomplete_patch"
-                                    _record_error("git_history_binary_content_omitted")
-                                    continue
-                                if history_line.startswith(b"@@@"):
-                                    in_hunk = False
-                                    unsupported_patch = True
-                                    history_status = "incomplete_patch"
-                                    _record_error("git_history_combined_hunk_omitted")
-                                    continue
-                                hunk = hunk_pattern.match(history_line)
-                                if hunk:
-                                    if not path_known or unsupported_patch or commit_id is None:
-                                        in_hunk = False
-                                        history_status = "incomplete_patch"
-                                        _record_error("git_history_hunk_context_unresolved")
-                                        continue
-                                    old_line = int(hunk.group(1))
-                                    new_line = int(hunk.group(3))
-                                    in_hunk = True
-                                    continue
-                                if not in_hunk:
-                                    continue
-                                if history_line.startswith(b"\\ No newline at end of file"):
-                                    continue
-                                if history_line.startswith(b"+"):
-                                    _scan_line(history_line[1:], history_path, new_line, source="git_history", git_commit=commit_id, git_change="added")
-                                    new_line += 1
-                                elif history_line.startswith(b"-"):
-                                    _scan_line(history_line[1:], history_path, old_line, source="git_history", git_commit=commit_id, git_change="removed")
-                                    old_line += 1
-                                elif history_line.startswith(b" "):
-                                    old_line += 1
-                                    new_line += 1
-                                else:
-                                    in_hunk = False
-                                    history_status = "incomplete_patch"
-                                    _record_error("git_history_malformed_hunk")
-                                if len(findings) >= _SECRET_SCAN_MAX_FINDINGS:
-                                    limits_hit.append("findings")
-                                    complete = False
-                                    history_status = "finding_limit_reached"
-                                    break
-                            history_coverage["commits_scanned"] = len(commit_ids)
-                            if process_result.returncode == 0 and history_status == "scanned":
+                            history_command_completed = True
+                            parsed = parse_git_patch_output(
+                                stdout, deadline=deadline,
+                                max_line_bytes=_SECRET_SCAN_MAX_LINE_BYTES,
+                                finding_count=len(findings), max_findings=_SECRET_SCAN_MAX_FINDINGS,
+                                scan_line=_scan_line,
+                            )
+                            history_coverage["commits_scanned"] = parsed["commits_scanned"]
+                            for code in parsed["errors"]:
+                                _record_error(code)
+                            if "git_history_line_exceeds_limit" in parsed["errors"]:
+                                limits_hit.append("history_line_bytes")
+                            history_status = parsed["status"]
+                            if parsed["findings_limit"]:
+                                limits_hit.append("findings")
+                            elif history_status == "scanned":
                                 history_status = "scanned_bounded_history"
-                            if history_coverage["bytes_read"] + bytes_read > _SECRET_SCAN_MAX_TOTAL_BYTES:
-                                history_status = "aggregate_byte_limit_reached"
-                                limits_hit.append("aggregate_bytes")
-                                _record_error("git_history_exceeded_aggregate_byte_budget")
+                            elif history_status == "time_budget_exhausted":
+                                limits_hit.append("time")
+                        if history_coverage["bytes_read"] + bytes_read > _SECRET_SCAN_MAX_TOTAL_BYTES:
+                            history_status = "aggregate_byte_limit_reached"
+                            limits_hit.append("aggregate_bytes")
+                            _record_error("git_history_exceeded_aggregate_byte_budget")
                     except (ProcessCancelledError, ProcessCleanupUnverifiedError, subprocess.SubprocessError, OSError, ValueError):
                         history_status = "process_failed_or_cleanup_unverified"
                         _record_error("git_history_process_or_cleanup_unverified")
-                    if history_status not in {"scanned_bounded_history"}:
+                    if history_status != "scanned_bounded_history":
                         complete = False
                     if time.monotonic() >= deadline:
                         limits_hit.append("time")
                         complete = False
-            if history_status not in {"scanned_bounded_history"}:
-                complete = False
-
         leak_count = len(findings)
         return {
             "success": True,
