@@ -1,5 +1,7 @@
 # Generic Agent Installation & Integration Prompt for Local AI Hub
 
+Event and incident storage accepts only current durable schemas. Older event layouts, payload-version override tables, incident ID fabrication and automatic column upgrades are rejected rather than converted. Current producer definitions govern schema validation; prior fingerprints are not compatibility alternatives. Existing durable data is retained for explicit recovery.
+
 Agent State uses `agent_state.sqlite`; old standalone filenames are never copied or merged automatically. Old-only state or an invalid canonical target hiding an old history is rejected while retaining the files. Archived old files alongside readable canonical state remain untouched. Unsupported durable schemas require explicit operator recovery; disposable derived metadata may rebuild.
 
 Task contracts require a nonempty string `goal`. Persisted title-only or missing-goal contracts are rejected without rewriting their contents. HTTP creation accepts a current contract object or the advertised goal/task shorthand; old intent/title/query coercions are removed. Completion requires the current full verification contract and rejects obsolete evaluator signatures.
