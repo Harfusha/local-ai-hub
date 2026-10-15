@@ -125,6 +125,33 @@ def test_test_matrix_omits_changed_file_and_mixed_language_wrong_runner(tmp_path
     assert result["coverage"]["scan_complete"] is False
 
 
+def test_test_matrix_read_ceiling_is_prevalidated_size_plus_lookahead(tmp_path: Path, monkeypatch) -> None:
+    test_dir = tmp_path / "tests"
+    test_dir.mkdir()
+    test_file = test_dir / "test_growth.py"
+    test_file.write_text("def test_case(): pass\n", encoding="utf-8")
+    engine = _engine(tmp_path)
+    original_stat = test_file.stat()
+    original_read = engine.repo_tools._read_snapshot
+    requested_limits = []
+
+    def candidates(*_args, **_kwargs):
+        yield test_file, original_stat
+
+    def grow_before_bounded_read(path: Path, *, stat=None, max_bytes=None):
+        requested_limits.append(max_bytes)
+        path.write_bytes(path.read_bytes() + b"#")
+        return original_read(path, stat=stat, max_bytes=max_bytes)
+
+    monkeypatch.setattr(engine.repo_tools, "_iter_files_with_stat", candidates)
+    monkeypatch.setattr(engine.repo_tools, "_read_snapshot", grow_before_bounded_read)
+    result = engine.test_matrix(str(tmp_path))
+
+    assert requested_limits == [original_stat.st_size]
+    assert result["test_files"] == []
+    assert result["coverage"]["scan_complete"] is False
+
+
 def test_test_matrix_caps_target_count_and_file_bytes(tmp_path: Path, monkeypatch) -> None:
     test_dir = tmp_path / "tests"
     test_dir.mkdir()

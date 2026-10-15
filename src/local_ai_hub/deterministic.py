@@ -4599,7 +4599,10 @@ def test_{sym}_regression_edge_cases():
             try:
                 if time.monotonic() >= deadline:
                     raise TimeoutError("test matrix read deadline exceeded")
-                digest, lines = self.repo_tools._read_snapshot(f, stat=before, max_bytes=max_file_bytes)
+                # Match the read ceiling to the prevalidated size. The snapshot
+                # helper reads max_bytes + 1 for growth detection, so aggregate
+                # selection reserves that lookahead byte before dispatch.
+                digest, lines = self.repo_tools._read_snapshot(f, stat=before, max_bytes=int(before.st_size))
                 txt = "\n".join(lines)
                 lstat_after = f.lstat()
                 after = f.stat()
@@ -4675,11 +4678,12 @@ def test_{sym}_regression_edge_cases():
         remaining_bytes = max_total_bytes
         for item in target_paths:
             size = int(item[2].st_size)
-            if size > remaining_bytes:
+            reservation = size + 1  # _read_snapshot's bounded growth lookahead
+            if reservation > remaining_bytes:
                 incomplete = True
                 warnings.append("test_file_total_byte_limit_reached")
                 break
-            remaining_bytes -= size
+            remaining_bytes -= reservation
             selected.append(item)
         if selected:
             with ThreadPoolExecutor(max_workers=min(8, len(selected))) as pool:
