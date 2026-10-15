@@ -120,6 +120,23 @@ def test_ambiguous_csharp_interpolation_keeps_source_together() -> None:
     assert chunks == [source]
 
 
+@pytest.mark.parametrize("prefix", ['$@"', '@$"', '$"""'])
+def test_csharp_interpolated_prefixes_are_detected_before_string_scanning(prefix) -> None:
+    source = f'class C {{ string M() {{ return {prefix}{{Call("}}")}}"; }} }}\n'
+
+    chunks = _regex_ast_chunks(source, "c_sharp", size=12)
+
+    assert chunks == [source]
+
+
+def test_nested_typescript_template_inside_interpolation_keeps_source_whole() -> None:
+    source = "const render = (name: string) => `outer ${`inner } ${name}`} done`;\n"
+
+    chunks = _regex_ast_chunks(source, "typescript", size=12)
+
+    assert chunks == [source]
+
+
 def test_tree_sitter_absence_dispatches_to_lexical_chunker(monkeypatch) -> None:
     store = RAGStore.__new__(RAGStore)
     store.config = {"rag": {"chunk_chars": 40, "chunk_overlap_chars": 0}}
