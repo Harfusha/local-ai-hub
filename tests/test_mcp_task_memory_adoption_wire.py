@@ -421,18 +421,22 @@ def test_stdio_default_budget_delivers_memory_without_extra_fields(tmp_path, mon
 
 @pytest.mark.parametrize("profile", ["compact", "minimal", "delta", "debug"])
 def test_task_memory_original_metadata_is_canonical_across_wrappers(tmp_path, monkeypatch, profile):
-    expected, _, results = _round_trip(tmp_path, [{
-        "action": "task_create", "contract": {"goal": "canonical task memory"},
-        "response_profile": profile, "reuse_key": f"canonical-memory:{profile}",
-        "max_response_tokens": 512,
-    }], monkeypatch)
-    result = results[0]
-    payload = result.structuredContent
-    assert payload["success"] is True, payload
-    assert payload["task"]["checkpoint"]["state_data"]["memory_context"] == expected
-    assert payload["response_budget"]["original_tokens"] == task_memory_original_tokens(payload)
-    assert payload["response_budget"]["returned_tokens"] == json_tokens(
-        result.model_dump(mode="json", by_alias=True, exclude_none=True))
+    expected, _, results = _round_trip(tmp_path, [
+        {"action": "task_create", "contract": {"goal": "canonical task memory"},
+         "response_profile": profile, "reuse_key": f"canonical-memory:{profile}",
+         "max_response_tokens": 3200},
+        {"action": "task_get", "response_profile": profile,
+         "reuse_key": f"canonical-memory:{profile}", "max_response_tokens": 3200},
+    ], monkeypatch)
+    for result in results:
+        payload = result.structuredContent
+        assert payload["success"] is True, payload
+        assert payload["task"]["checkpoint"]["state_data"]["memory_context"] == expected
+        assert payload["response_budget"]["original_tokens"] == task_memory_original_tokens(payload)
+        assert payload["response_budget"]["returned_tokens"] == json_tokens(
+            result.model_dump(mode="json", by_alias=True, exclude_none=True))
+    if profile == "delta":
+        assert "delta" in results[1].structuredContent
 
 
 def test_stdio_subminimum_quota_rejected_before_task_side_effect(tmp_path, monkeypatch):
