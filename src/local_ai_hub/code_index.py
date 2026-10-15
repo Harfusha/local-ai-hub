@@ -2468,7 +2468,10 @@ class CodeIndex:
                 "truncation": {"returned_count": 0, "observed_match_count": 0, "candidate_cap_reached": False},
                 "parse_outcomes": {"scope": "no_candidates", "files_examined": 0, "syntax_error_files": 0, "fallback_files": 0, "unavailable_files": 0, "failed_files": 0, "unknown_files": 0, "complete": False},
             }
+        exact_identifier = query if query.isidentifier() and query.isascii() else None
         terms = self._query_terms(query)
+        if not terms and exact_identifier is not None:
+            terms = [exact_identifier.lower()]
         if not terms:
             return {
                 "success": True, "root": resolved_root, "query": query, "terms": [],
@@ -2482,7 +2485,7 @@ class CodeIndex:
             }
         cache_generation = self._cache_generation()
         cache_key = stable_hash({
-            "root": resolved_root, "terms": terms, "limit": limit, "offset": offset,
+            "root": resolved_root, "query": query, "terms": terms, "limit": limit, "offset": offset,
             "generation": cache_generation,
         })
         cached = None if verify_freshness else self._query_l1.get(cache_key)
@@ -2532,9 +2535,29 @@ class CodeIndex:
             + " ORDER BY _score DESC,path ASC,line ASC,name_path ASC LIMIT ? OFFSET ?"
         )
         with self._lock, closing(self._connect()) as con:
-            con.create_function("hub_code_index_score", 4, score_match, deterministic=True)
-            total_matches = int(con.execute(count_sql, args).fetchone()[0])
-            rows = con.execute(sql, [*args, limit, offset]).fetchall()
+            exact_name = exact_identifier
+            exact_total = 0
+            if exact_name is not None:
+                exact_filters = (
+                    "root=? AND lower(name)=? AND " + root_archive_sql
+                    + (" AND " + ignored_path_sql if ignored_path_sql else "")
+                )
+                exact_args = [resolved_root, exact_name.lower(), *(f"/{name}/" for name in ignored_paths)]
+                exact_total = int(con.execute(
+                    "SELECT COUNT(*) FROM symbols WHERE " + exact_filters, exact_args
+                ).fetchone()[0])
+            if exact_total:
+                total_matches = exact_total
+                rows = con.execute(
+                    "SELECT path,name,kind,line,end_line,container,name_path,signature,access,docstring "
+                    "FROM symbols WHERE " + exact_filters
+                    + " ORDER BY path ASC,line ASC,name_path ASC LIMIT ? OFFSET ?",
+                    [*exact_args, limit, offset],
+                ).fetchall()
+            else:
+                con.create_function("hub_code_index_score", 4, score_match, deterministic=True)
+                total_matches = int(con.execute(count_sql, args).fetchone()[0])
+                rows = con.execute(sql, [*args, limit, offset]).fetchall()
         candidate_truncated = False
         candidate_limit = None
 
