@@ -145,6 +145,47 @@ def test_mcp_compaction_returns_413_when_budget_omits_requested_page_rows(
     assert result[page_key] == []
 
 
+def test_code_index_compaction_keeps_largest_whole_symbol_prefix_with_continuation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = [
+        {
+            "path": f"src/{index:03}.py", "name": f"symbol_{index:03}",
+            "kind": "function", "line": index + 1,
+            "signature": f"def symbol_{index:03}(value: str) -> str",
+        }
+        for index in range(40)
+    ]
+    value = {
+        "success": True, "root": ".", "symbols": page, "limit": 40,
+        "offset": 40, "total_matches": 100, "returned_count": 40,
+        "matches_count": 40, "has_more": True,
+    }
+
+    def omit_page_rows(compacted, **_kwargs):
+        result = dict(compacted)
+        result["symbols"] = []
+        return result
+
+    monkeypatch.setattr(mcp_server, "_response_budget", lambda *_args: (1800, "compact", "", True))
+    monkeypatch.setattr(mcp_server, "budget_response", omit_page_rows)
+    token = mcp_server._CURRENT_RESPONSE_OPTIONS.set({"tool": "local_ai_repo", "max_response_tokens": 1800})
+    try:
+        result = mcp_server._compact(value, task_kind="code_index")
+    finally:
+        mcp_server._CURRENT_RESPONSE_OPTIONS.reset(token)
+
+    assert result["success"] is True
+    assert 0 < len(result["symbols"]) < len(page)
+    assert result["symbols"] == page[:len(result["symbols"])]
+    assert result["returned_count"] == result["matches_count"] == result["returned_limit"] == len(result["symbols"])
+    assert result["offset"] == 40
+    assert result["limit"] == 40
+    assert result["total_matches"] == 100
+    assert result["has_more"] is True
+    assert result["next_offset"] == 40 + len(result["symbols"])
+
+
 @pytest.mark.parametrize("limit,offset", [(MAX_PAGE_SIZE + 1, 0), (24, MAX_PAGE_WINDOW)])
 def test_service_code_query_rejects_values_above_http_bounds(
     tmp_path: Path, limit: int, offset: int,

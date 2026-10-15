@@ -1115,6 +1115,62 @@ def _task_memory_projection(value: Any) -> dict[str, Any] | None:
     return projected
 
 
+def _code_index_page_with_prefix(
+    base: dict[str, Any], raw: dict[str, Any], symbols: list[Any], count: int,
+) -> dict[str, Any]:
+    """Build an honest code-index page containing a whole-symbol prefix."""
+    candidate = dict(base)
+    offset = raw.get("offset", 0)
+    total = raw.get("total_matches", 0)
+    requested_limit = raw.get("limit", 24)
+    has_more = bool(raw.get("has_more")) or count < len(symbols)
+    candidate.update({
+        "success": True,
+        "symbols": symbols[:count],
+        "offset": offset,
+        "limit": requested_limit,
+        "returned_limit": count,
+        "returned_count": count,
+        "matches_count": count,
+        "total_matches": total,
+        "has_more": has_more,
+    })
+    if has_more and isinstance(offset, int) and not isinstance(offset, bool):
+        candidate["next_offset"] = offset + count
+    else:
+        candidate.pop("next_offset", None)
+    return candidate
+
+
+def _code_index_prefix_fitting(
+    base: dict[str, Any], raw: dict[str, Any], symbols: list[Any], requested: int,
+    *, wire_budget: bool,
+) -> dict[str, Any] | None:
+    """Select the largest whole-symbol prefix fitting response and optional MCP wire budgets."""
+    for count in range(len(symbols), -1, -1):
+        candidate = _code_index_page_with_prefix(base, raw, symbols, count)
+        candidate = _normalize_deterministic(account_projection(raw, candidate))
+        response_meta = candidate.get("response_budget") if isinstance(candidate, dict) else None
+        if isinstance(response_meta, dict):
+            for _ in range(8):
+                returned = json_tokens(candidate)
+                if response_meta.get("returned_tokens") == returned:
+                    break
+                response_meta["returned_tokens"] = returned
+        if json_tokens(candidate) > requested:
+            continue
+        if wire_budget:
+            wire = {
+                "content": [{"type": "text", "text": json_dumps(candidate)}],
+                "structuredContent": candidate,
+                "isError": False,
+            }
+            if json_tokens(wire) > requested:
+                continue
+        return candidate
+    return None
+
+
 def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | None = None) -> Any:
     # Capture measured savings before the projector intentionally removes internal
     # token_saving/runtime fields. Private accounting metadata is stripped by the
@@ -1251,12 +1307,39 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
                 "error": "Exact source slice exceeds response budget; reduce the range or max_chars",
             }
     if (
-        task_kind in {"search", "code_index"}
+        task_kind == "code_index"
         and isinstance(raw_value, dict)
         and raw_value.get("success") is True
-        and isinstance(raw_value.get("results" if task_kind == "search" else "symbols"), list)
+        and isinstance(raw_value.get("symbols"), list)
     ):
-        page_key = "results" if task_kind == "search" else "symbols"
+        requested, _profile, _reuse_key, enabled = _response_budget(task_kind, options)
+        if enabled:
+            fitted = _code_index_prefix_fitting(
+                compacted if isinstance(compacted, dict) else {},
+                raw_value,
+                raw_value["symbols"],
+                requested,
+                wire_budget=True,
+            )
+            if fitted is None or (raw_value["symbols"] and not fitted.get("symbols")):
+                compacted = {
+                    "success": False, "status_code": 413, "terminal": True,
+                    "retryable": False,
+                    "error": "The first complete code-index symbol exceeds the configured response budget.",
+                    "root": raw_value.get("root"), "offset": raw_value.get("offset", 0),
+                    "limit": raw_value.get("limit", 24),
+                    "total_matches": raw_value.get("total_matches", 0),
+                    "has_more": raw_value.get("has_more", False), "symbols": [],
+                }
+            else:
+                compacted = fitted
+    if (
+        task_kind == "search"
+        and isinstance(raw_value, dict)
+        and raw_value.get("success") is True
+        and isinstance(raw_value.get("results"), list)
+    ):
+        page_key = "results"
         expected_count = len(raw_value[page_key])
         returned_results = compacted.get(page_key) if isinstance(compacted, dict) else None
         if not isinstance(returned_results, list) or len(returned_results) < expected_count:
@@ -4564,6 +4647,52 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
         original_tokens = json_tokens(_mcp_wire_view(value, structured=True))
         raw_efficiency = value.get("token_efficiency") if isinstance(value, dict) else None
         token_metadata = raw_efficiency if isinstance(raw_efficiency, dict) else None
+
+        if name == "local_ai_repo" and action == "code_index" and isinstance(value, dict) \
+                and value.get("success") is True and isinstance(value.get("symbols"), list):
+            outer_metadata = {
+                "requested_tokens": requested,
+                "original_tokens": original_tokens,
+                "returned_tokens": 0,
+                "truncated": original_tokens > requested,
+                "reused": bool((value.get("response_budget") or {}).get("reused"))
+                if isinstance(value.get("response_budget"), dict) else False,
+                "unit": "estimated_tokens",
+            }
+            for _ in range(16):
+                base = dict(value)
+                base["response_budget"] = dict(outer_metadata)
+                fitted = _code_index_prefix_fitting(
+                    base, value, value["symbols"], requested, wire_budget=True,
+                )
+                if fitted is None or (value["symbols"] and not fitted.get("symbols")):
+                    failure = {
+                        "success": False, "status_code": 413, "terminal": True,
+                        "retryable": False,
+                        "error": "The first complete code-index symbol exceeds the configured MCP response budget.",
+                    }
+                    bounded = _mcp_bounded_error(failure, requested)
+                    if bounded is not None:
+                        return bounded
+                    break
+                returned = json_tokens(_mcp_wire_view(fitted, structured=True))
+                fitted["response_budget"]["returned_tokens"] = returned
+                fitted["response_budget"]["truncated"] = returned < original_tokens
+                accounting = fitted.get("token_efficiency")
+                if isinstance(accounting, dict):
+                    accounting["protocol_tokens_est"] = tool_request_tokens(name, arguments) + returned
+                    baseline = accounting.get("baseline_tokens_est")
+                    if isinstance(baseline, int) and not isinstance(baseline, bool):
+                        signed_delta = baseline - returned
+                        accounting["token_savings_delta_est"] = signed_delta
+                        accounting["avoided_payload_tokens_est"] = max(0, signed_delta)
+                finalized = json_tokens(_mcp_wire_view(fitted, structured=True))
+                if finalized == returned and finalized <= requested:
+                    content = [mcp_types.TextContent(type="text", text=json_dumps(fitted))]
+                    return content, fitted
+                outer_metadata["returned_tokens"] = returned
+                if finalized > requested:
+                    outer_metadata["returned_tokens"] = 0
 
         if action in {"context", "context_compile"} and requested <= 128 and isinstance(value, dict):
             pack = value.get("adaptive_context_pack")
