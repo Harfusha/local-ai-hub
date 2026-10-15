@@ -4223,6 +4223,7 @@ def local_ai_coord(
     question: str = "",
     answer: str = "",
     contract: dict[str, Any] | None = None,
+    receipt: dict[str, Any] | None = None,
     checkpoint: dict[str, Any] | None = None,
     status: str = "",
     reason: str = "",
@@ -4322,6 +4323,60 @@ def local_ai_coord(
         sync_error = validate_operation_arguments("local_ai_coord", action, sync_only_inputs)
         if sync_error is not None:
             return contract_error(sync_error, status_code=400)
+    legacy_coord_values: dict[str, dict[str, Any]] = {
+        "ask": {"task_id": task_id, "record_id": record_id, "key": key, "query": query, "value": value, "answer": answer},
+        "answer": {"task_id": task_id, "record_id": record_id, "key": key, "query": query, "value": value, "question": question},
+        "task_cleanup_worktree": {"key": key},
+        "context_compile": {
+            "query": query, "value": value, "key": key, "record_id": record_id,
+            "status": status, "fingerprint": fingerprint, "ttl_seconds": ttl_seconds,
+        },
+        "verify_receipt": {
+            "checkpoint": checkpoint, "task_id": task_id, "criterion": criterion,
+            "key": key, "value": value, "query": query, "status": status, "record": record,
+        },
+        "verify_completion": {"query": query, "value": value, "key": key, "repository_revision": repository_revision},
+        "verify_export": {"query": query, "value": value, "key": key, "section": section, "status": status},
+    }
+    if action in legacy_coord_values and any(
+        (value != "" if isinstance(value, str) else value != 0 if type(value) is int else value is not None)
+        for value in legacy_coord_values[action].values()
+    ):
+        return contract_error(f"action='{action}' accepts only canonical fields", status_code=400)
+    if receipt is not None and action != "verify_receipt":
+        return contract_error("receipt is only valid for action='verify_receipt'", status_code=400)
+    if since_hash != "" and action != "context_compile":
+        return contract_error("since_hash is only valid for action='context_compile'", status_code=400)
+    if format != "markdown" and action != "verify_export":
+        return contract_error("format is only valid for action='verify_export'", status_code=400)
+    coord_canonical_inputs: dict[str, dict[str, Any]] = {
+        "ask": {
+            "root": root, "tenant": tenant, "session_id": session_id,
+            "question_id": question_id, "question": question,
+        },
+        "answer": {"root": root, "tenant": tenant, "question_id": question_id, "answer": answer},
+        "task_cleanup_worktree": {"root": root, "task_id": task_id},
+        "context_compile": {
+            "root": root, "task_id": task_id, "since_hash": since_hash,
+            "max_tokens": max_tokens or 4000, "include_diagnostics": include_diagnostics,
+            "clone_id": clone_id, "worktree_id": worktree_id, "branch": branch,
+            "repository_id": repository_id, "session_id": session_id,
+            "repository_revision": repository_revision, "phase": phase,
+            "focus": focus or [], "preload_profile": preload_profile,
+        },
+        "verify_receipt": {"root": root, "receipt": receipt},
+        "verify_completion": {"root": root, "task_id": task_id},
+        "verify_export": {"root": root, "task_id": task_id, "format": format},
+    }
+    if action in coord_canonical_inputs:
+        canonical_inputs = coord_canonical_inputs[action]
+        if action == "context_compile" and paths is not None:
+            canonical_inputs["paths"] = paths
+        validation_error = validate_operation_arguments(
+            "local_ai_coord", action, canonical_inputs,
+        )
+        if validation_error is not None:
+            return contract_error(validation_error, status_code=400)
     requested_root = str(root or "").strip()
     root = _client_root(root)
     if action.startswith("task_"):
@@ -4334,19 +4389,18 @@ def local_ai_coord(
         }, timeout=_timeout("quick")), "status")
     if action == "task_cleanup_worktree":
         return _compact(CLIENT.post("/api/agent-state/tasks", {
-            "action": "cleanup_worktree", "task_id": task_id or key or "",
+            "action": "cleanup_worktree", "task_id": task_id,
         }, timeout=_timeout("quick")), "status")
     if action in {"ask", "answer"}:
-        return _compact(CLIENT.coord(
-            action=action,
-            root=root,
-            tenant=tenant,
-            session_id=session_id,
-            task_id=task_id,
-            question_id=question_id or record_id,
-            question=question or query or value,
-            answer=answer or value or query,
-        ), "status")
+        question_payload = {
+            "action": action, "root": root, "tenant": tenant,
+            "question_id": question_id,
+        }
+        if action == "ask":
+            question_payload.update(session_id=session_id, question=question)
+        else:
+            question_payload["answer"] = answer
+        return _compact(CLIENT.coord(**question_payload), "status")
     if action.startswith("task_"):
         task_kwargs: dict[str, Any] = {
             "action": action, "task_id": task_id, "contract": contract,
@@ -4390,10 +4444,9 @@ def local_ai_coord(
             memory_kwargs["ttl_seconds"] = ttl_seconds
         return _compact(CLIENT.coord(**memory_kwargs), "task_memory")
     if action == "context_compile":
-        since_hash = str(since_hash or fingerprint or record_id or status or "")
         return _compact(CLIENT.post("/api/agent-state/context", {
-            "action": "compile", "task_id": task_id or query or value or key,
-            "token_budget": max_tokens or ttl_seconds or 4000, "root": root,
+            "action": "compile", "task_id": task_id,
+            "token_budget": max_tokens or 4000, "root": root,
             "changed_paths": paths or [],
             "since_hash": since_hash,
             "compact": True,
@@ -4409,34 +4462,17 @@ def local_ai_coord(
             "preload_profile": preload_profile,
         }, timeout=_timeout("context")), "context")
     if action == "verify_receipt":
-        receipt_payload = checkpoint or {
-            "task_id": task_id,
-            "criterion": criterion or key or value or query,
-            "passed": status.lower() in {"passed", "true", "1", "pass", "ok"} if status else True,
-        }
-        if checkpoint:
-            receipt_payload = dict(checkpoint)
-            receipt_payload.setdefault("task_id", task_id)
-            receipt_payload.setdefault("criterion", criterion or key or value or query)
-        if not str(receipt_payload.get("task_id", "")).strip() or not str(receipt_payload.get("criterion", "")).strip():
-            return {
-                "success": False,
-                "terminal": True,
-                "retryable": False,
-                "error": "verify_receipt requires task_id and criterion",
-            }
         return _compact(CLIENT.post("/api/agent-state/verification", {
-            "action": "receipt", "receipt": receipt_payload, "root": root,
+            "action": "receipt", "receipt": receipt, "root": root,
         }, timeout=_timeout("quick")), "verify")
     if action == "verify_completion":
         return _compact(CLIENT.post("/api/agent-state/verification", {
-            "action": "completion", "task_id": task_id or query or value or key, "root": root,
-            "repository_revision": repository_revision,
+            "action": "completion", "task_id": task_id, "root": root,
         }, timeout=_timeout("quick")), "verify")
     if action == "verify_export":
         return _compact(CLIENT.post("/api/agent-state/verification", {
-            "action": "export", "task_id": task_id or query or value or key, "root": root,
-            "format": format or section or status or "markdown",
+            "action": "export", "task_id": task_id, "root": root,
+            "format": format,
         }, timeout=_timeout("quick")), "verify")
     if action.startswith("negative_knowledge_"):
         sub_act = "record" if action == "negative_knowledge_record" else "find"

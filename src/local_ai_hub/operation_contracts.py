@@ -267,6 +267,9 @@ _ACTION_SCOPED_FIELDS = {
         "events": frozenset({"task_sync"}),
         "limit": frozenset({"task_sync"}),
         "after_seq": frozenset({"task_sync", "pubsub_poll"}),
+        "receipt": frozenset({"verify_receipt"}),
+        "since_hash": frozenset({"context_compile"}),
+        "format": frozenset({"verify_export"}),
     },
 }
 OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
@@ -669,13 +672,36 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "blackboard_get", "blackboard_list", "swarm_status", "swarm_list", "pubsub_poll", "verify_export",
         ),
         action_requirements={name: ("agent_os",) for name in _COORD_ACTIONS[8:]},
-        required={"ask": ("root", "session_id"), "answer": ("root", "question_id", "answer")},
+        allowed={
+            "ask": ("root", "tenant", "session_id", "question_id", "question"),
+            "answer": ("root", "tenant", "question_id", "answer"),
+            "task_cleanup_worktree": ("root", "task_id"),
+            "context_compile": (
+                "root", "task_id", "since_hash", "max_tokens", "paths", "include_diagnostics",
+                "clone_id", "worktree_id", "branch", "repository_id", "session_id",
+                "repository_revision", "phase", "focus", "preload_profile",
+            ),
+            "verify_receipt": ("root", "receipt"),
+            "verify_completion": ("root", "task_id"),
+            "verify_export": ("root", "task_id", "format"),
+            "task_sync": ("root", "sync_action", "stream_id", "after_seq", "limit", "events"),
+        },
+        required={
+            "ask": ("root", "session_id"),
+            "answer": ("root", "question_id", "answer"),
+            "task_cleanup_worktree": ("task_id",),
+            "context_compile": ("task_id",),
+            "verify_receipt": ("receipt",),
+            "verify_completion": ("task_id",),
+            "verify_export": ("task_id",),
+        },
         non_empty={
             "ask": ("root", "session_id"),
             "answer": ("root", "question_id", "answer"),
-        },
-        allowed={
-            "task_sync": ("root", "sync_action", "stream_id", "after_seq", "limit", "events"),
+            "task_cleanup_worktree": ("task_id",),
+            "context_compile": ("task_id",),
+            "verify_completion": ("task_id",),
+            "verify_export": ("task_id",),
         },
         action_effects={name: "coordination_state" for name in _COORD_ACTIONS if name not in {
             "leases", "memo_get", "memo_search", "task_get", "task_list", "memory_get", "memory_find",
@@ -698,6 +724,27 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "answer": {"type": "string", "default": "", "maxLength": 16_384},
             "ttl_seconds": {"type": "integer", "default": 0},
             "max_tokens": {"type": "integer", "default": 0},
+            "receipt": {
+                "type": "object",
+                "properties": {
+                    "receipt_id": {"type": "string", "minLength": 1},
+                    "task_id": {"type": "string", "minLength": 1},
+                    "criterion": {"type": "string", "minLength": 1},
+                    "passed": {"type": "boolean"},
+                    "change_intent_id": {"type": "string"},
+                    "evidence_id": {"type": "string"},
+                    "command_id": {"type": "string"},
+                    "repository_revision": {"type": "string"},
+                    "observed_at": {"type": "number"},
+                    "expires_at": {"type": ["number", "null"]},
+                    "details": {"type": "object"},
+                },
+                "required": ["task_id", "criterion", "passed"],
+                "allOf": [{
+                    "if": {"properties": {"passed": {"enum": [True]}}, "required": ["passed"]},
+                    "then": {"required": ["evidence_id"], "properties": {"evidence_id": {"minLength": 1}}},
+                }],
+            },
             "sync_action": {"type": "string", "enum": ["export", "import"], "default": "export"},
             "stream_id": {"type": "string", "default": ""},
             "events": {"type": "array", "items": {"type": "object"}},
@@ -915,6 +962,10 @@ def operation_input_schema(tool: str, action: str) -> dict[str, Any]:
         schema["properties"] = {
             name: value for name, value in properties.items()
             if name in common or name in allowed
+        }
+    if tool == "local_ai_coord" and action == "context_compile":
+        schema["properties"]["max_tokens"] = {
+            "type": "integer", "minimum": 0, "maximum": 100000, "default": 4000,
         }
     required = [selector, *contract["actions"][action].get("required", ())]
     schema["required"] = list(dict.fromkeys(required))
@@ -1566,6 +1617,14 @@ def operation_parameters_schema(tool: str, features: Any = None) -> dict[str, An
                 ]}},
             },
         ))
+    if tool == "local_ai_coord" and "context_compile" in available_actions:
+        parameters.setdefault("allOf", []).append({
+            "if": {
+                "properties": {selector_field: {"const": "context_compile"}},
+                "required": [selector_field],
+            },
+            "then": {"properties": {"max_tokens": {"default": 4000}}},
+        })
     return parameters
 
 
@@ -1823,6 +1882,26 @@ def validate_operation_arguments(
         elif target_tool or target_action:
             return "target_tool requires adoption_signal='bypassed'"
     if tool == "local_ai_repo" and action == "verify_receipt":
+        receipt = arguments.get("receipt")
+        if not isinstance(receipt, dict):
+            return "receipt must be an object for action='verify_receipt'"
+        receipt_schema = contract.get("properties", {}).get("receipt", {})
+        error = _validate_nested_schema(receipt, receipt_schema, "receipt", action)
+        if error:
+            return error
+        for field in ("task_id", "criterion"):
+            if not receipt[field].strip():
+                return f"receipt.{field} is required for action='verify_receipt'"
+        if receipt["passed"]:
+            evidence_id = receipt.get("evidence_id")
+            if not isinstance(evidence_id, str) or not evidence_id.strip():
+                return "receipt.evidence_id is required for passed verification receipts"
+    if tool == "local_ai_coord" and action == "ask":
+        question_id = arguments.get("question_id", "")
+        question = arguments.get("question", "")
+        if not question_id.strip() and not question.strip():
+            return "question or question_id is required for action='ask'"
+    if tool == "local_ai_coord" and action == "verify_receipt":
         receipt = arguments.get("receipt")
         if not isinstance(receipt, dict):
             return "receipt must be an object for action='verify_receipt'"
