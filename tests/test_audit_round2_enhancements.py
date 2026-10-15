@@ -204,18 +204,14 @@ def test_blackboard_in_compiled_context(tmp_path: Path):
     assert any("system_status" in el.content for el in res.elements)
 
 
-def test_agent_scope_parse_and_contract_tolerance():
-    """AgentScope.parse handles aliases and never crashes GoalContract.from_dict."""
-    assert AgentScope.parse("code") == AgentScope.TASK
-    assert AgentScope.parse("project") == AgentScope.REPOSITORY
-    assert AgentScope.parse("repo") == AgentScope.REPOSITORY
-    assert AgentScope.parse("workspace") == AgentScope.WORKTREE
-    assert AgentScope.parse("user") == AgentScope.GLOBAL
-    assert AgentScope.parse("UNKNOWN_RANDOM", default=AgentScope.TASK) == AgentScope.TASK
-
-    # GoalContract accepts 'code' scope gracefully
-    contract = GoalContract.from_dict({"goal": "Refactor parser", "scope": "code"})
-    assert contract.scope == AgentScope.TASK
+def test_agent_scope_parse_and_contract_reject_aliases():
+    for value in ("code", "project", "repo", "workspace", "user", "UNKNOWN_RANDOM"):
+        with pytest.raises(ValueError):
+            AgentScope.parse(value, default=AgentScope.TASK)
+        with pytest.raises(ValueError):
+            GoalContract.from_dict({"goal": "Refactor parser", "scope": value})
+    contract = GoalContract.from_dict({"goal": "Refactor parser", "scope": "task"})
+    assert contract.scope is AgentScope.TASK
 
 
 def test_lease_claim_auto_resolves_absolute_paths(tmp_path: Path):

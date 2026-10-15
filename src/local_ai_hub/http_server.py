@@ -1130,17 +1130,9 @@ def _resolve_memory_scope(
 
 
 def _parse_memory_scope(value: Any) -> AgentScope | None:
-    raw = str(value or "").strip().lower()
-    if not raw:
+    if value is None or value == "":
         return None
-    aliases = {
-        "code", "task", "tasks", "repo", "repository", "project", "workspace",
-        "worktree", "worktrees", "clone", "branch", "branches", "session", "sessions",
-        "global", "user",
-    }
-    if raw not in aliases:
-        raise ValueError(f"invalid memory scope '{raw}'")
-    return AgentScope.parse(raw, default=None)
+    return AgentScope.parse(value)
 
 
 def _memory_query_limit(value: Any) -> int:
