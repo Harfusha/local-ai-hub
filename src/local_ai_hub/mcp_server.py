@@ -2309,16 +2309,19 @@ def local_ai_task(
         "eval_drift": {"prompt"},
         "complete_code": {"context", "task"},
         "scaffold": {"task", "candidate"},
+        "transcribe": {"context", "task", "prompt"},
+        "eval_suite": {"prompt"},
+        "prompt_eval": {"task", "context"},
     }
     input_values = {
         "task": task, "prompt": prompt, "context": context,
         "candidate": candidate, "workspace": workspace, "model": model,
-        "root": root, "language": language,
+        "root": root, "language": language, "candidate_data": candidate_data,
     }
     for field in retired_inputs.get(action, ()):
         if input_values[field] not in (None, ""):
             return {
-                "success": False, "terminal": True, "retryable": False,
+                "success": False, "status_code": 400, "terminal": True, "retryable": False,
                 "error": f"{action} accepts its canonical input; {field} is not an alias",
             }
     canonical_string_fields = {
@@ -2328,13 +2331,21 @@ def local_ai_task(
         "eval_drift": ("task",),
         "complete_code": ("prompt", "candidate"),
         "scaffold": ("prompt", "context", "language", "model"),
+        "transcribe": ("candidate", "model", "language"),
+        "eval_suite": ("task", "model"),
+        "prompt_eval": ("prompt",),
     }
     for field in canonical_string_fields.get(action, ()):
         if not isinstance(input_values[field], str):
             return {
-                "success": False, "terminal": True, "retryable": False,
+                "success": False, "status_code": 400, "terminal": True, "retryable": False,
                 "error": f"{action} {field} must be a string",
             }
+    if action == "prompt_eval" and candidate_data is not None and not isinstance(candidate_data, dict):
+        return {
+            "success": False, "status_code": 400, "terminal": True, "retryable": False,
+            "error": "prompt_eval candidate_data must be an object",
+        }
     try:
         from local_ai_hub.operational_mode import (
             load_operational_mode,
@@ -2614,7 +2625,7 @@ def local_ai_task(
         )
     if action == "transcribe":
         transcribe_payload = {
-            "audio_path": candidate or context or task or prompt,
+            "audio_path": candidate,
             "model": model,
         }
         language_hint = str(language or "").strip()
@@ -2622,7 +2633,7 @@ def local_ai_task(
             transcribe_payload["language"] = language_hint
         return _compact(CLIENT.post("/api/task/transcribe", transcribe_payload, timeout=_timeout("long")), "delegate")
     if action == "eval_suite":
-        eval_payload: dict[str, Any] = {"suite_name": task or prompt or "default"}
+        eval_payload: dict[str, Any] = {"suite_name": task or "default"}
         if model:
             eval_payload["model"] = model[:160]
         if cases:
@@ -2640,7 +2651,7 @@ def local_ai_task(
         return _compact(CLIENT.post("/api/task/eval_suite", eval_payload, timeout=_timeout("long")), "status")
     if action == "prompt_eval":
         return _compact(CLIENT.post("/api/task/prompt_eval", {
-            "template": prompt or task, "variables": candidate_data or ({"input": context} if context else {}),
+            "template": prompt, "variables": candidate_data if candidate_data is not None else {},
         }, timeout=_timeout("model")), "delegate")
     if action == "eval_drift":
         return _compact(CLIENT.post("/api/task/eval_drift", {
