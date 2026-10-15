@@ -899,6 +899,11 @@ _RELIABILITY_PROTECTED_KEYS = (
     "fallback_used", "evidence", "evidence_ids", "cancelled", "cancel_requested", "cancel_reason",
 )
 _VERIFY_PROTECTED_KEYS = ("missing_criteria", "unverified_criteria", "receipts")
+_COMPLEXITY_PROTECTED_KEYS = (
+    "complete", "scope", "coverage", "limits", "files_analyzed", "eligible_files",
+    "skipped_files", "skipped_directories", "parse_error_count", "read_error_count",
+    "total_functions", "high_risk_count", "include_tests",
+)
 _COMMAND_PROTECTED_KEYS = (
     "test_summary",
     "exit_code", "summary", "request_id", "execution_id", "artifact_id", "artifact_ids",
@@ -1327,6 +1332,8 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
             compacted["test_summary"] = raw_value["test_summary"]
     if task_kind == "security" and isinstance(raw_value, dict) and isinstance(compacted, dict):
         compacted.update({key: raw_value[key] for key in _SECURITY_PROTECTED_KEYS if key in raw_value})
+    if task_kind == "complexity" and isinstance(raw_value, dict) and isinstance(compacted, dict):
+        compacted.update({key: raw_value[key] for key in _COMPLEXITY_PROTECTED_KEYS if key in raw_value})
     source_slice = task_kind == "artifact" and isinstance(raw_value, dict) and raw_value.get("action") == "source"
     if source_slice and isinstance(compacted, dict) and raw_value.get("success") is True:
         from .source_slice import SOURCE_SLICE_FIELDS
@@ -1344,6 +1351,7 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
         protected_keys = tuple(dict.fromkeys((
             *_RELIABILITY_PROTECTED_KEYS,
             *(_SECURITY_PROTECTED_KEYS if task_kind == "security" else ()),
+            *(_COMPLEXITY_PROTECTED_KEYS if task_kind == "complexity" else ()),
             *(('offset', 'limit', 'total_matches', 'has_more') if task_kind in {"search", "code_index"} else ()),
             *(('slices', 'truncated', 'budget_limited') if task_kind == "artifact" else ()),
             *(SOURCE_SLICE_FIELDS if source_slice and raw_value.get("success") is True else ()),
@@ -3549,7 +3557,7 @@ def _local_ai_repo_impl(
         return _compact(CLIENT.post("/api/repo/complexity", {
             "root": root, "path": path or query or task or None, "max_results": max_tokens or 20,
             "include_tests": bool(include_tests),
-        }, timeout=_timeout("quick")), "architecture")
+        }, timeout=_timeout("quick")), "complexity")
     if action == "api_spec":
         return _compact(CLIENT.post("/api/repo/api_spec", {
             "root": root, "framework": query or task or None,
@@ -4705,6 +4713,8 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
             protected = (*protected, *SOURCE_SLICE_FIELDS)
         if name == "local_ai_repo" and action in {"security_audit", "secret_scan"}:
             protected = (*protected, *_SECURITY_PROTECTED_KEYS)
+        if name == "local_ai_repo" and action == "complexity":
+            protected = (*protected, *_COMPLEXITY_PROTECTED_KEYS)
         original_tokens = json_tokens(_mcp_wire_view(value, structured=True))
         raw_efficiency = value.get("token_efficiency") if isinstance(value, dict) else None
         token_metadata = raw_efficiency if isinstance(raw_efficiency, dict) else None
