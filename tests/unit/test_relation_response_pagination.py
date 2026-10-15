@@ -214,6 +214,7 @@ def test_relation_compaction_35_to_5_keeps_exact_continuation_metadata():
 
 def test_mcp_relations_require_canonical_query_limit_offset_and_reject_bool(monkeypatch):
     requests = []
+    monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_kwargs: None)
     monkeypatch.setattr(mcp_server, "is_rooted_path", lambda _path: True)
     monkeypatch.setattr(mcp_server, "_client_root", lambda value: value)
 
@@ -247,6 +248,7 @@ def test_mcp_relations_require_canonical_query_limit_offset_and_reject_bool(monk
 
 
 def test_registered_mcp_relation_wire_rejects_first_item_over_budget(monkeypatch):
+    monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_kwargs: None)
     monkeypatch.setattr(mcp_server, "is_rooted_path", lambda _path: True)
     monkeypatch.setattr(mcp_server, "_client_root", lambda value: value)
 

@@ -115,6 +115,7 @@ def test_command_preserves_legacy_positional_timeout(monkeypatch, tmp_path):
 ])
 def test_repo_registered_wrapper_rejects_aliases_before_client(monkeypatch, alias, value):
     calls = []
+    monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_kwargs: None)
 
     class DummyClient:
         def post(self, url, payload, **kwargs):
