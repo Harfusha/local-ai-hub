@@ -11,6 +11,7 @@ import os
 import re
 import sqlite3
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -5904,7 +5905,7 @@ def test_{sym}_regression_edge_cases():
         scan_root = p_root.resolve(strict=True)
         started = time.monotonic()
         deadline = started + _SECRET_SCAN_MAX_SECONDS
-        excluded = {".git", "node_modules", "venv", ".venv", "tool-envs", "state", "build", "dist"}
+        excluded = {".git", "node_modules", "venv", ".venv", "tool-envs", "state", "build", "dist", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox"}
         binary_suffixes = {".png", ".jpg", ".jpeg", ".exe", ".bin", ".whl", ".pyc", ".db", ".sqlite3", ".zip", ".tar", ".gz", ".lock", ".wasm"}
         findings: list[dict[str, Any]] = []
         errors: list[str] = []
@@ -5934,6 +5935,34 @@ def test_{sym}_regression_edge_cases():
             if len(errors) < 20:
                 errors.append(code)
 
+        def _scan_line(raw_line: bytes, rel: str, line_no: int) -> None:
+            nonlocal complete
+            line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+            stripped_line = line.strip()
+            if not stripped_line or stripped_line.startswith(("#", "//", "/*", "*")):
+                return
+            is_test = _is_test_file(rel)
+            for rule_name, label, pattern, severity in patterns:
+                for match in pattern.finditer(line):
+                    token = match.group(1) if match.groups() else match.group(0)
+                    entropy = _shannon_entropy(token)
+                    if rule_name == "generic_secret_assignment" and entropy < 3.0:
+                        continue
+                    masked = f"{token[:4]}***{token[-4:]}" if len(token) > 8 else "***"
+                    findings.append({
+                        "file": rel, "line": line_no, "rule": rule_name,
+                        "description": label, "secret_type": rule_name,
+                        "severity": severity, "is_test": is_test,
+                        "is_placeholder": _placeholder(token),
+                        "triage_status": "untriaged", "entropy": round(entropy, 2),
+                        "match": masked, "redacted_secret": masked,
+                        "redacted_snippet": "credential-like value omitted",
+                    })
+                    if len(findings) >= _SECRET_SCAN_MAX_FINDINGS:
+                        limits_hit.append("findings")
+                        complete = False
+                        return
+
         if path is not None:
             requested = Path(path)
             target = requested if requested.is_absolute() else scan_root / requested
@@ -5959,17 +5988,23 @@ def test_{sym}_regression_edge_cases():
                     current.relative_to(scan_root)
                     with os.scandir(current) as entries:
                         for entry in entries:
+                            if time.monotonic() >= deadline:
+                                limits_hit.append("time")
+                                complete = False
+                                pending.clear()
+                                break
                             visited_entries += 1
                             if visited_entries > _SECRET_SCAN_MAX_ENTRIES:
                                 limits_hit.append("visited_entries")
                                 complete = False
                                 pending.clear()
                                 break
-                            if entry.name in excluded or entry.name.startswith("."):
+                            if entry.name in excluded:
                                 skipped_files += 1
                                 continue
                             if entry.is_symlink() or getattr(os.path, "isjunction", lambda _p: False)(entry.path):
                                 skipped_files += 1
+                                _record_error("linked_path_omitted")
                                 continue
                             candidate = Path(entry.path)
                             if entry.is_dir(follow_symlinks=False):
@@ -5999,88 +6034,91 @@ def test_{sym}_regression_edge_cases():
                 if resolved.suffix.lower() in binary_suffixes:
                     skipped_files += 1
                     continue
-                size = resolved.stat().st_size
-                if size > _SECRET_SCAN_MAX_FILE_BYTES or bytes_read + size > _SECRET_SCAN_MAX_TOTAL_BYTES:
-                    limits_hit.append("file_bytes" if size > _SECRET_SCAN_MAX_FILE_BYTES else "aggregate_bytes")
-                    complete = False
+                before = os.stat(candidate, follow_symlinks=False)
+                if not stat.S_ISREG(before.st_mode):
                     skipped_files += 1
+                    _record_error("non_regular_file_omitted")
+                    continue
+                flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
+                if getattr(os, "O_NOFOLLOW", 0):
+                    flags |= os.O_NOFOLLOW
+                fd = os.open(candidate, flags)
+                opened = os.fstat(fd)
+                if not stat.S_ISREG(opened.st_mode) or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+                    os.close(fd)
+                    skipped_files += 1
+                    _record_error("file_identity_changed_or_non_regular")
+                    continue
+                try:
+                    opened_path = candidate.resolve(strict=True)
+                    opened_path.relative_to(scan_root)
+                    path_stat = os.stat(candidate, follow_symlinks=False)
+                    if (path_stat.st_dev, path_stat.st_ino) != (opened.st_dev, opened.st_ino):
+                        raise ValueError("file path changed during open")
+                except (OSError, ValueError):
+                    os.close(fd)
+                    skipped_files += 1
+                    _record_error("file_path_changed_or_outside_root")
                     continue
                 eligible_files += 1
-                with resolved.open("rb") as source:
+                with os.fdopen(fd, "rb") as source:
+                    file_bytes = 0
                     line_no = 0
-                    line_buffer = bytearray()
-                    too_long = False
                     while True:
-                        chunk = source.read(8192)
-                        if not chunk:
-                            if line_buffer and not too_long:
-                                chunks = [bytes(line_buffer)]
-                            else:
-                                chunks = []
-                            eof = True
-                        else:
-                            bytes_read += len(chunk)
-                            if bytes_read > _SECRET_SCAN_MAX_TOTAL_BYTES:
-                                limits_hit.append("aggregate_bytes")
-                                complete = False
-                                break
-                            segments = chunk.split(b"\n")
-                            chunks = []
-                            for index, segment in enumerate(segments):
-                                if too_long:
-                                    if index < len(segments) - 1:
-                                        too_long = False
-                                    continue
-                                if len(line_buffer) + len(segment) > _SECRET_SCAN_MAX_LINE_BYTES:
-                                    too_long = True
-                                    line_buffer.clear()
-                                    _record_error("line_exceeds_scan_limit")
-                                    continue
-                                line_buffer.extend(segment)
-                                if index < len(segments) - 1:
-                                    chunks.append(bytes(line_buffer))
-                                    line_buffer.clear()
-                            eof = False
-                        for raw_line in chunks:
-                            line_no += 1
-                            line = raw_line.decode("utf-8", errors="replace")
-                            stripped_line = line.strip()
-                            if not stripped_line or stripped_line.startswith(("#", "//", "/*", "*")):
-                                continue
-                            is_test = _is_test_file(rel)
-                            redacted_line = line
-                            matches: list[tuple[str, str, re.Pattern[str], str, str, float, bool]] = []
-                            for rule_name, label, pattern, base_sev in patterns:
-                                for match in pattern.finditer(line):
-                                    token = match.group(1) if match.groups() else match.group(0)
-                                    entropy = _shannon_entropy(token)
-                                    if rule_name == "generic_secret_assignment" and entropy < 3.0:
-                                        continue
-                                    masked = f"{token[:4]}***{token[-4:]}" if len(token) > 8 else "***"
-                                    matches.append((rule_name, label, pattern, base_sev, masked, entropy, _placeholder(token)))
-                                    redacted_line = redacted_line.replace(token, "[REDACTED]")
-                            for rule_name, label, _pattern, severity, masked, entropy, placeholder in matches:
-                                findings.append({
-                                    "file": rel, "line": line_no, "rule": rule_name,
-                                    "description": label, "secret_type": rule_name,
-                                    "severity": severity, "is_test": is_test,
-                                    "is_placeholder": placeholder, "triage_status": "untriaged",
-                                    "entropy": round(entropy, 2), "match": masked,
-                                    "redacted_secret": masked,
-                                    "redacted_snippet": redacted_line.strip()[:140],
-                                })
-                                if len(findings) >= _SECRET_SCAN_MAX_FINDINGS:
-                                    limits_hit.append("findings")
-                                    complete = False
-                                    break
-                            if len(findings) >= _SECRET_SCAN_MAX_FINDINGS:
-                                break
-                        if len(findings) >= _SECRET_SCAN_MAX_FINDINGS or (not chunk and eof):
-                            break
                         if time.monotonic() >= deadline:
                             limits_hit.append("time")
                             complete = False
                             break
+                        remaining = min(
+                            _SECRET_SCAN_MAX_FILE_BYTES - file_bytes,
+                            _SECRET_SCAN_MAX_TOTAL_BYTES - bytes_read,
+                        )
+                        if remaining <= 0:
+                            limits_hit.append("file_bytes" if file_bytes >= _SECRET_SCAN_MAX_FILE_BYTES else "aggregate_bytes")
+                            complete = False
+                            break
+                        raw_line = source.readline(min(_SECRET_SCAN_MAX_LINE_BYTES + 1, remaining))
+                        if not raw_line:
+                            break
+                        file_bytes += len(raw_line)
+                        bytes_read += len(raw_line)
+                        line_no += 1
+                        line_content = raw_line.rstrip(b"\r\n")
+                        if len(line_content) > _SECRET_SCAN_MAX_LINE_BYTES:
+                            _record_error("line_exceeds_scan_limit")
+                            if not raw_line.endswith(b"\n"):
+                                while True:
+                                    drain_left = min(
+                                        _SECRET_SCAN_MAX_FILE_BYTES - file_bytes,
+                                        _SECRET_SCAN_MAX_TOTAL_BYTES - bytes_read,
+                                    )
+                                    if drain_left <= 0:
+                                        limits_hit.append("file_bytes" if file_bytes >= _SECRET_SCAN_MAX_FILE_BYTES else "aggregate_bytes")
+                                        complete = False
+                                        break
+                                    drained = source.readline(min(8192, drain_left))
+                                    if not drained:
+                                        break
+                                    file_bytes += len(drained)
+                                    bytes_read += len(drained)
+                                    if drained.endswith(b"\n"):
+                                        break
+                                    if time.monotonic() >= deadline:
+                                        limits_hit.append("time")
+                                        complete = False
+                                        break
+                                if not complete and limits_hit:
+                                    break
+                            continue
+                        _scan_line(line_content, rel, line_no)
+                        if len(findings) >= _SECRET_SCAN_MAX_FINDINGS:
+                            break
+                    after = os.fstat(source.fileno())
+                    if (opened.st_dev, opened.st_ino) != (after.st_dev, after.st_ino):
+                        _record_error("file_identity_changed_during_scan")
+                    if after.st_size > _SECRET_SCAN_MAX_FILE_BYTES:
+                        limits_hit.append("file_bytes")
+                        complete = False
                     if not complete and limits_hit:
                         break
             except (OSError, UnicodeError, ValueError):
@@ -6105,6 +6143,8 @@ def test_{sym}_regression_edge_cases():
             "clean": complete and leak_count == 0,
             "scan_complete": complete,
             "coverage": {
+                "coverage_scope": "requested file only" if path is not None else "repository files excluding listed generated and cache directories",
+                "excluded_dirs": sorted(excluded),
                 "visited_entries": visited_entries,
                 "visited_files": visited_files,
                 "eligible_files": eligible_files,
