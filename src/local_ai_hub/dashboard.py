@@ -440,7 +440,7 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
     <section class="section">
       <div class="project-toolbar">
         <input id="agentOsIncSearch" aria-label="Search incidents" type="search" placeholder="Search error class, root cause, verified fix..." autocomplete="off">
-        <select id="agentOsIncFilter" aria-label="Incident status"><option value="">All incidents</option><option value="unresolved">Unresolved</option><option value="resolved">Resolved with fix</option><option value="ignored">Ignored</option></select>
+        <select id="agentOsIncFilter" aria-label="Incident status"><option value="">All incidents</option><option value="unresolved">Unresolved</option><option value="resolved">Resolved with fix</option></select>
         <button class="btn warn" id="agentOsRecordIncBtn" style="padding:5px 9px">+ Record Anti-Pattern</button>
       </div>
       <div class="table-wrap"><table><thead><tr><th>Incident ID</th><th>Status</th><th>Attempts</th><th>Operation</th><th>Error Class</th><th>Redacted Message</th><th>Root Cause</th><th>Verified Fix</th></tr></thead><tbody id="agentOsIncBody"></tbody></table></div>
@@ -2794,12 +2794,11 @@ async function submitRecordMemory(e){
 function renderIncidentModal(i){
   const id=i.incident_id||'—';
   const errorClass=i.error_class||'Error';
-  const op=i.outcome?.tool_name||'agent';
+  const op=i.operation_class||i.outcome?.tool_name||'agent';
   const msg=i.redacted_message||i.message||'—';
   const cause=i.root_cause||'—';
   const fix=i.verified_fix||'—';
-  const status=String(i.status||(i.ignored?'ignored':i.resolved?'resolved':'unresolved'));
-  const isIgnored=status==='ignored';
+  const status=String(i.status||(i.verified_fix?'resolved':'unresolved'));
   const isResolved=status==='resolved';
 
   $('modalBody').innerHTML=`
@@ -2843,48 +2842,9 @@ function renderIncidentModal(i){
         </div>
       </div>
 
-      ${!isResolved?`
-        <div class="modal-card">
-          <div class="modal-card-head"><span>Resolve Anti-Pattern</span></div>
-          <div class="modal-card-body">
-            <div style="display:flex;gap:8px">
-              <input type="text" id="resolveFixInput" placeholder="Enter verified fix or prevention rule..." style="flex:1;background:#131d2b;color:var(--fg);border:1px solid #2d3f56;border-radius:6px;padding:6px 10px;font-size:11px">
-              <button class="btn ok" onclick="resolveIncidentAction(${escJs(id)})">Mark Resolved</button>
-            </div>
-            <div id="resolveIncStatus" class="tiny" style="margin-top:6px"></div>
-          </div>
-        </div>
-      `:''}
-
-      <div class="modal-card">
-        <div class="modal-card-head"><span>${isIgnored?'Ignored anti-pattern':'Suppress repeated anti-pattern'}</span></div>
-        <div class="modal-card-body" style="display:flex;justify-content:space-between;align-items:center;gap:10px">
-          <span class="tiny muted">${isIgnored?'Restore this incident to normal tracking.':'Hide this repeated incident from future negative-knowledge prompts.'}</span>
-          <button class="btn ${isIgnored?'':'warn'}" onclick="setIncidentIgnoredAction(${escJs(id)},${!isIgnored})">${isIgnored?'Restore':'Ignore'}</button>
-        </div>
-      </div>
-
       <details class="raw-json"><summary>Raw Incident JSON</summary><pre>${esc(JSON.stringify(i,null,2))}</pre></details>
     </div>
   `;
-}
-
-async function resolveIncidentAction(id){
-  const fix=$('resolveFixInput')?.value?.trim();
-  if(!fix)return;
-  const statusEl=$('resolveIncStatus');
-  if(statusEl)statusEl.textContent='Saving fix…';
-  try{
-    const res=await post('/api/agent-state/incidents',{action:'resolve',incident_id:id,verified_fix:fix});
-    if(res.success){
-      await loadAgentOsView();
-      if(res.incident)renderIncidentModal(res.incident);
-    }else{
-      if(statusEl)statusEl.innerHTML=`<span class="bad-t">Error: ${esc(res.error||'Failed')}</span>`;
-    }
-  }catch(e){
-    if(statusEl)statusEl.innerHTML=`<span class="bad-t">Error: ${esc(e.message||e)}</span>`;
-  }
 }
 
 function openRecordIncidentModal(){
@@ -4359,20 +4319,6 @@ function traceContextLabel(trace){
   return [...new Set([trace.request_summary,summary,source,trace.kind?humanLabel(trace.kind):'',trace.model?`model ${trace.model}`:'',requestId,jobId].filter(Boolean))].join(' · ');
 }
 
-async function setIncidentIgnoredAction(id,ignored){
-  const action=ignored?'ignore':'unignore';
-  try{
-    const res=await post('/api/agent-state/incidents',{action,incident_id:id});
-    if(res.success){
-      await loadAgentOsView();
-      if(res.incident)renderIncidentModal(res.incident);
-    }else{
-      alert('Unable to update incident: '+(res.error||'Unknown error'));
-    }
-  }catch(e){
-    alert('Unable to update incident: '+(e.message||e));
-  }
-}
 function requestTraceAvailability(request){
   const trace=requestTrace(request);
   if(trace)return {label:'Trace available',className:'ok',trace};
@@ -4852,7 +4798,7 @@ async function loadAgentOsView(){
   const results=await Promise.allSettled([
     fetchDashboardJson('/api/agent-state/tasks',{cache:'no-store'}),
     fetchDashboardJson('/api/agent-state/memory',{cache:'no-store'}),
-    fetchDashboardJson('/api/agent-state/incidents',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'list',limit:100})})
+    fetchDashboardJson('/api/agent-state/incidents',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'find',limit:100})})
   ]);
   if($('agentOsRoot')?.value?.trim()!==selectedRoot)return;
   agentOsLoadErrors={};
@@ -4906,7 +4852,7 @@ function renderAgentOsView(){
   const incQuery=String($('agentOsIncSearch')?.value||'').trim().toLowerCase();
   const incFilter=String($('agentOsIncFilter')?.value||'').trim();
   const filteredInc=agentOsIncidents.filter(i=>{
-    const incidentStatus=String(i.status||(i.ignored?'ignored':i.resolved?'resolved':'unresolved'));
+    const incidentStatus=String(i.status||(i.verified_fix?'resolved':'unresolved'));
     if(incFilter!==''&&incidentStatus!==incFilter)return false;
     if(!incQuery)return true;
     const hay=[i.incident_id,i.error_class,i.redacted_message,i.root_cause,i.verified_fix,incidentStatus].join(' ').toLowerCase();
@@ -4943,9 +4889,9 @@ function renderAgentOsView(){
 
   rows('agentOsIncBody',filteredInc,i=>{
     const id=esc(i.incident_id||'—');
-    const status=String(i.status||(i.ignored?'ignored':i.resolved?'resolved':'unresolved'));
+    const status=String(i.status||(i.verified_fix?'resolved':'unresolved'));
     const statusChip=status==='ignored'?'<span class="chip">ignored</span>':status==='resolved'?'<span class="chip ok">resolved</span>':'<span class="chip warn-t">unresolved</span>';
-    const op=esc(i.outcome?.tool_name||'agent');
+    const op=esc(i.operation_class||i.outcome?.tool_name||'agent');
     const ec=esc(i.error_class||'Error');
     let msg=esc(i.redacted_message||'');
     if(msg.length>45)msg=msg.slice(0,42)+'...';
