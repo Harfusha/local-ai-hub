@@ -18,6 +18,13 @@ Cached fallback models remain eligible while downloads are disabled.
 | `qwen3-vl:4b` | visual review, UI observations, accessibility observations | source-only reasoning, security decisions, edits, final verification |
 | `qwen3.5:9b` | heavy reasoning, cross-file review, patch plans, visual review | edits, security decisions, final verification |
 
+Whisper CLI has a separate `transcription` policy: verified official cache weights
+are required by default; downloads require `allow_model_downloads=true`. The
+cache honors `XDG_CACHE_HOME` or the configured `cache_dir`. Transcription uses
+explicit CPU selection; GPU CLI admission is not implemented and non-CPU
+requests are rejected. Hash checks are bounded and cancellable. Configured model
+names do not establish cached-weight availability, transcription quality or WER.
+
 ## Profile routing
 
 | Profile | `background_code` | `fast_code` | `heavy_code` | `reasoning` | `general` | `vision` |
