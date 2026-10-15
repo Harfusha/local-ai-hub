@@ -135,7 +135,7 @@ _COORD_ACTIONS = (
     "task_zombie_reap", "task_cleanup_worktree",
 )
 _WORK_ACTIONS = ("submit", "status", "wait", "get", "cancel", "continue")
-_ARTIFACT_ACTIONS = ("get", "slice", "list")
+_ARTIFACT_ACTIONS = ("get", "slice", "list", "source")
 _ADOPTION_TOOL_NAMES = (
     "local_ai_status", "local_ai_repo", "local_ai_task", "local_ai_rag",
     "local_ai_command", "local_ai_coord", "local_ai_artifact", "local_ai_work",
@@ -564,17 +564,21 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "local_ai_artifact", "artifacts", "action", _ARTIFACT_ACTIONS,
             timeout="HubClient.post default 360 seconds; capped by configured max_request_timeout_seconds",
             projection="artifact", read_only=_ARTIFACT_ACTIONS,
-            required={"get": ("artifact_id",), "slice": ("artifact_id",)},
-            non_empty={"get": ("artifact_id",), "slice": ("artifact_id",)},
+            required={"get": ("artifact_id",), "slice": ("artifact_id",), "source": ("path",)},
+            non_empty={"get": ("artifact_id",), "slice": ("artifact_id",), "source": ("path",)},
             allowed={
                 "get": ("artifact_id", "offset", "max_chars", "section", "binary", "slices"),
                 "slice": ("artifact_id", "offset", "max_chars", "section", "binary", "slices"),
                 "list": (),
+                "source": ("path", "line_start", "line_end", "max_chars"),
             },
             selector_required=False,
             properties={
                 "action": {"type": "string", "default": "get"},
                 "artifact_id": {"type": "string", "default": ""},
+                "path": {"type": "string", "maxLength": 32768, "default": ""},
+                "line_start": {"type": "integer", "minimum": 1, "maximum": 2147483647, "default": 1},
+                "line_end": {"type": "integer", "minimum": 0, "maximum": 2147483647, "default": 0},
                 "section": {"type": "string", "default": ""},
                 "offset": {"type": "integer", "minimum": 0, "default": 0},
                 "max_chars": {"type": "integer", "minimum": 512, "maximum": 12000, "default": 4000},
@@ -990,6 +994,20 @@ def _artifact_output_variants(action: str) -> list[dict[str, Any]]:
         "properties": {"success": {"const": False}, "error": {"type": "string"}},
         "additionalProperties": True,
     }
+    if action == "source":
+        return [{
+            "type": "object",
+            "required": ["success", "action", "path", "relative_path", "file_sha256",
+                         "line_start", "line_end", "requested_line_end", "total_lines",
+                         "text", "truncated", "complete"],
+            "properties": {
+                "success": {"const": True}, "action": {"const": "source"},
+                **{key: {"type": "string"} for key in ("path", "relative_path", "file_sha256", "text")},
+                **{key: {"type": "integer"} for key in ("line_start", "line_end", "requested_line_end", "total_lines")},
+                "truncated": {"type": "boolean"}, "complete": {"type": "boolean"},
+            },
+            "additionalProperties": True,
+        }, failure]
     if action == "list":
         item = {
             "type": "object",
@@ -1185,6 +1203,13 @@ def validate_operation_output(tool: str, action: str, result: Any) -> str | None
             return f"{field} must be boolean for action='{action}'"
     if "error" in result and not isinstance(result["error"], str):
         return f"error must be string for action='{action}'"
+    # Validate every published envelope field before FastMCP serializes it.
+    # Unknown optional booleans are not silently converted to false.
+    for field, schema in _OUTPUT_ENVELOPE_PROPERTIES.items():
+        if field in result:
+            error = _validate_output_schema(result[field], schema, f"result.{field}")
+            if error:
+                return f"{error} for action='{action}'"
     if tool in {"local_ai_artifact", "local_ai_status"}:
         error = _validate_output_schema(result, operation_output_schema(tool, action))
         if error:

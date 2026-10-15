@@ -774,6 +774,7 @@ def _desc_artifact() -> str:
         actions = ", ".join(operation_actions("local_ai_artifact"))
         return (
             f"Fetch an exact source or log slice or bounded binary artifact metadata; binary retrieval never inlines payloads; optional max_response_tokens, response_profile, reuse_key. Actions: {actions}."
+            " Source: action=source, path, line_start/line_end; workspace-confined, file/range/output bounded with SHA-256 provenance."
             " Use when: exact source or evidence text is required after indexed discovery."
             " Skip when: no source slice is needed or the existing compact result is sufficient."
         )
@@ -1193,6 +1194,10 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
         extra_fields=compact_extra_fields,
     )
     compacted = _preserve_contract_state(raw_value, compacted)
+    source_slice = task_kind == "artifact" and isinstance(raw_value, dict) and raw_value.get("action") == "source"
+    if source_slice and isinstance(compacted, dict) and raw_value.get("success") is True:
+        from .source_slice import SOURCE_SLICE_FIELDS
+        compacted.update({key: raw_value[key] for key in SOURCE_SLICE_FIELDS if key in raw_value})
     if exact_artifact_slices is not None and isinstance(compacted, dict):
         compacted["slices"] = exact_artifact_slices
         for field in ("truncated", "budget_limited"):
@@ -1207,6 +1212,7 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
             *_RELIABILITY_PROTECTED_KEYS,
             *(('offset', 'limit', 'total_matches', 'has_more') if task_kind in {"search", "code_index"} else ()),
             *(('slices', 'truncated', 'budget_limited') if task_kind == "artifact" else ()),
+            *(SOURCE_SLICE_FIELDS if source_slice and raw_value.get("success") is True else ()),
             *(_CONTEXT_PROTECTED_KEYS if task_kind in {"context", "context_compile"} else ()),
             *(_STATUS_PROTECTED_KEYS if task_kind == "status" else ()),
             *(_VERIFY_PROTECTED_KEYS if task_kind == "verify" else ()),
@@ -1221,6 +1227,12 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
             protected_keys=protected_keys,
             token_metadata=efficiency_metadata(),
         )
+    if source_slice and raw_value.get("success") is True and isinstance(compacted, dict) and compacted.get("success") is True:
+        if any(compacted.get(key) != raw_value.get(key) for key in SOURCE_SLICE_FIELDS):
+            compacted = {
+                "success": False, "status_code": 413, "terminal": True, "retryable": False,
+                "error": "Exact source slice exceeds response budget; reduce the range or max_chars",
+            }
     if (
         task_kind in {"search", "code_index"}
         and isinstance(raw_value, dict)
@@ -1844,6 +1856,20 @@ def _instrumented_tool():
                         clean = candidate
                         handoff_added = True
             clean = _agent_output(clean, fn.__name__, arguments)
+            selector = "detail" if fn.__name__ == "local_ai_status" else "action"
+            parameter = signature.parameters.get(selector)
+            contract_action = arguments.get(selector, parameter.default if parameter is not None else "")
+            action_kind = _action_kind_for_tool(fn.__name__)
+            if action_kind and isinstance(contract_action, str):
+                contract_action = _resolve_action(action_kind, contract_action)
+            output_error = validate_operation_output(fn.__name__, str(contract_action), clean)
+            if output_error is not None:
+                clean = {
+                    "success": False, "status_code": 500, "terminal": True, "retryable": False,
+                    "error": f"MCP output contract failed: {output_error}",
+                    "failure_kind": "output_contract_violation",
+                    **({"request_id": clean["request_id"]} if isinstance(clean, dict) and isinstance(clean.get("request_id"), str) else {}),
+                }
             _record_adoption(fn.__name__, arguments, clean, (time.monotonic() - started) * 1000, recommended=handoff_added)
             pending = _PENDING_MCP_ACCOUNTING.get()
             if pending is None:
@@ -4142,49 +4168,17 @@ def local_ai_work(
 
 @mcp.tool()
 @_instrumented_tool()
-def local_ai_artifact(action: ArtifactAction = "get", artifact_id: str = "", offset: int = 0, max_chars: int = 4000, section: str = "", extra_fields: list[str] | None = None, max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "", binary: bool = False, slices: list[dict[str, int]] | None = None, path: str = "", line_start: int = 0, line_end: int = 0, start_line: int = 0, end_line: int = 0) -> dict[str, Any]:
+def local_ai_artifact(action: ArtifactAction = "get", artifact_id: str = "", offset: int = 0, max_chars: int = 4000, section: str = "", extra_fields: list[str] | None = None, max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "", binary: bool = False, slices: list[dict[str, int]] | None = None, path: str = "", line_start: int = 1, line_end: int = 0) -> dict[str, Any]:
     """Fetch an artifact operation defined by the shared contract. Evidence IDs start with E."""
     if not operation_enabled(FEATURES, "local_ai_artifact"):
         return {"success": False, "unsupported": True, "error": "local_ai_artifact is disabled in configuration"}
-    if not artifact_id and path:
-        try:
-            workspace_root = Path(_workspace).resolve()
-            candidate_path = Path(path)
-            if not candidate_path.is_absolute():
-                candidate_path = workspace_root / candidate_path
-            resolved_path = candidate_path.resolve(strict=False)
-            resolved_path.relative_to(workspace_root)
-        except ValueError:
-            return {"success": False, "error": "Path must stay inside the workspace"}
-        except (OSError, RuntimeError):
-            return {"success": False, "error": "Invalid file path"}
-        if not resolved_path.is_file():
-            return {"success": False, "error": f"File not found: {path}"}
-        try:
-            content = resolved_path.read_text(encoding="utf-8", errors="replace")
-        except Exception as exc:
-            return {"success": False, "error": f"Failed to read file: {exc}"}
-        lines = content.splitlines(keepends=True)
-        effective_start = start_line or line_start or 1
-        effective_end = end_line or line_end or len(lines)
-        if effective_start < 1:
-            effective_start = 1
-        if effective_end > len(lines):
-            effective_end = len(lines)
-        if effective_start <= effective_end and lines:
-            sliced_text = "".join(lines[effective_start - 1 : effective_end])
-        else:
-            sliced_text = ""
-        return {
-            "success": True,
-            "path": str(resolved_path),
-            "line_start": effective_start,
-            "line_end": effective_end,
-            "total_lines": len(lines),
-            "total_chars": len(content),
-            "text": sliced_text,
-            "truncated": False,
-        }
+    if action == "source":
+        arguments = {"path": path, "line_start": line_start, "line_end": line_end, "max_chars": max_chars}
+        error = validate_operation_arguments("local_ai_artifact", action, arguments)
+        if error is not None:
+            return {"success": False, "error": error, "terminal": True, "retryable": False}
+        from .source_slice import read_source_slice
+        return _compact(read_source_slice(_workspace, **arguments), "artifact")
     if slices is not None:
         if action not in {"get", "slice"}:
             return {"success": False, "error": "slices are only valid for get or slice actions"}
@@ -4544,6 +4538,9 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
             *(_STATUS_PROTECTED_KEYS if name == "local_ai_status" else ()),
             *(_COMMAND_PROTECTED_KEYS if name == "local_ai_command" else ()),
         )
+        if name == "local_ai_artifact" and action == "source":
+            from .source_slice import SOURCE_SLICE_FIELDS
+            protected = (*protected, *SOURCE_SLICE_FIELDS)
         original_tokens = json_tokens(_mcp_wire_view(value, structured=True))
         raw_efficiency = value.get("token_efficiency") if isinstance(value, dict) else None
         token_metadata = raw_efficiency if isinstance(raw_efficiency, dict) else None
@@ -4591,6 +4588,12 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                 token_metadata=token_metadata,
                 evidence_store=None,
             )
+            if name == "local_ai_artifact" and action == "source" and isinstance(value, dict) and value.get("success") is True:
+                if isinstance(candidate, dict) and candidate.get("success") is True and any(candidate.get(key) != value.get(key) for key in SOURCE_SLICE_FIELDS):
+                    candidate = {
+                        "success": False, "status_code": 413, "terminal": True, "retryable": False,
+                        "error": "Exact source slice exceeds response budget; reduce the range or max_chars",
+                    }
             if isinstance(candidate, dict):
                 previous_meta = candidate.get("response_budget")
                 previous_meta = previous_meta if isinstance(previous_meta, dict) else {}
