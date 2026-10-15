@@ -2985,7 +2985,9 @@ def _local_ai_repo_impl(
             return contract_error(f"{numeric_name} must be between 0 and 100000")
     context_query = ""
     if action == "context":
-        context_query = str(query).strip() or str(task).strip()
+        if not isinstance(query, str):
+            return contract_error("context query must be a string")
+        context_query = query.strip()
         if not context_query:
             return contract_error("context query cannot be empty")
     if action not in FEATURES.supported_repo_actions():
@@ -2995,6 +2997,66 @@ def _local_ai_repo_impl(
             tuple(FEATURES.supported_repo_actions()),
             "Keep work bounded in Local AI Hub; use Codex-owned orchestration for peer subagents.",
         )
+    retired_input_fields = {
+        **{name: ("task", "diff", "workspace") for name in (
+            "investigate", "search", "semantic", "intelligence", "route", "refactor_impact",
+            "generate_tests", "generate_mocks", "explain_query", "dependency_slice", "structural_search",
+        )},
+        **{name: ("query", "diff", "task", "path") for name in ("diagnose",)},
+        **{name: ("query", "task", "workspace", "diff") for name in (
+            "migration_drift", "package_audit", "git_diff", "type_stubs", "split_changes",
+        )},
+        "mutation_test": ("query", "task", "workspace"),
+        "generate_tests_for_diff": ("query", "task", "path"),
+        "cross_repo_contract": ("query", "workspace", "task", "diff"),
+        "circular_dependencies": ("query", "task", "workspace", "diff", "path"),
+        "skeletonize": ("diff", "task"),
+        "context": ("task", "diff", "path"),
+        "solve": ("query", "diff", "path", "task_id"),
+        "delegate": ("query", "diff", "path", "task_id"),
+        "code_index": ("task", "diff", "workspace", "path"),
+        "deterministic": ("task", "diff", "workspace", "path"),
+        "resolve_imports": ("task", "diff", "workspace", "path"),
+        "validate_patch": ("task", "diff", "workspace", "path"),
+        "synthesize_commit": ("task", "diff", "workspace", "task_id", "path"),
+        "cross_project_symbols": ("task", "diff", "workspace", "path"),
+        "cross_project_impact": ("task", "diff", "workspace", "path"),
+        "generate_dataset": ("task", "diff", "workspace", "path"),
+        "api_spec": ("task", "diff", "workspace", "path"),
+        "git_history_search": ("task", "diff", "workspace", "path"),
+    }
+    input_values = {
+        "query": query, "diff": diff, "task": task, "workspace": workspace,
+        "path": path, "task_id": task_id,
+    }
+    for field in retired_input_fields.get(action, ()):
+        if input_values[field]:
+            return contract_error(f"{action} accepts its canonical input field; {field} is not an alias")
+    required_input_fields = {
+        **{name: "query" for name in (
+            "investigate", "diagnose", "search", "code_index", "semantic", "intelligence",
+            "deterministic", "route", "refactor_impact", "resolve_imports", "generate_tests",
+            "validate_patch", "generate_mocks", "cross_project_symbols", "cross_project_impact",
+            "generate_dataset", "explain_query", "dependency_slice", "structural_search", "git_history_search",
+        )},
+        "context": "query", "solve": "task", "delegate": "task", "generate_tests_for_diff": "diff",
+        "cross_repo_contract": "path", "type_stubs": "path",
+    }
+    required_field = required_input_fields.get(action)
+    if required_field is not None:
+        value = input_values[required_field]
+        if not isinstance(value, str) or not value.strip():
+            return contract_error(f"{action} requires non-empty {required_field}")
+    if action in {"migration_drift", "package_audit", "git_diff", "type_stubs", "split_changes"} and diff:
+        return contract_error(f"{action} accepts path; diff is not an input alias")
+    if action == "skeletonize" and not (isinstance(query, str) and query.strip()) and not (isinstance(path, str) and path.strip()):
+        return contract_error("skeletonize requires query code or a path")
+    if action == "circular_dependencies" and not isinstance(language, str):
+        return contract_error("language must be a string")
+    if action == "mutation_test" and not path and not diff:
+        return contract_error("mutation_test requires path or diff")
+    if action == "dependency_slice" and relation:
+        return contract_error("dependency_slice accepts query; relation is not a symbol alias")
     if action in {
         "ast_outline", "affected_tests", "code_invariants", "profile_digest", "schema_inspect",
         "generate_types", "complexity", "declaration", "ast_refactor", "context_compile",
@@ -3044,7 +3106,7 @@ def _local_ai_repo_impl(
         if not candidate.is_absolute():
             return {"success": False, "error": "Preprocessing requires an explicit absolute stable project root; do not use MCP process cwd"}
     elif action == "skeletonize":
-        if path and not (query or diff or task):
+        if path and not query:
             if not is_rooted_path(str(root or "").strip()):
                 return contract_error("indexed skeleton requires an explicit absolute project root")
             root = _client_root(str(root).strip())
@@ -3060,11 +3122,11 @@ def _local_ai_repo_impl(
         return _compact(CLIENT.post("/api/repo/profile", {"root": root}, timeout=_timeout("quick")), "profile")
     if action == "investigate":
         return _compact(CLIENT.post("/api/repo/investigate", {
-            "root": root, "query": query or task, "path": path, "include_code": include_code, "limit": 10,
+            "root": root, "query": query, "path": path, "include_code": include_code, "limit": 10,
         }, timeout=_timeout("quick")), "architecture")
     if action == "diagnose":
         return _compact(CLIENT.post("/api/repo/diagnose", {
-            "root": root, "text": query or diff or task,
+            "root": root, "text": query,
         }, timeout=_timeout("quick")), "verify")
     if action == "briefing":
         return _compact(CLIENT.post("/api/repo/briefing", {
@@ -3108,21 +3170,21 @@ def _local_ai_repo_impl(
                 "terminal": True, "retryable": False,
             }
         return _compact(CLIENT.post("/api/search", {
-            "root": root, "query": query or task, "top_k": 12, "enrich": enrich,
+            "root": root, "query": query, "top_k": 12, "enrich": enrich,
             "limit": limit, "offset": offset,
         }, timeout=min(120, _timeout("quick")), path_hints=normalized_hints or None), "search", extra_fields=extra if extra else None)
     if action == "map":
         return _compact(CLIENT.post("/api/repo/map", {"root": root, "max_symbols": 100}, timeout=_timeout("quick")), "architecture")
     if action == "code_index":
-        return _compact(CLIENT.post("/api/repo/code-index", {"root": root, "query": query or task, "limit": limit, "offset": offset, "include_code": include_code}, timeout=_timeout("quick")), "code_index")
+        return _compact(CLIENT.post("/api/repo/code-index", {"root": root, "query": query, "limit": limit, "offset": offset, "include_code": include_code}, timeout=_timeout("quick")), "code_index")
     if action in {"semantic", "intelligence"}:
         backend = "serena" if action == "semantic" else "auto"
         operation = relation or ("find_symbol" if backend == "serena" else "search")
         return _compact(CLIENT.post("/api/code-intelligence/query", {
-            "root": root, "query": query or task, "path": path, "backend": backend, "action": operation, "limit": 24,
+            "root": root, "query": query, "path": path, "backend": backend, "action": operation, "limit": 24,
         }, timeout=_timeout("quick")), "architecture")
     if action == "deterministic":
-        return _compact(CLIENT.post("/api/repo/deterministic", {"root": root, "query": query or task, "limit": 30}, timeout=_timeout("quick")), "context")
+        return _compact(CLIENT.post("/api/repo/deterministic", {"root": root, "query": query, "limit": 30}, timeout=_timeout("quick")), "context")
     if action == "context":
         if mode not in {"full", "fast", "adaptive"}:
             return _context_input_error("context mode must be adaptive, full or fast")
@@ -3212,15 +3274,15 @@ def _local_ai_repo_impl(
     if action == "route":
         if not path:
             return {"success": False, "error": "path is required for repo route"}
-        return _compact(CLIENT.post("/api/route", {"root": root, "path": path, "query": query or task}, timeout=_timeout("model")), "route")
+        return _compact(CLIENT.post("/api/route", {"root": root, "path": path, "query": query}, timeout=_timeout("model")), "route")
     if action == "delegate":
         return _compact(CLIENT.post("/api/delegate/repo", {
-            "root": root, "task": task or query, "workspace": workspace or None,
+            "root": root, "task": task, "workspace": workspace or None,
             "complexity": "auto", "context_tokens": max_tokens or 0, "max_tokens": max_tokens or 4096, "profile": profile,
         }, timeout=_timeout("model")), "delegate")
     if action == "solve":
         return _compact(CLIENT.post("/api/solve/repo", {
-            "root": root, "task": task or query, "workspace": workspace or None, "mode": mode,
+            "root": root, "task": task, "workspace": workspace or None, "mode": mode,
             "complexity": "auto", "context_tokens": max_tokens or 0, "base": base, "staged": staged,
         }, timeout=_timeout("long")), "solve")
     if action == "review_diff":
@@ -3236,16 +3298,16 @@ def _local_ai_repo_impl(
     if action == "impact":
         return _compact(CLIENT.post("/api/repo/impact", {"root": root, "base": base, "staged": staged}, timeout=_timeout("context")), "impact")
     if action == "refactor_impact":
-        return _compact(CLIENT.post("/api/refactor_impact", {"root": root, "file": path, "symbol": query or task}, timeout=_timeout("quick")), "impact")
+        return _compact(CLIENT.post("/api/refactor_impact", {"root": root, "file": path, "symbol": query}, timeout=_timeout("quick")), "impact")
     if action == "resolve_imports":
-        syms = [s.strip() for s in (query or task).split(",") if s.strip()]
+        syms = [s.strip() for s in query.split(",") if s.strip()]
         return _compact(CLIENT.post("/api/resolve_imports", {"root": root, "symbols": syms, "language": language or "auto"}, timeout=_timeout("quick")), "context",
                         extra_fields=[*(extra_fields or []), "resolved_imports", "unresolved_symbols", "rejected_candidates",
                                       "rejected_candidates_truncated", "validation", "complete"])
     if action == "generate_tests":
-        return _compact(CLIENT.post("/api/generate_tests", {"root": root, "file": path, "symbol": query or task}, timeout=_timeout("context")), "delegate")
+        return _compact(CLIENT.post("/api/generate_tests", {"root": root, "file": path, "symbol": query}, timeout=_timeout("context")), "delegate")
     if action == "validate_patch":
-        return _compact(CLIENT.post("/api/patch/validate", {"root": root, "patch": query or task}, timeout=_timeout("quick")), "verify")
+        return _compact(CLIENT.post("/api/patch/validate", {"root": root, "patch": query}, timeout=_timeout("quick")), "verify")
     if action == "audit_dependencies":
         return _compact(CLIENT.post("/api/audit_dependencies", {"root": root}, timeout=_timeout("quick")), "context")
     if action == "ast_outline":
@@ -3266,11 +3328,11 @@ def _local_ai_repo_impl(
         }, timeout=_timeout("quick")), "verify")
     if action == "generate_mocks":
         return _compact(CLIENT.post("/api/code/generate_mocks", {
-            "root": root, "file": path, "symbol": query or task,
+            "root": root, "file": path, "symbol": query,
         }, timeout=_timeout("quick")), "architecture")
     if action == "split_changes":
         return _compact(CLIENT.post("/api/repo/split_changes", {
-            "root": root, "paths": [path] if path else ([query] if query and not query.startswith("-") else None),
+            "root": root, "paths": [path] if path else None,
         }, timeout=_timeout("quick")), "architecture")
     if action == "synthesize_rules":
         return _compact(CLIENT.post("/api/repo/synthesize_rules", {
@@ -3285,9 +3347,7 @@ def _local_ai_repo_impl(
     if action == "repo_state":
         return _compact(CLIENT.post("/api/repo/state", {"root": root}, timeout=_timeout("quick")), "status")
     if action == "synthesize_commit":
-        synth_payload = {"root": root, "hint": query or task}
-        if task and str(task).startswith("task-"):
-            synth_payload["task_id"] = str(task)
+        synth_payload = {"root": root, "hint": query}
         return _compact(CLIENT.post("/api/git/synthesize_commit", synth_payload, timeout=_timeout("quick")), "status")
     if action == "verify":
         return _compact(CLIENT.post("/api/evidence/verify", {"root": root, "evidence": evidence or []}), "verify")
@@ -3451,9 +3511,9 @@ def _local_ai_repo_impl(
     if action == "cross_project_graph":
         return _compact(CLIENT.post("/api/cross_project_graph", {"roots": [root] if root else []}, timeout=_timeout("quick")), "architecture")
     if action == "cross_project_symbols":
-        return _compact(CLIENT.post("/api/cross_project_symbols", {"roots": [root] if root else [], "query": query or task, "limit": 50}, timeout=_timeout("quick")), "architecture")
+        return _compact(CLIENT.post("/api/cross_project_symbols", {"roots": [root] if root else [], "query": query, "limit": 50}, timeout=_timeout("quick")), "architecture")
     if action == "cross_project_impact":
-        return _compact(CLIENT.post("/api/cross_project_impact", {"roots": [root] if root else [], "symbol": query or task}, timeout=_timeout("quick")), "impact")
+        return _compact(CLIENT.post("/api/cross_project_impact", {"roots": [root] if root else [], "symbol": query}, timeout=_timeout("quick")), "impact")
     if action in {"call_graph_diff", "semantic_diff"}:
         if action == "semantic_diff" and (old_code is not None or new_code is not None):
             if old_code is None or new_code is None:
@@ -3472,7 +3532,7 @@ def _local_ai_repo_impl(
         }, timeout=_timeout("quick")), "architecture")
     if action == "generate_dataset":
         return _compact(CLIENT.post("/api/repo/generate_dataset", {
-            "root": root, "schema_or_model": query or task or path,
+            "root": root, "schema_or_model": query,
             "count": max_tokens or 10,
             "format": relation or "json",
         }, timeout=_timeout("quick")), "architecture")
@@ -3533,7 +3593,7 @@ def _local_ai_repo_impl(
         }, timeout=_timeout("quick")), "architecture")
     if action == "explain_query":
         return _compact(CLIENT.post("/api/repo/explain_query", {
-            "root": root, "query": query or task, "db_path": path or None,
+            "root": root, "query": query, "db_path": path or None,
         }, timeout=_timeout("quick")), "architecture")
     if action == "env_compat":
         return _compact(CLIENT.post("/api/repo/env_compat", {
@@ -3541,7 +3601,7 @@ def _local_ai_repo_impl(
         }, timeout=_timeout("quick")), "architecture")
     if action == "circular_dependencies":
         return _compact(CLIENT.post("/api/repo/circular_dependencies", {
-            "root": root, "language": query or task or "python",
+            "root": root, "language": "python" if language in {"", "auto"} else language,
         }, timeout=_timeout("quick")), "architecture")
     if action == "generate_types":
         return _compact(CLIENT.post("/api/repo/generate_types", {
@@ -3554,23 +3614,23 @@ def _local_ai_repo_impl(
         }, timeout=_timeout("quick")), "complexity")
     if action == "api_spec":
         return _compact(CLIENT.post("/api/repo/api_spec", {
-            "root": root, "framework": query or task or None,
+            "root": root, "framework": query or None,
         }, timeout=_timeout("quick")), "architecture")
     if action == "dependency_slice":
         return _compact(CLIENT.post("/api/repo/dependency_slice", {
-            "root": root, "symbol": query or task or relation, "path": path or None, "depth": max(1, min(max_tokens or 2, 8)),
+            "root": root, "symbol": query, "path": path or None, "depth": max(1, min(max_tokens or 2, 8)),
         }, timeout=_timeout("quick")), "architecture")
     if action == "migration_drift":
         return _compact(CLIENT.post("/api/repo/migration_drift", {
-            "root": root, "db_path": path or query or task or None,
+            "root": root, "db_path": path or None,
         }, timeout=_timeout("quick")), "architecture")
     if action == "package_audit":
         return _compact(CLIENT.post("/api/repo/package_audit", {
-            "root": root, "lockfile_path": path or query or task or None,
+            "root": root, "lockfile_path": path or None,
         }, timeout=_timeout("quick")), "architecture")
     if action == "structural_search":
         return _compact(CLIENT.post("/api/repo/structural_search", {
-            "root": root, "pattern": query or task, "path": path or None, "max_results": max_tokens or 30,
+            "root": root, "pattern": query, "path": path or None, "max_results": max_tokens or 30,
         }, timeout=_timeout("quick")), "architecture")
     if action == "context_budget":
         files_arg = [path] if path else ([query] if query and not query.startswith("-") else [])
@@ -3585,17 +3645,17 @@ def _local_ai_repo_impl(
                              or value.startswith("-") or "\0" in value for value in (rev1, rev2)):
                 return contract_error("git_diff requires valid rev1 and rev2 together, without staged")
             return _compact(CLIENT.post("/api/git/diff", {
-                "root": root, "path": path or query or None, "staged": False,
+                "root": root, "path": path or None, "staged": False,
                 "max_lines": max_tokens or 500, "rev1": rev1, "rev2": rev2,
             }, timeout=_timeout("context")), "diff", extra_fields=[
                 *(extra_fields or []), "comparison", "rev1", "rev2", "resolved_rev1", "resolved_rev2",
                 "stats_complete", "paths_complete", "diff_sha256",
             ])
-        return _compact(CLIENT.get(f"/api/git/diff?root={quote(root)}&path={quote(path or query or '')}&staged={'true' if staged else 'false'}&max_lines={max_tokens or 500}"), "diff",
+        return _compact(CLIENT.get(f"/api/git/diff?root={quote(root)}&path={quote(path or '')}&staged={'true' if staged else 'false'}&max_lines={max_tokens or 500}"), "diff",
                         extra_fields=[*(extra_fields or []), "stats_complete", "paths_complete", "diff_sha256", "comparison"])
     if action == "git_history_search":
         return _compact(CLIENT.post("/api/git/history_search", {
-            "root": root, "query": query or task, "max_commits": max_tokens or 50,
+            "root": root, "query": query, "max_commits": max_tokens or 50,
         }, timeout=_timeout("quick")), "architecture")
     if action == "hotspots":
         days_val = int(diff) if (diff and diff.isdigit()) else 30
@@ -3604,11 +3664,11 @@ def _local_ai_repo_impl(
         }, timeout=_timeout("quick")), "architecture")
     if action == "generate_tests_for_diff":
         return _compact(CLIENT.post("/api/repo/generate_tests_for_diff", {
-            "root": root, "diff": diff or query or task, "path": path or None,
+            "root": root, "diff": diff,
         }, timeout=_timeout("context")), "delegate")
     if action == "cross_repo_contract":
         return _compact(CLIENT.post("/api/repo/cross_repo_contract", {
-            "backend_root": root, "frontend_root": path or workspace or query,
+            "backend_root": root, "frontend_root": path,
         }, timeout=_timeout("quick")), "architecture")
     if action == "reachability_dead_code":
         return _compact(CLIENT.post("/api/repo/reachability_dead_code", {
@@ -3616,14 +3676,14 @@ def _local_ai_repo_impl(
         }, timeout=_timeout("context")), "architecture")
     if action == "mutation_test":
         return _compact(CLIENT.post("/api/repo/mutation_test", {
-            "root": root, "file": path or query, "diff": diff or None,
+            "root": root, "file": path or None, "diff": diff or None,
         }, timeout=_timeout("context")), "delegate")
     if action == "type_stubs":
         return _compact(CLIENT.post("/api/repo/type_stubs", {
-            "root": root, "file": path or query,
+            "root": root, "file": path or None,
         }, timeout=_timeout("quick")), "code")
     if action == "skeletonize":
-        source_code = query or diff or task
+        source_code = query
         skeleton_payload: dict[str, Any] = {
             "code": source_code,
             "targets": [path] if path and source_code else None,
