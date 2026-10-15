@@ -2340,6 +2340,39 @@ class LocalAIServices:
                 "error": "Whisper CLI is not installed or unavailable in PATH.",
             }
 
+        from .whisper_policy import prepare_whisper_model
+
+        transcription_config = self.config.get("transcription", {})
+        if not isinstance(transcription_config, dict):
+            transcription_config = {}
+        policy = prepare_whisper_model(
+            model,
+            cache_dir=transcription_config.get("cache_dir"),
+            allow_downloads=transcription_config.get("allow_model_downloads", False),
+            device=transcription_config.get("device", "cpu"),
+            cancel_event=cancel_event,
+        )
+        if not policy.ok:
+            return {
+                "success": False,
+                "audio_path": str(p),
+                "model": model,
+                "engine": "whisper_cli",
+                "reason": policy.reason or "model_unavailable",
+                "degraded": policy.reason in {
+                    "model_missing",
+                    "model_unavailable",
+                    "model_corrupt",
+                    "model_too_large",
+                    "model_verify_timeout",
+                },
+                "cancelled": policy.reason == "cancelled",
+                "terminal": policy.reason != "model_verify_timeout",
+                "retryable": policy.reason == "model_verify_timeout",
+                "request_not_sent": True,
+                "error": policy.error or "Whisper model policy rejected this request.",
+            }
+
         from tempfile import TemporaryDirectory
 
         from .process_utils import ProcessCancelledError, ProcessCleanupUnverifiedError, run_hidden
@@ -2352,7 +2385,11 @@ class LocalAIServices:
                     "--output_format",
                     "json",
                     "--model",
-                    model,
+                    policy.cached_model or model,
+                    "--model_dir",
+                    policy.model_dir,
+                    "--device",
+                    policy.device,
                     "--output_dir",
                     output_dir,
                 ]
