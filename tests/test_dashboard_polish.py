@@ -82,6 +82,11 @@ def test_incident_ui_uses_only_supported_read_and_record_actions():
         assert retired not in DASHBOARD_HTML
 
 
+def test_project_text_input_layout_excludes_checkboxes():
+    assert '.project-toolbar input{' not in DASHBOARD_HTML
+    assert '.project-toolbar input:not([type=checkbox]):not([type=radio])' in DASHBOARD_HTML
+
+
 def test_unauthorized_response_never_prompts_or_retries_for_a_token():
     source = extract("function scopeAgentOsRequest(", "function setFrontendVisionCaptureState(")
     run_javascript(source, """

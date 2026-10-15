@@ -119,9 +119,10 @@ tbody tr.click:hover{background:#162338}
 .control-popover{position:absolute;right:0;top:calc(100% + 7px);z-index:30;min-width:330px;padding:10px;background:#10161d;border:1px solid #394758;border-radius:8px;box-shadow:0 16px 45px #000b;display:grid;grid-template-columns:1fr 1fr;gap:7px}
 .control-popover .tiny.muted{grid-column:1/-1;padding-top:4px;font-weight:600;color:var(--muted);letter-spacing:0.02em}
 .control-popover>button{width:100%}
+.control-notice{grid-column:1/-1;white-space:normal;line-height:1.5;color:var(--muted);margin:2px 0 4px}
 .project-toolbar{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
-.project-toolbar input,.project-toolbar select{background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:7px 9px;font-size:11px}
-.project-toolbar input{flex:1;min-width:180px}
+.project-toolbar input:not([type=checkbox]):not([type=radio]),.project-toolbar select{background:#19232d;color:var(--fg);border:1px solid #394758;border-radius:6px;padding:7px 9px;font-size:11px}
+.project-toolbar input:not([type=checkbox]):not([type=radio]){flex:1;min-width:180px}
 .project-toolbar select{min-width:118px}
 .project-summary{margin-left:auto}
 .project-table th:nth-child(1){width:25%}.project-table th:nth-child(2){width:33%}.project-table th:nth-child(3){width:22%}.project-table th:nth-child(4){width:12%}.project-table th:nth-child(5){width:8%}
@@ -137,7 +138,7 @@ tbody tr.click:hover{background:#162338}
 .sub strong{color:var(--fg)}
 .spark-canvas{width:100%;height:32px;display:block;margin-top:6px}
 @media(max-width:980px){.split{grid-template-columns:1fr}.event,.event-header{grid-template-columns:72px 90px 1fr}.hide-sm{display:none}.page{padding:8px}.value{font-size:17px}}
-@media(max-width:700px){.toolbar{padding:8px;gap:6px}.toolbar .brand{font-size:12px}.toolbar>.tiny{display:none}.control-menu{margin-left:0}.control-popover{position:fixed;left:8px;right:8px;top:72px;min-width:0}.tabs{padding:0 6px 6px}.tabbtn{padding:6px 8px}.project-toolbar{align-items:stretch}.project-toolbar input{flex-basis:100%}.project-summary{margin-left:0;width:100%}}
+@media(max-width:700px){.toolbar{padding:8px;gap:6px}.toolbar .brand{font-size:12px}.toolbar>.tiny{display:none}.control-menu{margin-left:0}.control-popover{position:fixed;left:8px;right:8px;top:72px;min-width:0}.tabs{padding:0 6px 6px}.tabbtn{padding:6px 8px}.project-toolbar{align-items:stretch}.project-toolbar input:not([type=checkbox]):not([type=radio]){flex-basis:100%}.project-summary{margin-left:0;width:100%}}
 </style><style>
 .system-card .value{font-size:15px}
 .trace-running{color:var(--accent)}
@@ -277,10 +278,11 @@ input:not([type=checkbox]):not([type=radio]),select{min-height:32px;max-width:10
 .section h2{padding:13px 16px;font-size:14px;flex-wrap:wrap}
 table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
 .group-title{flex-wrap:wrap;gap:8px;line-height:1.5}
+.action-btn-sm,.copy-btn,.subtab-btn{min-height:30px;font-size:11px}.project-actions{flex-wrap:wrap}
 .arena-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .arena-grid>*{min-width:0}
 .split>*{min-width:0}
-@media(max-width:600px){.arena-grid{grid-template-columns:1fr}.control-popover{min-width:0;width:min(340px,calc(100vw - 24px));max-height:calc(100dvh - 140px);overflow:auto}.kv{grid-template-columns:minmax(100px,40%) minmax(0,1fr)}.project-toolbar input{min-width:min(180px,100%)}.reliability-footer>div{flex-wrap:wrap}}
+@media(max-width:600px){.arena-grid{grid-template-columns:1fr}.control-popover{min-width:0;width:min(340px,calc(100vw - 24px));max-height:calc(100dvh - 140px);overflow:auto}.kv{grid-template-columns:minmax(100px,40%) minmax(0,1fr)}.project-toolbar input:not([type=checkbox]):not([type=radio]){min-width:min(180px,100%)}.reliability-footer>div{flex-wrap:wrap}}
 .metric-status{margin:0 0 12px;color:var(--muted);font-size:12px}
 .metric-status.warn-t{color:var(--warn)}
 .metric-details{margin-top:12px;padding:12px 16px;border:1px solid var(--line);border-radius:9px;color:var(--muted);background:var(--panel)}
@@ -301,13 +303,13 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
     <span id="activityModeBadge" class="pill warn-t" data-mode="unknown">Mode: Unknown</span>
     <span id="updated" class="tiny"></span>
     <label class="tiny">Metrics period <select id="sloScope"><option value="process" selected>Since restart</option><option value="window">Last 30 days</option></select></label>
-    <span class="tiny spacer">Agent debug traces · off by default; payloads available when enabled</span>
     <span id="featSummary" class="pill tiny"></span>
     <details id="controlMenu" class="control-menu">
       <summary>Controls</summary>
       <div class="control-popover">
         <div class="tiny muted">Diagnostics</div>
         <button class="btn" id="detailedTelemetryToggle" aria-pressed="false">Detailed telemetry: Off</button>
+        <span class="tiny control-notice">Agent debug traces · off by default; payloads available when enabled</span>
         <button class="btn ok" id="optDbBtn">Optimize databases</button>
         <button class="btn ok" id="resolveAllErrorsBtn">Resolve all errors</button>
         <button class="btn" id="doctorBtn">Run diagnostics</button>
