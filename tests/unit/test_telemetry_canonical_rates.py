@@ -101,10 +101,10 @@ def test_channel_estimates_remain_separate_with_canonical_rates(telemetry_store)
 def test_mixed_overlap_and_additive_rows_keep_each_rows_priced_channels(telemetry_store):
     telemetry_store.record_tool_accounting(
         {
-            "gross_cloud_tokens_avoided_est": 150_000,
+            "gross_cloud_tokens_avoided_est": 100_000,
             "gross_input_tokens_avoided_est": 100_000,
             "gross_output_tokens_avoided_est": 100_000,
-            "net_cloud_token_delta_est": 150_000,
+            "net_cloud_token_delta_est": 100_000,
         }
     )
     telemetry_store.record_tool_accounting(
@@ -118,7 +118,7 @@ def test_mixed_overlap_and_additive_rows_keep_each_rows_priced_channels(telemetr
 
     summary = telemetry_store.report(scope="process")["summary"]
 
-    assert summary["gross_cloud_tokens_avoided_est"] == 200_000
+    assert summary["gross_cloud_tokens_avoided_est"] == 150_000
     assert summary["gross_input_cloud_tokens_avoided_est"] + summary["gross_output_cloud_tokens_avoided_est"] == 250_000
     assert summary["estimated_input_savings_usd"] == 0.2
     assert summary["estimated_output_savings_usd"] == 0.4
