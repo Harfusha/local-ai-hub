@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -46,6 +47,25 @@ def test_sqlite_set_many_round_trips_none_and_prunes_to_bound(tmp_path: Path) ->
     cache.set_many(overflow)
     assert len(cache.get_many([*first, *overflow])) <= 50
     assert cache.get("none") is None
+
+
+def test_sqlite_batch_pruning_preserves_capacity_and_newest_entries(tmp_path: Path) -> None:
+    cache = SQLiteCache(tmp_path / "small.sqlite", "small", max_entries=2)
+
+    cache.set_many({"old": 1, "middle": 2, "newest": 3})
+
+    retained = cache.get_many(["old", "middle", "newest"])
+    assert len(retained) == 2
+    assert retained == {"middle": 2, "newest": 3}
+
+
+def test_sqlite_set_many_rolls_back_partial_executemany_failure(tmp_path: Path) -> None:
+    cache = SQLiteCache(tmp_path / "atomic.sqlite", "atomic", max_entries=10)
+
+    cache.set_many({"good-before-error": "value", None: "invalid-null-key"})
+
+    assert cache.get("good-before-error") is None
+    assert cache.stats()["entries"] == 0
 
 
 def test_tiered_batching_promotes_l2_hits_and_preserves_duplicate_counters(tmp_path: Path) -> None:
@@ -100,7 +120,13 @@ def test_windows_command_cache_lock_timeout_uses_bounded_nonblocking_attempts(
 
     fake_msvcrt = SimpleNamespace(LK_NBLCK=1, LK_UNLCK=2, locking=lock)
     monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
-    monkeypatch.setattr(cache_module.os, "name", "nt")
+    class FakeWindowsOS:
+        name = "nt"
+
+        def __getattr__(self, name):
+            return getattr(os, name)
+
+    monkeypatch.setattr(cache_module, "os", FakeWindowsOS())
     monkeypatch.setattr(cache_module, "_COMMAND_CACHE_LOCK_TIMEOUT_SECONDS", 0.025)
     monkeypatch.setattr(cache_module.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(cache_module.time, "sleep", lambda duration: clock.__setitem__(0, clock[0] + duration))
