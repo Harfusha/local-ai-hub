@@ -2979,6 +2979,20 @@ def _local_ai_repo_impl(
         return {**contract_error("local_ai_repo is disabled in configuration", status_code=403), "unsupported": True}
     if not isinstance(phase, str) or phase not in REPO_PHASES:
         return contract_error(f"phase must be one of: {', '.join(REPO_PHASES[1:])}")
+    scoped_arguments = {
+        "max_commits": max_commits,
+        "author": author,
+        "since": since,
+        "until": until,
+        "days": days,
+        "limit": limit,
+    }
+    scoped_error = validate_operation_arguments(
+        "local_ai_repo", action,
+        {name: value for name, value in scoped_arguments.items() if value is not None},
+    )
+    if scoped_error is not None:
+        return contract_error(scoped_error, status_code=400)
     max_commits = 50 if max_commits is None else max_commits
     author = "" if author is None else author
     since = "" if since is None else since
