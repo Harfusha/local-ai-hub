@@ -21,6 +21,13 @@ DEFAULT_MAX_BINARY_BYTES = 4_000_000
 DEFAULT_MAX_JSON_BYTES = 4_000_000
 _ARTIFACT_TABLE = "artifacts"
 _ARTIFACT_PAGING_TABLE = "artifact_paging_metadata"
+_ARTIFACTS_SCHEMA_SQL = """CREATE TABLE artifacts (
+    artifact_id TEXT PRIMARY KEY, created_at REAL NOT NULL,
+    tenant TEXT NOT NULL, tenant_identity TEXT, kind TEXT NOT NULL,
+    text TEXT NOT NULL DEFAULT '', mime_type TEXT, encoding TEXT, blob BLOB,
+    size_bytes INTEGER, checksum TEXT, identity_json TEXT
+)"""
+_ARTIFACT_SCHEMA_META_SQL = "CREATE TABLE artifact_schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
 MAX_ARTIFACT_SLICES = 16
 MAX_ARTIFACT_SLICE_CHARS = 50_000
 MAX_ARTIFACT_TEXT_CHUNK_BYTES = 64 * 1024
@@ -31,6 +38,13 @@ MAX_ARTIFACT_SECTION_NAMES = 50
 MAX_ARTIFACT_SECTION_METADATA_BYTES = 128 * 1024
 MAX_ARTIFACT_JSON_SECTION_KEYS_SCANNED = 256
 MAX_ARTIFACT_READ_SECONDS = 5.0
+
+
+def _normalize_artifact_create_sql(statement: str) -> str:
+    normalized = " ".join(statement.upper().split()).rstrip(";")
+    normalized = normalized.replace("CREATE TABLE IF NOT EXISTS ", "CREATE TABLE ", 1)
+    return re.sub(r"\s*([(),])\s*", r"\1", normalized)
+
 
 class UnsupportedArtifactSchema(sqlite3.DatabaseError):
     """An existing artifact database does not use the current durable schema."""
@@ -221,6 +235,23 @@ class ArtifactStore:
         except sqlite3.OperationalError:
             pass
         return con
+
+    def _connect_for_initialization(self, *, fresh: bool) -> sqlite3.Connection:
+        mode = "rwc" if fresh else "rw"
+        uri = f"{self.path.resolve().as_uri()}?mode={mode}"
+        con = sqlite3.connect(uri, uri=True, timeout=0.75)
+        try:
+            con.execute("PRAGMA busy_timeout=750")
+            con.execute("PRAGMA foreign_keys=ON")
+            con.execute("PRAGMA cache_size=-32768")
+            try:
+                con.execute("PRAGMA mmap_size=268435456")
+            except sqlite3.OperationalError:
+                pass
+            return con
+        except BaseException:
+            con.close()
+            raise
 
     def _ensure_paging_metadata(self, con: sqlite3.Connection) -> None:
         table = self._table
@@ -570,23 +601,24 @@ class ArtifactStore:
                 "checksum": ("TEXT", 0, 0, None, 0), "identity_json": ("TEXT", 0, 0, None, 0),
             }
             canonical_sql = {
-                "artifacts": "CREATE TABLE ARTIFACTS ( ARTIFACT_ID TEXT PRIMARY KEY, CREATED_AT REAL NOT NULL, TENANT TEXT NOT NULL, TENANT_IDENTITY TEXT, KIND TEXT NOT NULL, TEXT TEXT NOT NULL DEFAULT '', MIME_TYPE TEXT, ENCODING TEXT, BLOB BLOB, SIZE_BYTES INTEGER, CHECKSUM TEXT, IDENTITY_JSON TEXT )",
-                "artifact_schema_meta": "CREATE TABLE ARTIFACT_SCHEMA_META ( KEY TEXT PRIMARY KEY, VALUE TEXT NOT NULL )",
+                "artifacts": _normalize_artifact_create_sql(_ARTIFACTS_SCHEMA_SQL),
+                "artifact_schema_meta": _normalize_artifact_create_sql(_ARTIFACT_SCHEMA_META_SQL),
             }
 
             def _validate_connection(con: sqlite3.Connection) -> None:
                 objects = {
                     str(row[0]): (str(row[1]), str(row[2] or ""))
                     for row in con.execute(
-                        "SELECT name, type, sql FROM sqlite_master WHERE name IN ('artifacts', 'artifact_schema_meta')"
+                        """SELECT name, type,
+                                  CASE WHEN length(CAST(sql AS BLOB))<=8192 THEN sql END
+                           FROM sqlite_master WHERE name IN ('artifacts', 'artifact_schema_meta')"""
                     )
                 }
                 if set(objects) != {"artifacts", "artifact_schema_meta"}:
                     raise UnsupportedArtifactSchema("unsupported artifact database schema")
                 for name in objects:
                     object_type, statement = objects[name]
-                    normalized = " ".join(statement.upper().split()).rstrip(";")
-                    normalized = normalized.replace("CREATE TABLE IF NOT EXISTS ", "CREATE TABLE ", 1)
+                    normalized = _normalize_artifact_create_sql(statement)
                     if (object_type != "table" or "WITHOUT ROWID" in normalized
                             or normalized.startswith("CREATE VIRTUAL TABLE")):
                         raise UnsupportedArtifactSchema("unsupported artifact table storage")
@@ -612,10 +644,12 @@ class ArtifactStore:
                     "value": ("TEXT", 0, 1, None, 0),
                 }:
                     raise UnsupportedArtifactSchema("unsupported artifact schema metadata table")
-                markers = [str(row[0]) for row in con.execute(
-                    "SELECT value FROM artifact_schema_meta WHERE key='tenant_storage'"
-                )]
-                if markers != ["sha256-v1"]:
+                marker = con.execute(
+                    """SELECT 1 FROM artifact_schema_meta
+                       WHERE key='tenant_storage' AND typeof(value)='text'
+                         AND length(CAST(value AS BLOB))=9 AND value='sha256-v1' LIMIT 1"""
+                ).fetchone()
+                if marker is None:
                     raise UnsupportedArtifactSchema("unsupported artifact tenant storage marker")
                 deadline = time.monotonic() + MAX_ARTIFACT_READ_SECONDS
                 con.set_progress_handler(
@@ -670,25 +704,26 @@ class ArtifactStore:
                         raise
                     raise UnsupportedArtifactSchema("unable to inspect artifact database schema") from exc
 
+            fresh_database = fresh
+
             def _setup() -> None:
-                with closing(self._connect()) as con:
-                    if not fresh:
-                        # Recheck after opening the writer handle to narrow the validation/write race.
+                nonlocal fresh_database
+                with closing(self._connect_for_initialization(fresh=fresh_database)) as con:
+                    if fresh_database:
+                        objects_exist = con.execute(
+                            "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') LIMIT 1"
+                        ).fetchone()
+                        if objects_exist is not None:
+                            _validate_connection(con)
+                            fresh_database = False
+                    else:
+                        # Recheck after opening the no-create writer handle, before persistent PRAGMAs.
                         _validate_connection(con)
                     initialize_wal(con)
                     con.execute("BEGIN IMMEDIATE")
-                    if fresh:
-                        con.execute(
-                            """CREATE TABLE artifacts (
-                                artifact_id TEXT PRIMARY KEY, created_at REAL NOT NULL,
-                                tenant TEXT NOT NULL, tenant_identity TEXT, kind TEXT NOT NULL,
-                                text TEXT NOT NULL DEFAULT '', mime_type TEXT, encoding TEXT, blob BLOB,
-                                size_bytes INTEGER, checksum TEXT, identity_json TEXT
-                            )"""
-                        )
-                        con.execute(
-                            "CREATE TABLE artifact_schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-                        )
+                    if fresh_database:
+                        con.execute(_ARTIFACTS_SCHEMA_SQL)
+                        con.execute(_ARTIFACT_SCHEMA_META_SQL)
                         con.execute(
                             "INSERT INTO artifact_schema_meta(key, value) VALUES('tenant_storage', 'sha256-v1')"
                         )
