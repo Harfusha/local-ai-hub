@@ -1763,12 +1763,16 @@ class TelemetryStore:
         }
 
     @staticmethod
-    def _detail_status(*, truncated: bool, flush_complete: bool, writer: dict[str, Any]) -> dict[str, Any]:
+    def _detail_status(
+        *, truncated: bool, flush_complete: bool, writer: dict[str, Any],
+        summary_cache_stale: bool = False,
+    ) -> dict[str, Any]:
         incomplete = bool(
             truncated or not flush_complete or writer.get("pending")
             or writer.get("dropped") or writer.get("writer_errors")
             or not writer.get("activity_observed", False)
             or writer.get("accounting_balanced") is False
+            or summary_cache_stale
         )
         omitted: list[str] = []
         if truncated:
@@ -1781,6 +1785,8 @@ class TelemetryStore:
             omitted.append("writer_activity_unobserved")
         if writer.get("accounting_balanced") is False:
             omitted.append("writer_accounting_unbalanced")
+        if summary_cache_stale:
+            omitted.append("cached_summary_data")
         return {
             "status": "incomplete" if incomplete else "complete",
             "truncated": bool(truncated),
@@ -2440,10 +2446,12 @@ class TelemetryStore:
             "bypass": summary.get("bypass", []),
             "errors": summary.get("errors", {}),
             "queue": summary.get("queue", {}),
+            "summary_cache_stale": bool(summary.get("summary_cache_stale", False)),
             "detail": self._detail_status(
                 truncated=bool(summary.get("detail", {}).get("truncated", False)),
                 flush_complete=flush_complete,
                 writer=summary.get("writer", {}),
+                summary_cache_stale=bool(summary.get("summary_cache_stale", False)),
             ),
             "decision_grade": summary.get("decision_grade", {}),
         }
