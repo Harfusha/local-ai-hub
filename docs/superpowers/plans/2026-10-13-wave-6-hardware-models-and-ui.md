@@ -100,12 +100,16 @@ Use one request-driven background sampler with cached ordinary status; preserve 
 
 ### Task 83: Idle Unload Timer for Local Models in VRAM (#54)
 
+**2026-10-15 implementation checkpoint — execution deferred.** The timer uses the existing affinity dispatcher, with validated `scheduler.idle_timeout_seconds=300` and explicit disable value 0. It tracks model preparation and completion of both foreground/background scheduler jobs, claims release only with no pending/inflight/switching/background-GPU reservation, and targets only the active model actually prepared or used by this scheduler. A merely observed pre-existing model is not claimed for idle release. The dispatcher reserves residency under its condition, calls `unload_model` outside that lock with a five-second absolute deadline and shutdown callback, then wakes queued arrivals. Tiered runtimes forward the same deadline/cancellation to the selected provider. The existing Ollama unload implementation sends `keep_alive=0`; backend selection remains unchanged.
+
+Any attempted release clears scheduler affinity so the next request must prepare the model afresh, including when release is unconfirmed. Failure does not create a repeated unload loop. Metadata distinguishes `request_accepted` from `unconfirmed`; acceptance is not physical-VRAM proof. Existing operator files, provider keep_alive values and durable state are untouched; the new scheduler timer intentionally limits residency of scheduler-owned idle models independently of provider keep_alive, and operators can disable it with the new setting. Deferred cases cover threshold, busy/disabled/foreign guards, release outside the condition lock, unconfirmed-release affinity and tiered forwarding. No model unload, test, inference or service restart occurred. Runtime timing, direct-call concurrency boundaries and physical VRAM reclamation remain final gate work.
+
 **Files:**
 - Modify: `src/local_ai_hub/ollama.py:180-220`
 - Test: `tests/unit/test_model_idle_unload.py`
 
-- [ ] **Step 1: Write test verifying model unload request is dispatched after configured idle duration**
-- [ ] **Step 2: Implement fix**
+- [x] **Step 1: Write idle ownership/threshold/release regression source (execution deferred)**
+- [x] **Step 2: Implement owned idle release in existing dispatcher (validation pending)**
 Add `idle_timeout_seconds` (default 300s). When timer expires, call Ollama API with `keep_alive=0` to free GPU VRAM for the user's IDE.
 - [ ] **Step 3: Run test and verify pass & Commit**
 `git commit -m "feat(models): add idle unload timer to release GPU VRAM when local models are inactive"`

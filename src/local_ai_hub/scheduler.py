@@ -162,6 +162,7 @@ class AffinityScheduler:
         self.max_other_wait = float(cfg.get("max_other_model_wait_seconds", 45))
         self.switch_cooldown = float(cfg.get("switch_cooldown_seconds", 1))
         self.switch_failure_cooldown = max(1.0, float(cfg.get("model_switch_failure_cooldown_seconds", 20.0)))
+        self.idle_timeout_seconds = max(0.0, float(cfg.get("idle_timeout_seconds", 300.0)))
         resilience_cfg = config.get("resilience", {})
         configured_default_wait = max(0.05, float(resilience_cfg.get("scheduler_wait_timeout_seconds", config.get("server", {}).get("request_timeout_seconds", 210) + 15)))
         self.max_caller_wait_timeout = max(0.05, float(cfg.get("max_caller_wait_timeout_seconds", config.get("client", {}).get("max_request_timeout_seconds", 900))))
@@ -186,6 +187,9 @@ class AffinityScheduler:
         self._switch_sequence = 0
         self._last_switch = 0.0
         self._switching = False
+        self._idle_owned_model: str | None = None
+        self._last_model_activity = time.monotonic()
+        self._idle_unload_state = "not_requested"
         self._model_blocked_until: dict[str, float] = {}
         self._model_last_error: dict[str, str] = {}
         self._model_vram_bytes: dict[str, int] = {}
@@ -971,13 +975,52 @@ class AffinityScheduler:
             return []
         return self._background_pending_jobs()
 
+    def _claim_idle_unload(self, now: float) -> str | None:
+        """Caller holds _cond; reserve residency before releasing that lock."""
+        if (not self._running or self.idle_timeout_seconds <= 0 or self._switching
+                or self._pending or self._inflight or self._background_gpu_lease
+                or not self._active_model or self._idle_owned_model != self._active_model
+                or now - self._last_model_activity < self.idle_timeout_seconds):
+            return None
+        self._switching = True
+        self._idle_unload_state = "releasing"
+        return self._active_model
+
+    def _perform_idle_unload(self, model: str) -> None:
+        released = False
+        try:
+            unload = getattr(self.runtime, "unload_model", None)
+            if callable(unload):
+                released = bool(unload(model, should_stop=lambda: not self._running,
+                                       deadline=time.monotonic() + 5.0))
+        except Exception:
+            pass
+        finally:
+            with self._cond:
+                # Even an unconfirmed unload may have removed the runner. The next
+                # queued request must prepare it afresh, rather than trust affinity.
+                if self._active_model == model:
+                    self._active_model = None
+                    self._active_since = 0.0
+                    self._active_dispatched = 0
+                self._idle_owned_model = None
+                self._idle_unload_state = "request_accepted" if released else "unconfirmed"
+                counter = "idle_unloads" if released else "idle_unload_failures"
+                self._stats[counter] = int(self._stats.get(counter, 0)) + 1
+                self._switching = False
+                self._cond.notify_all()
+
     def _dispatch_loop(self) -> None:
         while self._running:
             target_switch: str | None = None
+            idle_unload: str | None = None
             selected: Job | None = None
             with self._cond:
                 while self._running:
                     now = time.monotonic()
+                    idle_unload = self._claim_idle_unload(now)
+                    if idle_unload is not None:
+                        break
                     if self._background_gpu_lease:
                         self._cond.wait(timeout=0.10)
                         continue
@@ -1014,7 +1057,14 @@ class AffinityScheduler:
                     self._cond.wait(timeout=0.15)
 
             if not self._running:
+                if idle_unload is not None:
+                    with self._cond:
+                        self._switching = False
                 break
+
+            if idle_unload is not None:
+                self._perform_idle_unload(idle_unload)
+                continue
 
             if target_switch:
                 self._perform_switch(
@@ -1332,6 +1382,8 @@ class AffinityScheduler:
                 self._model_last_error.pop(target, None)
                 self._active_model = target
                 self._active_since = time.monotonic()
+                self._idle_owned_model = target
+                self._last_model_activity = self._active_since
             self._switching = False
             self._cond.notify_all()
         return not error and not cancelled and not admission_rejected
@@ -1377,6 +1429,9 @@ class AffinityScheduler:
             job.finished_at = time.monotonic()
             with self._cond:
                 self._inflight -= 1
+                self._last_model_activity = job.finished_at
+                if self._active_model == job.model:
+                    self._idle_owned_model = job.model
                 self._inflight_jobs.pop(job.id, None)
                 if job.background:
                     self._inflight_background = max(0, self._inflight_background - 1)
@@ -1444,6 +1499,8 @@ class AffinityScheduler:
             inflight_jobs = [self._job_public(job, now, state="running") for job in sorted(self._inflight_jobs.values(), key=lambda j: j.started_at or j.created_at)]
             return {
                 "active_model": self._active_model,
+                "idle_timeout_seconds": self.idle_timeout_seconds,
+                "idle_unload_state": self._idle_unload_state,
                 "active_parallel_limit": self._active_parallel_limit(),
                 "global_parallel_limit": self.max_parallel,
                 "switching": self._switching,
