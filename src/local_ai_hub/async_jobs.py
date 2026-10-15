@@ -1281,7 +1281,17 @@ class AsyncJobManager:
         started = time.perf_counter()
         timeout = max(1.0, min(self.wait_max_seconds, float(timeout_seconds or self.wait_max_seconds)))
         status = self.status(tenant, job_id)
-        if status.get("success") and status.get("state") in {"queued", "running"}: self._event(job_id).wait(timeout)
+        if status.get("success") and status.get("state") in {"queued", "running"}:
+            with self._lock:
+                event = self._events.setdefault(job_id, threading.Event())
+            status = self.status(tenant, job_id)
+            if not (status.get("success") and status.get("state") in {"queued", "running"}):
+                with self._lock:
+                    event.set()
+                    if self._events.get(job_id) is event:
+                        self._events.pop(job_id, None)
+            else:
+                event.wait(timeout)
         result = self.status(tenant, job_id); result["wait_timeout_seconds"] = timeout
         if self.telemetry is not None:
             try:
@@ -1453,6 +1463,7 @@ class AsyncJobManager:
             active_ids = {str(r[0]) for r in active_rows}
             for jid in list(self._events.keys()):
                 if jid not in active_ids:
+                    self._events[jid].set()
                     self._events.pop(jid, None)
             con.commit()
         self._stats["expired"] += int(expired or 0)
