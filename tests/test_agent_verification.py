@@ -285,20 +285,14 @@ def test_verifier_exception_cannot_become_a_passing_receipt(
         task_id="task-verifier-exception",
     )
 
-    try:
-        raise RuntimeError("verifier unavailable")
-    except RuntimeError as error:
-        verifier_result = error
+    with pytest.raises(ValueError, match="passed must be a boolean"):
+        VerificationReceipt.create(
+            "task-verifier-exception",
+            "tests",
+            passed=RuntimeError("verifier unavailable"),
+            evidence_id="ev-verifier-error",
+        )
 
-    receipt = VerificationReceipt.create(
-        "task-verifier-exception",
-        "tests",
-        passed=verifier_result,
-        evidence_id="ev-verifier-error",
-    )
-    assert receipt.passed is False
-
-    verif_store.record(receipt)
     completion = verif_store.completion("task-verifier-exception")
     assert completion.complete is False
     assert "tests" in completion.unsatisfied_criteria
