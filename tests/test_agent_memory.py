@@ -95,7 +95,7 @@ def model_conclusion(scope: AgentScope = AgentScope.TASK) -> MemoryRecord:
 
 
 def confirmed_repository_record(store: MemoryStore) -> MemoryRecord:
-    provenance = {"root": "C:/repository", "tenant": "tenant-a"}
+    provenance = {"root": "C:/repository", "repository_id": "repository-a", "tenant": "tenant-a"}
     rec = MemoryRecord.create(
         kind=MemoryKind.CONVENTION,
         scope=AgentScope.REPOSITORY,
@@ -116,10 +116,10 @@ def test_find_filters_global_and_repository_rows_by_tenant_and_root(store: Memor
         MemoryRecord.create(kind=MemoryKind.FACT, scope=AgentScope.GLOBAL, key="global-a", value="a", provenance={"tenant": "tenant-a"}),
         MemoryRecord.create(kind=MemoryKind.FACT, scope=AgentScope.GLOBAL, key="global-b", value="b", provenance={"tenant": "tenant-b"}),
         MemoryRecord.create(kind=MemoryKind.FACT, scope=AgentScope.GLOBAL, key="global-shared", value="shared"),
-        MemoryRecord.create(kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY, key="repo-a", value="a", provenance={"root": repo_a, "tenant": "tenant-a"}),
-        MemoryRecord.create(kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY, key="repo-b", value="b", provenance={"root": repo_a, "tenant": "tenant-b"}),
-        MemoryRecord.create(kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY, key="repo-shared", value="shared", provenance={"root": repo_a}),
-        MemoryRecord.create(kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY, key="repo-other-root", value="other", provenance={"root": repo_b, "tenant": "tenant-a"}),
+        MemoryRecord.create(kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY, key="repo-a", value="a", provenance={"root": repo_a, "repository_id": "repo-a", "tenant": "tenant-a"}),
+        MemoryRecord.create(kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY, key="repo-b", value="b", provenance={"root": repo_a, "repository_id": "repo-a", "tenant": "tenant-b"}),
+        MemoryRecord.create(kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY, key="repo-shared", value="shared", provenance={"root": repo_a, "repository_id": "repo-a"}),
+        MemoryRecord.create(kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY, key="repo-other-root", value="other", provenance={"root": repo_b, "repository_id": "repo-b", "tenant": "tenant-a"}),
         MemoryRecord.create(kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY, key="repo-rootless", value="legacy", provenance={"tenant": "tenant-a"}),
     )
     for record in records:
@@ -130,9 +130,9 @@ def test_find_filters_global_and_repository_rows_by_tenant_and_root(store: Memor
     global_without_tenant = store.find(scope=AgentScope.GLOBAL, semantic=False)
     assert {record.key for record in global_without_tenant} == {"global-shared"}
 
-    repo_for_a = store.find(scope=AgentScope.REPOSITORY, root=repo_a, tenant="tenant-a", semantic=False)
+    repo_for_a = store.find(scope=AgentScope.REPOSITORY, root=repo_a, repository_id="repo-a", tenant="tenant-a", semantic=False)
     assert {record.key for record in repo_for_a} == {"repo-a"}
-    repo_without_tenant = store.find(scope=AgentScope.REPOSITORY, root=repo_a, semantic=False)
+    repo_without_tenant = store.find(scope=AgentScope.REPOSITORY, root=repo_a, repository_id="repo-a", semantic=False)
     assert repo_without_tenant == []
     repo_without_root = store.find(scope=AgentScope.REPOSITORY, tenant="tenant-a", semantic=False)
     assert repo_without_root == []
@@ -146,14 +146,14 @@ def test_find_skips_corrupt_rows_without_aborting_scoped_read(store: MemoryStore
             scope=AgentScope.REPOSITORY,
             key="good",
             value="safe",
-            provenance={"root": repo, "tenant": "tenant-a"},
+            provenance={"root": repo, "repository_id": "repo", "tenant": "tenant-a"},
         ),
         "bad_value": MemoryRecord.create(
             kind=MemoryKind.FACT,
             scope=AgentScope.REPOSITORY,
             key="bad-value",
             value="replace with invalid JSON",
-            provenance={"root": repo, "tenant": "tenant-a"},
+            provenance={"root": repo, "repository_id": "repo", "tenant": "tenant-a"},
         ),
         "bad_evidence": MemoryRecord.create(
             kind=MemoryKind.FACT,
@@ -161,7 +161,7 @@ def test_find_skips_corrupt_rows_without_aborting_scoped_read(store: MemoryStore
             key="bad-evidence",
             value="safe value",
             evidence_ids=("evidence-1",),
-            provenance={"root": repo, "tenant": "tenant-a"},
+            provenance={"root": repo, "repository_id": "repo", "tenant": "tenant-a"},
         ),
         "scalar_evidence": MemoryRecord.create(
             kind=MemoryKind.FACT,
@@ -169,7 +169,7 @@ def test_find_skips_corrupt_rows_without_aborting_scoped_read(store: MemoryStore
             key="scalar-evidence",
             value="safe value",
             evidence_ids=("evidence-scalar",),
-            provenance={"root": repo, "tenant": "tenant-a"},
+            provenance={"root": repo, "repository_id": "repo", "tenant": "tenant-a"},
         ),
     }
     for record in records.values():
@@ -179,7 +179,7 @@ def test_find_skips_corrupt_rows_without_aborting_scoped_read(store: MemoryStore
         con.execute("UPDATE agent_memory_records SET evidence_ids = ? WHERE record_id = ?", ("not-json", records["bad_evidence"].record_id))
         con.execute("UPDATE agent_memory_records SET evidence_ids = ? WHERE record_id = ?", ('"evidence-scalar"', records["scalar_evidence"].record_id))
 
-    found = store.find(scope=AgentScope.REPOSITORY, root=repo, tenant="tenant-a", semantic=False)
+    found = store.find(scope=AgentScope.REPOSITORY, root=repo, repository_id="repo", tenant="tenant-a", semantic=False)
     assert [record.record_id for record in found] == [records["good"].record_id]
 
 def test_memory_record_from_dict_rejects_scalar_evidence_ids():
@@ -211,11 +211,11 @@ def test_memory_write_redacts_private_fields_and_blocks_sensitive_records(store:
             "nested": {"text": source_text, "stable": secret},
         },
         source="user",
-        provenance={"root": repo, "tenant": "tenant-a", "prompt": prompt, "source": source_text},
+        provenance={"root": repo, "repository_id": "repo", "tenant": "tenant-a", "prompt": prompt, "source": source_text},
     )
     stored = store.record(record, actor="user", idempotency_key="privacy-record")
     assert stored.value == {"safe": "keep this", "nested": {"stable": "token=[redacted]"}}
-    assert stored.provenance == {"root": repo, "tenant": "tenant-a"}
+    assert stored.provenance == {"root": repo, "repository_id": "repo", "tenant": "tenant-a"}
 
     sensitive = MemoryRecord.create(
         kind=MemoryKind.FACT,
@@ -223,16 +223,16 @@ def test_memory_write_redacts_private_fields_and_blocks_sensitive_records(store:
         key="sensitive-key",
         value="unique-sensitive-payload-f01a",
         sensitivity="secret",
-        provenance={"root": repo, "tenant": "tenant-a"},
+        provenance={"root": repo, "repository_id": "repo", "tenant": "tenant-a"},
     )
     with pytest.raises(ValueError, match="sensitive memory"):
         store.record(sensitive, actor="user", idempotency_key="sensitive-record")
 
-    clean = store.get(stored.record_id, scope=AgentScope.REPOSITORY, root=repo, tenant="tenant-a")
+    clean = store.get(stored.record_id, scope=AgentScope.REPOSITORY, root=repo, repository_id="repo", tenant="tenant-a")
     assert clean is not None
     assert clean.value == stored.value
-    assert store.find(scope=AgentScope.REPOSITORY, root=repo, tenant="tenant-a", semantic=False) == [clean]
-    assert store.find_for_context(root=repo, tenant="tenant-a") == [clean]
+    assert store.find(scope=AgentScope.REPOSITORY, root=repo, repository_id="repo", tenant="tenant-a", semantic=False) == [clean]
+    assert store.find_for_context(root=repo, coordination_id="repo", tenant="tenant-a") == [clean]
 
     with closing(connect_sqlite(store.state_store.db_path, isolation_level=None)) as con:
         con.execute("UPDATE agent_memory_records SET sensitivity = ? WHERE record_id = ?", ("secret", stored.record_id))
@@ -266,9 +266,9 @@ def test_memory_write_redacts_private_fields_and_blocks_sensitive_records(store:
     assert sensitive_fts == []
     assert sensitive_event_rows == []
     assert sensitive_events == 0
-    assert store.get(stored.record_id, scope=AgentScope.REPOSITORY, root=repo, tenant="tenant-a") is None
-    assert store.find(scope=AgentScope.REPOSITORY, root=repo, tenant="tenant-a", semantic=False) == []
-    assert store.find_for_context(root=repo, tenant="tenant-a") == []
+    assert store.get(stored.record_id, scope=AgentScope.REPOSITORY, root=repo, repository_id="repo", tenant="tenant-a") is None
+    assert store.find(scope=AgentScope.REPOSITORY, root=repo, repository_id="repo", tenant="tenant-a", semantic=False) == []
+    assert store.find_for_context(root=repo, coordination_id="repo", tenant="tenant-a") == []
 
 def test_memory_correction_lineage_and_delete_survive_reopen(store: MemoryStore, tmp_path: Path):
     repo = str(tmp_path / "repo")
@@ -280,7 +280,7 @@ def test_memory_correction_lineage_and_delete_survive_reopen(store: MemoryStore,
             value="old",
             status=MemoryStatus.CONFIRMED,
             source="user",
-            provenance={"root": repo, "tenant": "tenant-a", "repository_revision": "rev-old"},
+            provenance={"root": repo, "repository_id": "repo", "tenant": "tenant-a", "repository_revision": "rev-old"},
         ),
         actor="user",
         idempotency_key="previous-record",
@@ -293,7 +293,7 @@ def test_memory_correction_lineage_and_delete_survive_reopen(store: MemoryStore,
             value="new",
             status=MemoryStatus.CONFIRMED,
             source="user",
-            provenance={"root": repo, "tenant": "tenant-a", "repository_revision": "rev-new"},
+            provenance={"root": repo, "repository_id": "repo", "tenant": "tenant-a", "repository_revision": "rev-new"},
             expires_at=4102444800.0,
         ),
         actor="user",
@@ -307,6 +307,7 @@ def test_memory_correction_lineage_and_delete_survive_reopen(store: MemoryStore,
         previous.record_id,
         scope=AgentScope.REPOSITORY,
         root=repo,
+        repository_id="repo",
         tenant="tenant-a",
         include_expired=True,
     )
@@ -315,6 +316,7 @@ def test_memory_correction_lineage_and_delete_survive_reopen(store: MemoryStore,
         scope=AgentScope.REPOSITORY,
         scope_id="",
         root=repo,
+        repository_id="repo",
         tenant="tenant-a",
     )
     assert restored_previous is not None
@@ -326,7 +328,7 @@ def test_memory_correction_lineage_and_delete_survive_reopen(store: MemoryStore,
     assert serialized["source"] == "user"
     assert serialized["expires_at"] == 4102444800.0
     assert serialized["provenance"]["repository_revision"] == "rev-new"
-    assert reopened.find_for_context(root=repo, tenant="tenant-a") == [restored_corrected]
+    assert reopened.find_for_context(root=repo, coordination_id="repo", tenant="tenant-a") == [restored_corrected]
     assert reopened.find_relations(entity=previous.record_id, relation="superseded_by")
 
     assert reopened.delete(
@@ -334,6 +336,7 @@ def test_memory_correction_lineage_and_delete_survive_reopen(store: MemoryStore,
         scope=AgentScope.REPOSITORY,
         scope_id="",
         root=repo,
+        repository_id="repo",
         tenant="tenant-a",
     )
     assert reopened.get(corrected.record_id, include_expired=True) is None
@@ -504,11 +507,11 @@ def test_task_memory_find_requires_matching_root_tenant_and_provenance(store: Me
     root_a = str(tmp_path / "repo-a")
     root_b = str(tmp_path / "repo-b")
     records = [
-        MemoryRecord.create(kind=MemoryKind.FINDING, scope=AgentScope.TASK, scope_id=task_id, key="shared-task", value="a", provenance={"root": root_a, "tenant": "tenant-a"}),
-        MemoryRecord.create(kind=MemoryKind.FINDING, scope=AgentScope.TASK, scope_id=task_id, key="shared-task", value="b", provenance={"root": root_b, "tenant": "tenant-b"}),
+        MemoryRecord.create(kind=MemoryKind.FINDING, scope=AgentScope.TASK, scope_id=task_id, key="shared-task", value="a", provenance={"root": root_a, "repository_id": "repo-a", "tenant": "tenant-a"}),
+        MemoryRecord.create(kind=MemoryKind.FINDING, scope=AgentScope.TASK, scope_id=task_id, key="shared-task", value="b", provenance={"root": root_b, "repository_id": "repo-b", "tenant": "tenant-b"}),
         MemoryRecord.create(kind=MemoryKind.FINDING, scope=AgentScope.TASK, scope_id=task_id, key="shared-task", value="missing root", provenance={"tenant": "tenant-a"}),
         MemoryRecord.create(kind=MemoryKind.FINDING, scope=AgentScope.TASK, scope_id=task_id, key="shared-task", value="missing tenant", provenance={"root": root_a}),
-        MemoryRecord.create(kind=MemoryKind.FINDING, scope=AgentScope.TASK, scope_id=task_id, key="shared-task", value="corrupt provenance", provenance={"root": root_a, "tenant": "tenant-a"}),
+        MemoryRecord.create(kind=MemoryKind.FINDING, scope=AgentScope.TASK, scope_id=task_id, key="shared-task", value="corrupt provenance", provenance={"root": root_a, "repository_id": "repo-a", "tenant": "tenant-a"}),
     ]
     for record in records:
         store.record(record, actor="user")
@@ -529,10 +532,10 @@ def test_task_memory_find_requires_matching_root_tenant_and_provenance(store: Me
 def test_get_requires_identity_scope_for_non_global_records(store: MemoryStore, tmp_path: Path):
     root_a = str(tmp_path / "repo-a")
     root_b = str(tmp_path / "repo-b")
-    task_a = MemoryRecord.create(kind=MemoryKind.FINDING, scope=AgentScope.TASK, scope_id="shared-task-id", key="task-a", value="a", provenance={"root": root_a, "tenant": "tenant-a"})
-    task_b = MemoryRecord.create(kind=MemoryKind.FINDING, scope=AgentScope.TASK, scope_id="shared-task-id", key="task-b", value="b", provenance={"root": root_b, "tenant": "tenant-b"})
+    task_a = MemoryRecord.create(kind=MemoryKind.FINDING, scope=AgentScope.TASK, scope_id="shared-task-id", key="task-a", value="a", provenance={"root": root_a, "repository_id": "repo-a", "tenant": "tenant-a"})
+    task_b = MemoryRecord.create(kind=MemoryKind.FINDING, scope=AgentScope.TASK, scope_id="shared-task-id", key="task-b", value="b", provenance={"root": root_b, "repository_id": "repo-b", "tenant": "tenant-b"})
     task_missing = MemoryRecord.create(kind=MemoryKind.FINDING, scope=AgentScope.TASK, scope_id="shared-task-id", key="task-missing", value="missing provenance")
-    task_corrupt = MemoryRecord.create(kind=MemoryKind.FINDING, scope=AgentScope.TASK, scope_id="shared-task-id", key="task-corrupt", value="corrupt provenance", provenance={"root": root_a, "tenant": "tenant-a"})
+    task_corrupt = MemoryRecord.create(kind=MemoryKind.FINDING, scope=AgentScope.TASK, scope_id="shared-task-id", key="task-corrupt", value="corrupt provenance", provenance={"root": root_a, "repository_id": "repo-a", "tenant": "tenant-a"})
     global_unowned = MemoryRecord.create(kind=MemoryKind.FINDING, scope=AgentScope.GLOBAL, key="global-unowned", value="global")
     global_tenant = MemoryRecord.create(kind=MemoryKind.FINDING, scope=AgentScope.GLOBAL, key="global-tenant", value="tenant a", provenance={"tenant": "tenant-a"})
     for record in (task_a, task_b, task_missing, task_corrupt, global_unowned, global_tenant):
@@ -541,10 +544,10 @@ def test_get_requires_identity_scope_for_non_global_records(store: MemoryStore, 
         con.execute("UPDATE agent_memory_records SET provenance = ? WHERE record_id = ?", ("not-json", task_corrupt.record_id))
 
     assert store.get(task_a.record_id) is None
-    assert store.get(task_missing.record_id, task_id="shared-task-id", root=root_a, tenant="tenant-a") is None
-    assert store.get(task_corrupt.record_id, task_id="shared-task-id", root=root_a, tenant="tenant-a") is None
-    assert store.get(task_b.record_id, task_id="shared-task-id", root=root_a, tenant="tenant-a") is None
-    assert store.get(task_a.record_id, task_id="shared-task-id", root=root_a, tenant="tenant-a") == task_a
+    assert store.get(task_missing.record_id, task_id="shared-task-id", root=root_a, repository_id="repo-a", tenant="tenant-a") is None
+    assert store.get(task_corrupt.record_id, task_id="shared-task-id", root=root_a, repository_id="repo-a", tenant="tenant-a") is None
+    assert store.get(task_b.record_id, task_id="shared-task-id", root=root_a, repository_id="repo-a", tenant="tenant-a") is None
+    assert store.get(task_a.record_id, task_id="shared-task-id", root=root_a, repository_id="repo-a", tenant="tenant-a") == task_a
     assert store.get(global_tenant.record_id) is None
     assert store.get(global_tenant.record_id, scope=AgentScope.GLOBAL) is None
     assert store.get(global_tenant.record_id, scope=AgentScope.GLOBAL, tenant="tenant-b") is None
@@ -555,22 +558,22 @@ def test_get_requires_identity_scope_for_non_global_records(store: MemoryStore, 
 def test_repository_memory_lookup_requires_root(store: MemoryStore, tmp_path: Path):
     root = str(tmp_path / "repo")
     rootless = MemoryRecord.create(kind=MemoryKind.FINDING, scope=AgentScope.REPOSITORY, key="rootless", value="no root", provenance={"tenant": "tenant-a"})
-    rooted = MemoryRecord.create(kind=MemoryKind.FINDING, scope=AgentScope.REPOSITORY, key="rooted", value="with root", provenance={"root": root, "tenant": "tenant-a"})
+    rooted = MemoryRecord.create(kind=MemoryKind.FINDING, scope=AgentScope.REPOSITORY, key="rooted", value="with root", provenance={"root": root, "repository_id": "repo", "tenant": "tenant-a"})
     store.record(rootless, actor="user")
     store.record(rooted, actor="user")
     assert store.find(scope=AgentScope.REPOSITORY, tenant="tenant-a", semantic=False) == []
     assert store.get(rootless.record_id, scope=AgentScope.REPOSITORY, tenant="tenant-a") is None
     assert rootless.record_id not in {record.record_id for record in store.find_for_context(tenant="tenant-a")}
-    assert store.find(scope=AgentScope.REPOSITORY, root=root, tenant="tenant-a", semantic=False) == [rooted]
-    assert store.get(rooted.record_id, scope=AgentScope.REPOSITORY, root=root, tenant="tenant-a") == rooted
+    assert store.find(scope=AgentScope.REPOSITORY, root=root, repository_id="repo", tenant="tenant-a", semantic=False) == [rooted]
+    assert store.get(rooted.record_id, scope=AgentScope.REPOSITORY, root=root, repository_id="repo", tenant="tenant-a") == rooted
 
 
 def test_find_for_context_enforces_repository_tenant_and_task_identity(store: MemoryStore, tmp_path: Path):
     root_a = str(tmp_path / "repo-a")
     root_b = str(tmp_path / "repo-b")
     records = [
-        MemoryRecord.create(kind=MemoryKind.FINDING, scope=AgentScope.TASK, scope_id="same-task", key="task-a", value="a", provenance={"root": root_a, "tenant": "tenant-a"}),
-        MemoryRecord.create(kind=MemoryKind.FINDING, scope=AgentScope.TASK, scope_id="same-task", key="task-b", value="b", provenance={"root": root_b, "tenant": "tenant-b"}),
+        MemoryRecord.create(kind=MemoryKind.FINDING, scope=AgentScope.TASK, scope_id="same-task", key="task-a", value="a", provenance={"root": root_a, "repository_id": "repo-a", "tenant": "tenant-a"}),
+        MemoryRecord.create(kind=MemoryKind.FINDING, scope=AgentScope.TASK, scope_id="same-task", key="task-b", value="b", provenance={"root": root_b, "repository_id": "repo-b", "tenant": "tenant-b"}),
     ]
     for record in records:
         store.record(record, actor="user")
@@ -634,11 +637,9 @@ def test_memory_find_enforces_root_repository_and_tenant_identity(store: MemoryS
         },
     ))
 
-    assert {record.record_id for record in store.find(scope=AgentScope.REPOSITORY, root="C:/repo-a", tenant="tenant-1", key="shared-repo")} == {
-        repo_a.record_id,
-        repo_missing_id.record_id,
-    }
-    assert [record.record_id for record in store.find(scope=AgentScope.REPOSITORY, root="C:/repo-b", tenant="tenant-1", key="shared-repo")] == [repo_b.record_id]
+    assert store.find(scope=AgentScope.REPOSITORY, root="C:/repo-a", tenant="tenant-1", key="shared-repo") == []
+    assert [record.record_id for record in store.find(scope=AgentScope.REPOSITORY, root="C:/repo-a", repository_id="repo-a", tenant="tenant-1", key="shared-repo")] == [repo_a.record_id]
+    assert [record.record_id for record in store.find(scope=AgentScope.REPOSITORY, root="C:/repo-b", repository_id="repo-b", tenant="tenant-1", key="shared-repo")] == [repo_b.record_id]
     assert [record.record_id for record in store.find(scope=AgentScope.REPOSITORY, repository_id="repo-a", tenant="tenant-1", key="shared-repo")] == [repo_a.record_id]
     # A tenant ID is not a session ID, even when both strings happen to match.
     assert store.find(scope=AgentScope.SESSION, scope_id="tenant-1", tenant="tenant-1", key="shared-tenant") == []
@@ -678,7 +679,7 @@ def test_task_memory_find_requires_matching_root_tenant_and_provenance(store: Me
             scope_id=task_id,
             key="shared-task",
             value="root-a tenant-a",
-            provenance={"root": root_a, "tenant": "tenant-a"},
+            provenance={"root": root_a, "repository_id": "repo-a", "tenant": "tenant-a"},
         ),
         "root_b": MemoryRecord.create(
             kind=MemoryKind.FINDING,
@@ -686,7 +687,7 @@ def test_task_memory_find_requires_matching_root_tenant_and_provenance(store: Me
             scope_id=task_id,
             key="shared-task",
             value="root-b tenant-b",
-            provenance={"root": root_b, "tenant": "tenant-b"},
+            provenance={"root": root_b, "repository_id": "repo-b", "tenant": "tenant-b"},
         ),
         "missing_root": MemoryRecord.create(
             kind=MemoryKind.FINDING,
@@ -710,7 +711,7 @@ def test_task_memory_find_requires_matching_root_tenant_and_provenance(store: Me
             scope_id=task_id,
             key="shared-task",
             value="corrupt provenance",
-            provenance={"root": root_a, "tenant": "tenant-a"},
+            provenance={"root": root_a, "repository_id": "repo-a", "tenant": "tenant-a"},
         ),
     }
     for record in records.values():
@@ -728,6 +729,7 @@ def test_task_memory_find_requires_matching_root_tenant_and_provenance(store: Me
                 scope=AgentScope.TASK,
                 task_id=task,
                 root=root,
+                repository_id="repo-a" if root == root_a else "repo-b" if root == root_b else None,
                 tenant=tenant,
                 key="shared-task",
             )
@@ -750,7 +752,7 @@ def test_get_requires_identity_scope_for_non_global_records(store: MemoryStore, 
         scope_id="shared-task-id",
         key="task-a",
         value="tenant-a task memory",
-        provenance={"root": root_a, "tenant": "tenant-a"},
+        provenance={"root": root_a, "repository_id": "repo-a", "tenant": "tenant-a"},
     )
     task_b = MemoryRecord.create(
         kind=MemoryKind.FINDING,
@@ -758,7 +760,7 @@ def test_get_requires_identity_scope_for_non_global_records(store: MemoryStore, 
         scope_id="shared-task-id",
         key="task-b",
         value="tenant-b task memory",
-        provenance={"root": root_b, "tenant": "tenant-b"},
+        provenance={"root": root_b, "repository_id": "repo-b", "tenant": "tenant-b"},
     )
     task_missing_provenance = MemoryRecord.create(
         kind=MemoryKind.FINDING,
@@ -774,7 +776,7 @@ def test_get_requires_identity_scope_for_non_global_records(store: MemoryStore, 
         scope_id="shared-task-id",
         key="task-corrupt-provenance",
         value="task memory with corrupt provenance",
-        provenance={"root": root_a, "tenant": "tenant-a"},
+        provenance={"root": root_a, "repository_id": "repo-a", "tenant": "tenant-a"},
     )
     global_record = MemoryRecord.create(
         kind=MemoryKind.FINDING,
@@ -801,7 +803,7 @@ def test_get_requires_identity_scope_for_non_global_records(store: MemoryStore, 
         scope=AgentScope.REPOSITORY,
         key="repository-a-direct-get",
         value="tenant-a repository memory",
-        provenance={"root": root_a, "tenant": "tenant-a"},
+        provenance={"root": root_a, "repository_id": "repo-a", "tenant": "tenant-a"},
     )
     for record in (
         task_a,
@@ -867,6 +869,7 @@ def test_get_requires_identity_scope_for_non_global_records(store: MemoryStore, 
         repository_a.record_id,
         scope=AgentScope.REPOSITORY,
         root=root_a,
+        repository_id="repo-a",
         tenant="tenant-a",
     ) == repository_a
     assert store.get(global_record.record_id) == global_record
@@ -896,7 +899,7 @@ def test_task_lookup_rejects_rootless_and_tenantless_memory(store: MemoryStore, 
         scope_id="task-identity",
         key="task-complete-identity",
         value="task memory with complete identity",
-        provenance={"root": root, "tenant": "tenant-a"},
+        provenance={"root": root, "repository_id": "repo", "tenant": "tenant-a"},
     )
     for record in (rootless, tenantless, rooted_and_tenant_bound):
         _seed_memory_projection(store, record, actor="user")
@@ -934,7 +937,7 @@ def test_repository_memory_lookup_requires_root(store: MemoryStore, tmp_path: Pa
         scope=AgentScope.REPOSITORY,
         key="rooted-repository",
         value="repository memory with root",
-        provenance={"root": root, "tenant": "tenant-a"},
+        provenance={"root": root, "repository_id": "repo", "tenant": "tenant-a"},
     )
     _seed_memory_projection(store, rootless, actor="user")
     _seed_memory_projection(store, rooted, actor="user")
@@ -949,11 +952,12 @@ def test_repository_memory_lookup_requires_root(store: MemoryStore, tmp_path: Pa
         record.record_id
         for record in store.find_for_context(tenant="tenant-a")
     }
-    assert store.find(scope=AgentScope.REPOSITORY, root=root, tenant="tenant-a") == [rooted]
+    assert store.find(scope=AgentScope.REPOSITORY, root=root, repository_id="repo", tenant="tenant-a") == [rooted]
     assert store.get(
         rooted.record_id,
         scope=AgentScope.REPOSITORY,
         root=root,
+        repository_id="repo",
         tenant="tenant-a",
     ) == rooted
 
@@ -967,14 +971,14 @@ def test_find_for_context_enforces_repository_tenant_and_task_identity(store: Me
             scope=AgentScope.REPOSITORY,
             key="tenant-repo-a",
             value="tenant-a repository memory",
-            provenance={"root": repo_a, "tenant": "tenant-a"},
+            provenance={"root": repo_a, "repository_id": "repo-a", "tenant": "tenant-a"},
         ),
         "repo_tenant_b": MemoryRecord.create(
             kind=MemoryKind.FINDING,
             scope=AgentScope.REPOSITORY,
             key="tenant-repo-b",
             value="tenant-b repository memory",
-            provenance={"root": repo_a, "tenant": "tenant-b"},
+            provenance={"root": repo_a, "repository_id": "repo-a", "tenant": "tenant-b"},
         ),
         "repo_shared": MemoryRecord.create(
             kind=MemoryKind.FINDING,
@@ -988,7 +992,7 @@ def test_find_for_context_enforces_repository_tenant_and_task_identity(store: Me
             scope=AgentScope.REPOSITORY,
             key="other-root",
             value="other repository memory",
-            provenance={"root": repo_b, "tenant": "tenant-b"},
+            provenance={"root": repo_b, "repository_id": "repo-b", "tenant": "tenant-b"},
         ),
         "task_tenant_a": MemoryRecord.create(
             kind=MemoryKind.FINDING,
@@ -996,7 +1000,7 @@ def test_find_for_context_enforces_repository_tenant_and_task_identity(store: Me
             scope_id="shared-task-id",
             key="task-tenant-a",
             value="tenant-a task memory",
-            provenance={"root": repo_a, "tenant": "tenant-a"},
+            provenance={"root": repo_a, "repository_id": "repo-a", "tenant": "tenant-a"},
         ),
         "task_tenant_b": MemoryRecord.create(
             kind=MemoryKind.FINDING,
@@ -1004,7 +1008,7 @@ def test_find_for_context_enforces_repository_tenant_and_task_identity(store: Me
             scope_id="shared-task-id",
             key="task-tenant-b",
             value="tenant-b task memory",
-            provenance={"root": repo_a, "tenant": "tenant-b"},
+            provenance={"root": repo_a, "repository_id": "repo-a", "tenant": "tenant-b"},
         ),
         "task_other_root": MemoryRecord.create(
             kind=MemoryKind.FINDING,
@@ -1012,7 +1016,7 @@ def test_find_for_context_enforces_repository_tenant_and_task_identity(store: Me
             scope_id="shared-task-id",
             key="task-other-root",
             value="other repository task memory",
-            provenance={"root": repo_b, "tenant": "tenant-b"},
+            provenance={"root": repo_b, "repository_id": "repo-b", "tenant": "tenant-b"},
         ),
         "task_other_id": MemoryRecord.create(
             kind=MemoryKind.FINDING,
@@ -1020,7 +1024,7 @@ def test_find_for_context_enforces_repository_tenant_and_task_identity(store: Me
             scope_id="other-task-id",
             key="task-other-id",
             value="other task memory",
-            provenance={"root": repo_a, "tenant": "tenant-b"},
+            provenance={"root": repo_a, "repository_id": "repo-a", "tenant": "tenant-b"},
         ),
         "task_missing_root": MemoryRecord.create(
             kind=MemoryKind.FINDING,
@@ -1035,14 +1039,14 @@ def test_find_for_context_enforces_repository_tenant_and_task_identity(store: Me
             scope=AgentScope.GLOBAL,
             key="intentional-global",
             value="explicit global memory",
-            provenance={"root": repo_b, "tenant": "tenant-a"},
+            provenance={"root": repo_b, "repository_id": "repo-b", "tenant": "tenant-a"},
         ),
         "global_tenant_b": MemoryRecord.create(
             kind=MemoryKind.FINDING,
             scope=AgentScope.GLOBAL,
             key="tenant-b-global",
             value="global within tenant-b",
-            provenance={"root": repo_b, "tenant": "tenant-b"},
+            provenance={"root": repo_b, "repository_id": "repo-b", "tenant": "tenant-b"},
         ),
         "global_unowned": MemoryRecord.create(
             kind=MemoryKind.FINDING,
@@ -1054,7 +1058,7 @@ def test_find_for_context_enforces_repository_tenant_and_task_identity(store: Me
     for record in records.values():
         _seed_memory_projection(store, record, actor="user")
 
-    found = store.find_for_context(root=repo_a, task_id="shared-task-id", tenant="tenant-b")
+    found = store.find_for_context(root=repo_a, task_id="shared-task-id", tenant="tenant-b", coordination_id="repo-a")
     found_ids = {record.record_id for record in found}
     assert found_ids == {
         records["repo_tenant_b"].record_id,
@@ -1091,14 +1095,14 @@ def test_find_for_context_excludes_stale_expired_and_corrupt_rows(store: MemoryS
             scope=AgentScope.REPOSITORY,
             key="valid",
             value="safe current memory",
-            provenance={"root": repo, "tenant": "tenant-a"},
+            provenance={"root": repo, "repository_id": "repo", "tenant": "tenant-a"},
         ),
         "expired": MemoryRecord.create(
             kind=MemoryKind.FACT,
             scope=AgentScope.REPOSITORY,
             key="expired",
             value="expired memory",
-            provenance={"root": repo, "tenant": "tenant-a"},
+            provenance={"root": repo, "repository_id": "repo", "tenant": "tenant-a"},
             expires_at=0.0,
         ),
         "stale": MemoryRecord.create(
@@ -1107,7 +1111,7 @@ def test_find_for_context_excludes_stale_expired_and_corrupt_rows(store: MemoryS
             key="stale",
             value="stale memory",
             status=MemoryStatus.STALE,
-            provenance={"root": repo, "tenant": "tenant-a"},
+            provenance={"root": repo, "repository_id": "repo", "tenant": "tenant-a"},
         ),
         "quarantined": MemoryRecord.create(
             kind=MemoryKind.FACT,
@@ -1115,14 +1119,14 @@ def test_find_for_context_excludes_stale_expired_and_corrupt_rows(store: MemoryS
             key="quarantined",
             value="quarantined memory",
             status=MemoryStatus.QUARANTINED,
-            provenance={"root": repo, "tenant": "tenant-a"},
+            provenance={"root": repo, "repository_id": "repo", "tenant": "tenant-a"},
         ),
         "bad_value": MemoryRecord.create(
             kind=MemoryKind.FACT,
             scope=AgentScope.REPOSITORY,
             key="bad-value",
             value="well-formed before corruption",
-            provenance={"root": repo, "tenant": "tenant-a"},
+            provenance={"root": repo, "repository_id": "repo", "tenant": "tenant-a"},
         ),
         "bad_provenance": MemoryRecord.create(
             kind=MemoryKind.FACT,
@@ -1136,7 +1140,7 @@ def test_find_for_context_excludes_stale_expired_and_corrupt_rows(store: MemoryS
             key="bad-evidence",
             value="memory with corrupt evidence ids",
             evidence_ids=("evidence-1",),
-            provenance={"root": repo, "tenant": "tenant-a"},
+            provenance={"root": repo, "repository_id": "repo", "tenant": "tenant-a"},
         ),
     }
     for record in records.values():
@@ -1155,7 +1159,7 @@ def test_find_for_context_excludes_stale_expired_and_corrupt_rows(store: MemoryS
             ("not-json", records["bad_evidence"].record_id),
         )
 
-    found = store.find_for_context(root=repo, tenant="tenant-a")
+    found = store.find_for_context(root=repo, coordination_id="repo", tenant="tenant-a")
     assert [record.record_id for record in found] == [records["valid"].record_id]
     unscoped = store.find_for_context(root=repo)
     assert records["bad_provenance"].record_id not in {record.record_id for record in unscoped}
@@ -1168,10 +1172,10 @@ def test_find_filters_global_and_repository_rows_by_tenant_and_root(store: Memor
         MemoryRecord.create(kind=MemoryKind.FACT, scope=AgentScope.GLOBAL, key="global-a", value="a", provenance={"tenant": "tenant-a"}),
         MemoryRecord.create(kind=MemoryKind.FACT, scope=AgentScope.GLOBAL, key="global-b", value="b", provenance={"tenant": "tenant-b"}),
         MemoryRecord.create(kind=MemoryKind.FACT, scope=AgentScope.GLOBAL, key="global-shared", value="shared"),
-        MemoryRecord.create(kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY, key="repo-a", value="a", provenance={"root": repo_a, "tenant": "tenant-a"}),
-        MemoryRecord.create(kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY, key="repo-b", value="b", provenance={"root": repo_a, "tenant": "tenant-b"}),
-        MemoryRecord.create(kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY, key="repo-shared", value="shared", provenance={"root": repo_a}),
-        MemoryRecord.create(kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY, key="repo-other-root", value="other", provenance={"root": repo_b, "tenant": "tenant-a"}),
+        MemoryRecord.create(kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY, key="repo-a", value="a", provenance={"root": repo_a, "repository_id": "repo-a", "tenant": "tenant-a"}),
+        MemoryRecord.create(kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY, key="repo-b", value="b", provenance={"root": repo_a, "repository_id": "repo-a", "tenant": "tenant-b"}),
+        MemoryRecord.create(kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY, key="repo-shared", value="shared", provenance={"root": repo_a, "repository_id": "repo-a"}),
+        MemoryRecord.create(kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY, key="repo-other-root", value="other", provenance={"root": repo_b, "repository_id": "repo-b", "tenant": "tenant-a"}),
         MemoryRecord.create(kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY, key="repo-rootless", value="legacy", provenance={"tenant": "tenant-a"}),
     )
     for record in records:
@@ -1183,9 +1187,9 @@ def test_find_filters_global_and_repository_rows_by_tenant_and_root(store: Memor
     assert {record.key for record in global_without_tenant} == {"global-shared"}
     assert {record.key for record in store.find(semantic=False)} == {"global-shared"}
 
-    repo_for_a = store.find(scope=AgentScope.REPOSITORY, root=repo_a, tenant="tenant-a", semantic=False)
+    repo_for_a = store.find(scope=AgentScope.REPOSITORY, root=repo_a, repository_id="repo-a", tenant="tenant-a", semantic=False)
     assert {record.key for record in repo_for_a} == {"repo-a"}
-    repo_without_tenant = store.find(scope=AgentScope.REPOSITORY, root=repo_a, semantic=False)
+    repo_without_tenant = store.find(scope=AgentScope.REPOSITORY, root=repo_a, repository_id="repo-a", semantic=False)
     assert repo_without_tenant == []
     repo_without_root = store.find(scope=AgentScope.REPOSITORY, tenant="tenant-a", semantic=False)
     assert repo_without_root == []
@@ -1199,14 +1203,14 @@ def test_find_skips_corrupt_rows_without_aborting_scoped_read(store: MemoryStore
             scope=AgentScope.REPOSITORY,
             key="good",
             value="safe",
-            provenance={"root": repo, "tenant": "tenant-a"},
+            provenance={"root": repo, "repository_id": "repo", "tenant": "tenant-a"},
         ),
         "bad_value": MemoryRecord.create(
             kind=MemoryKind.FACT,
             scope=AgentScope.REPOSITORY,
             key="bad-value",
             value="replace with invalid JSON",
-            provenance={"root": repo, "tenant": "tenant-a"},
+            provenance={"root": repo, "repository_id": "repo", "tenant": "tenant-a"},
         ),
         "bad_evidence": MemoryRecord.create(
             kind=MemoryKind.FACT,
@@ -1214,7 +1218,7 @@ def test_find_skips_corrupt_rows_without_aborting_scoped_read(store: MemoryStore
             key="bad-evidence",
             value="safe value",
             evidence_ids=("evidence-1",),
-            provenance={"root": repo, "tenant": "tenant-a"},
+            provenance={"root": repo, "repository_id": "repo", "tenant": "tenant-a"},
         ),
         "scalar_evidence": MemoryRecord.create(
             kind=MemoryKind.FACT,
@@ -1222,7 +1226,7 @@ def test_find_skips_corrupt_rows_without_aborting_scoped_read(store: MemoryStore
             key="scalar-evidence",
             value="safe value",
             evidence_ids=("evidence-scalar",),
-            provenance={"root": repo, "tenant": "tenant-a"},
+            provenance={"root": repo, "repository_id": "repo", "tenant": "tenant-a"},
         ),
     }
     for record in records.values():
@@ -1232,7 +1236,7 @@ def test_find_skips_corrupt_rows_without_aborting_scoped_read(store: MemoryStore
         con.execute("UPDATE agent_memory_records SET evidence_ids = ? WHERE record_id = ?", ("not-json", records["bad_evidence"].record_id))
         con.execute("UPDATE agent_memory_records SET evidence_ids = ? WHERE record_id = ?", ('"evidence-scalar"', records["scalar_evidence"].record_id))
 
-    found = store.find(scope=AgentScope.REPOSITORY, root=repo, tenant="tenant-a", semantic=False)
+    found = store.find(scope=AgentScope.REPOSITORY, root=repo, repository_id="repo", tenant="tenant-a", semantic=False)
     assert [record.record_id for record in found] == [records["good"].record_id]
 
 
@@ -1272,6 +1276,7 @@ def test_memory_write_redacts_private_fields_and_blocks_sensitive_records(store:
         source="user",
         provenance={
             "root": repo,
+            "repository_id": "repo",
             "source_root": repo,
             "tenant": "tenant-a",
             "prompt": prompt,
@@ -1283,7 +1288,7 @@ def test_memory_write_redacts_private_fields_and_blocks_sensitive_records(store:
     )
     stored = store.record(record, actor="user", idempotency_key="privacy-record")
     assert stored.value == {"safe": "keep this", "nested": {"stable": "token=[redacted]"}}
-    assert stored.provenance == {"root": repo, "source_root": repo, "tenant": "tenant-a"}
+    assert stored.provenance == {"root": repo, "repository_id": "repo", "source_root": repo, "tenant": "tenant-a"}
 
     sensitive = MemoryRecord.create(
         kind=MemoryKind.FACT,
@@ -1291,16 +1296,16 @@ def test_memory_write_redacts_private_fields_and_blocks_sensitive_records(store:
         key="sensitive-key",
         value="unique-sensitive-payload-f01a",
         sensitivity="secret",
-        provenance={"root": repo, "tenant": "tenant-a"},
+        provenance={"root": repo, "repository_id": "repo", "tenant": "tenant-a"},
     )
     with pytest.raises(ValueError, match="sensitive memory"):
         store.record(sensitive, actor="user", idempotency_key="sensitive-record")
 
-    clean = store.get(stored.record_id, scope=AgentScope.REPOSITORY, root=repo, tenant="tenant-a")
+    clean = store.get(stored.record_id, scope=AgentScope.REPOSITORY, root=repo, repository_id="repo", tenant="tenant-a")
     assert clean is not None
     assert clean.value == stored.value
-    assert store.find(scope=AgentScope.REPOSITORY, root=repo, tenant="tenant-a", semantic=False) == [clean]
-    assert store.find_for_context(root=repo, tenant="tenant-a") == [clean]
+    assert store.find(scope=AgentScope.REPOSITORY, root=repo, repository_id="repo", tenant="tenant-a", semantic=False) == [clean]
+    assert store.find_for_context(root=repo, coordination_id="repo", tenant="tenant-a") == [clean]
 
     with closing(connect_sqlite(store.state_store.db_path, isolation_level=None)) as con:
         con.execute("UPDATE agent_memory_records SET sensitivity = ? WHERE record_id = ?", ("secret", stored.record_id))
@@ -1335,9 +1340,9 @@ def test_memory_write_redacts_private_fields_and_blocks_sensitive_records(store:
     assert sensitive_fts == []
     assert sensitive_event_rows == []
     assert sensitive_events == 0
-    assert store.get(stored.record_id, scope=AgentScope.REPOSITORY, root=repo, tenant="tenant-a") is None
-    assert store.find(scope=AgentScope.REPOSITORY, root=repo, tenant="tenant-a", semantic=False) == []
-    assert store.find_for_context(root=repo, tenant="tenant-a") == []
+    assert store.get(stored.record_id, scope=AgentScope.REPOSITORY, root=repo, repository_id="repo", tenant="tenant-a") is None
+    assert store.find(scope=AgentScope.REPOSITORY, root=repo, repository_id="repo", tenant="tenant-a", semantic=False) == []
+    assert store.find_for_context(root=repo, coordination_id="repo", tenant="tenant-a") == []
 
 
 def test_memory_correction_lineage_and_delete_survive_reopen(store: MemoryStore, tmp_path: Path):
@@ -1350,7 +1355,7 @@ def test_memory_correction_lineage_and_delete_survive_reopen(store: MemoryStore,
             value="old",
             status=MemoryStatus.CONFIRMED,
             source="user",
-            provenance={"root": repo, "tenant": "tenant-a", "repository_revision": "rev-old"},
+            provenance={"root": repo, "repository_id": "repo", "tenant": "tenant-a", "repository_revision": "rev-old"},
         ),
         actor="user",
         idempotency_key="previous-record",
@@ -1363,7 +1368,7 @@ def test_memory_correction_lineage_and_delete_survive_reopen(store: MemoryStore,
             value="new",
             status=MemoryStatus.CONFIRMED,
             source="user",
-            provenance={"root": repo, "tenant": "tenant-a", "repository_revision": "rev-new"},
+            provenance={"root": repo, "repository_id": "repo", "tenant": "tenant-a", "repository_revision": "rev-new"},
             expires_at=4102444800.0,
         ),
         actor="user",
@@ -1383,6 +1388,7 @@ def test_memory_correction_lineage_and_delete_survive_reopen(store: MemoryStore,
         scope=AgentScope.REPOSITORY,
         scope_id="",
         root=repo,
+        repository_id="repo",
         tenant="tenant-a",
     )
     assert restored_previous is not None
@@ -1394,7 +1400,7 @@ def test_memory_correction_lineage_and_delete_survive_reopen(store: MemoryStore,
     assert serialized["source"] == "user"
     assert serialized["expires_at"] == 4102444800.0
     assert serialized["provenance"]["repository_revision"] == "rev-new"
-    assert reopened.find_for_context(root=repo, tenant="tenant-a") == [restored_corrected]
+    assert reopened.find_for_context(root=repo, coordination_id="repo", tenant="tenant-a") == [restored_corrected]
     assert reopened.find_relations(entity=previous.record_id, relation="superseded_by")
 
     assert reopened.delete(
@@ -1402,6 +1408,7 @@ def test_memory_correction_lineage_and_delete_survive_reopen(store: MemoryStore,
         scope=AgentScope.REPOSITORY,
         scope_id="",
         root=repo,
+        repository_id="repo",
         tenant="tenant-a",
     )
     assert reopened.get(
@@ -1410,6 +1417,7 @@ def test_memory_correction_lineage_and_delete_survive_reopen(store: MemoryStore,
         scope=AgentScope.REPOSITORY,
         scope_id="",
         root=repo,
+        repository_id="repo",
         tenant="tenant-a",
     ) is None
     assert reopened.find_relations(entity=previous.record_id, relation="superseded_by") == []
@@ -2645,7 +2653,7 @@ def test_get_global_requires_unowned_or_matching_tenant(store: MemoryStore, tmp_
         scope=AgentScope.REPOSITORY,
         key="repository-get",
         value="repository memory",
-        provenance={"root": root, "tenant": "tenant-a"},
+        provenance={"root": root, "repository_id": "repo", "tenant": "tenant-a"},
     )
     task = MemoryRecord.create(
         kind=MemoryKind.FINDING,
@@ -2653,7 +2661,7 @@ def test_get_global_requires_unowned_or_matching_tenant(store: MemoryStore, tmp_
         scope_id="task-a",
         key="task-get",
         value="task memory",
-        provenance={"root": root, "tenant": "tenant-a"},
+        provenance={"root": root, "repository_id": "repo", "tenant": "tenant-a"},
     )
     for record in (global_unowned, global_tenant, global_rooted, global_scoped_id, repository, task):
         store._save_record(record)

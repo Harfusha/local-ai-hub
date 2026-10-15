@@ -405,7 +405,7 @@ def test_committed_memory_record_survives_restart_before_publish(tmp_path, monke
         scope_id="task-restart-memory",
         key="durable-fact",
         value={"value": 42},
-        provenance={"root": str(tmp_path), "tenant": "tenant-a"},
+        provenance={"root": str(tmp_path), "repository_id": str(tmp_path), "tenant": "tenant-a"},
     )
 
     monkeypatch.setattr(state_store, "_publish", _interrupt_before_publish)
@@ -418,6 +418,7 @@ def test_committed_memory_record_survives_restart_before_publish(tmp_path, monke
         record.record_id,
         task_id="task-restart-memory",
         root=str(tmp_path),
+        repository_id=str(tmp_path),
         tenant="tenant-a",
     )
     assert saved is not None and saved.value == {"value": 42}
@@ -723,7 +724,7 @@ def test_committed_compaction_group_survives_restart_before_publish(tmp_path, mo
                 scope_id="task-restart-compact",
                 key=f"source-{index}",
                 value={"index": index},
-                provenance={"root": str(tmp_path), "tenant": "tenant-a"},
+                provenance={"root": str(tmp_path), "repository_id": str(tmp_path), "tenant": "tenant-a"},
             )
         )
 
@@ -738,6 +739,7 @@ def test_committed_compaction_group_survives_restart_before_publish(tmp_path, mo
         scope_id="task-restart-compact",
         task_id="task-restart-compact",
         root=str(tmp_path),
+            repository_id=str(tmp_path),
         tenant="tenant-a",
         status=MemoryStatus.ACTIVE,
     )
@@ -777,7 +779,7 @@ def test_compaction_preserves_scope_identity_and_never_merges_tasks(tmp_path):
                     scope_id=task_id,
                     key=f"{task_id}-fact-{index}",
                     value={"index": index},
-                    provenance={"root": str(tmp_path), "tenant": "tenant-a"},
+                    provenance={"root": str(tmp_path), "repository_id": str(tmp_path), "tenant": "tenant-a"},
                 )
             )
 
@@ -896,6 +898,7 @@ def test_committed_memory_revision_staleness_survives_restart_before_publish(
             status=MemoryStatus.CONFIRMED,
             provenance={
                 "root": str(tmp_path),
+                "repository_id": str(tmp_path),
                 "tenant": "tenant-a",
                 "repository_revision": "rev-1",
                 "path_refs": ["src/parser.py"],
@@ -913,6 +916,7 @@ def test_committed_memory_revision_staleness_survives_restart_before_publish(
         record.record_id,
         scope=AgentScope.REPOSITORY,
         root=str(tmp_path),
+        repository_id=str(tmp_path),
         tenant="tenant-a",
     )
     assert stale is not None and stale.status is MemoryStatus.STALE
@@ -933,7 +937,7 @@ def test_committed_memory_quarantine_survives_restart_before_publish(tmp_path, m
             scope_id="task-restart-quarantine",
             key="conflict",
             value={"answer": "old"},
-            provenance={"root": str(tmp_path), "tenant": "tenant-a"},
+            provenance={"root": str(tmp_path), "repository_id": str(tmp_path), "tenant": "tenant-a"},
         )
     )
 
@@ -945,6 +949,7 @@ def test_committed_memory_quarantine_survives_restart_before_publish(tmp_path, m
             actor="test",
             task_id="task-restart-quarantine",
             root=str(tmp_path),
+            repository_id=str(tmp_path),
             tenant="tenant-a",
         )
 
@@ -954,6 +959,7 @@ def test_committed_memory_quarantine_survives_restart_before_publish(tmp_path, m
         record.record_id,
         task_id="task-restart-quarantine",
         root=str(tmp_path),
+        repository_id=str(tmp_path),
         tenant="tenant-a",
     )
     assert quarantined is not None and quarantined.status is MemoryStatus.QUARANTINED
