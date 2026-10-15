@@ -83,20 +83,60 @@ def test_command_rollback_rejects_non_run_action_before_dispatch(monkeypatch) ->
 def test_telemetry_status_projection_keeps_slow_paths_and_omits_bulk_report() -> None:
     report = {
         "success": True,
-        "summary": {"events": 10, "avg_queue_wait_ms": 700, "failure_rate": 0.1, "raw": "drop"},
+        "scope": "process",
+        "summary_cache_stale": True,
+        "summary": {
+            "events": 10, "avg_queue_wait_ms": 700, "failure_rate": 0.1, "raw": "drop",
+            "writer": {
+                "scope": "current_process", "process_started_at": 1000.0,
+                "snapshot_end_at": 1010.0, "interval_seconds": 10.0,
+                "attempted": 8, "accepted": 7, "rejected_overflow": 1,
+                "lost_after_acceptance": 0, "processed": 7, "written": 7,
+                "pending": 0, "dropped": 1, "writer_errors": 0,
+                "writer_error_attempts": 0, "writer_errors_unit": "raw explanation",
+                "accounting_balanced": True, "activity_observed": True,
+                "accepted_rate": 0.875, "overflow_rejection_rate": 0.125,
+                "post_acceptance_loss_rate": 0.0, "written_rate": 1.0,
+                "pending_rate": None,
+            },
+        },
         "queue": {"p95_queue_age_ms": 900},
         "hotspots": [{"signal": "queue_wait"}],
         "by_operation": [{"action": "context", "avg_ms": 1200}],
         "error_fingerprints": [{"error_type": "timeout"}],
+        "detail": {"omitted_sections": [
+            "writer_activity_unobserved", "writer_accounting_unbalanced", "cached_summary_data",
+        ]},
         "daily": [{"day": "bulk"}] * 100,
         "provider_token_usage": [{"prompt": "must not pass"}] * 100,
     }
 
     result = mcp_server._telemetry_status_projection({"success": True, "report": report})
 
-    assert result["summary"] == {"events": 10, "avg_queue_wait_ms": 700, "failure_rate": 0.1}
+    assert result["summary"]["events"] == 10
+    assert result["summary"]["avg_queue_wait_ms"] == 700
+    assert result["summary"]["failure_rate"] == 0.1
+    assert "raw" not in result["summary"]
     assert result["queue"]["p95_queue_age_ms"] == 900
     assert result["by_operation"][0]["action"] == "context"
+    assert result["summary"]["scope"] == "process"
+    assert result["summary"]["summary_cache_stale"] is True
+    assert result["summary"]["writer"] == {
+        "scope": "current_process", "process_started_at": 1000.0,
+        "snapshot_end_at": 1010.0, "interval_seconds": 10.0,
+        "attempted": 8, "accepted": 7, "rejected_overflow": 1,
+        "lost_after_acceptance": 0, "processed": 7, "written": 7,
+        "pending": 0, "dropped": 1, "writer_errors": 0,
+        "writer_error_attempts": 0, "writer_error_attempts_unit": "attempts",
+        "accounting_balanced": True, "activity_observed": True,
+        "accepted_rate": 0.875, "overflow_rejection_rate": 0.125,
+        "post_acceptance_loss_rate": 0.0, "written_rate": 1.0,
+        "pending_rate": None,
+    }
+    assert "writer_errors_unit" not in result["summary"]["writer"]
+    assert result["detail"]["omitted_sections"] == [
+        "writer_activity_unobserved", "writer_accounting_unbalanced", "cached_summary_data",
+    ]
     assert "daily" not in result
     assert "provider_token_usage" not in result
 
