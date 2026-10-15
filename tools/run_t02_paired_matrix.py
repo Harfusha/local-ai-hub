@@ -50,7 +50,6 @@ SOURCE_PIN_PATHS = (
     "tests/test_surface_benchmarks.py",
     "tools/benchmark_surfaces.py",
 )
-DEFAULT_MANIFEST = Path(__file__).resolve().parents[1] / "handoff/T02-paired-matrix-20261002-v1/manifest.json"
 
 
 class PreparationRequired(RuntimeError):
@@ -144,7 +143,7 @@ def validate_manifest(manifest: Any) -> list[str]:
     return reasons
 
 
-def load_manifest(path: Path | str = DEFAULT_MANIFEST) -> dict[str, Any]:
+def load_manifest(path: Path | str) -> dict[str, Any]:
     manifest = json.loads(Path(path).read_text(encoding="utf-8"))
     reasons = validate_manifest(manifest)
     if reasons:
@@ -772,9 +771,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
     prepare = sub.add_parser("prepare", help="validate manifest and show pending pins/slot")
-    prepare.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
+    prepare.add_argument("--manifest", type=Path, required=True)
     run = sub.add_parser("run", help="run paired six-case matrix after explicit T20 pin/slot assignment")
-    run.add_argument("--manifest", type=Path, default=DEFAULT_MANIFEST)
+    run.add_argument("--manifest", type=Path, required=True)
     run.add_argument("--baseline-root", type=Path, required=True)
     run.add_argument("--candidate-root", type=Path, required=True)
     run.add_argument("--output-dir", type=Path, required=True)
