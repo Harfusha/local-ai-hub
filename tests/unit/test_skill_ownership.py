@@ -1,13 +1,20 @@
 from __future__ import annotations
 
-import sys
+import importlib.util
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools"))
-
-from skill_ownership import install_skill, remove_skill
+_spec = importlib.util.spec_from_file_location(
+    "skill_ownership_under_test", Path(__file__).resolve().parents[2] / "tools" / "skill_ownership.py"
+)
+if _spec is None or _spec.loader is None:
+    raise ImportError("could not load skill_ownership.py")
+skill_ownership = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(skill_ownership)
+install_skill = skill_ownership.install_skill
+remove_skill = skill_ownership.remove_skill
 
 
 class SkillOwnershipTests(unittest.TestCase):
@@ -67,7 +74,7 @@ class SkillOwnershipTests(unittest.TestCase):
             remove_skill(outside, self.skills_root, self.manifest, "example-skill")
 
     def test_rejects_symlink_inside_skill_tree(self) -> None:
-        self.target.mkdir(parents=True)
+        install_skill(self.source, self.target, self.skills_root, self.manifest, "example-skill")
         external = self.root / "outside.txt"
         external.write_text("keep", encoding="utf-8")
         try:
@@ -79,6 +86,23 @@ class SkillOwnershipTests(unittest.TestCase):
 
         self.assertIn("preserved conflicting", result)
         self.assertTrue(external.exists())
+
+    def test_replacement_failure_restores_previous_owned_tree(self) -> None:
+        install_skill(self.source, self.target, self.skills_root, self.manifest, "example-skill")
+        original = (self.target / "SKILL.md").read_text(encoding="utf-8")
+        (self.source / "SKILL.md").write_text("Updated Hub version\n", encoding="utf-8")
+        real_replace = skill_ownership.os.replace
+
+        def fail_staged_swap(source: str | Path, destination: str | Path) -> None:
+            if Path(source).name == "replacement":
+                raise OSError("simulated staged replacement failure")
+            real_replace(source, destination)
+
+        with patch.object(skill_ownership.os, "replace", side_effect=fail_staged_swap):
+            result = install_skill(self.source, self.target, self.skills_root, self.manifest, "example-skill")
+
+        self.assertIn("replacement failed", result)
+        self.assertEqual((self.target / "SKILL.md").read_text(encoding="utf-8"), original)
 
 
 if __name__ == "__main__":
