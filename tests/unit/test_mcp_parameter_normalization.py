@@ -11,6 +11,13 @@ def _call_tool(name, arguments):
     return asyncio.run(mcp.call_tool(name, arguments))
 
 
+def _use_active_operational_mode(monkeypatch):
+    from local_ai_hub.operational_mode import OperationalModeSnapshot
+
+    snapshot = OperationalModeSnapshot("active", 1, None)
+    monkeypatch.setattr(mcp_server, "load_operational_mode", lambda _state_dir: snapshot)
+
+
 def test_mcp_module_comes_from_current_checkout():
     expected = Path(__file__).resolve().parents[2] / "src" / "local_ai_hub" / "mcp_server.py"
     assert Path(mcp_server.__file__).resolve() == expected.resolve()
@@ -115,6 +122,7 @@ def test_command_preserves_legacy_positional_timeout(monkeypatch, tmp_path):
 ])
 def test_repo_registered_wrapper_rejects_aliases_before_client(monkeypatch, alias, value):
     calls = []
+    _use_active_operational_mode(monkeypatch)
     monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_kwargs: None)
 
     class DummyClient:
@@ -134,7 +142,8 @@ def test_repo_registered_wrapper_rejects_aliases_before_client(monkeypatch, alia
 @pytest.mark.parametrize("alias,value", [
     ("cwd", "."), ("symbol", "Widget.run"), ("paths", ["module.py"]), ("files", ["module.py"]),
 ])
-def test_repo_direct_python_call_rejects_alias_keyword(alias, value):
+def test_repo_direct_python_call_rejects_alias_keyword(monkeypatch, alias, value):
+    _use_active_operational_mode(monkeypatch)
     with pytest.raises(TypeError):
         mcp_server.local_ai_repo(action="search", root=".", query="Widget.run", **{alias: value})
 

@@ -14,6 +14,13 @@ from local_ai_hub.services import LocalAIServices
 from local_ai_hub import mcp_server
 
 
+def _use_active_operational_mode(monkeypatch):
+    from local_ai_hub.operational_mode import OperationalModeSnapshot
+
+    snapshot = OperationalModeSnapshot("active", 1, None)
+    monkeypatch.setattr(mcp_server, "load_operational_mode", lambda _state_dir: snapshot)
+
+
 def _repo_tools(tmp_path: Path) -> RepositoryTools:
     return RepositoryTools({"server": {"state_dir": str(tmp_path / "state")}, "search": {"prefer_git_files": False}})
 
@@ -214,6 +221,7 @@ def test_relation_compaction_35_to_5_keeps_exact_continuation_metadata():
 
 def test_mcp_relations_require_canonical_query_limit_offset_and_reject_bool(monkeypatch):
     requests = []
+    _use_active_operational_mode(monkeypatch)
     monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_kwargs: None)
     monkeypatch.setattr(mcp_server, "is_rooted_path", lambda _path: True)
     monkeypatch.setattr(mcp_server, "_client_root", lambda value: value)
@@ -248,6 +256,7 @@ def test_mcp_relations_require_canonical_query_limit_offset_and_reject_bool(monk
 
 
 def test_registered_mcp_relation_wire_rejects_first_item_over_budget(monkeypatch):
+    _use_active_operational_mode(monkeypatch)
     monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_kwargs: None)
     monkeypatch.setattr(mcp_server, "is_rooted_path", lambda _path: True)
     monkeypatch.setattr(mcp_server, "_client_root", lambda value: value)
