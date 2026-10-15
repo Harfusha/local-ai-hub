@@ -1,0 +1,53 @@
+from pathlib import Path
+
+from local_ai_hub.deterministic import DeterministicEngine
+
+
+def test_source_files_rank_ahead_of_history_copies(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    (root / "src").mkdir(parents=True)
+    (root / "archive").mkdir()
+    for number in range(60):
+        (root / "archive" / f"copy_{number}.py").write_text(
+            f"def historical_{number}():\n    return 1\n", encoding="utf-8"
+        )
+    for number in range(50):
+        (root / f"legacy_{number:02}.py").write_text(
+            f"def legacy_{number}():\n    return 1\n", encoding="utf-8"
+        )
+    (root / "src" / "important.py").write_text(
+        "def important():\n    if ready:\n        return 1\n    return 0\n", encoding="utf-8"
+    )
+
+    result = DeterministicEngine().code_complexity(str(root))
+
+    assert result["files_analyzed"] == 50
+    assert any(item["file"] == "src/important.py" for item in result["functions"])
+    assert result["complete"] is False
+    assert "archive" in result["coverage"]["excluded_dirs"]
+    assert result["coverage"]["limits_hit"] == ["files"]
+
+
+def test_parse_error_makes_coverage_incomplete(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "bad.py").write_text("def broken(:\n    pass\n", encoding="utf-8")
+
+    result = DeterministicEngine().code_complexity(str(root))
+
+    assert result["files_analyzed"] == 0
+    assert result["parse_error_count"] == 1
+    assert result["complete"] is False
+
+
+def test_explicit_path_outside_root_is_rejected(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    outside = tmp_path / "outside.py"
+    outside.write_text("def outside():\n    return 1\n", encoding="utf-8")
+
+    result = DeterministicEngine().code_complexity(str(root), str(outside))
+
+    assert result["files_analyzed"] == 0
+    assert result["complete"] is False
+    assert result["read_error_count"] == 0
