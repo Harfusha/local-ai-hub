@@ -1868,7 +1868,7 @@ def test_evidence_memory_persists_revision_metadata_and_is_idempotent(store: Mem
         key="guard:finding:stable:rev-1",
         value={"status": "verified", "evidence_ids": ["ev-1"]},
         evidence_ids=("ev-1",),
-        provenance={"root": str(tmp_path), "tenant": "tenant-a"},
+        provenance={"repository_id": 'repo-evidence', "root": str(tmp_path), "tenant": "tenant-a"},
         repository_revision="rev-1",
         path_refs=("src/app.py",),
         symbol_refs=("App.run",),
@@ -1884,7 +1884,7 @@ def test_evidence_memory_persists_revision_metadata_and_is_idempotent(store: Mem
             key="guard:finding:stable:rev-1",
             value={"status": "changed"},
             repository_revision="rev-1",
-            provenance={"root": str(tmp_path), "tenant": "tenant-a"},
+            provenance={"repository_id": 'repo-evidence', "root": str(tmp_path), "tenant": "tenant-a"},
         ),
         idempotency_key="guard:finding:stable:rev-1",
     )
@@ -1892,7 +1892,7 @@ def test_evidence_memory_persists_revision_metadata_and_is_idempotent(store: Mem
         first.record_id,
         scope=AgentScope.REPOSITORY,
         scope_id="repo",
-        root=str(tmp_path),
+        repository_id='repo-evidence', root=str(tmp_path),
         tenant="tenant-a",
     )
 
@@ -1965,7 +1965,7 @@ def test_repository_revision_is_preserved_in_provenance(store: MemoryStore, tmp_
         key="parser",
         value="uses Pratt parsing",
         provenance={
-            "root": str(tmp_path),
+            "repository_id": 'repo-evidence', "root": str(tmp_path),
             "tenant": "tenant-a",
             "repository_revision": "rev-1",
             "path_refs": ["src/parser.py"],
@@ -1978,7 +1978,7 @@ def test_repository_revision_is_preserved_in_provenance(store: MemoryStore, tmp_
     restored = store.get(
         saved.record_id,
         scope=AgentScope.REPOSITORY,
-        root=str(tmp_path),
+        repository_id='repo-evidence', root=str(tmp_path),
         tenant="tenant-a",
     )
 
@@ -1998,7 +1998,7 @@ def test_mark_stale_for_revision_preserves_metadata_and_emits_event(store: Memor
             value="old evidence",
             status=MemoryStatus.CONFIRMED,
             provenance={
-                "root": str(tmp_path),
+                "repository_id": 'repo-evidence', "root": str(tmp_path),
                 "tenant": "tenant-a",
                 "repository_revision": "rev-1",
                 "path_refs": ["src/parser.py"],
@@ -2011,7 +2011,7 @@ def test_mark_stale_for_revision_preserves_metadata_and_emits_event(store: Memor
     stale = store.get(
         record.record_id,
         scope=AgentScope.REPOSITORY,
-        root=str(tmp_path),
+        repository_id='repo-evidence', root=str(tmp_path),
         tenant="tenant-a",
     )
     assert stale is not None
@@ -2033,7 +2033,7 @@ def test_mark_stale_for_revision_guards_revision_paths_root_and_repeats(store: M
             value="evidence",
             status=MemoryStatus.CONFIRMED,
             provenance={
-                "root": str(tmp_path),
+                "repository_id": 'repo-evidence', "root": str(tmp_path),
                 "tenant": "tenant-a",
                 "repository_revision": "rev-1",
                 "path_refs": ["src/guarded.py"],
@@ -2061,7 +2061,7 @@ def test_mark_stale_for_revision_guards_revision_paths_root_and_repeats(store: M
     assert store.get(
         record.record_id,
         scope=AgentScope.REPOSITORY,
-        root=str(tmp_path),
+        repository_id='repo-evidence', root=str(tmp_path),
         tenant="tenant-a",
     ).status is MemoryStatus.STALE
 
@@ -2084,7 +2084,7 @@ def test_mark_stale_for_revision_matches_beyond_100k_rows(store: MemoryStore, tm
             None,
             None,
             None,
-            json.dumps({"root": root, "tenant": "tenant-a", "repository_revision": "rev-1", "path_refs": [f"src/other-{index}.py"]}),
+            json.dumps({"repository_id": 'repo-evidence', "root": root, "tenant": "tenant-a", "repository_revision": "rev-1", "path_refs": [f"src/other-{index}.py"]}),
             float(index + 2),
             float(index + 2),
             None,
@@ -2107,7 +2107,7 @@ def test_mark_stale_for_revision_matches_beyond_100k_rows(store: MemoryStore, tm
             None,
             None,
             None,
-            json.dumps({"root": root, "tenant": "tenant-a", "repository_revision": "rev-1", "path_refs": ["src/match.py"]}),
+            json.dumps({"repository_id": 'repo-evidence', "root": root, "tenant": "tenant-a", "repository_revision": "rev-1", "path_refs": ["src/match.py"]}),
             1.0,
             1.0,
             None,
@@ -2130,7 +2130,7 @@ def test_mark_stale_for_revision_matches_beyond_100k_rows(store: MemoryStore, tm
         con.close()
 
     assert store.mark_stale_for_revision(root, "rev-2", ["src/match.py"]) == 1
-    assert store.get("bulk-match", scope=AgentScope.REPOSITORY, root=root, tenant="tenant-a").status is MemoryStatus.STALE
+    assert store.get("bulk-match", scope=AgentScope.REPOSITORY, repository_id='repo-evidence', root=root, tenant="tenant-a").status is MemoryStatus.STALE
 
 
 def test_mark_stale_for_revision_matches_relative_and_absolute_roots(store: MemoryStore, tmp_path: Path):
@@ -2143,7 +2143,7 @@ def test_mark_stale_for_revision_matches_relative_and_absolute_roots(store: Memo
             value="evidence",
             status=MemoryStatus.CONFIRMED,
             provenance={
-                "root": relative_root,
+                "repository_id": 'repo-evidence', "root": relative_root,
                 "tenant": "tenant-a",
                 "repository_revision": "rev-1",
                 "path_refs": ["src/relative.py"],
@@ -2152,7 +2152,7 @@ def test_mark_stale_for_revision_matches_relative_and_absolute_roots(store: Memo
     )
 
     assert store.mark_stale_for_revision(str(tmp_path), "rev-2", ["src/relative.py"]) == 1
-    assert store.get(record.record_id, scope=AgentScope.REPOSITORY, root=str(tmp_path), tenant="tenant-a").status is MemoryStatus.STALE
+    assert store.get(record.record_id, scope=AgentScope.REPOSITORY, repository_id='repo-evidence', root=str(tmp_path), tenant="tenant-a").status is MemoryStatus.STALE
 
 
 def test_mark_stale_for_revision_deduplicates_and_caps_changed_paths(store: MemoryStore, tmp_path: Path):
@@ -2164,7 +2164,7 @@ def test_mark_stale_for_revision_deduplicates_and_caps_changed_paths(store: Memo
             value="evidence",
             status=MemoryStatus.CONFIRMED,
             provenance={
-                "root": str(tmp_path),
+                "repository_id": 'repo-evidence', "root": str(tmp_path),
                 "tenant": "tenant-a",
                 "repository_revision": "rev-1",
                 "path_refs": ["src/match.py"],
@@ -2176,7 +2176,7 @@ def test_mark_stale_for_revision_deduplicates_and_caps_changed_paths(store: Memo
     ]
 
     assert store.mark_stale_for_revision(str(tmp_path), "rev-2", changed_paths) == 1
-    stale = store.get(record.record_id, scope=AgentScope.REPOSITORY, root=str(tmp_path), tenant="tenant-a")
+    stale = store.get(record.record_id, scope=AgentScope.REPOSITORY, repository_id='repo-evidence', root=str(tmp_path), tenant="tenant-a")
     assert stale is not None
     bounded_paths = stale.provenance["staled_changed_paths"]
     assert len(bounded_paths) == 32
@@ -2194,7 +2194,7 @@ def test_mark_stale_batch_rolls_back_and_repeats_idempotently(store: MemoryStore
                 value="evidence",
                 status=MemoryStatus.CONFIRMED,
                 provenance={
-                    "root": str(tmp_path),
+                    "repository_id": 'repo-evidence', "root": str(tmp_path),
                     "tenant": "tenant-a",
                     "repository_revision": "rev-1",
                     "path_refs": [f"src/batch-{index}.py"],
@@ -2217,7 +2217,7 @@ def test_mark_stale_batch_rolls_back_and_repeats_idempotently(store: MemoryStore
     with pytest.raises(RuntimeError, match="injected batch failure"):
         store.mark_stale_for_revision(str(tmp_path), "rev-2", ["src/batch-0.py", "src/batch-1.py"])
 
-    assert [store.get(record.record_id, scope=AgentScope.REPOSITORY, root=str(tmp_path), tenant="tenant-a").status for record in records] == [
+    assert [store.get(record.record_id, scope=AgentScope.REPOSITORY, repository_id='repo-evidence', root=str(tmp_path), tenant="tenant-a").status for record in records] == [
         MemoryStatus.CONFIRMED,
         MemoryStatus.CONFIRMED,
     ]
@@ -2377,10 +2377,10 @@ def test_t08_root_scoped_promotion_contract(store: MemoryStore):
         kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY,
         scope_id="repo-t08", key="t08-promote", value="verified",
         status=MemoryStatus.CONFIRMED,
-        provenance={"root": "C:/repo", "tenant": "tenant-a"},
+        provenance={"repository_id": 'repo-evidence', "root": "C:/repo", "tenant": "tenant-a"},
     ), actor="user")
     identity = dict(scope=AgentScope.REPOSITORY, scope_id="repo-t08",
-                    root="C:/repo", tenant="tenant-a")
+                    repository_id='repo-evidence', root="C:/repo", tenant="tenant-a")
     for mismatch in ({"scope_id": "other"}, {"tenant": "other"}, {"root": "C:/other"}):
         with pytest.raises(KeyError, match="not found"):
             store.promote(record.record_id, AgentScope.GLOBAL, approver="user",
@@ -2395,15 +2395,15 @@ def test_t08_root_repository_lookup_without_scope_id(store: MemoryStore):
     record = store.record(MemoryRecord.create(
         kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY,
         scope_id="repo-t08", key="t08-scoped-lookup", value="verified",
-        provenance={"root": "C:/repo", "tenant": "tenant-a"},
+        provenance={"repository_id": 'repo-evidence', "root": "C:/repo", "tenant": "tenant-a"},
     ), actor="user")
     found = store.get(record.record_id, scope=AgentScope.REPOSITORY,
-                      root="C:/repo", tenant="tenant-a")
+                      repository_id='repo-evidence', root="C:/repo", tenant="tenant-a")
     assert found is not None and found.record_id == record.record_id
     assert store.get(record.record_id, scope=AgentScope.REPOSITORY,
-                     root="C:/other", tenant="tenant-a") is None
+                     repository_id='repo-evidence', root="C:/other", tenant="tenant-a") is None
     assert store.get(record.record_id, scope=AgentScope.REPOSITORY,
-                     root="C:/repo", tenant="other") is None
+                     repository_id='repo-evidence', root="C:/repo", tenant="other") is None
     assert store.get(record.record_id, scope=AgentScope.REPOSITORY,
                      tenant="tenant-a") is None
 
@@ -2675,8 +2675,8 @@ def test_get_global_requires_unowned_or_matching_tenant(store: MemoryStore, tmp_
     assert store.get(global_scoped_id.record_id) is None
     assert store.get(global_scoped_id.record_id, scope=AgentScope.GLOBAL, tenant="tenant-a") is None
     assert store.get(repository.record_id, scope=AgentScope.REPOSITORY) is None
-    assert store.get(repository.record_id, scope=AgentScope.REPOSITORY, root=root, tenant="tenant-b") is None
-    assert store.get(repository.record_id, scope=AgentScope.REPOSITORY, root=root, tenant="tenant-a") == repository
+    assert store.get(repository.record_id, scope=AgentScope.REPOSITORY, repository_id='repo', root=root, tenant="tenant-b") is None
+    assert store.get(repository.record_id, scope=AgentScope.REPOSITORY, repository_id='repo', root=root, tenant="tenant-a") == repository
     assert store.get(task.record_id, scope=AgentScope.TASK, root=root, tenant="tenant-a") is None
     assert store.get(task.record_id, scope=AgentScope.TASK, task_id="task-a", root=root, tenant="tenant-b") is None
     assert store.get(task.record_id, scope=AgentScope.TASK, task_id="task-a", root=root, tenant="tenant-a") == task

@@ -1,5 +1,7 @@
 # Generic Agent Update & Upgrade Prompt for Local AI Hub
 
+Task memory adoption passes the same resolved repository coordination ID into compilation, record materialization and excluded-memory diagnostics; expiry checks retain the current repository and tenant identity.
+
 Consistency-guard repository memory writes and audit reads use the current server-derived project coordination ID and exact tenant; missing identity cannot fall back to a physical-root lookup. Windows isolated-parser workers treat only WerGetFlags ERROR_NOT_FOUND as absent per-process flags before setting NO_UI; other HRESULT failures remain explicit.
 
 Agent scopes use exact enum values global/repository/clone/worktree/branch/task/session. Supplied aliases, case/whitespace variants and unknown/nonstring values reject instead of selecting default authority. Omitted scope retains its declared default; the HTTP memory filter retains empty/absent filter semantics.
