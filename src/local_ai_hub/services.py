@@ -2699,7 +2699,7 @@ class LocalAIServices:
                 })
                 raw, hit, coalesced = self.repo_flight.get_or_compute(key, compute)
                 cache_degraded = bool(state.get("degraded", False))
-                cache_reason = state.get("reason")
+                cache_reason = state.get("degraded_reason")
         except (FileNotFoundError, ValueError) as exc:
             return {"success": False, "stale_root": True, "error": str(exc), "error_type": type(exc).__name__, "operation": operation}
         if isinstance(raw, dict):

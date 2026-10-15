@@ -72,6 +72,7 @@ def test_repository_cache_isolated_by_physical_root(tmp_path: Path) -> None:
 def test_repository_cache_collapses_lexical_alias_for_same_root(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     root.mkdir()
+    (root / "child").mkdir()
     alias = root / "child" / ".."
     flight = RecordingFlight()
     service = _service({"fingerprint": "same", "kind": "indexed"}, flight)
@@ -95,7 +96,7 @@ def test_repository_cache_collapses_lexical_alias_for_same_root(tmp_path: Path) 
 
 @pytest.mark.parametrize(
     "state",
-    [{}, {"fingerprint": None}, {"fingerprint": ""}, {"fingerprint": 0}, {"fingerprint": False}],
+    [{}, {"fingerprint": None}, {"fingerprint": ""}, {"fingerprint": "   "}, {"fingerprint": 0}, {"fingerprint": False}],
 )
 def test_invalid_repository_fingerprint_bypasses_cache_and_coalescing(state) -> None:
     class ForbiddenFlight:
