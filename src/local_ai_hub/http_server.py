@@ -1393,6 +1393,24 @@ class RequestBodyError(ValueError):
         self.status = status
 
 
+_CANONICAL_AGENT_ACTION = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*")
+_AGENT_TASK_ACTIONS = frozenset({
+    "create", "list", "get", "transition", "complete", "fail",
+    "checkpoint", "rollback", "resume", "heartbeat", "ask", "answer",
+    "cleanup_worktree", "reap_expired", "curate_dataset",
+})
+_AGENT_VERIFICATION_ACTIONS = frozenset({"receipt", "completion", "export"})
+
+
+def _agent_action_selector(payload: Mapping[str, Any], default: str | None = None) -> str | None:
+    if "action" not in payload:
+        return default
+    action = payload["action"]
+    if not isinstance(action, str) or _CANONICAL_AGENT_ACTION.fullmatch(action) is None:
+        raise RequestBodyError("action must use canonical lowercase underscore syntax")
+    return action
+
+
 class LocalAIHTTPServer(ThreadingHTTPServer):
     """Threaded HTTP server with a hard cap on live handler threads and per-tenant rate limiting.
 
@@ -2157,12 +2175,26 @@ class Handler(BaseHTTPRequestHandler):
         })
         return False
 
+    def _agent_action_or_error(self, payload: dict[str, Any], default: str) -> str | None:
+        try:
+            return _agent_action_selector(payload, default)
+        except RequestBodyError as exc:
+            self._send(exc.status, {
+                "success": False,
+                "error": str(exc),
+                "terminal": True,
+                "retryable": False,
+            })
+            return None
+
     def _bind_memory_payload(self, payload: dict[str, Any]) -> bool:
         record = payload.get("record") if isinstance(payload.get("record"), dict) else {}
         payload_provenance = payload.get("provenance") if isinstance(payload.get("provenance"), dict) else {}
         record_provenance = record.get("provenance") if isinstance(record.get("provenance"), dict) else {}
         containers = (payload, record, payload_provenance, record_provenance)
-        action = str(payload.get("action", "")).strip().lower().replace("-", "_")
+        action = self._agent_action_or_error(payload, "")
+        if action is None:
+            return False
         if action == "record":
             # The outer request root is the trust anchor for creation. Nested
             # provenance is evidence to sanitize, not a second authority.
@@ -2641,7 +2673,9 @@ class Handler(BaseHTTPRequestHandler):
         return self._validate_memory_task_identity(canonical_root, effective_tenant, [task_id])
 
     def _bind_task_event_payload(self, payload: dict[str, Any]) -> bool:
-        action = str(payload.get("action", "export")).strip().lower().replace("-", "_")
+        action = self._agent_action_or_error(payload, "export")
+        if action is None:
+            return False
         if action != "export":
             self._send(403, {"success": False, "error": "global event import is unavailable through root-scoped access", "terminal": True, "retryable": False})
             return False
@@ -2696,14 +2730,13 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def _bind_task_board_payload(self, payload: dict[str, Any]) -> bool:
-        action = str(payload.get("action", "get")).strip().lower().replace("-", "_")
-        if action in {"list", "blackboard_list"}:
+        action = self._agent_action_or_error(payload, "get")
+        if action is None:
+            return False
+        if action == "list":
             self._send(403, {"success": False, "error": "global blackboard listing is unavailable through root-scoped access", "terminal": True, "retryable": False})
             return False
-        if action not in {
-            "update", "put", "blackboard_update", "get", "read", "blackboard_get",
-            "merge", "blackboard_merge", "delete", "remove", "blackboard_delete",
-        }:
+        if action not in {"update", "get", "merge", "delete"}:
             self._send(400, {"success": False, "error": "unknown blackboard action", "terminal": True, "retryable": False})
             return False
         if not self._bind_task_payload(payload):
@@ -3344,6 +3377,13 @@ class Handler(BaseHTTPRequestHandler):
                 or not minimum <= value <= maximum
             ):
                 raise RequestBodyError(f"{name} must be a finite number from {minimum:g} to {maximum:g}")
+
+        if path.startswith("/api/agent-state/") and "action" in payload:
+            action = _agent_action_selector(payload)
+            if path == "/api/agent-state/tasks" and action not in _AGENT_TASK_ACTIONS:
+                raise RequestBodyError("unknown task action")
+            if path == "/api/agent-state/verification" and action not in _AGENT_VERIFICATION_ACTIONS:
+                raise RequestBodyError("unknown verification action")
 
         if path == "/api/embed":
             values = payload.get("texts", payload.get("input", []))
@@ -5971,7 +6011,7 @@ class Handler(BaseHTTPRequestHandler):
         ) and not self._bind_repository_root_payload(payload):
             return
         if path == "/api/agent-state/verification":
-            action = str(payload.get("action", "")).strip().lower().replace("-", "_")
+            action = payload.get("action", "")
             if action in {"receipt", "completion"}:
                 receipt = payload.get("receipt") if isinstance(payload.get("receipt"), dict) else {}
                 request_task_id = str(payload.get("task_id", "") or "").strip()
@@ -6203,18 +6243,10 @@ class Handler(BaseHTTPRequestHandler):
             if 'post_agent_state_tasks_1' in post_route_ids:
                 if not getattr(APP, "agent_tasks", None) or not APP.agent_tasks.state_store.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
-                action = str(payload.get("action", "")).strip().lower().replace("-", "_")
+                action = payload.get("action", "")
                 idempotency_key = str(payload.get("idempotency_key", "")).strip()
                 actor = self._agent() or "agent"
-                known_task_actions = {
-                    "create", "list", "get", "transition", "complete", "fail",
-                    "checkpoint", "rollback", "resume", "heartbeat",
-                    "ask", "answer",
-                    "cleanup_worktree", "task_cleanup_worktree", "reap",
-                    "reap_expired", "zombie_reap", "recover_zombie_tasks",
-                    "curate_dataset", "curate_training_dataset",
-                }
-                if action not in known_task_actions:
+                if action not in _AGENT_TASK_ACTIONS:
                     self._send(400, {
                         "success": False,
                         "error": f"unknown task action '{action}'",
@@ -6222,35 +6254,14 @@ class Handler(BaseHTTPRequestHandler):
                         "retryable": False,
                     }); return
                 scoped_task_actions = {
-                    "reap", "reap_expired", "zombie_reap", "recover_zombie_tasks",
-                    "curate_dataset", "curate_training_dataset",
+                    "curate_dataset",
                     "ask", "answer",
                 }
                 repo_root = str(getattr(self, "_authorization_root", "") or "")
                 tenant = self._tenant()
                 if action in scoped_task_actions and (not repo_root or not tenant):
                     self._send(403, {"success": False, "error": "task root scope is required", "terminal": True, "retryable": False}); return
-                if action in {"reap", "reap_expired", "zombie_reap", "recover_zombie_tasks"}:
-                    task_id = str(payload.get("task_id", "")).strip() or None
-                    try:
-                        if action == "recover_zombie_tasks":
-                            reaped = APP.agent_tasks.recover_zombie_tasks(
-                                repo_root=repo_root,
-                                tenant=tenant,
-                                task_id=task_id,
-                            )
-                        else:
-                            auto_recover = bool(payload.get("auto_recover", False))
-                            reaped = APP.agent_tasks.reap_expired_heartbeats(
-                                auto_recover=auto_recover,
-                                repo_root=repo_root,
-                                tenant=tenant,
-                                task_id=task_id,
-                            )
-                        self._send(200, {"success": True, "reaped": reaped, "count": len(reaped)}); return
-                    except Exception as exc:
-                        self._send(400, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
-                if action in {"curate_dataset", "curate_training_dataset"}:
+                if action == "curate_dataset":
                     task_id = str(payload.get("task_id", "")).strip() or None
                     output_path = str(payload.get("output_path", payload.get("path", "training_dataset.jsonl")))
                     min_receipts = int(payload.get("min_receipts", 1))
@@ -6284,7 +6295,7 @@ class Handler(BaseHTTPRequestHandler):
                             "retryable": False,
                         }); return
                 task_id = str(payload.get("task_id", "")).strip()
-                if action not in {"create", "list", "reap", "curate_dataset", "curate_training_dataset"} and task_id:
+                if action not in {"create", "list", "reap_expired", "curate_dataset"} and task_id:
                     if self._request_task(task_id, request_root, request_tenant) is None:
                         return
                 if action in {"ask", "answer"}:
@@ -6583,11 +6594,11 @@ class Handler(BaseHTTPRequestHandler):
                         self._send(200, {"success": True, "task": task.to_dict()}); return
                     except KeyError as exc:
                         self._send(404, {"success": False, "error": str(exc), "terminal": True, "retryable": False}); return
-                if action in {"cleanup_worktree", "task_cleanup_worktree"}:
+                if action == "cleanup_worktree":
                     t_id = str(payload.get("task_id", ""))
                     del_br = bool(payload.get("delete_branch", True))
                     self._send(200, APP.agent_tasks.cleanup_worktree(t_id, delete_branch=del_br, actor=self._agent())); return
-                if action in {"reap_expired", "zombie_reap", "recover_zombie_tasks"}:
+                if action == "reap_expired":
                     self._send(403, {"success": False, "error": "task reaping is unavailable without a scoped mutation contract", "terminal": True, "retryable": False}); return
                 if action == "list":
                     status_filter = None
@@ -6620,7 +6631,7 @@ class Handler(BaseHTTPRequestHandler):
             if 'post_agent_state_memory_1' in post_route_ids:
                 if not getattr(APP, "agent_memory", None) or not APP.agent_memory.state_store.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
-                action = str(payload.get("action", "")).strip().lower().replace("-", "_")
+                action = payload.get("action", "")
                 idempotency_key = str(payload.get("idempotency_key", "")).strip()
                 actor = self._agent() or "agent"
                 if action == "record":
@@ -7081,7 +7092,7 @@ class Handler(BaseHTTPRequestHandler):
             if 'post_agent_state_incidents_1' in post_route_ids:
                 if not getattr(APP, "agent_incidents", None) or not APP.agent_incidents.state_store.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
-                action = str(payload.get("action", "")).strip().lower().replace("-", "_")
+                action = payload.get("action", "")
                 if action not in {"decision", "record", "find"}:
                     self._send(403, {"success": False, "error": "incident action requires a scoped mutation contract", "terminal": True, "retryable": False}); return
                 if action == "decision":
@@ -7128,7 +7139,7 @@ class Handler(BaseHTTPRequestHandler):
             if 'post_agent_state_verification_1' in post_route_ids:
                 if not getattr(APP, "agent_verification", None) or not APP.agent_verification.state_store.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
-                action = str(payload.get("action", "")).strip().lower().replace("-", "_")
+                action = payload.get("action", "")
                 if action == "receipt":
                     rcpt_data = payload.get("receipt")
                     if not isinstance(rcpt_data, dict):
@@ -7191,7 +7202,7 @@ class Handler(BaseHTTPRequestHandler):
                             "error": "completion requires a repository snapshot with a non-empty revision",
                         }); return
                     self._send(200, {"success": True, "completion": res.to_dict()}); return
-                if action in {"export", "verify_export"}:
+                if action == "export":
                     task_id = str(payload.get("task_id", "")).strip()
                     if not self._require_scoped_task(task_id):
                         return
@@ -7202,7 +7213,7 @@ class Handler(BaseHTTPRequestHandler):
             if 'post_agent_state_context_1' in post_route_ids:
                 if not getattr(APP, "agent_context", None) or not APP.agent_context.state_store.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
-                action = str(payload.get("action", "")).strip().lower().replace("-", "_")
+                action = payload.get("action", "")
                 if action == "compile":
                     requested_mode = self._context_retrieval_mode(payload)
                     if requested_mode is None:
@@ -7344,7 +7355,7 @@ class Handler(BaseHTTPRequestHandler):
             if 'post_agent_state_learning_1' in post_route_ids:
                 if not getattr(APP, "agent_learning", None) or not APP.agent_learning.state_store.enabled:
                     self._send(403, {"success": False, "error": "agent_state is disabled", "terminal": True, "retryable": False}); return
-                action = str(payload.get("action", "")).strip().lower().replace("-", "_")
+                action = payload.get("action", "")
                 if action == "create_candidate":
                     cand_data = payload.get("candidate") or {}
                     try:
@@ -7400,9 +7411,9 @@ class Handler(BaseHTTPRequestHandler):
             if 'post_agent_state_blackboard_1' in post_route_ids:
                 if not getattr(APP, "agent_blackboard", None):
                     self._send(503, {"success": False, "error": "blackboard unavailable"}); return
-                action = str(payload.get("action", "get")).strip().lower().replace("-", "_")
+                action = payload.get("action", "get")
                 board_id = str(payload.get("board_id", payload.get("task_id", payload.get("key", "default"))))
-                if action in {"update", "put", "blackboard_update"}:
+                if action == "update":
                     section = str(payload.get("section", payload.get("key", "main")))
                     content = payload.get("content", payload.get("value"))
                     author = str(payload.get("author", payload.get("approver", tenant or "agent")))
@@ -7411,18 +7422,18 @@ class Handler(BaseHTTPRequestHandler):
                     exp_v_int = int(exp_v) if exp_v is not None else None
                     res = APP.agent_blackboard.update(board_id, section, content, author, clock=clock, expected_version=exp_v_int)
                     self._send(200, res); return
-                if action in {"get", "read", "blackboard_get"}:
+                if action == "get":
                     section = payload.get("section")
                     res = APP.agent_blackboard.get(board_id, section=str(section) if section else None)
                     self._send(200, res); return
-                if action in {"list", "blackboard_list"}:
+                if action == "list":
                     boards = APP.agent_blackboard.list_boards()
                     self._send(200, {"success": True, "boards": boards, "count": len(boards)}); return
-                if action in {"merge", "blackboard_merge"}:
+                if action == "merge":
                     remote = payload.get("remote_sections", payload.get("sections", payload.get("record", {})))
                     res = APP.agent_blackboard.merge(board_id, remote)
                     self._send(200, res); return
-                if action in {"delete", "remove", "blackboard_delete"}:
+                if action == "delete":
                     section = payload.get("section")
                     res = APP.agent_blackboard.delete(board_id, section=str(section) if section else None)
                     self._send(200, res); return
@@ -8263,7 +8274,7 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"}); return
             if 'post_agent_state_events_delta_1' in post_route_ids:
-                action = str(payload.get("action", "export"))
+                action = payload.get("action", "export")
                 if action == "export":
                     stream_id = str(payload.get("stream_id", ""))
                     after_seq = int(payload.get("after_seq", 0))
