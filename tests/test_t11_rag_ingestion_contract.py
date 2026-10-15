@@ -1038,6 +1038,17 @@ def test_offline_missing_reranker_weights_degrade_without_false_reranked_claim(t
         "cache": {"reranker": False},
     })
     store.reranker = reranker
+
+    # Direct Reranker use permits CPU loading; foreground RAG intentionally
+    # bypasses CPU rerankers and must not be forced to load weights for this test.
+    direct = reranker.rerank(
+        "authenticate token", ["def authenticate_token(token): return token"],
+        allow_cpu_fallback=True,
+    )
+    assert direct["success"] is False
+    assert direct["results"] == []
+    assert "offline reranker weights missing from cache" in direct["error"]
+    assert loader_attempts == [True]
     root = tmp_path / "offline-reranker-project"
     root.mkdir()
     (root / "auth.py").write_text(
