@@ -116,6 +116,27 @@ def test_cached_staleness_persists_when_writer_counters_stop_changing(tmp_path: 
     assert "cached_summary_data" in refreshed_again["detail"]["omitted_sections"]
 
 
+def test_report_preserves_stale_cached_summary_detail(tmp_path: Path) -> None:
+    store = _store_without_writer(tmp_path)
+    with store._stats_lock:
+        store._stats.update(attempted=1, accepted=1, queued=1, processed=1, written=1)
+    writer = store._writer_snapshot()
+    stale_summary = {
+        "writer": writer,
+        "summary_cache_stale": True,
+        "detail": {"truncated": False, "incomplete": True,
+                   "omitted_sections": ["cached_summary_data"]},
+        "decision_grade": {"detail": {"omitted_sections": ["cached_summary_data"]}},
+    }
+    store.summary = lambda days, *, scope, _flush: stale_summary  # type: ignore[method-assign]
+
+    report = store.report(_flush=False)
+
+    assert report["summary_cache_stale"] is True
+    assert report["detail"]["status"] == "incomplete"
+    assert "cached_summary_data" in report["detail"]["omitted_sections"]
+
+
 def test_dashboard_and_realtime_cache_hits_refresh_writer_status(tmp_path: Path) -> None:
     store = _store_without_writer(tmp_path)
     with store._stats_lock:
