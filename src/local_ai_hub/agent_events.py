@@ -4,8 +4,6 @@ from contextlib import contextmanager
 from contextlib import closing
 import hashlib
 import copy
-import stat
-import subprocess
 import tempfile
 import json
 import math
@@ -30,64 +28,6 @@ from .sqlite_support import (
 )
 
 _MAX_EVENT_GAP_RANGES = 128
-
-
-def _windows_process_user_sid() -> str:
-    """Read the primary process token locally; no child, account lookup or cache.
-
-    Environment usernames are not authenticated identities. Numeric SIDs also
-    avoid domain/account-name resolution when icacls secures the backup.
-    """
-    import ctypes
-    from ctypes import wintypes
-
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    security = ctypes.WinDLL("advapi32", use_last_error=True)
-    kernel.GetCurrentProcess.argtypes = []
-    kernel.GetCurrentProcess.restype = wintypes.HANDLE
-    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
-    kernel.CloseHandle.restype = wintypes.BOOL
-    kernel.LocalFree.argtypes = [ctypes.c_void_p]
-    kernel.LocalFree.restype = ctypes.c_void_p
-    security.OpenProcessToken.argtypes = [
-        wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE),
-    ]
-    security.OpenProcessToken.restype = wintypes.BOOL
-    security.GetTokenInformation.argtypes = [
-        wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
-        ctypes.POINTER(wintypes.DWORD),
-    ]
-    security.GetTokenInformation.restype = wintypes.BOOL
-    security.ConvertSidToStringSidW.argtypes = [
-        ctypes.c_void_p, ctypes.POINTER(wintypes.LPWSTR),
-    ]
-    security.ConvertSidToStringSidW.restype = wintypes.BOOL
-
-    token = wintypes.HANDLE()
-    if not security.OpenProcessToken(kernel.GetCurrentProcess(), 0x0008, ctypes.byref(token)):
-        raise ctypes.WinError(ctypes.get_last_error())
-    try:
-        required = wintypes.DWORD()
-        # TokenUser starts with SID_AND_ATTRIBUTES, whose first field is PSID.
-        security.GetTokenInformation(token, 1, None, 0, ctypes.byref(required))
-        if ctypes.get_last_error() != 122 or not (ctypes.sizeof(ctypes.c_void_p) <= required.value <= 65536):
-            raise OSError("agent_state backup process token size unavailable")
-        buffer = ctypes.create_string_buffer(required.value)
-        if not security.GetTokenInformation(token, 1, buffer, len(buffer), ctypes.byref(required)):
-            raise ctypes.WinError(ctypes.get_last_error())
-        sid = ctypes.cast(buffer, ctypes.POINTER(ctypes.c_void_p))[0]
-        text = wintypes.LPWSTR()
-        if not security.ConvertSidToStringSidW(sid, ctypes.byref(text)):
-            raise ctypes.WinError(ctypes.get_last_error())
-        try:
-            result = text.value
-            if not result or not result.startswith("S-1-"):
-                raise OSError("agent_state backup process SID unavailable")
-            return result
-        finally:
-            kernel.LocalFree(ctypes.cast(text, ctypes.c_void_p))
-    finally:
-        kernel.CloseHandle(token)
 
 
 @dataclass(frozen=True)
@@ -198,16 +138,12 @@ class AgentStateStore:
     # PRAGMA user_version belongs to this database-wide core schema. Independent
     # stores keep component versions in agent_state_schema_versions instead.
     _SCHEMA_VERSION = 1
-    # Live events use this payload version implicitly; the side table stores legacy overrides.
-    _CURRENT_EVENT_PAYLOAD_VERSION = 1
     _SCHEMA_PREFLIGHT_TIMEOUT_SECONDS = 5.0
-    _MIGRATION_BACKUP_TIMEOUT_SECONDS = 5.0
-    _MIGRATION_BACKUP_PAGES = 128
+    _SCHEMA_OBJECT_SQL_MAX_BYTES = 8192
     _EVENT_COLUMNS = [
         "stream_id", "seq", "event_id", "kind", "payload", "idempotency_key",
         "correlation_id", "actor", "created_at",
     ]
-    _LEGACY_EVENT_COLUMNS = [*_EVENT_COLUMNS[:-1], "schema_version", "created_at"]
     _SNAPSHOT_COLUMNS = ["snapshot_id", "stream_id", "seq", "state", "created_at"]
     _EXPECTED_OBJECT_SQL_HASHES = {
         ("table", "agent_questions", "agent_questions"): "c072993f2caba4dd9b1c7b868a243f02ccbd9d6e71a7c38853f7d27b8b5b0a61",
@@ -216,8 +152,8 @@ class AgentStateStore:
         ("index", "idx_leases_root", "leases"): "a0ede5303197cc5172c5583f33a72ee1636083712d84e9d618a642a34671cc85",
         ("table", "agent_state_migrations", "agent_state_migrations"): "c05fc94a41754f655038115d920ca125256bad65f5fd82bcc8ee4cdc8ce1c164",
         ("table", "agent_state_schema_versions", "agent_state_schema_versions"): "a2884a575e1e67cfbc5b40c2e90370a89d5310197171332b6806c0b4e036a547",
-        ("table", "lease_waits", "lease_waits"): "dd85a48b1dbe347ede4ca2c5e5ac8ba648090b0553e37af0b104a4b0afeedbd9",
-        ("table", "leases", "leases"): "8efd0ab396d15d5557fc4dda0683cbf77f3957867131072d89c6a0fc334e9059",
+        ("table", "lease_waits", "lease_waits"): "e9a38812fd120d00228269c2e5f28f02172702355abd9127562ccf78a5c93612",
+        ("table", "leases", "leases"): "f7a165f4f68106fb33b5855d0a66532e63fde78b2675380b67fe8112096f8edd",
         ("index", "idx_lease_waits_blocked", "lease_waits"): "366fe3b81e54f9032edecf9d798a2b2d23160bba578438a89591b929c1e87cab",
         ("table", "agent_swarms", "agent_swarms"): "5ccda29c6b858caae83c2ca78296c4ff939f7ae41cdab14054e67bf374592a81",
         ("table", "sqlite_sequence", "sqlite_sequence"): "9e042902d97481bf7dccaaff2183d686b3344691bb622fdfc017096ef4080c65",
@@ -225,10 +161,10 @@ class AgentStateStore:
         ("index", "idx_agent_change_task", "agent_change_intents"): "59e49e948f8ccd127cd4698378e49e66af98e872ec9fcf1e23445854cb88440b",
         ("index", "idx_agent_events_created", "agent_events"): "bc5acedde3a15256f0c4de4628d1beadfe846b30f7b89738f3e7f030de635dba",
         ("index", "idx_agent_events_kind", "agent_events"): "ea38ef5ba6de50080cd324a3a41177914e9b37f12ffc62a76d37b2f7fe7a5b9b",
-        ("index", "idx_agent_incidents_fp", "agent_incidents"): "4b67662bd5955574d1cce114df205ba62a1e0f5165613b4edd16072d34339709",
-        ("index", "idx_agent_incidents_lookup", "agent_incidents"): "f170ab3ca4813c2fde1ef264a4a148c1ad08c0a6ea7243119864d2f7d35e58d9",
-        ("index", "idx_agent_incidents_recent", "agent_incidents"): "2dabb490a313b3f49ec8cf3bbec38e5dd7d7869db9dc9ea69474d96fe86260a8",
-        ("index", "idx_agent_incidents_scope", "agent_incidents"): "fcddf0dcdaa939754d8826b199dc730bfee46c1e3f9f1dc7742757a26b324fc3",
+        ("index", "idx_agent_incidents_fp", "agent_incidents"): "2e97507ad3c8a00f75c8ab9e703258a4221de48e519c8c8872b57c9d27a8ebe6",
+        ("index", "idx_agent_incidents_lookup", "agent_incidents"): "1cb342c0f28e91bd317414d5bf1db1f139fe94ef1ebad9b2822986a6a256a67e",
+        ("index", "idx_agent_incidents_recent", "agent_incidents"): "f91c507976d80c71c58e6818a3728e5a802f2572e265aea4681cb370823b04fe",
+        ("index", "idx_agent_incidents_scope", "agent_incidents"): "62821891e841a90165a5b95db5bf93c2c82fa294622cc1c95c04cac3334a26e2",
         ("index", "idx_agent_klinks_path", "agent_knowledge_links"): "a765bbe0d7e69856c925200094c53bbd726cfaec770d274d4451b18b40e52b32",
         ("index", "idx_agent_memory_expires", "agent_memory_records"): "2b572d27d7aeff30fd4f5bac34028828f8cea53b3e7a33a365ecd2ac8d62bda6",
         ("index", "idx_agent_memory_provenance_branch", "agent_memory_records"): "d2bbcbdc38fffca0533cc1fb185773d0d7063c91e7318838a15bfb4a3ef919ff",
@@ -256,9 +192,8 @@ class AgentStateStore:
         ("table", "agent_budgets", "agent_budgets"): "fbcda82d934dce0695d9cb9edd9d7c1386e5320a2aac79c5194eee55471982df",
         ("table", "agent_change_intents", "agent_change_intents"): "52ed988b0a31f820b145261f7c586ea869369958b8adcd21d6bd1ad7e1f8a9ca",
         ("table", "agent_entity_relations", "agent_entity_relations"): "7cb3cdb25d201d7e2e264eb0d2b3dda5bb831ffd531d7aea2dab79df6db26590",
-        ("table", "agent_event_schema_versions", "agent_event_schema_versions"): "39c354761a018cfed96cd720de30b50665d708b39f8fe032c799e4f9e926e841",
         ("table", "agent_events", "agent_events"): "1dfef49210889dc707aa8405b65262a5a86acbc14bd940ca338293dde150b2a2",
-        ("table", "agent_incidents", "agent_incidents"): "6ea9770af294cd83e1fd6dcc80a0c7950bc93d142c27d40996c5acf5a0b478d4",
+        ("table", "agent_incidents", "agent_incidents"): "c50729cd066336a983c276efd201af043306e117407c34407256891553feac48",
         ("table", "agent_knowledge_links", "agent_knowledge_links"): "729e5c852a59ef150c488ccfb998a8a4dab606a052d353d94360aa2793a62426",
         ("table", "agent_learning_candidates", "agent_learning_candidates"): "3b8650b155c972e370825d72cf2222c005401a696b7f996a991c1f9d552b5caa",
         ("table", "agent_memory_embeddings", "agent_memory_embeddings"): "468df99dabe588d9475009d02108f2fdadfcf63e83a7aedf6d7a36a9ead965b5",
@@ -271,51 +206,19 @@ class AgentStateStore:
         ("table", "agent_memory_records", "agent_memory_records"): "5cd8a7e88151416c741554d667ef08dfd8469b645870f26ccadc436cfddc25c0",
         ("table", "agent_outcomes", "agent_outcomes"): "624b2b6c004fe2d59814db6d948d1bd043a73dfc10a9d83127e7450a05d90144",
         ("table", "agent_snapshots", "agent_snapshots"): "323b038ec2305f3aa746737408a3a024da0f222285101d5e0bea9729cf5fdb69",
-        ("table", "agent_swarms", "agent_swarms"): "c92f1fff4b1f91185a32b0233eb3838875f62ef22f0df6d7fbea9a4bfa93c220",
         ("table", "agent_tasks_projection", "agent_tasks_projection"): "d4283f29e8560ff94ae0877f38c1fdd8020a2d8e2fc6c66aa01a58dca6339cc4",
         ("table", "agent_verification_receipts", "agent_verification_receipts"): "6aeb2ffafd9572d5325f56e99f7c62455989c3d44772bd83d3e47b6f3abe953a",
     }
     _EXPECTED_OBJECT_SQL_HASHES.update({
-        ("index", "idx_agent_incidents_scope", "agent_incidents"): "fcddf0dcdaa939754d8826b199dc730bfee46c1e3f9f1dc7742757a26b324fc3",
+        ("index", "idx_agent_incidents_scope", "agent_incidents"): "62821891e841a90165a5b95db5bf93c2c82fa294622cc1c95c04cac3334a26e2",
         ("index", "idx_agent_task_search_grams_gram", "agent_task_search_grams"): "47289e8fa6b5eb7e6837a56d77ad684e26fbc466f43f0f7af252e77fb8af5e0a",
         ("index", "idx_agent_verif_task_outbox_pending", "agent_verification_task_outbox"): "50dff1b755ee28d10c80d199270f9f6b12fb2ca958b4a8948cb59ac6ff751f48",
         ("table", "agent_event_cursors", "agent_event_cursors"): "0ecf2e08637aef9d2f4a9167feb61de083e1a9d9b8b927f79ae7a58e74b2ef71",
-        ("table", "agent_incidents", "agent_incidents"): "a2be58a71724133b64d9a7a773680a193488f64414ee245e378b06973454e420",
+        ("table", "agent_incidents", "agent_incidents"): "c50729cd066336a983c276efd201af043306e117407c34407256891553feac48",
         ("table", "agent_task_search_documents", "agent_task_search_documents"): "a291a7122e95c8b2f3f6b9a9a73269489b1794ceea3f4378d9ff6155fd900f93",
         ("table", "agent_task_search_grams", "agent_task_search_grams"): "d2f7c3b733bc0ffcee4d9ee72804edc3fedc36f73f7ceca5ce18662941a13b78",
         ("table", "agent_verification_task_outbox", "agent_verification_task_outbox"): "2f17423836ca86bf09a701a71a27ead55a2c458d02bb9f29e1445a0c0fc11d17",
     })
-    _ALTERNATE_OBJECT_SQL_HASHES = {
-        ("table", "agent_incidents", "agent_incidents"): (
-            "6ea9770af294cd83e1fd6dcc80a0c7950bc93d142c27d40996c5acf5a0b478d4",
-            "43c461c1906a1c11a5558889e2c49478942b940c3e98d0a926848ead3010a63e",
-            "b3f8fa5c1723ab3addf421e28c3e9e07d232a7734cc95c247aed04224f3856b0",
-        ),
-        # T08 adds root/version columns to the T05 swarm projection. Both layouts
-        # are known; present definitions still require an exact fingerprint.
-        ("table", "agent_swarms", "agent_swarms"): (
-            "5ccda29c6b858caae83c2ca78296c4ff939f7ae41cdab14054e67bf374592a81",
-        ),
-    }
-    _LEGACY_EVENTS_SQL_HASH = "80bc39dfa4ff6ca36c421c6160678bb6b1721d15753298b7c7bd2cfc4887eb65"
-    _MIGRATION_HISTORY_SQL_HASH = "3a1338feacda1c31e65c7e4fe16f49b4e14f699b7c0d7a4672deca39fbca4c33"
-    _LEGACY_EVENT_INDEX_HASHES = {
-        ("index", "idx_agent_events_created", "agent_events"): "0c060f3923ffc6874a55f975a4a5b5ae2257fe99d3adfd783c3bcc18e763f510",
-        ("index", "idx_agent_events_kind", "agent_events"): "77d2e2a836ce41786c2710ad9b46a9ff484aac89a3fc28461dcd46c5f85a9299",
-    }
-    _ALTERNATE_OBJECT_SQL_HASHES.update({
-        ("table", "lease_waits", "lease_waits"): {
-            "a866368052df7b9433b7a44d47dc262c5a76a06058b878e0249ccee791dfb17c",
-            "e9a38812fd120d00228269c2e5f28f02172702355abd9127562ccf78a5c93612",
-            # ScopeLeaseStore's namespace-key rebuild/rename quotes the table name.
-            # Same NOT NULL columns and root-inclusive PK; no SQL normalization widening.
-            "314dbe78e360c6c00133c85323b9349936d9cb2e87121e60c8ffb733b46d20aa",
-        },
-        ("table", "leases", "leases"): {
-            "f7a165f4f68106fb33b5855d0a66532e63fde78b2675380b67fe8112096f8edd",
-        },
-    })
-
     def __init__(
         self,
         db_path: Path | str,
@@ -381,10 +284,6 @@ class AgentStateStore:
                     self._preflight_schema_read_only()
                 con = sqlite3.connect(self.db_path, timeout=5.0)
                 try:
-                    self._migrate_known_schema(
-                        con,
-                        existed_before_open=existed_before_open,
-                    )
                     if not con.in_transaction:
                         con.execute("BEGIN IMMEDIATE")
                     with con:
@@ -425,15 +324,6 @@ class AgentStateStore:
                             "ON agent_snapshots (stream_id, seq DESC)"
                         )
                         con.execute("""
-                            -- Sparse legacy overrides; current payload version is implicit.
-                            CREATE TABLE IF NOT EXISTS agent_event_schema_versions (
-                                stream_id TEXT NOT NULL,
-                                seq INTEGER NOT NULL,
-                                schema_version INTEGER NOT NULL,
-                                PRIMARY KEY (stream_id, seq)
-                            )
-                        """)
-                        con.execute("""
                             CREATE TABLE IF NOT EXISTS agent_event_cursors (
                                 stream_id TEXT PRIMARY KEY,
                                 last_seq INTEGER NOT NULL,
@@ -468,34 +358,6 @@ class AgentStateStore:
 
             retry_busy(_setup, retries=5, base_delay_seconds=0.02)
             self._initialized = True
-
-    def _verified_migration_backup(self, source: sqlite3.Connection) -> Path:
-        """Create and verify a snapshot before changing a legacy durable database."""
-        backup_path = self.db_path.with_name(
-            f"{self.db_path.name}.migration-v0-v1-{time.time_ns()}.bak"
-        )
-        with backup_path.open("xb"):
-            pass
-        destination = sqlite3.connect(backup_path)
-        try:
-            source.backup(destination)
-            quick_check = destination.execute("PRAGMA quick_check").fetchone()
-            if not quick_check or str(quick_check[0]).lower() != "ok":
-                raise sqlite3.DatabaseError("agent state migration backup failed quick_check")
-            source_schema = source.execute(
-                "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
-            ).fetchall()
-            backup_schema = destination.execute(
-                "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
-            ).fetchall()
-            if source_schema != backup_schema:
-                raise sqlite3.DatabaseError("agent state migration backup schema mismatch")
-        except Exception:
-            destination.close()
-            backup_path.unlink(missing_ok=True)
-            raise
-        destination.close()
-        return backup_path
 
     def _preflight_schema_read_only(self) -> None:
         deadline = time.monotonic() + self._SCHEMA_PREFLIGHT_TIMEOUT_SECONDS
@@ -544,29 +406,10 @@ class AgentStateStore:
                     try:
                         self._classify_schema(con)
                     except RuntimeError as exc:
-                        database_name = self.db_path.name
-                        if database_name.endswith(".sqlite3"):
-                            database_name = database_name[:-1]
-                        timestamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-                        recovery_path = self.db_path.with_name(
-                            f"{database_name}.schema-mismatch-{timestamp}-{uuid.uuid4().hex[:12]}.sqlite3"
-                        )
-                        try:
-                            recovery_path = self._verified_backup(
-                                con,
-                                destination_path=recovery_path,
-                            )
-                        except Exception as backup_error:
-                            raise DurableSchemaMismatchError(
-                                self.db_path,
-                                [str(exc)],
-                                None,
-                                str(backup_error),
-                            ) from exc
                         raise DurableSchemaMismatchError(
                             self.db_path,
                             [str(exc)],
-                            recovery_path,
+                            None,
                         ) from exc
             except RuntimeError:
                 raise
@@ -589,599 +432,100 @@ class AgentStateStore:
 
         event_columns = cls._columns(con, "agent_events")
         snapshot_columns = cls._columns(con, "agent_snapshots")
-        raw_objects = tuple(sorted(
-            (str(row[0]), str(row[1]), str(row[2]), " ".join(str(row[3] or "").split()).casefold())
-            for row in con.execute(
-                "SELECT type, name, tbl_name, sql FROM sqlite_master "
-                "WHERE (name NOT LIKE 'sqlite_%' OR name='sqlite_sequence') "
-                "AND type IN ('table','index','view','trigger')"
-            )
-        ))
+        cursor_columns = cls._columns(con, "agent_event_cursors")
         objects = []
-        for object_type, name, table, sql in raw_objects:
-            # Canonical sqlite_master SQL fingerprint covers column types, nullability,
-            # primary/foreign keys, checks, and full index predicates/expressions.
-            key = (object_type, name, table)
+        for object_type, name, table, sql_length, sql_prefix in con.execute(
+            "SELECT type, name, tbl_name, length(CAST(sql AS BLOB)), "
+            "substr(CAST(sql AS BLOB), 1, ?) FROM sqlite_master "
+            "WHERE (name NOT LIKE 'sqlite_%' OR name='sqlite_sequence') "
+            "AND type IN ('table','index','view','trigger') ORDER BY type, name",
+            (cls._SCHEMA_OBJECT_SQL_MAX_BYTES + 1,),
+        ):
+            if sql_length is not None and int(sql_length) > cls._SCHEMA_OBJECT_SQL_MAX_BYTES:
+                raise RuntimeError(
+                    f"unsupported agent_state schema definition exceeds "
+                    f"{cls._SCHEMA_OBJECT_SQL_MAX_BYTES} bytes: {object_type} {name}"
+                )
+            sql = bytes(sql_prefix).decode("utf-8") if sql_prefix is not None else ""
+            normalized_sql = " ".join(sql.split()).casefold()
+            key = (str(object_type), str(name), str(table))
             expected_hash = cls._EXPECTED_OBJECT_SQL_HASHES.get(key)
-            if key == ("table", "agent_schema_migrations", "agent_schema_migrations"):
-                expected_hash = cls._MIGRATION_HISTORY_SQL_HASH
-            if key == ("table", "agent_events", "agent_events") and version == 0:
-                if event_columns == cls._LEGACY_EVENT_COLUMNS:
-                    expected_hash = cls._LEGACY_EVENTS_SQL_HASH
-            if version == 0 and event_columns == cls._LEGACY_EVENT_COLUMNS:
-                expected_hash = cls._LEGACY_EVENT_INDEX_HASHES.get(key, expected_hash)
-            actual_hash = hashlib.sha256(sql.encode("utf-8")).hexdigest()
+            actual_hash = hashlib.sha256(normalized_sql.encode("utf-8")).hexdigest()
             if expected_hash is None:
-                raise RuntimeError(f"unsupported agent_state schema object: {object_type} {name}")
-            if (
-                actual_hash != expected_hash
-                and actual_hash not in cls._ALTERNATE_OBJECT_SQL_HASHES.get(key, ())
-            ):
-                raise RuntimeError(f"unsupported agent_state schema object definition: {object_type} {name}")
-            objects.append((object_type, name, table, sql))
+                raise RuntimeError(
+                    f"unsupported agent_state schema object: {object_type} {name}"
+                )
+            if actual_hash != expected_hash:
+                raise RuntimeError(
+                    f"unsupported agent_state schema object definition: {object_type} {name}"
+                )
+            objects.append((str(object_type), str(name), str(table), normalized_sql))
         objects = tuple(objects)
+        tables = {name for kind, name, _table, _sql in objects if kind == "table"}
 
-        tables = {name for object_type, name, _, _ in objects if object_type == "table"}
-
-        if version == cls._SCHEMA_VERSION:
-            if event_columns != cls._EVENT_COLUMNS or snapshot_columns != cls._SNAPSHOT_COLUMNS:
+        core_columns_present = bool(event_columns or snapshot_columns or cursor_columns)
+        if core_columns_present:
+            if version != cls._SCHEMA_VERSION:
+                raise RuntimeError("unsupported agent_state schema version for event tables")
+            if (
+                event_columns != cls._EVENT_COLUMNS
+                or snapshot_columns != cls._SNAPSHOT_COLUMNS
+                or cursor_columns != ["stream_id", "last_seq", "first_retained_seq"]
+            ):
                 raise RuntimeError("unsupported agent_state schema layout")
-            event_version_columns = cls._columns(con, "agent_event_schema_versions")
-            if event_version_columns == ["stream_id", "seq", "schema_version"]:
-                if "agent_schema_migrations" in tables:
-                    markers = [int(row[0]) for row in con.execute(
-                        "SELECT version FROM agent_schema_migrations ORDER BY version"
-                    )]
-                    if markers != [1]:
-                        raise RuntimeError("unsupported agent_state schema migration history")
-                layout = "current"
-            elif not event_version_columns:
-                layout = "current-unversioned"
-            else:
-                raise RuntimeError("unsupported agent_state schema layout")
-        else:
-            auxiliary_only_tables = {
-                "agent_state_migrations", "agent_state_schema_versions",
-                "leases", "lease_waits",
+            required = {
+                ("table", "agent_events", "agent_events"),
+                ("table", "agent_snapshots", "agent_snapshots"),
+                ("table", "agent_event_cursors", "agent_event_cursors"),
+                ("index", "idx_agent_events_created", "agent_events"),
+                ("index", "idx_agent_events_kind", "agent_events"),
+                ("index", "idx_agent_snapshots_stream", "agent_snapshots"),
             }
-            is_empty = (
-                not event_columns and not snapshot_columns
-                and tables.issubset(auxiliary_only_tables)
-            )
-            is_current_unversioned = (
-                version == 0
-                and event_columns == cls._EVENT_COLUMNS
-                and snapshot_columns == cls._SNAPSHOT_COLUMNS
-                and cls._columns(con, "agent_event_schema_versions")
-                == ["stream_id", "seq", "schema_version"]
-            )
-            if is_current_unversioned and "agent_schema_migrations" in tables:
-                markers = [int(row[0]) for row in con.execute(
-                    "SELECT version FROM agent_schema_migrations ORDER BY version"
-                )]
-                if markers != [1]:
-                    raise RuntimeError("unsupported agent_state schema migration history")
-            is_current_v0 = (
-                event_columns == cls._EVENT_COLUMNS
-                and snapshot_columns == cls._SNAPSHOT_COLUMNS
-                and "agent_schema_migrations" not in tables
-                and "agent_event_schema_versions" not in tables
-            )
-            is_historical_v0 = (
-                event_columns == cls._LEGACY_EVENT_COLUMNS
-                and snapshot_columns == cls._SNAPSHOT_COLUMNS
-                and cls._columns(con, "agent_schema_migrations")
-                == ["version", "applied_at", "description"]
-                and "agent_event_schema_versions" not in tables
-            )
-            if is_historical_v0:
-                markers = [int(row[0]) for row in con.execute(
-                    "SELECT version FROM agent_schema_migrations ORDER BY version"
-                )]
-                if markers != [1]:
-                    raise RuntimeError("unsupported agent_state schema migration history")
-            if is_empty:
-                layout = "empty"
-            elif is_current_unversioned:
-                # Existing current event metadata is preserved; _ensure_schema owns the v0->v1 backup/write.
-                layout = "current"
-            elif is_current_v0:
-                layout = "current-v0"
-            elif is_historical_v0:
-                layout = "historical-v0"
-            else:
-                raise RuntimeError("unsupported agent_state schema layout")
+            present = {(kind, name, table) for kind, name, table, _sql in objects}
+            missing = required - present
+            if missing:
+                detail = ", ".join(f"{kind} {name}" for kind, name, _ in sorted(missing))
+                raise RuntimeError(f"unsupported agent_state schema missing required schema objects: {detail}")
+        elif "agent_events" in tables or "agent_snapshots" in tables or "agent_event_cursors" in tables:
+            raise RuntimeError("unsupported agent_state schema layout")
 
-        # Module-owned tables and indexes are optional until their stores are used.
-        # Validate every object that is present above, but require only the core
-        # event schema here so partial subsystem initialization survives restart.
-        required_objects = {
-            ("table", "agent_events", "agent_events"),
-            ("table", "agent_snapshots", "agent_snapshots"),
-        }
-        migration_history = ("table", "agent_schema_migrations", "agent_schema_migrations")
-        event_versions = ("table", "agent_event_schema_versions", "agent_event_schema_versions")
-        if layout == "current":
-            required_objects.add(event_versions)
-        elif layout in {"current-v0", "current-unversioned"}:
-            pass
-        elif layout == "historical-v0":
-            required_objects.add(migration_history)
-        elif layout == "empty":
-            required_objects.clear()
+        if "agent_incidents" in tables:
+            incident_required = {
+                ("table", "agent_incidents", "agent_incidents"),
+                ("index", "idx_agent_incidents_fp", "agent_incidents"),
+                ("index", "idx_agent_incidents_lookup", "agent_incidents"),
+                ("index", "idx_agent_incidents_recent", "agent_incidents"),
+                ("index", "idx_agent_incidents_scope", "agent_incidents"),
+            }
+            present = {(kind, name, table) for kind, name, table, _sql in objects}
+            missing = incident_required - present
+            if missing:
+                detail = ", ".join(f"{kind} {name}" for kind, name, _ in sorted(missing))
+                raise RuntimeError(
+                    f"unsupported agent_state schema missing required schema objects: {detail}"
+                )
 
-        present_objects = {(object_type, name, table) for object_type, name, table, _ in objects}
         task_profile_tables = {
-            "agent_tasks_projection",
-            "agent_verification_receipts",
-            "agent_budgets",
-            "agent_change_intents",
-            "agent_outcomes",
+            "agent_tasks_projection", "agent_verification_receipts", "agent_budgets",
+            "agent_change_intents", "agent_outcomes",
         }
         has_task_events = bool(event_columns) and con.execute(
             "SELECT 1 FROM agent_events WHERE kind LIKE 'task.%' "
             "AND kind != 'task.updated' LIMIT 1"
         ).fetchone() is not None
-        if layout != "empty" and (bool(tables & task_profile_tables) or has_task_events):
-            required_objects.add(("table", "agent_tasks_projection", "agent_tasks_projection"))
-
-        missing_objects = sorted(required_objects - present_objects)
-        if missing_objects:
-            details_list = []
-            for object_type, name, _ in missing_objects:
-                if object_type == "table" and name == "agent_tasks_projection" and has_task_events:
-                    details_list.append("table agent_tasks_projection is missing while related events remain")
-                else:
-                    details_list.append(f"{object_type} {name}")
-            details = ", ".join(details_list)
-            raise RuntimeError(
-                f"unsupported agent_state schema missing required schema objects: {details}"
-            )
-
-        return (version, layout, event_columns, snapshot_columns, objects)
-
-    @staticmethod
-    def _is_pristine_auxiliary_database(con: sqlite3.Connection, schema: tuple[Any, ...]) -> bool:
-        """Recognize only an empty, already-classified auxiliary schema."""
-        version, layout, _event_columns, _snapshot_columns, objects = schema
-        if version != 0 or layout != "empty":
-            return False
-        tables = {name for kind, name, _table, _sql in objects if kind == "table"}
-        if not tables:
-            return not objects
-        if tables != {"leases", "lease_waits", "agent_state_schema_versions"}:
-            return False
-        markers = con.execute(
-            "SELECT component, version FROM agent_state_schema_versions ORDER BY component"
-        ).fetchall()
-        if markers != [("leases", 1)]:
-            return False
-        for table in ("leases", "lease_waits"):
-            if con.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone() is not None:
-                return False
-        return True
-
-    @classmethod
-    def _migrate_known_schema(cls, con: sqlite3.Connection, *, existed_before_open: bool) -> None:
-        """Migrate known v0 layouts only; callers preflight nonempty files read-only."""
-        initial = cls._classify_schema(con)
-        version, layout = initial[:2]
-        if layout == "current" and version == cls._SCHEMA_VERSION:
-            return
-
-        # Keep the caller contract, but back up every non-pristine schema,
-        # even when another process created the file after the initial stat.
-        pristine_auxiliary = cls._is_pristine_auxiliary_database(con, initial)
-        if not pristine_auxiliary:
-            baseline_data_version = int(con.execute("PRAGMA data_version").fetchone()[0])
-            cls._verified_backup(con)
-            after_backup = int(con.execute("PRAGMA data_version").fetchone()[0])
-            con.execute("BEGIN IMMEDIATE")
-            try:
-                locked = cls._classify_schema(con)
-            except Exception:
-                con.rollback()
-                raise
-            if locked[0] == cls._SCHEMA_VERSION:
-                con.rollback()
-                return
-            locked_data_version = int(con.execute("PRAGMA data_version").fetchone()[0])
-            if (
-                after_backup != baseline_data_version
-                or locked_data_version != after_backup
-                or locked != initial
-            ):
-                con.rollback()
-                raise RuntimeError("agent_state changed before migration; retry initialization")
-        else:
-            con.execute("BEGIN IMMEDIATE")
-            try:
-                locked = cls._classify_schema(con)
-            except Exception:
-                con.rollback()
-                raise
-            if locked[0] == cls._SCHEMA_VERSION:
-                con.rollback()
-                return
-            if locked != initial or not cls._is_pristine_auxiliary_database(con, locked):
-                con.rollback()
+        if tables & task_profile_tables or has_task_events:
+            if "agent_tasks_projection" not in tables:
                 raise RuntimeError(
-                    "agent_state changed before fresh schema initialization; retry initialization"
+                    "unsupported agent_state schema missing required schema objects: "
+                    "table agent_tasks_projection"
                 )
 
-        try:
-            con.execute("""
-                -- Sparse legacy overrides; current payload version is implicit.
-                CREATE TABLE IF NOT EXISTS agent_event_schema_versions (
-                    stream_id TEXT NOT NULL,
-                    seq INTEGER NOT NULL,
-                    schema_version INTEGER NOT NULL,
-                    PRIMARY KEY (stream_id, seq)
-                )
-            """)
-            if layout == "historical-v0":
-                con.execute("""
-                    CREATE TABLE agent_events_v1 (
-                        stream_id TEXT NOT NULL,
-                        seq INTEGER NOT NULL,
-                        event_id TEXT NOT NULL,
-                        kind TEXT NOT NULL,
-                        payload TEXT NOT NULL,
-                        idempotency_key TEXT NOT NULL,
-                        correlation_id TEXT NOT NULL,
-                        actor TEXT NOT NULL,
-                        created_at REAL NOT NULL,
-                        PRIMARY KEY (stream_id, seq),
-                        UNIQUE (stream_id, idempotency_key)
-                    )
-                """)
-                con.execute("""
-                    INSERT INTO agent_events_v1 (
-                        stream_id, seq, event_id, kind, payload, idempotency_key,
-                        correlation_id, actor, created_at
-                    ) SELECT stream_id, seq, event_id, kind, payload, idempotency_key,
-                        correlation_id, actor, created_at FROM agent_events
-                """)
-                con.execute("""
-                    INSERT INTO agent_event_schema_versions (stream_id, seq, schema_version)
-                    SELECT stream_id, seq, schema_version FROM agent_events
-                    WHERE schema_version != ?
-                """, (cls._CURRENT_EVENT_PAYLOAD_VERSION,))
-                con.execute("DROP TABLE agent_events")
-                con.execute("""
-                    CREATE TABLE agent_events (
-                        stream_id TEXT NOT NULL,
-                        seq INTEGER NOT NULL,
-                        event_id TEXT NOT NULL,
-                        kind TEXT NOT NULL,
-                        payload TEXT NOT NULL,
-                        idempotency_key TEXT NOT NULL,
-                        correlation_id TEXT NOT NULL,
-                        actor TEXT NOT NULL,
-                        created_at REAL NOT NULL,
-                        PRIMARY KEY (stream_id, seq),
-                        UNIQUE (stream_id, idempotency_key)
-                    )
-                """)
-                con.execute("""
-                    INSERT INTO agent_events (
-                        stream_id, seq, event_id, kind, payload, idempotency_key,
-                        correlation_id, actor, created_at
-                    ) SELECT stream_id, seq, event_id, kind, payload, idempotency_key,
-                        correlation_id, actor, created_at FROM agent_events_v1
-                """)
-                con.execute("DROP TABLE agent_events_v1")
-            elif layout == "empty":
-                con.execute("""
-                    CREATE TABLE IF NOT EXISTS agent_events (
-                        stream_id TEXT NOT NULL,
-                        seq INTEGER NOT NULL,
-                        event_id TEXT NOT NULL,
-                        kind TEXT NOT NULL,
-                        payload TEXT NOT NULL,
-                        idempotency_key TEXT NOT NULL,
-                        correlation_id TEXT NOT NULL,
-                        actor TEXT NOT NULL,
-                        created_at REAL NOT NULL,
-                        PRIMARY KEY (stream_id, seq),
-                        UNIQUE (stream_id, idempotency_key)
-                    )
-                """)
-                con.execute("""
-                    CREATE TABLE IF NOT EXISTS agent_snapshots (
-                        snapshot_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        stream_id TEXT NOT NULL,
-                        seq INTEGER NOT NULL,
-                        state TEXT NOT NULL,
-                        created_at REAL NOT NULL
-                    )
-                """)
-            con.execute("CREATE INDEX IF NOT EXISTS idx_agent_events_created ON agent_events (created_at)")
-            con.execute("CREATE INDEX IF NOT EXISTS idx_agent_events_kind ON agent_events (kind)")
-            con.execute("CREATE INDEX IF NOT EXISTS idx_agent_snapshots_stream ON agent_snapshots (stream_id, seq DESC)")
-        except Exception:
-            con.rollback()
-            raise
+        layout = "current" if core_columns_present else "empty"
+        return (version, layout, event_columns, snapshot_columns, objects)
 
     @staticmethod
     def _columns(con: sqlite3.Connection, table: str) -> list[str]:
         return [str(row[1]) for row in con.execute(f'PRAGMA table_info("{table}")')]
-
-    @classmethod
-    def _schema_signature(cls, con: sqlite3.Connection) -> tuple[tuple[str, str, str, str], ...]:
-        return tuple(sorted(
-            (str(row[0]), str(row[1]), str(row[2]), " ".join(str(row[3] or "").split()).casefold())
-            for row in con.execute(
-                "SELECT type, name, tbl_name, sql FROM sqlite_master "
-                "WHERE (name NOT LIKE 'sqlite_%' OR name='sqlite_sequence') "
-                "AND type IN ('table','index','view','trigger')"
-            )
-        ))
-
-    @staticmethod
-    def _hash_part(digest: Any, tag: bytes, value: bytes) -> None:
-        digest.update(tag)
-        digest.update(len(value).to_bytes(8, "big"))
-        digest.update(value)
-
-    @classmethod
-    def _content_fingerprint(
-        cls,
-        con: sqlite3.Connection,
-        check_deadline: Any = lambda: None,
-    ) -> tuple[tuple[tuple[str, int], ...], str]:
-        digest = hashlib.sha256()
-        row_counts = []
-        tables = [str(row[0]) for row in con.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' "
-            "AND (name NOT LIKE 'sqlite_%' OR name='sqlite_sequence') ORDER BY name"
-        )]
-        for table in tables:
-            check_deadline()
-            quoted = table.replace('"', '""')
-            columns = [str(row[1]) for row in con.execute(f'PRAGMA table_info("{quoted}")')]
-            cls._hash_part(digest, b"T", table.encode("utf-8"))
-            for column in columns:
-                cls._hash_part(digest, b"C", column.encode("utf-8"))
-            order_by = ", ".join(f'"{column.replace(chr(34), chr(34) * 2)}"' for column in columns)
-            query = f'SELECT * FROM "{quoted}" ORDER BY {order_by}' if order_by else f'SELECT * FROM "{quoted}"'
-            row_count = 0
-            for row in con.execute(query):
-                check_deadline()
-                row_count += 1
-                digest.update(b"R")
-                for value in row:
-                    if value is None:
-                        cls._hash_part(digest, b"N", b"")
-                    elif isinstance(value, bytes):
-                        cls._hash_part(digest, b"B", value)
-                    elif isinstance(value, float):
-                        cls._hash_part(digest, b"F", value.hex().encode("ascii"))
-                    elif isinstance(value, int):
-                        cls._hash_part(digest, b"I", str(value).encode("ascii"))
-                    else:
-                        cls._hash_part(digest, b"S", str(value).encode("utf-8", "surrogatepass"))
-            cls._hash_part(digest, b"Q", str(row_count).encode("ascii"))
-            row_counts.append((table, row_count))
-            digest.update(b"E")
-        return tuple(row_counts), digest.hexdigest()
-
-    @classmethod
-    def _verify_backup(
-        cls,
-        source: sqlite3.Connection,
-        backup: sqlite3.Connection,
-        *,
-        deadline: float | None = None,
-    ) -> None:
-        deadline = deadline if deadline is not None else time.monotonic() + cls._MIGRATION_BACKUP_TIMEOUT_SECONDS
-
-        def check_deadline() -> None:
-            if time.monotonic() >= deadline:
-                raise TimeoutError("agent_state migration backup time limit exceeded")
-
-        def sql_progress() -> int:
-            return 1 if time.monotonic() >= deadline else 0
-
-        remaining_ms = max(1, min(10, int(max(0.001, deadline - time.monotonic()) * 1000)))
-        source.execute(f"PRAGMA busy_timeout={remaining_ms}")
-        backup.execute(f"PRAGMA busy_timeout={remaining_ms}")
-        source.set_progress_handler(sql_progress, 100)
-        backup.set_progress_handler(sql_progress, 100)
-        try:
-            check_deadline()
-            integrity_rows = [str(row[0]) for row in backup.execute("PRAGMA integrity_check")]
-            check_deadline()
-            if integrity_rows != ["ok"]:
-                raise RuntimeError(
-                    "agent_state migration backup failed integrity check: "
-                    + "; ".join(integrity_rows[:8])
-                )
-            if int(backup.execute("PRAGMA user_version").fetchone()[0]) != int(
-                source.execute("PRAGMA user_version").fetchone()[0]
-            ):
-                raise RuntimeError("agent_state migration backup version mismatch")
-            if cls._schema_signature(source) != cls._schema_signature(backup):
-                raise RuntimeError("agent_state migration backup schema definition mismatch")
-            source_counts, source_hash = cls._content_fingerprint(source, check_deadline)
-            backup_counts, backup_hash = cls._content_fingerprint(backup, check_deadline)
-            if source_counts != backup_counts:
-                raise RuntimeError("agent_state migration backup table row count mismatch")
-            if source_hash != backup_hash:
-                raise RuntimeError("agent_state migration backup content hash mismatch")
-            check_deadline()
-        except sqlite3.OperationalError as exc:
-            if time.monotonic() >= deadline or "locked" in str(exc).casefold() or "busy" in str(exc).casefold():
-                raise TimeoutError("agent_state migration backup time limit exceeded") from exc
-            raise
-        finally:
-            source.set_progress_handler(None, 0)
-            backup.set_progress_handler(None, 0)
-
-    @staticmethod
-    def _backup_path_matches(path: Path, identity: tuple[int, int]) -> bool:
-        try:
-            info = path.lstat()
-        except FileNotFoundError:
-            return False
-        return stat.S_ISREG(info.st_mode) and (info.st_dev, info.st_ino) == identity
-
-    @classmethod
-    def _reserve_backup_destination(cls, path: Path) -> tuple[int, int]:
-        for suffix in ("-wal", "-shm", "-journal"):
-            sidecar = Path(f"{path}{suffix}")
-            try:
-                sidecar.lstat()
-            except FileNotFoundError:
-                continue
-            raise FileExistsError(f"agent_state backup sidecar already exists: {sidecar}")
-
-        flags = os.O_CREAT | os.O_EXCL | os.O_RDWR
-        flags |= getattr(os, "O_BINARY", 0)
-        flags |= getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(path, flags, 0o600)
-        info = os.fstat(descriptor)
-        identity = (info.st_dev, info.st_ino)
-        try:
-            if os.name == "nt":
-                from .process_utils import run_hidden
-
-                try:
-                    sid = _windows_process_user_sid()
-                    acl_command = ["icacls", str(path), "/inheritance:r", "/grant:r", f"*{sid}:(F)"]
-                    try:
-                        run_hidden(
-                            acl_command,
-                            check=True,
-                            capture_output=True,
-                            text=True,
-                            timeout=1.0,
-                        )
-                    except subprocess.TimeoutExpired:
-                        # ACL changes are idempotent; one bounded retry absorbs
-                        # transient Windows process-start and filesystem latency.
-                        run_hidden(
-                            acl_command,
-                            check=True,
-                            capture_output=True,
-                            text=True,
-                            timeout=1.0,
-                        )
-                except (OSError, subprocess.SubprocessError, UnicodeError) as exc:
-                    raise PermissionError("agent_state backup permissions could not be secured") from exc
-            else:
-                os.fchmod(descriptor, 0o600)
-                if stat.S_IMODE(os.fstat(descriptor).st_mode) != 0o600:
-                    raise PermissionError("agent_state backup permissions are not private")
-
-            if not cls._backup_path_matches(path, identity):
-                raise RuntimeError("agent_state backup destination changed during secure creation")
-            return identity
-        except BaseException:
-            os.close(descriptor)
-            descriptor = -1
-            try:
-                if cls._backup_path_matches(path, identity):
-                    path.unlink()
-            except OSError:
-                pass
-            raise
-        finally:
-            if descriptor >= 0:
-                os.close(descriptor)
-
-    @classmethod
-    def _remove_owned_backup_artifacts(
-        cls,
-        path: Path,
-        identity: tuple[int, int],
-    ) -> None:
-        if not cls._backup_path_matches(path, identity):
-            return
-        for suffix in ("-wal", "-shm", "-journal"):
-            sidecar = Path(f"{path}{suffix}")
-            try:
-                info = sidecar.lstat()
-            except FileNotFoundError:
-                continue
-            if stat.S_ISREG(info.st_mode):
-                sidecar.unlink()
-        if cls._backup_path_matches(path, identity):
-            path.unlink()
-
-    @classmethod
-    def _verified_backup(
-        cls,
-        source: sqlite3.Connection,
-        *,
-        destination_path: Path | None = None,
-    ) -> Path:
-        # sqlite3_backup cannot copy from its own active write transaction.
-        # Never commit/rollback caller-owned durable changes to make it proceed.
-        if source.in_transaction:
-            raise RuntimeError("agent_state backup requires a source without an active transaction")
-        timeout = float(cls._MIGRATION_BACKUP_TIMEOUT_SECONDS)
-        deadline = time.monotonic() + timeout
-        if timeout <= 0:
-            raise TimeoutError("agent_state migration backup time limit exceeded")
-
-        def check_deadline(stage: str = "prepare", status: int | None = None) -> None:
-            if time.monotonic() >= deadline:
-                raise TimeoutError(
-                    "agent_state migration backup time limit exceeded "
-                    f"(stage={stage} sqlite_status={status} source_in_transaction={source.in_transaction})"
-                )
-
-        def backup_progress(_status: int, _remaining: int, _total: int) -> None:
-            check_deadline("copy", _status)
-
-        remaining_ms = max(1, min(10, int(timeout * 1000)))
-        source.set_progress_handler(lambda: 1 if time.monotonic() >= deadline else 0, 100)
-        backup_path: Path | None = None
-        backup: sqlite3.Connection | None = None
-        backup_identity: tuple[int, int] | None = None
-        verified = False
-        try:
-            source.execute(f"PRAGMA busy_timeout={remaining_ms}")
-            check_deadline()
-            db_path = str(source.execute("PRAGMA database_list").fetchone()[2])
-            backup_path = destination_path or Path(
-                f"{db_path}.migration-v0-v1-{uuid.uuid4().hex}.bak"
-            )
-            backup_identity = cls._reserve_backup_destination(backup_path)
-            check_deadline("secure_destination")
-            backup = sqlite3.connect(backup_path, timeout=min(0.1, timeout))
-            if not cls._backup_path_matches(backup_path, backup_identity):
-                raise RuntimeError("agent_state backup destination changed before SQLite opened it")
-            backup.execute(f"PRAGMA busy_timeout={remaining_ms}")
-            source.backup(
-                backup,
-                pages=cls._MIGRATION_BACKUP_PAGES,
-                progress=backup_progress,
-                sleep=min(0.002, timeout),
-            )
-            check_deadline("copy_complete")
-            backup.commit()
-            cls._verify_backup(source, backup, deadline=deadline)
-            verified = True
-        except sqlite3.OperationalError as exc:
-            if (
-                time.monotonic() >= deadline
-                or "locked" in str(exc).casefold()
-                or "busy" in str(exc).casefold()
-            ):
-                raise TimeoutError("agent_state migration backup time limit exceeded") from exc
-            raise
-        finally:
-            source.set_progress_handler(None, 0)
-            if backup is not None:
-                backup.close()
-            if not verified and backup_path is not None and backup_identity is not None:
-                cls._remove_owned_backup_artifacts(backup_path, backup_identity)
-        if backup_path is None:
-            raise RuntimeError("agent_state migration backup path unavailable")
-        return backup_path
-
 
     def append_in_transaction(
         self,
@@ -1661,24 +1005,9 @@ class AgentStateStore:
 
 
     def events(self, stream_id: str, after_seq: int = 0, limit: int = 1000) -> list[AgentEvent]:
-        # Keep initialization/migration failures visible to the state-store caller.
-        # event_page deliberately converts read failures to a bounded API envelope;
-        # performing schema setup first preserves the original migration error and
-        # lets callers safely retry without mistaking it for an empty/unavailable page.
+        # Initialize first so durable-schema failures remain typed and actionable.
         if self.enabled and self.db_path.exists():
-            try:
-                self._ensure_schema()
-            except DurableSchemaMismatchError as exc:
-                # Preserve the established opaque response for this legacy layout;
-                # other durable-schema failures retain their actionable diagnosis.
-                mismatch = " ".join(exc.mismatches)
-                if mismatch == (
-                    "unsupported agent_state schema object definition: table agent_events"
-                ):
-                    raise RuntimeError(
-                        "event_page_unavailable: Event page could not be read."
-                    ) from None
-                raise
+            self._ensure_schema()
         page = self.event_page(stream_id, after_seq=after_seq, limit=limit)
         if page["success"] is not True:
             error = page["error"]
@@ -1786,19 +1115,11 @@ class AgentStateStore:
                     ).fetchone()
                     if first_recent and first_recent[0] is not None:
                         first_retained_seq = int(first_recent[0])
-                        con.execute(
-                            "DELETE FROM agent_event_schema_versions WHERE stream_id = ? AND seq < ?",
-                            (clean_stream, first_retained_seq),
-                        )
                         cur_ev = con.execute(
                             "DELETE FROM agent_events WHERE stream_id = ? AND seq < ?",
                             (clean_stream, first_retained_seq),
                         )
                     else:
-                        con.execute(
-                            "DELETE FROM agent_event_schema_versions WHERE stream_id = ?",
-                            (clean_stream,),
-                        )
                         cur_ev = con.execute(
                             "DELETE FROM agent_events WHERE stream_id = ?",
                             (clean_stream,),
