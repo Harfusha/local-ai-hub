@@ -3204,8 +3204,7 @@ def _local_ai_repo_impl(
         if action == "generate_types" and diff:
             operation_inputs["diff"] = diff
         validation_error = validate_operation_arguments(
-            "local_ai_repo", action,
-            _repo_validation_arguments(action, operation_inputs), features=FEATURES,
+            "local_ai_repo", action, operation_inputs, features=FEATURES,
         )
         if validation_error is not None:
             return contract_error(validation_error)
