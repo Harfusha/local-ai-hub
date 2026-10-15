@@ -5936,6 +5936,7 @@ def test_{sym}_regression_edge_cases():
                 errors.append(code)
 
         def _scan_line(raw_line: bytes, rel: str, line_no: int) -> None:
+            nonlocal complete
             line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
             is_test = _is_test_file(rel)
             for rule_name, label, pattern, severity in patterns:
@@ -6110,8 +6111,15 @@ def test_{sym}_regression_edge_cases():
                         if len(findings) >= _SECRET_SCAN_MAX_FINDINGS:
                             break
                     after = os.fstat(source.fileno())
-                    if (opened.st_dev, opened.st_ino) != (after.st_dev, after.st_ino):
-                        _record_error("file_identity_changed_during_scan")
+                    opened_state = (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns)
+                    after_state = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+                    if opened_state != after_state:
+                        _record_error("file_changed_during_scan")
+                    current_path = candidate.resolve(strict=True)
+                    current_path.relative_to(scan_root)
+                    current = os.stat(candidate, follow_symlinks=False)
+                    if (current.st_dev, current.st_ino) != (after.st_dev, after.st_ino):
+                        _record_error("file_path_changed_during_scan")
                     if after.st_size > _SECRET_SCAN_MAX_FILE_BYTES:
                         limits_hit.append("file_bytes")
                         complete = False
