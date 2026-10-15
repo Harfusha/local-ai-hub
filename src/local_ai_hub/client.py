@@ -1520,6 +1520,15 @@ class HubClient:
                 "error": f"unknown coord action '{action}'",
             }
         act = action
+        if act in {"context_compile", "verify_receipt", "verify_completion", "verify_export"}:
+            from .operation_contracts import validate_operation_arguments
+
+            validation_error = validate_operation_arguments("local_ai_coord", act, dict(kwargs))
+            if validation_error:
+                return {
+                    "success": False, "status_code": 400, "terminal": True, "retryable": False,
+                    "error": validation_error,
+                }
         if act in {"ask", "answer"}:
             payload = {
                 "action": act,
@@ -1567,36 +1576,39 @@ class HubClient:
                 "state_revision": kwargs.get("state_revision", kwargs.get("revision", "")),
             })
         if act == "context_compile":
-            return self.post("/api/agent-state/context", {
+            payload = dict(kwargs)
+            max_tokens = payload.pop("max_tokens", 4000)
+            paths = payload.pop("paths", [])
+            payload.update({
                 "action": "compile",
-                "task_id": kwargs.get("task_id") or kwargs.get("query") or kwargs.get("task") or "",
-                "token_budget": kwargs.get("token_budget") or kwargs.get("max_tokens") or 4000,
-                "changed_paths": kwargs.get("changed_paths") or kwargs.get("paths") or [],
+                "token_budget": max_tokens,
+                "changed_paths": paths,
                 "root": kwargs.get("root", "."),
             })
+            return self.post("/api/agent-state/context", {
+                **payload,
+            })
         if act == "verify_receipt":
-            receipt = kwargs.get("receipt") or {
-                "task_id": kwargs.get("task_id", ""),
-                "criterion": kwargs.get("criterion", kwargs.get("key", "")),
-                "passed": kwargs.get("passed", True),
-            }
-            if not str(receipt.get("task_id", "")).strip() or not str(receipt.get("criterion", "")).strip():
-                return {
-                    "success": False,
-                    "terminal": True,
-                    "retryable": False,
-                    "error": "verify_receipt requires task_id and criterion",
-                }
             return self.post("/api/agent-state/verification", {
                 "action": "receipt",
-                "receipt": receipt,
+                "receipt": kwargs["receipt"],
                 "root": kwargs.get("root", "."),
             })
         if act == "verify_completion":
-            return self.post("/api/agent-state/verification", {
+            payload = {
                 "action": "completion",
-                "task_id": kwargs.get("task_id") or kwargs.get("query") or kwargs.get("task") or "",
+                "task_id": kwargs["task_id"],
                 "root": kwargs.get("root", "."),
+            }
+            if "repository_revision" in kwargs:
+                payload["repository_revision"] = kwargs["repository_revision"]
+            return self.post("/api/agent-state/verification", payload)
+        if act == "verify_export":
+            return self.post("/api/agent-state/verification", {
+                "action": "export",
+                "task_id": kwargs["task_id"],
+                "root": kwargs.get("root", "."),
+                "format": kwargs.get("format", "markdown"),
             })
         if act in {"negative_knowledge_record", "negative_knowledge_find"}:
             sub_act = "record" if act == "negative_knowledge_record" else "find"
