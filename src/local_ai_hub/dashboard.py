@@ -678,25 +678,27 @@ document.head.insertAdjacentHTML('beforeend','<style>.vision-review-modal{width:
 const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])), escJs=v=>esc(JSON.stringify(v));
 const n=v=>Number(v||0).toLocaleString(), ms=v=>{v=Number(v||0);return v>=1000?(v/1000).toFixed(v>=10000?1:2)+' s':Math.round(v)+' ms'}, durSec=s=>{s=Number(s||0);if(s<60)return Math.round(s)+'s';if(s<3600)return Math.floor(s/60)+'m '+Math.round(s%60)+'s';if(s<86400)return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';return Math.floor(s/86400)+'d '+Math.floor((s%86400)/3600)+'h'}, age=msv=>durSec(Number(msv||0)/1000);
 
-function dashboardPreprocessingHealth(preprocessing={},dependencies={}){
+function dashboardPreprocessingHealth(preprocessing={},dependencies={},features={}){
+  const disabled=features.preprocessing===false||preprocessing.enabled===false;
+  if(disabled)return {available:true,statsAvailable:true,errorCount:0,disabled:true};
   const unavailable=preprocessing.success===false||dependencies['preprocessing.status']?.degraded===true||!Array.isArray(preprocessing.projects);
   const statsAvailable=dependencies['preprocessing.stats']?.degraded!==true;
   if(unavailable)return {available:false,statsAvailable,errorCount:null};
   const errorCount=preprocessing.projects.filter(project=>String(project?.status||'').toLowerCase()==='error').length;
-  return {available:true,statsAvailable,errorCount};
+  return {available:true,statsAvailable,errorCount,disabled:false};
 }
 
 function dashboardHealthBadge(status={}){
   const dependencies=status.dependency_status&&typeof status.dependency_status==='object'&&!Array.isArray(status.dependency_status)?Object.entries(status.dependency_status).filter(([name])=>name!=='telemetry.summary').map(([,value])=>value):[];
   const degradedCount=dependencies.filter(item=>item&&item.degraded===true).length;
-  const preprocessing=dashboardPreprocessingHealth(status.preprocessing||{},status.dependency_status||{});
+  const preprocessing=dashboardPreprocessingHealth(status.preprocessing||{},status.dependency_status||{},status.features||{});
   const preprocessingWarning=!preprocessing.available||!preprocessing.statsAvailable||preprocessing.errorCount>0;
   const telemetryOnlyFailure=status.dependency_status?.['telemetry.summary']?.degraded&&degradedCount===0;
   const degraded=(status.success===false&&!telemetryOnlyFailure)||degradedCount>0;
   const ollamaState=status.ollama_status||((status.ollama_online==null)?'unknown':status.ollama_online?'online':'offline');
   const className=status.hub_online?(degraded||ollamaState!=='online'||preprocessingWarning?'warn-t':'ok'):'bad-t';
   const degradedLabel=degradedCount?` / ${String(degradedCount)} degraded check${degradedCount===1?'':'s'}`:degraded?' / status degraded':'';
-  const preprocessingLabel=!preprocessing.available?' / preprocessing status unknown':(!preprocessing.statsAvailable?' / preprocessing stats unknown':'')+(preprocessing.errorCount?` / ${n(preprocessing.errorCount)} preprocessing project error${preprocessing.errorCount===1?'':'s'}`:'');
+  const preprocessingLabel=preprocessing.disabled?' / preprocessing disabled':!preprocessing.available?' / preprocessing status unknown':(!preprocessing.statsAvailable?' / preprocessing stats unknown':'')+(preprocessing.errorCount?` / ${n(preprocessing.errorCount)} preprocessing project error${preprocessing.errorCount===1?'':'s'}`:'');
   return {className,degradedCount,degradedLabel:degradedLabel+preprocessingLabel,preprocessing};
 }
 
@@ -753,14 +755,15 @@ function renderTelemetryMetrics(observability={}){
   if(breakdown)breakdown.textContent+='\nUSD input rate: $'+Number(observability.cloud_input_token_cost_usd_per_million??observability.cloud_token_cost_usd_per_million??0).toFixed(2)+' / 1M\nUSD output rate: $'+Number(observability.cloud_output_token_cost_usd_per_million??observability.cloud_token_cost_usd_per_million??0).toFixed(2)+' / 1M';
 }
 
-function preprocessingSummary(preprocessing={},dependencies={}){
+function preprocessingSummary(preprocessing={},dependencies={},features={}){
+  if(features.preprocessing===false||preprocessing.enabled===false)return {available:true,statsAvailable:true,disabled:true,text:'Preprocessing disabled'};
   const available=preprocessing.success!==false&&Array.isArray(preprocessing.projects)&&dependencies['preprocessing.status']?.degraded!==true;
   const count=value=>Math.max(0,Number(value)||0).toLocaleString();
   const projects=available?preprocessing.projects:[];
   const running=projects.filter(project=>String(project?.status||'').toLowerCase()==='running').length;
   const slots=Number.isFinite(Number(preprocessing.max_preprocessing_projects))&&preprocessing.max_preprocessing_projects!=null?count(preprocessing.max_preprocessing_projects):'unknown';
   const statsAvailable=dependencies['preprocessing.stats']?.degraded!==true;
-  return {available,statsAvailable,text:available?count(projects.length)+' registered · '+count(running)+' currently running · '+(statsAvailable?slots:'unknown')+' concurrent slots':'Preprocessing status unknown'};
+  return {available,statsAvailable,disabled:false,text:available?count(projects.length)+' registered · '+count(running)+' currently running · '+(statsAvailable?slots:'unknown')+' concurrent slots':'Preprocessing status unknown'};
 }
 
 function telemetryPeriod(observability={}){return observability.scope==='window'?'Last 30 days':'Since restart';}
@@ -789,12 +792,24 @@ function dashboardHealth(snapshot={}){
   const failedChecks=Object.entries(snapshot.dependency_status||{}).filter(([name,value])=>name!=='telemetry.summary'&&value?.degraded).map(([name])=>name);
   if(failedChecks.length)signals.push('unavailable checks: '+failedChecks.join(', '));
   const preprocessingDeps=snapshot.dependency_status||current.dependency_status||{};
+  const features=snapshot.features||current.features||{};
   const preprocessingAdvertised=Object.hasOwn(snapshot,'preprocessing')||Object.hasOwn(current,'preprocessing')||Object.hasOwn(preprocessingDeps,'preprocessing.status')||Object.hasOwn(preprocessingDeps,'preprocessing.stats');
   if(preprocessingAdvertised){
-    const preprocessing=dashboardPreprocessingHealth(snapshot.preprocessing||current.preprocessing||{},preprocessingDeps);
-    if(!preprocessing.available)signals.push('preprocessing project status is unknown');
-    if(!preprocessing.statsAvailable)signals.push('preprocessing statistics are unavailable');
-    if(preprocessing.errorCount)signals.push(`${preprocessing.errorCount} current preprocessing project${preprocessing.errorCount===1?'':'s'} report error`);
+    const preprocessing=dashboardPreprocessingHealth(snapshot.preprocessing||current.preprocessing||{},preprocessingDeps,features);
+    if(!preprocessing.disabled){
+      if(!preprocessing.available)signals.push('preprocessing project status is unknown');
+      if(!preprocessing.statsAvailable)signals.push('preprocessing statistics are unavailable');
+      if(preprocessing.errorCount)signals.push(`${preprocessing.errorCount} current preprocessing project${preprocessing.errorCount===1?'':'s'} report error`);
+    }
+  }
+  if(snapshot.observability&&typeof snapshot.observability==='object'){
+    const telemetry=dashboardTelemetryState(snapshot.observability);
+    if(!telemetry.available)signals.push('telemetry data is unavailable or stale');
+    else if(!telemetry.activityObserved)signals.push('telemetry writer activity is unobserved');
+    else if(!telemetry.accountingBalanced)signals.push('telemetry writer accounting is unbalanced');
+    else if(telemetry.pending)signals.push(`telemetry writer has ${telemetry.pending} pending record${telemetry.pending===1?'':'s'}`);
+    else if(telemetry.summaryCacheStale)signals.push('telemetry summary is stale');
+    else if(!telemetry.complete)signals.push('telemetry coverage is incomplete');
   }
   const actionTab=openIssues||count(current.blocked_requests)?'work':'reliability';
   const actionLabel=actionTab==='work'?'Open queue and requests':'Open reliability details';
@@ -4278,7 +4293,7 @@ function groupedProjects(items){
 }
 
 function renderProjects(items){
-  const status=preprocessingSummary(last?.preprocessing||{},last?.dependency_status||{});
+  const status=preprocessingSummary(last?.preprocessing||{},last?.dependency_status||{},last?.features||{});
   if(!status.available){
     if($('projectSummary'))$('projectSummary').textContent='Project inventory unavailable';
     rows('projectsBody',[],()=>'',5,'Project status unavailable. Refresh status to retry.');
@@ -4531,7 +4546,7 @@ function render(s){
   if($('agentStateCard'))$('agentStateCard').onclick=()=>switchTab('agentos');
 
   $('prep').textContent=(p.paused?'paused':(p.processing_projects?'active':'idle'))+' · '+n(p.steps)+' steps';
-  const prepStatus=preprocessingSummary(p,s.dependency_status||{});
+  const prepStatus=preprocessingSummary(p,s.dependency_status||{},s.features||{});
   $('prepSub').textContent=prepStatus.text+(prepStatus.available?' · card reuse '+ingReuse+'% · query hit '+qHitRate+'%':'');
   if(!prepStatus.available)$('prep').textContent='Unavailable';
 
@@ -4792,7 +4807,7 @@ document.addEventListener('visibilitychange',()=>{
 });
 // ── Bundles ────────────────────────────────────────────────────────────────────
 function renderBundles(s){
-  if(!preprocessingSummary(s?.preprocessing||{}).available){$('bundleExportTable').innerHTML='<tr><td colspan="4" class="empty warn-t">Project inventory unavailable. Export readiness cannot be verified.</td></tr>';return;}
+  if(!preprocessingSummary(s?.preprocessing||{},s?.dependency_status||{},s?.features||{}).available){$('bundleExportTable').innerHTML='<tr><td colspan="4" class="empty warn-t">Project inventory unavailable. Export readiness cannot be verified.</td></tr>';return;}
   const projs=groupedProjects(s?.preprocessing?.projects||[]);
   $('bundleExportTable').innerHTML=projs.length?projs.map(p=>{
     const state=projectState(p),progress=Math.round(Number(p.overall_progress_pct||0)),ready=state==='ready';
