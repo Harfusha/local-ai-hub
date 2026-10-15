@@ -63,7 +63,7 @@ def test_completion_revision_pin_http_contract(
     )
     app = LocalAIApp(str(config))
     task_id = "completion-pin-task"
-    tenant = "completion-pin-agent"
+    tenant = "api-token-default"
     app.agent_tasks.create(
         GoalContract(goal="test pinned completion", acceptance_criteria=("test",)),
         ScopeContext(repository_id=str(project_root), task_id=task_id, session_id=tenant),
