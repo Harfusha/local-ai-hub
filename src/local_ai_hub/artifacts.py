@@ -22,6 +22,7 @@ DEFAULT_MAX_BINARY_BYTES = 4_000_000
 DEFAULT_MAX_JSON_BYTES = 4_000_000
 _ARTIFACT_TABLE = "artifacts"
 _ARTIFACT_V2_TABLE = "artifacts_v2"
+_ARTIFACT_PAGING_TABLE = "artifact_paging_metadata"
 MAX_ARTIFACT_SLICES = 16
 MAX_ARTIFACT_SLICE_CHARS = 50_000
 _ARTIFACT_MIGRATION_BACKUP_SUFFIX = ".pre-tenant-identity.bak"
@@ -109,19 +110,11 @@ class _ArtifactBatch:
         section_names = self._store._section_names(text)
         page_text, nul_mask = self._store._page_text_metadata(text)
         self._connection.execute(
-            f"INSERT OR REPLACE INTO {self._store._table}(artifact_id, created_at, tenant, tenant_identity, kind, text, char_count, section_names, page_text, nul_mask) VALUES(?,?,?,?,?,?,?,?,?,?)",
-            (
-                artifact_id,
-                time.time(),
-                self._tenant_identity,
-                self._tenant_identity,
-                kind,
-                text,
-                len(text),
-                json.dumps(section_names, ensure_ascii=False, separators=(",", ":")),
-                page_text,
-                nul_mask,
-            ),
+            f"INSERT OR REPLACE INTO {self._store._table}(artifact_id, created_at, tenant, tenant_identity, kind, text) VALUES(?,?,?,?,?,?)",
+            (artifact_id, time.time(), self._tenant_identity, self._tenant_identity, kind, text),
+        )
+        self._store._write_paging_metadata(
+            self._connection, artifact_id, text, section_names, page_text, nul_mask,
         )
         return artifact_id
 
@@ -158,6 +151,9 @@ class _ArtifactBatch:
             "size_bytes": len(data),
             "checksum": checksum,
         }
+        self._connection.execute(
+            f"DELETE FROM {_ARTIFACT_PAGING_TABLE} WHERE artifact_id=?", (artifact_id,),
+        )
         self._connection.execute(
             f"""INSERT OR REPLACE INTO {self._store._table}(
                 artifact_id, created_at, tenant, tenant_identity, kind, text, mime_type,
@@ -210,41 +206,52 @@ class ArtifactStore:
 
     def _ensure_paging_metadata(self, con: sqlite3.Connection) -> None:
         table = self._table
-        columns = {str(row[1]) for row in con.execute(f"PRAGMA table_info({table})")}
-        if "char_count" not in columns:
-            con.execute(f"ALTER TABLE {table} ADD COLUMN char_count INTEGER")
-        if "section_names" not in columns:
-            con.execute(f"ALTER TABLE {table} ADD COLUMN section_names TEXT")
-        if "page_text" not in columns:
-            con.execute(f"ALTER TABLE {table} ADD COLUMN page_text TEXT")
-        if "nul_mask" not in columns:
-            con.execute(f"ALTER TABLE {table} ADD COLUMN nul_mask BLOB")
-
+        con.execute(
+            f"""CREATE TABLE IF NOT EXISTS {_ARTIFACT_PAGING_TABLE} (
+                artifact_id TEXT PRIMARY KEY,
+                char_count INTEGER NOT NULL,
+                section_names TEXT NOT NULL,
+                page_text TEXT,
+                nul_mask BLOB
+            )"""
+        )
         cutoff = time.time() - self.ttl_seconds
-        last_rowid = 0
-        while True:
-            row = con.execute(
-                f"SELECT rowid, text FROM {table} "
-                "WHERE rowid>? AND (char_count IS NULL OR section_names IS NULL) "
-                "AND mime_type IS NULL AND created_at>=? ORDER BY rowid LIMIT 1",
-                (last_rowid, cutoff),
-            ).fetchone()
+        # Bound work per initialization and fetch only IDs before loading bodies.
+        artifact_ids = [str(row[0]) for row in con.execute(
+            f"""SELECT a.artifact_id FROM {table} AS a
+                LEFT JOIN {_ARTIFACT_PAGING_TABLE} AS p ON p.artifact_id=a.artifact_id
+                WHERE p.artifact_id IS NULL AND a.mime_type IS NULL AND a.created_at>=?
+                ORDER BY a.created_at, a.artifact_id LIMIT 128""",
+            (cutoff,),
+        ).fetchall()]
+        for artifact_id in artifact_ids:
+            row = con.execute(f"SELECT text FROM {table} WHERE artifact_id=?", (artifact_id,)).fetchone()
             if row is None:
-                break
-            last_rowid = int(row[0])
-            text = str(row[1] or "")
+                continue
+            text = str(row[0] or "")
             section_names = self._section_names(text)
             page_text, nul_mask = self._page_text_metadata(text)
-            con.execute(
-                f"UPDATE {table} SET char_count=?, section_names=?, page_text=?, nul_mask=? WHERE rowid=?",
-                (
-                    len(text),
-                    json.dumps(section_names, ensure_ascii=False, separators=(",", ":")),
-                    page_text,
-                    nul_mask,
-                    last_rowid,
-                ),
+            self._write_paging_metadata(
+                con, artifact_id, text, section_names, page_text, nul_mask,
             )
+
+    @staticmethod
+    def _write_paging_metadata(
+        con: sqlite3.Connection,
+        artifact_id: str,
+        text: str,
+        section_names: list[str],
+        page_text: str | None,
+        nul_mask: bytes | None,
+    ) -> None:
+        con.execute(
+            f"""INSERT INTO {_ARTIFACT_PAGING_TABLE}
+                (artifact_id, char_count, section_names, page_text, nul_mask)
+                VALUES(?,?,?,?,?) ON CONFLICT(artifact_id) DO UPDATE SET
+                char_count=excluded.char_count, section_names=excluded.section_names,
+                page_text=excluded.page_text, nul_mask=excluded.nul_mask""",
+            (artifact_id, len(text), json.dumps(section_names, ensure_ascii=False, separators=(",", ":")), page_text, nul_mask),
+        )
 
     @staticmethod
     def _page_text_metadata(text: str) -> tuple[str | None, bytes | None]:
@@ -420,11 +427,7 @@ class ArtifactStore:
                             blob BLOB,
                             size_bytes INTEGER,
                             checksum TEXT,
-                            identity_json TEXT,
-                            char_count INTEGER,
-                            section_names TEXT,
-                            page_text TEXT,
-                            nul_mask BLOB
+                            identity_json TEXT
                         )"""
                         )
                         self._table = _ARTIFACT_TABLE
@@ -444,11 +447,7 @@ class ArtifactStore:
                                 blob BLOB,
                                 size_bytes INTEGER,
                                 checksum TEXT,
-                                identity_json TEXT,
-                                char_count INTEGER,
-                                section_names TEXT,
-                                page_text TEXT,
-                                nul_mask BLOB
+                                identity_json TEXT
                             )"""
                         )
                         if existing_columns:
@@ -558,7 +557,13 @@ class ArtifactStore:
         if not force and (now - self._last_purge) < self._purge_interval:
             return
         self._last_purge = now
-        con.execute(f"DELETE FROM {self._table} WHERE created_at < ?", (now - self.ttl_seconds,))
+        cutoff = now - self.ttl_seconds
+        con.execute(
+            f"DELETE FROM {_ARTIFACT_PAGING_TABLE} WHERE artifact_id IN "
+            f"(SELECT artifact_id FROM {self._table} WHERE created_at < ?)",
+            (cutoff,),
+        )
+        con.execute(f"DELETE FROM {self._table} WHERE created_at < ?", (cutoff,))
 
     def _scoped_artifact_id(self, con: sqlite3.Connection, base_id: str, tenant_identity: str) -> str:
         row = con.execute(
@@ -759,10 +764,21 @@ class ArtifactStore:
                 # Reads stay read-only; expiry cleanup happens on writes. This avoids
                 # turning every artifact slice fetch into a WAL writer.
                 if section:
-                    query = f"SELECT kind, text, mime_type, created_at, char_count, section_names FROM {self._table} WHERE artifact_id=? AND created_at>=?"
+                    query = (
+                        f"SELECT a.kind, a.text, a.mime_type, a.created_at, p.char_count, "
+                        f"p.section_names, NULL, CASE WHEN p.artifact_id IS NULL THEN a.text END "
+                        f"FROM {self._table} AS a LEFT JOIN {_ARTIFACT_PAGING_TABLE} AS p "
+                        "ON p.artifact_id=a.artifact_id WHERE a.artifact_id=? AND a.created_at>=?"
+                    )
                     params: list[Any] = [artifact_id, cutoff]
                 else:
-                    query = f"SELECT kind, substr(COALESCE(page_text, text), ?, ?), mime_type, created_at, char_count, section_names, substr(nul_mask, ?, ?) FROM {self._table} WHERE artifact_id=? AND created_at>=?"
+                    query = (
+                        f"SELECT a.kind, substr(COALESCE(p.page_text, a.text), ?, ?), "
+                        f"a.mime_type, a.created_at, p.char_count, p.section_names, "
+                        f"substr(p.nul_mask, ?, ?), CASE WHEN p.artifact_id IS NULL THEN a.text END "
+                        f"FROM {self._table} AS a LEFT JOIN {_ARTIFACT_PAGING_TABLE} AS p "
+                        "ON p.artifact_id=a.artifact_id WHERE a.artifact_id=? AND a.created_at>=?"
+                    )
                     nul_byte_offset = offset % 8
                     nul_byte_count = (nul_byte_offset + max_chars + 7) // 8
                     sqlite_max_int = (1 << 63) - 1
@@ -775,7 +791,7 @@ class ArtifactStore:
                         cutoff,
                     ]
                 if tenant is not None:
-                    query += " AND tenant_identity=?"
+                    query += " AND a.tenant_identity=?"
                     params.append(self._tenant_identity(tenant))
                 return con.execute(query, params).fetchone()
 
@@ -811,7 +827,16 @@ class ArtifactStore:
                     "total_chars": len(section_text), "sections": list(sections)[:50]}
 
         if row[4] is None or row[5] is None:
-            return {"success": False, "error": "artifact paging metadata unavailable", "artifact_id": artifact_id}
+            text = str(row[7] or "")
+            sections = self._section_names(text)
+            piece = text[offset:offset + max_chars]
+            total_chars = len(text)
+            return {
+                "success": True, "artifact_id": artifact_id, "kind": row[0], "text": piece,
+                "offset": offset,
+                "next_offset": offset + len(piece) if offset + len(piece) < total_chars else None,
+                "total_chars": total_chars, "sections": sections,
+            }
         try:
             sections = json.loads(row[5])
         except Exception:
@@ -871,19 +896,21 @@ class ArtifactStore:
         params: list[Any] = []
         sqlite_max_int = (1 << 63) - 1
         for offset, max_chars in normalized:
-            expressions.append("substr(COALESCE(page_text, text), ?, ?)")
+            expressions.append("substr(COALESCE(p.page_text, a.text), ?, ?)")
             params.extend((min(offset + 1, sqlite_max_int), max_chars))
             nul_byte_offset = offset % 8
             nul_byte_count = (nul_byte_offset + max_chars + 7) // 8
-            expressions.append("substr(nul_mask, ?, ?)")
+            expressions.append("substr(p.nul_mask, ?, ?)")
             params.extend((min(offset // 8 + 1, sqlite_max_int), nul_byte_count))
         query = (
-            f"SELECT kind, mime_type, char_count, section_names, {', '.join(expressions)} "
-            f"FROM {self._table} WHERE artifact_id=? AND created_at>=?"
+            f"SELECT a.kind, a.mime_type, p.char_count, p.section_names, "
+            f"CASE WHEN p.artifact_id IS NULL THEN a.text END, {', '.join(expressions)} "
+            f"FROM {self._table} AS a LEFT JOIN {_ARTIFACT_PAGING_TABLE} AS p "
+            "ON p.artifact_id=a.artifact_id WHERE a.artifact_id=? AND a.created_at>=?"
         )
         params.extend((artifact_id, cutoff))
         if tenant is not None:
-            query += " AND tenant_identity=?"
+            query += " AND a.tenant_identity=?"
             params.append(self._tenant_identity(tenant))
 
         def _do_get_slices() -> tuple[Any, ...] | None:
@@ -895,20 +922,23 @@ class ArtifactStore:
             return {"success": False, "error": "artifact not found or expired", "artifact_id": artifact_id}
         if row[1]:
             return {"success": False, "error": "binary artifact requires binary retrieval", "artifact_id": artifact_id}
+        fallback_text = row[4]
         if row[2] is None or row[3] is None:
-            return {"success": False, "error": "artifact paging metadata unavailable", "artifact_id": artifact_id}
-        try:
-            sections = json.loads(row[3])
-        except Exception:
-            return {"success": False, "error": "artifact paging metadata unavailable", "artifact_id": artifact_id}
-        if not isinstance(sections, list) or any(not isinstance(name, str) for name in sections):
-            return {"success": False, "error": "artifact paging metadata unavailable", "artifact_id": artifact_id}
-
-        total_chars = int(row[2])
+            text = str(fallback_text or "")
+            sections = self._section_names(text)
+            total_chars = len(text)
+        else:
+            try:
+                sections = json.loads(row[3])
+            except Exception:
+                return {"success": False, "error": "artifact paging metadata unavailable", "artifact_id": artifact_id}
+            if not isinstance(sections, list) or any(not isinstance(name, str) for name in sections):
+                return {"success": False, "error": "artifact paging metadata unavailable", "artifact_id": artifact_id}
+            total_chars = int(row[2])
         result_slices: list[dict[str, Any]] = []
         for index, (offset, _max_chars) in enumerate(normalized):
-            piece = row[4 + index * 2] or ""
-            nul_mask = row[5 + index * 2] or b""
+            piece = str(fallback_text or "")[offset:offset + normalized[index][1]] if fallback_text is not None else (row[5 + index * 2] or "")
+            nul_mask = b"" if fallback_text is not None else (row[6 + index * 2] or b"")
             if nul_mask:
                 chars = list(piece)
                 bit_offset = offset % 8
