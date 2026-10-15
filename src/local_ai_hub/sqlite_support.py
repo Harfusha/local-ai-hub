@@ -433,11 +433,12 @@ def validate_durable_schema(
     backup_on_mismatch: bool = True,
 ) -> None:
     """Fail closed on existing durable table drift, preserving a verified backup."""
-    existing = {
-        str(row[0])
-        for row in con.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    objects = {
+        str(row[0]): (str(row[1]), str(row[2] or ""))
+        for row in con.execute("SELECT name, type, sql FROM sqlite_master")
         if not str(row[0]).startswith("sqlite_")
     }
+    existing = {name for name, (object_type, _sql) in objects.items() if object_type == "table"}
     mismatches: list[str] = []
     for group in complete_groups:
         present = set(group) & existing
@@ -445,6 +446,19 @@ def validate_durable_schema(
             missing = sorted(set(group) - existing)
             mismatches.append(f"incomplete durable table group; missing={','.join(missing)}")
     for table, expected_columns in expected_tables.items():
+        object_info = objects.get(table)
+        if object_info is not None and object_info[0] != "table":
+            mismatches.append(
+                f"unsupported durable schema object type for {table}: {object_info[0]}"
+            )
+            continue
+        if (
+            object_info is not None
+            and object_info[1].lstrip().lower().startswith("create virtual table")
+            and any(not isinstance(item, str) for item in expected_columns)
+        ):
+            mismatches.append(f"unsupported virtual durable table: {table}")
+            continue
         if table not in existing:
             event_kinds = (required_if_event_kinds or {}).get(table, ())
             if event_kinds and "agent_events" in existing:

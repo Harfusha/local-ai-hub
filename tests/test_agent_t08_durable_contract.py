@@ -1577,7 +1577,7 @@ def test_legacy_lease_wait_schema_is_rejected_before_schema_changes(tmp_path):
         before = con.execute("SELECT sql FROM sqlite_master WHERE name='lease_waits'").fetchone()[0]
     before_bytes = canonical.read_bytes()
 
-    with pytest.raises(sqlite3.DatabaseError):
+    with pytest.raises(DurableSchemaMismatchError):
         ScopeLeaseStore(tmp_path)
 
     with closing(sqlite3.connect(canonical)) as con:
@@ -1585,6 +1585,41 @@ def test_legacy_lease_wait_schema_is_rejected_before_schema_changes(tmp_path):
     assert after == before
     assert canonical.read_bytes() == before_bytes
     assert not list(tmp_path.glob("agent_state.sqlite.schema-mismatch-*.sqlite3"))
+
+
+def test_lease_view_name_is_rejected_before_writes(tmp_path):
+    from local_ai_hub.leases import ScopeLeaseStore
+
+    canonical = tmp_path / "agent_state.sqlite"
+    with closing(sqlite3.connect(canonical)) as con, con:
+        con.execute("CREATE VIEW leases AS SELECT 'lease' AS lease_id")
+    before = canonical.read_bytes()
+
+    with pytest.raises(DurableSchemaMismatchError, match="unsupported durable schema object type for leases: view"):
+        ScopeLeaseStore(tmp_path)
+
+    assert canonical.read_bytes() == before
+    assert not list(tmp_path.glob("agent_state.sqlite.schema-mismatch-*.sqlite3"))
+
+
+def test_partial_lease_table_group_is_rejected_before_writes(tmp_path):
+    from local_ai_hub.leases import ScopeLeaseStore
+
+    canonical = tmp_path / "agent_state.sqlite"
+    with closing(sqlite3.connect(canonical)) as con, con:
+        con.execute("""CREATE TABLE leases (
+            lease_id TEXT NOT NULL, tenant TEXT NOT NULL, root_id TEXT NOT NULL,
+            root_path TEXT NOT NULL, path TEXT NOT NULL, purpose TEXT NOT NULL,
+            created_at REAL NOT NULL, expires_at REAL NOT NULL,
+            PRIMARY KEY(lease_id, path))""")
+    before = canonical.read_bytes()
+
+    with pytest.raises(DurableSchemaMismatchError, match="incomplete durable table group; missing=lease_waits"):
+        ScopeLeaseStore(tmp_path)
+
+    assert canonical.read_bytes() == before
+    assert not list(tmp_path.glob("agent_state.sqlite.schema-mismatch-*.sqlite3"))
+
 
 def test_cache_rebuild_does_not_erase_agent_state_records(tmp_path):
     agent_state = tmp_path / "agent_state.sqlite"
