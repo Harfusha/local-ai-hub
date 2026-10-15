@@ -5,7 +5,6 @@ from .json_utils import dumps as json_dumps
 import json
 import sqlite3
 import hashlib
-import inspect
 import contextvars
 import queue
 import math
@@ -155,19 +154,10 @@ class GoalContract:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> GoalContract:
-        explicit_goal = next(
-            (data.get(key) for key in ("goal", "title", "summary", "intent", "task", "name") if data.get(key)),
-            None,
-        )
-        goal_val = str(explicit_goal or data.get("description") or "").strip()
-        description = str(data.get("description") or "").strip() if explicit_goal else ""
-        if not goal_val:
-            crit = data.get("acceptance_criteria")
-            if crit and isinstance(crit, (list, tuple)) and len(crit) > 0:
-                goal_val = f"Complete task: {crit[0]}"
+        goal_val = str(data.get("goal") or "").strip()
         return cls(
             goal=goal_val,
-            description=description,
+            description=str(data.get("description") or "").strip(),
             acceptance_criteria=tuple(data.get("acceptance_criteria") or ()),
             scope=AgentScope.parse(data.get("scope", AgentScope.TASK.value)),
             non_goals=tuple(data.get("non_goals") or ()),
@@ -1963,16 +1953,20 @@ class TaskStore:
         active_rules = any(str(key).strip() in acceptance for key in verification_rules)
 
         verifier = getattr(self, "verification_store", None)
+        from .agent_verification import VerificationStore
+
         if verifier is None:
             try:
-                from .agent_verification import VerificationStore
-
                 verifier = VerificationStore(self.state_store, task_store=self)
                 self.verification_store = verifier
             except Exception as exc:
                 raise CompletionGateError(
                     "Cannot transition to COMPLETED: verification evaluator is unavailable"
                 ) from exc
+        if not isinstance(verifier, VerificationStore):
+            raise CompletionGateError(
+                "Cannot transition to COMPLETED: verification evaluator is unsupported"
+            )
 
         completion = getattr(verifier, "completion", None)
         if not callable(completion):
@@ -1980,59 +1974,21 @@ class TaskStore:
                 "Cannot transition to COMPLETED: verification evaluator has no completion method"
             )
         try:
-            parameters = inspect.signature(completion).parameters
-            supports_kwargs = any(
-                parameter.kind is inspect.Parameter.VAR_KEYWORD
-                for parameter in parameters.values()
+            if active_rules and not repository_revision:
+                raise CompletionGateError(
+                    "Cannot transition to COMPLETED: trusted repository_revision is unavailable"
+                )
+            result = completion(
+                task.task_id,
+                current_revision=repository_revision,
+                current_mutation_generation=mutation_generation,
+                verification_rules=verification_rules,
+                configured_criteria=configured_criteria,
+                configured_commands=configured_commands,
+                project_config_digest=project_config_digest,
+                configured_environment_sha256=configured_environment_sha256,
+                project_root=repo_root or "",
             )
-            supports_project_rules = {
-                "current_revision",
-                "current_mutation_generation",
-                "verification_rules",
-                "configured_criteria",
-            }.issubset(parameters)
-            supports_project_binding = supports_kwargs or {
-                "configured_commands",
-                "project_config_digest",
-                "configured_environment_sha256",
-                "project_root",
-            }.issubset(parameters)
-            if supports_project_rules:
-                if active_rules and not repository_revision:
-                    raise CompletionGateError(
-                        "Cannot transition to COMPLETED: trusted repository_revision is unavailable"
-                    )
-                if active_rules and not supports_project_binding:
-                    raise CompletionGateError(
-                        "Cannot transition to COMPLETED: verification evaluator does not bind project commands"
-                    )
-                project_binding_kwargs = (
-                    {
-                        "configured_commands": configured_commands,
-                        "project_config_digest": project_config_digest,
-                        "configured_environment_sha256": configured_environment_sha256,
-                        "project_root": repo_root,
-                    }
-                    if supports_project_binding
-                    else {}
-                )
-                result = completion(
-                    task.task_id,
-                    current_revision=repository_revision,
-                    current_mutation_generation=mutation_generation,
-                    verification_rules=verification_rules,
-                    configured_criteria=configured_criteria,
-                    **project_binding_kwargs,
-                )
-            else:
-                if active_rules:
-                    raise CompletionGateError(
-                        "Cannot transition to COMPLETED: verification evaluator does not support project rules"
-                    )
-                legacy_kwargs = {}
-                if repository_revision and ("current_revision" in parameters or supports_kwargs):
-                    legacy_kwargs["current_revision"] = repository_revision
-                result = completion(task.task_id, **legacy_kwargs)
         except CompletionGateError:
             raise
         except Exception as exc:
@@ -3485,17 +3441,6 @@ class TaskStore:
             updated_at,
         ) = row
         contract_data = json.loads(contract_raw)
-        if not str(contract_data.get("goal", "")).strip():
-            contract_data = dict(contract_data)
-            legacy_title = str(contract_data.get("title", "")).strip()
-            if legacy_title:
-                contract_data["goal"] = legacy_title
-            else:
-                # V4 rejects empty goals for new contracts, but older persisted
-                # projections may still contain one. Keep those tasks loadable and
-                # make the missing intent explicit instead of returning blank
-                # task context or failing the entire Agent OS startup.
-                contract_data["goal"] = f"Legacy task contract: {task_id}"
         contract = GoalContract.from_dict(contract_data)
         ctx_data = json.loads(context_raw)
         context = ScopeContext(

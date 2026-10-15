@@ -309,6 +309,105 @@ def test_idle_reaper_accepts_scheduled_worktree_before_expiry(tmp_path, monkeypa
     assert cleanup_calls
 
 
+@pytest.mark.parametrize(
+    "contract_data",
+    [
+        {"title": "legacy title", "acceptance_criteria": []},
+        {"acceptance_criteria": []},
+    ],
+)
+def test_task_projection_rejects_contract_without_canonical_goal(tmp_path, contract_data):
+    store = _store(tmp_path)
+    row = (
+        "task-canonical-contract",
+        TaskStatus.PLANNED.value,
+        "agent",
+        "",
+        json.dumps(contract_data),
+        json.dumps({}),
+        json.dumps({}),
+        json.dumps({}),
+        0.0,
+        1.0,
+        1.0,
+    )
+
+    with pytest.raises(ValueError, match="task contract requires goal"):
+        store._row_to_state(row)
+
+    assert "goal" not in contract_data
+
+
+def test_unsupported_completion_evaluator_fails_closed_without_project_rules(
+    tmp_path, monkeypatch
+):
+    from local_ai_hub.agent_verification import VerificationStore
+    from local_ai_hub import verification_rules
+
+    store = _store(tmp_path)
+    task = store.create(
+        GoalContract(
+            goal="verified task",
+            acceptance_criteria=("syntax",),
+            scope=AgentScope.TASK,
+        ),
+        ScopeContext(),
+        task_id="unsupported-evaluator",
+    )
+    verifier = VerificationStore(store.state_store, task_store=store)
+    monkeypatch.setattr(
+        verifier, "completion", lambda _task_id: SimpleNamespace(complete=True)
+    )
+    store.verification_store = verifier
+    monkeypatch.setattr(verification_rules, "_task_created_state_data", lambda *_: {})
+    monkeypatch.setattr(verification_rules, "_task_project_root", lambda *_: None)
+
+    with pytest.raises(CompletionGateError, match="verification completion evaluation failed"):
+        store._verify_completion(task)
+
+
+def test_completion_evaluator_receives_full_current_contract_without_project_rules(
+    tmp_path, monkeypatch
+):
+    from local_ai_hub.agent_verification import VerificationStore
+    from local_ai_hub import verification_rules
+
+    store = _store(tmp_path)
+    task = store.create(
+        GoalContract(
+            goal="verified task",
+            acceptance_criteria=("syntax",),
+            scope=AgentScope.TASK,
+        ),
+        ScopeContext(),
+        task_id="current-evaluator-contract",
+    )
+    verifier = VerificationStore(store.state_store, task_store=store)
+    received = {}
+
+    def current_completion(_task_id, **kwargs):
+        received.update(kwargs)
+        return SimpleNamespace(complete=True)
+
+    monkeypatch.setattr(verifier, "completion", current_completion)
+    store.verification_store = verifier
+    monkeypatch.setattr(verification_rules, "_task_created_state_data", lambda *_: {})
+    monkeypatch.setattr(verification_rules, "_task_project_root", lambda *_: None)
+
+    store._verify_completion(task, current_revision="revision-current")
+
+    assert received == {
+        "current_revision": "revision-current",
+        "current_mutation_generation": 0,
+        "verification_rules": {},
+        "configured_criteria": (),
+        "configured_commands": {},
+        "project_config_digest": "",
+        "configured_environment_sha256": {},
+        "project_root": "",
+    }
+
+
 def test_prepared_worktree_plan_is_read_only_and_bound_to_create_request(tmp_path, monkeypatch):
     from subprocess import CompletedProcess
 
