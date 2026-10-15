@@ -130,11 +130,24 @@ def mcp_wire_tokens(payload: dict[str, Any], *, text_payload: Any = None) -> int
     })
 
 
+def task_memory_original_tokens(value: Any) -> int:
+    """Measure the canonical complete-adoption wire, excluding optional wrappers.
+
+    `original_tokens` has this stable meaning even when callers add delta,
+    reuse, debug, or private accounting metadata around the same memory bundle.
+    """
+    projection = task_memory_projection(value)
+    canonical = normalize_task_memory_response(projection if projection is not None else value)
+    return mcp_wire_tokens(canonical)
+
+
 def task_memory_wire_tokens(value: dict[str, Any], requested: int) -> int:
-    """Measure the smallest successful MCP wire candidate, including budget metadata."""
-    original = mcp_wire_tokens(value)
+    """Measure the smallest successful MCP wire candidate with full adoption advice."""
+    projection = task_memory_projection(value)
+    canonical = normalize_task_memory_response(projection if projection is not None else value)
+    original = task_memory_original_tokens(canonical)
     minimum: int | None = None
-    for source in (value, task_memory_essential_response(value)):
+    for source in (canonical, task_memory_essential_response(canonical)):
         payload = copy.deepcopy(source)
         payload["response_budget"] = {
             "requested_tokens": requested,

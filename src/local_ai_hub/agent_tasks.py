@@ -25,7 +25,7 @@ from .agent_events import AgentEvent, AgentStateStore
 from .agent_identity import AgentScope, ScopeContext
 from .sqlite_support import connect_sqlite, retry_busy
 from .task_memory_wire import normalize_task_memory_response, task_memory_projection, task_memory_wire_tokens
-from .token_accounting import account_projection, json_tokens
+from .token_accounting import json_tokens
 
 MAX_TASK_QUERY_SCAN_ROWS = 10_000
 MAX_AGENT_QUESTION_BYTES = 16_384
@@ -2460,7 +2460,7 @@ class TaskStore:
                 raw_result["request_id"] = request_id
             projected = task_memory_projection(raw_result)
             if projected is not None:
-                projected = normalize_task_memory_response(account_projection(raw_result, projected))
+                projected = normalize_task_memory_response(projected)
                 required_tokens = task_memory_wire_tokens(projected, response_budget_tokens)
                 if required_tokens > response_budget_tokens:
                     raise CheckpointResponseBudgetError(response_budget_tokens, required_tokens)
@@ -2501,7 +2501,7 @@ class TaskStore:
                     raw_result["request_id"] = request_id
                 projected = task_memory_projection(raw_result)
                 if projected is not None:
-                    projected = normalize_task_memory_response(account_projection(raw_result, projected))
+                    projected = normalize_task_memory_response(projected)
                     required_tokens = task_memory_wire_tokens(projected, response_budget_tokens)
                     if required_tokens > response_budget_tokens:
                         raise CheckpointResponseBudgetError(response_budget_tokens, required_tokens)
