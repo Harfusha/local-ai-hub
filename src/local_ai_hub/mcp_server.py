@@ -3058,7 +3058,9 @@ def _local_ai_repo_impl(
         return _compact(CLIENT.post("/api/refactor_impact", {"root": root, "file": path, "symbol": query or task}, timeout=_timeout("quick")), "impact")
     if action == "resolve_imports":
         syms = [s.strip() for s in (query or task).split(",") if s.strip()]
-        return _compact(CLIENT.post("/api/resolve_imports", {"root": root, "symbols": syms, "language": language or "auto"}, timeout=_timeout("quick")), "context")
+        return _compact(CLIENT.post("/api/resolve_imports", {"root": root, "symbols": syms, "language": language or "auto"}, timeout=_timeout("quick")), "context",
+                        extra_fields=[*(extra_fields or []), "resolved_imports", "unresolved_symbols", "rejected_candidates",
+                                      "rejected_candidates_truncated", "validation", "complete"])
     if action == "generate_tests":
         return _compact(CLIENT.post("/api/generate_tests", {"root": root, "file": path, "symbol": query or task}, timeout=_timeout("context")), "delegate")
     if action == "validate_patch":
