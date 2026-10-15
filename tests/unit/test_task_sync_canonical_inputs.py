@@ -6,7 +6,11 @@ import asyncio
 import pytest
 
 from local_ai_hub import mcp_server
-from local_ai_hub.operation_contracts import operation_input_schema, validate_operation_arguments
+from local_ai_hub.operation_contracts import (
+    operation_input_schema,
+    operation_tool_input_schema,
+    validate_operation_arguments,
+)
 
 
 def _activate_coord(monkeypatch):
@@ -27,6 +31,19 @@ class _FakeClient:
     def post(self, path, payload, **kwargs):
         self.calls.append((path, payload))
         return {"success": True, "count": len(payload.get("events", []))}
+
+
+def test_task_sync_rejects_subminimum_budget_before_client_call(monkeypatch):
+    _activate_coord(monkeypatch)
+    client = _FakeClient()
+    monkeypatch.setattr(mcp_server, "CLIENT", client)
+
+    result = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
+        "action": "task_sync", "max_response_tokens": 127,
+    }))
+
+    assert client.calls == []
+    assert "400" in str(result)
 
 
 @pytest.mark.parametrize(("arguments", "expected"), [
@@ -92,6 +109,7 @@ def test_shared_contract_rejects_retired_task_sync_aliases(field, value):
     ({"sync_action": "import", "events": [], "after_seq": 0},),
     ({"sync_action": "import", "events": [], "limit": 100},),
     ({"sync_action": "export", "events": []},),
+    ({"events": []},),
 ])
 def test_shared_contract_rejects_irrelevant_or_missing_sync_fields(arguments):
     assert validate_operation_arguments("local_ai_coord", "task_sync", arguments) is not None
@@ -102,3 +120,16 @@ def test_task_sync_fields_are_action_scoped():
     assert {"sync_action", "stream_id", "after_seq", "limit", "events"} <= set(schema["properties"])
     assert "limit" not in operation_input_schema("local_ai_coord", "task_get")["properties"]
     assert validate_operation_arguments("local_ai_coord", "task_get", {"sync_action": "export"}) is not None
+
+
+def test_coord_schema_forbids_events_for_implicit_export():
+    schema = operation_tool_input_schema("local_ai_coord")
+    sync_schema = next(
+        clause for clause in schema["allOf"]
+        if clause.get("if", {}).get("properties", {}).get("action") == {"const": "task_sync"}
+        and "allOf" in clause.get("then", {})
+    )
+    assert any(
+        "else" in nested and nested["else"] == {"not": {"required": ["events"]}}
+        for nested in sync_schema["then"]["allOf"]
+    )
