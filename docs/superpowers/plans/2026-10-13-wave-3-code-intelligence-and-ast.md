@@ -156,6 +156,8 @@ On Windows Python 3.13, run tree-sitter parsing in a separate pool worker subpro
 
 Deferred regression source: `tests/unit/test_sqlite_parameter_overflow.py` uses temporary SQLite databases with `SQLITE_LIMIT_VARIABLE_NUMBER=512` and 2,000 requested paths/links. The new tests have **not been executed**; no passing, performance or release claim is made. Run them only after the remaining implementation/integration bundle, per the latest user instruction.
 
+Follow-up source review also found the impact resolver's 400-path batches and repeated symbol-name bindings in UNION count queries. Path batches now use the same 250-item helper. Symbol-name membership uses a single JSON1 table parameter for each occurrence, preserving aggregate counts and limits without growing host parameters with symbol count. This follow-up is likewise unexecuted.
+
 **Files:**
 - Modify: `src/local_ai_hub/deterministic.py:1200-1240`
 - Modify: `src/local_ai_hub/code_index.py:2700-2730`
