@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+from dataclasses import replace
 from pathlib import Path
 import subprocess
 import sys
@@ -45,6 +46,47 @@ def contract_with_criteria(*criteria: str) -> GoalContract:
         acceptance_criteria=tuple(criteria),
         scope=AgentScope.TASK,
     )
+
+
+def test_capture_enrichment_remeasures_response_before_checkpoint_commit(store, tmp_path, monkeypatch):
+    task = store.create(contract_with_criteria(), task_context(), task_id="preflight-capture")
+    before_seq = store.state_store.event_page(f"task:{task.task_id}")["last_seq"]
+    memory = {
+        "schema_version": 1, "tenant_key": "tenant-test", "instruction": "Use memory carefully",
+        "items": [{"id": "mem-1", "content": "fact", "origin": "memory_store"}],
+        "warnings": [], "estimated_tokens": 10,
+    }
+    current = replace(task, checkpoint=TaskCheckpoint(state_data={"memory_context": memory}))
+    monkeypatch.setattr(store, "get", lambda task_id: current)
+    monkeypatch.setattr(store, "_validate_memory_audit", lambda _task: None)
+
+    captured = tmp_path / "large-source.txt"
+    captured.write_text("source detail " * 5000, encoding="utf-8")
+    measured_values = []
+
+    def measure(value, requested):
+        measured_values.append(value)
+        return 64 if len(measured_values) == 1 else 129
+
+    monkeypatch.setattr(agent_tasks_module, "task_memory_wire_tokens", measure)
+    commits = []
+    monkeypatch.setattr(store, "_commit_update", lambda *args, **kwargs: commits.append(args))
+
+    with pytest.raises(agent_tasks_module.CheckpointResponseBudgetError):
+        store.checkpoint(
+            task.task_id,
+            TaskCheckpoint(phase="edit", affected_paths=(str(captured),),
+                           state_data={"memory_audit": {"not_used_reason": "not relevant"}}),
+            response_budget_tokens=128,
+            capture_files=True,
+        )
+
+    assert len(measured_values) == 2
+    before = measured_values[0]["_token_accounting"]["raw_response_tokens_est"]
+    after = measured_values[1]["_token_accounting"]["raw_response_tokens_est"]
+    assert after > before
+    assert commits == []
+    assert store.state_store.event_page(f"task:{task.task_id}")["last_seq"] == before_seq
 
 
 def make_trusted_repository(parent: Path) -> tuple[Path, str]:

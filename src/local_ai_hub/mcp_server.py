@@ -889,6 +889,7 @@ _STATUS_PROTECTED_KEYS = (
     "job_id", "trace_id", "task_id", "state", "artifact_id", "cancel_requested",
     "expires_at", "wait_timeout_seconds", "outcome_unknown", "coalesced", "idempotent_replay",
     "admission_state", "terminal", "retryable", "in_progress",
+    "mutation_applied", "operation_not_started",
     "worktree_id", "worktree_path", "lease_id", "branch",
     "enabled", "active_tasks", "tasks_count", "incidents_count", "candidates_count", "status",
 )

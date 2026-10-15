@@ -2467,7 +2467,8 @@ class TaskStore:
 
         # File reads are optional checkpoint enrichment. Complete the response
         # preflight first so an undersized MCP budget has no filesystem work.
-        if capture_files or checkpoint.state_data.get("capture_files"):
+        capture_requested = capture_files or checkpoint.state_data.get("capture_files")
+        if capture_requested:
             snaps = dict(checkpoint.state_data.get("file_snapshots") or {})
             for p_str in checkpoint.affected_paths:
                 if p_str not in snaps:
@@ -2490,6 +2491,20 @@ class TaskStore:
                 state_data=new_sd,
             )
             updated = replace(updated, checkpoint=checkpoint)
+            # Captured snapshots affect accounting of the full HTTP result.
+            # Recheck the final exact envelope before policy handling/events.
+            if response_budget_tokens is not None:
+                from .trace_context import current as current_trace_context
+                request_id = str(current_trace_context().get("request_id") or "")
+                raw_result = {"success": True, "task": updated.to_dict()}
+                if request_id:
+                    raw_result["request_id"] = request_id
+                projected = task_memory_projection(raw_result)
+                if projected is not None:
+                    projected = normalize_task_memory_response(account_projection(raw_result, projected))
+                    required_tokens = task_memory_wire_tokens(projected, response_budget_tokens)
+                    if required_tokens > response_budget_tokens:
+                        raise CheckpointResponseBudgetError(response_budget_tokens, required_tokens)
 
         if self.policy_engine and current.status == TaskStatus.ACTIVE:
             budget = self.policy_engine.get_budget(task_id)

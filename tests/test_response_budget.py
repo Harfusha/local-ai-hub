@@ -129,6 +129,29 @@ def test_budget_response_can_return_reuse_envelope() -> None:
     assert result["response_budget"]["unit"] == "estimated_tokens"
 
 
+def test_reuse_pointers_preserve_mutation_outcome_flags_for_all_profiles() -> None:
+    for profile in ("compact", "minimal", "delta"):
+        result = budget_response(
+            {
+                "success": False,
+                "error": "checkpoint response budget rejected " * 500,
+                "request_id": "req_0123456789ab",
+                "mutation_applied": False,
+                "operation_not_started": True,
+            },
+            max_tokens=256,
+            profile=profile,
+            reuse_key=f"checkpoint-error:{profile}",
+            reuse_only=True,
+        )
+
+        assert json_tokens(result) <= 256
+        assert result["mutation_applied"] is False
+        assert result["operation_not_started"] is True
+        assert result["request_id"] == "req_0123456789ab"
+        assert result["reused"] is True
+
+
 def test_budget_rejection_reports_exact_final_token_count() -> None:
     result = budget_response(
         {
