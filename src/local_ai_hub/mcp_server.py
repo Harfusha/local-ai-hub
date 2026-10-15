@@ -700,7 +700,6 @@ _REPO_ACTIONS = (
     "preprocess_pause", "preprocess_resume", "preprocess_cancel", "preprocess_unregister",
     "context_compile", "verify_receipt", "verify_completion",
     "cross_project_graph", "cross_project_symbols", "cross_project_impact",
-    "cross_repo_graph", "cross_repo_symbols", "cross_repo_impact",
     "call_graph_diff", "semantic_diff",
     "affected_tests", "topology", "ast_refactor",
     "generate_mocks", "split_changes", "synthesize_rules",
@@ -3449,11 +3448,11 @@ def _local_ai_repo_impl(
         return _compact(CLIENT.post("/api/agent-state/verification", {
             "action": "completion", "task_id": task_id, "root": root,
         }, timeout=_timeout("quick")), "verify")
-    if action in {"cross_project_graph", "cross_repo_graph"}:
+    if action == "cross_project_graph":
         return _compact(CLIENT.post("/api/cross_project_graph", {"roots": [root] if root else []}, timeout=_timeout("quick")), "architecture")
-    if action in {"cross_project_symbols", "cross_repo_symbols"}:
+    if action == "cross_project_symbols":
         return _compact(CLIENT.post("/api/cross_project_symbols", {"roots": [root] if root else [], "query": query or task, "limit": 50}, timeout=_timeout("quick")), "architecture")
-    if action in {"cross_project_impact", "cross_repo_impact"}:
+    if action == "cross_project_impact":
         return _compact(CLIENT.post("/api/cross_project_impact", {"roots": [root] if root else [], "symbol": query or task}, timeout=_timeout("quick")), "impact")
     if action in {"call_graph_diff", "semantic_diff"}:
         if action == "semantic_diff" and (old_code is not None or new_code is not None):

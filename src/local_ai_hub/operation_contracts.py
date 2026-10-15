@@ -107,7 +107,6 @@ _REPO_ACTIONS = (
     "preprocess_status", "preprocess_refresh", "preprocess_pause", "preprocess_resume", "preprocess_cancel",
     "preprocess_unregister", "context_compile", "verify_receipt", "verify_completion", "call_graph_diff",
     "semantic_diff", "cross_project_graph", "cross_project_symbols", "cross_project_impact",
-    "cross_repo_graph", "cross_repo_symbols", "cross_repo_impact",
 )
 _TASK_ACTIONS = (
     "delegate", "explore", "reason", "continue", "review", "second_opinion", "compress", "route", "batch",
@@ -222,9 +221,6 @@ _REPO_CONDITIONS = {
     "cross_project_graph": ("agent_os",),
     "cross_project_symbols": ("agent_os",),
     "cross_project_impact": ("agent_os",),
-    "cross_repo_graph": ("agent_os",),
-    "cross_repo_symbols": ("agent_os",),
-    "cross_repo_impact": ("agent_os",),
 }
 _ACTION_SCOPED_FIELDS = {
     "local_ai_task": {
