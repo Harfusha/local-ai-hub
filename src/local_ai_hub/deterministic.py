@@ -2087,6 +2087,7 @@ class DeterministicEngine:
         base = Path(root).resolve()
         items: list[dict[str, Any]] = []
         seen: set[tuple[str, int]] = set()
+        seen_ranges: set[tuple[str, int, int]] = set()
         for row in rows:
             path = str(row.get("path", "")); line = max(1, int(row.get("line", 1) or 1))
             key = (path, line)
@@ -2103,9 +2104,31 @@ class DeterministicEngine:
             except OSError as read_exc:
                 logger.debug("Exact evidence source skipped (%s)", type(read_exc).__name__)
                 continue
+            if not lines or line > len(lines):
+                continue
             start = max(1, line - 2); end = min(len(lines), line + 2)
+            bounds = None
+            bounds_reader = getattr(self.code_index, "symbol_bounds_at", None)
+            if callable(bounds_reader):
+                try:
+                    bounds = bounds_reader(str(base), path, line, content_hash=digest)
+                except (OSError, sqlite3.DatabaseError, TypeError, ValueError):
+                    bounds = None
+            valid_bounds = (
+                isinstance(bounds, tuple) and len(bounds) == 2
+                and all(isinstance(value, int) and not isinstance(value, bool) for value in bounds)
+            )
+            if valid_bounds and 1 <= bounds[0] <= line <= bounds[1] <= len(lines):
+                start, end = bounds
+            else:
+                bounds = None
+            range_key = (path, start, end)
+            if range_key in seen_ranges:
+                continue
+            seen_ranges.add(range_key)
             text = "\n".join(f"{i}: {lines[i-1]}" for i in range(start, end + 1))
-            item = {"path": path, "start_line": start, "end_line": end, "text": text, "file_sha256": digest, "deterministic": True}
+            item = {"path": path, "start_line": start, "end_line": end, "text": text, "file_sha256": digest, "deterministic": True,
+                    "symbol_complete": bounds is not None}
             eid = self.evidence.put(str(base), item)
             if eid:
                 item["evidence_id"] = eid
@@ -2943,12 +2966,17 @@ class DeterministicEngine:
         This is the preferred seed for tool-aware local models. It avoids RAG and
         embeddings when parsers already provide enough coverage.
         """
+        max_chars = max(0, int(max_chars))
         result = self.query(root, query, limit=30)
         pieces = [
             "DETERMINISTIC FACTS:",
             self.render_answer(result, max_items=14),
         ]
-        used = sum(len(x) for x in pieces)
+        initial = "\n".join(pieces)
+        truncated = len(initial) > max_chars
+        pieces = [initial[:max_chars]]
+        used = len(pieces[0])
+        omitted_evidence: list[dict[str, Any]] = []
         raw_count = 0
         if self.evidence is not None:
             for ev in result.get("evidence", []):
@@ -2960,9 +2988,13 @@ class DeterministicEngine:
                     continue
                 text = str(exact.get("text", ""))
                 block = f"\n--- {eid} {exact.get('path')}:{exact.get('start_line')}-{exact.get('end_line')} ---\n{text}"
-                if used + len(block) > max_chars:
-                    break
-                pieces.append(block); used += len(block); raw_count += 1
+                if used + 1 + len(block) > max_chars:
+                    truncated = True
+                    omitted_evidence.append({"evidence_id": eid, "path": exact.get("path"),
+                                             "start_line": exact.get("start_line"), "end_line": exact.get("end_line"),
+                                             "reason": "complete_source_exceeds_context_budget"})
+                    continue
+                pieces.append(block); used += 1 + len(block); raw_count += 1
 
         if self.code_index is not None and used < max_chars:
             try:
@@ -2976,17 +3008,20 @@ class DeterministicEngine:
                         for ch in s.get("children", [])[:4]:
                             sym_blocks.append(f"    * {ch.get('signature') or ch.get('name')} (L{ch.get('line')})")
                     sym_text = "\n".join(sym_blocks)
-                    if used + len(sym_text) <= max_chars:
+                    if used + 1 + len(sym_text) <= max_chars:
                         pieces.append(sym_text)
+                    else:
+                        truncated = True
             except Exception:
                 pass
 
-        context = "\n".join(pieces)[:max_chars]
+        context = "\n".join(pieces)
         return {
             "success": True, "root": self._root(root), "query": query, "context": context,
             "evidence": result.get("evidence", []), "deterministic": result,
             "estimated_tokens": max(1, len(context) // 4), "semantic_used": False,
             "scanned_files": 0, "context_budget_chars": max_chars,
+            "truncated": truncated, "omitted_evidence": omitted_evidence,
         }
 
     def compact_context(self, root: str, query: str, max_chars: int = 2800) -> str:
