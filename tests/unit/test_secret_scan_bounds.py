@@ -49,3 +49,38 @@ def test_requested_git_history_is_explicitly_not_scanned(tmp_path: Path) -> None
     assert result["git_history_status"] == "unsupported_bounded_process_capture"
     assert result["scan_complete"] is False
     assert result["clean"] is False
+
+
+def test_env_file_is_scanned(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text('OPENAI_API_KEY="sk-proj-123456789012345678901234"\n', encoding="utf-8")
+
+    result = DeterministicEngine().secret_scan(str(tmp_path))
+
+    assert any(item["file"] == ".env" for item in result["findings"])
+
+
+def test_file_read_stops_at_hard_byte_limit(tmp_path: Path, monkeypatch) -> None:
+    from local_ai_hub import deterministic
+
+    source = tmp_path / "large.txt"
+    source.write_bytes(b"x" * 64)
+    monkeypatch.setattr(deterministic, "_SECRET_SCAN_MAX_FILE_BYTES", 16)
+
+    result = DeterministicEngine().secret_scan(str(tmp_path))
+
+    assert result["coverage"]["bytes_read"] <= 16
+    assert "file_bytes" in result["coverage"]["limits_hit"]
+    assert result["scan_complete"] is False
+
+
+def test_long_line_does_not_shift_following_secret_line_number(tmp_path: Path) -> None:
+    source = tmp_path / "config.py"
+    source.write_bytes(b"x" * 65_537 + b"\napi_key = \"sk-EXAMPLEabcdefghijklmnop\"\n")
+
+    result = DeterministicEngine().secret_scan(str(tmp_path))
+
+    finding = next(item for item in result["findings"] if item["rule"] == "openai_api_key")
+    assert finding["line"] == 2
+    assert finding["redacted_snippet"] == "credential-like value omitted"
+    assert result["scan_complete"] is False
