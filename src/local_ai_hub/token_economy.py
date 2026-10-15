@@ -23,6 +23,7 @@ import re
 import shutil
 import subprocess
 import sys
+from collections import deque
 from pathlib import Path
 from functools import lru_cache
 from typing import Any, Iterable
@@ -35,13 +36,16 @@ def _encodings():
     from local_ai_hub.code_tokens import offline_encoding
     return offline_encoding("o200k_base"), offline_encoding("cl100k_base")
 
-ANSI_REGEX = re.compile(r"\x1b\[[0-9;]*[a-zA-Z]")
+ANSI_REGEX = re.compile(
+    r"\x1b(?:\][^\x07\x1b]*?(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|\([A-Za-z0-9]|[@-Z\\-_])"
+)
 DEFAULT_EXTS = {
     ".py", ".cs", ".js", ".ts", ".tsx", ".jsx", ".mjs", ".cjs", ".mts", ".cts",
     ".php", ".ctp", ".vue", ".svelte", ".html", ".htm", ".css", ".scss", ".sass", ".less",
     ".go", ".rs", ".java", ".cpp", ".c", ".h",
 }
 IGNORE_DIRS = {".git", "node_modules", "vendor", "Library", "Temp", "obj", "bin", "__pycache__", ".venv", "dist", "build", ".idea", ".vscode", "tool-envs"}
+_IGNORE_DIRS_CASEFOLDED = {name.casefold() for name in IGNORE_DIRS}
 
 
 def strip_ansi(text: str) -> str:
@@ -121,9 +125,9 @@ def tokcount_main(argv: list[str] | None = None) -> int:
         elif p.is_dir():
             for root, dirs, files in os.walk(p):
                 rel_parts = Path(root).relative_to(p).parts
-                if any(part in IGNORE_DIRS for part in rel_parts):
+                if any(part.casefold() in _IGNORE_DIRS_CASEFOLDED for part in rel_parts):
                     continue
-                dirs[:] = [d for d in dirs if d not in IGNORE_DIRS]
+                dirs[:] = [d for d in dirs if d.casefold() not in _IGNORE_DIRS_CASEFOLDED]
                 for f in sorted(files):
                     fp = Path(root) / f
                     try:
@@ -160,20 +164,26 @@ def tokcount_main(argv: list[str] | None = None) -> int:
 
 
 def filter_and_print_trimmed(lines: Iterable[str], max_lines: int) -> None:
-    """Print trimmed lines preserving head and tail."""
-    clean_lines = [strip_ansi(l.rstrip("\r\n")) for l in lines]
-    total = len(clean_lines)
-    if total <= max_lines:
-        for l in clean_lines:
-            print(l)
-    else:
-        half = max_lines // 2
-        for l in clean_lines[:half]:
-            print(l)
-        skipped = total - max_lines
+    """Consume once, retaining at most the requested head/tail line count."""
+    limit = max(0, int(max_lines))
+    head_limit, tail_limit = (limit + 1) // 2, limit // 2
+    head: list[str] = []
+    tail: deque[str] = deque(maxlen=tail_limit)
+    total = 0
+    for raw in lines:
+        line = strip_ansi(raw.rstrip("\r\n"))
+        if total < head_limit:
+            head.append(line)
+        else:
+            tail.append(line)
+        total += 1
+    for line in head:
+        print(line)
+    if total > limit:
+        skipped = total - limit
         print(f"\n[... {skipped:,} lines truncated by trim-run to save tokens (total: {total:,} lines) ...]\n")
-        for l in clean_lines[-half:]:
-            print(l)
+    for line in tail:
+        print(line)
 
 
 _TRIM_RUN_ALLOWED_COMMANDS = {"rg", "fd", "grep-ast"}
@@ -294,9 +304,9 @@ def generate_repo_map(root_dir: str | Path, max_lines: int = 250, exts: set[str]
     else:
         for dp, dn, fn in os.walk(root_p):
             rel_parts = Path(dp).relative_to(root_p).parts
-            if any(part in IGNORE_DIRS for part in rel_parts):
+            if any(part.casefold() in _IGNORE_DIRS_CASEFOLDED for part in rel_parts):
                 continue
-            dn[:] = [d for d in dn if d not in IGNORE_DIRS]
+            dn[:] = [d for d in dn if d.casefold() not in _IGNORE_DIRS_CASEFOLDED]
             walk_items.append((Path(dp), sorted(fn)))
         base_dir = root_p
 
