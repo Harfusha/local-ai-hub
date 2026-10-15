@@ -29,6 +29,32 @@ _HTTP_ERROR_BODY_LIMIT = 65_536
 _GAMING_UNLOAD_MAX_TIMEOUT_SECONDS = 5.0
 
 
+def _oom_context_request(payload: dict[str, Any], default_context: int) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Halve KV allocation only when retained input fits a conservative byte bound."""
+    raw_options = payload.get("options")
+    if raw_options is not None and not isinstance(raw_options, dict):
+        return None, {"reason": "invalid_context_options"}
+    options = dict(raw_options or {})
+    try:
+        original = int(options.get("num_ctx", default_context))
+        predicted = int(options.get("num_predict", 256))
+    except (TypeError, ValueError, OverflowError):
+        return None, {"reason": "invalid_context_options"}
+    reduced = original // 2
+    metadata = {"original_num_ctx": original, "effective_num_ctx": reduced,
+                "input_truncated": False, "device_changed": False}
+    if reduced < 1024:
+        return None, {**metadata, "reason": "context_floor"}
+    input_values = {key: payload[key] for key in ("prompt", "system", "messages", "images", "suffix") if key in payload}
+    input_bytes = len(json_dumps(input_values, ensure_ascii=False).encode("utf-8"))
+    reserve = max(256, predicted if predicted > 0 else 1024) + 256
+    if input_bytes + reserve > reduced:
+        return None, {**metadata, "reason": "retained_input_exceeds_reduced_budget",
+                      "input_budget_basis": "serialized_utf8_bytes_plus_generation_reserve"}
+    options["num_ctx"] = reduced
+    return {**payload, "options": options}, {**metadata, "reason": "oom_context_halved"}
+
+
 def _read_http_error_body(error: HTTPError) -> str:
     raw = error.read(_HTTP_ERROR_BODY_LIMIT + 1)
     truncated = len(raw) > _HTTP_ERROR_BODY_LIMIT
@@ -489,6 +515,7 @@ class OllamaRuntime:
         deadline = request_deadline
         last_error = "unknown Ollama error"
         timed_out = False
+        context_recovery: dict[str, Any] | None = None
         for attempt in range(1, attempts + 1):
             remaining = request_deadline - time.monotonic()
             if remaining <= 0:
@@ -498,6 +525,7 @@ class OllamaRuntime:
             chat: list[str] = []
             thinking_parts: list[str] = []
             emitted_output = False
+            stream_error = False
             final: dict[str, Any] = {}
             watchdog = RepetitionWatchdog(max_repeat=3)
             req = Request(f"{self.base_url}{endpoint}", data=body, headers=headers)
@@ -566,6 +594,7 @@ class OllamaRuntime:
                             continue
                         if chunk.get("error"):
                             last_error = str(chunk["error"])
+                            stream_error = True
                             break
                         delta = chunk.get("response")
                         if delta is not None:
@@ -598,6 +627,7 @@ class OllamaRuntime:
                             thinking_text = str(thinking_delta)
                             thinking_parts.append(thinking_text)
                             if on_thinking is not None:
+                                emitted_output = True
                                 try: on_thinking(thinking_text)
                                 except Exception: pass
                         final.update(chunk)
@@ -626,8 +656,10 @@ class OllamaRuntime:
                     final["message"] = message
                 if thinking_parts:
                     final["thinking"] = "".join(thinking_parts)
-                if final and not final.get("error"):
+                if final and not final.get("error") and not stream_error:
                     final["_lah_retry_count"] = max(0, attempt - 1)
+                    if context_recovery is not None:
+                        final["context_recovery"] = context_recovery
                     if backend_fallback:
                         final["_lah_backend_fallback"] = backend_fallback
                     return final
@@ -662,16 +694,36 @@ class OllamaRuntime:
                     break
             if timed_out:
                 return {"error": last_error, "_lah_retry_count": max(0, attempt - 1), "timed_out": True}
-            if emitted_output:
+            if emitted_output or generated or chat or thinking_parts:
                 return {
                     "error": last_error,
                     "_lah_retry_count": max(0, attempt - 1),
                     "_lah_partial_response": True,
                 }
+            memory_error = any(marker in last_error.lower() for marker in (
+                "out of memory", "not enough memory", "insufficient memory", "failed to allocate",
+            ))
+            if memory_error:
+                if context_recovery is not None or attempt >= attempts:
+                    break
+                model = str(clean.get("model", ""))
+                try:
+                    default_context = self.model_policy.profile(model).num_ctx
+                except (AttributeError, TypeError, ValueError):
+                    context_recovery = {"reason": "context_profile_unavailable"}
+                    break
+                adjusted, recovery = _oom_context_request(clean, default_context)
+                context_recovery = recovery
+                if adjusted is None:
+                    break
+                clean = adjusted
+                body = json_dumps(clean).encode("utf-8")
             remaining = request_deadline - time.monotonic()
             if attempt < attempts and remaining > 0 and retry_delay:
                 time.sleep(min(retry_delay, remaining))
-        return {"error": last_error, "_lah_retry_count": max(0, attempts - 1), "timed_out": timed_out or time.monotonic() >= deadline}
+        return {"error": last_error, "_lah_retry_count": max(0, attempt - 1),
+                "timed_out": timed_out or time.monotonic() >= deadline,
+                **({"context_recovery": context_recovery} if context_recovery is not None else {})}
 
     def run_benchmark_scenario(
         self,
