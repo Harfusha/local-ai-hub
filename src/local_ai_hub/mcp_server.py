@@ -3007,7 +3007,7 @@ def _local_ai_repo_impl(
             "migration_drift", "package_audit", "git_diff", "type_stubs", "split_changes",
         )},
         "mutation_test": ("query", "task", "workspace"),
-        "generate_tests_for_diff": ("query", "task", "path"),
+        "generate_tests_for_diff": ("query", "task"),
         "cross_repo_contract": ("query", "workspace", "task", "diff"),
         "circular_dependencies": ("query", "task", "workspace", "diff", "path"),
         "skeletonize": ("diff", "task"),
@@ -3033,17 +3033,16 @@ def _local_ai_repo_impl(
         if input_values[field]:
             return contract_error(f"{action} accepts its canonical input field; {field} is not an alias")
     required_input_fields = {
-        **{name: "query" for name in (
-            "investigate", "diagnose", "search", "code_index", "semantic", "intelligence",
-            "deterministic", "route", "refactor_impact", "resolve_imports", "generate_tests",
-            "validate_patch", "generate_mocks", "cross_project_symbols", "cross_project_impact",
+        **{name: ("query",) for name in (
+            "diagnose", "semantic", "intelligence", "resolve_imports",
+            "validate_patch", "generate_mocks", "cross_project_impact",
             "generate_dataset", "explain_query", "dependency_slice", "structural_search", "git_history_search",
         )},
-        "context": "query", "solve": "task", "delegate": "task", "generate_tests_for_diff": "diff",
-        "cross_repo_contract": "path", "type_stubs": "path",
+        "context": ("query",), "solve": ("task",), "delegate": ("task",),
+        "cross_repo_contract": ("path",), "type_stubs": ("path",),
+        "refactor_impact": ("path",), "generate_mocks": ("query", "path"),
     }
-    required_field = required_input_fields.get(action)
-    if required_field is not None:
+    for required_field in required_input_fields.get(action, ()):
         value = input_values[required_field]
         if not isinstance(value, str) or not value.strip():
             return contract_error(f"{action} requires non-empty {required_field}")
@@ -3664,7 +3663,7 @@ def _local_ai_repo_impl(
         }, timeout=_timeout("quick")), "architecture")
     if action == "generate_tests_for_diff":
         return _compact(CLIENT.post("/api/repo/generate_tests_for_diff", {
-            "root": root, "diff": diff,
+            "root": root, "diff": diff or None, "path": path or None,
         }, timeout=_timeout("context")), "delegate")
     if action == "cross_repo_contract":
         return _compact(CLIENT.post("/api/repo/cross_repo_contract", {
