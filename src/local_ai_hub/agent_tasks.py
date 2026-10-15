@@ -96,19 +96,45 @@ class GoalContract:
     description: str = ""
 
     def __post_init__(self) -> None:
-        goal = str(self.goal or "").strip()
+        def _clean_str(val: Any) -> str:
+            return str(val or "").replace("\x00", "").strip()
+
+        def _clean_tuple(items: Any) -> tuple[str, ...]:
+            if not items:
+                return ()
+            cleaned: list[str] = []
+            for item in items:
+                s = _clean_str(item)
+                if s:
+                    cleaned.append(s)
+            return tuple(cleaned)
+
+        goal = _clean_str(self.goal)
         if not goal:
             raise ValueError("task contract requires goal")
         object.__setattr__(self, "goal", goal)
-        object.__setattr__(self, "description", str(self.description or "").strip())
+        object.__setattr__(self, "description", _clean_str(self.description))
+        object.__setattr__(self, "risk_profile", _clean_str(self.risk_profile) or "normal")
         if not isinstance(self.scope, AgentScope):
             object.__setattr__(self, "scope", AgentScope.parse(self.scope))
-        if not isinstance(self.acceptance_criteria, tuple):
-            object.__setattr__(self, "acceptance_criteria", tuple(self.acceptance_criteria or ()))
-        if not isinstance(self.non_goals, tuple):
-            object.__setattr__(self, "non_goals", tuple(self.non_goals or ()))
-        if not isinstance(self.constraints, tuple):
-            object.__setattr__(self, "constraints", tuple(self.constraints or ()))
+        object.__setattr__(self, "acceptance_criteria", _clean_tuple(self.acceptance_criteria))
+        object.__setattr__(self, "non_goals", _clean_tuple(self.non_goals))
+        object.__setattr__(self, "constraints", _clean_tuple(self.constraints))
+
+    def has_criteria(self) -> bool:
+        return bool(self.acceptance_criteria)
+
+    def criteria_count(self) -> int:
+        return len(self.acceptance_criteria)
+
+    def is_high_risk(self) -> bool:
+        return self.risk_profile in ("high", "critical")
+
+    def has_non_goals(self) -> bool:
+        return bool(self.non_goals)
+
+    def has_constraints(self) -> bool:
+        return bool(self.constraints)
 
     def to_dict(self) -> dict[str, Any]:
         scope_val = self.scope.value if isinstance(self.scope, AgentScope) else (getattr(self.scope, "value", None) or str(self.scope))
@@ -156,6 +182,36 @@ class TaskCheckpoint:
     blockers: tuple[str, ...] = ()
     state_data: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        def _clean_str(val: Any) -> str:
+            return str(val or "").replace("\x00", "").strip()
+
+        def _clean_tuple(items: Any) -> tuple[str, ...]:
+            if not items:
+                return ()
+            cleaned: list[str] = []
+            for item in items:
+                s = _clean_str(item)
+                if s:
+                    cleaned.append(s)
+            return tuple(cleaned)
+
+        object.__setattr__(self, "phase", _clean_str(self.phase))
+        object.__setattr__(self, "next_action", _clean_str(self.next_action))
+        object.__setattr__(self, "affected_paths", _clean_tuple(self.affected_paths))
+        object.__setattr__(self, "evidence_ids", _clean_tuple(self.evidence_ids))
+        object.__setattr__(self, "blockers", _clean_tuple(self.blockers))
+        object.__setattr__(self, "state_data", dict(self.state_data or {}))
+
+    def has_blockers(self) -> bool:
+        return bool(self.blockers)
+
+    def has_evidence(self) -> bool:
+        return bool(self.evidence_ids)
+
+    def has_affected_paths(self) -> bool:
+        return bool(self.affected_paths)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "phase": self.phase,
@@ -192,6 +248,35 @@ class TaskState:
     checkpoint: TaskCheckpoint = field(default_factory=TaskCheckpoint)
     verification_receipts: dict[str, str] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        tid = str(self.task_id or "").replace("\x00", "").strip()
+        st = self.status
+        if isinstance(st, str):
+            try:
+                st = TaskStatus(st)
+            except ValueError:
+                st = TaskStatus.DRAFT
+        elif not isinstance(st, TaskStatus):
+            st = TaskStatus.DRAFT
+        own = str(self.owner or "").replace("\x00", "").strip()
+        lid = str(self.lease_id or "").replace("\x00", "").strip()
+
+        def _clean_float(val: Any) -> float:
+            try:
+                f = float(val or 0.0)
+                return max(0.0, f) if math.isfinite(f) else 0.0
+            except (ValueError, TypeError):
+                return 0.0
+
+        object.__setattr__(self, "task_id", tid)
+        object.__setattr__(self, "status", st)
+        object.__setattr__(self, "owner", own)
+        object.__setattr__(self, "lease_id", lid)
+        object.__setattr__(self, "created_at", _clean_float(self.created_at))
+        object.__setattr__(self, "updated_at", _clean_float(self.updated_at))
+        object.__setattr__(self, "heartbeat_expires_at", _clean_float(self.heartbeat_expires_at))
+        object.__setattr__(self, "verification_receipts", dict(self.verification_receipts or {}))
+
     @property
     def is_stale(self) -> bool:
         return bool(
@@ -199,6 +284,28 @@ class TaskState:
             and self.heartbeat_expires_at < time.time()
             and self.status not in {TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.FAILED, TaskStatus.ABANDONED}
         )
+
+    def is_terminal(self) -> bool:
+        return self.status in {TaskStatus.COMPLETED, TaskStatus.CANCELLED, TaskStatus.FAILED, TaskStatus.ABANDONED}
+
+    def is_active(self) -> bool:
+        return self.status == TaskStatus.ACTIVE
+
+    def is_verifying(self) -> bool:
+        return self.status == TaskStatus.VERIFYING
+
+    def has_owner(self) -> bool:
+        return bool(self.owner)
+
+    def has_lease(self) -> bool:
+        return bool(self.lease_id)
+
+    def receipt_count(self) -> int:
+        return len(self.verification_receipts)
+
+    def has_receipt(self, criterion: str) -> bool:
+        crit = str(criterion or "").replace("\x00", "").strip()
+        return crit in self.verification_receipts
 
     def to_dict(self) -> dict[str, Any]:
         stale = self.is_stale
@@ -232,6 +339,12 @@ class TaskList(list[TaskState]):
     def __init__(self, tasks: list[TaskState] | tuple[TaskState, ...] = (), *, query_truncated: bool = False) -> None:
         super().__init__(tasks)
         self.query_truncated = bool(query_truncated)
+
+    def is_truncated(self) -> bool:
+        return self.query_truncated
+
+    def has_tasks(self) -> bool:
+        return len(self) > 0
 
 
 def _validate_checkpoint_memory_context(
@@ -1167,6 +1280,27 @@ class TaskStore:
             actor=actor,
         )
         return self._commit_create(initial_state, event)
+
+    def has_task(self, task_id: str) -> bool:
+        clean_id = str(task_id or "").replace("\x00", "").strip()
+        if not clean_id:
+            return False
+        if not self._db_path_available():
+            return False
+        self._init_projection_table()
+
+        def _do_check() -> bool:
+            with closing(connect_sqlite(self.state_store.db_path)) as con:
+                row = con.execute(
+                    "SELECT 1 FROM agent_tasks_projection WHERE task_id = ?",
+                    (clean_id,),
+                ).fetchone()
+                return bool(row)
+
+        try:
+            return bool(retry_busy(_do_check, retries=5, base_delay_seconds=0.02))
+        except sqlite3.Error:
+            return False
 
     def get(self, task_id: str) -> TaskState | None:
         if not self._db_path_available():
