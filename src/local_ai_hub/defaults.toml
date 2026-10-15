@@ -757,6 +757,8 @@ max_bytes = 268435456
 
 # ---------------- Idle project preprocessing ----------------
 [preprocessing]
+# Optional bounded task-goal prediction; normal cache/freshness gates still apply.
+task_context_warmup = true
 # Opportunistic whole-project warmup. Every expensive unit is a low-priority,
 # checkpointed micro-job and yields as soon as foreground work appears.
 enabled = true
