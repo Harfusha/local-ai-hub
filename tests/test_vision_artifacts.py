@@ -123,6 +123,11 @@ def test_artifact_schema_uses_additive_release_compatible_tables(tmp_path: Path)
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert "artifacts_v2" in tables
     assert store.get("art_legacy", tenant="tenant")["text"] == "legacy"
+    with closing(sqlite3.connect(db_path)) as connection:
+        core_columns = {row[1] for row in connection.execute("PRAGMA table_info(artifacts_v2)")}
+        paging_columns = {row[1] for row in connection.execute("PRAGMA table_info(artifact_paging_metadata)")}
+    assert not {"char_count", "section_names", "page_text", "nul_mask"} & core_columns
+    assert {"char_count", "section_names", "page_text", "nul_mask"} <= paging_columns
 
 
 def test_legacy_migration_backs_up_once_and_preserves_binary_metadata(tmp_path: Path) -> None:
