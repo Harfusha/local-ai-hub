@@ -20,7 +20,7 @@ from typing import Any, Iterator
 
 from . import __version__
 
-_PARSER_ANALYZER_VERSION = f"{__version__}:call-edges-v14-python-import-members"
+_PARSER_ANALYZER_VERSION = f"{__version__}:call-edges-v15-native-point-tuples"
 from .cache import MemoryLRUCache, stable_hash
 from .normalizer import tokenize_query_terms
 from .process_utils import canonical_root

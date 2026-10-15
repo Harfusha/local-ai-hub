@@ -628,7 +628,9 @@ def _node_text(node: Any, source_bytes: bytes) -> str:
 
 
 def _first_line_sig(node: Any, lines: list[str]) -> str:
-    start_row = node.start_point.row
+    # Use tuple access for native Points. In tree-sitter 0.26.0 the row/column
+    # property getters return borrowed references, corrupting larger row ints.
+    start_row = node.start_point[0]
     if 0 <= start_row < len(lines):
         line = lines[start_row].strip()
         # strip trailing open brace
@@ -665,7 +667,7 @@ def _extract_csharp(
                     "src": "<module>",
                     "dst": target,
                     "kind": "imports",
-                    "line": node.start_point.row + 1,
+                    "line": node.start_point[0] + 1,
                 })
             return
 
@@ -702,14 +704,14 @@ def _extract_csharp(
                                 "src": name_path,
                                 "dst": bname,
                                 "kind": "inherits",
-                                "line": node.start_point.row + 1,
+                                "line": node.start_point[0] + 1,
                             })
 
                 syms.append({
                     "name": name,
                     "kind": kind,
-                    "line": node.start_point.row + 1,
-                    "end_line": node.end_point.row + 1,
+                    "line": node.start_point[0] + 1,
+                    "end_line": node.end_point[0] + 1,
                     "container": container,
                     "name_path": name_path,
                     "signature": sig,
@@ -734,8 +736,8 @@ def _extract_csharp(
                 syms.append({
                     "name": name,
                     "kind": "method" if stack else "function",
-                    "line": node.start_point.row + 1,
-                    "end_line": node.end_point.row + 1,
+                    "line": node.start_point[0] + 1,
+                    "end_line": node.end_point[0] + 1,
                     "container": container,
                     "name_path": name_path,
                     "signature": sig,
@@ -759,8 +761,8 @@ def _extract_csharp(
                 syms.append({
                     "name": name,
                     "kind": "property",
-                    "line": node.start_point.row + 1,
-                    "end_line": node.end_point.row + 1,
+                    "line": node.start_point[0] + 1,
+                    "end_line": node.end_point[0] + 1,
                     "container": container,
                     "name_path": name_path,
                     "signature": sig,
@@ -776,7 +778,7 @@ def _extract_csharp(
                 if leaf_name and leaf_name[0].isalpha():
                     refs.append({
                         "name": leaf_name,
-                        "line": node.start_point.row + 1,
+                        "line": node.start_point[0] + 1,
                         "kind": "call",
                     })
                     curr_scope = "/".join(filter(None, [curr_namespace] + stack)) or "<module>"
@@ -784,7 +786,7 @@ def _extract_csharp(
                         "src": curr_scope,
                         "dst": leaf_name,
                         "kind": "calls",
-                        "line": node.start_point.row + 1,
+                        "line": node.start_point[0] + 1,
                     })
 
         for child in node.children:
@@ -822,8 +824,8 @@ def _extract_java(
                 syms.append({
                     "name": name,
                     "kind": type_kinds[ntype],
-                    "line": node.start_point.row + 1,
-                    "end_line": node.end_point.row + 1,
+                    "line": node.start_point[0] + 1,
+                    "end_line": node.end_point[0] + 1,
                     "container": container,
                     "name_path": name_path,
                     "signature": _first_line_sig(node, lines),
@@ -845,8 +847,8 @@ def _extract_java(
                 syms.append({
                     "name": name,
                     "kind": "constructor" if ntype == "constructor_declaration" else "method",
-                    "line": node.start_point.row + 1,
-                    "end_line": node.end_point.row + 1,
+                    "line": node.start_point[0] + 1,
+                    "end_line": node.end_point[0] + 1,
                     "container": container,
                     "name_path": name_path,
                     "signature": _first_line_sig(node, lines),
@@ -864,12 +866,12 @@ def _extract_java(
             name_node = node.child_by_field_name("name")
             name = _node_text(name_node, source_bytes) if name_node else ""
             if name and re.fullmatch(r"[A-Za-z_$][\w$]*", name):
-                refs.append({"name": name, "line": node.start_point.row + 1, "kind": "call"})
+                refs.append({"name": name, "line": node.start_point[0] + 1, "kind": "call"})
                 edges.append({
                     "src": current_function or "<module>",
                     "dst": name,
                     "kind": "calls",
-                    "line": node.start_point.row + 1,
+                    "line": node.start_point[0] + 1,
                 })
 
         for child in node.children:
@@ -924,8 +926,8 @@ def _extract_cpp(
                 syms.append({
                     "name": name,
                     "kind": container_kinds[ntype],
-                    "line": node.start_point.row + 1,
-                    "end_line": node.end_point.row + 1,
+                    "line": node.start_point[0] + 1,
+                    "end_line": node.end_point[0] + 1,
                     "container": container,
                     "name_path": name_path,
                     "signature": _first_line_sig(node, lines),
@@ -951,8 +953,8 @@ def _extract_cpp(
                 syms.append({
                     "name": name,
                     "kind": "method" if class_containers else "function",
-                    "line": node.start_point.row + 1,
-                    "end_line": node.end_point.row + 1,
+                    "line": node.start_point[0] + 1,
+                    "end_line": node.end_point[0] + 1,
                     "container": container,
                     "name_path": name_path,
                     "signature": _first_line_sig(node, lines),
@@ -971,12 +973,12 @@ def _extract_cpp(
             call_text = _node_text(function_node, source_bytes) if function_node else ""
             name = re.split(r"::|->|\.", call_text)[-1]
             if name and re.fullmatch(r"[A-Za-z_][\w]*", name):
-                refs.append({"name": name, "line": node.start_point.row + 1, "kind": "call"})
+                refs.append({"name": name, "line": node.start_point[0] + 1, "kind": "call"})
                 edges.append({
                     "src": current_function or "<module>",
                     "dst": name,
                     "kind": "calls",
-                    "line": node.start_point.row + 1,
+                    "line": node.start_point[0] + 1,
                 })
 
         for child in node.children:
@@ -1006,7 +1008,7 @@ def _extract_js_ts(
                     "src": "<module>",
                     "dst": raw_src,
                     "kind": "imports",
-                    "line": node.start_point.row + 1,
+                    "line": node.start_point[0] + 1,
                 })
             return
 
@@ -1033,14 +1035,14 @@ def _extract_js_ts(
                                         "src": name_path,
                                         "dst": bname,
                                         "kind": "inherits",
-                                        "line": node.start_point.row + 1,
+                                        "line": node.start_point[0] + 1,
                                     })
 
                 syms.append({
                     "name": name,
                     "kind": kind,
-                    "line": node.start_point.row + 1,
-                    "end_line": node.end_point.row + 1,
+                    "line": node.start_point[0] + 1,
+                    "end_line": node.end_point[0] + 1,
                     "container": container,
                     "name_path": name_path,
                     "signature": sig,
@@ -1064,8 +1066,8 @@ def _extract_js_ts(
                 syms.append({
                     "name": name,
                     "kind": "method" if stack else "function",
-                    "line": node.start_point.row + 1,
-                    "end_line": node.end_point.row + 1,
+                    "line": node.start_point[0] + 1,
+                    "end_line": node.end_point[0] + 1,
                     "container": container,
                     "name_path": name_path,
                     "signature": _first_line_sig(node, lines),
@@ -1089,8 +1091,8 @@ def _extract_js_ts(
                 syms.append({
                     "name": name,
                     "kind": "method" if stack else "function",
-                    "line": node.start_point.row + 1,
-                    "end_line": node.end_point.row + 1,
+                    "line": node.start_point[0] + 1,
+                    "end_line": node.end_point[0] + 1,
                     "container": container,
                     "name_path": name_path,
                     "signature": sig,
@@ -1111,14 +1113,14 @@ def _extract_js_ts(
                 if leaf_name and leaf_name[0].isalpha():
                     refs.append({
                         "name": leaf_name,
-                        "line": node.start_point.row + 1,
+                        "line": node.start_point[0] + 1,
                         "kind": "call",
                     })
                     edges.append({
                         "src": "/".join(stack) or "<module>",
                         "dst": leaf_name,
                         "kind": "calls",
-                        "line": node.start_point.row + 1,
+                        "line": node.start_point[0] + 1,
                     })
 
         for child in node.children:
@@ -1162,7 +1164,7 @@ def _extract_python(
                     "src": "<module>",
                     "dst": dst,
                     "kind": "imports",
-                    "line": node.start_point.row + 1,
+                    "line": node.start_point[0] + 1,
                 })
             continue
 
@@ -1187,14 +1189,14 @@ def _extract_python(
                                 "src": name_path,
                                 "dst": bname,
                                 "kind": "inherits",
-                                "line": node.start_point.row + 1,
+                                "line": node.start_point[0] + 1,
                             })
 
                 syms.append({
                     "name": name,
                     "kind": "class",
-                    "line": node.start_point.row + 1,
-                    "end_line": node.end_point.row + 1,
+                    "line": node.start_point[0] + 1,
+                    "end_line": node.end_point[0] + 1,
                     "container": container,
                     "name_path": name_path,
                     "signature": sig,
@@ -1214,8 +1216,8 @@ def _extract_python(
                 syms.append({
                     "name": name,
                     "kind": "method" if scope else "function",
-                    "line": node.start_point.row + 1,
-                    "end_line": node.end_point.row + 1,
+                    "line": node.start_point[0] + 1,
+                    "end_line": node.end_point[0] + 1,
                     "container": container,
                     "name_path": name_path,
                     "signature": sig,
@@ -1232,14 +1234,14 @@ def _extract_python(
                 if leaf_name and leaf_name[0].isalpha():
                     refs.append({
                         "name": leaf_name,
-                        "line": node.start_point.row + 1,
+                        "line": node.start_point[0] + 1,
                         "kind": "call",
                     })
                     edges.append({
                         "src": "/".join(scope) or "<module>",
                         "dst": leaf_name,
                         "kind": "calls",
-                        "line": node.start_point.row + 1,
+                        "line": node.start_point[0] + 1,
                     })
 
         pending.extend((child, child_scope) for child in reversed(node.children))
@@ -1276,7 +1278,7 @@ def _extract_go(
                             "src": "<module>",
                             "dst": p_text,
                             "kind": "imports",
-                            "line": c.start_point.row + 1,
+                            "line": c.start_point[0] + 1,
                         })
             return
 
@@ -1294,8 +1296,8 @@ def _extract_go(
                         syms.append({
                             "name": name,
                             "kind": kind,
-                            "line": c.start_point.row + 1,
-                            "end_line": c.end_point.row + 1,
+                            "line": c.start_point[0] + 1,
+                            "end_line": c.end_point[0] + 1,
                             "container": curr_pkg,
                             "name_path": name_path,
                             "signature": sig,
@@ -1313,8 +1315,8 @@ def _extract_go(
                 syms.append({
                     "name": name,
                     "kind": "function",
-                    "line": node.start_point.row + 1,
-                    "end_line": node.end_point.row + 1,
+                    "line": node.start_point[0] + 1,
+                    "end_line": node.end_point[0] + 1,
                     "container": curr_pkg,
                     "name_path": name_path,
                     "signature": sig,
@@ -1341,8 +1343,8 @@ def _extract_go(
                 syms.append({
                     "name": name,
                     "kind": "method",
-                    "line": node.start_point.row + 1,
-                    "end_line": node.end_point.row + 1,
+                    "line": node.start_point[0] + 1,
+                    "end_line": node.end_point[0] + 1,
                     "container": container,
                     "name_path": name_path,
                     "signature": sig,
@@ -1364,14 +1366,14 @@ def _extract_go(
                 if leaf_name and leaf_name[0].isalpha():
                     refs.append({
                         "name": leaf_name,
-                        "line": node.start_point.row + 1,
+                        "line": node.start_point[0] + 1,
                         "kind": "call",
                     })
                     edges.append({
                         "src": curr_func or "<module>",
                         "dst": leaf_name,
                         "kind": "calls",
-                        "line": node.start_point.row + 1,
+                        "line": node.start_point[0] + 1,
                     })
 
         for child in node.children:
@@ -1403,8 +1405,8 @@ def _extract_rust(
                 syms.append({
                     "name": name,
                     "kind": kind,
-                    "line": node.start_point.row + 1,
-                    "end_line": node.end_point.row + 1,
+                    "line": node.start_point[0] + 1,
+                    "end_line": node.end_point[0] + 1,
                     "container": "",
                     "name_path": name,
                     "signature": sig,
@@ -1422,7 +1424,7 @@ def _extract_rust(
                     "src": t_name,
                     "dst": tr_name,
                     "kind": "implements",
-                    "line": node.start_point.row + 1,
+                    "line": node.start_point[0] + 1,
                 })
             old_impl = curr_impl
             curr_impl = t_name
@@ -1441,8 +1443,8 @@ def _extract_rust(
                 syms.append({
                     "name": name,
                     "kind": "method" if container else "function",
-                    "line": node.start_point.row + 1,
-                    "end_line": node.end_point.row + 1,
+                    "line": node.start_point[0] + 1,
+                    "end_line": node.end_point[0] + 1,
                     "container": container,
                     "name_path": name_path,
                     "signature": sig,
@@ -1464,14 +1466,14 @@ def _extract_rust(
                 if leaf_name and leaf_name[0].isalpha():
                     refs.append({
                         "name": leaf_name,
-                        "line": node.start_point.row + 1,
+                        "line": node.start_point[0] + 1,
                         "kind": "call",
                     })
                     edges.append({
                         "src": curr_func or "<module>",
                         "dst": fn_text.rstrip("!"),
                         "kind": "calls",
-                        "line": node.start_point.row + 1,
+                        "line": node.start_point[0] + 1,
                     })
 
         for child in node.children:
@@ -1508,8 +1510,8 @@ def _extract_java(
                 syms.append({
                     "name": name,
                     "kind": type_kinds[ntype],
-                    "line": node.start_point.row + 1,
-                    "end_line": node.end_point.row + 1,
+                    "line": node.start_point[0] + 1,
+                    "end_line": node.end_point[0] + 1,
                     "container": container,
                     "name_path": name_path,
                     "signature": _first_line_sig(node, lines),
@@ -1531,8 +1533,8 @@ def _extract_java(
                 syms.append({
                     "name": name,
                     "kind": "constructor" if ntype == "constructor_declaration" else "method",
-                    "line": node.start_point.row + 1,
-                    "end_line": node.end_point.row + 1,
+                    "line": node.start_point[0] + 1,
+                    "end_line": node.end_point[0] + 1,
                     "container": container,
                     "name_path": name_path,
                     "signature": _first_line_sig(node, lines),
@@ -1550,12 +1552,12 @@ def _extract_java(
             name_node = node.child_by_field_name("name")
             name = _node_text(name_node, source_bytes) if name_node else ""
             if name and re.fullmatch(r"[A-Za-z_$][\w$]*", name):
-                refs.append({"name": name, "line": node.start_point.row + 1, "kind": "call"})
+                refs.append({"name": name, "line": node.start_point[0] + 1, "kind": "call"})
                 edges.append({
                     "src": current_function or "<module>",
                     "dst": name,
                     "kind": "calls",
-                    "line": node.start_point.row + 1,
+                    "line": node.start_point[0] + 1,
                 })
 
         for child in node.children:
@@ -1610,8 +1612,8 @@ def _extract_cpp(
                 syms.append({
                     "name": name,
                     "kind": container_kinds[ntype],
-                    "line": node.start_point.row + 1,
-                    "end_line": node.end_point.row + 1,
+                    "line": node.start_point[0] + 1,
+                    "end_line": node.end_point[0] + 1,
                     "container": container,
                     "name_path": name_path,
                     "signature": _first_line_sig(node, lines),
@@ -1637,8 +1639,8 @@ def _extract_cpp(
                 syms.append({
                     "name": name,
                     "kind": "method" if class_containers else "function",
-                    "line": node.start_point.row + 1,
-                    "end_line": node.end_point.row + 1,
+                    "line": node.start_point[0] + 1,
+                    "end_line": node.end_point[0] + 1,
                     "container": container,
                     "name_path": name_path,
                     "signature": _first_line_sig(node, lines),
@@ -1657,12 +1659,12 @@ def _extract_cpp(
             call_text = _node_text(function_node, source_bytes) if function_node else ""
             name = re.split(r"::|->|\.", call_text)[-1]
             if name and re.fullmatch(r"[A-Za-z_][\w]*", name):
-                refs.append({"name": name, "line": node.start_point.row + 1, "kind": "call"})
+                refs.append({"name": name, "line": node.start_point[0] + 1, "kind": "call"})
                 edges.append({
                     "src": current_function or "<module>",
                     "dst": name,
                     "kind": "calls",
-                    "line": node.start_point.row + 1,
+                    "line": node.start_point[0] + 1,
                 })
 
         for child in node.children:
