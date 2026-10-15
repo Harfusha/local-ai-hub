@@ -12,7 +12,8 @@ from typing import Any
 _COMMIT_MARKER = re.compile(
     rb"^\x00LAH_SECRET_SCAN_COMMIT:([0-9a-f]{40,64}) PARENTS:((?:[0-9a-f]{40,64}(?: [0-9a-f]{40,64})*)?)\x00$"
 )
-_HUNK = re.compile(rb"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: |$)")
+_HUNK = re.compile(rb"^@@ -([0-9]{1,20})(?:,([0-9]{1,20}))? \+([0-9]{1,20})(?:,([0-9]{1,20}))? @@(?: |$)")
+_MAX_HUNK_NUMBER = (1 << 64) - 1
 
 
 def _quoted_path_token(payload: bytes, offset: int) -> tuple[bytes, int] | None:
@@ -42,7 +43,10 @@ def _quoted_path_token(payload: bytes, offset: int) -> tuple[bytes, int] | None:
             octal = bytes((escaped, payload[offset], payload[offset + 1]))
             if any(byte < ord("0") or byte > ord("7") for byte in octal):
                 return None
-            decoded.append(int(octal, 8))
+            value = int(octal, 8)
+            if value > 0xFF:
+                return None
+            decoded.append(value)
             offset += 2
         else:
             return None
@@ -181,6 +185,15 @@ def parse_git_patch_output(
             mark("git_history_line_exceeds_limit")
             account_skipped_patch_line(history_line)
             continue
+        if history_line.startswith(b"\x00LAH_SECRET_SCAN_COMMIT:") and not _COMMIT_MARKER.match(history_line):
+            finish_hunk()
+            commit_id = None
+            path = "<history path unavailable>"
+            path_known = False
+            unsupported_patch = True
+            patch_hunk_started = False
+            mark("git_history_malformed_commit_marker")
+            continue
         marker = _COMMIT_MARKER.match(history_line)
         if marker:
             finish_hunk()
@@ -227,16 +240,25 @@ def parse_git_patch_output(
             if not path_known or unsupported_patch or commit_id is None:
                 mark("git_history_hunk_context_unresolved")
                 continue
-            old_line = int(hunk.group(1))
-            old_remaining = int(hunk.group(2) or 1)
-            new_line = int(hunk.group(3))
-            new_remaining = int(hunk.group(4) or 1)
+            numbers = [int(value) if value is not None else 1 for value in hunk.groups()]
+            if any(value > _MAX_HUNK_NUMBER for value in numbers):
+                patch_hunk_started = True
+                mark("git_history_hunk_number_out_of_range")
+                continue
+            old_line, old_remaining, new_line, new_remaining = numbers
             patch_hunk_started = True
             in_hunk = bool(old_remaining or new_remaining)
+            continue
+        if history_line.startswith(b"@@"):
+            finish_hunk()
+            patch_hunk_started = True
+            mark("git_history_malformed_hunk_header")
             continue
         if not in_hunk:
             if patch_hunk_started and history_line.startswith((b"+", b"-", b" ")):
                 mark("git_history_hunk_line_count_mismatch")
+            elif path_known and history_line.startswith((b"+", b"-", b" ")) and not history_line.startswith((b"+++ ", b"--- ")):
+                mark("git_history_patch_line_without_hunk")
             continue
         if history_line.startswith(b"\\ No newline at end of file"):
             continue
