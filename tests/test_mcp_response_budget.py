@@ -83,10 +83,9 @@ def test_command_rollback_rejects_non_run_action_before_dispatch(monkeypatch) ->
 def test_telemetry_status_projection_keeps_slow_paths_and_omits_bulk_report() -> None:
     report = {
         "success": True,
-        "scope": "process",
-        "summary_cache_stale": True,
         "summary": {
             "events": 10, "avg_queue_wait_ms": 700, "failure_rate": 0.1, "raw": "drop",
+            "scope": "process", "summary_cache_stale": True,
             "writer": {
                 "scope": "current_process", "process_started_at": 1000.0,
                 "snapshot_end_at": 1010.0, "interval_seconds": 10.0,
@@ -97,7 +96,7 @@ def test_telemetry_status_projection_keeps_slow_paths_and_omits_bulk_report() ->
                 "accounting_balanced": True, "activity_observed": True,
                 "accepted_rate": 0.875, "overflow_rejection_rate": 0.125,
                 "post_acceptance_loss_rate": 0.0, "written_rate": 1.0,
-                "pending_rate": None,
+                "pending_rate": None, "writer_error_attempts_unit": "untrusted text",
             },
         },
         "queue": {"p95_queue_age_ms": 900},
@@ -139,6 +138,18 @@ def test_telemetry_status_projection_keeps_slow_paths_and_omits_bulk_report() ->
     ]
     assert "daily" not in result
     assert "provider_token_usage" not in result
+
+
+def test_telemetry_writer_projection_rejects_nonfinite_and_absent_rates() -> None:
+    result = mcp_server._telemetry_status_projection({
+        "success": True,
+        "summary": {"writer": {
+            "accepted_rate": float("nan"), "written_rate": float("inf"),
+            "pending_rate": None, "attempted": -1,
+        }},
+    })
+
+    assert result["summary"]["writer"] == {"pending_rate": None}
 
 
 def test_context_projection_keeps_actual_context_text_after_budget() -> None:
