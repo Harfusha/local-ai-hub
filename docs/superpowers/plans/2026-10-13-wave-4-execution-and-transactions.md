@@ -166,12 +166,14 @@ Add `canonical_path(p: str | Path) -> str`: normalizes slashes to `/` and upperc
 
 ### Task 62: Diffing Arbitrary Commits in `git_diff` (#31)
 
+**2026-10-15 implementation checkpoint — execution deferred.** Added nullable keyword-only `rev1`/`rev2` through the existing MCP operation contract, client, GET/POST route, service and bounded RepositoryTools backend. Both refs must be provided together, cannot combine with staged mode, and are resolved independently to commit IDs with bounded Git calls before constructing `rev1...rev2`. Literal pathspecs prevent optional path filters from becoming Git magic. Revision queries bypass the workspace-only result cache so moving refs are resolved afresh. The structured deterministic API now reuses bounded stream capture instead of retaining unbounded subprocess output; incomplete preview statistics are explicitly marked. Working-tree and index modes retain their default comparison behavior. Both agent prompts describe merge-base semantics and resolved IDs. Deferred regression source uses temporary Git repositories for diverged branches, dirty-file exclusion, path filtering and MCP forwarding; it has not run. No runtime/release acceptance is claimed.
+
 **Files:**
 - Modify: `src/local_ai_hub/repo_tools.py:890-930`
 - Test: `tests/unit/test_git_diff_arbitrary_revisions.py`
 
-- [ ] **Step 1: Write test diffing `HEAD~3..HEAD` or `commitA..commitB`**
-- [ ] **Step 2: Implement fix**
+- [x] **Step 1: Write arbitrary-revision and forwarding regression source (execution deferred)**
+- [x] **Step 2: Implement bounded revision diff across existing public surface (validation pending)**
 Support `rev1` and `rev2` parameters in `git_diff`, running `git diff rev1...rev2`.
 - [ ] **Step 3: Run test and verify pass & Commit**
 `git commit -m "feat(git): support diffing arbitrary commits and revisions in git_diff"`

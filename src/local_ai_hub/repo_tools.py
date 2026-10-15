@@ -2326,8 +2326,16 @@ class RepositoryTools:
             checked.append({"path": rel, "status": status, "expected_sha256": expected or None, "actual_sha256": actual})
         return {"success": True, "root": str(base), "stale": stale > 0, "stale_count": stale, "checked": checked}
 
-    def git_diff(self, root: str, base: str = "HEAD", staged: bool = False, max_tokens: int = 10000) -> dict[str, Any]:
+    def git_diff(self, root: str, base: str = "HEAD", staged: bool = False, max_tokens: int = 10000,
+                 *, rev1: str | None = None, rev2: str | None = None, path: str | None = None) -> dict[str, Any]:
         repo = self._root(root)
+        revision_mode = rev1 is not None or rev2 is not None
+        if revision_mode and (staged or rev1 is None or rev2 is None):
+            return {"success": False, "error": "rev1 and rev2 must be supplied together and cannot be combined with staged",
+                    "terminal": True, "retryable": False}
+        if path is not None and (not isinstance(path, str) or "\0" in path or len(path) > 4096):
+            return {"success": False, "error": "invalid diff path", "terminal": True, "retryable": False}
+        pinned: list[str] = []
         try:
             probe = subprocess.run(
                 ["git", "-C", str(repo), "rev-parse", "--is-inside-work-tree"], capture_output=True, text=True,
@@ -2337,11 +2345,33 @@ class RepositoryTools:
             return {"success": False, "error": str(exc), "terminal": True, "retryable": False}
         if probe.returncode != 0 or probe.stdout.strip().lower() != "true":
             return {"success": False, "error": "git diff requires a Git repository", "terminal": True, "retryable": False}
-        cmd = ["git", "-C", str(repo), "diff", "--no-ext-diff", "--unified=3"]
+        if revision_mode:
+            for revision in (rev1, rev2):
+                if not isinstance(revision, str) or not revision.strip() or len(revision) > 512 or revision.startswith("-") or "\0" in revision:
+                    return {"success": False, "error": "invalid commit revision", "terminal": True, "retryable": False}
+                try:
+                    resolved = subprocess.run(
+                        ["git", "-C", str(repo), "rev-parse", "--verify", "--end-of-options", revision + "^{commit}"],
+                        capture_output=True, text=True, timeout=3, check=False,
+                        encoding="utf-8", errors="replace", **hidden_run_kwargs(),
+                    )
+                except Exception as exc:
+                    return {"success": False, "error": f"revision resolution failed: {type(exc).__name__}", "terminal": True, "retryable": False}
+                commit = resolved.stdout.strip()
+                if resolved.returncode != 0 or not re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", commit):
+                    return {"success": False, "error": "revision does not resolve to one commit", "terminal": True, "retryable": False}
+                pinned.append(commit)
+        selectors: list[str] = []
         if staged:
-            cmd.append("--cached")
+            selectors.append("--cached")
+        elif revision_mode:
+            selectors.append("...".join(pinned))
         elif base:
-            cmd.append(base)
+            if not isinstance(base, str) or base.startswith("-") or "\0" in base or len(base) > 1024:
+                return {"success": False, "error": "invalid diff base", "terminal": True, "retryable": False}
+            selectors.append(base)
+        pathspec = ["--", ":(literal)" + path] if path else ["--"]
+        cmd = ["git", "-C", str(repo), "diff", "--no-ext-diff", "--no-textconv", "--unified=3", *selectors, *pathspec]
         budget_chars = max(1, chars_for_tokens(max_tokens))
         def bounded_process(command: list[str], retain_limit: int, on_stdout_chunk: Any = None, digest_output: bool = False) -> dict[str, Any]:
             retained = bytearray()
@@ -2469,11 +2499,7 @@ class RepositoryTools:
                     return
                 path_names.append(piece.decode("utf-8", errors="replace"))
 
-        path_cmd = ["git", "-C", str(repo), "diff", "--no-ext-diff", "--name-only", "-z"]
-        if staged:
-            path_cmd.append("--cached")
-        elif base:
-            path_cmd.append(base)
+        path_cmd = ["git", "-C", str(repo), "diff", "--no-ext-diff", "--no-textconv", "--name-only", "-z", *selectors, *pathspec]
         path_result = bounded_process(path_cmd, 0, on_stdout_chunk=collect_path_chunk)
         if path_capture_error:
             return {
@@ -2496,7 +2522,7 @@ class RepositoryTools:
             path_names.append(bytes(path_pending)[:4096].decode("utf-8", errors="replace"))
         snapshot = self.git_snapshot(str(repo))
         changed_files = list(dict.fromkeys(path_names + changed))
-        changed_paths = list(dict.fromkeys(changed_files + list(snapshot.changed_paths)))
+        changed_paths = changed_files if revision_mode or path else list(dict.fromkeys(changed_files + list(snapshot.changed_paths)))
         return {
             "success": True, "root": str(repo), "diff": text, "changed_files": changed_files,
             "changed_paths": changed_paths, "revision": snapshot.revision,
@@ -2505,6 +2531,10 @@ class RepositoryTools:
             "original_estimated_tokens": max(estimate_tokens(text), (stdout_total + 3) // 4),
             "truncated": truncated, "diff_sha256": content_result["sha256"],
             "paths_complete": True,
+            "comparison": "merge_base" if revision_mode else "index" if staged else "working_tree",
+            "rev1": rev1, "rev2": rev2,
+            "resolved_rev1": pinned[0] if pinned else None,
+            "resolved_rev2": pinned[1] if pinned else None,
         }
 
 

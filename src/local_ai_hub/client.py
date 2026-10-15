@@ -2011,8 +2011,12 @@ class HubClient:
     def eval_drift(self, suite_name: str = "default") -> dict[str, Any]:
         return self.post("/api/task/eval_drift", {"suite_name": suite_name})
 
-    def git_diff(self, root: str = ".", path: str | None = None, staged: bool = False, max_lines: int = 1000) -> dict[str, Any]:
-        return self.post("/api/git/diff", {"root": root, "path": path, "staged": staged, "max_lines": max_lines})
+    def git_diff(self, root: str = ".", path: str | None = None, staged: bool = False, max_lines: int = 1000,
+                 *, rev1: str | None = None, rev2: str | None = None) -> dict[str, Any]:
+        payload = {"root": root, "path": path, "staged": staged, "max_lines": max_lines}
+        if rev1 is not None or rev2 is not None:
+            payload.update(rev1=rev1, rev2=rev2)
+        return self.post("/api/git/diff", payload)
 
     def git_history_search(self, root: str = ".", query: str = "", max_commits: int = 20) -> dict[str, Any]:
         return self.post("/api/git/history_search", {"root": root, "query": query, "max_commits": max_commits})

@@ -5242,7 +5242,9 @@ class Handler(BaseHTTPRequestHandler):
                 p = (query.get("path") or [None])[0]
                 staged = (query.get("staged") or ["false"])[0].lower() in {"1", "true", "yes"}
                 if APP.deterministic is not None:
-                    self._send(200, APP.services.git_diff(root, path=p, staged=staged))
+                    revisions = {key: query[key][0] for key in ("rev1", "rev2") if key in query}
+                    max_lines = int((query.get("max_lines") or [1000])[0])
+                    self._send(200, APP.services.git_diff(root, path=p, staged=staged, max_lines=max_lines, **revisions))
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return

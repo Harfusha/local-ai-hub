@@ -3865,34 +3865,21 @@ class DeterministicEngine:
             return {"success": False, "error": str(exc), "is_git": False}
 
     def git_diff(
-        self,
-        root: str,
-        path: str | None = None,
-        staged: bool = False,
-        max_lines: int = 1000,
+        self, root: str, path: str | None = None, staged: bool = False,
+        max_lines: int = 1000, *, rev1: str | None = None, rev2: str | None = None,
     ) -> dict[str, Any]:
-        """Return structured git diff with parsed file hunks and statistics."""
-        import subprocess, shutil
-        from .process_utils import hidden_run_kwargs
+        """Return structured, bounded Git diff, optionally between pinned revisions."""
         resolved = self._root(root)
-        git_exe = shutil.which("git") or "git"
-        cmd = [git_exe, "-C", resolved, "diff"]
-        if staged:
-            cmd.append("--staged")
-        if path:
-            cmd.extend(["--", str(path)])
-
+        if isinstance(max_lines, bool) or not isinstance(max_lines, int) or not 1 <= max_lines <= 10000:
+            return {"success": False, "error": "max_lines must be between 1 and 10000", "root": resolved}
         try:
-            res = subprocess.run(
-                cmd,
-                capture_output=True, text=True, timeout=5.0, check=False,
-                encoding="utf-8", errors="replace",
-                **hidden_run_kwargs(),
+            result = self.repo_tools.git_diff(
+                resolved, base="", staged=staged, max_tokens=min(24000, max(1024, max_lines * 32)),
+                rev1=rev1, rev2=rev2, path=path,
             )
-            if res.returncode != 0:
-                return {"success": False, "error": res.stderr.strip() or "git diff failed", "root": resolved}
-
-            raw_diff = res.stdout
+            if not result.get("success"):
+                return result
+            raw_diff = str(result.get("diff", ""))
             lines = raw_diff.splitlines()
             files_changed: list[dict[str, Any]] = []
             cur_file: dict[str, Any] | None = None
@@ -3904,7 +3891,7 @@ class DeterministicEngine:
                     if cur_file:
                         files_changed.append(cur_file)
                     parts = line.split(" ")
-                    file_b = parts[-1].lstrip("b/") if len(parts) >= 4 else ""
+                    file_b = parts[-1].removeprefix("b/") if len(parts) >= 4 else ""
                     cur_file = {"file": file_b, "additions": 0, "deletions": 0, "hunks": []}
                 elif cur_file is not None:
                     if line.startswith("@@"):
@@ -3919,11 +3906,18 @@ class DeterministicEngine:
             if cur_file:
                 files_changed.append(cur_file)
 
-            truncated = len(lines) > max_lines
+            truncated = bool(result.get("truncated")) or len(lines) > max_lines
             return {
                 "success": True,
                 "root": resolved,
                 "staged": staged,
+                "comparison": result.get("comparison"),
+                "rev1": result.get("rev1"), "rev2": result.get("rev2"),
+                "resolved_rev1": result.get("resolved_rev1"), "resolved_rev2": result.get("resolved_rev2"),
+                "diff_sha256": result.get("diff_sha256"),
+                "changed_files": result.get("changed_files", []),
+                "paths_complete": bool(result.get("paths_complete")),
+                "stats_complete": not truncated,
                 "files_count": len(files_changed),
                 "total_additions": additions,
                 "total_deletions": deletions,
