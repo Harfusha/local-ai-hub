@@ -7,7 +7,7 @@ from contextlib import closing
 
 import pytest
 
-from local_ai_hub.artifacts import ArtifactStore
+from local_ai_hub.artifacts import ArtifactStore, ArtifactTextReadError
 
 
 def _identity(tenant: str) -> str:
@@ -103,6 +103,45 @@ def test_section_scan_caps_names_and_header_retention(tmp_path) -> None:
     assert result["text"] == text[:256]
 
 
+def test_markdown_section_reads_stop_at_boundary_and_clamp_past_end(tmp_path) -> None:
+    store = ArtifactStore(tmp_path)
+    text = "## First\nfirst body\n## Second\nsecond body"
+    _insert_text(store, "art_section_boundary", text)
+    first_end = text.index("## Second")
+    first_length = first_end
+
+    result = store.get("art_section_boundary", section="first", tenant="owner")
+    assert result["success"] is True
+    assert result["text"] == text[:first_end]
+    assert "## Second" not in result["text"]
+    assert result["total_chars"] == first_length
+
+    past_end = store.get(
+        "art_section_boundary", offset=first_length + 9, section="first", tenant="owner",
+    )
+    assert past_end["success"] is True
+    assert past_end["text"] == ""
+    assert past_end["next_offset"] is None
+
+
+def test_section_map_closes_last_retained_section_at_first_omitted_heading() -> None:
+    lines = [f"## Heading {index}" for index in range(51)]
+    text = "\n".join(lines) + "\nremaining body"
+    sections, truncated = ArtifactStore._section_data(text)
+    omitted_heading_start = text.index(lines[50])
+    assert truncated is True
+    assert len(sections) == 50
+    assert sections["heading-49"][1] == omitted_heading_start
+
+
+def test_compact_marks_sections_omitted_from_preview_list(tmp_path) -> None:
+    store = ArtifactStore(tmp_path, max_inline_chars=1000)
+    text = "\n".join(f"## Heading {index}" for index in range(30)) + "\n" + ("x" * 1200)
+    result = store.compact({"text": text}, "owner", "text")
+    assert len(result["artifact"]["sections"]) == 24
+    assert result["artifact"]["sections_truncated"] is True
+
+
 def test_json_section_over_admission_limit_returns_bounded_error(tmp_path) -> None:
     store = ArtifactStore(tmp_path)
     _insert_text(store, "art_large_json", '{"large":"' + ("x" * 1_100_000) + '"}')
@@ -110,6 +149,32 @@ def test_json_section_over_admission_limit_returns_bounded_error(tmp_path) -> No
     result = store.get("art_large_json", section="json:large", tenant="owner")
     assert result["success"] is False
     assert result["error_code"] == "artifact_section_too_large"
+
+
+def test_missing_json_metadata_reports_bounded_names_and_rejects_duplicate_keys(tmp_path) -> None:
+    store = ArtifactStore(tmp_path)
+    _insert_text(store, "art_json_names", '{"first":1,"second":2}')
+    _insert_text(store, "art_json_duplicate", '{"same":1,"same":2}')
+    _insert_text(store, "art_json_long_key", '{"' + ("k" * 600) + '":1}')
+
+    names = store.get("art_json_names", tenant="owner")
+    assert names["success"] is True
+    assert names["sections"] == ["json:first", "json:second"]
+    assert names["sections_truncated"] is False
+
+    duplicate = store.get("art_json_duplicate", section="json:same", tenant="owner")
+    assert duplicate["success"] is False
+    assert duplicate["error_code"] == "artifact_json_invalid"
+
+    oversized_key = store.get("art_json_long_key", tenant="owner")
+    assert oversized_key["success"] is True
+    assert oversized_key["sections"] == []
+    assert oversized_key["sections_truncated"] is True
+    oversized_request = store.get(
+        "art_json_long_key", section="json:" + ("k" * 600), tenant="owner",
+    )
+    assert oversized_request["success"] is False
+    assert oversized_request["error_code"] == "artifact_section_invalid"
 
 
 def test_expired_wrong_tenant_and_binary_rows_do_not_stream_text(tmp_path, monkeypatch) -> None:
@@ -126,3 +191,11 @@ def test_expired_wrong_tenant_and_binary_rows_do_not_stream_text(tmp_path, monke
     assert store.get("art_expired", tenant="owner")["success"] is False
     assert store.get("art_private", tenant="owner")["success"] is False
     assert store.get(binary_id, tenant="owner")["success"] is False
+
+
+def test_expired_stream_deadline_returns_typed_read_timeout(tmp_path) -> None:
+    store = ArtifactStore(tmp_path)
+    with closing(sqlite3.connect(store.path)) as connection:
+        with pytest.raises(ArtifactTextReadError) as exc_info:
+            store._stream_text(connection, 1, "UTF-8", deadline=time.monotonic() - 1)
+    assert exc_info.value.code == "artifact_text_read_timeout"

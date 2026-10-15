@@ -31,6 +31,8 @@ MAX_ARTIFACT_BACKFILL_BYTES = 1_000_000
 MAX_ARTIFACT_SECTION_JSON_CHARS = 250_000
 MAX_ARTIFACT_HEADING_CHARS = 512
 MAX_ARTIFACT_SECTION_NAMES = 50
+MAX_ARTIFACT_JSON_SECTION_KEYS_SCANNED = 256
+MAX_ARTIFACT_READ_SECONDS = 5.0
 _ARTIFACT_MIGRATION_BACKUP_SUFFIX = ".pre-tenant-identity.bak"
 
 
@@ -48,7 +50,7 @@ class ArtifactBatchCancelled(RuntimeError):
 
 
 class ArtifactTextReadError(RuntimeError):
-    """Bounded, typed failure when legacy TEXT cannot be streamed safely."""
+    """Bounded, typed failure when artifact TEXT cannot be read safely."""
 
     def __init__(self, code: str, message: str):
         super().__init__(message)
@@ -315,6 +317,33 @@ class ArtifactStore:
         return None
 
     @staticmethod
+    def _json_object_without_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON object key")
+            result[key] = value
+        return result
+
+    @staticmethod
+    def _json_section_names(parsed: dict[str, Any]) -> tuple[list[str], bool]:
+        names: list[str] = []
+        truncated = False
+        for index, key in enumerate(parsed):
+            if index >= MAX_ARTIFACT_JSON_SECTION_KEYS_SCANNED:
+                truncated = True
+                break
+            if len(names) == MAX_ARTIFACT_SECTION_NAMES:
+                truncated = True
+                break
+            name = f"json:{key}"
+            if len(name) > MAX_ARTIFACT_HEADING_CHARS:
+                truncated = True
+                continue
+            names.append(name)
+        return names, truncated
+
+    @staticmethod
     def _sqlite_text_codec(encoding: str) -> str:
         normalized = encoding.strip().casefold()
         codec = {"utf-8": "utf-8", "utf-16le": "utf-16-le", "utf-16be": "utf-16-be"}.get(normalized)
@@ -322,20 +351,60 @@ class ArtifactStore:
             raise ArtifactTextReadError("artifact_text_encoding_unsupported", "unsupported SQLite text encoding")
         return codec
 
+    @staticmethod
+    def _check_read_deadline(deadline: float) -> None:
+        if time.monotonic() >= deadline:
+            raise ArtifactTextReadError("artifact_text_read_timeout", "artifact text read exceeded its time limit")
+
+    def _configure_read_deadline(self, con: sqlite3.Connection, deadline: float) -> None:
+        self._check_read_deadline(deadline)
+        remaining_ms = max(1, int((deadline - time.monotonic()) * 1000))
+        con.execute(f"PRAGMA busy_timeout={min(100, remaining_ms)}")
+        con.set_progress_handler(lambda: int(time.monotonic() >= deadline), 1000)
+
     def _read_small_text(
-        self, con: sqlite3.Connection, rowid: int, encoding: str, max_bytes: int,
+        self, con: sqlite3.Connection, rowid: int, encoding: str, max_bytes: int, deadline: float,
     ) -> str:
+        self._check_read_deadline(deadline)
         codec = self._sqlite_text_codec(encoding)
         try:
             with con.blobopen(self._table, "text", rowid, readonly=True) as text_blob:
                 size_bytes = len(text_blob)
                 if size_bytes > max_bytes:
                     raise ArtifactTextReadError("artifact_section_too_large", "JSON section exceeds bounded parsing limit")
-                return text_blob.read(size_bytes).decode(codec, errors="strict")
+                text = text_blob.read(size_bytes).decode(codec, errors="strict")
+                self._check_read_deadline(deadline)
+                return text
         except UnicodeError as exc:
             raise ArtifactTextReadError("artifact_text_decode_failed", "artifact text could not be decoded safely") from exc
         except sqlite3.Error as exc:
+            if time.monotonic() >= deadline:
+                raise ArtifactTextReadError("artifact_text_read_timeout", "artifact text read exceeded its time limit") from exc
             raise ArtifactTextReadError("artifact_text_stream_failed", "artifact text could not be streamed safely") from exc
+
+    def _read_bounded_json_sections(
+        self, con: sqlite3.Connection, rowid: int, encoding: str, deadline: float,
+    ) -> tuple[list[str], bool] | None:
+        codec = self._sqlite_text_codec(encoding)
+        try:
+            with con.blobopen(self._table, "text", rowid, readonly=True) as text_blob:
+                if len(text_blob) > MAX_ARTIFACT_BACKFILL_BYTES:
+                    return None
+                prefix = text_blob.read(min(128, len(text_blob))).decode(codec, errors="strict")
+        except (sqlite3.Error, UnicodeError):
+            return None
+        self._check_read_deadline(deadline)
+        if not prefix.lstrip().startswith("{"):
+            return None
+        text = self._read_small_text(con, rowid, encoding, MAX_ARTIFACT_BACKFILL_BYTES, deadline)
+        try:
+            parsed = json.loads(text, object_pairs_hook=self._json_object_without_duplicate_keys)
+        except (TypeError, ValueError):
+            return None
+        self._check_read_deadline(deadline)
+        if not isinstance(parsed, dict):
+            return None
+        return self._json_section_names(parsed)
 
     def _stream_text(
         self,
@@ -346,7 +415,10 @@ class ArtifactStore:
         *,
         target_section: str = "",
         parse_sections: bool = True,
+        deadline: float | None = None,
     ) -> dict[str, Any]:
+        deadline = deadline if deadline is not None else time.monotonic() + MAX_ARTIFACT_READ_SECONDS
+        self._check_read_deadline(deadline)
         spans = spans or []
         codec = self._sqlite_text_codec(encoding)
         decoder = codecs.getincrementaldecoder(codec)(errors="strict")
@@ -366,20 +438,22 @@ class ArtifactStore:
         def finish_line() -> None:
             nonlocal current_name, truncated, target_start, target_end
             line = "".join(line_chars) if not line_overflow else ""
-            if len(line) > MAX_ARTIFACT_HEADING_CHARS:
-                truncated = True
+            if line_overflow or len(line) > MAX_ARTIFACT_HEADING_CHARS:
+                prefix = "".join(line_chars)
+                if re.match(r"^#{1,6}\s+", prefix):
+                    if current_name:
+                        start, _end = sections[current_name]
+                        sections[current_name] = (start, line_start)
+                        current_name = ""
+                    if target_start is not None and target_end is None:
+                        target_end = line_start
+                    truncated = True
                 return
             label = self._section_label(line) if line else None
             if label is None:
                 if line_overflow:
                     truncated = True
                 return
-            base = self._section_slug(label)
-            slug = base
-            suffix = 2
-            while slug in seen_names:
-                slug = f"{base}-{suffix}"
-                suffix += 1
             if current_name:
                 start, _end = sections[current_name]
                 sections[current_name] = (start, line_start)
@@ -387,14 +461,20 @@ class ArtifactStore:
                 target_end = line_start
             current_name = ""
             if len(names) < MAX_ARTIFACT_SECTION_NAMES:
+                base = self._section_slug(label)
+                slug = base
+                suffix = 2
+                while slug in seen_names:
+                    slug = f"{base}-{suffix}"
+                    suffix += 1
                 names.append(slug)
                 seen_names.add(slug)
                 sections[slug] = (line_start, -1)
                 current_name = slug
+                if slug == target_section and target_start is None:
+                    target_start = line_start
             else:
                 truncated = True
-            if slug == target_section and target_start is None:
-                target_start = line_start
 
         def consume(decoded: str) -> None:
             nonlocal total_chars, line_start, line_overflow
@@ -416,7 +496,6 @@ class ArtifactStore:
                         if len(line_chars) < MAX_ARTIFACT_HEADING_CHARS + 1:
                             line_chars.append(character)
                         else:
-                            line_chars.clear()
                             line_overflow = True
             total_chars = chunk_end
 
@@ -424,16 +503,21 @@ class ArtifactStore:
             with con.blobopen(self._table, "text", rowid, readonly=True) as text_blob:
                 size_bytes = len(text_blob)
                 while True:
+                    self._check_read_deadline(deadline)
                     chunk = text_blob.read(MAX_ARTIFACT_TEXT_CHUNK_BYTES)
                     if not chunk:
                         break
                     consume(decoder.decode(chunk, final=False))
+                self._check_read_deadline(deadline)
                 consume(decoder.decode(b"", final=True))
         except sqlite3.Error as exc:
+            if time.monotonic() >= deadline:
+                raise ArtifactTextReadError("artifact_text_read_timeout", "artifact text read exceeded its time limit") from exc
             raise ArtifactTextReadError("artifact_text_stream_failed", "artifact text could not be streamed safely") from exc
         except UnicodeError as exc:
             raise ArtifactTextReadError("artifact_text_decode_failed", "artifact text could not be decoded safely") from exc
 
+        self._check_read_deadline(deadline)
         if parse_sections and (line_chars or line_overflow):
             finish_line()
         if current_name:
@@ -877,52 +961,50 @@ class ArtifactStore:
         sections: dict[str, tuple[int, int]] = {}
         if len(text) <= MAX_ARTIFACT_SECTION_JSON_CHARS:
             try:
-                parsed = json.loads(text)
+                parsed = json.loads(text, object_pairs_hook=cls._json_object_without_duplicate_keys)
             except Exception:
                 parsed = None
             if isinstance(parsed, dict):
-                names: list[str] = []
-                truncated = False
-                for key in parsed:
-                    if len(names) == MAX_ARTIFACT_SECTION_NAMES:
-                        truncated = True
-                        break
-                    name = f"json:{str(key)}"
-                    if len(name) > MAX_ARTIFACT_HEADING_CHARS:
-                        truncated = True
-                        continue
-                    names.append(name)
+                names, truncated = cls._json_section_names(parsed)
                 return {name: (-1, -1) for name in names}, truncated
 
         names: list[str] = []
-        positions: list[tuple[str, int]] = []
         seen: set[str] = set()
         truncated = False
+        active_name: str | None = None
+        active_start = 0
         cursor = 0
         while cursor < len(text):
             newline = text.find("\n", cursor)
             end = len(text) if newline < 0 else newline
             if end - cursor > MAX_ARTIFACT_HEADING_CHARS:
                 truncated = True
+                prefix = text[cursor:min(end, cursor + MAX_ARTIFACT_HEADING_CHARS + 1)]
+                if re.match(r"^#{1,6}\s+", prefix) and active_name is not None:
+                    sections[active_name] = (active_start, cursor)
+                    active_name = None
             else:
                 label = cls._section_label(text[cursor:end])
                 if label is not None:
-                    base = cls._section_slug(label)
-                    slug = base
-                    suffix = 2
-                    while slug in seen:
-                        slug = f"{base}-{suffix}"
-                        suffix += 1
+                    if active_name is not None:
+                        sections[active_name] = (active_start, cursor)
+                        active_name = None
                     if len(names) < MAX_ARTIFACT_SECTION_NAMES:
+                        base = cls._section_slug(label)
+                        slug = base
+                        suffix = 2
+                        while slug in seen:
+                            slug = f"{base}-{suffix}"
+                            suffix += 1
                         names.append(slug)
                         seen.add(slug)
-                        positions.append((slug, cursor))
+                        active_name = slug
+                        active_start = cursor
                     else:
                         truncated = True
             cursor = end + 1 if newline >= 0 else len(text)
-        for index, (name, start) in enumerate(positions):
-            end = positions[index + 1][1] if index + 1 < len(positions) else len(text)
-            sections[name] = (start, end)
+        if active_name is not None:
+            sections[active_name] = (active_start, len(text))
         return sections, truncated
 
     @classmethod
@@ -948,6 +1030,7 @@ class ArtifactStore:
         preview = text[:head] + "\n\n[... full local output stored as artifact ...]\n\n" + text[-tail:]
         section_map, sections_truncated = self._section_data(text)
         sections = list(section_map)[:24]
+        sections_truncated = sections_truncated or len(section_map) > len(sections)
         result[field] = preview
         result["artifact"] = {
             "id": artifact_id,
@@ -964,10 +1047,15 @@ class ArtifactStore:
         max_chars = max(256, min(int(max_chars), 50_000))
         section = str(section or "").strip()
         cutoff = time.time() - self.ttl_seconds
+        deadline = time.monotonic() + MAX_ARTIFACT_READ_SECONDS
         tenant_identity = self._tenant_identity(tenant) if tenant is not None else None
+        if len(section) > MAX_ARTIFACT_HEADING_CHARS:
+            return {"success": False, "error": "artifact section name exceeds its limit",
+                    "error_code": "artifact_section_invalid", "artifact_id": artifact_id}
 
         def _do_get() -> dict[str, Any]:
             with closing(self._connect()) as con:
+                self._configure_read_deadline(con, deadline)
                 con.execute("BEGIN")
                 params: list[Any] = [artifact_id, cutoff]
                 query = (
@@ -990,15 +1078,22 @@ class ArtifactStore:
 
                 if section:
                     if section.startswith("json:"):
-                        text = self._read_small_text(con, int(rowid), encoding, MAX_ARTIFACT_BACKFILL_BYTES)
+                        text = self._read_small_text(
+                            con, int(rowid), encoding, MAX_ARTIFACT_BACKFILL_BYTES, deadline,
+                        )
                         try:
-                            parsed = json.loads(text)
-                        except Exception:
-                            parsed = None
+                            parsed = json.loads(text, object_pairs_hook=self._json_object_without_duplicate_keys)
+                        except (TypeError, ValueError):
+                            return {"success": False, "error": "artifact JSON section source is invalid",
+                                    "error_code": "artifact_json_invalid", "artifact_id": artifact_id}
+                        self._check_read_deadline(deadline)
                         if isinstance(parsed, dict):
-                            section_map, sections_truncated = self._section_data(text)
-                            sections = list(section_map)[:MAX_ARTIFACT_SECTION_NAMES]
+                            sections, sections_truncated = self._json_section_names(parsed)
                             key = section[5:]
+                            if len(key) > MAX_ARTIFACT_HEADING_CHARS - len("json:"):
+                                return {"success": False, "error": "artifact JSON section name exceeds its limit",
+                                        "error_code": "artifact_section_invalid", "artifact_id": artifact_id,
+                                        "sections": sections, "sections_truncated": True}
                             if key not in parsed:
                                 return {"success": False, "error": "artifact section not found", "artifact_id": artifact_id,
                                         "sections": sections, "sections_truncated": sections_truncated}
@@ -1010,16 +1105,23 @@ class ArtifactStore:
                                     "total_chars": len(value), "sections": sections,
                                     "sections_truncated": sections_truncated}
 
-                    scan = self._stream_text(con, int(rowid), encoding, target_section=section)
+                    scan = self._stream_text(
+                        con, int(rowid), encoding, target_section=section, deadline=deadline,
+                    )
                     start, end = scan["target_start"], scan["target_end"]
                     if start is None or end is None:
                         return {"success": False, "error": "artifact section not found", "artifact_id": artifact_id,
                                 "sections": scan["section_names"], "sections_truncated": scan["sections_truncated"]}
                     section_chars = max(0, end - start)
-                    piece_scan = self._stream_text(
-                        con, int(rowid), encoding, [(start + offset, max_chars)], parse_sections=False,
-                    )
-                    piece = piece_scan["pieces"][0]
+                    piece_length = max(0, min(max_chars, section_chars - offset))
+                    if piece_length:
+                        piece_scan = self._stream_text(
+                            con, int(rowid), encoding, [(start + offset, piece_length)],
+                            parse_sections=False, deadline=deadline,
+                        )
+                        piece = piece_scan["pieces"][0]
+                    else:
+                        piece = ""
                     return {"success": True, "artifact_id": artifact_id, "kind": kind, "section": section,
                             "text": piece, "offset": offset,
                             "next_offset": offset + len(piece) if offset + len(piece) < section_chars else None,
@@ -1027,12 +1129,17 @@ class ArtifactStore:
                             "sections_truncated": scan["sections_truncated"]}
 
                 metadata = self._decode_section_metadata(section_json) if section_json else None
+                json_metadata = (
+                    self._read_bounded_json_sections(con, int(rowid), encoding, deadline)
+                    if metadata is None else None
+                )
                 scan = self._stream_text(
                     con, int(rowid), encoding, [(offset, max_chars)],
-                    parse_sections=metadata is None,
+                    parse_sections=metadata is None and json_metadata is None,
+                    deadline=deadline,
                 )
                 piece = scan["pieces"][0]
-                sections, sections_truncated = metadata or (
+                sections, sections_truncated = metadata or json_metadata or (
                     scan["section_names"], scan["sections_truncated"]
                 )
                 total_chars = scan["total_chars"]
@@ -1046,6 +1153,11 @@ class ArtifactStore:
             return retry_busy(_do_get, retries=3)
         except ArtifactTextReadError as exc:
             return {"success": False, "error": str(exc), "error_code": exc.code, "artifact_id": artifact_id}
+        except sqlite3.Error as exc:
+            if time.monotonic() >= deadline:
+                error = ArtifactTextReadError("artifact_text_read_timeout", "artifact text read exceeded its time limit")
+                return {"success": False, "error": str(error), "error_code": error.code, "artifact_id": artifact_id}
+            raise
 
     def get_slices(
         self,
@@ -1073,10 +1185,12 @@ class ArtifactStore:
             normalized.append((offset, max_chars))
 
         cutoff = time.time() - self.ttl_seconds
+        deadline = time.monotonic() + MAX_ARTIFACT_READ_SECONDS
         tenant_identity = self._tenant_identity(tenant) if tenant is not None else None
 
         def _do_get_slices() -> dict[str, Any]:
             with closing(self._connect()) as con:
+                self._configure_read_deadline(con, deadline)
                 con.execute("BEGIN")
                 params: list[Any] = [artifact_id, cutoff]
                 query = (
@@ -1097,13 +1211,18 @@ class ArtifactStore:
                     return {"success": False, "error": "artifact text encoding unsupported", "error_code": "artifact_text_encoding_unsupported", "artifact_id": artifact_id}
                 metadata = self._decode_section_metadata(section_json) if section_json else None
                 encoding = str(con.execute("PRAGMA encoding").fetchone()[0])
+                json_metadata = (
+                    self._read_bounded_json_sections(con, int(rowid), encoding, deadline)
+                    if metadata is None else None
+                )
                 scan = self._stream_text(
                     con, int(rowid), encoding,
                     [(offset, size) for offset, size in normalized],
-                    parse_sections=metadata is None,
+                    parse_sections=metadata is None and json_metadata is None,
+                    deadline=deadline,
                 )
                 pieces = scan["pieces"]
-                sections, sections_truncated = metadata or (
+                sections, sections_truncated = metadata or json_metadata or (
                     scan["section_names"], scan["sections_truncated"]
                 )
                 total_chars = scan["total_chars"]
@@ -1127,6 +1246,11 @@ class ArtifactStore:
             return retry_busy(_do_get_slices, retries=3)
         except ArtifactTextReadError as exc:
             return {"success": False, "error": str(exc), "error_code": exc.code, "artifact_id": artifact_id}
+        except sqlite3.Error as exc:
+            if time.monotonic() >= deadline:
+                error = ArtifactTextReadError("artifact_text_read_timeout", "artifact text read exceeded its time limit")
+                return {"success": False, "error": str(error), "error_code": error.code, "artifact_id": artifact_id}
+            raise
 
     def list(self, tenant: str = "", limit: int = 20) -> list[dict[str, Any]]:
         if not isinstance(tenant, str):
