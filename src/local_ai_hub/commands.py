@@ -4516,11 +4516,11 @@ class CommandBroker:
     @staticmethod
     def _tokens(command: str) -> list[str]:
         try:
-            tokens = shlex.split(command, posix=(os.name != "nt"))
             if os.name == "nt":
-                return [t[1:-1] if (len(t) >= 2 and ((t.startswith('"') and t.endswith('"')) or (t.startswith("'") and t.endswith("'")))) else t for t in tokens]
-            return tokens
-        except ValueError:
+                from .windows_argv import parse_windows_command_line
+                return parse_windows_command_line(command)
+            return shlex.split(command, posix=True)
+        except (OSError, ValueError):
             return []
 
     @staticmethod
@@ -7781,7 +7781,7 @@ class CommandBroker:
                 except (OSError, TypeError, ValueError):
                     return {"success": False, "error": "structured invocation working directory is invalid", "preflight": True, "terminal": True, "retryable": False}
             argv_fingerprint = stable_hash(argv_override)
-            command = shlex.join(argv_override)
+            command = subprocess.list2cmdline(argv_override) if os.name == "nt" else shlex.join(argv_override)
         command_digest_source = f"argv:{argv_fingerprint}" if argv_override is not None else command
         command_digest_value = hashlib.sha256(command_digest_source.encode("utf-8")).hexdigest()
         context_digest, project_env_overrides, project_context_error = self._project_environment(project_context, cwd)
