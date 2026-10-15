@@ -47,6 +47,14 @@ Current durable execution contract: `lead-remaining-bundle-20261015`, status act
 - 56 branch refs are not ancestral to master. `git cherry` finds no patch-unique changes on `gemini/wave-6-task-77`, `gemini/wave-8-task-84`, `gemini/wave-9-task-87`, `gemini/wave-9-task-88`, or `gemini/wave-9-task-94`.
 - The remaining 51 refs include unique patches and overlapping ancestry. In particular, tasks 100–127 form one stack ending at `gemini/wave-11-task-127`; refs are not independent implementation units.
 - Preserve all refs and worktrees pending task-criterion and patch review. Ancestry or patch novelty alone does not authorize integration or deletion. No blanket merge, reset, stash, rebase, or cleanup was performed.
+
+**Patch dispositions from source review (2026-10-15):**
+
+- `gemini/wave-9-task-89` / `d6321759`: the directory/base validation and temporary-root `samefile` hunks are already present in the master-side `cf1cf9b2` lineage. Current master additionally contains later worktree functionality and the `577c3159` syntax repair. Do not replace the current file with this older branch. Its branch/test ref remains preserved; no merge or deletion performed.
+- `gemini/wave-9-task-98` / `d917845b`: this mixed commit includes a worktree syntax correction already supplied by `577c3159`, plus optional logging helpers/config coercion. Its rollover reopening branch only runs when `delay=False`; the Hub creates its handler with `delay=True`. Current CPython 3.13 `FileHandler.emit` already reopens a missing append-mode stream. No demonstrated required runtime fix justifies importing this entire mixed commit. Preserve it as deferred optional API work; do not merge or delete it wholesale.
+- Remaining unique patches, including the task-100–127 stack, still require actual hunk/criterion review. Commit subjects are an inventory aid, not proof of equivalence or acceptance.
+
+**Current source-only integration checkpoint:** `381349d2` includes T47 (`bcb5b73a`), T51 (`629da11a`), T52 (`dd6f84ff`) and the T44 impact-query follow-up. These implementations and their newly authored regression cases remain unexecuted under the operator's whole-bundle validation deferral. No current installed-runtime or full-release acceptance is claimed.
 - T79 is committed as `6ce835de`; T74–T78 remain a dirty reviewed implementation candidate. Focused integrated regression command: `python -m pytest tests/test_agent_events.py tests/test_agent_events_fresh_init.py tests/test_agent_tasks.py tests/test_repo_tools.py tests/unit/test_agent_question_channel.py tests/unit/test_agent_question_scope.py tests/unit/test_cross_workspace_memory.py tests/unit/test_verify_completion_projection.py tests/unit/test_simulate_merge_projection.py tests/unit/test_worktree_dotgit_file.py -q --tb=short` — 86 passed, request `req_b5c8cca96a18`. This is candidate evidence, not full release acceptance.
 
 ```mermaid
