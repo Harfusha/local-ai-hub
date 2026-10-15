@@ -67,3 +67,26 @@ def test_check_reports_structured_artifact_drift_without_writing(tmp_path: Path,
     assert output["artifact_matches"] is False
     assert any("docs/API_COVERAGE.json" in item for item in output["drift"])
     assert artifact.read_bytes() == before
+
+
+def test_check_rejects_pending_historical_snapshot(tmp_path: Path, monkeypatch, capsys) -> None:
+    _fake_inventory(monkeypatch)
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    markdown = docs / "API_COVERAGE.md"
+    artifact = docs / "API_COVERAGE.json"
+    markdown.write_text("# API surface coverage\n\nRefresh pending.\n", encoding="utf-8")
+    artifact.write_text(json.dumps({
+        "schema_version": 1,
+        "snapshot_status": "refresh_pending",
+        "task_id": None,
+        "coverage_rows": None,
+    }) + "\n", encoding="utf-8")
+    before = (markdown.read_bytes(), artifact.read_bytes())
+
+    assert surface_inventory.main(["--root", str(tmp_path), "--check"]) == 1
+    output = json.loads(capsys.readouterr().out)
+    assert output["success"] is False
+    assert output["coverage_matches"] is False
+    assert output["artifact_matches"] is False
+    assert (markdown.read_bytes(), artifact.read_bytes()) == before

@@ -1,7 +1,12 @@
 {
   "schema_version": 1,
   "snapshot_status": "refresh_pending",
-  "source_document": "docs/API_COVERAGE.md",
+  "source_snapshot": {
+    "revision": "539090ad5c04e9c8d2b2cf09bce7bc6eb7c2bcfb",
+    "path": "docs/API_COVERAGE.md",
+    "blob": "d9d677256582c0e8ebedce993851849a00ed9f98"
+  },
+  "task_id": null,
   "coverage_rows": null,
-  "note": "The checked-in Markdown is a historical wide-format snapshot. Refresh both human and structured artifacts with python tools/surface_inventory.py --write-doc after the full change bundle is ready. This marker contains no fresh inventory or runtime claims."
+  "note": "No rows migrated. Historical Markdown fields do not match current renderer. This marker makes no fresh inventory, contract, behavioral, or runtime claims; --check must reject it until --write-doc regenerates both artifacts."
 }
