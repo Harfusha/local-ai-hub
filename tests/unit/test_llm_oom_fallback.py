@@ -74,3 +74,67 @@ def test_reduced_window_never_silently_discards_input():
     assert adjusted is None
     assert metadata["reason"] == "retained_input_exceeds_reduced_budget"
     assert metadata["input_truncated"] is False
+
+
+def test_default_one_attempt_still_allows_one_dedicated_oom_recovery(monkeypatch):
+    runtime = _runtime()
+    runtime.config["ollama"]["request_attempts"] = 1
+    calls = []
+    responses = [_response([{"error": "CUDA out of memory"}]), _response([{"response": "ok", "done": True}])]
+    monkeypatch.setattr(module, "urlopen", lambda *args, **kwargs: calls.append(True) or responses.pop(0))
+    result = runtime.request_stream("/api/generate", {"model": "fake", "prompt": "x"}, None)
+    assert result["response"] == "ok" and result["_lah_retry_count"] == 1 and len(calls) == 2
+
+
+def test_generic_error_does_not_consume_reserved_oom_attempt(monkeypatch):
+    runtime = _runtime()
+    runtime.config["ollama"]["request_attempts"] = 1
+    calls = []
+    monkeypatch.setattr(module, "urlopen", lambda *args, **kwargs: calls.append(True) or _response([{"error": "model not found"}]))
+    result = runtime.request_stream("/api/generate", {"model": "fake", "prompt": "x"}, None)
+    assert "error" in result and len(calls) == 1
+
+
+def test_timeout_after_fragment_is_marked_partial_even_without_callback(monkeypatch):
+    runtime = _runtime()
+
+    class Response:
+        def __iter__(self):
+            yield json.dumps({"response": "partial"}).encode()
+            raise TimeoutError("deadline")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(module, "urlopen", lambda *args, **kwargs: Response())
+    result = runtime.request_stream("/api/generate", {"model": "fake", "prompt": "x"}, None)
+    assert result["timed_out"] and result["_lah_partial_response"]
+
+
+def test_interruptible_foreground_path_uses_same_oom_recovery(monkeypatch):
+    runtime = _runtime()
+    responses = [_response([{"error": "CUDA out of memory"}]), _response([{"response": "ok", "done": True}])]
+    calls = []
+    monkeypatch.setattr(module, "urlopen", lambda *args, **kwargs: calls.append(True) or responses.pop(0))
+    result = runtime.request_interruptible("/api/generate", {"model": "fake", "prompt": "x"}, lambda: False)
+    assert result["response"] == "ok" and result["_lah_retry_count"] == 1 and len(calls) == 2
+
+
+def test_interruptible_path_preserves_single_generic_attempt(monkeypatch):
+    runtime = _runtime()
+    runtime.config["ollama"]["request_attempts"] = 5
+    calls = []
+    monkeypatch.setattr(module, "urlopen", lambda *args, **kwargs: calls.append(True) or _response([{"error": "model not found"}]))
+    assert "error" in runtime.request_interruptible("/api/generate", {"model": "fake", "prompt": "x"}, lambda: False)
+    assert len(calls) == 1
+
+
+def test_incomplete_eof_never_returns_success_on_either_path(monkeypatch):
+    runtime = _runtime()
+    monkeypatch.setattr(module, "urlopen", lambda *args, **kwargs: _response([{"response": "partial", "done": False}]))
+    for method in (
+        lambda: runtime.request_stream("/api/generate", {"model": "fake", "prompt": "x"}, None),
+        lambda: runtime.request_interruptible("/api/generate", {"model": "fake", "prompt": "x"}, lambda: False),
+    ):
+        result = method()
+        assert result["incomplete_stream"] and result["_lah_partial_response"] and "error" in result

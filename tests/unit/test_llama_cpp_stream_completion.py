@@ -62,7 +62,7 @@ def test_preset_retains_configured_context_without_mutating_config(tmp_path):
     assert config == original
 
 
-@pytest.mark.parametrize("context", [-1, True, "invalid"])
+@pytest.mark.parametrize("context", [-1, True, "invalid", float("inf"), 8192.5])
 def test_invalid_preset_context_never_overwrites_existing_preset(tmp_path, context):
     runtime = LlamaCppManagedRuntime({"server": {"state_dir": str(tmp_path)}, "llama_cpp": {"models": {
         "fake": {"served_model": "fake", "url": "http://127.0.0.1:12438", "context_length": context},
