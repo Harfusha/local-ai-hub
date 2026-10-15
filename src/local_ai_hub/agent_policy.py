@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import math
+import numbers
 import sqlite3
 import uuid
 from dataclasses import dataclass, field
@@ -281,6 +283,34 @@ class PolicyEngine:
                     side_effect_class=side_effect_class,
                 )
             if request.action in grant.allowed or risk_class.value in grant.allowed:
+                expiry = grant.expires_at
+                if expiry is not None:
+                    try:
+                        expiry_value = float(expiry)
+                        expiry_valid = (
+                            not isinstance(expiry, bool)
+                            and isinstance(expiry, numbers.Real)
+                            and math.isfinite(expiry_value)
+                        )
+                    except (OverflowError, TypeError, ValueError):
+                        expiry_valid = False
+                        expiry_value = 0.0
+                    if not expiry_valid:
+                        return PolicyDecision(
+                            allowed=False,
+                            requires_approval=False,
+                            reason="capability grant has invalid expiry",
+                            owner=POLICY_OWNER,
+                            side_effect_class=side_effect_class,
+                        )
+                    if time.time() >= expiry_value:
+                        return PolicyDecision(
+                            allowed=False,
+                            requires_approval=False,
+                            reason="capability grant has expired",
+                            owner=POLICY_OWNER,
+                            side_effect_class=side_effect_class,
+                        )
                 return PolicyDecision(
                     allowed=True,
                     requires_approval=False,
@@ -319,15 +349,40 @@ class PolicyEngine:
         requested: set[str] | frozenset[str],
     ) -> CapabilityGrant:
         req = frozenset(requested)
-        child_allowed = req & parent_grant.allowed
+        expiry = parent_grant.expires_at
+        expiry_valid = expiry is None
+        if expiry is not None:
+            try:
+                expiry_valid = (
+                    not isinstance(expiry, bool)
+                    and isinstance(expiry, numbers.Real)
+                    and math.isfinite(float(expiry))
+                    and time.time() < float(expiry)
+                )
+            except (OverflowError, TypeError, ValueError):
+                expiry_valid = False
+        depth = parent_grant.max_delegation_depth
+        depth_valid = (
+            isinstance(depth, int)
+            and not isinstance(depth, bool)
+            and depth > 0
+        )
+        can_delegate = expiry_valid and depth_valid
         child_denied = parent_grant.denied | (req - parent_grant.allowed)
+        if not can_delegate:
+            child_denied |= req
+        child_allowed = (
+            req & (parent_grant.allowed - child_denied)
+            if can_delegate
+            else frozenset()
+        )
         return CapabilityGrant(
             grant_id=f"grant_{uuid.uuid4().hex[:12]}",
             task_id=parent_grant.task_id,
             allowed=child_allowed,
             denied=child_denied,
             expires_at=parent_grant.expires_at,
-            max_delegation_depth=max(0, parent_grant.max_delegation_depth - 1),
+            max_delegation_depth=max(0, depth - 1) if depth_valid else 0,
         )
 
     def get_budget(self, task_id: str) -> Budget:
