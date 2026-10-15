@@ -3,6 +3,7 @@ from __future__ import annotations
 from .json_utils import dumps as json_dumps
 
 import hashlib
+import math
 import os
 import shlex
 from pathlib import Path
@@ -89,9 +90,21 @@ class VerificationReceipt:
     details: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "passed", self.passed is True)
+        if type(self.passed) is not bool:
+            raise ValueError("verification receipt passed must be a boolean")
         if isinstance(self.mutation_generation, bool) or not isinstance(self.mutation_generation, int) or self.mutation_generation < 0:
             raise ValueError("verification receipt mutation_generation must be a non-negative integer")
+        for name, value in (("observed_at", self.observed_at), ("expires_at", self.expires_at)):
+            if name == "expires_at" and value is None:
+                continue
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"verification receipt {name} must be a finite number")
+            try:
+                finite = math.isfinite(value)
+            except (OverflowError, TypeError, ValueError):
+                finite = False
+            if not finite:
+                raise ValueError(f"verification receipt {name} must be a finite number")
         object.__setattr__(self, "owner", str(self.owner or "").strip())
         object.__setattr__(self, "repository_revision", str(self.repository_revision or "").strip())
         evidence_type = str(self.evidence_type or "").strip().lower()
@@ -122,17 +135,18 @@ class VerificationReceipt:
         if not criterion_text:
             raise ValueError("verification receipt requires criterion")
         owner_text = str(owner or "").strip()
-        passed_value = passed is True
+        if type(passed) is not bool:
+            raise ValueError("verification receipt passed must be a boolean")
+        passed_value = passed
         evidence_key = str(evidence_id or "").strip()
         command_key = str(command_id or "").strip()
         inferred_kind = criterion_evidence_type(criterion_text)
         evidence_kind = str(evidence_type or inferred_kind).strip().lower()
         if evidence_kind not in {"test", "benchmark", "source_review"}:
             raise ValueError("verification receipt has unsupported evidence_type")
-        try:
-            generation = int(mutation_generation)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("verification receipt requires valid mutation_generation") from exc
+        if isinstance(mutation_generation, bool) or not isinstance(mutation_generation, int):
+            raise ValueError("verification receipt mutation_generation must be a non-negative integer")
+        generation = mutation_generation
         if generation < 0:
             raise ValueError("verification receipt mutation_generation must be non-negative")
         if passed_value and not evidence_key:
@@ -206,8 +220,8 @@ class VerificationReceipt:
             repository_revision=str(data.get("repository_revision", "")),
             mutation_generation=mutation_generation,
             evidence_type=str(data.get("evidence_type", "source_review")),
-            observed_at=float(data.get("observed_at", 0.0)),
-            expires_at=float(data["expires_at"]) if data.get("expires_at") is not None else None,
+            observed_at=data.get("observed_at", 0.0),
+            expires_at=data.get("expires_at"),
             passed=passed,
             details=dict(details),
         )
