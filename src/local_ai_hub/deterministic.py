@@ -4314,7 +4314,9 @@ class DeterministicEngine:
                     incomplete.add("analysis_deadline")
                     break
                 try:
-                    timestamp_raw, separator, files_raw = segment.partition(b"\0")
+                    # The explicit timestamp terminator is followed by Git's
+                    # -z record terminator before its filename framing newline.
+                    timestamp_raw, separator, files_raw = segment.partition(b"\0\0")
                     timestamp = int(timestamp_raw.strip())
                     if not separator or timestamp < cutoff:
                         raise ValueError("malformed commit record")

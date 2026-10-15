@@ -98,7 +98,7 @@ def test_hotspots_apply_ninety_day_half_life_and_report_raw_churn(tmp_path, monk
     source.write_text("if True:\n    pass\n", encoding="utf-8")
     now = 1_800_000_000.0
     timestamp = int(now - 90 * 86_400)
-    output = b"\0LAH_HOTSPOT:" + str(timestamp).encode() + b"\0\nsrc/a.py\0\n"
+    output = b"\0LAH_HOTSPOT:" + str(timestamp).encode() + b"\0\0\nsrc/a.py\0"
     monkeypatch.setattr(deterministic.time, "time", lambda: now)
     monkeypatch.setattr("local_ai_hub.deterministic.shutil.which", lambda _name: "git.exe")
     monkeypatch.setattr(
