@@ -4667,12 +4667,39 @@ def test_{sym}_regression_edge_cases():
         }
 
     def repo_topology(self, root: str) -> dict[str, Any]:
-        """Synthesize architectural layers, component topology, and central hub modules without LLM."""
-        resolved_root = Path(self._root(root))
+        """Return bounded filename heuristics and declared Python import edges."""
+        resolved_root = Path(self._root(root)).resolve()
         root_str = str(resolved_root)
-        
-        all_files = [str(p.relative_to(resolved_root)).replace("\\", "/") for p in self.repo_tools.iter_files(root_str)]
-        
+        file_limit, per_file_limit, total_bytes_limit = 2000, 256 * 1024, 8 * 1024 * 1024
+        deadline = time.monotonic() + 3.0
+        complete = True
+        errors: list[str] = []
+        excluded_dirs = sorted(getattr(self.repo_tools, "ignore_dirs", set()))
+        all_files: list[str] = []
+        try:
+            for candidate in self.repo_tools.iter_files(root_str, max_files=file_limit + 1):
+                if time.monotonic() >= deadline:
+                    complete = False
+                    errors.append("inventory_deadline")
+                    break
+                if len(all_files) >= file_limit:
+                    complete = False
+                    errors.append("file_limit")
+                    break
+                try:
+                    rel = candidate.relative_to(resolved_root).as_posix()
+                    if not rel or rel.startswith("../"):
+                        complete = False
+                        errors.append("path_outside_root")
+                        continue
+                    all_files.append(rel)
+                except (OSError, ValueError):
+                    complete = False
+                    errors.append("inventory_path_error")
+        except Exception:
+            complete = False
+            errors.append("inventory_error")
+
         layers: dict[str, list[str]] = {
             "entrypoints": [],
             "presentation": [],
@@ -4686,12 +4713,21 @@ def test_{sym}_regression_edge_cases():
         import_graph: dict[str, set[str]] = defaultdict(set)
         in_degree: Counter[str] = Counter()
 
+        total_bytes = 0
+        files_read = 0
+        parse_errors = 0
+        skipped = 0
         for rel in all_files:
+            if time.monotonic() >= deadline or total_bytes >= total_bytes_limit:
+                complete = False
+                errors.append("analysis_deadline" if time.monotonic() >= deadline else "aggregate_byte_limit")
+                skipped += len(all_files) - files_read - skipped
+                break
             rel_lower = rel.lower()
             name = Path(rel).name.lower()
             stem = Path(rel).stem.lower()
 
-            if "test" in rel_lower or "spec" in rel_lower:
+            if _is_test_file(rel):
                 layers["tests"].append(rel)
             elif name in {"main.py", "app.py", "cli.py", "index.ts", "index.js", "server.ts", "server.js", "main.go", "main.rs", "__main__.py"}:
                 layers["entrypoints"].append(rel)
@@ -4706,17 +4742,59 @@ def test_{sym}_regression_edge_cases():
             else:
                 layers["utilities"].append(rel)
 
-            if rel.endswith(".py"):
+            if rel.lower().endswith(".py"):
                 fpath = resolved_root / rel
                 try:
-                    txt = fpath.read_text(encoding="utf-8", errors="replace")
-                    for m in re.finditer(r"(?:from\s+([\w\.]+)\s+import|import\s+([\w\.]+))", txt):
-                        target_mod = (m.group(1) or m.group(2)).split(".")[0]
-                        if target_mod and target_mod != stem:
-                            import_graph[rel].add(target_mod)
-                            in_degree[target_mod] += 1
-                except Exception:
-                    pass
+                    if fpath.is_symlink() or not fpath.resolve().is_relative_to(resolved_root):
+                        complete = False
+                        errors.append("unsafe_path")
+                        skipped += 1
+                        continue
+                    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+                    fd = os.open(fpath, flags)
+                    try:
+                        before = os.fstat(fd)
+                        if not stat.S_ISREG(before.st_mode) or before.st_size > per_file_limit:
+                            complete = False
+                            errors.append("nonregular_or_oversize")
+                            skipped += 1
+                            continue
+                        remaining = min(per_file_limit, total_bytes_limit - total_bytes)
+                        with os.fdopen(fd, "rb", closefd=False) as handle:
+                            raw = handle.read(remaining + 1)
+                        after = os.fstat(fd)
+                        total_bytes += len(raw)
+                        files_read += 1
+                        if len(raw) > remaining or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+                            complete = False
+                            errors.append("file_changed_or_byte_limit")
+                            continue
+                        tree = ast.parse(raw.decode("utf-8", errors="replace"), filename=rel)
+                        for node in ast.walk(tree):
+                            if time.monotonic() >= deadline:
+                                complete = False
+                                errors.append("analysis_deadline")
+                                break
+                            if isinstance(node, ast.Import):
+                                modules = [alias.name for alias in node.names]
+                            elif isinstance(node, ast.ImportFrom):
+                                modules = [("." * node.level) + (node.module or "")]
+                            else:
+                                continue
+                            for target_mod in modules:
+                                if target_mod and target_mod != stem:
+                                    import_graph[rel].add(target_mod)
+                    finally:
+                        os.close(fd)
+                except (OSError, SyntaxError, UnicodeError, ValueError):
+                    complete = False
+                    parse_errors += 1
+                    skipped += 1
+                    errors.append("read_or_parse_error")
+
+        for sources in import_graph.values():
+            for target_mod in sources:
+                in_degree[target_mod] += 1
 
         top_hubs = [{"module": mod, "in_degree": count} for mod, count in in_degree.most_common(10)]
 
@@ -4747,7 +4825,7 @@ def test_{sym}_regression_edge_cases():
         if top_hubs:
             hubs_str = ", ".join(f"`{h['module']}` ({h['in_degree']})" for h in top_hubs[:5])
             lines.append("")
-            lines.append(f"## Key Hub Modules (Blast Radius): {hubs_str}")
+            lines.append(f"## Frequently Imported Declared Names (heuristic): {hubs_str}")
 
         summary_md = "\n".join(lines)
 
@@ -4758,6 +4836,9 @@ def test_{sym}_regression_edge_cases():
             "layers": layers,
             "hub_modules": top_hubs,
             "summary_markdown": summary_md,
+            "coverage": {"complete": complete, "coverage_scope": "bounded repo_tools eligible inventory; iterator may omit oversize/unreadable files before this method sees them; Python AST declared imports; filename-based layer heuristics", "inventory_scope": "repo_tools.iter_files eligible files only", "deadline_kind": "cooperative", "files_seen": len(all_files), "files_read": files_read, "files_skipped": skipped, "parse_errors": parse_errors, "bytes_read": total_bytes, "file_limit": file_limit, "per_file_bytes_limit": per_file_limit, "aggregate_bytes_limit": total_bytes_limit, "excluded_dirs": excluded_dirs, "errors": sorted(set(errors)), "module_graph_resolved": False, "architecture_pattern_basis": "filename heuristics"},
+            "architecture_pattern_verified": False,
+            "import_scope": "Python AST declared imports only; modules are not resolved",
         }
 
     def ast_rename(self, root: str, target_file: str, old_symbol: str, new_symbol: str, apply_changes: bool = False) -> dict[str, Any]:
