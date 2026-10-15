@@ -20,7 +20,7 @@ from typing import Any, Iterator
 
 from . import __version__
 
-_PARSER_ANALYZER_VERSION = f"{__version__}:call-edges-v13-scoped-fallback"
+_PARSER_ANALYZER_VERSION = f"{__version__}:call-edges-v14-python-import-members"
 from .cache import MemoryLRUCache, stable_hash
 from .normalizer import tokenize_query_terms
 from .process_utils import canonical_root
@@ -1335,7 +1335,14 @@ class CodeIndex:
                     edges.append({"src": "<module>", "dst": a.name, "kind": "imports", "line": n.lineno})
 
             def visit_ImportFrom(s, n):
-                edges.append({"src": "<module>", "dst": n.module or "", "kind": "imports", "line": n.lineno})
+                module = "." * n.level + (n.module or "")
+                targets = {module} if module else set()
+                for alias in n.names:
+                    if alias.name != "*":
+                        separator = "" if not module or module.endswith(".") else "."
+                        targets.add(f"{module}{separator}{alias.name}")
+                for target in sorted(targets):
+                    edges.append({"src": "<module>", "dst": target, "kind": "imports", "line": n.lineno})
 
         V().visit(tree)
         return syms, refs, edges
