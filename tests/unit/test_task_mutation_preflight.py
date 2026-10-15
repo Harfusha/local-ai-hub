@@ -338,6 +338,25 @@ def test_task_projection_rejects_contract_without_canonical_goal(tmp_path, contr
     assert "goal" not in contract_data
 
 
+@pytest.mark.parametrize("goal", [True, 7, {}, []])
+def test_goal_contract_rejects_non_string_goal(goal):
+    with pytest.raises(ValueError, match="goal to be a string"):
+        GoalContract.from_dict({"goal": goal})
+
+
+@pytest.mark.parametrize("alias", ["title", "description", "summary", "intent", "prompt", "query"])
+def test_http_task_create_uses_only_canonical_goal_or_task_shortcut(alias):
+    from local_ai_hub.http_server import _task_create_contract
+
+    with pytest.raises(ValueError, match="task contract requires goal"):
+        _task_create_contract({alias: "legacy task text"})
+
+    task_contract = _task_create_contract({"task": "canonical task shorthand"})
+    assert task_contract.goal == "canonical task shorthand"
+    object_contract = _task_create_contract({"contract": {"goal": "canonical goal"}})
+    assert object_contract.goal == "canonical goal"
+
+
 def test_unsupported_completion_evaluator_fails_closed_without_project_rules(
     tmp_path, monkeypatch
 ):

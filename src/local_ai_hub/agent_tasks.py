@@ -125,7 +125,9 @@ class GoalContract:
     description: str = ""
 
     def __post_init__(self) -> None:
-        goal = str(self.goal or "").strip()
+        if not isinstance(self.goal, str):
+            raise ValueError("task contract requires goal to be a string")
+        goal = self.goal.strip()
         if not goal:
             raise ValueError("task contract requires goal")
         object.__setattr__(self, "goal", goal)
@@ -154,9 +156,8 @@ class GoalContract:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> GoalContract:
-        goal_val = str(data.get("goal") or "").strip()
         return cls(
-            goal=goal_val,
+            goal=data.get("goal", ""),
             description=str(data.get("description") or "").strip(),
             acceptance_criteria=tuple(data.get("acceptance_criteria") or ()),
             scope=AgentScope.parse(data.get("scope", AgentScope.TASK.value)),
