@@ -503,11 +503,15 @@ def test_external_tools_index_failure_suppression(tmp_path: Path):
 
 
 @pytest.mark.parametrize("invalid_scope", ["repo", "REPOSITORY", " repository ", "unknown", False, [], 23])
-def test_memory_find_rejects_noncanonical_scope_before_database_access(tmp_path: Path, invalid_scope, monkeypatch):
+@pytest.mark.parametrize("lookup", ["find", "get"])
+def test_memory_lookup_rejects_noncanonical_scope_before_database_access(tmp_path: Path, invalid_scope, lookup, monkeypatch):
     store = MemoryStore(AgentStateStore(tmp_path / "agent_state.sqlite", enabled=True))
     def unexpected_database_access():
         raise AssertionError("invalid scope reached database access")
 
     monkeypatch.setattr(store, "_init_table", unexpected_database_access)
     with pytest.raises(ValueError):
-        store.find(scope=invalid_scope)
+        if lookup == "find":
+            store.find(scope=invalid_scope)
+        else:
+            store.get("missing-record", scope=invalid_scope)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -96,6 +97,9 @@ def test_hotspots_apply_ninety_day_half_life_and_report_raw_churn(tmp_path, monk
     source = repo / "src" / "a.py"
     source.parent.mkdir(parents=True)
     source.write_text("if True:\n    pass\n", encoding="utf-8")
+    # On Windows path ctime can be birth time while handle ctime follows mtime.
+    # Deliberately separate those timestamps without changing file identity.
+    os.utime(source, ns=(1_800_000_000_000_000_000, 1_800_000_000_000_000_000))
     now = 1_800_000_000.0
     timestamp = int(now - 90 * 86_400)
     output = b"\0LAH_HOTSPOT:" + str(timestamp).encode() + b"\0\0\nsrc/a.py\0"

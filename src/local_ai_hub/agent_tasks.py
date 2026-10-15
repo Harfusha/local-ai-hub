@@ -132,6 +132,8 @@ class GoalContract:
             raise ValueError("task contract requires goal")
         object.__setattr__(self, "goal", goal)
         object.__setattr__(self, "description", str(self.description or "").strip())
+        if not isinstance(self.scope, str):
+            raise ValueError("scope must be a canonical string")
         if not isinstance(self.scope, AgentScope):
             object.__setattr__(self, "scope", AgentScope.parse(self.scope))
         if not isinstance(self.acceptance_criteria, tuple):
@@ -160,7 +162,7 @@ class GoalContract:
             goal=data.get("goal", ""),
             description=str(data.get("description") or "").strip(),
             acceptance_criteria=tuple(data.get("acceptance_criteria") or ()),
-            scope=AgentScope.parse(data.get("scope", AgentScope.TASK.value)),
+            scope=data.get("scope", AgentScope.TASK),
             non_goals=tuple(data.get("non_goals") or ()),
             constraints=tuple(data.get("constraints") or ()),
             risk_profile=str(data.get("risk_profile", "normal")),

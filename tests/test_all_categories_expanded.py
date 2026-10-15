@@ -84,7 +84,7 @@ def process_data(x):
     det = DeterministicEngine()
     hotspots_res = det.find_hotspots(str(repo), days=7, limit=10)
     assert hotspots_res["success"] is True
-    assert hotspots_res["complete"] is True
+    assert hotspots_res["complete"] is True, hotspots_res
     assert len(hotspots_res["hotspots"]) >= 1
     assert hotspots_res["hotspots"][0]["path"] == "complex_logic.py"
     assert hotspots_res["hotspots"][0]["churn"] >= 2

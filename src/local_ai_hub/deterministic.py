@@ -4441,9 +4441,17 @@ class DeterministicEngine:
                 current_path = full_p.resolve(strict=True)
                 current_path.relative_to(canonical_root)
                 before_state = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+                opened_state = (opened.st_dev, opened.st_ino, opened.st_size, opened.st_mtime_ns, opened.st_ctime_ns)
                 after_state = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+                path_state = (
+                    current_path_stat.st_dev, current_path_stat.st_ino, current_path_stat.st_size,
+                    current_path_stat.st_mtime_ns, current_path_stat.st_ctime_ns,
+                )
+                # Windows path stat and handle stat expose different ctime
+                # semantics. Compare each source with its own earlier sample.
                 if (
-                    before_state != after_state
+                    before_state != path_state
+                    or opened_state != after_state
                     or (current_path_stat.st_dev, current_path_stat.st_ino) != (after.st_dev, after.st_ino)
                     or current_path != canonical_file
                     or _is_symlink_or_reparse_point(full_p)
