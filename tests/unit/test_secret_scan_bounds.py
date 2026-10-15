@@ -107,6 +107,32 @@ def test_git_history_pathspec_is_literal_and_validated(tmp_path: Path, monkeypat
     assert result["coverage"]["git_history"]["requested_commit_depth"] == 2
 
 
+def test_git_history_normalizes_absolute_contained_pathspec(tmp_path: Path, monkeypatch) -> None:
+    source = tmp_path / "config.env"
+    source.write_text("no credentials here\n", encoding="utf-8")
+    calls = _mock_history(monkeypatch, _history_output())
+
+    DeterministicEngine().secret_scan(str(tmp_path), str(source), scan_git_history=True)
+
+    assert calls[0][0][-1] == "config.env"
+
+
+def test_git_history_rejects_path_escape_before_process_run(tmp_path: Path, monkeypatch) -> None:
+    calls = _mock_history(monkeypatch, _history_output())
+    source = tmp_path / "secret.env"
+    source.write_text('token="sk-proj-123456789012345678901234"\n', encoding="utf-8")
+    outside = tmp_path.parent / f"outside-{tmp_path.name}-history.txt"
+
+    result = DeterministicEngine().secret_scan(
+        str(tmp_path), str(outside), scan_git_history=True,
+    )
+
+    assert calls == []
+    assert result["git_history_status"] == "invalid_pathspec"
+    assert result["clean"] is False
+    assert "findings" not in result
+
+
 def test_git_history_quoted_non_ascii_path_is_decoded_without_guessing(tmp_path: Path, monkeypatch) -> None:
     commit = b"d" * 40
     output = (
@@ -173,6 +199,8 @@ def test_git_history_unverified_process_cleanup_fails_closed(tmp_path: Path, mon
 
 def test_git_history_rejects_invalid_depth_without_running_git(tmp_path: Path, monkeypatch) -> None:
     calls = _mock_history(monkeypatch, _history_output())
+    source = tmp_path / "secret.env"
+    source.write_text('token="sk-proj-123456789012345678901234"\n', encoding="utf-8")
 
     result = DeterministicEngine().secret_scan(str(tmp_path), scan_git_history=True, commit_depth=101)
 
@@ -180,6 +208,8 @@ def test_git_history_rejects_invalid_depth_without_running_git(tmp_path: Path, m
     assert result["git_history_status"] == "invalid_commit_depth"
     assert result["scan_complete"] is False
     assert result["clean"] is False
+    assert result["success"] is False
+    assert "leak_count" not in result
 
 
 def test_git_history_truncated_capture_is_not_parsed_as_complete(tmp_path: Path, monkeypatch) -> None:
@@ -194,6 +224,75 @@ def test_git_history_truncated_capture_is_not_parsed_as_complete(tmp_path: Path,
     assert result["scanned_git_history"] is False
     assert result["git_history_status"] == "output_capture_incomplete"
     assert result["clean"] is False
+
+
+def test_git_history_nonzero_command_does_not_parse_partial_secret_output(tmp_path: Path, monkeypatch) -> None:
+    calls = _mock_history(
+        monkeypatch, _history_output(b"sk-proj-123456789012345678901234"), returncode=128,
+    )
+
+    result = DeterministicEngine().secret_scan(str(tmp_path), scan_git_history=True)
+
+    assert calls
+    assert result["findings"] == []
+    assert result["git_history_status"] == "command_failed"
+    assert result["scan_complete"] is False
+
+
+def test_git_history_does_not_start_when_working_scan_used_finding_budget(tmp_path: Path, monkeypatch) -> None:
+    from local_ai_hub import deterministic
+
+    source = tmp_path / "config.env"
+    source.write_text('token="sk-proj-123456789012345678901234"\n', encoding="utf-8")
+    monkeypatch.setattr(deterministic, "_SECRET_SCAN_MAX_FINDINGS", 1)
+    calls = _mock_history(monkeypatch, _history_output())
+
+    result = DeterministicEngine().secret_scan(str(tmp_path), scan_git_history=True)
+
+    assert result["leak_count"] == 1
+    assert result["git_history_status"] == "finding_limit_reached"
+    assert calls == []
+
+
+def test_git_history_rejects_too_little_remaining_capture_budget_before_spawn(tmp_path: Path, monkeypatch) -> None:
+    from local_ai_hub import deterministic
+
+    monkeypatch.setattr(deterministic, "_SECRET_SCAN_MAX_TOTAL_BYTES", 1024)
+    calls = _mock_history(monkeypatch, _history_output())
+
+    result = DeterministicEngine().secret_scan(str(tmp_path), scan_git_history=True)
+
+    assert calls == []
+    assert result["git_history_status"] == "aggregate_byte_budget_exhausted"
+    assert result["scan_complete"] is False
+
+
+def test_git_history_overlong_line_keeps_following_removed_line_number(tmp_path: Path, monkeypatch) -> None:
+    commit = b"e" * 40
+    output = (
+        b"\x00LAH_SECRET_SCAN_COMMIT:" + commit + b" PARENTS:\x00\n"
+        b"diff --git a/config.env b/config.env\n--- a/config.env\n+++ b/config.env\n"
+        b"@@ -10,2 +10,0 @@\n-" + b"x" * 65_537 + b"\n"
+        b"-sk-proj-123456789012345678901234\n"
+    )
+    _mock_history(monkeypatch, output)
+
+    result = DeterministicEngine().secret_scan(str(tmp_path), scan_git_history=True)
+
+    assert result["findings"][0]["line"] == 11
+    assert result["scan_complete"] is False
+    assert "git_history_line_exceeds_limit" in result["coverage"]["errors"]
+
+
+def test_git_history_hunk_count_mismatch_blocks_later_line_provenance(tmp_path: Path, monkeypatch) -> None:
+    output = _history_output(b"sk-proj-123456789012345678901234") + b"-sk-proj-abcdefghijklmnopqrstuv\n"
+    _mock_history(monkeypatch, output)
+
+    result = DeterministicEngine().secret_scan(str(tmp_path), scan_git_history=True)
+
+    assert len(result["findings"]) == 1
+    assert result["scan_complete"] is False
+    assert "git_history_hunk_line_count_mismatch" in result["coverage"]["errors"]
 
 
 def test_git_history_merge_commit_omission_is_incomplete(tmp_path: Path, monkeypatch) -> None:
