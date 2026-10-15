@@ -8132,7 +8132,10 @@ class Handler(BaseHTTPRequestHandler):
                 code = str(payload.get("code", ""))
                 targets = payload.get("targets") or payload.get("target_symbols")
                 if APP.deterministic is not None:
-                    self._send(200, APP.deterministic.skeletonize_code(code, target_symbols=targets)); return
+                    self._send(200, APP.deterministic.skeletonize_code(
+                        code, target_symbols=targets, root=str(payload.get("root", "")),
+                        path=str(payload.get("path", "")),
+                    )); return
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"}); return
             if 'post_agent_state_events_delta_1' in post_route_ids:

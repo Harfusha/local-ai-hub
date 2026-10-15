@@ -7856,11 +7856,21 @@ def test_{sym}_regression_edge_cases():
 
     def skeletonize_code(
         self,
-        code: str,
+        code: str = "",
         target_symbols: list[str] | None = None,
         keep_imports: bool = True,
+        *,
+        root: str = "",
+        path: str = "",
     ) -> dict[str, Any]:
         """Fold non-target function and method bodies into '...' to radically save prompt tokens while preserving AST outline."""
+        if path and not code:
+            indexed = getattr(self.code_index, "indexed_skeleton", None)
+            if not callable(indexed) or target_symbols:
+                return {"success": False, "terminal": True, "retryable": False,
+                        "error_code": "indexed_skeleton_unavailable",
+                        "error": "indexed outline requires an active index and no retained target bodies; otherwise supply source text"}
+            return indexed(root, path)
         try:
             tree = ast.parse(code)
         except Exception:

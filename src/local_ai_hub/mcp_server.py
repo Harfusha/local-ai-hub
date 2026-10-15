@@ -2855,8 +2855,10 @@ def _local_ai_repo_impl(
         if not candidate.is_absolute():
             return {"success": False, "error": "Preprocessing requires an explicit absolute stable project root; do not use MCP process cwd"}
     elif action == "skeletonize":
-        # This action only transforms supplied source text; it does not inspect a repository.
-        pass
+        if path and not (query or diff or task):
+            if not is_rooted_path(str(root or "").strip()):
+                return contract_error("indexed skeleton requires an explicit absolute project root")
+            root = _client_root(str(root).strip())
     else:
         explicit_root = str(root or "").strip()
         if not is_rooted_path(explicit_root):
@@ -3385,10 +3387,13 @@ def _local_ai_repo_impl(
             "root": root, "file": path or query,
         }, timeout=_timeout("quick")), "code")
     if action == "skeletonize":
+        source_code = query or diff or task
         skeleton_payload: dict[str, Any] = {
-            "code": query or diff or task,
-            "targets": [path] if path else None,
+            "code": source_code,
+            "targets": [path] if path and source_code else None,
         }
+        if path and not source_code:
+            skeleton_payload["path"] = path
         if root and is_rooted_path(str(root).strip()):
             skeleton_payload["root"] = _client_root(str(root).strip())
         return _compact(CLIENT.post("/api/repo/skeletonize", skeleton_payload, timeout=_timeout("quick")), "code")
