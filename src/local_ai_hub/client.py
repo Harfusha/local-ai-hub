@@ -1643,18 +1643,18 @@ class HubClient:
             return self.post("/api/leases/release", {"lease_id": kwargs.get("lease_id", "")})
         if act == "leases":
             return self.get(f"/api/leases?root={quote(str(kwargs.get('root', '')))}")
-        if act in {"worktree_lease", "worktree_claim"}:
+        if act == "worktree_lease":
             return self.post("/api/coord/worktree_lease", {
                 "root": kwargs.get("root", "."),
-                "branch": kwargs.get("branch") or kwargs.get("key") or kwargs.get("task_id"),
+                "branch": kwargs.get("branch"),
             })
         if act in {"worktree_release"}:
             return self.post("/api/coord/worktree_release", {
                 "root": kwargs.get("root", "."),
-                "worktree_path": kwargs.get("worktree_path") or kwargs.get("value") or kwargs.get("lease_id") or "",
+                "worktree_path": kwargs.get("worktree_path", ""),
                 "worktree_id": kwargs.get("worktree_id", ""),
-                "delete_branch": kwargs.get("delete_branch", True),
-                "branch": kwargs.get("branch") or kwargs.get("key") or kwargs.get("task_id"),
+                "delete_branch": kwargs.get("delete_branch", False),
+                "branch": kwargs.get("branch"),
             })
         if act == "pubsub_publish":
             allowed = {"root", "topic", "message", "publisher"}
@@ -1713,8 +1713,8 @@ class HubClient:
         if act == "simulate_merge":
             return self.post("/api/coord/simulate_merge", {
                 "root": kwargs.get("root", "."),
-                "source_branch": kwargs.get("source_branch") or kwargs.get("key") or kwargs.get("branch", ""),
-                "target_branch": kwargs.get("target_branch") or kwargs.get("target_scope", "HEAD"),
+                "source_branch": kwargs.get("source_branch", ""),
+                "target_branch": kwargs.get("target_branch", "HEAD"),
             })
         return {"success": False, "error": f"unknown coord action '{action}'"}
 
