@@ -256,12 +256,16 @@ Add `ast_diff(old_code: str, new_code: str)` returning structural diff tree iden
 
 ### Task 50: Incremental AST Reparsing on Single-Line Edits (#80)
 
+**2026-10-15 implementation checkpoint — all execution deferred until the remaining bundle is implemented.** CodeIndex now supplies a database/root/path/analyzer identity to the existing parser. A worker-local LRU retains up to 32 native Trees, with 8 MiB of retained source bytes and a 2 MiB per-source admission limit (these limits do not measure native Tree RAM). UTF-8 byte edits use `Tree.edit` and `Parser.parse(source, old_tree)`; failed incremental parses discard the edited Tree and fall back to a full parse. Native parser access and extraction remain serialized, and Windows Python 3.13 keeps the existing subprocess isolation. Workers retain initialized parsers between requests; timeout/crash cleanup terminates only owned worker handles with bounded joins and reports whether cleanup was confirmed. API reference: https://tree-sitter.github.io/py-tree-sitter/classes/tree_sitter.Tree.html .
+
+Single-file updates, including one-file watcher batches, compare metadata tuples inside the SQLite write transaction, retain identical symbol/reference/edge rows, and delete/insert only changed occurrences. Duplicate reference multiplicity is preserved; symbol conflicts follow the existing last-occurrence primary-key behavior. Larger initial batches retain the existing bulk SQL path. Extraction still walks the resulting Tree; this is native incremental parsing plus metadata delta writes, not proof that all extraction work is limited to changed lines. Diagnostics distinguish actual incremental parses from fallback parsers. Deferred regression source covers UTF-8 byte edits, Tree identity reuse and SQLite row preservation using `:memory:`; it has not been executed. Native-library behavior, performance and Windows cleanup remain pending the final bundle gate.
+
 **Files:**
 - Modify: `src/local_ai_hub/code_index.py:2740-2790`
 - Test: `tests/unit/test_incremental_ast_reparsing.py`
 
-- [ ] **Step 1: Write test verifying small patch updates only affected symbol nodes without full reindex**
-- [ ] **Step 2: Implement fix**
+- [x] **Step 1: Write incremental-edit and unchanged-row regression source (execution deferred)**
+- [x] **Step 2: Implement incremental Tree reuse and metadata delta writes (validation pending)**
 When patch changes a single function, reparse only that function's line range using tree-sitter incremental edit.
 - [ ] **Step 3: Run test and verify pass & Commit**
 `git commit -m "perf(code_index): support incremental AST tree editing for fast single-function updates"`

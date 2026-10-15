@@ -10,6 +10,7 @@ import os
 import re
 import sys
 import threading
+from collections import OrderedDict
 from concurrent.futures import ProcessPoolExecutor, TimeoutError
 from concurrent.futures.process import BrokenProcessPool
 from pathlib import Path
@@ -26,6 +27,91 @@ _LAZY_LANGUAGE_PACKS = {"java": "java", "cpp": "cpp"}
 _IN_WORKER = False
 _WORKER_POOL: ProcessPoolExecutor | None = None
 _WORKER_POOL_LOCK = threading.Lock()
+_TREE_CACHE: OrderedDict[tuple[str, str], tuple[bytes, Any, int]] = OrderedDict()
+_TREE_CACHE_BYTES = 0
+_TREE_CACHE_MAX_ENTRIES = 32
+_TREE_CACHE_MAX_BYTES = 8 * 1024 * 1024
+_TREE_CACHE_MAX_SOURCE_BYTES = 2 * 1024 * 1024
+
+
+def _discard_tree(source_key: str | None, language: str) -> None:
+    global _TREE_CACHE_BYTES
+    previous = _TREE_CACHE.pop((source_key, language), None)
+    if previous is not None:
+        _TREE_CACHE_BYTES -= len(previous[0])
+
+
+def _byte_point(source: bytes, offset: int) -> tuple[int, int]:
+    return source.count(b"\n", 0, offset), offset - source.rfind(b"\n", 0, offset) - 1
+
+
+def _source_edit(before: bytes, after: bytes) -> dict[str, Any]:
+    """Describe one contiguous UTF-8 edit; points use byte columns, not characters."""
+    start, shared = 0, min(len(before), len(after))
+    while start + 4096 <= shared and before[start:start + 4096] == after[start:start + 4096]:
+        start += 4096
+    while start < shared and before[start] == after[start]:
+        start += 1
+    old_end, new_end = len(before), len(after)
+    while old_end - start >= 4096 and new_end - start >= 4096 and before[old_end - 4096:old_end] == after[new_end - 4096:new_end]:
+        old_end -= 4096
+        new_end -= 4096
+    while old_end > start and new_end > start and before[old_end - 1] == after[new_end - 1]:
+        old_end -= 1
+        new_end -= 1
+    while start > 0 and ((start < len(before) and before[start] & 0xC0 == 0x80)
+                         or (start < len(after) and after[start] & 0xC0 == 0x80)):
+        start -= 1
+    while old_end < len(before) and new_end < len(after) and before[old_end] & 0xC0 == 0x80:
+        old_end += 1
+        new_end += 1
+    return {"start_byte": start, "old_end_byte": old_end, "new_end_byte": new_end,
+            "start_point": _byte_point(before, start), "old_end_point": _byte_point(before, old_end),
+            "new_end_point": _byte_point(after, new_end)}
+
+
+def _parse_tree(parser: Any, source: bytes, language: str, source_key: str | None) -> tuple[Any, dict[str, Any]]:
+    """Use worker-local native Trees; caller holds _PARSER_LOCK for the whole walk."""
+    global _TREE_CACHE_BYTES
+    key = (source_key, language) if isinstance(source_key, str) and 0 < len(source_key) <= 256 else None
+    previous = _TREE_CACHE.pop(key, None) if key is not None else None
+    if previous is not None:
+        _TREE_CACHE_BYTES -= len(previous[0])
+    report: dict[str, Any] = {"incremental": False, "tree_cache_hit": previous is not None}
+    tree = None
+    if previous is not None and previous[2] == id(parser):
+        old_source, old_tree, _ = previous
+        if old_source == source:
+            tree = old_tree
+            report.update(incremental=True, tree_reused=True)
+        else:
+            try:
+                edit = _source_edit(old_source, source)
+                old_tree.edit(**edit)
+                tree = parser.parse(source, old_tree)
+                if tree is None:
+                    raise RuntimeError("incremental parser returned no tree")
+                report.update(incremental=True, edit=edit)
+            except Exception as exc:
+                # An edited tree must never be retained after an unsuccessful parse.
+                report["incremental_fallback"] = type(exc).__name__
+                reset = getattr(parser, "reset", None)
+                if callable(reset):
+                    try:
+                        reset()
+                    except Exception:
+                        pass
+    if tree is None:
+        tree = parser.parse(source)
+        if tree is None:
+            raise RuntimeError("parser returned no tree")
+    if key is not None and len(source) <= _TREE_CACHE_MAX_SOURCE_BYTES:
+        _TREE_CACHE[key] = (source, tree, id(parser))
+        _TREE_CACHE_BYTES += len(source)
+        while len(_TREE_CACHE) > _TREE_CACHE_MAX_ENTRIES or _TREE_CACHE_BYTES > _TREE_CACHE_MAX_BYTES:
+            _, discarded = _TREE_CACHE.popitem(last=False)
+            _TREE_CACHE_BYTES -= len(discarded[0])
+    return tree, report
 
 
 def _get_worker_pool() -> ProcessPoolExecutor:
@@ -36,15 +122,31 @@ def _get_worker_pool() -> ProcessPoolExecutor:
         return _WORKER_POOL
 
 
-def _reset_worker_pool() -> None:
+def _reset_worker_pool() -> bool:
     global _WORKER_POOL
     with _WORKER_POOL_LOCK:
-        if _WORKER_POOL is not None:
+        pool = _WORKER_POOL
+        _WORKER_POOL = None
+        if pool is None:
+            return True
+        confirmed = True
+        workers = list(dict(getattr(pool, "_processes", None) or {}).values())
+        try:
+            pool.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            confirmed = False
+        for worker in workers:
             try:
-                _WORKER_POOL.shutdown(wait=False, cancel_futures=True)
+                if worker.is_alive():
+                    worker.terminate()
+                worker.join(timeout=0.5)
+                if worker.is_alive():
+                    worker.kill()
+                    worker.join(timeout=0.5)
+                confirmed = not worker.is_alive() and confirmed
             except Exception:
-                pass
-            _WORKER_POOL = None
+                confirmed = False
+        return confirmed
 
 
 def _use_isolated_worker() -> bool:
@@ -230,7 +332,7 @@ def parse_treesitter(
     return parse_treesitter_with_status(text, language)["result"]
 
 
-def _parse_treesitter_internal(text: str, language: str) -> dict[str, Any]:
+def _parse_treesitter_internal(text: str, language: str, *, source_key: str | None = None) -> dict[str, Any]:
     """Internal synchronous parser execution."""
     if not text or not text.strip():
         return {"result": ([], [], []), "status": "empty", "parser": "tree_sitter", "syntax_error_count": 0}
@@ -264,7 +366,7 @@ def _parse_treesitter_internal(text: str, language: str) -> dict[str, Any]:
             # Parser instances are mutable in the native Tree-sitter bindings and are
             # shared per language. Serialize calls so concurrent preprocessing cannot
             # corrupt parser state and crash the Python process.
-            tree = parser.parse(source_bytes)
+            tree, incremental = _parse_tree(parser, source_bytes, key, source_key)
         except Exception as exc:
             logger.debug("Tree-sitter parse failed for %s: %s", language, exc)
             return {"result": None, "status": "failed", "parser": key, "fallback_reason": "parser_error", "error_type": type(exc).__name__, "syntax_error_count": 0}
@@ -316,6 +418,7 @@ def _parse_treesitter_internal(text: str, language: str) -> dict[str, Any]:
                 return {"result": None, "status": "unavailable", "parser": key, "fallback_reason": "parser_unavailable", "syntax_error_count": 0}
         except Exception as exc:
             logger.debug("Tree-sitter extraction failed for %s: %s", language, exc)
+            _discard_tree(source_key, key)
             return {"result": None, "status": "failed", "parser": key, "fallback_reason": "parser_error", "error_type": type(exc).__name__, "syntax_error_count": 0}
 
         return {
@@ -324,17 +427,20 @@ def _parse_treesitter_internal(text: str, language: str) -> dict[str, Any]:
             "parser": key,
             "syntax_error_count": error_count,
             "syntax_error_count_truncated": error_count_truncated,
+            **incremental,
         }
 
 
-def _worker_parse(text: str, language: str) -> dict[str, Any]:
+def _worker_parse(text: str, language: str, source_key: str | None = None) -> dict[str, Any]:
     """Entrypoint executed in isolated worker subprocess."""
     global _IN_WORKER, _INIT_ATTEMPTED
-    _IN_WORKER = True
-    _INIT_ATTEMPTED = False
+    if not _IN_WORKER:
+        _IN_WORKER = True
+        _INIT_ATTEMPTED = False
     _init_treesitter()
     try:
-        return _parse_treesitter_internal(text, language)
+        return (_parse_treesitter_internal(text, language, source_key=source_key)
+                if source_key is not None else _parse_treesitter_internal(text, language))
     except Exception as exc:
         return {
             "result": None,
@@ -345,7 +451,7 @@ def _worker_parse(text: str, language: str) -> dict[str, Any]:
         }
 
 
-def parse_treesitter_with_status(text: str, language: str) -> dict[str, Any]:
+def parse_treesitter_with_status(text: str, language: str, *, source_key: str | None = None) -> dict[str, Any]:
     """Return extracted syntax data and an explicit, bounded parser outcome."""
     if not text or not text.strip():
         return {"result": ([], [], []), "status": "empty", "parser": "tree_sitter", "syntax_error_count": 0}
@@ -353,25 +459,28 @@ def parse_treesitter_with_status(text: str, language: str) -> dict[str, Any]:
     if _use_isolated_worker():
         try:
             pool = _get_worker_pool()
-            future = pool.submit(_worker_parse, text, language)
+            future = (pool.submit(_worker_parse, text, language, source_key)
+                      if source_key is not None else pool.submit(_worker_parse, text, language))
             return future.result(timeout=10.0)
         except BrokenProcessPool as exc:
             logger.warning("Tree-sitter worker process crashed (access violation): %s", exc)
-            _reset_worker_pool()
+            cleanup = _reset_worker_pool()
             return {
                 "result": None,
                 "status": "failed",
                 "fallback_reason": "worker_crash",
+                "worker_cleanup_confirmed": cleanup,
                 "error_type": type(exc).__name__,
                 "syntax_error_count": 0,
             }
         except TimeoutError as exc:
             logger.warning("Tree-sitter worker timed out: %s", exc)
-            _reset_worker_pool()
+            cleanup = _reset_worker_pool()
             return {
                 "result": None,
                 "status": "failed",
                 "fallback_reason": "worker_timeout",
+                "worker_cleanup_confirmed": cleanup,
                 "error_type": type(exc).__name__,
                 "syntax_error_count": 0,
             }
@@ -385,7 +494,8 @@ def parse_treesitter_with_status(text: str, language: str) -> dict[str, Any]:
                 "syntax_error_count": 0,
             }
 
-    return _parse_treesitter_internal(text, language)
+    return (_parse_treesitter_internal(text, language, source_key=source_key)
+            if source_key is not None else _parse_treesitter_internal(text, language))
 
 
 def _node_text(node: Any, source_bytes: bytes) -> str:
