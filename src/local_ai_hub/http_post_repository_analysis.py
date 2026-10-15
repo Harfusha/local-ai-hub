@@ -121,7 +121,7 @@ def handle_post_repository_analysis(
                 handler._send(400, {"success": False, "error": "path must be a repository-relative literal path", "terminal": True, "retryable": False})
                 return True
         if app.deterministic is not None:
-            handler._send(200, app.services.git_history_search(
+            result = app.services.git_history_search(
                 root,
                 query,
                 max_commits=max_commits,
@@ -129,7 +129,15 @@ def handle_post_repository_analysis(
                 since=filters["since"],
                 until=filters["until"],
                 path=filters["path"],
-            ))
+            )
+            result_status = result.get("status_code") if isinstance(result, dict) else None
+            status = (
+                result_status
+                if isinstance(result_status, int) and not isinstance(result_status, bool)
+                and 400 <= result_status <= 599
+                else 200
+            )
+            handler._send(status, result)
         else:
             handler._send(200, {"success": False, "error": "deterministic engine disabled"})
         return True

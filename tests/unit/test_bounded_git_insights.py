@@ -20,9 +20,10 @@ def test_history_search_uses_two_bounded_literal_searches_and_deduplicates(tmp_p
     calls = []
     commit = b"a" * 40
     record = (
-        commit + b"\0Ada Lovelace\0" + b"2026-01-10T12:00:00+00:00"
+        commit + b"\0A+B [Ops]\\Name\0" + b"2026-01-10T12:00:00+00:00"
         + b"\0needle subject\0\n"
     )
+    literal_author = "A+B [Ops]\\Name <a+b@example.com>"
 
     def fake_run(argv, **kwargs):
         calls.append((argv, kwargs))
@@ -31,7 +32,7 @@ def test_history_search_uses_two_bounded_literal_searches_and_deduplicates(tmp_p
     monkeypatch.setattr("local_ai_hub.deterministic.run_hidden", fake_run)
     monkeypatch.setattr("local_ai_hub.deterministic.shutil.which", lambda _name: "git.exe")
     result = _engine(tmp_path).git_history_search(
-        str(repo), "needle", 5, author="Ada", since="2026-01-01",
+        str(repo), "needle", 5, author=literal_author, since="2026-01-01",
         until="2026-01-31", path="src/a.py",
     )
 
@@ -39,7 +40,9 @@ def test_history_search_uses_two_bounded_literal_searches_and_deduplicates(tmp_p
     assert all(call[1]["timeout"] <= 8 for call in calls)
     assert all(call[1]["max_output_bytes"] == 1_048_576 for call in calls)
     assert all("--literal-pathspecs" in call[0] and "--no-textconv" in call[0] for call in calls)
-    assert all("--author=Ada" in call[0] and "src/a.py" in call[0] for call in calls)
+    assert all("--fixed-strings" in call[0] for call in calls)
+    assert all(f"--author={literal_author}" in call[0] and "src/a.py" in call[0] for call in calls)
+    assert all(any(arg.startswith("--since-as-filter=@") for arg in call[0]) for call in calls)
     assert result["complete"] is True
     assert result["count"] == 1
     assert result["commits"][0]["match_type"] == "message, diff_content"
