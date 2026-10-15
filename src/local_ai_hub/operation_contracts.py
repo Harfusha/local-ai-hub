@@ -409,7 +409,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "changed_paths": {"type": "array", "items": {"type": "string"}},
             **{name: {"type": "string", "default": ""} for name in (
                 "task", "context", "root", "profile", "conversation_id", "prompt", "model", "candidate",
-                "image_artifact_id", "screenshot_artifact_id", "bundle_artifact_id", "dom_artifact_id",
+                "image_artifact_id", "screenshot_artifact_id", "baseline_screenshot_artifact_id", "bundle_artifact_id", "dom_artifact_id",
                 "accessibility_artifact_id", "computed_styles_artifact_id", "runtime_artifact_id",
                 "network_artifact_id", "source", "job_id", "evaluation_task_id", "evaluation_cohort",
                 "workspace", "approver", "task_id", "language",
