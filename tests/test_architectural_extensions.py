@@ -3,12 +3,15 @@ import os
 import sqlite3
 import tempfile
 import time
+import hashlib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from local_ai_hub.agent_events import SwarmPubSub
 from local_ai_hub.commands import CommandBroker, _BoundedStreamBuffer, _redact_secrets
+from local_ai_hub.code_index import CodeIndex
 from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.process_utils import (
     atomic_write_file,
@@ -230,7 +233,19 @@ def test_deterministic_find_circular_dependencies(tmp_path: Path):
     (pkg / "mod_b.py").write_text("from cycle_pkg import mod_c\ndef b(): pass\n", encoding="utf-8")
     (pkg / "mod_c.py").write_text("from cycle_pkg import mod_a\ndef c(): pass\n", encoding="utf-8")
 
-    engine = DeterministicEngine({"server": {"state_dir": str(tmp_path)}})
+    def read_snapshot(path: Path, **_kwargs):
+        content = path.read_bytes()
+        return hashlib.sha256(content).hexdigest(), content.decode("utf-8").splitlines()
+
+    index = CodeIndex(
+        {"server": {"state_dir": str(tmp_path / "state")}},
+        SimpleNamespace(max_file_bytes=10_000_000, _read_snapshot=read_snapshot),
+    )
+    indexed = index.update_files_batch(
+        str(tmp_path), [str(path.relative_to(tmp_path)) for path in pkg.rglob("*.py")]
+    )
+    assert indexed["success"] is True
+    engine = DeterministicEngine({"server": {"state_dir": str(tmp_path)}}, code_index=index)
     res = engine.find_circular_dependencies(str(tmp_path))
     assert res["success"] is True
     assert res["has_cycles"] is True
@@ -249,12 +264,13 @@ def test_deterministic_generate_types(tmp_path: Path):
     )
 
     engine = DeterministicEngine({"server": {"state_dir": str(tmp_path)}})
-    res = engine.generate_types(str(tmp_path), "calculator.py", write_stub=True)
+    res = engine.generate_types(str(tmp_path), "calculator.py")
     assert res["success"] is True
     assert "def add(x: int, y: int) -> int: ..." in res["stub_content"]
     assert "class Calculator:" in res["stub_content"]
     assert "def multiply(self, a: float, b: float) -> float: ..." in res["stub_content"]
-    assert (tmp_path / "calculator.pyi").is_file()
+    assert res["stub_file"] is None
+    assert not (tmp_path / "calculator.pyi").exists()
 
 
 def test_deterministic_code_complexity(tmp_path: Path):

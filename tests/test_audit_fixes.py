@@ -6,11 +6,14 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+import hashlib
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
 from local_ai_hub.commands import _BoundedStreamBuffer, _is_interactive_prompt, CommandBroker
+from local_ai_hub.code_index import CodeIndex
 from local_ai_hub.work_orchestrator import WorkOrchestrator
 from local_ai_hub.async_jobs import AsyncJobManager
 from local_ai_hub.agent_routing import RoutingEngine
@@ -249,7 +252,19 @@ def test_circular_dependencies_fast_resolution():
         (pkg / "mod_a.py").write_text("import mypkg.mod_b\n", encoding="utf-8")
         (pkg / "mod_b.py").write_text("from mypkg import mod_a\n", encoding="utf-8")
 
-        det = DeterministicEngine({"deterministic": {"enabled": True}, "server": {"state_dir": str(tmp_path)}}, MagicMock(), MagicMock(), MagicMock())
+        def read_snapshot(path: Path, **_kwargs):
+            content = path.read_bytes()
+            return hashlib.sha256(content).hexdigest(), content.decode("utf-8").splitlines()
+
+        index = CodeIndex(
+            {"server": {"state_dir": str(tmp_path / "state")}},
+            SimpleNamespace(max_file_bytes=10_000_000, _read_snapshot=read_snapshot),
+        )
+        indexed = index.update_files_batch(
+            str(tmp_path), [str(path.relative_to(tmp_path)) for path in pkg.rglob("*.py")]
+        )
+        assert indexed["success"] is True
+        det = DeterministicEngine({"deterministic": {"enabled": True}, "server": {"state_dir": str(tmp_path)}}, MagicMock(), index, MagicMock())
         res = det.find_circular_dependencies(str(tmp_path))
         assert res["success"] is True
         assert res["has_cycles"] is True
