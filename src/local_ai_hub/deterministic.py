@@ -5936,18 +5936,12 @@ def test_{sym}_regression_edge_cases():
                 errors.append(code)
 
         def _scan_line(raw_line: bytes, rel: str, line_no: int) -> None:
-            nonlocal complete
             line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
-            stripped_line = line.strip()
-            if not stripped_line or stripped_line.startswith(("#", "//", "/*", "*")):
-                return
             is_test = _is_test_file(rel)
             for rule_name, label, pattern, severity in patterns:
                 for match in pattern.finditer(line):
                     token = match.group(1) if match.groups() else match.group(0)
                     entropy = _shannon_entropy(token)
-                    if rule_name == "generic_secret_assignment" and entropy < 3.0:
-                        continue
                     masked = f"{token[:4]}***{token[-4:]}" if len(token) > 8 else "***"
                     findings.append({
                         "file": rel, "line": line_no, "rule": rule_name,
@@ -6029,6 +6023,7 @@ def test_{sym}_regression_edge_cases():
                 resolved.relative_to(scan_root)
                 if candidate.is_symlink() or not resolved.is_file():
                     skipped_files += 1
+                    _record_error("file_changed_or_linked_during_scan")
                     continue
                 rel = resolved.relative_to(scan_root).as_posix()
                 if resolved.suffix.lower() in binary_suffixes:
@@ -6043,25 +6038,26 @@ def test_{sym}_regression_edge_cases():
                 if getattr(os, "O_NOFOLLOW", 0):
                     flags |= os.O_NOFOLLOW
                 fd = os.open(candidate, flags)
-                opened = os.fstat(fd)
-                if not stat.S_ISREG(opened.st_mode) or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
-                    os.close(fd)
-                    skipped_files += 1
-                    _record_error("file_identity_changed_or_non_regular")
-                    continue
                 try:
+                    opened = os.fstat(fd)
+                    if not stat.S_ISREG(opened.st_mode) or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+                        skipped_files += 1
+                        _record_error("file_identity_changed_or_non_regular")
+                        continue
                     opened_path = candidate.resolve(strict=True)
                     opened_path.relative_to(scan_root)
                     path_stat = os.stat(candidate, follow_symlinks=False)
                     if (path_stat.st_dev, path_stat.st_ino) != (opened.st_dev, opened.st_ino):
-                        raise ValueError("file path changed during open")
-                except (OSError, ValueError):
-                    os.close(fd)
-                    skipped_files += 1
-                    _record_error("file_path_changed_or_outside_root")
-                    continue
+                        skipped_files += 1
+                        _record_error("file_path_changed_or_outside_root")
+                        continue
+                    source = os.fdopen(fd, "rb")
+                    fd = -1
+                finally:
+                    if fd >= 0:
+                        os.close(fd)
                 eligible_files += 1
-                with os.fdopen(fd, "rb") as source:
+                with source:
                     file_bytes = 0
                     line_no = 0
                     while True:

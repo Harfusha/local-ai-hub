@@ -30,10 +30,12 @@ def test_placeholder_substring_does_not_downgrade_finding(tmp_path: Path) -> Non
 
 
 def test_requested_path_escape_makes_scan_incomplete(tmp_path: Path) -> None:
-    outside = tmp_path.parent / "outside-secret-scan.txt"
+    root = tmp_path / "repo"
+    root.mkdir()
+    outside = tmp_path / "outside-secret-scan.txt"
     outside.write_text("nothing to scan", encoding="utf-8")
     try:
-        result = DeterministicEngine().secret_scan(str(tmp_path), "../outside-secret-scan.txt")
+        result = DeterministicEngine().secret_scan(str(root), "../outside-secret-scan.txt")
     finally:
         outside.unlink(missing_ok=True)
 
@@ -84,3 +86,19 @@ def test_long_line_does_not_shift_following_secret_line_number(tmp_path: Path) -
     assert finding["line"] == 2
     assert finding["redacted_snippet"] == "credential-like value omitted"
     assert result["scan_complete"] is False
+
+
+def test_comment_and_low_entropy_credentials_remain_visible(tmp_path: Path) -> None:
+    source = tmp_path / "config.py"
+    source.write_text(
+        '# token = "sk-proj-123456789012345678901234"\n'
+        '# api_key = "aaaaaaaaaaaaaaaa"\n',
+        encoding="utf-8",
+    )
+
+    result = DeterministicEngine().secret_scan(str(tmp_path))
+
+    assert {item["rule"] for item in result["findings"]} == {
+        "openai_api_key", "generic_secret_assignment"
+    }
+    assert all(item["triage_status"] == "untriaged" for item in result["findings"])
