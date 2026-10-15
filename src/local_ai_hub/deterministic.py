@@ -6868,7 +6868,7 @@ def test_{sym}_regression_edge_cases():
                         )
                     safe_tbl = tbl.replace('"', '""')
                     cols: set[str] = set()
-                    for column_row in con.execute(f'PRAGMA table_info("{safe_tbl}")'):
+                    for column_row in con.execute(f'PRAGMA table_xinfo("{safe_tbl}")'):
                         if time.monotonic() >= db_deadline:
                             raise TimeoutError(
                                 "SQLite schema inspection exceeded its time budget"
@@ -6919,6 +6919,8 @@ def test_{sym}_regression_edge_cases():
         if migration_files:
             schema_source = "sql_migrations"
             migration_db = sqlite3.connect(":memory:")
+            migration_db.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, _MAX_SCHEMA_FILE_BYTES)
+            migration_db.setlimit(sqlite3.SQLITE_LIMIT_SQL_LENGTH, _MAX_SCHEMA_FILE_BYTES)
 
             def split_sql_statements(source: str) -> Iterator[str]:
                 pending: list[str] = []
@@ -6999,6 +7001,8 @@ def test_{sym}_regression_edge_cases():
                     source = raw_source.decode("utf-8", errors="replace")
 
                     for statement in split_sql_statements(source):
+                        if time.monotonic() >= migration_deadline:
+                            raise TimeoutError("migration replay exceeded its time budget")
                         normalized = re.sub(r"(?m)^\s*--[^\n]*", "", statement)
                         normalized = re.sub(r"/\*.*?\*/", "", normalized, flags=re.DOTALL).strip()
                         if not re.match(r"^(?:CREATE\s+TABLE|ALTER\s+TABLE|DROP\s+TABLE)\b", normalized, re.IGNORECASE):
@@ -7013,14 +7017,24 @@ def test_{sym}_regression_edge_cases():
                     return {"success": False, "error": "no supported table schema DDL found in SQL migrations"}
                 tables = migration_db.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
-                ).fetchall()
+                )
+                total_code_columns = 0
                 for (table_name,) in tables:
+                    if len(code_tables) >= _MAX_SCHEMA_DB_TABLES:
+                        raise ValueError("migration schema table limit exceeded")
                     safe_table = str(table_name).replace('"', '""')
-                    code_tables[str(table_name)] = {
-                        row[1] for row in migration_db.execute(f'PRAGMA table_info("{safe_table}")').fetchall()
-                    }
-            except (OSError, sqlite3.Error) as exc:
-                return {"success": False, "error": f"failed to read schema migrations: {exc}"}
+                    columns: set[str] = set()
+                    for row in migration_db.execute(f'PRAGMA table_xinfo("{safe_table}")'):
+                        total_code_columns += 1
+                        if total_code_columns > _MAX_SCHEMA_DB_COLUMNS:
+                            raise ValueError("migration schema column limit exceeded")
+                        if time.monotonic() >= migration_deadline:
+                            raise TimeoutError("migration schema inspection exceeded its time budget")
+                        columns.add(row[1])
+                    code_tables[str(table_name)] = columns
+            except (OSError, sqlite3.Error, ValueError, TimeoutError) as exc:
+                return {"success": False, "drift_detected": None, "in_sync": None,
+                        "error": f"failed to read schema migrations: {exc}"}
             finally:
                 migration_db.close()
         else:
@@ -7137,16 +7151,20 @@ def test_{sym}_regression_edge_cases():
                 "error": "No SQL migration schema or declared Python model tables were found",
             }
 
-        missing_in_db = [t for t in code_tables if t not in db_tables]
-        if schema_source == "sql_migrations":
-            extra_in_db = [t for t in db_tables if t not in code_tables]
-        else:
-            extra_in_db = [t for t in db_tables if t not in code_tables and code_tables]
+        # SQLite identifier matching folds ASCII only; Unicode casefold would
+        # incorrectly merge distinct non-ASCII names accepted by SQLite.
+        ascii_lower = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+        db_names = {name.translate(ascii_lower): name for name in db_tables}
+        code_names = {name.translate(ascii_lower): name for name in code_tables}
+        missing_in_db = sorted(name for key, name in code_names.items() if key not in db_names)
+        extra_in_db = sorted(name for key, name in db_names.items() if key not in code_names)
         column_drifts: list[dict[str, Any]] = []
-        for t in code_tables:
-            if t in db_tables:
-                missing_cols = list(code_tables[t] - db_tables[t])
-                extra_cols = list(db_tables[t] - code_tables[t]) if code_tables[t] else []
+        for key, t in sorted(code_names.items()):
+            if key in db_names:
+                declared = {column.translate(ascii_lower): column for column in code_tables[t]}
+                actual = {column.translate(ascii_lower): column for column in db_tables[db_names[key]]}
+                missing_cols = sorted(column for name, column in declared.items() if name not in actual)
+                extra_cols = sorted(column for name, column in actual.items() if name not in declared) if declared else []
                 if missing_cols or extra_cols:
                     column_drifts.append({
                         "table": t,
@@ -7163,7 +7181,7 @@ def test_{sym}_regression_edge_cases():
             }
         for t in missing_in_db:
             drift_map[t] = {
-                "missing_in_db": list(code_tables.get(t, [])),
+                "missing_in_db": sorted(code_tables.get(t, [])),
                 "missing_in_code": [],
                 "type_mismatches": {},
             }
@@ -7171,7 +7189,7 @@ def test_{sym}_regression_edge_cases():
             for t in extra_in_db:
                 drift_map[t] = {
                     "missing_in_db": [],
-                    "missing_in_code": list(db_tables.get(t, [])),
+                    "missing_in_code": sorted(db_tables.get(t, [])),
                     "type_mismatches": {},
                 }
 

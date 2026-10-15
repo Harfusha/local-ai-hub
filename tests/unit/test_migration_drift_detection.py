@@ -7,6 +7,73 @@ import local_ai_hub.deterministic as deterministic
 from local_ai_hub.deterministic import DeterministicEngine
 
 
+def _compare_schema(tmp_path, live_sql, migration_sql):
+    migrations = tmp_path / "migrations"
+    migrations.mkdir()
+    (migrations / "001.sql").write_text(migration_sql, encoding="utf-8")
+    db_file = tmp_path / "app.db"
+    with sqlite3.connect(db_file) as con:
+        con.executescript(live_sql)
+    before = db_file.read_bytes()
+    engine = DeterministicEngine({"server": {"state_dir": str(tmp_path / "state")}})
+    result = engine.migration_drift(str(tmp_path), str(db_file))
+    assert db_file.read_bytes() == before
+    return result
+
+
+def test_generated_columns_participate_in_drift_comparison(tmp_path):
+    result = _compare_schema(tmp_path, "CREATE TABLE values_table (id INTEGER);",
+                             "CREATE TABLE values_table (id INTEGER, doubled INTEGER GENERATED ALWAYS AS (id * 2) STORED);")
+    assert result["success"] and result["drift_detected"]
+    assert result["column_drifts"][0]["missing_in_db"] == ["doubled"]
+
+
+def test_matching_generated_columns_do_not_create_false_drift(tmp_path):
+    schema = "CREATE TABLE values_table (id INTEGER, doubled INTEGER GENERATED ALWAYS AS (id * 2) VIRTUAL);"
+    assert _compare_schema(tmp_path, schema, schema)["in_sync"]
+
+
+def test_sqlite_ascii_identifier_case_does_not_create_false_drift(tmp_path):
+    result = _compare_schema(tmp_path, 'CREATE TABLE "Users" ("ID" INTEGER, "Email" TEXT);',
+                             "CREATE TABLE users (id INTEGER, email TEXT);")
+    assert result["success"] and result["in_sync"]
+
+
+def test_non_ascii_identifiers_remain_distinct(tmp_path):
+    result = _compare_schema(tmp_path, 'CREATE TABLE "Ä" (id INTEGER);', 'CREATE TABLE "ä" (id INTEGER);')
+    assert result["drift_detected"]
+    assert result["missing_tables_in_db"] == ["ä"]
+    assert result["extra_tables_in_db"] == ["Ä"]
+
+
+def test_migration_alter_rename_drop_sequence_matches_final_schema(tmp_path):
+    result = _compare_schema(tmp_path, "CREATE TABLE renamed (id INTEGER, email TEXT);",
+                             "CREATE TABLE users (id INTEGER, obsolete TEXT);"
+                             "ALTER TABLE users RENAME TO renamed;"
+                             "ALTER TABLE renamed DROP COLUMN obsolete;"
+                             "ALTER TABLE renamed ADD COLUMN email TEXT;")
+    assert result["success"] and result["in_sync"]
+
+
+def test_column_drift_order_is_stable(tmp_path):
+    result = _compare_schema(tmp_path, "CREATE TABLE users (id INTEGER, z_old TEXT, a_old TEXT);",
+                             "CREATE TABLE users (id INTEGER, z_new TEXT, a_new TEXT);")
+    assert result["column_drifts"][0]["missing_in_db"] == ["a_new", "z_new"]
+    assert result["column_drifts"][0]["extra_in_db"] == ["a_old", "z_old"]
+
+
+def test_migration_schema_metadata_limits_do_not_claim_sync(tmp_path, monkeypatch):
+    monkeypatch.setattr(deterministic, "_MAX_SCHEMA_DB_TABLES", 1)
+    result = _compare_schema(tmp_path, "", "CREATE TABLE first_table (id INTEGER); CREATE TABLE second_table (id INTEGER);")
+    assert not result["success"] and result["in_sync"] is None
+    assert "table limit" in result["error"]
+
+
+def test_migration_large_computed_value_is_rejected_in_memory(tmp_path):
+    result = _compare_schema(tmp_path, "", "CREATE TABLE oversized AS SELECT zeroblob(10000000) AS data;")
+    assert not result["success"] and result["in_sync"] is None
+
+
 def test_migration_drift_detects_columns_missing_from_live_sqlite(tmp_path: Path) -> None:
     migration_dir = tmp_path / "migrations"
     migration_dir.mkdir()
