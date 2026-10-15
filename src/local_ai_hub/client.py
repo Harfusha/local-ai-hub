@@ -1522,8 +1522,6 @@ class HubClient:
             }
         act = action
         if act in {"context_compile", "verify_receipt", "verify_completion", "verify_export"}:
-            from .operation_contracts import validate_operation_arguments
-
             validation_error = validate_operation_arguments("local_ai_coord", act, dict(kwargs))
             if validation_error:
                 return {
