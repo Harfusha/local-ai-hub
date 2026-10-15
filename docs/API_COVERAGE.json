@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "snapshot_status": "refresh_pending",
+  "source_document": "docs/API_COVERAGE.md",
+  "coverage_rows": null,
+  "note": "The checked-in Markdown is a historical wide-format snapshot. Refresh both human and structured artifacts with python tools/surface_inventory.py --write-doc after the full change bundle is ready. This marker contains no fresh inventory or runtime claims."
+}
