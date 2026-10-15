@@ -23,7 +23,6 @@ def _status(*, ollama_online=True, preprocessing_timeout=False):
         "ollama_online": ollama_online,
         "active_model": "qwen2.5-coder:3b",
         "scheduler": {"active_model": "qwen2.5-coder:3b"},
-        "installed_models": ["qwen2.5-coder:3b", "qwen3.5:9b"],
         "models": {
             "fast_code": "qwen2.5-coder:3b",
             "general": "qwen2.5-coder:3b",
@@ -43,15 +42,35 @@ class HubClientDouble:
         "text": "recognized speech",
     }
     calls: list[tuple[str, dict]] = []
+    get_calls: list[str] = []
+    models_payload = {
+        "object": "list",
+        "data": [
+            {"id": "qwen2.5-coder:3b", "object": "model", "owned_by": "ollama"},
+            {"id": "qwen3.5:9b", "object": "model", "owned_by": "ollama"},
+        ],
+    }
     async_submit_payload = {"success": True, "job_id": "job-test"}
-    reason_payload = {"success": True, "text": "READY", "model": "qwen3.5:9b"}
+    async_wait_payload = {"success": True, "job_id": "job-test", "state": "done", "terminal": True}
+    async_result_payload = {
+        "success": True, "job_id": "job-test", "state": "done", "terminal": True,
+        "artifact_id": "artifact-test",
+        "result": {"text": "ASYNC_READY", "route": {"model": "qwen3.5:9b"}},
+    }
+    reason_payload = {
+        "success": True, "text": "READY", "model": "qwen3.5:9b",
+        "route": {"model": "qwen3.5:9b"},
+    }
 
     def __init__(self, **_kwargs):
         self.calls = type(self).calls
 
-    def get(self, path):
+    def get(self, path, **_kwargs):
+        self.get_calls.append(path)
         if path == "/health":
             return {"success": True, "hub_online": True, "version": "test"}
+        if path == "/api/models":
+            return deepcopy(type(self).models_payload)
         if path == "/api/hardware/gpu":
             return {"available": True, "backend": "test"}
         raise AssertionError(f"unexpected GET {path}")
@@ -73,7 +92,10 @@ class HubClientDouble:
         if path == "/api/async-jobs":
             if payload["action"] == "submit":
                 return deepcopy(type(self).async_submit_payload)
-            return {"success": True, "result": {"text": "ASYNC_READY"}}
+            if payload["action"] == "wait":
+                return deepcopy(type(self).async_wait_payload)
+            if payload["action"] == "result":
+                return deepcopy(type(self).async_result_payload)
         raise AssertionError(f"unexpected POST {path}")
 
     def coord(self, action, **_kwargs):
@@ -99,10 +121,27 @@ def smoke(monkeypatch):
         {"success": True, "engine": "whisper_cli", "text": "recognized speech"},
     )
     monkeypatch.setattr(HubClientDouble, "calls", [])
+    monkeypatch.setattr(HubClientDouble, "get_calls", [])
+    monkeypatch.setattr(HubClientDouble, "models_payload", deepcopy(HubClientDouble.models_payload))
     monkeypatch.setattr(HubClientDouble, "async_submit_payload", {"success": True, "job_id": "job-test"})
     monkeypatch.setattr(
+        HubClientDouble, "async_wait_payload",
+        {"success": True, "job_id": "job-test", "state": "done", "terminal": True},
+    )
+    monkeypatch.setattr(
+        HubClientDouble, "async_result_payload",
+        {
+            "success": True, "job_id": "job-test", "state": "done", "terminal": True,
+            "artifact_id": "artifact-test",
+            "result": {"text": "ASYNC_READY", "route": {"model": "qwen3.5:9b"}},
+        },
+    )
+    monkeypatch.setattr(
         HubClientDouble, "reason_payload",
-        {"success": True, "text": "READY", "model": "qwen3.5:9b"},
+        {
+            "success": True, "text": "READY", "model": "qwen3.5:9b",
+            "route": {"model": "qwen3.5:9b"},
+        },
     )
 
     def run(tmp_path: Path):
@@ -135,8 +174,11 @@ def test_live_smoke_uses_runtime_reason_routing_and_keeps_benchmark_model(smoke,
     assert checks["live-model"]["status"] == "verified"
     assert checks["live-model"]["expected_response"] == "READY"
     assert checks["live-async-job"]["ok"] is True
+    assert checks["live-async-job"]["status"] == "verified"
     assert benchmark["model"] == "qwen2.5-coder:3b"
     assert checks["live-hardware-benchmark"]["response_quality"] == "not_verified"
+    assert HubClientDouble.get_calls.count("/api/models") == 1
+    assert HubClientDouble.get_calls.index("/api/models") < HubClientDouble.get_calls.index("/health")
     assert post_order.index("/api/reason") < post_order.index("/api/async-jobs")
     assert post_order.index("/api/async-jobs") < post_order.index("/api/benchmark/run")
     assert post_order.index("/api/async-jobs") < post_order.index("/api/task/vision")
@@ -146,7 +188,10 @@ def test_live_smoke_uses_runtime_reason_routing_and_keeps_benchmark_model(smoke,
 def test_live_smoke_rejects_wrong_exact_response(smoke, tmp_path, monkeypatch):
     monkeypatch.setattr(
         HubClientDouble, "reason_payload",
-        {"success": True, "text": "WRONG", "model": "qwen3.5:9b"},
+        {
+            "success": True, "text": "WRONG", "model": "qwen3.5:9b",
+            "route": {"model": "qwen3.5:9b"},
+        },
     )
 
     result = smoke(tmp_path)
@@ -168,8 +213,10 @@ def test_live_smoke_skips_preprocessing_only_models(smoke, tmp_path, monkeypatch
         "heavy_code": "qwen2.5-coder:1.5b",
         "reasoning": "qwen2.5-coder:1.5b",
     })
-    status["installed_models"] = ["qwen2.5-coder:1.5b"]
     monkeypatch.setattr(HubClientDouble, "status_payload", status)
+    monkeypatch.setattr(HubClientDouble, "models_payload", {
+        "object": "list", "data": [{"id": "qwen2.5-coder:1.5b"}],
+    })
 
     result = smoke(tmp_path)
     checks = _checks(result)
@@ -182,6 +229,115 @@ def test_live_smoke_skips_preprocessing_only_models(smoke, tmp_path, monkeypatch
     assert checks["live-model"]["status"] == "not_verified"
     assert checks["live-model"]["classification"] == "foreground_model_not_configured"
     assert checks["live-hardware-benchmark"]["status"] == "not_verified"
+    assert inference_paths == set()
+
+
+@pytest.mark.parametrize(
+    ("actual_model", "classification"),
+    [
+        ("qwen2.5-coder:7b", "model_route_mismatch"),
+        ("qwen2.5-coder:1.5b", "preprocessing_model_routed"),
+    ],
+)
+def test_live_smoke_rejects_wrong_reported_reason_route(smoke, tmp_path, monkeypatch, actual_model, classification):
+    monkeypatch.setattr(
+        HubClientDouble, "reason_payload",
+        {
+            "success": True, "text": "READY", "model": actual_model,
+            "route": {"model": actual_model},
+        },
+    )
+
+    result = smoke(tmp_path)
+    model_check = _checks(result)["live-model"]
+
+    assert result["success"] is False
+    assert model_check["ok"] is False
+    assert model_check["classification"] == classification
+
+
+def test_live_smoke_does_not_infer_unreported_reason_route(smoke, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        HubClientDouble, "reason_payload",
+        {"success": True, "text": "READY", "model": "qwen3.5:9b"},
+    )
+
+    result = smoke(tmp_path)
+    model_check = _checks(result)["live-model"]
+
+    assert result["success"] is False
+    assert model_check["status"] == "not_verified"
+    assert model_check["classification"] == "model_route_unreported"
+
+
+def test_live_smoke_rejects_async_result_without_terminal_proof(smoke, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        HubClientDouble, "async_wait_payload",
+        {"success": True, "job_id": "job-test", "state": "running", "terminal": False},
+    )
+
+    result = smoke(tmp_path)
+    async_check = _checks(result)["live-async-job"]
+    async_requests = [payload for path, payload in HubClientDouble.calls if path == "/api/async-jobs"]
+
+    assert result["success"] is False
+    assert async_check["ok"] is False
+    assert async_check["status"] == "not_verified"
+    assert async_check["classification"] == "async_not_terminal"
+    assert [payload["action"] for payload in async_requests] == ["submit", "wait"]
+
+
+def test_live_smoke_rejects_async_artifact_without_exact_result(smoke, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        HubClientDouble, "async_result_payload",
+        {
+            "success": True, "job_id": "job-test", "state": "done", "terminal": True,
+            "artifact_id": "artifact-only",
+        },
+    )
+
+    result = smoke(tmp_path)
+    async_check = _checks(result)["live-async-job"]
+
+    assert result["success"] is False
+    assert async_check["ok"] is False
+    assert async_check["status"] == "not_verified"
+
+
+def test_live_smoke_rejects_async_result_from_wrong_model(smoke, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        HubClientDouble, "async_result_payload",
+        {
+            "success": True, "job_id": "job-test", "state": "done", "terminal": True,
+            "artifact_id": "artifact-test",
+            "result": {
+                "text": "ASYNC_READY", "route": {"model": "qwen2.5-coder:7b"},
+            },
+        },
+    )
+
+    result = smoke(tmp_path)
+    async_check = _checks(result)["live-async-job"]
+
+    assert result["success"] is False
+    assert async_check["ok"] is False
+    assert async_check["status"] == "failed"
+    assert async_check["classification"] == "model_route_mismatch"
+
+
+def test_live_smoke_does_not_guess_when_model_inventory_shape_is_unknown(smoke, tmp_path, monkeypatch):
+    monkeypatch.setattr(HubClientDouble, "models_payload", {"models": ["qwen3.5:9b"]})
+
+    result = smoke(tmp_path)
+    checks = _checks(result)
+    inference_paths = {
+        path for path, _payload in HubClientDouble.calls
+        if path in {"/api/reason", "/api/async-jobs", "/api/benchmark/run", "/api/task/vision"}
+    }
+
+    assert result["success"] is False
+    assert checks["live-model-inventory"]["status"] == "not_verified"
+    assert checks["live-model"]["classification"] == "model_inventory_unavailable"
     assert inference_paths == set()
 
 
