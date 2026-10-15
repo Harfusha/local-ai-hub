@@ -965,7 +965,7 @@ class TaskStore:
         not_used_reason = raw_not_used_reason.strip() if isinstance(raw_not_used_reason, str) else ""
         if not used_ids and not not_used_reason:
             raise CompletionGateError(
-                "Invalid checkpoint memory audit: record used_ids or a nonempty not_used_reason in state_data.memory_audit"
+                "Invalid checkpoint memory audit: record used memory IDs or not_used_reason in state_data.memory_audit (used_ids or a nonempty reason)"
             )
         volatile_used = {
             str(item.get("id", ""))
