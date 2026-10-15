@@ -208,6 +208,8 @@ def test_registered_code_index_wire_keeps_prefix_and_final_wire_accounting(
         "offset": 40, "total_matches": 100, "returned_count": 40,
         "matches_count": 40, "has_more": True, "terms": ["symbol", "function"],
         "observed_match_count": 100, "truncated": True, "stale": False,
+        "confidence": 0.05,
+        "confidence_basis": "returned_query_term_coverage_result_support_and_candidate_freshness",
         "coverage": {
             "query_term_count": 2, "matched_term_count": 2,
             "matched_terms": ["function", "symbol"], "query_term_coverage": 1.0,
@@ -277,7 +279,10 @@ def test_registered_code_index_wire_keeps_prefix_and_final_wire_accounting(
     assert payload["coverage"]["returned_symbol_count"] == len(payload["symbols"])
     assert payload["coverage"]["candidate_match_count"] == 100
     assert payload["freshness"]["unknown_paths"] == [symbol["path"] for symbol in payload["symbols"]]
-    assert payload["stale"] is None
+    assert "stale" not in payload or isinstance(payload["stale"], bool)
+    assert payload["confidence"] <= raw["confidence"]
+    from local_ai_hub.operation_contracts import validate_operation_output
+    assert validate_operation_output("local_ai_repo", "code_index", payload) is None
     assert "parse_outcomes" not in payload
     assert "parse_outcomes" in payload["omitted_fields"]
     assert payload["truncation"]["returned_count"] == len(payload["symbols"])

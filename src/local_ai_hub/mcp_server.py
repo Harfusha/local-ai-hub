@@ -1172,8 +1172,10 @@ def _code_index_page_with_prefix(
             "checked_paths": 0, "stale_paths": [],
             "unknown_paths": candidate_paths[:64], "complete": False,
         }
-        if "stale" in candidate:
-            candidate["stale"] = None
+        if raw.get("stale") is True:
+            candidate["stale"] = True
+        else:
+            candidate.pop("stale", None)
         candidate.pop("parse_outcomes", None)
         candidate["omitted_fields"] = list(dict.fromkeys([
             *(candidate.get("omitted_fields") if isinstance(candidate.get("omitted_fields"), list) else []),
@@ -1181,8 +1183,17 @@ def _code_index_page_with_prefix(
         ]))
         coverage = candidate["coverage"]["query_term_coverage"]
         support = min(1.0, count / 3.0)
-        candidate["confidence"] = round(0.65 * coverage + 0.20 * support, 3) if candidate_paths else 0.0
-        candidate["confidence"] = min(candidate["confidence"], 0.50)
+        derived_confidence = round(0.65 * coverage + 0.20 * support, 3) if candidate_paths else 0.0
+        raw_confidence = raw.get("confidence")
+        if (isinstance(raw_confidence, (int, float)) and not isinstance(raw_confidence, bool)
+                and 0 <= raw_confidence <= 1):
+            candidate["confidence"] = min(float(raw_confidence), derived_confidence, 0.50)
+        else:
+            candidate.pop("confidence", None)
+            candidate.pop("confidence_basis", None)
+            candidate["omitted_fields"] = list(dict.fromkeys([
+                *candidate["omitted_fields"], "confidence", "confidence_basis",
+            ]))
         candidate["truncated"] = has_more
         candidate["observed_match_count"] = total
         truncation = raw.get("truncation")
