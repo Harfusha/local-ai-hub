@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -184,6 +186,66 @@ def test_code_index_compaction_keeps_largest_whole_symbol_prefix_with_continuati
     assert result["total_matches"] == 100
     assert result["has_more"] is True
     assert result["next_offset"] == 40 + len(result["symbols"])
+
+
+def test_registered_code_index_wire_keeps_prefix_and_final_wire_accounting(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    from local_ai_hub.token_accounting import json_tokens
+
+    page = [
+        {
+            "path": f"src/{index:03}.py", "name": f"symbol_{index:03}",
+            "kind": "function", "line": index + 1,
+            "signature": f"def symbol_{index:03}(value: str) -> str",
+        }
+        for index in range(40)
+    ]
+    raw = {
+        "success": True, "root": str(tmp_path), "symbols": page, "limit": 40,
+        "offset": 40, "total_matches": 100, "returned_count": 40,
+        "matches_count": 40, "has_more": True,
+    }
+
+    class DummyClient:
+        def post(self, path, _payload, **_kwargs):
+            assert path == "/api/repo/code-index"
+            return dict(raw)
+
+    monkeypatch.setattr(mcp_server, "CLIENT", DummyClient())
+    monkeypatch.setattr(mcp_server, "_workspace", str(tmp_path))
+    monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, "record", lambda *args, **kwargs: None)
+    monkeypatch.setattr(mcp_server.CONTEXT_LEDGER, "record", lambda **kwargs: None)
+    monkeypatch.setattr(
+        mcp_server, "load_operational_mode",
+        lambda *args, **kwargs: mcp_server.OperationalModeSnapshot("active", 0, None),
+    )
+    requested = 1800
+    result = asyncio.run(mcp_server.mcp.call_tool("local_ai_repo", {
+        "action": "code_index", "root": str(tmp_path), "query": "symbol",
+        "limit": 40, "offset": 40, "max_response_tokens": requested,
+    }))
+    contents, structured = result if isinstance(result, tuple) else (result, None)
+    payload = json.loads(contents[0].text)
+    wire = {
+        "content": [{"type": "text", "text": contents[0].text}],
+        "structuredContent": structured,
+        "isError": False,
+    }
+    wire_tokens = json_tokens(wire)
+
+    assert structured is not None
+    assert 0 < len(payload["symbols"]) < len(page)
+    assert payload["symbols"] == page[:len(payload["symbols"])]
+    assert payload["success"] is True
+    assert not (payload.get("success") is True and payload.get("status_code") == 413)
+    assert payload["returned_count"] == payload["returned_limit"] == len(payload["symbols"])
+    assert payload["total_matches"] == 100
+    assert payload["has_more"] is True
+    assert payload["next_offset"] == 40 + len(payload["symbols"])
+    assert wire_tokens <= requested
+    assert payload["response_budget"]["returned_tokens"] == wire_tokens
+    assert structured["response_budget"]["returned_tokens"] == wire_tokens
 
 
 @pytest.mark.parametrize("limit,offset", [(MAX_PAGE_SIZE + 1, 0), (24, MAX_PAGE_WINDOW)])
