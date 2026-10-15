@@ -3347,8 +3347,15 @@ def _local_ai_repo_impl(
             "root": root, "language": query or task or "python",
         }, timeout=_timeout("quick")), "architecture")
     if action == "generate_types":
+        if diff:
+            return {
+                "success": False,
+                "error": "generate_types is read-only; diff must be empty",
+                "terminal": True,
+                "retryable": False,
+            }
         return _compact(CLIENT.post("/api/repo/generate_types", {
-            "root": root, "file": path or query or task, "write_stub": bool(diff),
+            "root": root, "file": path or query or task, "write_stub": False,
         }, timeout=_timeout("quick")), "architecture")
     if action == "complexity":
         return _compact(CLIENT.post("/api/repo/complexity", {

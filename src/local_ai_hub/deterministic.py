@@ -6301,19 +6301,72 @@ def test_{sym}_regression_edge_cases():
         }
 
     def generate_types(self, root: str, file_path: str, write_stub: bool = False) -> dict[str, Any]:
-        """Parse Python source file and generate PEP 484 .pyi type stub."""
-        p_root = Path(root).expanduser().resolve(strict=False)
-        target = Path(file_path)
-        if not target.is_absolute():
-            target = (p_root / target).resolve()
-        if not target.is_file():
-            return {"success": False, "error": f"file not found: {file_path}"}
+        """Generate PEP 484 stub text without writing files."""
+        if write_stub:
+            return {
+                "success": False,
+                "error": "generate_types is read-only; write_stub must be false",
+                "terminal": True,
+                "retryable": False,
+            }
 
+        max_source_bytes = 1_048_576
         try:
-            content = target.read_text(encoding="utf-8", errors="replace")
+            p_root = Path(root).expanduser().resolve(strict=True)
+            if not p_root.is_dir():
+                raise ValueError("repository root is not a directory")
+            target = Path(file_path).expanduser()
+            if not target.is_absolute():
+                target = p_root / target
+            target = target.resolve(strict=True)
+            try:
+                target.relative_to(p_root)
+            except ValueError:
+                return {
+                    "success": False,
+                    "error": f"file is outside repository root: {file_path}",
+                    "terminal": True,
+                    "retryable": False,
+                }
+            if not target.is_file():
+                return {
+                    "success": False,
+                    "error": f"file not found: {file_path}",
+                    "terminal": True,
+                    "retryable": False,
+                }
+            if target.stat().st_size > max_source_bytes:
+                return {
+                    "success": False,
+                    "error": f"source file exceeds {max_source_bytes} byte limit",
+                    "terminal": True,
+                    "retryable": False,
+                }
+            with target.open("rb") as source_file:
+                source_bytes = source_file.read(max_source_bytes + 1)
+            if len(source_bytes) > max_source_bytes:
+                return {
+                    "success": False,
+                    "error": f"source file exceeds {max_source_bytes} byte limit",
+                    "terminal": True,
+                    "retryable": False,
+                }
+            content = source_bytes.decode("utf-8", errors="replace")
             tree = ast.parse(content, filename=str(target))
+        except (OSError, RuntimeError, ValueError) as exc:
+            return {
+                "success": False,
+                "error": f"failed to resolve source file: {exc}",
+                "terminal": True,
+                "retryable": False,
+            }
         except Exception as exc:
-            return {"success": False, "error": f"failed to parse AST: {exc}"}
+            return {
+                "success": False,
+                "error": f"failed to parse AST: {exc}",
+                "terminal": True,
+                "retryable": False,
+            }
 
         stub_lines = ["from __future__ import annotations", "from typing import Any, Optional, Union, List, Dict, Tuple, Callable", ""]
         
@@ -6340,15 +6393,11 @@ def test_{sym}_regression_edge_cases():
                 stub_lines.append("")
 
         stub_content = "\n".join(stub_lines).strip() + "\n"
-        stub_path = target.with_suffix(".pyi")
-        if write_stub:
-            from .process_utils import atomic_write_file
-            atomic_write_file(stub_path, stub_content)
 
         return {
             "success": True,
             "source_file": str(target),
-            "stub_file": str(stub_path) if write_stub else None,
+            "stub_file": None,
             "stub_content": stub_content,
             "stub_lines": len(stub_lines),
         }
