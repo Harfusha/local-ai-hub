@@ -71,7 +71,7 @@ def _trace_remediation_probe(expression):
         "const esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',\"'\":'&#39;'}[c]));"
         "const n=v=>String(v??0);"
         + _trace_redaction_runtime_source() + source + model_source
-        + "function probe(session,events=[]){const model=traceDisplayModel({session,events});return tracePrimaryFallback(renderTracePresentation(model),model.panels,model);}"
+        + "function probe(session,events=[]){const model=traceDisplayModel({session,events});return renderTracePresentation(model);}"
         + f"console.log(JSON.stringify({expression}));"
     )
     result = subprocess.run(['node'], input=script, text=True, capture_output=True, timeout=20, check=True)
@@ -309,7 +309,7 @@ def test_trace_remediation_all_kinds_bound_escaped_aggregate_and_keep_core_value
     rendered = _trace_remediation_probe("""(()=>{
       const huge='<&\"'+'x'.repeat(40000),wide=Object.fromEntries(Array.from({length:50},(_,i)=>['field'+i,{message:huge}]));
       const output={message:'Core result',data:wide};
-      const model=(kind,payload)=>{const m=traceDisplayModel({session:payload,events:[]});m.presentation.kind=kind;return tracePrimaryFallback(renderTracePresentation(m),m.panels,m);};
+      const model=(kind,payload)=>{const m=traceDisplayModel({session:payload,events:[]});m.presentation.kind=kind;return renderTracePresentation(m);};
       return {
         model_chat:model('model_chat',{request:{prompt:'Core prompt '+huge},output}),
         agent_loop:model('agent_loop',{request:{prompt:'Core prompt '+huge},output}),
@@ -364,7 +364,6 @@ def test_dashboard_modal_renderers_defined() -> None:
         "function renderActiveLeaseModal(",
         "function renderActiveCommandModal(",
         "function renderErrorFingerprintModal(",
-        "function openArchNodeModal(",
         "function renderDbOptModal(",
         "function renderCachePurgeModal(",
     ]
@@ -390,7 +389,6 @@ def test_dashboard_modal_forms_and_actions_defined() -> None:
         "async function confirmCleanMissing(",
         "async function openDoctorModal(",
         "async function checkTaskCompletionGate(",
-        "async function checkTaskCriterion(",
         "async function completeTaskAction(",
         "function showFailTaskInput(",
         "async function submitFailTask(",
@@ -404,7 +402,7 @@ def test_dashboard_modal_forms_and_actions_defined() -> None:
 
 
 def test_dashboard_task_criterion_reads_completion_satisfied_criteria() -> None:
-    section = DASHBOARD_HTML.split("async function checkTaskCriterion(", 1)[1].split("function renderCodeIntelModal", 1)[0]
+    section = DASHBOARD_HTML.split("async function checkTaskCompletionGate(", 1)[1].split("function showFailTaskInput", 1)[0]
     assert "c.satisfied_criteria" in section
     assert "c.passed_criteria" not in section
 
@@ -437,8 +435,8 @@ def test_dashboard_buttons_rewired_to_custom_modals() -> None:
     assert "'db_opt'" in DASHBOARD_HTML
     assert "'cache_purge'" in DASHBOARD_HTML
 
-    # Architecture graph node click handler
-    assert "openArchNodeModal(nd)" in DASHBOARD_HTML
+    # Removed architecture page must not leave a callable orphan modal.
+    assert "openArchNodeModal(nd)" not in DASHBOARD_HTML
 
 
 def test_dashboard_new_table_custom_modals_defined() -> None:
@@ -857,20 +855,17 @@ def test_trace_inspector_prioritizes_input_output_and_demotes_technical_detail()
 def test_trace_inspector_exposes_core_panels_when_human_presentation_is_empty() -> None:
     assert which("node"), "Dashboard JavaScript tests require Node.js"
     helper_source = DASHBOARD_HTML[
-        DASHBOARD_HTML.index("function tracePrimaryFallback(") : DASHBOARD_HTML.index(
-            "function traceDisplayModel(detail)"
-        )
+        DASHBOARD_HTML.index("function traceMainContent(") : DASHBOARD_HTML.index("function traceMetricRow(")
     ]
     script = (
-        helper_source
-        + "const panels=[{id:'input',available:true,render:()=>'<section>input</section>'},{id:'output',available:true,render:()=>'<section>output</section>'},{id:'timeline',available:true,render:()=>'<section>timeline</section>'}];"
-        + "console.log(tracePrimaryFallback('',panels));"
+        "const esc=s=>String(s);const traceRecorded=v=>v!==null&&v!==undefined;"
+        + helper_source
+        + "console.log(traceMainContent('Input','input','input payload')+traceMainContent('Output','output','output payload'));"
     )
     result = subprocess.run(["node"], input=script, check=True, capture_output=True, text=True)
-    rendered = result.stdout
-    assert "input" in rendered
-    assert "output" in rendered
-    assert "timeline" not in rendered
+    assert "input payload" in result.stdout
+    assert "output payload" in result.stdout
+    assert "timeline" not in result.stdout
 
     detail_source = DASHBOARD_HTML[
         DASHBOARD_HTML.index("function renderTraceDetail(d)") : DASHBOARD_HTML.index(
@@ -1200,7 +1195,7 @@ def test_trace_inspector_has_model_chat_renderer_contract_and_codex_timeline() -
 def test_trace_inspector_has_agent_loop_tool_cards_with_bounded_safe_fields() -> None:
     assert "function renderAgentLoopPresentation(model)" in DASHBOARD_HTML
     source = DASHBOARD_HTML[
-        DASHBOARD_HTML.index("function traceChatColumns(model") : DASHBOARD_HTML.index(
+        DASHBOARD_HTML.index("function traceCodexTimeline(model") : DASHBOARD_HTML.index(
             "function traceDisplayModel(detail)"
         )
     ]
@@ -1209,12 +1204,10 @@ def test_trace_inspector_has_agent_loop_tool_cards_with_bounded_safe_fields() ->
         "trace-codex-timeline",
         "trace-tool-card",
         "trace-tool-timeline",
-        "tool name",
         "arguments",
         "result",
         "error",
         "step",
-        "call id",
         "tool call",
         "tool result",
         "traceSanitizeValue",
@@ -1796,11 +1789,8 @@ def test_trace_request_renderers_expose_reviewer_gap_contracts() -> None:
         "low",
         "Command and arguments",
         "trace-command-top",
-        "rank",
         "score",
         "provider",
-        "trace-rag-ranked",
-        "trace-rag-source-details",
         "traceMergeRecorded",
     ]:
         assert marker in source, f"Reviewer gap marker missing: {marker}"
@@ -2552,7 +2542,7 @@ def test_trace_history_surfaces_project_before_technical_metadata() -> None:
     assert "Project not recorded" not in source
     assert "no tenant" not in source
     assert "x.tenant||'—'" not in source
-    request_source = DASHBOARD_HTML[DASHBOARD_HTML.index("function workRecentRequestRow(request)") : DASHBOARD_HTML.index("function renderAdoptionRows")]
+    request_source = DASHBOARD_HTML[DASHBOARD_HTML.index("function workRecentRequestRow(request)") : DASHBOARD_HTML.index("function render(s)")]
     assert "traceProjectLabel" in request_source
 
 
@@ -3506,21 +3496,13 @@ def test_trace_model_chat_runtime_redacts_embedded_pem_certificate_and_ssh_keys(
     assert "redacted" in html.lower()
 
 
-def test_trace_raw_projection_bounds_events_before_sanitization() -> None:
+def test_trace_summary_bounds_events_before_sanitization() -> None:
     bounded_events_source = DASHBOARD_HTML[
         DASHBOARD_HTML.index("function traceBoundedEvents(") : DASHBOARD_HTML.index(
             "function traceRawBoundValue("
         )
     ]
     assert "list.slice(-eventLimit)" in bounded_events_source
-    projection_source = DASHBOARD_HTML[
-        DASHBOARD_HTML.index("function traceRawProjection(") : DASHBOARD_HTML.index(
-            "function traceRaw("
-        )
-    ]
-    assert "traceBoundedEvents(detail?.events,eventLimit)" in projection_source
-    assert "events_total" in projection_source
-    assert "events_truncated" in projection_source
     model_source = DASHBOARD_HTML[
         DASHBOARD_HTML.index("function traceDisplayModel(detail)") : DASHBOARD_HTML.index(
             "function traceAvailability("
