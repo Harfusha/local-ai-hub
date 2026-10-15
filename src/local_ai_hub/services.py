@@ -54,7 +54,12 @@ from .agent_context import ContextCompiler, ContextRequest
 from .agent_events import AgentStateStore
 from .semantic_quality import assess_semantic_result
 from .prompt_contracts import build_prompt
-from .retrieval import fuse_ranked_paths
+from .retrieval import (
+    fuse_ranked_paths,
+    is_source_context_query,
+    prioritize_source_context_paths,
+    source_context_path_tier,
+)
 
 
 # Keep optional context workers bounded across concurrent requests. Each backend
@@ -5611,7 +5616,6 @@ class LocalAIServices:
             path_groups["changed_paths"] = list(changed_candidate_paths)
         if focus_candidate_paths:
             path_groups["task_focus"] = list(focus_candidate_paths)
-        fused_candidates = fuse_ranked_paths(path_groups, limit=64, max_per_path=2)
         pinned_paths = tuple(
             path
             for item in path_hints[:64]
@@ -5620,6 +5624,30 @@ class LocalAIServices:
             and isinstance(item.get("path"), str)
             and (path := safe_relative_candidate(item["path"], base_path))
         )
+        source_priority_paths = tuple(dict.fromkeys((
+            *pinned_paths, *forced_candidate_paths, *changed_candidate_paths, *focus_candidate_paths,
+            *(path for raw_path in explicit_paths if (path := safe_relative_candidate(raw_path, base_path))),
+        )))
+        source_query = is_source_context_query(query)
+        if source_query:
+            path_groups = {
+                backend: prioritize_source_context_paths(
+                    paths, query, priority_paths=source_priority_paths,
+                )
+                for backend, paths in path_groups.items()
+            }
+        fused_candidates = fuse_ranked_paths(
+            path_groups, limit=256 if source_query else 64, max_per_path=2,
+        )
+        if source_query:
+            priority_keys = {path.casefold() for path in source_priority_paths}
+            fused_candidates.sort(key=lambda item: (
+                0 if item[0].replace("\\", "/").casefold() in priority_keys
+                else 1 + source_context_path_tier(item[0]),
+                -item[1],
+                item[0],
+            ))
+            fused_candidates = fused_candidates[:64]
         # Pins survive ranking limits, but never become force-include authorization.
         candidate_paths = list(dict.fromkeys((
             *pinned_paths,
@@ -5686,6 +5714,8 @@ class LocalAIServices:
                         "exclude_paths": exclude_paths,
                         "force_include_paths": force_include_paths,
                     })
+                if source_query:
+                    pack_kwargs["priority_paths"] = list(source_priority_paths)
                 lexical = self.repo_tools.context_pack_paths(
                     root, query, candidate_paths, **pack_kwargs,
                 )

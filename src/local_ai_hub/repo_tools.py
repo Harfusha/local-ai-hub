@@ -23,6 +23,7 @@ from typing import Any, Callable, Iterable, Mapping
 from .budget import chars_for_tokens, estimate_tokens
 from .normalizer import tokenize_query_terms
 from .process_utils import canonical_root, hidden_run_kwargs, popen_managed, terminate_tree
+from .retrieval import is_source_context_query, source_context_path_tier
 from .search_pagination import MAX_PAGE_SIZE, MAX_PAGE_WINDOW, pagination_bounds_error
 
 
@@ -3037,15 +3038,44 @@ class RepositoryTools:
         directory_hints: list[str] | tuple[str, ...] = (),
         exclude_paths: list[str] | tuple[str, ...] = (),
         force_include_paths: list[str] | tuple[str, ...] = (),
+        priority_paths: list[str] | tuple[str, ...] = (),
         max_directory_files: int = _MAX_DIRECTORY_HINT_FILES,
     ) -> dict[str, Any]:
+        source_query = is_source_context_query(query)
+        requested_top_k = max(1, int(top_k))
+        search_top_k = min(64, requested_top_k * 4) if source_query else top_k
         search = self.search_paths(
-            root, query, paths, top_k=top_k, directory_hints=directory_hints,
+            root, query, paths, top_k=search_top_k, directory_hints=directory_hints,
             exclude_paths=exclude_paths, force_include_paths=force_include_paths,
             max_directory_files=max_directory_files,
         )
         if not search.get("success"):
             return search
+        if source_query:
+            results = search.get("results", [])
+            input_rank = {str(path).replace("\\", "/").casefold(): rank for rank, path in enumerate(paths)}
+            protected = {
+                str(path).replace("\\", "/").casefold()
+                for path in (*priority_paths, *force_include_paths)
+            }
+            force_patterns = tuple(str(path) for path in force_include_paths)
+
+            def source_result_rank(item: dict[str, Any]) -> tuple[int, float, int, str, int]:
+                raw_path = str(item.get("path", ""))
+                normalized_path = raw_path.replace("\\", "/").casefold()
+                explicitly_prioritized = normalized_path in protected or self._path_control_matches(
+                    raw_path, force_patterns,
+                )
+                return (
+                    0 if explicitly_prioritized else 1 + source_context_path_tier(raw_path),
+                    -float(item.get("score", 0.0)),
+                    input_rank.get(normalized_path, len(input_rank)),
+                    raw_path,
+                    int(item.get("start_line", 0)),
+                )
+
+            results.sort(key=source_result_rank)
+            search["results"] = results[:requested_top_k]
         return self._pack_ranked_context(search, query, max_tokens, targeted=True)
 
     def _pack_ranked_context(
@@ -3149,7 +3179,19 @@ class RepositoryTools:
         }
 
     def context_pack(self, root: str, query: str, max_tokens: int = 4500, top_k: int = 14) -> dict[str, Any]:
-        search = self.search(root, query, top_k=top_k)
+        source_query = is_source_context_query(query)
+        requested_top_k = max(1, int(top_k))
+        search_top_k = min(64, requested_top_k * 4) if source_query else top_k
+        search = self.search(root, query, top_k=search_top_k)
         if not search.get("success"):
             return search
+        if source_query:
+            results = search.get("results", [])
+            results.sort(key=lambda item: (
+                source_context_path_tier(str(item.get("path", ""))),
+                -float(item.get("score", 0.0)),
+                str(item.get("path", "")),
+                int(item.get("start_line", 0)),
+            ))
+            search["results"] = results[:requested_top_k]
         return self._pack_ranked_context(search, query, max_tokens)
