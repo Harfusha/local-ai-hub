@@ -1621,6 +1621,29 @@ def test_partial_lease_table_group_is_rejected_before_writes(tmp_path):
     assert not list(tmp_path.glob("agent_state.sqlite.schema-mismatch-*.sqlite3"))
 
 
+def test_oversized_expected_schema_definition_is_rejected_without_backup(tmp_path):
+    canonical = tmp_path / "agent_state.sqlite"
+    ddl = "CREATE TABLE leases (lease_id TEXT /*" + ("x" * 8200) + "*/ )"
+    with closing(sqlite3.connect(canonical)) as con, con:
+        con.execute(ddl)
+    before = canonical.read_bytes()
+
+    with closing(sqlite3.connect(canonical)) as con:
+        with pytest.raises(
+            DurableSchemaMismatchError,
+            match="durable table definition exceeds 8192 bytes: leases",
+        ):
+            validate_durable_schema(
+                con,
+                canonical,
+                {"leases": ["lease_id"]},
+                backup_on_mismatch=False,
+            )
+
+    assert canonical.read_bytes() == before
+    assert not list(tmp_path.glob("agent_state.sqlite.schema-mismatch-*.sqlite3"))
+
+
 def test_cache_rebuild_does_not_erase_agent_state_records(tmp_path):
     agent_state = tmp_path / "agent_state.sqlite"
     cache_db = tmp_path / "cache.sqlite"
