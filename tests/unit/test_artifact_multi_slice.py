@@ -57,10 +57,11 @@ def test_mcp_get_returns_disjoint_slices_in_one_post(tmp_path, monkeypatch) -> N
     selects = [
         statement.lower()
         for statement in statements
-        if statement.lstrip().lower().startswith("select") and "substr(" in statement.lower()
+        if statement.lstrip().lower().startswith("select")
     ]
     assert len(selects) == 1
-    assert selects[0].count("substr(") == 4
+    assert "substr(" not in selects[0]
+    assert "typeof(a.text)" in selects[0]
 
 
 @pytest.mark.parametrize(
