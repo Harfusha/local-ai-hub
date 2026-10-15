@@ -167,12 +167,28 @@ def _inside(path: Path, root: Path) -> bool:
         return False
 
 
-def _tree_manifest(root: Path) -> dict[str, _TreeEntry]:
+def _snapshot_depth_limit(value: int) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 512:
+        raise ValueError("transaction maximum depth must be an integer between 1 and 512")
+    return value
+
+
+def _tree_manifest(root: Path, max_depth: int = 64) -> dict[str, _TreeEntry]:
+    max_depth = _snapshot_depth_limit(max_depth)
     manifest: dict[str, _TreeEntry] = {}
     pending = [root]
+    seen_dirs: set[tuple[int, int] | Path] = set()
+    root_stat = root.stat()
+    if root_stat.st_ino != 0:
+        seen_dirs.add((root_stat.st_dev, root_stat.st_ino))
+    else:
+        seen_dirs.add(root.resolve())
+
     while pending:
         directory = pending.pop()
         relative_dir = directory.relative_to(root)
+        if len(relative_dir.parts) >= max_depth:
+            raise ValueError(f"maximum directory depth exceeded in transaction inputs: {relative_dir.as_posix()}")
         try:
             with os.scandir(directory) as scanner:
                 entries = sorted(scanner, key=lambda entry: entry.name.casefold())
@@ -206,6 +222,10 @@ def _tree_manifest(root: Path) -> dict[str, _TreeEntry]:
                 )
                 continue
             if stat.S_ISDIR(before.st_mode):
+                dir_key = (before.st_dev, before.st_ino) if before.st_ino != 0 else path.resolve()
+                if dir_key in seen_dirs:
+                    raise ValueError(f"directory cycle detected in transaction inputs: {relative}")
+                seen_dirs.add(dir_key)
                 manifest[relative] = _TreeEntry(
                     "directory", int(before.st_mode), 0, int(before.st_mtime_ns)
                 )
@@ -239,11 +259,23 @@ def _tree_manifest(root: Path) -> dict[str, _TreeEntry]:
     return manifest
 
 
-def _copy_tree(source: Path, destination: Path) -> None:
+def _copy_tree(source: Path, destination: Path, max_depth: int = 64) -> None:
+    max_depth = _snapshot_depth_limit(max_depth)
     pending = [(source, destination)]
     directory_metadata: list[tuple[Path, Path]] = []
+    seen_dirs: set[tuple[int, int] | Path] = set()
+    source_stat = source.stat()
+    if source_stat.st_ino != 0:
+        seen_dirs.add((source_stat.st_dev, source_stat.st_ino))
+    else:
+        seen_dirs.add(source.resolve())
+
     while pending:
         source_dir, destination_dir = pending.pop()
+        rel = source_dir.relative_to(source)
+        if len(rel.parts) >= max_depth:
+            raise ValueError(f"maximum directory depth exceeded in transaction inputs: {rel.as_posix()}")
+
         with os.scandir(source_dir) as scanner:
             entries = sorted(scanner, key=lambda entry: entry.name.casefold())
         for entry in entries:
@@ -260,6 +292,10 @@ def _copy_tree(source: Path, destination: Path) -> None:
                 os.symlink(link, target_path, target_is_directory=resolved.is_dir())
                 shutil.copystat(source_path, target_path, follow_symlinks=False)
             elif stat.S_ISDIR(info.st_mode):
+                dir_key = (info.st_dev, info.st_ino) if info.st_ino != 0 else source_path.resolve()
+                if dir_key in seen_dirs:
+                    raise ValueError(f"directory cycle detected in transaction inputs: {source_path.relative_to(source)}")
+                seen_dirs.add(dir_key)
                 target_path.mkdir()
                 pending.append((source_path, target_path))
                 directory_metadata.append((source_path, target_path))
@@ -349,8 +385,11 @@ def _copy_private_index(source: Path, destination: Path) -> None:
 def create_private_transaction_snapshot_with_manifest(
     source: str | Path,
     destination: str | Path,
+    *,
+    max_depth: int = 64,
 ) -> tuple[Path, Mapping[str, _TreeEntry]]:
     """Create private checkout and return the exact source manifest it preserves."""
+    max_depth = _snapshot_depth_limit(max_depth)
     source_root = Path(source).expanduser().resolve(strict=True)
     if not source_root.is_dir():
         raise ValueError("transaction source must be a directory")
@@ -364,7 +403,7 @@ def create_private_transaction_snapshot_with_manifest(
     if Path(top).resolve(strict=True) != source_root:
         raise ValueError("transaction source must be a Git worktree root")
 
-    source_manifest = _tree_manifest(source_root)
+    source_manifest = _tree_manifest(source_root, max_depth=max_depth)
     try:
         clone = subprocess.run(
             ["git", "clone", "--no-hardlinks", "--no-checkout", "--", str(source_root), str(destination_root)],
@@ -385,9 +424,9 @@ def create_private_transaction_snapshot_with_manifest(
         _git_output(destination_root, "config", "--local", "core.hooksPath", "/dev/null")
         _git_output(destination_root, "reset", "--mixed", source_head)
         _copy_private_index(source_root, destination_root)
-        _copy_tree(source_root, destination_root)
-        cloned_manifest = _tree_manifest(destination_root)
-        current_source_manifest = _tree_manifest(source_root)
+        _copy_tree(source_root, destination_root, max_depth=max_depth)
+        cloned_manifest = _tree_manifest(destination_root, max_depth=max_depth)
+        current_source_manifest = _tree_manifest(source_root, max_depth=max_depth)
         if cloned_manifest != source_manifest or current_source_manifest != source_manifest:
             raise OSError("transaction source changed while snapshot was being created")
         source_common = Path(_git_output(source_root, "rev-parse", "--git-common-dir"))
@@ -407,9 +446,16 @@ def create_private_transaction_snapshot_with_manifest(
         raise
 
 
-def create_private_transaction_snapshot(source: str | Path, destination: str | Path) -> Path:
+def create_private_transaction_snapshot(
+    source: str | Path,
+    destination: str | Path,
+    *,
+    max_depth: int = 64,
+) -> Path:
     """Copy a worktree's complete file input state into a private Git checkout."""
-    transaction_root, _ = create_private_transaction_snapshot_with_manifest(source, destination)
+    transaction_root, _ = create_private_transaction_snapshot_with_manifest(
+        source, destination, max_depth=max_depth
+    )
     return transaction_root
 
 
