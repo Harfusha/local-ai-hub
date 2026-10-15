@@ -4717,6 +4717,15 @@ def test_{sym}_regression_edge_cases():
         files_read = 0
         parse_errors = 0
         skipped = 0
+
+        def has_unsafe_ancestor(path: Path) -> bool:
+            current = resolved_root
+            for part in path.relative_to(resolved_root).parts:
+                current = current / part
+                if _is_symlink_or_reparse_point(current):
+                    return True
+            return False
+
         for rel in all_files:
             if time.monotonic() >= deadline or total_bytes >= total_bytes_limit:
                 complete = False
@@ -4745,16 +4754,28 @@ def test_{sym}_regression_edge_cases():
             if rel.lower().endswith(".py"):
                 fpath = resolved_root / rel
                 try:
-                    if fpath.is_symlink() or not fpath.resolve().is_relative_to(resolved_root):
+                    if has_unsafe_ancestor(fpath) or not fpath.resolve().is_relative_to(resolved_root):
                         complete = False
                         errors.append("unsafe_path")
                         skipped += 1
                         continue
-                    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+                    flags = (
+                        os.O_RDONLY
+                        | getattr(os, "O_NOFOLLOW", 0)
+                        | getattr(os, "O_NONBLOCK", 0)
+                        | getattr(os, "O_BINARY", 0)
+                    )
                     fd = os.open(fpath, flags)
                     try:
                         before = os.fstat(fd)
-                        if not stat.S_ISREG(before.st_mode) or before.st_size > per_file_limit:
+                        path_before = os.stat(fpath, follow_symlinks=False)
+                        if (
+                            not stat.S_ISREG(before.st_mode)
+                            or before.st_size > per_file_limit
+                            or has_unsafe_ancestor(fpath)
+                            or (before.st_dev, before.st_ino) != (path_before.st_dev, path_before.st_ino)
+                            or not fpath.resolve().is_relative_to(resolved_root)
+                        ):
                             complete = False
                             errors.append("nonregular_or_oversize")
                             skipped += 1
@@ -4763,9 +4784,17 @@ def test_{sym}_regression_edge_cases():
                         with os.fdopen(fd, "rb", closefd=False) as handle:
                             raw = handle.read(remaining + 1)
                         after = os.fstat(fd)
+                        path_after = os.stat(fpath, follow_symlinks=False)
                         total_bytes += len(raw)
                         files_read += 1
-                        if len(raw) > remaining or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns):
+                        if (
+                            len(raw) > remaining
+                            or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+                            != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+                            or (after.st_dev, after.st_ino) != (path_after.st_dev, path_after.st_ino)
+                            or has_unsafe_ancestor(fpath)
+                            or not fpath.resolve().is_relative_to(resolved_root)
+                        ):
                             complete = False
                             errors.append("file_changed_or_byte_limit")
                             continue
@@ -4778,7 +4807,12 @@ def test_{sym}_regression_edge_cases():
                             if isinstance(node, ast.Import):
                                 modules = [alias.name for alias in node.names]
                             elif isinstance(node, ast.ImportFrom):
-                                modules = [("." * node.level) + (node.module or "")]
+                                prefix = ("." * node.level) + (node.module or "")
+                                modules = (
+                                    [prefix + alias.name for alias in node.names]
+                                    if node.module is None
+                                    else [prefix]
+                                )
                             else:
                                 continue
                             for target_mod in modules:
@@ -4813,9 +4847,9 @@ def test_{sym}_regression_edge_cases():
 
         lines = [
             f"# Architecture Topology: {resolved_root.name}",
-            f"**Pattern**: {arch_pattern}",
+            f"**Pattern hypothesis (unverified, path-based)**: {arch_pattern}",
             "",
-            "## Architectural Layers",
+            "## Filename-based layer hypotheses (unverified)",
         ]
         for layer_name, files in layers.items():
             if files:
