@@ -2812,6 +2812,8 @@ def _local_ai_repo_impl(
     new_symbol: str | None = None,
     old_code: str | None = None,
     new_code: str | None = None,
+    rev1: str | None = None,
+    rev2: str | None = None,
 ) -> dict[str, Any]:
     """Primary bounded repository worker for the main agent.
 
@@ -3375,7 +3377,19 @@ def _local_ai_repo_impl(
             "root": root, "files": files_arg, "max_tokens": max_tokens or 4000,
         }, timeout=_timeout("quick")), "architecture")
     if action == "git_diff":
-        return _compact(CLIENT.get(f"/api/git/diff?root={quote(root)}&path={quote(path or query or '')}&staged={'true' if staged else 'false'}&max_lines={max_tokens or 500}"), "diff")
+        if rev1 is not None or rev2 is not None:
+            if staged or any(not isinstance(value, str) or not value.strip() or len(value) > 512
+                             or value.startswith("-") or "\0" in value for value in (rev1, rev2)):
+                return contract_error("git_diff requires valid rev1 and rev2 together, without staged")
+            return _compact(CLIENT.post("/api/git/diff", {
+                "root": root, "path": path or query or None, "staged": False,
+                "max_lines": max_tokens or 500, "rev1": rev1, "rev2": rev2,
+            }, timeout=_timeout("context")), "diff", extra_fields=[
+                *(extra_fields or []), "comparison", "rev1", "rev2", "resolved_rev1", "resolved_rev2",
+                "stats_complete", "paths_complete", "diff_sha256",
+            ])
+        return _compact(CLIENT.get(f"/api/git/diff?root={quote(root)}&path={quote(path or query or '')}&staged={'true' if staged else 'false'}&max_lines={max_tokens or 500}"), "diff",
+                        extra_fields=[*(extra_fields or []), "stats_complete", "paths_complete", "diff_sha256", "comparison"])
     if action == "git_history_search":
         return _compact(CLIENT.post("/api/git/history_search", {
             "root": root, "query": query or task, "max_commits": max_tokens or 50,
@@ -3481,6 +3495,8 @@ def local_ai_repo(
     new_symbol: str | None = None,
     old_code: str | None = None,
     new_code: str | None = None,
+    rev1: str | None = None,
+    rev2: str | None = None,
 ) -> dict[str, Any]:
     """Primary bounded repository worker. Use when: indexed repository evidence is needed. Skip when: fresh evidence already answers it."""
     root = root if root is not None else cwd if cwd is not None else "."
@@ -3537,7 +3553,7 @@ def local_ai_repo(
         include_diagnostics, clone_id, worktree_id, branch, repository_id, session_id, repository_revision,
         changed_paths, phase, focus, preload_profile, guarded, since_hash, approval, override_reason,
         token_budget, is_worktree, parent_root, steps, limit=limit, offset=offset,
-        old_symbol=old_symbol, new_symbol=new_symbol, old_code=old_code, new_code=new_code, **forward,
+        old_symbol=old_symbol, new_symbol=new_symbol, old_code=old_code, new_code=new_code, rev1=rev1, rev2=rev2, **forward,
     )
 
 

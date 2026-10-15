@@ -256,6 +256,8 @@ _ACTION_SCOPED_FIELDS = {
         "new_symbol": frozenset({"ast_refactor"}),
         "old_code": frozenset({"semantic_diff"}),
         "new_code": frozenset({"semantic_diff"}),
+        "rev1": frozenset({"git_diff"}),
+        "rev2": frozenset({"git_diff"}),
     },
 }
 OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
@@ -292,6 +294,8 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "new_symbol": {"type": ["string", "null"], "default": None, "maxLength": 512},
             "old_code": {"type": ["string", "null"], "default": None, "maxLength": 1_048_576},
             "new_code": {"type": ["string", "null"], "default": None, "maxLength": 1_048_576},
+            "rev1": {"type": ["string", "null"], "default": None, "maxLength": 512},
+            "rev2": {"type": ["string", "null"], "default": None, "maxLength": 512},
             "path": {"type": "string", "default": ""},
             "task": {"type": "string", "default": ""},
             "task_id": {"type": "string", "default": ""},

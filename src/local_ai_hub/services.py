@@ -3949,7 +3949,11 @@ class LocalAIServices:
     def context_budget(self, root: str, files: list[str] | None = None, max_tokens: int = 4000) -> dict[str, Any]:
         return self.deterministic_operation("context-budget", root, {"files": files, "max_tokens": max_tokens}, lambda: self.deterministic.context_budget(root, files=files, max_tokens=max_tokens))
 
-    def git_diff(self, root: str, path: str | None = None, staged: bool = False, max_lines: int = 1000) -> dict[str, Any]:
+    def git_diff(self, root: str, path: str | None = None, staged: bool = False, max_lines: int = 1000,
+                 *, rev1: str | None = None, rev2: str | None = None) -> dict[str, Any]:
+        if rev1 is not None or rev2 is not None:
+            # Moving refs must be pinned afresh, not served from a workspace-only cache.
+            return self.deterministic.git_diff(root, path=path, staged=staged, max_lines=max_lines, rev1=rev1, rev2=rev2)
         return self.deterministic_operation("git-diff", root, {"path": path, "staged": staged, "max_lines": max_lines}, lambda: self.deterministic.git_diff(root, path=path, staged=staged, max_lines=max_lines))
 
     def git_history_search(self, root: str, query: str, max_commits: int = 20) -> dict[str, Any]:
