@@ -341,19 +341,39 @@ class UnsupportedLegacyStateDatabase(sqlite3.DatabaseError):
 
 
 def require_canonical_agent_state_database(state_dir: Path | str) -> Path:
-    """Return the canonical state path, rejecting legacy-only state without touching it."""
+    """Return canonical state path; reject legacy histories hidden by an invalid target."""
     root = Path(state_dir)
     canonical = root / "agent_state.sqlite"
-    if canonical.exists():
+    legacy_paths = [
+        root / name
+        for name in ("agent_state.sqlite3", "leases.sqlite3", "agent_blackboard.sqlite3")
+        if (root / name).exists()
+    ]
+    if canonical.exists() and (not legacy_paths or _is_readable_sqlite_database(canonical)):
         return canonical
-    for name in ("agent_state.sqlite3", "leases.sqlite3", "agent_blackboard.sqlite3"):
-        legacy = root / name
-        if legacy.exists():
-            raise UnsupportedLegacyStateDatabase(
-                f"unsupported legacy durable state database: {legacy}; "
-                f"expected canonical database: {canonical}"
-            )
+    if legacy_paths:
+        legacy = legacy_paths[0]
+        raise UnsupportedLegacyStateDatabase(
+            f"unsupported legacy durable state database: {legacy}; "
+            f"canonical database is missing or not a readable SQLite file: {canonical}"
+        )
     return canonical
+
+
+def _is_readable_sqlite_database(path: Path) -> bool:
+    """Check SQLite's header and schema with a bounded, read-only probe."""
+    try:
+        if not path.is_file():
+            return False
+        with path.open("rb") as source:
+            if source.read(16) != b"SQLite format 3\x00":
+                return False
+        uri = f"{path.resolve().as_uri()}?mode=ro"
+        with closing(sqlite3.connect(uri, uri=True, timeout=0.5)) as con:
+            con.execute("SELECT name FROM sqlite_master LIMIT 1").fetchone()
+        return True
+    except (OSError, sqlite3.Error, ValueError):
+        return False
 
 
 def validate_durable_schema(
@@ -364,6 +384,7 @@ def validate_durable_schema(
     complete_groups: tuple[tuple[str, ...], ...] = (),
     required_unique: dict[str, tuple[tuple[str, ...], ...]] | None = None,
     required_if_event_kinds: dict[str, tuple[str, ...]] | None = None,
+    backup_on_mismatch: bool = True,
 ) -> None:
     """Fail closed on existing durable table drift, preserving a verified backup."""
     existing = {
@@ -440,10 +461,11 @@ def validate_durable_schema(
     con.close()
     backup_path: Path | None = None
     backup_error = ""
-    try:
-        backup_path = backup_durable_database(db_path)
-    except Exception as exc:
-        backup_error = str(exc)
+    if backup_on_mismatch:
+        try:
+            backup_path = backup_durable_database(db_path)
+        except Exception as exc:
+            backup_error = str(exc)
     raise DurableSchemaMismatchError(db_path, mismatches, backup_path, backup_error)
 
 
