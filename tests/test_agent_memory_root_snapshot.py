@@ -36,6 +36,7 @@ def _repository_identity(record: MemoryRecord) -> dict[str, object]:
         "scope": AgentScope.REPOSITORY,
         "scope_id": record.scope_id or "",
         "root": record.provenance["root"],
+        "repository_id": record.provenance.get("repository_id"),
         "tenant": record.provenance["tenant"],
     }
 
@@ -60,7 +61,7 @@ def confirmed_repository_record(store: MemoryStore) -> MemoryRecord:
         confidence=0.95,
         source="user",
         status=MemoryStatus.CONFIRMED,
-        provenance={"root": "C:/repository", "tenant": "tenant-a"},
+        provenance={"root": "C:/repository", "repository_id": "repository-id", "tenant": "tenant-a"},
     )
     return store.record(rec, actor="user", idempotency_key="rec-repo-1")
 
@@ -146,7 +147,7 @@ def test_memory_write_redacts_private_fields_and_blocks_sensitive_records(store:
             "nested": {"text": source_text, "stable": secret},
         },
         source="user",
-        provenance={"root": repo, "tenant": "tenant-a", "prompt": prompt, "source": source_text},
+        provenance={"root": repo, "repository_id": "repo-id", "tenant": "tenant-a", "prompt": prompt, "source": source_text},
     )
     stored = store.record(record, actor="user", idempotency_key="privacy-record")
     assert stored.value == {"safe": "keep this", "nested": {"stable": "token=[redacted]"}}
@@ -163,11 +164,11 @@ def test_memory_write_redacts_private_fields_and_blocks_sensitive_records(store:
     with pytest.raises(ValueError, match="sensitive memory"):
         store.record(sensitive, actor="user", idempotency_key="sensitive-record")
 
-    clean = store.get(stored.record_id, scope=AgentScope.REPOSITORY, root=repo, tenant="tenant-a")
+    clean = store.get(stored.record_id, scope=AgentScope.REPOSITORY, root=repo, repository_id="repo-id", tenant="tenant-a")
     assert clean is not None
     assert clean.value == stored.value
-    assert store.find(scope=AgentScope.REPOSITORY, root=repo, tenant="tenant-a", semantic=False) == [clean]
-    assert store.find_for_context(root=repo, tenant="tenant-a") == [clean]
+    assert store.find(scope=AgentScope.REPOSITORY, root=repo, repository_id="repo-id", tenant="tenant-a", semantic=False) == [clean]
+    assert store.find_for_context(root=repo, tenant="tenant-a", coordination_id="repo-id") == [clean]
 
     with closing(connect_sqlite(store.state_store.db_path, isolation_level=None)) as con:
         con.execute("UPDATE agent_memory_records SET sensitivity = ? WHERE record_id = ?", ("secret", stored.record_id))
@@ -215,7 +216,7 @@ def test_memory_correction_lineage_and_delete_survive_reopen(store: MemoryStore,
             value="old",
             status=MemoryStatus.CONFIRMED,
             source="user",
-            provenance={"root": repo, "tenant": "tenant-a", "repository_revision": "rev-old"},
+            provenance={"root": repo, "repository_id": "repo-id", "tenant": "tenant-a", "repository_revision": "rev-old"},
         ),
         actor="user",
         idempotency_key="previous-record",
@@ -228,7 +229,7 @@ def test_memory_correction_lineage_and_delete_survive_reopen(store: MemoryStore,
             value="new",
             status=MemoryStatus.CONFIRMED,
             source="user",
-            provenance={"root": repo, "tenant": "tenant-a", "repository_revision": "rev-new"},
+            provenance={"root": repo, "repository_id": "repo-id", "tenant": "tenant-a", "repository_revision": "rev-new"},
             expires_at=4102444800.0,
         ),
         actor="user",
@@ -244,6 +245,7 @@ def test_memory_correction_lineage_and_delete_survive_reopen(store: MemoryStore,
         scope=AgentScope.REPOSITORY,
         scope_id="",
         root=repo,
+        repository_id="repo-id",
         tenant="tenant-a",
     )
     assert restored_previous is not None
@@ -255,7 +257,7 @@ def test_memory_correction_lineage_and_delete_survive_reopen(store: MemoryStore,
     assert serialized["source"] == "user"
     assert serialized["expires_at"] == 4102444800.0
     assert serialized["provenance"]["repository_revision"] == "rev-new"
-    assert reopened.find_for_context(root=repo, tenant="tenant-a") == [restored_corrected]
+    assert reopened.find_for_context(root=repo, tenant="tenant-a", coordination_id="repo-id") == [restored_corrected]
     assert reopened.find_relations(entity=previous.record_id, relation="superseded_by")
 
     assert reopened.delete(
@@ -263,6 +265,7 @@ def test_memory_correction_lineage_and_delete_survive_reopen(store: MemoryStore,
         scope=AgentScope.REPOSITORY,
         scope_id="",
         root=repo,
+        repository_id="repo-id",
         tenant="tenant-a",
     )
     assert reopened.get(corrected.record_id, include_expired=True) is None
@@ -335,7 +338,7 @@ def test_global_memory_delete_ignores_transport_tenant_but_keeps_scope(store: Me
     assert store.get(global_record.record_id, scope=AgentScope.GLOBAL) is None
 
 
-def test_repository_memory_delete_accepts_trusted_root_when_legacy_repository_id_is_absent(store: MemoryStore):
+def test_repository_memory_legacy_root_identity_is_not_read_or_deleted(store: MemoryStore):
     record = store.record(MemoryRecord.create(
         kind=MemoryKind.FACT,
         scope=AgentScope.REPOSITORY,
@@ -350,8 +353,23 @@ def test_repository_memory_delete_accepts_trusted_root_when_legacy_repository_id
         root="C:/repo-a",
         repository_id="coordination-repo-a",
         tenant="tenant-1",
-    ) is True
-    assert store.get(record.record_id, scope=AgentScope.REPOSITORY, root="C:/repo-a") is None
+    ) is False
+    assert store.get(
+        record.record_id,
+        scope=AgentScope.REPOSITORY,
+        root="C:/repo-a",
+        repository_id="coordination-repo-a",
+        tenant="tenant-1",
+    ) is None
+    assert store.get(record.record_id, scope=AgentScope.REPOSITORY) is None
+    summary = store.diagnostic_summary(root="C:/repo-a", tenant="tenant-1")
+    assert "legacy_unscoped" not in summary
+    assert all(data["count"] == 0 for data in summary.values())
+    with closing(connect_sqlite(store.state_store.db_path)) as con:
+        assert con.execute(
+            "SELECT COUNT(*) FROM agent_memory_records WHERE record_id = ?",
+            (record.record_id,),
+        ).fetchone()[0] == 1
 
     conflicting = store.record(MemoryRecord.create(
         kind=MemoryKind.FACT,
@@ -452,11 +470,9 @@ def test_memory_find_enforces_root_repository_and_tenant_identity(store: MemoryS
         },
     ))
 
-    assert {record.record_id for record in store.find(scope=AgentScope.REPOSITORY, root="C:/repo-a", tenant="tenant-1", key="shared-repo")} == {
-        repo_a.record_id,
-        repo_missing_id.record_id,
-    }
-    assert [record.record_id for record in store.find(scope=AgentScope.REPOSITORY, root="C:/repo-b", tenant="tenant-1", key="shared-repo")] == [repo_b.record_id]
+    assert [record.record_id for record in store.find(scope=AgentScope.REPOSITORY, root="C:/repo-a", repository_id="repo-a", tenant="tenant-1", key="shared-repo")] == [repo_a.record_id]
+    assert [record.record_id for record in store.find(scope=AgentScope.REPOSITORY, root="C:/repo-a", tenant="tenant-1", key="shared-repo")] == []
+    assert [record.record_id for record in store.find(scope=AgentScope.REPOSITORY, root="C:/repo-b", repository_id="repo-b", tenant="tenant-1", key="shared-repo")] == [repo_b.record_id]
     assert [record.record_id for record in store.find(scope=AgentScope.REPOSITORY, repository_id="repo-a", tenant="tenant-1", key="shared-repo")] == [repo_a.record_id]
     assert store.find(scope=AgentScope.SESSION, scope_id="tenant-1", tenant="tenant-1", key="shared-tenant") == []
     assert [record.record_id for record in store.find(scope=AgentScope.SESSION, session_id="tenant-1", tenant="tenant-1", key="shared-tenant")] == [tenant_one.record_id]
@@ -692,7 +708,7 @@ def test_evidence_memory_persists_revision_metadata_and_is_idempotent(store: Mem
         symbol_refs=("App.run",),
         related_task="task-1",
         expires_at=9999999999.0,
-        provenance={"root": str(tmp_path), "tenant": "tenant-a"},
+        provenance={"root": str(tmp_path), "repository_id": "repo-id", "tenant": "tenant-a"},
     )
     first = store.record(record, idempotency_key="guard:finding:stable:rev-1")
     second = store.record(
@@ -778,6 +794,7 @@ def test_repository_revision_is_preserved_in_provenance(store: MemoryStore, tmp_
         value="uses Pratt parsing",
         provenance={
             "root": str(tmp_path),
+            "repository_id": "repo-id",
             "repository_revision": "rev-1",
             "path_refs": ["src/parser.py"],
             "tenant": "tenant-a",
@@ -806,6 +823,7 @@ def test_mark_stale_for_revision_preserves_metadata_and_emits_event(store: Memor
             status=MemoryStatus.CONFIRMED,
             provenance={
                 "root": str(tmp_path),
+                "repository_id": "repo-id",
                 "repository_revision": "rev-1",
                 "path_refs": ["src/parser.py"],
                 "tenant": "tenant-a",

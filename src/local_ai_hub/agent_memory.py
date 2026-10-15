@@ -292,12 +292,9 @@ def _context_scope_sql(
         clauses.append("(" + " AND ".join(conditions) + ")")
         params.extend(identity_params)
 
-    add_scoped_identity(AgentScope.REPOSITORY.value)
     coordination_id = str(coordination_id or "").strip()
-    # Keep the physical-root branch above for legacy records. Cross-worktree
-    # access is a separate repository-only branch requiring trusted identity
-    # and an exact tenant match.
-    if root and tenant and coordination_id:
+    # Repository memory requires trusted repository identity and exact tenant.
+    if tenant and coordination_id:
         shared_repository = [
             "scope = ?",
             f"{provenance_tenant} = ?",
@@ -1431,7 +1428,6 @@ class MemoryStore:
             MemoryStatus.SUPERSEDED.value,
         )
         summary = {status: {"count": 0, "ids": []} for status in statuses}
-        summary["legacy_unscoped"] = {"count": 0, "ids": []}
         if not self.state_store.enabled or not self.state_store.db_path.exists():
             return summary
         self._init_table()
@@ -1476,33 +1472,6 @@ class MemoryStore:
                     ).fetchall()
                     summary[status]["ids"] = [str(row[0]) for row in rows]
 
-            if request_scope_provided and root:
-                legacy_where = (
-                    "scope = ? AND "
-                    f"{_CONTEXT_ROOT_SQL} = '' AND (expires_at IS NULL OR expires_at > ?)"
-                )
-                legacy_params: list[Any] = [AgentScope.REPOSITORY.value, time.time()]
-                legacy_tenant = (
-                    "json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, '$.tenant')"
-                )
-                tenant_value = str(tenant or "").strip()
-                if tenant_value:
-                    legacy_where += f" AND {legacy_tenant} = ?"
-                    legacy_params.append(tenant_value)
-                else:
-                    legacy_where += f" AND ({legacy_tenant} IS NULL OR {legacy_tenant} = '')"
-                count_row = con.execute(
-                    f"SELECT COUNT(1) FROM agent_memory_records WHERE {legacy_where}",
-                    tuple(legacy_params),
-                ).fetchone()
-                summary["legacy_unscoped"]["count"] = int(count_row[0]) if count_row else 0
-                if capped_limit:
-                    rows = con.execute(
-                        f"SELECT record_id FROM agent_memory_records WHERE {legacy_where} "
-                        "ORDER BY updated_at DESC LIMIT ?",
-                        (*legacy_params, capped_limit),
-                    ).fetchall()
-                    summary["legacy_unscoped"]["ids"] = [str(row[0]) for row in rows]
         finally:
             con.close()
         return summary
@@ -1539,7 +1508,7 @@ class MemoryStore:
         if (
             requested_scope == AgentScope.REPOSITORY.value
             or (not requested_scope and str(repository_id or "").strip())
-        ) and not str(root or "").strip() and not str(repository_id or "").strip():
+        ) and (not str(repository_id or "").strip() or not str(tenant or "").strip()):
             return None
         if any(value is not None for value in (scope, scope_id, root, repository_id, tenant)) or any(
             str(value or "").strip() for value in (task_id, session_id, clone_id, worktree_id, branch)
@@ -1907,7 +1876,7 @@ class MemoryStore:
         if legacy_allowed:
             sql += " AND (scope NOT IN (?, ?) OR scope_id = '')"
             params.extend([AgentScope.TASK.value, AgentScope.SESSION.value])
-        if root:
+        if root and scope_val != AgentScope.REPOSITORY.value:
             canonical_root = _normalise_scope_root(root)
             provenance_repo_id = (
                 "json_extract(CASE WHEN json_valid(provenance) THEN provenance ELSE '{}' END, "
@@ -1915,7 +1884,11 @@ class MemoryStore:
             )
             sql += f" AND ({_CONTEXT_ROOT_VALUE_SQL} = ? OR {_CONTEXT_ROOT_SQL} = ? OR {provenance_repo_id} = ?)"
             params.extend([canonical_root, canonical_root, root])
-        elif not repository_id and not (scope_val in identity_fields and scope_id_val):
+        elif (
+            scope_val != AgentScope.REPOSITORY.value
+            and not repository_id
+            and not (scope_val in identity_fields and scope_id_val)
+        ):
             sql += f" AND (scope = ? OR {_CONTEXT_ROOT_SQL} = '')"
             params.append(AgentScope.GLOBAL.value)
         if repository_id:
@@ -1945,10 +1918,7 @@ class MemoryStore:
             params.append(tenant)
         else:
             sql += f" AND ({provenance_tenant} IS NULL OR {provenance_tenant} = '')"
-        if scope_val == AgentScope.REPOSITORY.value and (
-            not (root or repository_id)
-            or (scope is not None and not tenant and not repository_id and not record_id)
-        ):
+        if scope_val == AgentScope.REPOSITORY.value and (not repository_id or not tenant):
             sql += " AND 0"
         if scope_val == AgentScope.TASK.value:
             # A task ID (or repository alias) cannot replace either trusted
@@ -2450,7 +2420,7 @@ class MemoryStore:
             if not scope_id_value:
                 return False
         elif parsed_scope is AgentScope.REPOSITORY:
-            if not identity_values["root"] and not identity_values["repository_id"]:
+            if not identity_values["repository_id"] or not identity_values["tenant"]:
                 return False
         elif parsed_scope is AgentScope.GLOBAL:
             # Tenant is transport identity, not part of a GLOBAL record's scope.
@@ -2502,24 +2472,14 @@ class MemoryStore:
                     for identity_key, expected in identity_values.items():
                         if not expected or identity_key == scope_identity_key:
                             continue
+                        if parsed_scope is AgentScope.REPOSITORY and identity_key == "root":
+                            continue
                         if parsed_scope is AgentScope.GLOBAL and identity_key == "tenant":
                             continue
                         actual = str(provenance.get(identity_key, "") or "").strip()
                         if identity_key == "root":
                             repo_id = str(provenance.get("repository_id", "") or "").strip()
                             if (not actual or _normalise_scope_root(actual) != _normalise_scope_root(expected)) and repo_id != expected:
-                                con.execute("COMMIT")
-                                return False, None
-                        elif identity_key == "repository_id" and not actual:
-                            # Older repository records may predate this optional
-                            # provenance field. A matching trusted physical root
-                            # still binds them; a present but different ID does not.
-                            trusted_root = identity_values["root"]
-                            record_root = str(provenance.get("root", "") or "").strip()
-                            if not trusted_root or not record_root or (
-                                _normalise_scope_root(record_root)
-                                != _normalise_scope_root(trusted_root)
-                            ):
                                 con.execute("COMMIT")
                                 return False, None
                         elif actual != expected:
