@@ -886,6 +886,8 @@ _STATUS_PROTECTED_KEYS = (
     "enabled", "active_tasks", "tasks_count", "incidents_count", "candidates_count", "status",
 )
 _SECURITY_PROTECTED_KEYS = (
+    "clean", "leak_count", "real_leaks_count", "secrets_count", "test_findings_count",
+    "scanned_git_history", "git_history_status", "coverage",
     "is_clean", "findings_present", "release_blocking_findings", "triage_complete",
     "scan_complete", "limit_reached", "findings_count", "scanned_files", "eligible_files",
     "eligible_files_total", "skipped_files", "scanned_bytes", "coverage_scope", "stop_reason",
@@ -3371,7 +3373,7 @@ def _local_ai_repo_impl(
         return _compact(CLIENT.post("/api/repo/secret_scan", {
             "root": root, "path": path or query or task or None,
             "scan_git_history": scan_git,
-        }, timeout=_timeout("quick")), "architecture")
+        }, timeout=_timeout("quick")), "security")
     if action == "schema_inspect":
         return _compact(CLIENT.post("/api/repo/schema_inspect", {
             "root": root, "db_path": path or query or task or None,
@@ -4557,7 +4559,7 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
         if name == "local_ai_artifact" and action == "source":
             from .source_slice import SOURCE_SLICE_FIELDS
             protected = (*protected, *SOURCE_SLICE_FIELDS)
-        if name == "local_ai_repo" and action == "security_audit":
+        if name == "local_ai_repo" and action in {"security_audit", "secret_scan"}:
             protected = (*protected, *_SECURITY_PROTECTED_KEYS)
         original_tokens = json_tokens(_mcp_wire_view(value, structured=True))
         raw_efficiency = value.get("token_efficiency") if isinstance(value, dict) else None
