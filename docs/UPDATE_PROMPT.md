@@ -86,6 +86,8 @@ Operator maintenance: error resolution shares a bounded deadline and rolls back 
 
 Gaming unload uses GET `/api/ps` before and after POST `/api/generate` with `keep_alive=0`, sharing one cancellation/deadline budget. Empty verified inventory is not proof of physical VRAM reclamation. Task completion rejects malformed checkpoint generations, including boolean values that Python otherwise compares equal to integers.
 
+Memory bundle imports require the complete current record schema and explicit record IDs; invalid records reject without metadata-dropping fallbacks. Repository records require tenant and repository identity. Project imports rebind identity to the resolved target repository; standalone imports preserve their explicit identity.
+
 Agent OS memory adoption must be verified through the actual MCP transport after installation:
 new/resumed tasks receive a small relevant advisory bundle with memory IDs, origin, scope,
 version and validity, without requiring an extra `memory_find` or `extra_fields` call.

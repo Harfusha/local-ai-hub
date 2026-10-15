@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+
+import pytest
 import threading
 import urllib.request
 
@@ -187,19 +189,20 @@ def test_memory_store_query_search(tmp_path: Path):
     state_dir.mkdir(parents=True, exist_ok=True)
     state_store = AgentStateStore(state_dir / "agent_state.sqlite", enabled=True)
     mem_store = MemoryStore(state_store)
+    provenance = {"repository_id": "query-test-repository", "tenant": "tenant-a"}
 
-    mem_store.record(MemoryRecord.create(key="backend_config", value="Serena runs on port 9000", kind="config", scope="repository"))
-    mem_store.record(MemoryRecord.create(key="db_port", value="Port 5432 is postgres", kind="fact", scope="repository"))
-    mem_store.record(MemoryRecord.create(key="auth_token_pattern", value="JWT tokens use RS256", kind="finding", scope="repository"))
+    mem_store.record(MemoryRecord.create(key="backend_config", value="Serena runs on port 9000", kind="config", scope="repository", provenance=provenance))
+    mem_store.record(MemoryRecord.create(key="db_port", value="Port 5432 is postgres", kind="fact", scope="repository", provenance=provenance))
+    mem_store.record(MemoryRecord.create(key="auth_token_pattern", value="JWT tokens use RS256", kind="finding", scope="repository", provenance=provenance))
 
     # Search query in value
-    res1 = mem_store.find(query="port")
+    res1 = mem_store.find(query="port", repository_id="query-test-repository", tenant="tenant-a")
     assert len(res1) == 2
     keys = {r.key for r in res1}
     assert keys == {"backend_config", "db_port"}
 
     # Search query in key
-    res2 = mem_store.find(query="auth")
+    res2 = mem_store.find(query="auth", repository_id="query-test-repository", tenant="tenant-a")
     assert len(res2) == 1
     assert res2[0].key == "auth_token_pattern"
 
@@ -442,8 +445,8 @@ def test_task_store_auto_complete_and_fail(tmp_path: Path):
 
     # 6. MemoryStore count
     assert mem_store.count() == 0
-    mem_store.record(MemoryRecord.create(key="k1", value="first", kind="fact", scope="repo"))
-    mem_store.record(MemoryRecord.create(key="k2", value="second", kind="decision", scope="repo"))
+    mem_store.record(MemoryRecord.create(key="k1", value="first", kind="fact", scope="repository"))
+    mem_store.record(MemoryRecord.create(key="k2", value="second", kind="decision", scope="repository"))
     assert mem_store.count() == 2
 
 
@@ -497,3 +500,14 @@ def test_external_tools_index_failure_suppression(tmp_path: Path):
     # Revision scoped error should not increment index_failures
     mgr._record_failure("serena", RuntimeError("indexing exceeded 60s"), operation="index", root=str(tmp_path))
     assert mgr.index_failures == 0
+
+
+@pytest.mark.parametrize("invalid_scope", ["repo", "REPOSITORY", " repository ", "unknown", False, [], 23])
+def test_memory_find_rejects_noncanonical_scope_before_database_access(tmp_path: Path, invalid_scope, monkeypatch):
+    store = MemoryStore(AgentStateStore(tmp_path / "agent_state.sqlite", enabled=True))
+    def unexpected_database_access():
+        raise AssertionError("invalid scope reached database access")
+
+    monkeypatch.setattr(store, "_init_table", unexpected_database_access)
+    with pytest.raises(ValueError):
+        store.find(scope=invalid_scope)

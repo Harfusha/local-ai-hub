@@ -155,6 +155,7 @@ def test_selective_export_and_import_valid_records(tmp_path: Path):
         found = app2.agent_memory.find(
             scope=AgentScope.REPOSITORY,
             scope_id="repo1",
+            repository_id="fixture-repository-id",
             root=str(tmp_path / "app1" / "repo"),
             tenant="tenant-a",
             key="repo_fact",
@@ -208,6 +209,7 @@ def test_selective_bundle_roundtrips_memory_metadata(tmp_path: Path):
             saved.record_id, scope=AgentScope.REPOSITORY,
             scope_id=saved.scope_id,
             root=str(tmp_path / "repo"), tenant="tenant-a",
+            repository_id="fixture-repository-id",
         )
         assert restored is not None
         expected_provenance = dict(provenance)
@@ -273,6 +275,7 @@ def test_project_bundle_roundtrips_agent_state_memory_metadata(tmp_path: Path):
             saved.record_id, scope=AgentScope.REPOSITORY,
             scope_id=saved.scope_id,
             root=str(target_repo), tenant="tenant-a",
+            repository_id=resolve_project_context(target_repo, Path(app2.agent_state.db_path).parent).coordination_id,
         )
         assert restored is not None
         expected_provenance = dict(provenance)
@@ -291,7 +294,8 @@ def test_project_bundle_roundtrips_agent_state_memory_metadata(tmp_path: Path):
         assert restored.contradicts_record_id == "project-old"
         assert restored.supersedes_record_id == "project-older"
         context = app2.agent_context.compile(
-            ContextRequest(task_id="task-project", root=str(target_repo), tenant="tenant-a", token_budget=400)
+            ContextRequest(task_id="task-project", root=str(target_repo), tenant="tenant-a", token_budget=400,
+                           coordination_id=resolve_project_context(target_repo, Path(app2.agent_state.db_path).parent).coordination_id)
         )
         assert saved.record_id in {element.element_id for element in context.elements}
 
@@ -569,11 +573,12 @@ def test_t08_root_export_repository_without_record_context(tmp_path: Path):
     repository_root = tmp_path / "repository"
     repository_root.mkdir()
     with app_with_agent_state(tmp_path / "source") as source:
+        repository_id = resolve_project_context(repository_root, Path(source.agent_state.db_path).parent).coordination_id
         record = source.agent_memory.record(MemoryRecord.create(
             kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY,
             scope_id="repo-t08", key="t08-export", value="verified",
             status=MemoryStatus.CONFIRMED,
-            provenance={"root": str(repository_root), "tenant": "tenant-a"},
+            provenance={"root": str(repository_root), "repository_id": repository_id, "tenant": "tenant-a"},
         ), actor="user")
         for tenant in ("other", None):
             with pytest.raises(BundleValidationError, match="not found"):
@@ -584,7 +589,7 @@ def test_t08_root_export_repository_without_record_context(tmp_path: Path):
     with app_with_agent_state(tmp_path / "target") as target:
         assert target.import_bundle(bundle)["success"] is True
         restored = target.agent_memory.get(record.record_id,
-            scope=AgentScope.REPOSITORY, root=str(repository_root), tenant="tenant-a")
+            scope=AgentScope.REPOSITORY, root=str(repository_root), tenant="tenant-a", repository_id=repository_id)
         assert restored is not None and restored.value == "verified"
 
 
@@ -612,3 +617,41 @@ def test_t08_root_export_global_with_project_root(tmp_path: Path):
         restored = target.agent_memory.get(record.record_id,
             scope=AgentScope.GLOBAL, tenant="tenant-a")
         assert restored is not None and restored.value == "verified"
+
+
+@pytest.mark.parametrize("defect", ["missing_metadata", "missing_id", "invalid_status", "scope_alias", "null_scope", "missing_repository_id"])
+def test_bundle_import_rejects_noncanonical_memory_without_writes(tmp_path: Path, defect: str):
+    import hashlib
+    import io
+    import zipfile
+    from local_ai_hub import __version__
+
+    record = MemoryRecord.create(
+        kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY,
+        key="strict-import", value="preserve metadata", status=MemoryStatus.CONFIRMED,
+        provenance={"root": str(tmp_path), "repository_id": "opaque-repository", "tenant": "tenant-a"},
+    ).to_dict()
+    if defect == "missing_metadata":
+        del record["confidence"]
+    elif defect == "missing_id":
+        record["record_id"] = ""
+    elif defect == "invalid_status":
+        record["status"] = "invalid"
+    elif defect == "scope_alias":
+        record["scope"] = "repo"
+    elif defect == "null_scope":
+        record["scope"] = None
+    else:
+        del record["provenance"]["repository_id"]
+    records = [{"type": "memory", "data": record}]
+    canonical = json.dumps(records, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    payload = {"format": "local-ai-hub-agent-state-bundle", "version": __version__,
+               "records": records, "records_sha256": hashlib.sha256(canonical).hexdigest()}
+    bundle = io.BytesIO()
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("bundle.json", json.dumps(payload))
+    with app_with_agent_state(tmp_path / "app") as app:
+        before = app.agent_memory.count()
+        result = app.import_bundle(bundle.getvalue())
+        assert result["success"] is False
+        assert app.agent_memory.count() == before

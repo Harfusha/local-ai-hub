@@ -831,7 +831,7 @@ def test_http_unscoped_global_get_promote_and_delete(tmp_path):
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = 39132\nstate_dir = "{state_dir.as_posix()}"\n\n'
-        "[agent_state]\nenabled = true\n",
+        "[agent_state]\nenabled = true\n\n[security]\napi_token_tenant = \"transport-tenant\"\n",
         encoding="utf-8",
     )
     app = LocalAIApp(str(config_path))
@@ -903,7 +903,7 @@ def test_http_unscoped_global_delete_then_record_replay_keeps_tombstone(tmp_path
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = 39133\nstate_dir = "{state_dir.as_posix()}"\n\n'
-        "[agent_state]\nenabled = true\n",
+        "[agent_state]\nenabled = true\n\n[security]\napi_token_tenant = \"transport-tenant\"\n",
         encoding="utf-8",
     )
     app = LocalAIApp(str(config_path))

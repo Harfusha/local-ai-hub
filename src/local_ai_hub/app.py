@@ -53,7 +53,8 @@ from .debug_traces import DebugTraceStore
 from .agent_events import AgentStateStore
 from .agent_tasks import TaskStore, TaskStatus
 from .agent_identity import AgentScope
-from .agent_memory import MemoryStore, MemoryKind, MemoryRecord, MemoryStatus, _normalise_scope_root
+from .project_config import resolve_project_context
+from .agent_memory import MemoryStore, MemoryRecord, MemoryStatus, _normalise_scope_root
 from .agent_incidents import IncidentStore
 from .agent_verification import VerificationStore
 from .agent_policy import PolicyEngine
@@ -1371,7 +1372,7 @@ class LocalAIApp:
                     lookup_context.setdefault("root", root or None)
                     lookup_context.setdefault("tenant", tenant)
                     scope_value = getattr(lookup_context.get("scope"), "value", lookup_context.get("scope"))
-                    if scope_value in ("repo", "repository") and not str(lookup_context.get("root") or "").strip():
+                    if scope_value == "repository" and not str(lookup_context.get("root") or "").strip():
                         raise BundleValidationError("repository memory requires provenance root")
                     if rid in (agent_state_contexts or {}):
                         rec = self.agent_memory.get(rid, **lookup_context)
@@ -1383,6 +1384,9 @@ class LocalAIApp:
                             rec = self.agent_memory.get(
                                 rid, scope=AgentScope.REPOSITORY,
                                 root=root, tenant=tenant,
+                                repository_id=resolve_project_context(
+                                    root, Path(self.agent_state.db_path).parent
+                                ).coordination_id,
                             )
                 if rec is not None:
                     scope_val = getattr(rec.scope, "value", rec.scope)
@@ -1428,7 +1432,7 @@ class LocalAIApp:
             if item.get("type") != "memory":
                 continue
             record_data = item.get("data") or {}
-            if str(record_data.get("scope", "")).strip().lower() not in {"repo", "repository"}:
+            if record_data.get("scope") != "repository":
                 continue
             provenance = record_data.get("provenance")
             source_root = provenance.get("root") if isinstance(provenance, dict) else None
@@ -1525,7 +1529,6 @@ class LocalAIApp:
         import os
         import tempfile
         import uuid
-        from dataclasses import replace
         from contextlib import closing, contextmanager
 
         max_bundle, max_json, max_rows = self._bundle_limits()
@@ -1737,7 +1740,7 @@ class LocalAIApp:
             if not isinstance(records, list):
                 return None, "bundle records are missing"
             prepared_records: list[MemoryRecord] = []
-            for record_index, item in enumerate(records):
+            for item in records:
                 if not isinstance(item, dict):
                     return None, "invalid agent-state bundle record"
                 rtype = item.get("type")
@@ -1747,18 +1750,34 @@ class LocalAIApp:
                 if rtype == "memory" and getattr(self, "agent_memory", None):
                     try:
                         record_data = dict(rdata)
-                        scope_value = str(record_data.get("scope", "")).strip().lower()
-                        provenance = record_data.get("provenance")
-                        if scope_value in {"repo", "repository"}:
+                        if set(record_data) != set(MemoryRecord.__dataclass_fields__):
+                            return None, "memory record must use the complete current schema"
+                        if not isinstance(record_data["record_id"], str) or not record_data["record_id"].strip():
+                            return None, "memory record_id is required"
+                        if not isinstance(record_data["scope"], str):
+                            return None, "memory scope must be a canonical string"
+                        scope_value = AgentScope.parse(record_data["scope"]).value
+                        provenance = record_data["provenance"]
+                        if not isinstance(provenance, dict):
+                            return None, "memory provenance must be an object"
+                        if scope_value == "repository":
                             source_root = provenance.get("root") if isinstance(provenance, dict) else None
                             if not source_root:
                                 return None, "repository memory provenance root is required for import"
+                            if any(not isinstance(provenance.get(field), str) or not provenance[field].strip()
+                                   for field in ("repository_id", "tenant")):
+                                return None, "repository memory requires repository_id and tenant"
                             if target_root_path:
                                 if not source_root_path:
                                     return None, "project bundle root is required for repository memory import"
                                 if _normalise_scope_root(str(source_root)) != _normalise_scope_root(source_root_path):
                                     return None, "repository memory provenance does not match bundle root"
                                 imported_root = target_root_path
+                                project = resolve_project_context(
+                                    target_root_path, Path(self.agent_state.db_path).parent
+                                )
+                                if not project.coordination_id:
+                                    return None, "target repository identity is unavailable"
                             else:
                                 imported_root = str(
                                     Path(str(source_root)).expanduser().resolve(strict=False)
@@ -1766,39 +1785,12 @@ class LocalAIApp:
                             rebased_provenance = dict(provenance)
                             rebased_provenance.setdefault("source_root", str(source_root))
                             rebased_provenance["root"] = imported_root
+                            if target_root_path:
+                                rebased_provenance["repository_id"] = project.coordination_id
                             record_data["provenance"] = rebased_provenance
-                        from_dict = getattr(MemoryRecord, "from_dict", None)
-                        if callable(from_dict) and all(
-                            field in record_data for field in ("record_id", "status", "provenance")
-                        ):
-                            try:
-                                rec = from_dict(record_data)
-                            except (KeyError, TypeError, ValueError):
-                                rec = MemoryRecord.create(
-                                    kind=MemoryKind(record_data.get("kind", "fact")),
-                                    scope=AgentScope.parse(record_data.get("scope", "task")),
-                                    key=str(record_data.get("key", "")),
-                                    value=record_data.get("value"),
-                                    scope_id=str(record_data.get("scope_id", "")),
-                                    status=MemoryStatus(record_data.get("status", "candidate")),
-                                )
-                        else:
-                            rec = MemoryRecord.create(
-                                kind=MemoryKind(record_data.get("kind", "fact")),
-                                scope=AgentScope.parse(record_data.get("scope", "task")),
-                                key=str(record_data.get("key", "")),
-                                value=record_data.get("value"),
-                                scope_id=str(record_data.get("scope_id", "")),
-                                status=MemoryStatus(record_data.get("status", "candidate")),
-                            )
+                        rec = MemoryRecord.from_dict(record_data)
                     except (KeyError, OSError, TypeError, ValueError):
                         return None, "invalid agent-state bundle memory record"
-                    if not str(record_data.get("record_id", "")).strip():
-                        stable_id = uuid.uuid5(
-                            uuid.NAMESPACE_URL,
-                            f"{bundle_sha256}\0{target_root_path or ''}\0{record_index}",
-                        )
-                        rec = replace(rec, record_id=str(stable_id))
                     prepared_records.append(rec)
             return prepared_records, None
 

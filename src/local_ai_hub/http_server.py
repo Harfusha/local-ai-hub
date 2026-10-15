@@ -2855,11 +2855,6 @@ class Handler(BaseHTTPRequestHandler):
 
             context = resolve_project_context(requested_root, configured_state_dir(APP.config))
             root = str(Path(context.root).resolve(strict=True))
-            if hasattr(context, "resolution"):
-                shared_ns = getattr(getattr(context, "settings", None), "shared_namespace", None)
-                has_git = getattr(project_config_module, "_git_common_dir", _real_git_common_dir)(Path(context.root)) is not None
-                if not shared_ns and not has_git:
-                    return root, ""
             repository_id = str(getattr(context, "coordination_id", "") or "").strip()
             return root, repository_id
         except Exception:
