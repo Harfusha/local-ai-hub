@@ -5,6 +5,7 @@ from .json_utils import dumps as json_dumps
 import concurrent.futures
 import hashlib
 import json
+import math
 import sqlite3
 import time
 from contextlib import closing
@@ -870,6 +871,7 @@ class SwarmCoordinator:
         paths: list[str] | None = None,
         work_attempt_fence: Any | None = None,
         request_cancel_event: Any | None = None,
+        overall_timeout: float | None = None,
     ) -> dict[str, Any]:
         """Execute a preflighted DAG; Python callbacks must cooperate with cancellation."""
         return execute_swarm_dag(
@@ -883,6 +885,7 @@ class SwarmCoordinator:
             paths=paths,
             work_attempt_fence=work_attempt_fence,
             request_cancel_event=request_cancel_event,
+            overall_timeout=overall_timeout,
         )
 
     run_dag = execute_dag
@@ -900,11 +903,15 @@ def execute_swarm_dag(
     paths: list[str] | None = None,
     work_attempt_fence: Any | None = None,
     request_cancel_event: Any | None = None,
+    overall_timeout: float | None = None,
 ) -> dict[str, Any]:
     """Execute a fully validated DAG.
 
-    Brokered commands have bounded process timeouts. In-process callbacks cannot
-    be safely preempted; they must cooperate with any cancellation mechanism.
+    Brokered commands share the optional overall deadline and have bounded
+    process timeouts. In-process callbacks cannot be safely preempted or timed
+    out and may overrun the deadline; callbacks must cooperate with cancellation.
+    The ``coordinator`` parameter is retained for API compatibility and does
+    not establish command ownership.
     Failure never triggers global filesystem or Git rollback, so completed work
     remains available for inspection and recovery by its owner.
     """
@@ -914,6 +921,19 @@ def execute_swarm_dag(
         return _dag_preflight_failure("steps cannot exceed 256 entries")
     if not isinstance(max_workers, int) or isinstance(max_workers, bool) or not 1 <= max_workers <= 64:
         return _dag_preflight_failure("max_workers must be an integer from 1 through 64")
+    started_at = time.monotonic()
+    deadline = None
+    if overall_timeout is not None:
+        if (
+            isinstance(overall_timeout, bool)
+            or not isinstance(overall_timeout, (int, float))
+            or not 0 < overall_timeout <= 3600
+            or not math.isfinite(overall_timeout)
+        ):
+            return _dag_preflight_failure("overall_timeout must be greater than 0 and at most 3600 seconds")
+        deadline = started_at + overall_timeout
+    if request_cancel_event is not None and not callable(getattr(request_cancel_event, "is_set", None)):
+        return _dag_preflight_failure("request_cancel_event must provide callable is_set")
 
     errors: list[str] = []
     step_map: dict[str, dict[str, Any]] = {}
@@ -956,9 +976,11 @@ def execute_swarm_dag(
             if (
                 not isinstance(command, list)
                 or not command
-                or any(not isinstance(arg, str) or not arg.strip() for arg in command)
+                or not isinstance(command[0], str)
+                or command[0] == ""
+                or any(not isinstance(arg, str) or "\x00" in arg for arg in command)
             ):
-                errors.append(f"{step_id}: command must be a non-empty argv list of strings")
+                errors.append(f"{step_id}: command must be argv with a non-empty executable and NUL-free string arguments")
             if command_broker is None or not callable(getattr(command_broker, "run", None)):
                 errors.append(f"{step_id}: command broker is required")
             if worktree_path is None:
@@ -1009,8 +1031,22 @@ def execute_swarm_dag(
     remaining_steps = set(step_map)
 
     aborted = False
+    cancelled_steps: set[str] = set()
+    timed_out_steps: set[str] = set()
+
+    def _cancel_requested() -> bool:
+        if request_cancel_event is None:
+            return False
+        try:
+            return bool(request_cancel_event.is_set())
+        except Exception:
+            return True
 
     while remaining_steps and not aborted:
+        if _cancel_requested():
+            break
+        if deadline is not None and time.monotonic() >= deadline:
+            break
         ready = [
             sid for sid in sorted(remaining_steps)
             if all(dep in completed_steps for dep in deps_by_id[sid])
@@ -1023,6 +1059,11 @@ def execute_swarm_dag(
             fn = step_data.get("fn")
             cmd = step_data.get("command")
             try:
+                if _cancel_requested():
+                    return step_id, False, {"success": False, "status": "cancelled", "cancelled": True}
+                remaining_budget = None if deadline is None else deadline - time.monotonic()
+                if remaining_budget is not None and remaining_budget < 1:
+                    return step_id, False, {"success": False, "status": "timed_out", "timed_out": True}
                 if callable(fn):
                     out = fn()
                     success = True
@@ -1037,10 +1078,13 @@ def execute_swarm_dag(
                     invocation = CommandInvocation(
                         argv=list(cmd), cwd=str(Path(worktree_path).resolve()), shell=False
                     )
+                    step_timeout = command_timeout
+                    if remaining_budget is not None:
+                        step_timeout = min(command_timeout, math.floor(remaining_budget))
                     out = command_broker.run(
                         invocation,
                         cwd=str(Path(worktree_path).resolve()),
-                        timeout=command_timeout,
+                        timeout=step_timeout,
                         task_id=task_id,
                         paths=paths,
                         _work_attempt_fence=work_attempt_fence,
@@ -1056,7 +1100,11 @@ def execute_swarm_dag(
                 sid, success, out = future.result()
                 step_results[sid] = out
                 remaining_steps.remove(sid)
-                if success:
+                if isinstance(out, dict) and out.get("cancelled") is True:
+                    cancelled_steps.add(sid)
+                elif isinstance(out, dict) and out.get("timed_out") is True:
+                    timed_out_steps.add(sid)
+                elif success:
                     completed_steps.add(sid)
                 else:
                     failed_steps.add(sid)
@@ -1064,20 +1112,33 @@ def execute_swarm_dag(
                         aborted = True
 
     skipped_steps = []
+    was_cancelled = bool(cancelled_steps) or _cancel_requested()
+    deadline_exceeded = deadline is not None and time.monotonic() >= deadline
     for sid in sorted(remaining_steps):
-        skipped_steps.append(sid)
-        step_results[sid] = {
-            "success": False,
-            "status": "skipped",
-            "error": "aborted_after_required_failure" if aborted else "unmet_dependencies",
-        }
+        if was_cancelled:
+            cancelled_steps.add(sid)
+            step_results[sid] = {"success": False, "status": "cancelled", "cancelled": True}
+        elif deadline_exceeded:
+            timed_out_steps.add(sid)
+            step_results[sid] = {"success": False, "status": "timed_out", "timed_out": True}
+        else:
+            skipped_steps.append(sid)
+            step_results[sid] = {
+                "success": False,
+                "status": "skipped",
+                "error": "aborted_after_required_failure" if aborted else "unmet_dependencies",
+            }
 
-    overall_success = len(failed_steps) == 0 and not skipped_steps
+    overall_success = not failed_steps and not skipped_steps and not cancelled_steps and not timed_out_steps and not deadline_exceeded
     return {
         "success": overall_success,
         "completed_steps": sorted(completed_steps),
         "failed_steps": sorted(failed_steps),
         "skipped_steps": skipped_steps,
+        "cancelled_steps": sorted(cancelled_steps),
+        "timed_out_steps": sorted(timed_out_steps),
+        "cancelled": was_cancelled,
+        "deadline_exceeded": deadline_exceeded,
         "step_results": {sid: step_results[sid] for sid in sorted(step_results)},
         "rolled_back": False,
         "rollback_status": "not_performed",
