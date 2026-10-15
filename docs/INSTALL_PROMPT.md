@@ -538,6 +538,10 @@ For non-trivial multi-step work, create a durable Agent OS task with `local_ai_c
 
 ## Repository symbol navigation
 
+For telemetry diagnostics, `local_ai_status(detail="telemetry")` preserves bounded writer counts and an explicit current-process interval in `summary.writer`, independently of the history window. Distinguish attempted, accepted, overflow-rejected, lost-after-acceptance and pending records; denominator rates remain null without observations. Missing activity, accounting imbalance and stale aggregates do not establish zero failures or complete data.
+
+MCP task checkpoints preflight the complete adoption response before checkpoint persistence, including the watchdog failure path. An insufficient response budget returns `mutation_applied=false` and `operation_not_started=true`; it does not mean the HTTP request was unsent. Task-memory `original_tokens` measures the canonical complete adoption payload without optional delta/reuse/debug wrappers; `returned_tokens` measures the actual emitted MCP envelope. This checkpoint guard does not establish equivalent preflight for every other mutation.
+
 For indexed symbol lookup, use `local_ai_repo(action="code_index", root=ABS_ROOT, query="symbol")`. For managed Serena navigation when available, use `action="semantic", relation="find_symbol"` with the same tool.
 
 Follow the published typed action/detail enums. Optional `speculative_lint` and Agent OS actions are exposed only when their modules are enabled.
