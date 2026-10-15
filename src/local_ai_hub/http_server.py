@@ -3475,7 +3475,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/vision/review":
             if "prompt" in payload:
                 text(payload["prompt"], "prompt", 20000)
-        elif path in {"/api/coord/pubsub_poll", "/api/pubsub_poll"}:
+        elif path == "/api/coord/pubsub_poll":
             if "after_seq" in payload:
                 bounded_integer(payload["after_seq"], "after_seq", 0, (1 << 63) - 1)
             if "limit" in payload:
