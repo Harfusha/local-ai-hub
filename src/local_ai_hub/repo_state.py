@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from .cache import MemoryLRUCache, stable_hash
-from .process_utils import canonical_root, hidden_run_kwargs
+from .process_utils import canonical_path, canonical_root, hidden_run_kwargs
 
 
 class RepoStateTracker:
@@ -266,7 +266,7 @@ class RepoStateTracker:
         root_path = Path(canon)
         if not root_path.is_dir():
             raise ValueError(f"root directory does not exist: {root_path}")
-        cache_key = canon
+        cache_key = canonical_path(canon)
         if not force:
             cached = self.cache.get(cache_key)
             if isinstance(cached, dict):
@@ -348,9 +348,10 @@ class RepoStateTracker:
         with self._lock:
             if root:
                 canon = canonical_root(root)
-                self.cache.delete(canon)
-                self._last_good.pop(canon, None)
-                self._slow_until.pop(canon, None)
+                cache_key = canonical_path(canon)
+                self.cache.delete(cache_key)
+                self._last_good.pop(cache_key, None)
+                self._slow_until.pop(cache_key, None)
             else:
                 self.cache.clear()
                 self._last_good.clear()
