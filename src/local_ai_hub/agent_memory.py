@@ -1491,7 +1491,6 @@ class MemoryStore:
         clone_id: str | None = None,
         worktree_id: str | None = None,
         branch: str | None = None,
-        allow_legacy_unscoped: bool = False,
         tenant_agnostic_global: bool = False,
     ) -> MemoryRecord | None:
         if not self.state_store.enabled or not self.state_store.db_path.exists():
@@ -1512,11 +1511,10 @@ class MemoryStore:
             return None
         if any(value is not None for value in (scope, scope_id, root, repository_id, tenant)) or any(
             str(value or "").strip() for value in (task_id, session_id, clone_id, worktree_id, branch)
-        ) or allow_legacy_unscoped:
+        ):
             records = self.find(
                 scope=scope,
                 record_id=record_id,
-                allow_legacy_unscoped=allow_legacy_unscoped,
                 scope_id=scope_id,
                 root=root,
                 repository_id=repository_id,
@@ -1733,7 +1731,6 @@ class MemoryStore:
         services: Any = None,
         min_score: float = 0.1,
         record_id: str | None = None,
-        allow_legacy_unscoped: bool = False,
         scope_id: str | None = None,
         root: str | None = None,
         repository_id: str | None = None,
@@ -1785,21 +1782,6 @@ class MemoryStore:
             AgentScope.WORKTREE.value: "worktree_id",
             AgentScope.BRANCH.value: "branch",
         }
-        if allow_legacy_unscoped and not any(
-            str(value or "").strip()
-            for value in (
-                record_id, scope_id_val, task_id_val, session_id_val, clone_id_val,
-                worktree_id_val, branch_val, root, repository_id, tenant,
-            )
-        ):
-            raise ValueError("legacy memory lookup requires explicit root or identity")
-        legacy_allowed = allow_legacy_unscoped and not any(
-            str(value or "").strip()
-            for value in (
-                scope, scope_id_val, task_id_val, session_id_val, clone_id_val,
-                worktree_id_val, branch_val, root, repository_id, tenant,
-            )
-        )
         if not include_expired:
             sql += " AND (expires_at IS NULL OR expires_at > ?)"
             params.append(time.time())
@@ -1849,17 +1831,11 @@ class MemoryStore:
                 sql += " AND scope_id = ?"
                 params.append(scope_id_val)
             elif scope_val is not None:
-                has_identity = bool(root or repository_id or tenant or identity_scopes)
                 if scope_val == AgentScope.REPOSITORY.value:
-                    if not (root or repository_id):
+                    if not repository_id or not tenant:
                         sql += " AND 0"
                 elif scope_val in {AgentScope.TASK.value, AgentScope.SESSION.value}:
-                    if not legacy_allowed:
-                        sql += " AND 0"
-                    elif not has_identity:
-                        sql += " AND scope_id = ''"
-                    else:
-                        sql += " AND 0"
+                    sql += " AND 0"
                 else:
                     sql += " AND 0"
         elif scope_id_val:
@@ -1873,9 +1849,6 @@ class MemoryStore:
         if record_id is not None:
             sql += " AND record_id = ?"
             params.append(str(record_id))
-        if legacy_allowed:
-            sql += " AND (scope NOT IN (?, ?) OR scope_id = '')"
-            params.extend([AgentScope.TASK.value, AgentScope.SESSION.value])
         if root and scope_val != AgentScope.REPOSITORY.value:
             canonical_root = _normalise_scope_root(root)
             provenance_repo_id = (
@@ -1884,12 +1857,8 @@ class MemoryStore:
             )
             sql += f" AND ({_CONTEXT_ROOT_VALUE_SQL} = ? OR {_CONTEXT_ROOT_SQL} = ? OR {provenance_repo_id} = ?)"
             params.extend([canonical_root, canonical_root, root])
-        elif (
-            scope_val != AgentScope.REPOSITORY.value
-            and not repository_id
-            and not (scope_val in identity_fields and scope_id_val)
-        ):
-            sql += f" AND (scope = ? OR {_CONTEXT_ROOT_SQL} = '')"
+        elif scope_val is None:
+            sql += " AND scope = ?"
             params.append(AgentScope.GLOBAL.value)
         if repository_id:
             provenance_repository_id = (
@@ -1925,10 +1894,6 @@ class MemoryStore:
             # context identity. The SQL above matches both provenance fields.
             if not (root and tenant and (task_id_val or scope_id_val)):
                 sql += " AND 0"
-        elif scope_val is None:
-            # Unscoped searches must not recover task rows by key or record ID.
-            sql += " AND scope != ?"
-            params.append(AgentScope.TASK.value)
         if scope_val == AgentScope.SESSION.value and (not tenant or not session_id_val):
             sql += " AND 0"
         for identity_value, identity_scope in identity_scopes:
