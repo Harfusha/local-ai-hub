@@ -6,7 +6,6 @@ import concurrent.futures
 import hashlib
 import json
 import sqlite3
-import subprocess
 import time
 from contextlib import closing
 from enum import Enum
@@ -19,7 +18,6 @@ from .agent_blackboard import BlackboardStore
 from .agent_events import AgentEvent, AgentStateStore
 from .agent_verification import VerificationStore
 from .leases import ScopeLeaseStore
-from .process_utils import hidden_run_kwargs
 from .sqlite_support import connect_sqlite, initialize_wal, validate_durable_schema
 
 
@@ -866,13 +864,25 @@ class SwarmCoordinator:
         *,
         worktree_path: str | Path | None = None,
         max_workers: int = 4,
+        command_broker: Any | None = None,
+        command_timeout: int = 120,
+        task_id: str | None = None,
+        paths: list[str] | None = None,
+        work_attempt_fence: Any | None = None,
+        request_cancel_event: Any | None = None,
     ) -> dict[str, Any]:
-        """Execute steps following declared depends_on DAG constraints in parallel."""
+        """Execute a preflighted DAG; Python callbacks must cooperate with cancellation."""
         return execute_swarm_dag(
             steps,
             worktree_path=worktree_path,
             max_workers=max_workers,
             coordinator=self,
+            command_broker=command_broker,
+            command_timeout=command_timeout,
+            task_id=task_id,
+            paths=paths,
+            work_attempt_fence=work_attempt_fence,
+            request_cancel_event=request_cancel_event,
         )
 
     run_dag = execute_dag
@@ -884,45 +894,128 @@ def execute_swarm_dag(
     worktree_path: str | Path | None = None,
     max_workers: int = 4,
     coordinator: Any | None = None,
+    command_broker: Any | None = None,
+    command_timeout: int = 120,
+    task_id: str | None = None,
+    paths: list[str] | None = None,
+    work_attempt_fence: Any | None = None,
+    request_cancel_event: Any | None = None,
 ) -> dict[str, Any]:
-    """Execute steps following declared depends_on DAG constraints in parallel.
+    """Execute a fully validated DAG.
 
-    If any required step fails, automatically trigger git checkout -f rollback
-    of worktree_path to the pre-swarm snapshot commit.
+    Brokered commands have bounded process timeouts. In-process callbacks cannot
+    be safely preempted; they must cooperate with any cancellation mechanism.
+    Failure never triggers global filesystem or Git rollback, so completed work
+    remains available for inspection and recovery by its owner.
     """
-    pre_snapshot = ""
-    if worktree_path:
-        wt = Path(worktree_path).resolve()
-        try:
-            cp = subprocess.run(
-                ["git", "-C", str(wt), "rev-parse", "HEAD"],
-                capture_output=True,
-                text=True,
-                check=False,
-                **hidden_run_kwargs(),
-            )
-            if cp.returncode == 0:
-                pre_snapshot = cp.stdout.strip()
-        except Exception:
-            pass
+    if not isinstance(steps, list) or not steps:
+        return _dag_preflight_failure("steps must be a non-empty list")
+    if len(steps) > 256:
+        return _dag_preflight_failure("steps cannot exceed 256 entries")
+    if not isinstance(max_workers, int) or isinstance(max_workers, bool) or not 1 <= max_workers <= 64:
+        return _dag_preflight_failure("max_workers must be an integer from 1 through 64")
 
-    step_map = {step["id"]: step for step in steps}
+    errors: list[str] = []
+    step_map: dict[str, dict[str, Any]] = {}
+    for index, step in enumerate(steps):
+        if not isinstance(step, dict):
+            errors.append(f"step at index {index} must be a dictionary")
+            continue
+        step_id = step.get("id")
+        if not isinstance(step_id, str) or not step_id.strip():
+            errors.append(f"step at index {index} must have a non-empty string id")
+            continue
+        if step_id in step_map:
+            errors.append(f"duplicate step id: {step_id}")
+            continue
+        step_map[step_id] = step
+
+    deps_by_id: dict[str, list[str]] = {}
+    for step_id, step in step_map.items():
+        deps = step.get("depends_on", [])
+        if not isinstance(deps, list):
+            errors.append(f"{step_id}: depends_on must be a list")
+            deps = []
+        if len(set(dep for dep in deps if isinstance(dep, str))) != len(deps):
+            errors.append(f"{step_id}: depends_on contains duplicates or invalid values")
+        for dep in deps:
+            if not isinstance(dep, str) or dep not in step_map:
+                errors.append(f"{step_id}: unknown dependency {dep!r}")
+            elif dep == step_id:
+                errors.append(f"{step_id}: self dependency is invalid")
+        deps_by_id[step_id] = deps
+
+        fn_present = "fn" in step
+        command_present = "command" in step
+        if fn_present == command_present:
+            errors.append(f"{step_id}: provide exactly one callable fn or command")
+        elif fn_present and not callable(step.get("fn")):
+            errors.append(f"{step_id}: fn must be callable")
+        elif command_present:
+            command = step.get("command")
+            if (
+                not isinstance(command, list)
+                or not command
+                or any(not isinstance(arg, str) or not arg.strip() for arg in command)
+            ):
+                errors.append(f"{step_id}: command must be a non-empty argv list of strings")
+            if command_broker is None or not callable(getattr(command_broker, "run", None)):
+                errors.append(f"{step_id}: command broker is required")
+            if worktree_path is None:
+                errors.append(f"{step_id}: worktree_path is required for commands")
+            elif not isinstance(worktree_path, (str, Path)) or not Path(worktree_path).is_dir():
+                errors.append(f"{step_id}: worktree_path must be an existing directory")
+            if not isinstance(task_id, str) or not task_id.strip():
+                errors.append(f"{step_id}: explicit task_id is required for commands")
+            if (
+                not isinstance(paths, list)
+                or not paths
+                or any(not isinstance(path, str) or not path.strip() for path in paths)
+            ):
+                errors.append(f"{step_id}: explicit non-empty write paths are required for commands")
+            if work_attempt_fence is None:
+                errors.append(f"{step_id}: explicit work_attempt_fence is required for commands")
+            if request_cancel_event is None:
+                errors.append(f"{step_id}: explicit request_cancel_event is required for commands")
+
+    if not isinstance(command_timeout, int) or isinstance(command_timeout, bool) or not 1 <= command_timeout <= 600:
+        errors.append("command_timeout must be an integer from 1 through 600 seconds")
+
+    if not errors:
+        visiting: set[str] = set()
+        visited: set[str] = set()
+
+        def visit(step_id: str) -> None:
+            if step_id in visiting:
+                errors.append(f"dependency cycle includes {step_id}")
+                return
+            if step_id in visited:
+                return
+            visiting.add(step_id)
+            for dep in deps_by_id[step_id]:
+                visit(dep)
+            visiting.remove(step_id)
+            visited.add(step_id)
+
+        for step_id in sorted(step_map):
+            visit(step_id)
+
+    if errors:
+        return _dag_preflight_failure("; ".join(dict.fromkeys(errors)), step_map)
+
     completed_steps: set[str] = set()
     failed_steps: set[str] = set()
     step_results: dict[str, Any] = {}
-    remaining_steps = set(step_map.keys())
+    remaining_steps = set(step_map)
 
     aborted = False
 
     while remaining_steps and not aborted:
         ready = [
-            sid for sid in remaining_steps
-            if all(dep in completed_steps for dep in step_map[sid].get("depends_on", []))
+            sid for sid in sorted(remaining_steps)
+            if all(dep in completed_steps for dep in deps_by_id[sid])
         ]
         if not ready:
-            for sid in remaining_steps:
-                failed_steps.add(sid)
-                step_results[sid] = {"success": False, "error": "unmet_dependencies"}
             break
 
         def _run_single_step(step_id: str) -> tuple[str, bool, Any]:
@@ -934,23 +1027,26 @@ def execute_swarm_dag(
                     out = fn()
                     success = True
                     if isinstance(out, dict):
-                        success = bool(out.get("success", True))
+                        success = out.get("success", True) is True
                     elif isinstance(out, bool):
                         success = out
                     return step_id, success, out
-                elif cmd and worktree_path:
-                    proc = subprocess.run(
-                        cmd,
-                        cwd=str(worktree_path),
-                        shell=True,
-                        capture_output=True,
-                        text=True,
-                        check=False,
-                        **hidden_run_kwargs(),
-                    )
-                    return step_id, (proc.returncode == 0), {"stdout": proc.stdout, "stderr": proc.stderr, "exit_code": proc.returncode}
                 else:
-                    return step_id, True, {"status": "noop"}
+                    from .commands import CommandInvocation
+
+                    invocation = CommandInvocation(
+                        argv=list(cmd), cwd=str(Path(worktree_path).resolve()), shell=False
+                    )
+                    out = command_broker.run(
+                        invocation,
+                        cwd=str(Path(worktree_path).resolve()),
+                        timeout=command_timeout,
+                        task_id=task_id,
+                        paths=paths,
+                        _work_attempt_fence=work_attempt_fence,
+                        request_cancel_event=request_cancel_event,
+                    )
+                    return step_id, bool(isinstance(out, dict) and out.get("success") is True), out
             except Exception as exc:
                 return step_id, False, {"error": str(exc)}
 
@@ -967,30 +1063,43 @@ def execute_swarm_dag(
                     if step_map[sid].get("required", True):
                         aborted = True
 
-    rolled_back = False
-    if failed_steps and worktree_path and pre_snapshot:
-        try:
-            subprocess.run(
-                ["git", "-C", str(worktree_path), "checkout", "-f", pre_snapshot],
-                capture_output=True,
-                check=False,
-                **hidden_run_kwargs(),
-            )
-            subprocess.run(
-                ["git", "-C", str(worktree_path), "clean", "-fd"],
-                capture_output=True,
-                check=False,
-                **hidden_run_kwargs(),
-            )
-            rolled_back = True
-        except Exception:
-            pass
+    skipped_steps = []
+    for sid in sorted(remaining_steps):
+        skipped_steps.append(sid)
+        step_results[sid] = {
+            "success": False,
+            "status": "skipped",
+            "error": "aborted_after_required_failure" if aborted else "unmet_dependencies",
+        }
 
-    overall_success = len(failed_steps) == 0
+    overall_success = len(failed_steps) == 0 and not skipped_steps
     return {
         "success": overall_success,
-        "completed_steps": list(completed_steps),
-        "failed_steps": list(failed_steps),
-        "step_results": step_results,
-        "rolled_back": rolled_back,
+        "completed_steps": sorted(completed_steps),
+        "failed_steps": sorted(failed_steps),
+        "skipped_steps": skipped_steps,
+        "step_results": {sid: step_results[sid] for sid in sorted(step_results)},
+        "rolled_back": False,
+        "rollback_status": "not_performed",
+        "work_preserved": True,
+    }
+
+
+def _dag_preflight_failure(
+    error: str, step_map: dict[str, dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    ids = sorted(step_map or {})
+    return {
+        "success": False,
+        "completed_steps": [],
+        "failed_steps": [],
+        "skipped_steps": ids,
+        "step_results": {
+            step_id: {"success": False, "status": "not_started", "error": "preflight_failed"}
+            for step_id in ids
+        },
+        "error": error,
+        "rolled_back": False,
+        "rollback_status": "not_performed",
+        "work_preserved": True,
     }

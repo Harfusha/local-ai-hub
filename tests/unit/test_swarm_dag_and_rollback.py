@@ -50,7 +50,7 @@ def test_swarm_dag_executes_parallel_steps(tmp_path: Path):
     assert execution_order[-1] == "C"
 
 
-def test_swarm_dag_rollback_on_failure(tmp_path: Path):
+def test_swarm_dag_preserves_work_on_failure(tmp_path: Path):
     repo = _init_git_repo(tmp_path)
     coordinator = SwarmCoordinator(tmp_path / "swarm.sqlite")
 
@@ -68,7 +68,104 @@ def test_swarm_dag_rollback_on_failure(tmp_path: Path):
 
     res = coordinator.execute_dag(steps, worktree_path=repo)
     assert res["success"] is False
-    assert res["rolled_back"] is True
+    assert res["rolled_back"] is False
+    assert res["rollback_status"] == "not_performed"
     assert "s2" in res["failed_steps"]
-    # Check that tracked.txt was restored to initial version
-    assert (repo / "tracked.txt").read_text(encoding="utf-8") == "initial version\n"
+    # Failure must leave callback writes available for owner inspection.
+    assert (repo / "tracked.txt").read_text(encoding="utf-8") == "corrupted content\n"
+
+
+def test_swarm_dag_preflights_entire_graph_before_callbacks():
+    called = []
+    result = execute_swarm_dag([
+        {"id": "first", "fn": lambda: called.append("first")},
+        {"id": "later", "fn": lambda: called.append("later"), "depends_on": ["missing"]},
+    ])
+    assert result["success"] is False
+    assert called == []
+    assert result["step_results"]["first"]["status"] == "not_started"
+
+
+def test_swarm_dag_rejects_duplicate_ids_and_cycles_before_callbacks():
+    called = []
+    duplicate = execute_swarm_dag([
+        {"id": "same", "fn": lambda: called.append(1)},
+        {"id": "same", "fn": lambda: called.append(2)},
+    ])
+    cycle = execute_swarm_dag([
+        {"id": "a", "fn": lambda: called.append("a"), "depends_on": ["b"]},
+        {"id": "b", "fn": lambda: called.append("b"), "depends_on": ["a"]},
+    ])
+    assert duplicate["success"] is False
+    assert cycle["success"] is False
+    assert called == []
+
+
+def test_swarm_dag_requires_broker_before_any_command_graph_step():
+    called = []
+    result = execute_swarm_dag([
+        {"id": "callback", "fn": lambda: called.append("ran")},
+        {"id": "command", "command": ["python", "-V"], "depends_on": ["callback"]},
+    ])
+    assert result["success"] is False
+    assert called == []
+    assert "command broker is required" in result["error"]
+
+
+def test_swarm_dag_rejects_noop_and_shell_string_steps():
+    noop = execute_swarm_dag([{"id": "empty"}])
+    shell_string = execute_swarm_dag([{"id": "shell", "command": "echo unsafe"}])
+    assert noop["success"] is False
+    assert shell_string["success"] is False
+
+
+def test_swarm_dag_does_not_treat_non_boolean_success_as_success():
+    result = execute_swarm_dag([
+        {"id": "bad-result", "fn": lambda: {"success": "false"}},
+    ])
+    assert result["success"] is False
+
+
+def test_swarm_dag_broker_receives_structured_bounded_command(tmp_path: Path):
+    class Broker:
+        def __init__(self):
+            self.call = None
+
+        def run(self, command, **kwargs):
+            self.call = (command, kwargs)
+            return {"success": True, "exit_code": 0}
+
+    broker = Broker()
+    fence = object()
+    cancel_event = object()
+    result = execute_swarm_dag(
+        [{"id": "cmd", "command": ["python", "-V"]}],
+        worktree_path=tmp_path,
+        command_broker=broker,
+        command_timeout=17,
+        task_id="task-1",
+        paths=["src/example.py"],
+        work_attempt_fence=fence,
+        request_cancel_event=cancel_event,
+    )
+    invocation, kwargs = broker.call
+    assert result["success"] is True
+    assert invocation.argv == ["python", "-V"]
+    assert invocation.shell is False
+    assert kwargs["timeout"] == 17
+    assert kwargs["task_id"] == "task-1"
+    assert kwargs["paths"] == ["src/example.py"]
+    assert kwargs["_work_attempt_fence"] is fence
+    assert kwargs["request_cancel_event"] is cancel_event
+
+
+def test_swarm_dag_returns_aborted_steps_explicitly():
+    called = []
+    result = execute_swarm_dag([
+        {"id": "fail", "fn": lambda: {"success": False}},
+        {"id": "later", "fn": lambda: called.append("later"), "depends_on": ["fail"]},
+    ], max_workers=1)
+    assert result["success"] is False
+    assert called == []
+    assert result["step_results"]["later"]["status"] == "skipped"
+    assert result["skipped_steps"] == ["later"]
