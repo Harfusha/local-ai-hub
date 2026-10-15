@@ -192,12 +192,16 @@ Implement `connect_with_retry` with exponential jitter backoff on `sqlite3.BusyE
 
 ### Task 89: Async Job Progress Callbacks in `async_jobs.py` (#52)
 
+**2026-10-15 implementation checkpoint — execution deferred.** Added persistent `progress_percent`/`current_stage` metadata in a new `async_job_progress` table beside the exact existing durable job schema; existing job columns/records are neither altered nor rebuilt. The three-argument executor contract remains intact. `report_job_progress` uses an execution-scoped ContextVar callback bound to job ID, tenant and claimed attempt. Writes require the current running, noncancelled, unexpired job lease and matching attempt. Percent is finite, monotonic within the attempt and capped at 99 while running; only a done state with available result artifact reports 100. Stage strings are bounded to 160 characters and writes are throttled to at most four per second per callback; dropped/throttled reports return false. Callback context is reset on every executor exit. Startup/finalizing phases and actual completed batch-item fractions use this reporter. Reporting outside an executing job is a no-op.
+
+Execution claim now uses a queued-state/attempt compare-and-set to avoid two claimants both executing the same queued attempt. Public status/wait carries progress fields through MCP projection, keeps tenant filtering, derives terminal stages from actual state, and marks unavailable optional progress storage explicitly. Existing tombstone cleanup also removes orphan progress rows. Progress does not wake terminal waits or prove a successful result. Deferred temporary-database cases cover persistence/reopen, monotonicity/throttling, foreign tenant/attempt rejection, cancellation, context reset and terminal 100%. No tests, job executors, builds or runtime migrations were run during implementation; all current-runtime adoption remains pending the whole-bundle gate.
+
 **Files:**
 - Modify: `src/local_ai_hub/async_jobs.py:100-140`
 - Test: `tests/unit/test_async_jobs_progress.py`
 
-- [ ] **Step 1: Write test verifying async job reports percent completion and stage message**
-- [ ] **Step 2: Implement fix**
+- [x] **Step 1: Write durable scoped-progress regression source (execution deferred)**
+- [x] **Step 2: Implement attempt-bound callbacks and public progress state (validation pending)**
 Add `progress_percent: float` and `current_stage: str` to job state record.
 - [ ] **Step 3: Run test and verify pass & Commit**
 `git commit -m "feat(jobs): add progress percentage and stage callback to async jobs"`

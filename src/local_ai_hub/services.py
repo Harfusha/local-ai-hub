@@ -7144,6 +7144,7 @@ class LocalAIServices:
         results: dict[int, dict[str, Any]] = {}
         default_priority = int(args.get("priority", 5))
         inherited_root = args.get("root") or args.get("cwd")
+        from .async_jobs import report_job_progress
         for i, _model, item in prepared:
             item = dict(item)
             item.setdefault("priority", default_priority)
@@ -7156,6 +7157,7 @@ class LocalAIServices:
                     "success": False,
                     "error": f"batch item failed ({type(exc).__name__})",
                 }
+            report_job_progress(100.0 * len(results) / len(prepared), f"batch:{len(results)}/{len(prepared)}")
         return {"success": all(r.get("success", False) for r in results.values()), "results": [results[i] for i in range(len(results))]}
 
     def optimize_databases(self) -> dict[str, Any]:

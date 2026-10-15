@@ -3,6 +3,7 @@ from __future__ import annotations
 from .json_utils import dumps as json_dumps
 
 import json
+import math
 import os
 import sqlite3
 import threading
@@ -16,6 +17,15 @@ from typing import Any, Callable, Iterator
 from .cache import stable_hash
 from .sqlite_support import connect_sqlite, initialize_wal, retry_busy
 from .process_utils import terminate_tree
+
+
+_JOB_PROGRESS: ContextVar[Callable[[float, str], bool] | None] = ContextVar("async_job_progress", default=None)
+
+
+def report_job_progress(progress_percent: float, current_stage: str) -> bool:
+    """Report from the executing job context; outside it this is a harmless no-op."""
+    callback = _JOB_PROGRESS.get()
+    return callback(progress_percent, current_stage) if callback is not None else False
 
 
 class AsyncJobManager:
@@ -137,6 +147,12 @@ class AsyncJobManager:
                         )""")
                         con.execute("CREATE INDEX IF NOT EXISTS idx_async_jobs_state ON async_jobs(state, lease_until, expires_at)")
                         con.execute("CREATE INDEX IF NOT EXISTS idx_async_jobs_dispatch ON async_jobs(state, dispatch_not_before, expires_at)")
+                        # Additive metadata table preserves the exact durable job schema.
+                        con.execute("""CREATE TABLE IF NOT EXISTS async_job_progress (
+                            job_id TEXT PRIMARY KEY, tenant TEXT NOT NULL, attempt INTEGER NOT NULL,
+                            progress_percent REAL NOT NULL DEFAULT 0, current_stage TEXT NOT NULL DEFAULT '',
+                            updated_at REAL NOT NULL
+                        )""")
                         con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_async_jobs_active_dedupe ON async_jobs(tenant, request_hash) WHERE state IN ('queued','running')")
                         con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_async_jobs_request_id ON async_jobs(tenant, json_extract(payload_json, '$.request_id')) WHERE json_valid(payload_json) AND json_type(payload_json, '$.request_id')='text' AND json_extract(payload_json, '$.request_id')<>''")
                         con.commit()
@@ -936,6 +952,45 @@ class AsyncJobManager:
             self._event(job_id).set()
 
 
+    def _progress_callback(self, job_id: str, tenant: str, attempt: int) -> Callable[[float, str], bool]:
+        guard = threading.Lock()
+        last_write = float("-inf")
+
+        def update(percent: float, stage: str) -> bool:
+            nonlocal last_write
+            if isinstance(percent, bool) or not isinstance(percent, (int, float)):
+                return False
+            try:
+                if not math.isfinite(percent):
+                    return False
+            except OverflowError:
+                return False
+            if not 0 <= percent <= 100 or not isinstance(stage, str) or not stage.strip() or len(stage) > 160:
+                return False
+            stage = " ".join(stage.split())
+            with guard:
+                tick = time.monotonic()
+                if tick - last_write < 0.25:
+                    return False
+                try:
+                    with self._lock, closing(self._connect()) as con:
+                        changed = con.execute(
+                            "INSERT INTO async_job_progress(job_id,tenant,attempt,progress_percent,current_stage,updated_at) "
+                            "SELECT job_id,tenant,attempts,?,?,? FROM async_jobs WHERE job_id=? AND tenant=? "
+                            "AND attempts=? AND state='running' AND cancel_requested=0 AND lease_until>? AND expires_at>? "
+                            "ON CONFLICT(job_id) DO UPDATE SET tenant=excluded.tenant,attempt=excluded.attempt, "
+                            "progress_percent=MAX(CASE WHEN async_job_progress.attempt=excluded.attempt "
+                            "THEN async_job_progress.progress_percent ELSE 0 END,excluded.progress_percent), "
+                            "current_stage=excluded.current_stage,updated_at=excluded.updated_at",
+                            (min(99.0, float(percent)), stage, time.time(), job_id, tenant, attempt, time.time(), time.time()),
+                        ).rowcount
+                        con.commit()
+                    last_write = tick
+                    return changed == 1
+                except sqlite3.DatabaseError:
+                    return False
+        return update
+
     def _execute(self, job_id: str) -> dict[str, Any]:
         self._cancel_jobs_blocked_by_mode(self._operational_mode_snapshot())
         with self._lock, closing(self._connect()) as con:
@@ -948,8 +1003,14 @@ class AsyncJobManager:
                 cancelled = bool(row["cancel_requested"]) or current_state == "cancelled"
                 state = "cancelled" if cancelled else current_state
                 return {"success": False, "job_id": job_id, "state": state, "error": "async job cancelled before execution" if cancelled else "async job is not queued", "outcome_unknown": state == "outcome_unknown", "terminal": state in self.TERMINAL_STATES, "retryable": state in {"queued", "running"}, "admission": self._admission("accepted", "capacity_available", retryable=False)}
-            con.execute("UPDATE async_jobs SET state='running',attempts=attempts+1,lease_until=?,updated_at=? WHERE job_id=?", (time.time() + self.lease_seconds, time.time(), job_id))
+            claimed = con.execute(
+                "UPDATE async_jobs SET state='running',attempts=attempts+1,lease_until=?,updated_at=? "
+                "WHERE job_id=? AND state='queued' AND cancel_requested=0 AND attempts=?",
+                (time.time() + self.lease_seconds, time.time(), job_id, int(row["attempts"])),
+            ).rowcount
             con.commit()
+            if claimed != 1:
+                return {"success": False, "job_id": job_id, "error": "async job claim lost", "retryable": False}
             tenant, action, stored_payload, trace_id = str(row["tenant"]), str(row["action"]), json.loads(str(row["payload_json"])), str(row["trace_id"] or "")
             if not isinstance(stored_payload, dict):
                 stored_payload = {}
@@ -973,8 +1034,10 @@ class AsyncJobManager:
                 self.debug_traces.event(trace_id, "running", {"action": action})
             except Exception:
                 pass
+        progress_token = _JOB_PROGRESS.set(self._progress_callback(job_id, tenant, int(row["attempts"]) + 1))
         try:
             result = self._invoke_executor_if_allowed(job_id, action, payload, tenant)
+            report_job_progress(99.0, "finalizing")
             if not isinstance(result, dict):
                 result = {
                     "success": False,
@@ -984,6 +1047,7 @@ class AsyncJobManager:
         except Exception as exc:
             result = {"success": False, "error": str(exc), "retryable": True}
         finally:
+            _JOB_PROGRESS.reset(progress_token)
             cleanup_confirmed = self._cleanup_processes(job_id)
         deferred_for_resource_release = False
         if result.get("success") and str(result.get("state", "")) in {"queued", "running"}:
@@ -1156,6 +1220,23 @@ class AsyncJobManager:
             "next_action": "wait_or_result" if state in {"queued", "running"} else "inspect_result",
             "admission": self._admission("accepted", "capacity_available", retryable=False, queue_age_ms=(time.time() - float(row["created_at"])) * 1000.0),
         }
+        progress_percent, current_stage = 0.0, state
+        progress_available = True
+        try:
+            with self._lock, closing(self._connect()) as con:
+                progress = con.execute(
+                    "SELECT progress_percent,current_stage FROM async_job_progress WHERE job_id=? AND tenant=? AND attempt=?",
+                    (job_id, tenant, int(row["attempts"])),
+                ).fetchone()
+        except sqlite3.DatabaseError:
+            progress, progress_available = None, False
+        if progress is not None and state != "queued":
+            progress_percent = float(progress[0])
+            if state == "running":
+                current_stage = str(progress[1])
+        if state == "done":
+            progress_percent = 100.0
+        result.update(progress_percent=progress_percent, current_stage=current_stage, progress_available=progress_available)
         if artifact_unavailable:
             result["error"] = "async job result artifact unavailable"
         elif state == "outcome_unknown":
@@ -1321,6 +1402,7 @@ class AsyncJobManager:
             expired = con.execute("UPDATE async_jobs SET state='expired',dispatch_not_before=0,updated_at=? WHERE state IN ('done','failed','cancelled','outcome_unknown') AND expires_at<?", (now, now)).rowcount
             # Periodic tombstone purge: evict expired jobs whose retention period has lapsed
             con.execute("DELETE FROM async_jobs WHERE state='expired' AND updated_at<?", (now - self.result_ttl_seconds,))
+            con.execute("DELETE FROM async_job_progress WHERE NOT EXISTS (SELECT 1 FROM async_jobs j WHERE j.job_id=async_job_progress.job_id)")
             stuck = con.execute("SELECT job_id, action, attempts, cancel_requested, payload_json FROM async_jobs WHERE state='running' AND lease_until<?", (now,)).fetchall()
             for s_id, s_action, s_att, s_canc, payload_json in stuck:
                 s_attempts = int(s_att or 0)
