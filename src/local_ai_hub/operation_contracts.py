@@ -715,6 +715,9 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "worktree_release": ("root", "worktree_path", "worktree_id", "delete_branch", "branch"),
             "simulate_merge": ("root", "source_branch", "target_branch"),
             "curate_dataset": ("output_path", "min_receipts", "format"),
+            "negative_knowledge_record": ("root", "tenant", "record"),
+            "negative_knowledge_find": ("root", "tenant", "query", "limit"),
+            "incident_decision": ("root", "tenant", "fingerprint", "state_revision"),
             "task_sync": ("root", "sync_action", "stream_id", "after_seq", "limit", "events"),
             "blackboard_update": ("root", "task_id", "board_id", "section", "content", "author", "expected_version"),
             "blackboard_get": ("root", "task_id", "board_id", "section"),
@@ -740,6 +743,9 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "swarm_status": ("swarm_id",),
             "swarm_cancel": ("swarm_id",),
             "simulate_merge": ("source_branch",),
+            "negative_knowledge_record": ("record",),
+            "negative_knowledge_find": ("query",),
+            "incident_decision": ("fingerprint",),
         },
         non_empty={
             "ask": ("root", "session_id"),
@@ -767,7 +773,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
                 "record_id", "target_scope", "approver", "criterion", "board_id", "section", "scope",
                 "scope_id", "clone_id", "worktree_id", "branch", "repository_id", "session_id", "tenant",
                 "repository_revision", "phase", "preload_profile", "since_hash",
-                "question_id", "question", "answer",
+                "question_id", "question", "answer", "state_revision",
             )},
             "format": {"type": ["string", "null"], "default": None},
             "goal": {"type": "string", "default": ""},
@@ -846,8 +852,30 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
                     }},
                 }},
             },
-            "record": {"type": "object"},
-            "fingerprint": {"type": "object"},
+            "record": {
+                "type": "object",
+                "properties": {
+                    "root_cause": {"type": "string", "maxLength": 4096},
+                    "verified_fix": {"type": "string", "maxLength": 4096},
+                    "message": {"type": "string", "maxLength": 4096},
+                    "operation_class": {"type": "string", "maxLength": 160},
+                    "exit_code": {"type": "integer", "minimum": -32768, "maximum": 32767},
+                    "state_revision": {"type": "string", "maxLength": 256},
+                    "evidence_ids": {"type": "array", "maxItems": 64, "items": {"type": "string", "maxLength": 256}},
+                    "affected_paths": {"type": "array", "maxItems": 128, "items": {"type": "string", "maxLength": 4096}},
+                },
+                "additionalProperties": False,
+            },
+            "fingerprint": {
+                "type": "object",
+                "properties": {
+                    "error_class": {"type": "string", "minLength": 1, "maxLength": 160},
+                    "operation_class": {"type": "string", "minLength": 1, "maxLength": 160},
+                    "signature_hash": {"type": "string", "minLength": 1, "maxLength": 128},
+                },
+                "required": ["error_class", "operation_class", "signature_hash"],
+                "additionalProperties": False,
+            },
             "tool_outcome": {"type": "object"},
             "focus": {"type": "array", "items": {"type": "string"}},
             "include_diagnostics": {"type": "boolean", "default": False},
@@ -1698,6 +1726,18 @@ def operation_parameters_schema(tool: str, features: Any = None) -> dict[str, An
             },
             "then": {"properties": {"max_tokens": {"default": 4000}}},
         })
+    if tool == "local_ai_coord" and "negative_knowledge_find" in available_actions:
+        parameters.setdefault("allOf", []).append({
+            "if": {
+                "properties": {selector_field: {"const": "negative_knowledge_find"}},
+                "required": [selector_field],
+            },
+            "then": {
+                "properties": {
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 100},
+                },
+            },
+        })
     return parameters
 
 
@@ -1893,6 +1933,16 @@ def validate_operation_arguments(
         limit = arguments.get("limit", 1000)
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 1000:
             return "limit must be an integer from 1 to 1000 for action='task_sync'"
+    if tool == "local_ai_coord" and action == "negative_knowledge_find":
+        limit = arguments.get("limit", 100)
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            return "limit must be an integer from 1 to 100 for action='negative_knowledge_find'"
+    if tool == "local_ai_coord" and action in {"negative_knowledge_record", "incident_decision"}:
+        field = "record" if action == "negative_knowledge_record" else "fingerprint"
+        if field in arguments:
+            nested_error = _validate_nested_schema(arguments[field], properties[field], field, action)
+            if nested_error:
+                return nested_error
     if tool == "local_ai_artifact" and action == "source" and "max_chars" in arguments:
         max_chars = arguments["max_chars"]
         if isinstance(max_chars, bool) or not isinstance(max_chars, int) or not 512 <= max_chars <= 12000:

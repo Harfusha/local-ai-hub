@@ -4238,6 +4238,7 @@ def local_ai_coord(
     approver: str = "",
     fingerprint: dict[str, Any] | None = None,
     tool_outcome: dict[str, Any] | None = None,
+    state_revision: str = "",
     extra_fields: list[str] | None = None,
     max_response_tokens: int = 0,
     response_profile: str = "",
@@ -4332,6 +4333,28 @@ def local_ai_coord(
         return _compact(CLIENT.post("/api/agent-state/events/delta", {
             "action": "import", "events": events,
         }, timeout=_timeout("quick")), "status")
+    incident_legacy_values: dict[str, dict[str, Any]] = {
+        "negative_knowledge_record": {
+            "key": key, "value": value, "query": query, "reason": reason, "status": status,
+            "record_id": record_id, "tool_outcome": tool_outcome, "fingerprint": fingerprint,
+            "state_revision": state_revision, "limit": limit,
+        },
+        "negative_knowledge_find": {
+            "key": key, "value": value, "reason": reason, "status": status,
+            "record_id": record_id, "tool_outcome": tool_outcome, "fingerprint": fingerprint,
+            "record": record, "state_revision": state_revision,
+        },
+        "incident_decision": {
+            "value": value, "query": query, "reason": reason, "status": status,
+            "record_id": record_id, "tool_outcome": tool_outcome, "record": record,
+            "repository_revision": repository_revision, "key": key, "limit": limit,
+        },
+    }
+    if action in incident_legacy_values and any(
+        item is not None and item != "" and item != 0
+        for item in incident_legacy_values[action].values()
+    ):
+        return contract_error(f"action='{action}' accepts only canonical incident fields", status_code=400)
     sync_only_inputs = {
         name: value for name, value in {
             "sync_action": sync_action,
@@ -4469,12 +4492,31 @@ def local_ai_coord(
             "task": task, "task_id": task_id, "key": key, "value": value,
             "query": query, "status": status, "target_scope": target_scope,
         },
+        "negative_knowledge_record": {
+            "key": key, "value": value, "query": query, "reason": reason,
+            "status": status, "record_id": record_id, "tool_outcome": tool_outcome,
+            "fingerprint": fingerprint, "state_revision": state_revision,
+            "repository_revision": repository_revision,
+        },
+        "negative_knowledge_find": {
+            "key": key, "value": value, "reason": reason, "status": status,
+            "record_id": record_id, "tool_outcome": tool_outcome, "fingerprint": fingerprint,
+            "record": record, "state_revision": state_revision,
+            "repository_revision": repository_revision,
+        },
+        "incident_decision": {
+            "value": value, "query": query, "reason": reason, "status": status,
+            "record_id": record_id, "tool_outcome": tool_outcome, "record": record,
+            "repository_revision": repository_revision, "key": key,
+        },
     }
     if action in legacy_coord_values and any(
         (value != "" if isinstance(value, str) else value != 0 if type(value) is int else value is not None)
         for value in legacy_coord_values[action].values()
     ):
         return contract_error(f"action='{action}' accepts only canonical fields", status_code=400)
+    if action in {"negative_knowledge_record", "incident_decision"} and limit is not None:
+        return contract_error(f"limit is not valid for action='{action}'", status_code=400)
     if receipt is not None and action != "verify_receipt":
         return contract_error("receipt is only valid for action='verify_receipt'", status_code=400)
     if since_hash != "" and action != "context_compile":
@@ -4513,16 +4555,25 @@ def local_ai_coord(
         "swarm_status": {"root": root, "swarm_id": swarm_id},
         "swarm_list": {"root": root, "state": state},
         "swarm_cancel": {"root": root, "swarm_id": swarm_id, "reason": reason},
-        "worktree_lease": {"root": root, "branch": branch or None},
+        "worktree_lease": {"root": root, "branch": branch},
         "worktree_release": {
             "root": root, "worktree_path": worktree_path,
-            "worktree_id": worktree_id, "delete_branch": delete_branch, "branch": branch or None,
+            "worktree_id": worktree_id, "delete_branch": delete_branch, "branch": branch,
         },
         "simulate_merge": {"root": root, "source_branch": source_branch, "target_branch": target_branch},
         "curate_dataset": {
             "output_path": output_path,
             "min_receipts": min_receipts,
             "format": "jsonl" if format is None else format,
+        },
+        "negative_knowledge_record": {"root": root, "tenant": tenant, "record": record},
+        "negative_knowledge_find": {
+            "root": root, "tenant": tenant, "query": query,
+            "limit": 100 if limit is None else limit,
+        },
+        "incident_decision": {
+            "root": root, "tenant": tenant, "fingerprint": fingerprint,
+            "state_revision": state_revision,
         },
     }
     if action in coord_canonical_inputs:
@@ -4634,18 +4685,19 @@ def local_ai_coord(
             "action": "export", "task_id": task_id, "root": root,
             "format": format,
         }, timeout=_timeout("quick")), "verify")
-    if action.startswith("negative_knowledge_"):
-        sub_act = "record" if action == "negative_knowledge_record" else "find"
+    if action == "negative_knowledge_record":
         return _compact(CLIENT.post("/api/agent-state/incidents", {
-            "action": sub_act, "error_class": key or "AgentError", "message": value or query,
-            "query": query or key or value, "root": root,
-            "root_cause": reason, "verified_fix": status,
-            "incident_id": record_id,
+            **record, "action": "record", "root": root, "tenant": tenant,
+        }, timeout=_timeout("quick")), "task_memory")
+    if action == "negative_knowledge_find":
+        return _compact(CLIENT.post("/api/agent-state/incidents", {
+            "action": "find", "root": root, "tenant": tenant,
+            "query": query, "limit": 100 if limit is None else limit,
         }, timeout=_timeout("quick")), "task_memory")
     if action == "incident_decision":
         return _compact(CLIENT.coord(
-            action="incident_decision", fingerprint=fingerprint or {},
-            tool_outcome=tool_outcome or {}, root=root,
+            action=action, fingerprint=fingerprint, state_revision=state_revision,
+            root=root, tenant=tenant,
         ), "status")
     if action in ("claim", "claim_batch"):
         claim_root = root

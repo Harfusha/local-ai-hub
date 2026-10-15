@@ -1570,11 +1570,12 @@ class HubClient:
             payload = {**kwargs, "action": mem_action}
             return self.post("/api/agent-state/memory", payload)
         if act == "incident_decision":
-
             return self.post("/api/agent-state/incidents", {
                 "action": "decision",
-                "fingerprint": kwargs.get("fingerprint") or {},
-                "state_revision": kwargs.get("state_revision", kwargs.get("revision", "")),
+                "fingerprint": kwargs.get("fingerprint"),
+                "state_revision": kwargs.get("state_revision", ""),
+                "root": kwargs.get("root", "."),
+                "tenant": kwargs.get("tenant", ""),
             })
         if act == "context_compile":
             payload = dict(kwargs)
@@ -1611,11 +1612,23 @@ class HubClient:
                 "root": kwargs.get("root", "."),
                 "format": kwargs.get("format", "markdown"),
             })
-        if act in {"negative_knowledge_record", "negative_knowledge_find"}:
-            sub_act = "record" if act == "negative_knowledge_record" else "find"
+        if act == "negative_knowledge_record":
+            record = kwargs.get("record")
+            if not isinstance(record, dict):
+                return {"success": False, "terminal": True, "retryable": False, "error": "record must be an object"}
             return self.post("/api/agent-state/incidents", {
-                **kwargs,
-                "action": sub_act,
+                **record,
+                "action": "record",
+                "root": kwargs.get("root", "."),
+                "tenant": kwargs.get("tenant", ""),
+            })
+        if act == "negative_knowledge_find":
+            return self.post("/api/agent-state/incidents", {
+                "action": "find",
+                "query": kwargs.get("query"),
+                "limit": kwargs.get("limit", 100),
+                "root": kwargs.get("root", "."),
+                "tenant": kwargs.get("tenant", ""),
             })
         if act in ("claim", "claim_batch"):
             return self.post("/api/leases/claim_batch", {
