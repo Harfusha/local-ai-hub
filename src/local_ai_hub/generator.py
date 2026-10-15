@@ -302,9 +302,8 @@ def generate_skill_markdown(cfg: dict[str, Any]) -> str:
     contract_notes: list[str] = []
     if fs.status:
         contract_notes.append(
-            '`local_ai_status.detail` uses `brief`, `cache`, `telemetry`, `full`, `agent_state`, or `traces`; '
+            '`local_ai_status.detail` uses `brief`, `cache`, `telemetry`, `full`, `agent_state`, `traces`, or `guide`; '
             '`traces` accepts bounded `min_duration_ms` and `trace_action` filters. '
-            'action also accepts `status`, `health`, `check`, and `info` aliases.'
         )
     if fs.repo:
         contract_notes.append(
