@@ -29,6 +29,7 @@ _WORKER_POOL: ProcessPoolExecutor | None = None
 _WORKER_POOL_LOCK = threading.Lock()
 _WORKER_DISPATCH_LOCK = threading.Lock()
 _WORKER_DISABLED_CAUSE: str | None = None
+_WER_FAULT_REPORTING_NO_UI = 0x0020
 _TREE_CACHE: OrderedDict[tuple[str, str], tuple[bytes, Any, int]] = OrderedDict()
 _TREE_CACHE_BYTES = 0
 _TREE_CACHE_MAX_ENTRIES = 32
@@ -122,8 +123,55 @@ def _get_worker_pool() -> ProcessPoolExecutor:
         if _WORKER_DISABLED_CAUSE is not None:
             raise RuntimeError("isolated Tree-sitter worker is disabled")
         if _WORKER_POOL is None:
-            _WORKER_POOL = ProcessPoolExecutor(max_workers=1)
+            _WORKER_POOL = ProcessPoolExecutor(
+                max_workers=1,
+                initializer=_initialize_isolated_worker,
+            )
         return _WORKER_POOL
+
+
+def _load_worker_windows_api() -> Any:
+    import ctypes
+
+    return ctypes.WinDLL("kernel32", use_last_error=True)
+
+
+def _worker_runtime_is_windows() -> bool:
+    return os.name == "nt"
+
+
+def _initialize_isolated_worker() -> None:
+    """Disable fault-dialog UI in this worker before loading native parsers."""
+    if not _worker_runtime_is_windows():
+        return
+
+    import ctypes
+
+    api = _load_worker_windows_api()
+    handle_type = ctypes.c_void_p
+    dword_type = ctypes.c_uint32
+    hresult_type = ctypes.c_int32
+
+    get_current_process = api.GetCurrentProcess
+    get_current_process.argtypes = []
+    get_current_process.restype = handle_type
+    process = get_current_process()
+
+    get_flags = api.WerGetFlags
+    get_flags.argtypes = [handle_type, ctypes.POINTER(dword_type)]
+    get_flags.restype = hresult_type
+    flags = dword_type()
+    result = get_flags(process, ctypes.byref(flags))
+    if result < 0:
+        raise OSError(f"WerGetFlags failed with HRESULT 0x{result & 0xFFFFFFFF:08X}")
+
+    set_flags = api.WerSetFlags
+    set_flags.argtypes = [dword_type, handle_type]
+    set_flags.restype = hresult_type
+    updated_flags = flags.value | _WER_FAULT_REPORTING_NO_UI
+    result = set_flags(updated_flags, process)
+    if result < 0:
+        raise OSError(f"WerSetFlags failed with HRESULT 0x{result & 0xFFFFFFFF:08X}")
 
 
 def _disable_worker_pool(cause: str) -> bool:
