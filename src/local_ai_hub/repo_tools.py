@@ -3043,7 +3043,7 @@ class RepositoryTools:
     ) -> dict[str, Any]:
         source_query = is_source_context_query(query)
         requested_top_k = max(1, int(top_k))
-        search_top_k = min(64, requested_top_k * 4) if source_query else top_k
+        search_top_k = max(requested_top_k, min(64, requested_top_k * 4)) if source_query else top_k
         search = self.search_paths(
             root, query, paths, top_k=search_top_k, directory_hints=directory_hints,
             exclude_paths=exclude_paths, force_include_paths=force_include_paths,
@@ -3181,7 +3181,7 @@ class RepositoryTools:
     def context_pack(self, root: str, query: str, max_tokens: int = 4500, top_k: int = 14) -> dict[str, Any]:
         source_query = is_source_context_query(query)
         requested_top_k = max(1, int(top_k))
-        search_top_k = min(64, requested_top_k * 4) if source_query else top_k
+        search_top_k = max(requested_top_k, min(64, requested_top_k * 4)) if source_query else top_k
         search = self.search(root, query, top_k=search_top_k)
         if not search.get("success"):
             return search
