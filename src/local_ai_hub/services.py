@@ -634,6 +634,8 @@ class LocalAIServices:
             l1_ttl_seconds=int(cache_cfg.get("l1_repo_ttl_seconds", 900)),
         )
         self.repo_flight = SingleFlightCache(self.repo_cache, enabled=True, wait_timeout_seconds=float(config.get("resilience", {}).get("singleflight_wait_timeout_seconds", 45)))
+        from .context_warmup import ContextWarmup
+        self._context_warmup = ContextWarmup()
         self.semantic_cache = SemanticGenerationCache(config, embeddings)
         resilience = config.get("resilience", {})
         self.breakers = CircuitBreakerRegistry(
@@ -4403,6 +4405,48 @@ class LocalAIServices:
             return self._repo_cached("adaptive-relevance", request.root, params, compute)
         except Exception:
             return {"success": False, "degraded": True, "degraded_reason": "relevance_error", "warnings": []}
+
+    def schedule_task_context_warmup(self, task: Any, *, root: str, tenant: str,
+                                     changed_paths: list[str] | None = None) -> bool:
+        """Optional prediction; reuse only the normal adaptive cache and its fences."""
+        if not root or not tenant or not (task.contract.acceptance_criteria or changed_paths):
+            return False
+        if not bool(self.config.get("preprocessing", {}).get("task_context_warmup", True)):
+            return False
+        if not Path(root).is_absolute() or not Path(root).is_dir() or len(root) > 400:
+            return False
+        from .operational_mode import load_operational_mode
+
+        def allowed() -> bool:
+            return load_operational_mode(configured_state_dir(self.config, create=False)).mode == "active"
+
+        if not allowed():
+            return False
+        request = ConsistencyRequest(
+            root=canonical_root(root), tenant=tenant, task_id=task.task_id,
+            query=task.contract.goal, session_id=task.context.session_id,
+            changed_paths=tuple(changed_paths or ())[:64], token_budget=4000,
+        )
+        expected_updated = task.updated_at
+        key = stable_hash({"request": request.__dict__, "task_updated_at": expected_updated})
+
+        def warm() -> None:
+            if not allowed():
+                return
+            store = getattr(self, "task_store", None)
+            current = store.get(task.task_id) if store is not None else None
+            if current is None or current.updated_at != expected_updated:
+                return
+            if str(getattr(current.status, "value", current.status)) in {"completed", "cancelled", "failed", "abandoned"}:
+                return
+            self.adaptive_context_pack(request, mode="adaptive")
+
+        return self._context_warmup.submit(key, warm)
+
+    def close_context_warmup(self) -> None:
+        worker = getattr(self, "_context_warmup", None)
+        if worker is not None:
+            worker.close()
 
     def adaptive_context_pack(self, request: ConsistencyRequest, *, mode: str = "fast", since_hash: str = "") -> dict[str, Any]:
         """Build deterministic context plus bounded, soft consistency findings."""

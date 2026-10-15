@@ -6316,7 +6316,18 @@ class Handler(BaseHTTPRequestHandler):
                         auto_worktree=bool(payload.get("auto_worktree", False)),
                         repo_root=str(payload.get("repo_root", "")),
                     )
-                    self._send(200, {"success": True, "task": task.to_dict()}); return
+                    # A prediction is optional and must never fail task persistence.
+                    warmup_scheduled = False
+                    try:
+                        warm = getattr(APP.services, "schedule_task_context_warmup", None)
+                        if callable(warm):
+                            paths = payload.get("changed_paths")
+                            if paths is not None and (not isinstance(paths, list) or any(not isinstance(p, str) for p in paths)):
+                                paths = None
+                            warmup_scheduled = warm(task, root=repo_root, tenant=tenant, changed_paths=paths)
+                    except Exception:
+                        pass
+                    self._send(200, {"success": True, "task": task.to_dict(), "context_warmup_scheduled": bool(warmup_scheduled)}); return
                 if action == "get":
                     task = APP.agent_tasks.get(str(payload.get("task_id", "")))
                     if not task:

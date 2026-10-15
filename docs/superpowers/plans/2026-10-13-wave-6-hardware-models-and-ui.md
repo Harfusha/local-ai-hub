@@ -150,12 +150,16 @@ Provide concise required parameters, action examples, and token tips for each to
 
 ### Task 86: Predictive Cache Warmup after `task_create` (#18)
 
+**2026-10-15 implementation checkpoint — execution deferred.** Successful task creation with criteria or changed paths schedules an optional prediction through the existing adaptive-context pipeline, using its normal task/tenant/session/root/config/memory/repository cache identities and freshness checks. Goal text is the predicted query, with the standard 4,000-token budget and empty phase/profile. It does not introduce a second task-memory result cache, fabricate receipts or create another task. MCP task creation forwards existing `paths` as changed paths; authenticated HTTP root/tenant are used, not a guessed checkout. `context_warmup_scheduled` only means queue admission, not a completed pack or guaranteed hit.
+
+The lazy daemon queue has one worker/four waiting entries, deduplicates pending/active predictions, retains at most 64 recent identities, suppresses immediate repeats and drops queued work older than 30 seconds. Active operational mode is required at submit and execution. A changed/terminal task invalidates its prediction; `preprocessing.task_context_warmup=false` disables the feature. App close drops pending work and joins the worker for at most one second; an already-running adaptive computation still relies on existing bounded backend waits and application shutdown cancellation. Exact downstream request identity and unchanged source/memory state are required for cache reuse; generic first-call/L1-hit and latency claims remain pending final measurement. Deferred fake-operation cases cover queue capacity, active deduplication, close, request identity, task drift and gaming exclusion. No warmup worker, inference, test or service restart was started during source implementation.
+
 **Files:**
 - Modify: `src/local_ai_hub/services.py:4180-4220`
 - Test: `tests/unit/test_predictive_cache_warmup.py`
 
-- [ ] **Step 1: Write test verifying context cache begins background warmup upon task creation**
-- [ ] **Step 2: Implement fix**
+- [x] **Step 1: Write bounded queue and scoped warmup regression source (execution deferred)**
+- [x] **Step 2: Implement optional task-create prediction using existing context pipeline (validation pending)**
 When `task_create` is executed with criteria or changed paths, dispatch asynchronous background context compilation so the subsequent `context` call hits L1 cache.
 - [ ] **Step 3: Run test and verify pass & Commit**
 `git commit -m "perf(services): trigger predictive background context warmup on task_create"`

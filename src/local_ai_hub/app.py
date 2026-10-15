@@ -2070,6 +2070,10 @@ class LocalAIApp:
             self._closed = True
         self._shutdown.set()
         try:
+            self.services.close_context_warmup()
+        except Exception:
+            pass
+        try:
             self._status_dependency_executor.shutdown(wait=False, cancel_futures=True)
         except Exception:
             pass

@@ -3910,6 +3910,8 @@ def local_ai_coord(
             task_kwargs["query"] = query
         if action == "task_create" and task:
             task_kwargs["task"] = task
+        if action == "task_create" and paths:
+            task_kwargs["changed_paths"] = paths[:64]
         task_result = CLIENT.coord(
             **task_kwargs,
         )
