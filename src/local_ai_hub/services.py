@@ -5784,8 +5784,8 @@ class LocalAIServices:
                 path = str(item.get("path", ""))
                 normalized_path = path.replace("\\", "/").casefold()
                 return (
-                    source_context_path_tier(path),
                     0 if normalized_path in priority_keys else 1,
+                    source_context_path_tier(path),
                     evidence_rank.get(path, 999),
                     path,
                 )

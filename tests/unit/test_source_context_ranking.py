@@ -142,12 +142,13 @@ def test_source_context_expansion_never_shrinks_large_requested_top_k(monkeypatc
     assert observed == [100, 100]
 
 
-def test_hybrid_final_evidence_puts_source_first_and_retains_explicit_doc(tmp_path: Path) -> None:
+def _hybrid_source_evidence(tmp_path: Path, *, pin_readme: bool) -> dict:
     _source_fixture(tmp_path)
+    (tmp_path / "README.md").write_text("Project readme.\n", encoding="utf-8")
     old_plan = "docs/plans/old-runtime-plan.md"
     runtime_source = "src/service.py"
-    explicit_doc = "docs/pinned-notes.md"
-    query = f"audit source runtime implementation service stop behavior {explicit_doc}"
+    protected_doc = "README.md" if pin_readme else "docs/pinned-notes.md"
+    query = "audit source runtime implementation service stop behavior"
 
     class RepeatedDocs:
         @staticmethod
@@ -161,7 +162,7 @@ def test_hybrid_final_evidence_puts_source_first_and_retains_explicit_doc(tmp_pa
 
         @staticmethod
         def indexed_paths(_root):
-            return [old_plan, runtime_source, explicit_doc]
+            return [old_plan, runtime_source, protected_doc]
 
     class LegacyPack:
         @staticmethod
@@ -171,7 +172,7 @@ def test_hybrid_final_evidence_puts_source_first_and_retains_explicit_doc(tmp_pa
         ):
             evidence = [
                 {"path": old_plan, "start_line": 1, "end_line": 1, "score": 90.0, "raw": "old plan"},
-                {"path": explicit_doc, "start_line": 1, "end_line": 1, "score": 4.0, "raw": "pinned doc"},
+                {"path": protected_doc, "start_line": 1, "end_line": 1, "score": 4.0, "raw": "protected doc"},
                 {"path": runtime_source, "start_line": 1, "end_line": 1, "score": 1.0, "raw": "runtime source"},
             ]
             context = "".join(
@@ -195,13 +196,27 @@ def test_hybrid_final_evidence_puts_source_first_and_retains_explicit_doc(tmp_pa
     services.evidence_store = None
     services.repo_tools = LegacyPack()
 
-    result = services._hybrid_context_uncached(
+    path_hints = [{"path": old_plan, "purpose": "candidate"}]
+    if pin_readme:
+        path_hints.append({
+            "path": "README.md", "purpose": "pin",
+            "provenance": "project_config:pinned_context",
+        })
+    return services._hybrid_context_uncached(
         str(tmp_path), query, "tenant", None, 1600,
-        path_hints=({"path": old_plan, "purpose": "candidate"},),
+        path_hints=path_hints,
     )
 
+
+def test_hybrid_final_evidence_demotes_agreed_historical_docs_for_source_query(tmp_path: Path) -> None:
+    result = _hybrid_source_evidence(tmp_path, pin_readme=False)
     evidence_paths = [item["path"] for item in result["evidence"]]
-    assert evidence_paths[0] == runtime_source
-    assert result["context"].startswith(f"--- {runtime_source}:1-1 score=1.0 ---\n")
-    assert explicit_doc in evidence_paths
-    assert evidence_paths.index(explicit_doc) < evidence_paths.index(old_plan)
+    assert evidence_paths[0] == "src/service.py"
+    assert evidence_paths.index("src/service.py") < evidence_paths.index("docs/plans/old-runtime-plan.md")
+
+
+def test_hybrid_final_evidence_keeps_pinned_readme_first_and_source(tmp_path: Path) -> None:
+    result = _hybrid_source_evidence(tmp_path, pin_readme=True)
+    evidence_paths = [item["path"] for item in result["evidence"]]
+    assert evidence_paths[0] == "README.md"
+    assert "src/service.py" in evidence_paths
