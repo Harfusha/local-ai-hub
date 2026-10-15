@@ -4595,28 +4595,16 @@ def test_{sym}_regression_edge_cases():
             except Exception:
                 graph_complete = False
 
-        matched_tests = sorted(test_paths_set)
-        cmd = ""
-        if matched_tests:
-            if framework == "pytest":
-                cmd = f"pytest {' '.join(matched_tests)}"
-            elif framework == "dotnet":
-                filters = " | ".join(f"FullyQualifiedName~{Path(t).stem}" for t in matched_tests)
-                cmd = f"dotnet test --filter \"{filters}\""
-            elif framework == "npm":
-                cmd = f"npm test -- {' '.join(matched_tests)}"
-            elif framework == "cargo":
-                cmd = f"cargo test {' '.join(Path(t).stem for t in matched_tests)}"
-            elif framework == "go":
-                cmd = f"go test {' '.join(matched_tests)}"
-            else:
-                cmd = f"pytest {' '.join(matched_tests)}"
+        from .test_selection import affected_test_command, compatible_tests
+        matched_tests, incompatible_tests = compatible_tests(sorted(test_paths_set), framework)
+        cmd = affected_test_command(matched_tests, framework)
 
         return {
             "success": True,
             "framework": framework,
             "changed_files": norm_changed,
             "test_files": matched_tests,
+            "excluded_incompatible_tests": incompatible_tests,
             "suggested_command": cmd,
             "confidence": 0.95 if matched_tests else 0.5,
             "selection_complete": graph_complete,

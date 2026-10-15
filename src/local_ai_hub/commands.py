@@ -8696,6 +8696,7 @@ class CommandBroker:
         # 6. Determine test command
         test_cmd = command.strip() or criterion.strip()
         auto_detected_tests: list[str] = []
+        incompatible_detected_tests: list[str] = []
         affected_test_selection_widened = False
         selection_error = ""
         if test_cmd.lower() == "auto":
@@ -8731,14 +8732,20 @@ class CommandBroker:
                     and confidence >= 0.95
                     and auto_detected_tests
                 ):
-                    if any(tf.endswith(".py") for tf in auto_detected_tests):
-                        test_cmd = f"python -m pytest {' '.join(auto_detected_tests)} -q"
-                    elif any(tf.endswith((".ts", ".tsx", ".js", ".jsx")) for tf in auto_detected_tests):
-                        test_cmd = f"npm test -- {' '.join(auto_detected_tests)}"
-                    elif any(tf.endswith(".cs") for tf in auto_detected_tests):
+                    from .test_selection import automatic_runner, compatible_tests, runner_path_argument
+                    runner = automatic_runner(auto_detected_tests)
+                    auto_detected_tests, incompatible_detected_tests = compatible_tests(auto_detected_tests, runner)
+                    quote_path = (lambda value: subprocess.list2cmdline([value])) if os.name == "nt" else shlex.quote
+                    quoted = " ".join(quote_path(runner_path_argument(path)) for path in auto_detected_tests)
+                    if runner == "pytest":
+                        test_cmd = f"python -m pytest {quoted} -q"
+                    elif runner == "npm":
+                        test_cmd = f"npm test -- {quoted}"
+                    elif runner == "dotnet":
                         test_cmd = "dotnet test"
                     else:
-                        test_cmd = f"python -m pytest {' '.join(auto_detected_tests)} -q"
+                        # Use the existing full-suite detection for unsupported automatic runners.
+                        affected_test_selection_widened = True
                 else:
                     affected_test_selection_widened = True
             elif det is not None:
@@ -8752,6 +8759,10 @@ class CommandBroker:
                         for item in matrix.get("test_files", [])
                         if isinstance(item, dict) and item.get("path")
                     ]
+                    from .test_selection import compatible_tests
+                    auto_detected_tests, incompatible_detected_tests = compatible_tests(
+                        auto_detected_tests, str(matrix.get("framework", "unknown")),
+                    )
                     test_cmd = str(matrix.get("run_all_command") or "").strip()
                     if test_cmd:
                         selection_error = ""
@@ -8775,6 +8786,7 @@ class CommandBroker:
                     "error": selection_error,
                     "affected_test_selection_widened": True,
                     "affected_tests_run": auto_detected_tests,
+                    "excluded_incompatible_tests": incompatible_detected_tests,
                     **({"rollback_error": rollback_error} if rollback_error else {}),
                 }
 
@@ -8837,6 +8849,7 @@ class CommandBroker:
                 "tests_passed": True,
                 "command": test_cmd,
                 "affected_tests_run": auto_detected_tests,
+                "excluded_incompatible_tests": incompatible_detected_tests,
                 "affected_test_selection_widened": affected_test_selection_widened,
                 "duration_ms": run_res.get("duration_ms"),
                 "verification_receipt": rcpt_data,
@@ -8858,6 +8871,7 @@ class CommandBroker:
                 ),
                 "command": test_cmd,
                 "affected_tests_run": auto_detected_tests,
+                "excluded_incompatible_tests": incompatible_detected_tests,
                 "affected_test_selection_widened": affected_test_selection_widened,
                 "exit_code": run_res.get("exit_code"),
                 "stdout": run_res.get("stdout"),

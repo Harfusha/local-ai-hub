@@ -3745,33 +3745,14 @@ class LocalAIServices:
                 allowed_tests.append(candidate)
 
         result = dict(result)
+        from .test_selection import affected_test_command, canonical_runner, compatible_tests
+        framework = canonical_runner(result.get("framework", "unknown"))
+        allowed_tests, incompatible_tests = compatible_tests(allowed_tests, framework)
         result["test_files"] = allowed_tests
-        quote_argument = (
-            (lambda value: subprocess.list2cmdline([value]))
-            if os.name == "nt"
-            else shlex.quote
-        )
-        quoted_tests = [quote_argument(path) for path in allowed_tests]
-        framework = str(result.get("framework", "unknown"))
-        if not allowed_tests:
-            suggested_command = ""
-        elif framework == "pytest":
-            suggested_command = f"pytest {' '.join(quoted_tests)}"
-        elif framework == "dotnet":
-            filters = " | ".join(
-                f"FullyQualifiedName~{Path(path).stem}" for path in allowed_tests
-            )
-            suggested_command = f"dotnet test --filter {quote_argument(filters)}"
-        elif framework == "npm":
-            suggested_command = f"npm test -- {' '.join(quoted_tests)}"
-        elif framework == "cargo":
-            suggested_command = (
-                f"cargo test {' '.join(quote_argument(Path(path).stem) for path in allowed_tests)}"
-            )
-        elif framework == "go":
-            suggested_command = f"go test {' '.join(quoted_tests)}"
-        else:
-            suggested_command = f"pytest {' '.join(quoted_tests)}"
+        result["excluded_incompatible_tests"] = list(dict.fromkeys(
+            [*result.get("excluded_incompatible_tests", []), *incompatible_tests]
+        ))
+        suggested_command = affected_test_command(allowed_tests, framework)
         result["suggested_command"] = suggested_command
         result["project_config_digest"] = context.config_digest
         if graph_complete:
@@ -6837,8 +6818,16 @@ class LocalAIServices:
                 changed_paths=args.get("paths"),
                 path_hints=args.get("path_hints"),
             )
+            if not isinstance(aff, dict) or not aff.get("success", True):
+                return aff if isinstance(aff, dict) else {"success": False, "error": "affected-test selection returned no result"}
             cmd = aff.get("suggested_command", "")
             if not cmd:
+                if aff.get("excluded_incompatible_tests"):
+                    return {
+                        "success": False,
+                        "error": "No affected tests are compatible with the detected runner",
+                        "affected_tests_summary": aff,
+                    }
                 if aff.get("selection_uncertain"):
                     fallback = aff.get("selection_fallback")
                     error = (

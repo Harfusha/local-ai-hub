@@ -134,12 +134,16 @@ If `artifact_id` is empty but `path` is provided, slice repository file directly
 
 ### Task 60: Test Selection Fix in `run_affected` (#15)
 
+**2026-10-15 implementation checkpoint — execution deferred until the whole remaining bundle.** Actual selection lives in `services.affected_tests` and `DeterministicEngine.affected_tests`; automatic patch validation also independently chose pytest whenever any Python path was present. A shared deterministic compatibility table now filters Python, JS/TS module variants, .NET, Rust and Go paths before command construction. Both selection layers and the automatic patch path use it; excluded paths are reported instead of being counted as tests run. Command paths are quoted using the existing host convention; leading-dash relative filenames receive `./` so they cannot become runner flags. Unknown runners no longer default unrelated files to pytest. `run_affected` propagates selection failures and explicitly fails when only incompatible candidates exist, instead of reporting that no tests were found. Full-suite fallback behavior for uncertain selection remains in place.
+
+Deferred regression source: `tests/unit/test_run_affected_language_filter.py` covers the real deterministic mixed-language selection path, spaces, runner families, unknown files and leading-dash paths. It uses temporary state and a fake dependency index; it has not been executed. Integration, command-policy acceptance, platform quoting and full-suite fallback still require final bundle validation.
+
 **Files:**
 - Modify: `src/local_ai_hub/services.py:6575-6610`
 - Test: `tests/unit/test_run_affected_language_filter.py`
 
-- [ ] **Step 1: Write test verifying `run_affected` ignores `.js` fixtures when running `pytest`**
-- [ ] **Step 2: Implement fix**
+- [x] **Step 1: Write mixed-runner regression source (execution deferred)**
+- [x] **Step 2: Implement shared runner filtering (validation pending)**
 Filter `auto_detected_tests` by runner compatibility: only pass `.py` files to pytest, `.ts`/`.js` to jest/vitest.
 - [ ] **Step 3: Run test and verify pass & Commit**
 `git commit -m "fix(commands): filter affected test files by test runner language compatibility"`
