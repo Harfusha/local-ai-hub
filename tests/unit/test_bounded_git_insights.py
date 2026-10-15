@@ -8,11 +8,22 @@ from types import SimpleNamespace
 import pytest
 
 from local_ai_hub.deterministic import DeterministicEngine
+from local_ai_hub import mcp_server
 from local_ai_hub.operation_contracts import validate_operation_arguments
 
 
 def _engine(tmp_path: Path) -> DeterministicEngine:
     return DeterministicEngine({"server": {"state_dir": str(tmp_path / "state")}})
+
+
+def _make_repo_active(monkeypatch):
+    from local_ai_hub.operational_mode import OperationalModeSnapshot
+
+    monkeypatch.setattr(mcp_server.FEATURES, "repo", True)
+    monkeypatch.setattr(mcp_server.FEATURES, "agent_os", True)
+    snapshot = OperationalModeSnapshot("active", 1, None)
+    monkeypatch.setattr(mcp_server, "load_operational_mode", lambda _state_dir: snapshot)
+    monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_kwargs: None)
 
 
 def test_history_search_uses_two_bounded_literal_searches_and_deduplicates(tmp_path, monkeypatch):
@@ -139,13 +150,8 @@ def test_history_filters_are_scoped_to_history_action():
 
 
 def test_mcp_hotspots_forwards_only_canonical_window_and_limit(monkeypatch, tmp_path):
-    from local_ai_hub import mcp_server
-
+    _make_repo_active(monkeypatch)
     calls = []
-    monkeypatch.setattr(
-        mcp_server, "FEATURES",
-        SimpleNamespace(repo=True, supported_repo_actions=lambda: ("hotspots",)),
-    )
     monkeypatch.setattr(mcp_server, "_client_root", lambda value: value)
     monkeypatch.setattr(mcp_server, "_timeout", lambda _profile: 1)
     monkeypatch.setattr(mcp_server, "_compact", lambda value, *_args, **_kwargs: value)
@@ -163,13 +169,8 @@ def test_mcp_hotspots_forwards_only_canonical_window_and_limit(monkeypatch, tmp_
 
 @pytest.mark.parametrize("legacy", [{"diff": "90"}, {"max_tokens": 90}])
 def test_mcp_hotspots_does_not_forward_retired_aliases(monkeypatch, tmp_path, legacy):
-    from local_ai_hub import mcp_server
-
+    _make_repo_active(monkeypatch)
     calls = []
-    monkeypatch.setattr(
-        mcp_server, "FEATURES",
-        SimpleNamespace(repo=True, supported_repo_actions=lambda: ("hotspots",)),
-    )
     monkeypatch.setattr(
         mcp_server, "CLIENT",
         SimpleNamespace(post=lambda *args, **kwargs: calls.append((args, kwargs))),
@@ -179,3 +180,40 @@ def test_mcp_hotspots_does_not_forward_retired_aliases(monkeypatch, tmp_path, le
     )
     assert result["success"] is False
     assert calls == []
+
+
+@pytest.mark.parametrize("field,value", [
+    ("max_commits", 4), ("author", "Ada"), ("since", "2026-01-01"),
+    ("until", "2026-01-31"), ("days", 9), ("limit", 7),
+])
+def test_direct_mcp_impl_rejects_history_and_hotspot_fields_outside_actions(
+    monkeypatch, tmp_path, field, value,
+):
+    _make_repo_active(monkeypatch)
+    calls = []
+    monkeypatch.setattr(
+        mcp_server, "CLIENT",
+        SimpleNamespace(post=lambda *args, **kwargs: calls.append((args, kwargs))),
+    )
+    result = mcp_server._local_ai_repo_impl(
+        action="code_index", root=str(tmp_path), **{field: value},
+    )
+    assert result["success"] is False
+    assert calls == []
+
+
+def test_mcp_hotspots_uses_canonical_default_window_and_limit(monkeypatch, tmp_path):
+    _make_repo_active(monkeypatch)
+    calls = []
+    monkeypatch.setattr(mcp_server, "_client_root", lambda value: value)
+    monkeypatch.setattr(mcp_server, "_timeout", lambda _profile: 1)
+    monkeypatch.setattr(
+        mcp_server, "_compact", lambda value, *_args, **_kwargs: value,
+    )
+    monkeypatch.setattr(
+        mcp_server, "CLIENT",
+        SimpleNamespace(post=lambda route, payload, **_kwargs: calls.append((route, payload)) or {"success": True}),
+    )
+    result = mcp_server._local_ai_repo_impl(action="hotspots", root=str(tmp_path))
+    assert result == {"success": True}
+    assert calls == [("/api/repo/hotspots", {"root": str(tmp_path), "days": 30, "limit": 20})]
