@@ -3,6 +3,25 @@ from pathlib import Path
 from local_ai_hub.deterministic import DeterministicEngine
 
 
+def test_compact_topology_retains_unverified_architecture_and_import_scope():
+    from local_ai_hub import mcp_server
+
+    raw = {"success": True, "architecture_pattern_verified": False,
+           "import_scope": "declared Python imports; unresolved",
+           "coverage": {"complete": False, "errors": ["file_limit"]}}
+    token = mcp_server._CURRENT_RESPONSE_OPTIONS.set({
+        "tool": "local_ai_repo", "max_response_tokens": 1800,
+        "response_profile": "compact",
+    })
+    try:
+        result = mcp_server._compact(raw, "topology")
+    finally:
+        mcp_server._CURRENT_RESPONSE_OPTIONS.reset(token)
+    assert result["architecture_pattern_verified"] is False
+    assert result["import_scope"] == raw["import_scope"]
+    assert result["coverage"] == raw["coverage"]
+
+
 def test_topology_reports_declared_python_imports_as_unresolved_heuristics(tmp_path: Path) -> None:
     root = tmp_path / "repo"
     (root / "src" / "pkg").mkdir(parents=True)
