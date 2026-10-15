@@ -678,23 +678,40 @@ document.head.insertAdjacentHTML('beforeend','<style>.vision-review-modal{width:
 const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])), escJs=v=>esc(JSON.stringify(v));
 const n=v=>Number(v||0).toLocaleString(), ms=v=>{v=Number(v||0);return v>=1000?(v/1000).toFixed(v>=10000?1:2)+' s':Math.round(v)+' ms'}, durSec=s=>{s=Number(s||0);if(s<60)return Math.round(s)+'s';if(s<3600)return Math.floor(s/60)+'m '+Math.round(s%60)+'s';if(s<86400)return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';return Math.floor(s/86400)+'d '+Math.floor((s%86400)/3600)+'h'}, age=msv=>durSec(Number(msv||0)/1000);
 
+function dashboardPreprocessingHealth(preprocessing={},dependencies={}){
+  const unavailable=preprocessing.success===false||dependencies['preprocessing.status']?.degraded===true||!Array.isArray(preprocessing.projects);
+  const statsAvailable=dependencies['preprocessing.stats']?.degraded!==true;
+  if(unavailable)return {available:false,statsAvailable,errorCount:null};
+  const errorCount=preprocessing.projects.filter(project=>String(project?.status||'').toLowerCase()==='error').length;
+  return {available:true,statsAvailable,errorCount};
+}
+
 function dashboardHealthBadge(status={}){
   const dependencies=status.dependency_status&&typeof status.dependency_status==='object'&&!Array.isArray(status.dependency_status)?Object.entries(status.dependency_status).filter(([name])=>name!=='telemetry.summary').map(([,value])=>value):[];
   const degradedCount=dependencies.filter(item=>item&&item.degraded===true).length;
+  const preprocessing=dashboardPreprocessingHealth(status.preprocessing||{},status.dependency_status||{});
+  const preprocessingWarning=!preprocessing.available||!preprocessing.statsAvailable||preprocessing.errorCount>0;
   const telemetryOnlyFailure=status.dependency_status?.['telemetry.summary']?.degraded&&degradedCount===0;
   const degraded=(status.success===false&&!telemetryOnlyFailure)||degradedCount>0;
   const ollamaState=status.ollama_status||((status.ollama_online==null)?'unknown':status.ollama_online?'online':'offline');
-  const className=status.hub_online?(degraded||ollamaState!=='online'?'warn-t':'ok'):'bad-t';
+  const className=status.hub_online?(degraded||ollamaState!=='online'||preprocessingWarning?'warn-t':'ok'):'bad-t';
   const degradedLabel=degradedCount?` / ${String(degradedCount)} degraded check${degradedCount===1?'':'s'}`:degraded?' / status degraded':'';
-  return {className,degradedCount,degradedLabel};
+  const preprocessingLabel=!preprocessing.available?' / preprocessing status unknown':(!preprocessing.statsAvailable?' / preprocessing stats unknown':'')+(preprocessing.errorCount?` / ${n(preprocessing.errorCount)} preprocessing project error${preprocessing.errorCount===1?'':'s'}`:'');
+  return {className,degradedCount,degradedLabel:degradedLabel+preprocessingLabel,preprocessing};
 }
 
 function dashboardTelemetryState(observability={}){
   const writer=observability.writer||{};
   const dropped=Math.max(0,Number(writer.dropped)||0),errors=Math.max(0,Number(writer.writer_errors)||0);
+  const pending=Math.max(0,Number(writer.pending)||0);
+  const activityObserved=writer.activity_observed===true;
+  const accountingBalanced=writer.accounting_balanced===true;
+  const summaryCacheStale=observability.summary_cache_stale===true;
+  const detailIncomplete=observability.detail?.incomplete===true||observability.detail?.status==='incomplete';
   const available=observability.enabled!==false&&observability.data_available!==false&&observability.stale!==true&&
     (observability.data_available===true||Object.hasOwn(observability,'net_cloud_token_delta_est'));
-  return {available,complete:available&&!dropped&&!errors&&!observability.accounting_boundary_incomplete,dropped,errors};
+  const complete=available&&activityObserved&&accountingBalanced&&!pending&&!dropped&&!errors&&!summaryCacheStale&&!detailIncomplete&&!observability.accounting_boundary_incomplete;
+  return {available,complete,dropped,errors,pending,activityObserved,accountingBalanced,summaryCacheStale,detailIncomplete};
 }
 
 function formatEstimatedUsd(value){
@@ -709,12 +726,13 @@ function renderTelemetryMetrics(observability={}){
   const calls=Math.max(0,Number(observability.tool_accounting_events)||0);
   const status=$('efficiencyStatus'),breakdown=$('efficiencyBreakdown');
   if(status){
-    status.textContent=period+' · '+(!state.available?'Telemetry unavailable. Metrics cannot be verified.':!state.complete?'Incomplete telemetry. Estimates exclude missing records.':!calls?'No accounted tool calls yet.':'Estimated from '+n(calls)+' accounted tool calls.');
+    const completeness=!state.available?'Telemetry unavailable. Metrics cannot be verified.':!state.activityObserved?'Writer activity was not observed; completeness is unknown.':!state.accountingBalanced?'Writer accounting is unavailable or unbalanced.':state.pending?'Telemetry writer has '+n(state.pending)+' pending record'+(state.pending===1?'':'s')+'.':state.summaryCacheStale?'Cached telemetry summary is stale.':!state.complete?'Incomplete telemetry. Estimates exclude missing records.':!calls?'No accounted tool calls yet.':'Estimated from '+n(calls)+' accounted tool calls.';
+    status.textContent=period+' · '+completeness;
     status.classList.toggle('warn-t',!state.complete);
   }
   if(breakdown){
     const sources=Object.entries(observability.token_savings_breakdown||{}).map(([name,value])=>name+': '+n(value)).join('\n');
-    breakdown.textContent='Period: '+period+'\nAccounted calls: '+n(calls)+'\nBaseline: '+n(observability.gross_cloud_tokens_avoided_est)+' tokens\nProtocol: '+n(observability.agent_protocol_tokens_est)+' tokens (call '+n(observability.agent_tool_request_tokens_est)+' + read '+n(observability.agent_tool_response_tokens_est)+')\nSchema-adjusted delta: '+n(observability.net_after_schema_token_delta_est)+' tokens\nSchema catalog exposure: '+n(observability.tool_schema_tokens_exposure_est)+' tokens\nLocal compute reuse: '+n(observability.local_compute_tokens_avoided_est)+' tokens\nWriter: '+n(state.dropped)+' records dropped; '+n(state.errors)+' write errors'+(sources?'\nBaseline sources:\n'+sources:'\nNo baseline source recorded.');
+    breakdown.textContent='Period: '+period+'\nAccounted calls: '+n(calls)+'\nBaseline: '+n(observability.gross_cloud_tokens_avoided_est)+' tokens\nProtocol: '+n(observability.agent_protocol_tokens_est)+' tokens (call '+n(observability.agent_tool_request_tokens_est)+' + read '+n(observability.agent_tool_response_tokens_est)+')\nSchema-adjusted delta: '+n(observability.net_after_schema_token_delta_est)+' tokens\nSchema catalog exposure: '+n(observability.tool_schema_tokens_exposure_est)+' tokens\nLocal compute reuse: '+n(observability.local_compute_tokens_avoided_est)+' tokens\nWriter: '+n(state.dropped)+' records dropped; '+n(state.errors)+' caught error attempts; '+n(state.pending)+' pending; activity '+(state.activityObserved?'observed':'unobserved')+'; accounting '+(state.accountingBalanced?'balanced':'unknown/unbalanced')+(sources?'\nBaseline sources:\n'+sources:'\nNo baseline source recorded.');
   }
   if(breakdown){
     breakdown.textContent=breakdown.textContent.replace('Baseline sources:','Baseline sources (retained detail only):');
@@ -736,9 +754,13 @@ function renderTelemetryMetrics(observability={}){
 }
 
 function preprocessingSummary(preprocessing={},dependencies={}){
-  const available=preprocessing.success!==false&&dependencies['preprocessing.status']?.degraded!==true&&dependencies['preprocessing.stats']?.degraded!==true;
+  const available=preprocessing.success!==false&&Array.isArray(preprocessing.projects)&&dependencies['preprocessing.status']?.degraded!==true;
   const count=value=>Math.max(0,Number(value)||0).toLocaleString();
-  return {available,text:available?count(preprocessing.active_projects)+' monitored · '+count(preprocessing.processing_projects)+' processing projects · '+count(preprocessing.max_preprocessing_projects)+' concurrent slots':'Preprocessing status unavailable'};
+  const projects=available?preprocessing.projects:[];
+  const running=projects.filter(project=>String(project?.status||'').toLowerCase()==='running').length;
+  const slots=Number.isFinite(Number(preprocessing.max_preprocessing_projects))&&preprocessing.max_preprocessing_projects!=null?count(preprocessing.max_preprocessing_projects):'unknown';
+  const statsAvailable=dependencies['preprocessing.stats']?.degraded!==true;
+  return {available,statsAvailable,text:available?count(projects.length)+' registered · '+count(running)+' currently running · '+(statsAvailable?slots:'unknown')+' concurrent slots':'Preprocessing status unknown'};
 }
 
 function telemetryPeriod(observability={}){return observability.scope==='window'?'Last 30 days':'Since restart';}
@@ -766,6 +788,14 @@ function dashboardHealth(snapshot={}){
   const signals=[];
   const failedChecks=Object.entries(snapshot.dependency_status||{}).filter(([name,value])=>name!=='telemetry.summary'&&value?.degraded).map(([name])=>name);
   if(failedChecks.length)signals.push('unavailable checks: '+failedChecks.join(', '));
+  const preprocessingDeps=snapshot.dependency_status||current.dependency_status||{};
+  const preprocessingAdvertised=Object.hasOwn(snapshot,'preprocessing')||Object.hasOwn(current,'preprocessing')||Object.hasOwn(preprocessingDeps,'preprocessing.status')||Object.hasOwn(preprocessingDeps,'preprocessing.stats');
+  if(preprocessingAdvertised){
+    const preprocessing=dashboardPreprocessingHealth(snapshot.preprocessing||current.preprocessing||{},preprocessingDeps);
+    if(!preprocessing.available)signals.push('preprocessing project status is unknown');
+    if(!preprocessing.statsAvailable)signals.push('preprocessing statistics are unavailable');
+    if(preprocessing.errorCount)signals.push(`${preprocessing.errorCount} current preprocessing project${preprocessing.errorCount===1?'':'s'} report error`);
+  }
   const actionTab=openIssues||count(current.blocked_requests)?'work':'reliability';
   const actionLabel=actionTab==='work'?'Open queue and requests':'Open reliability details';
   if(hubOnline===false||heartbeatStale||['degraded','down','offline','unavailable','crashed','stopped','stale'].includes(status)||current.degraded===true){
@@ -4528,7 +4558,7 @@ function render(s){
   const diagBar=$('prepDiagnosticBar');
   if(diagBar){
     const projs=p.projects||[], isGlobPaused=!!p.paused, isEnabled=p.enabled!==false&&s.features?.preprocessing!==false;
-    const hasErr=projs.some(x=>x.status==='error'||x.last_error);
+    const hasErr=projs.some(x=>String(x.status||'').toLowerCase()==='error');
     const allDone=projs.length>0&&projs.every(x=>projectState(x)==='ready');
     const bgYield=p.scheduler_background_allowed===false;
     diagBar.style.display='flex';
@@ -4545,7 +4575,7 @@ function render(s){
       diagBar.className='diag-banner info';
       diagBar.innerHTML=`<span style="flex:1">ℹ️ <b>No projects currently registered</b>. Preprocessing is idle waiting for workspace registration. Click <b>+ Register Project</b> or call <code>local_ai_repo(action='preprocess')</code> from an agent.</span><button class="btn ok" onclick="$('regProjectBtn').click()" style="padding:3px 8px;font-size:11px">+ Register Project</button>`;
     }else if(hasErr){
-      const errProjs=projs.filter(x=>x.status==='error'||x.last_error).map(x=>x.project||x.root).join(', ');
+      const errProjs=projs.filter(x=>String(x.status||'').toLowerCase()==='error').map(x=>x.project||x.root).join(', ');
       diagBar.className='diag-banner bad';
       diagBar.innerHTML=`<span style="flex:1">⚠️ <b>Errors detected in project preprocessing:</b> ${esc(errProjs)}. Check status column below for error details.</span><button class="btn" onclick="pollStatus()" style="padding:3px 8px;font-size:11px">Refresh status</button>`;
     }else if(allDone){
