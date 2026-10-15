@@ -446,6 +446,7 @@ class LocalAIApp:
         self.services.set_rag(self.rag)
         self.preprocessor = ProjectPreprocessor(self.config, self.services, self.rag, self.scheduler, self.runtime, self.repo_tools, self.code_index, self.learner, self.deterministic, telemetry=self.telemetry, background_gpu=self.background_gpu, external_tools=self.external_tools)
         self.services.set_preprocessor(self.preprocessor)
+        self.code_index.set_reindex_callback(self.preprocessor.notify_path_changed)
         self._recover_pending_bundle_imports()
         self.token_router = LosslessTokenRouter(self.config, self.services)
         self.services.set_token_router(self.token_router)

@@ -1015,6 +1015,13 @@ class CodeIndex:
         self._cache_observer = SQLiteChangeObserver(self.db_path)
         self._cache_guard = threading.RLock()
         self._observed_data_version: int | None = None
+        self._reindex_callback: Any = None
+        self._reindex_notifications = MemoryLRUCache(max_entries=512, ttl_seconds=30)
+
+    def set_reindex_callback(self, callback: Any) -> None:
+        if callback is not None and not callable(callback):
+            raise TypeError("reindex callback must be callable or None")
+        self._reindex_callback = callback
 
     def _cache_generation(self) -> int:
         with self._cache_guard:
@@ -2267,7 +2274,7 @@ class CodeIndex:
     def _query_terms(query: str) -> list[str]:
         return [t.lower() for t in tokenize_query_terms(query, min_len=2, max_terms=16)]
 
-    def _candidate_freshness(self, root: str, paths: list[str]) -> dict[str, Any]:
+    def _candidate_freshness(self, root: str, paths: list[str], *, content_hash: bool = True) -> dict[str, Any]:
         unique_paths = list(dict.fromkeys(self._norm_rel(path) for path in paths if path))
         if not unique_paths:
             return {"status": "no_candidates", "scope": "returned_symbol_candidates", "checked_paths": 0, "stale_paths": [], "unknown_paths": [], "complete": False}
@@ -2279,10 +2286,11 @@ class CodeIndex:
                 for batch in sqlite_batches(unique_paths):
                     placeholders = ",".join("?" for _ in batch)
                     rows.extend(con.execute(
-                        f"SELECT path,content_hash FROM files WHERE root=? AND path IN ({placeholders})",
+                        f"SELECT path,content_hash,mtime_ns,size_bytes FROM files WHERE root=? AND path IN ({placeholders})",
                         (resolved_root, *batch),
                     ).fetchall())
             file_hashes = {str(row["path"]): str(row["content_hash"] or "") for row in rows}
+            file_stats = {str(row["path"]): (row["mtime_ns"], row["size_bytes"]) for row in rows}
         except sqlite3.DatabaseError:
             return {"status": "verification_failed", "scope": "returned_symbol_candidates", "checked_paths": 0, "stale_paths": [], "unknown_paths": unique_paths[:64], "complete": False}
 
@@ -2304,6 +2312,19 @@ class CodeIndex:
             if not target.is_file():
                 stale.append(rel_path)
                 continue
+            if not content_hash:
+                try:
+                    current_stat = target.stat()
+                    indexed_stat = file_stats[rel_path]
+                    if None in indexed_stat:
+                        unknown.append(rel_path)
+                    elif (current_stat.st_mtime_ns, current_stat.st_size) == indexed_stat:
+                        verified.append(rel_path)
+                    else:
+                        stale.append(rel_path)
+                except OSError:
+                    unknown.append(rel_path)
+                continue
             if not callable(reader):
                 unknown.append(rel_path)
                 continue
@@ -2313,7 +2334,9 @@ class CodeIndex:
                 unknown.append(rel_path)
                 continue
             (verified if str(current_hash) == indexed_hash else stale).append(rel_path)
-        status = "stale_candidates" if stale else "verified_current_candidates" if len(verified) == len(unique_paths) else "verification_incomplete"
+        status = ("stale_candidates" if stale else
+                  ("verified_current_candidates" if content_hash else "stat_current_candidates")
+                  if len(verified) == len(unique_paths) else "verification_incomplete")
         return {
             "status": status,
             "scope": "returned_symbol_candidates",
@@ -2322,7 +2345,36 @@ class CodeIndex:
             "stale_paths": stale[:64],
             "unknown_paths": unknown[:64],
             "complete": False,
+            "verification": "content_hash" if content_hash else "mtime_ns_and_size",
         }
+
+    def _apply_query_freshness(self, result: dict[str, Any], *, verify_content: bool) -> dict[str, Any]:
+        paths = list(dict.fromkeys(str(item["path"]) for item in result.get("symbols", []) if item.get("path")))
+        root = str(result["root"])
+        freshness = self._candidate_freshness(root, paths, content_hash=verify_content)
+        status = freshness.get("status")
+        current = status in {"verified_current_candidates", "stat_current_candidates"}
+        result["freshness"] = freshness
+        result["stale"] = True if status == "stale_candidates" else False if current else None
+        factor = 1.0 if status == "verified_current_candidates" else 0.5 if current else 0.0
+        coverage = float(result.get("coverage", {}).get("query_term_coverage", 0.0))
+        support = min(1.0, len(result.get("symbols", [])) / 3.0)
+        confidence = round(0.65 * coverage + 0.20 * support + 0.15 * factor, 3) if paths else 0.0
+        result["confidence"] = min(confidence, 0.90 if current else 0.50) if status != "verified_current_candidates" else confidence
+        callback = getattr(self, "_reindex_callback", None)
+        queued = 0
+        if callable(callback):
+            for path in freshness.get("stale_paths", []):
+                key = stable_hash({"root": root, "path": path})
+                if self._reindex_notifications.get(key) is not None:
+                    continue
+                self._reindex_notifications.set(key, True)
+                try:
+                    queued += int(bool(callback(str(Path(root, path)))))
+                except Exception:
+                    logging.getLogger(__name__).debug("stale candidate notification failed", exc_info=True)
+        freshness["reindex_notifications_queued"] = queued
+        return result
 
 
     def _parse_outcomes_for_paths(self, root: str, paths: list[str]) -> dict[str, Any]:
@@ -2435,7 +2487,7 @@ class CodeIndex:
         })
         cached = None if verify_freshness else self._query_l1.get(cache_key)
         if isinstance(cached, dict):
-            return copy.deepcopy(cached)
+            return self._apply_query_freshness(copy.deepcopy(cached), verify_content=False)
 
         def score_match(name: Any, name_path: Any, container: Any, path: Any) -> float:
             name_l = str(name or "").lower()
@@ -2527,14 +2579,11 @@ class CodeIndex:
         has_more = offset + len(symbols) < total_matches
         truncated = has_more
         candidate_paths = list(dict.fromkeys(str(item["path"]) for item in symbols if item.get("path")))
-        freshness = self._candidate_freshness(resolved_root, candidate_paths) if verify_freshness else {
+        freshness = {
             "status": "not_checked", "scope": "returned_symbol_candidates", "checked_paths": 0,
             "stale_paths": [], "unknown_paths": candidate_paths[:64], "complete": False,
         }
         parse_outcomes = self._parse_outcomes_for_paths(resolved_root, candidate_paths)
-        fresh_factor = 1.0 if freshness.get("status") == "verified_current_candidates" else 0.0 if freshness.get("status") == "stale_candidates" else 0.5
-        support = min(1.0, len(symbols) / 3.0)
-        confidence = round(0.65 * term_coverage + 0.20 * support + 0.15 * fresh_factor, 3) if symbols else 0.0
         out = {
             "success": True,
             "root": resolved_root,
@@ -2548,7 +2597,7 @@ class CodeIndex:
             "observed_match_count": total_matches,
             "returned_count": len(symbols),
             "symbols": symbols,
-            "confidence": confidence,
+            "confidence": 0.0,
             "confidence_basis": "returned_query_term_coverage_result_support_and_candidate_freshness",
             "coverage": {
                 "query_term_count": len(terms),
@@ -2571,6 +2620,7 @@ class CodeIndex:
             },
             "parse_outcomes": parse_outcomes,
         }
+        self._apply_query_freshness(out, verify_content=verify_freshness)
         if not verify_freshness:
             self._query_l1.set(cache_key, out)
         return out
