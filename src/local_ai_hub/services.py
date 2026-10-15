@@ -2982,10 +2982,6 @@ class LocalAIServices:
         paths = list(dict.fromkeys([*hinted_search_paths, *paths]))
 
         def compute() -> dict[str, Any]:
-            candidate_limit = max(
-                1, int(getattr(self.repo_tools, "max_hits", 80)) * 4,
-                offset + page_limit,
-            )
             override_patterns = tuple(
                 pattern
                 for pattern, action in project_context.settings.path_overrides.items()
