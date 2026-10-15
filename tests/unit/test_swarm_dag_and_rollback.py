@@ -76,6 +76,23 @@ def test_swarm_dag_preserves_work_on_failure(tmp_path: Path):
     assert (repo / "tracked.txt").read_text(encoding="utf-8") == "corrupted content\n"
 
 
+def test_swarm_dag_failure_never_discards_preexisting_dirty_overlay(tmp_path: Path):
+    repo = _init_git_repo(tmp_path)
+    tracked = repo / "tracked.txt"
+    untracked = repo / "operator-notes.txt"
+    tracked.write_bytes(b"operator's uncommitted tracked work\r\n")
+    untracked.write_bytes(b"operator's untracked work\x00\n")
+    before = tracked.read_bytes(), untracked.read_bytes()
+
+    result = execute_swarm_dag(
+        [{"id": "failure", "fn": lambda: {"success": False}}], worktree_path=repo,
+    )
+
+    assert result["success"] is False
+    assert result["rolled_back"] is False
+    assert (tracked.read_bytes(), untracked.read_bytes()) == before
+
+
 def test_swarm_dag_preflights_entire_graph_before_callbacks():
     called = []
     result = execute_swarm_dag([

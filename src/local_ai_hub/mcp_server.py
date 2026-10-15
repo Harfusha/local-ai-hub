@@ -884,6 +884,12 @@ _STATUS_PROTECTED_KEYS = (
     "worktree_id", "worktree_path", "lease_id", "branch",
     "enabled", "active_tasks", "tasks_count", "incidents_count", "candidates_count", "status",
 )
+_SECURITY_PROTECTED_KEYS = (
+    "is_clean", "findings_present", "release_blocking_findings", "triage_complete",
+    "scan_complete", "limit_reached", "findings_count", "scanned_files", "eligible_files",
+    "eligible_files_total", "skipped_files", "scanned_bytes", "coverage_scope", "stop_reason",
+)
+
 _RELIABILITY_PROTECTED_KEYS = (
     "success", "terminal", "retryable", "unsupported", "degraded", "stale",
     "fallback_used", "evidence", "evidence_ids", "cancelled", "cancel_requested", "cancel_reason",
@@ -1194,6 +1200,8 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
         extra_fields=compact_extra_fields,
     )
     compacted = _preserve_contract_state(raw_value, compacted)
+    if task_kind == "security" and isinstance(raw_value, dict) and isinstance(compacted, dict):
+        compacted.update({key: raw_value[key] for key in _SECURITY_PROTECTED_KEYS if key in raw_value})
     source_slice = task_kind == "artifact" and isinstance(raw_value, dict) and raw_value.get("action") == "source"
     if source_slice and isinstance(compacted, dict) and raw_value.get("success") is True:
         from .source_slice import SOURCE_SLICE_FIELDS
@@ -1210,6 +1218,7 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
             compacted = delta_response(previous, compacted, result_id=result_id(compacted))
         protected_keys = tuple(dict.fromkeys((
             *_RELIABILITY_PROTECTED_KEYS,
+            *(_SECURITY_PROTECTED_KEYS if task_kind == "security" else ()),
             *(('offset', 'limit', 'total_matches', 'has_more') if task_kind in {"search", "code_index"} else ()),
             *(('slices', 'truncated', 'budget_limited') if task_kind == "artifact" else ()),
             *(SOURCE_SLICE_FIELDS if source_slice and raw_value.get("success") is True else ()),
@@ -3126,7 +3135,7 @@ def _local_ai_repo_impl(
     if action == "test_matrix":
         return _compact(CLIENT.post("/api/test_matrix", {"root": root}, timeout=_timeout("quick")), "architecture")
     if action == "security_audit":
-        return _compact(CLIENT.post("/api/security_audit", {"root": root}, timeout=_timeout("quick")), "architecture")
+        return _compact(CLIENT.post("/api/security_audit", {"root": root}, timeout=_timeout("quick")), "security")
     if action == "git_status":
         return _compact(CLIENT.get(f"/api/git/status?root={quote(root)}"), "status")
     if action == "repo_state":
@@ -4541,6 +4550,8 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
         if name == "local_ai_artifact" and action == "source":
             from .source_slice import SOURCE_SLICE_FIELDS
             protected = (*protected, *SOURCE_SLICE_FIELDS)
+        if name == "local_ai_repo" and action == "security_audit":
+            protected = (*protected, *_SECURITY_PROTECTED_KEYS)
         original_tokens = json_tokens(_mcp_wire_view(value, structured=True))
         raw_efficiency = value.get("token_efficiency") if isinstance(value, dict) else None
         token_metadata = raw_efficiency if isinstance(raw_efficiency, dict) else None
