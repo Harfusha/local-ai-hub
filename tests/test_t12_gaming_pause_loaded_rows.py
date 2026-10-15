@@ -479,6 +479,128 @@ def test_gaming_auto_empty_unknown_llama_inventory_fails_closed(
     assert result["backend_inventory_status"]["llama_cpp"] == {"http://127.0.0.1:12438": "unknown"}
 
 
+def test_gaming_llama_without_canonical_inventory_contract_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = OllamaRuntime(
+        {
+            "server": {"state_dir": str(tmp_path), "ollama_url": "http://127.0.0.1:11434"},
+            "ollama": {"enabled": True, "request_attempts": 1},
+            "llama_cpp": {"mode": "on", "models": {"llama-model": {"url": "http://127.0.0.1:12438"}}},
+        }
+    )
+    unloads: list[str] = []
+
+    class FakeLlamaCpp:
+        def available_models(self, **_kwargs):
+            return ["llama-model"]
+
+        def loaded_model_details(self, **_kwargs):
+            return [{"name": "llama-model"}]
+
+        def unload_model(self, model, **_kwargs):
+            unloads.append(model)
+            return True
+
+    monkeypatch.setattr(
+        runtime,
+        "request",
+        lambda endpoint, *_args, **_kwargs: {"models": []} if endpoint == "/api/ps" else pytest.fail(endpoint),
+    )
+    runtime.llama_cpp = FakeLlamaCpp()
+
+    result = runtime.unload_configured_models(timeout_seconds=0.5)
+
+    assert result["success"] is False
+    assert result["complete"] is False
+    assert "llama_cpp" in result["failed"]
+    assert unloads == []
+
+
+def test_gaming_accepts_canonical_empty_llama_inventory_without_vram_claim(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = OllamaRuntime(
+        {
+            "server": {"state_dir": str(tmp_path), "ollama_url": "http://127.0.0.1:11434"},
+            "ollama": {"enabled": True, "request_attempts": 1},
+            "llama_cpp": {"mode": "on", "models": {"llama-model": {"url": "http://127.0.0.1:12438"}}},
+        }
+    )
+    unloads: list[str] = []
+
+    class FakeLlamaCpp:
+        def loaded_model_inventory(self, **_kwargs):
+            return {
+                "complete": True,
+                "models": [],
+                "endpoint_status": {},
+                "endpoints": {},
+                "errors": {},
+            }
+
+        def unload_model(self, model, **_kwargs):
+            unloads.append(model)
+            return True
+
+    monkeypatch.setattr(
+        runtime,
+        "request",
+        lambda endpoint, *_args, **_kwargs: {"models": []} if endpoint == "/api/ps" else pytest.fail(endpoint),
+    )
+    runtime.llama_cpp = FakeLlamaCpp()
+
+    result = runtime.unload_configured_models(timeout_seconds=0.5)
+
+    assert result["complete"] is True
+    assert result["physical_vram_reclaimed"] is False
+    assert unloads == []
+
+
+def test_gaming_rejects_partial_llama_empty_endpoint_receipts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = OllamaRuntime(
+        {
+            "server": {"state_dir": str(tmp_path), "ollama_url": "http://127.0.0.1:11434"},
+            "ollama": {"enabled": True, "request_attempts": 1},
+            "llama_cpp": {"mode": "on", "models": {"llama-model": {"url": "http://127.0.0.1:12438"}}},
+        }
+    )
+    unloads: list[str] = []
+
+    class FakeLlamaCpp:
+        def loaded_model_inventory(self, **_kwargs):
+            return {
+                "complete": True,
+                "models": [{"name": "llama-model", "endpoint_url": "http://127.0.0.1:12438"}],
+                "endpoint_status": {},
+                "endpoints": {},
+                "errors": {},
+            }
+
+        def unload_model(self, model, **_kwargs):
+            unloads.append(model)
+            return True
+
+    monkeypatch.setattr(
+        runtime,
+        "request",
+        lambda endpoint, *_args, **_kwargs: {"models": []} if endpoint == "/api/ps" else pytest.fail(endpoint),
+    )
+    runtime.llama_cpp = FakeLlamaCpp()
+
+    result = runtime.unload_configured_models(timeout_seconds=0.5)
+
+    assert result["success"] is False
+    assert result["complete"] is False
+    assert "llama_cpp" in result["failed"]
+    assert unloads == []
+
+
 def test_gaming_unloads_unmapped_llama_served_id_with_fresh_pre_and_post_inventory(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

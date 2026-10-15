@@ -127,7 +127,11 @@ class Supervisor:
     @staticmethod
     def _read_owner(path: Path) -> dict[str, Any] | None:
         try:
-            value = json.loads(path.read_text(encoding="utf-8"))
+            with path.open("r", encoding="utf-8") as owner_file:
+                raw = owner_file.read(16_385)
+            if len(raw) > 16_384:
+                return None
+            value = json.loads(raw)
             return value if isinstance(value, dict) else None
         except (OSError, ValueError, TypeError):
             return None
@@ -196,31 +200,16 @@ class Supervisor:
         published_lock = False
         try:
             if self.lock_path.exists():
-                raw = self.lock_path.read_text(encoding="utf-8")
-                legacy_pid = 0
-                legacy_format = False
-                try:
-                    existing = json.loads(raw)
-                except (ValueError, TypeError):
-                    legacy_format = True
-                    try:
-                        legacy_pid = int(raw.strip() or 0)
-                    except ValueError:
-                        return False
-                    if legacy_pid and pid_alive(legacy_pid):
-                        return False
-                    existing = None
-                if isinstance(existing, int) and not isinstance(existing, bool):
-                    # Legacy lock files contain a bare PID, which is valid JSON
-                    # numeric syntax and therefore does not enter the exception path.
-                    legacy_format = True
-                    legacy_pid = existing
-                    existing = None
+                existing = self._read_owner(self.lock_path)
+                if existing is None:
+                    return False
                 state = process_owner_state(existing, self.state_dir, "supervisor")
-                legacy_stale = legacy_format and (legacy_pid == 0 or not pid_alive(legacy_pid))
-                if state == "owned" or (state == "unknown" and not legacy_stale):
+                if state != "stale":
                     return False
                 # The OS guard serializes this stale-owner check and replacement.
+                current = self._read_owner(self.lock_path)
+                if current != existing or process_owner_state(current, self.state_dir, "supervisor") != "stale":
+                    return False
                 self.lock_path.unlink(missing_ok=True)
             if not atomic_json(self.lock_path, owner):
                 return False

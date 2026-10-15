@@ -2365,20 +2365,45 @@ class OllamaRuntime:
                 endpoint_status = snapshot.get("endpoint_status", {})
                 if not isinstance(endpoint_status, dict):
                     raise RuntimeError("llama.cpp endpoint status unavailable")
-                last_llama_endpoint_status.clear()
-                last_llama_endpoint_status.update({str(key): str(value) for key, value in endpoint_status.items()})
                 endpoints = snapshot.get("endpoints", {})
                 if not isinstance(endpoints, dict):
                     raise RuntimeError("llama.cpp endpoint receipts unavailable")
+                errors = snapshot.get("errors")
+                if snapshot.get("complete") is not True or not isinstance(errors, dict) or errors:
+                    raise RuntimeError("llama.cpp inventory incomplete")
+                if not rows and not endpoint_status and not endpoints:
+                    last_llama_endpoint_status.clear()
+                    last_llama_urls.clear()
+                    return rows, {}
+                if (
+                    not endpoints
+                    or not endpoint_status
+                    or any(
+                        not isinstance(endpoint, str)
+                        or not endpoint.strip()
+                        or status != "complete"
+                        for endpoint, status in endpoints.items()
+                    )
+                ):
+                    raise RuntimeError("llama.cpp endpoint receipts unavailable")
+                last_llama_endpoint_status.clear()
+                last_llama_endpoint_status.update({str(key): str(value) for key, value in endpoint_status.items()})
                 last_llama_urls.clear()
                 last_llama_urls.update({str(key): str(value) for key, value in endpoints.items()})
-                if snapshot.get("complete") is not True:
-                    raise RuntimeError("llama.cpp inventory incomplete")
+                if any(
+                    status != "complete" for status in endpoint_status.values()
+                ):
+                    raise RuntimeError("llama.cpp endpoint status unavailable")
+                for index, row in enumerate(rows):
+                    if (
+                        not isinstance(row, dict)
+                        or not isinstance(row.get("name") or row.get("model"), str)
+                        or not (row.get("name") or row.get("model")).strip()
+                        or row.get("endpoint_url") not in endpoints
+                    ):
+                        raise RuntimeError(f"llama.cpp inventory row {index} is incomplete")
                 return rows, dict(last_llama_endpoint_status)
-            available = self.llama_cpp.available_models(should_stop=should_stop, deadline=unload_deadline)
-            if not available:
-                raise RuntimeError("llama.cpp inventory unavailable")
-            return self.llama_cpp.loaded_model_details(should_stop=should_stop, deadline=unload_deadline), {"legacy": "complete"}
+            raise RuntimeError("llama.cpp canonical inventory contract unavailable")
 
         loaded_rows_by_backend: dict[str, list[dict[str, Any]]] = {}
         failed_by_backend: dict[str, dict[str, str]] = {name: {} for name in backend_names}
