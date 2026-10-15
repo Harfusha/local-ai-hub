@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-import time
+import math
 import threading
+import time
 from contextlib import contextmanager
+from numbers import Real
 from typing import Iterator
 
 
@@ -23,17 +25,25 @@ class CooperativePriorityGate:
 
     @contextmanager
     def slot(self, priority: int, timeout: float = 120.0) -> Iterator[None]:
+        if isinstance(timeout, bool) or not isinstance(timeout, Real):
+            raise ValueError("timeout must be a finite non-negative real number")
+        try:
+            timeout_seconds = float(timeout)
+        except (OverflowError, TypeError, ValueError):
+            raise ValueError("timeout must be a finite non-negative real number") from None
+        if not math.isfinite(timeout_seconds) or timeout_seconds < 0:
+            raise ValueError("timeout must be a finite non-negative real number")
         foreground = int(priority or 0) >= self.foreground_priority
-        deadline = time.monotonic() + timeout if timeout else None
+        deadline = time.monotonic() + timeout_seconds
         with self._cond:
             if foreground:
                 self._foreground_waiters += 1
             try:
                 while self._active or (not foreground and self._foreground_waiters > 0):
-                    remaining = max(0.0, deadline - time.monotonic()) if deadline else 30.0
+                    remaining = max(0.0, deadline - time.monotonic())
                     if remaining <= 0:
                         raise TimeoutError("timed out waiting for cooperative priority gate")
-                    self._cond.wait(timeout=remaining)
+                    self._cond.wait(timeout=min(remaining, 30.0))
                 self._active = True
             finally:
                 if foreground:
