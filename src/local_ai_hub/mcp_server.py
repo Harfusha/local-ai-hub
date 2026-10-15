@@ -1119,9 +1119,9 @@ def _code_index_page_with_prefix(
     base: dict[str, Any], raw: dict[str, Any], symbols: list[Any], count: int,
 ) -> dict[str, Any]:
     """Build an honest code-index page containing a whole-symbol prefix."""
-    candidate = copy.deepcopy(base)
+    candidate = copy.deepcopy(raw if raw.get("success") is True and base.get("success") is False else base)
     if raw.get("success") is True:
-        for key in ("error", "status_code", "terminal", "retryable"):
+        for key in ("error", "status_code", "terminal", "retryable", "failure_kind"):
             candidate.pop(key, None)
             if key in raw:
                 candidate[key] = copy.deepcopy(raw[key])
@@ -1144,6 +1144,58 @@ def _code_index_page_with_prefix(
         candidate["next_offset"] = offset + count
     else:
         candidate.pop("next_offset", None)
+    if count < len(symbols):
+        matched_terms = sorted({
+            str(term)
+            for symbol in symbols[:count]
+            if isinstance(symbol, dict) and isinstance(symbol.get("matched_terms"), list)
+            for term in symbol["matched_terms"]
+        })
+        terms = raw.get("terms") if isinstance(raw.get("terms"), list) else []
+        query_term_count = len(terms)
+        candidate["coverage"] = {
+            "query_term_count": query_term_count,
+            "matched_term_count": len(matched_terms),
+            "matched_terms": matched_terms,
+            "query_term_coverage": round(len(matched_terms) / max(1, query_term_count), 3),
+            "candidate_match_count": total,
+            "returned_symbol_count": count,
+            "complete": False,
+            "scope": "indexed_symbol_candidates",
+        }
+        candidate_paths = list(dict.fromkeys(
+            str(symbol["path"]) for symbol in symbols[:count]
+            if isinstance(symbol, dict) and symbol.get("path")
+        ))
+        candidate["freshness"] = {
+            "status": "not_checked", "scope": "returned_symbol_candidates",
+            "checked_paths": 0, "stale_paths": [],
+            "unknown_paths": candidate_paths[:64], "complete": False,
+        }
+        if "stale" in candidate:
+            candidate["stale"] = None
+        candidate.pop("parse_outcomes", None)
+        candidate["omitted_fields"] = list(dict.fromkeys([
+            *(candidate.get("omitted_fields") if isinstance(candidate.get("omitted_fields"), list) else []),
+            "parse_outcomes",
+        ]))
+        coverage = candidate["coverage"]["query_term_coverage"]
+        support = min(1.0, count / 3.0)
+        candidate["confidence"] = round(0.65 * coverage + 0.20 * support, 3) if candidate_paths else 0.0
+        candidate["confidence"] = min(candidate["confidence"], 0.50)
+        candidate["truncated"] = has_more
+        candidate["observed_match_count"] = total
+        truncation = raw.get("truncation")
+        truncation = dict(truncation) if isinstance(truncation, dict) else {}
+        truncation.update({
+            "result_limit": requested_limit,
+            "returned_count": count,
+            "observed_match_count": raw.get("observed_match_count", total),
+        })
+        candidate["truncation"] = truncation
+        response_budget = candidate.get("response_budget")
+        if isinstance(response_budget, dict):
+            response_budget.pop("rejected", None)
     return candidate
 
 
