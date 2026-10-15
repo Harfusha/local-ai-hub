@@ -1528,6 +1528,23 @@ class LocalAIHTTPServer(ThreadingHTTPServer):
             }
 
 
+def _task_create_contract(payload: Mapping[str, Any]) -> GoalContract:
+    """Parse the canonical task contract or its declared task-string shorthand."""
+    contract_data = payload.get("contract")
+    if contract_data is not None:
+        if not isinstance(contract_data, Mapping):
+            raise ValueError("contract must be an object")
+        return GoalContract.from_dict(contract_data)
+    return GoalContract.from_dict({
+        "goal": payload.get("goal", payload.get("task", "")),
+        "acceptance_criteria": payload.get("acceptance_criteria") or [],
+        "scope": payload.get("scope", "task"),
+        "non_goals": payload.get("non_goals") or [],
+        "constraints": payload.get("constraints") or [],
+        "risk_profile": payload.get("risk_profile", "normal"),
+    })
+
+
 class Handler(BaseHTTPRequestHandler):
     _ADMIN_ACTIONS = {
         "db.query": ({"GET", "POST"}, "/api/db/query", None),
@@ -6328,51 +6345,13 @@ class Handler(BaseHTTPRequestHandler):
                             "success": False, "error": "auto_worktree must be a boolean",
                             "terminal": True, "retryable": False,
                         }); return
-                    contract_data = payload.get("contract") or {}
-                    if not contract_data:
-                        goal = str(
-                            payload.get("goal")
-                            or payload.get("title")
-                            or payload.get("description")
-                            or payload.get("summary")
-                            or payload.get("intent")
-                            or payload.get("prompt")
-                            or payload.get("query")
-                            or payload.get("task")
-                            or (f"Task {payload.get('task_id')}" if payload.get("task_id") else "")
-                            or ""
-                        )
-                        contract_data = {
-                            "goal": goal,
-                            "acceptance_criteria": payload.get("acceptance_criteria") or [],
-                            "scope": payload.get("scope", "task"),
-                            "non_goals": payload.get("non_goals") or [],
-                            "constraints": payload.get("constraints") or [],
-                            "risk_profile": payload.get("risk_profile", "normal"),
-                        }
-                    elif isinstance(contract_data, str):
-                        contract_data = {
-                            "goal": contract_data,
-                            "acceptance_criteria": payload.get("acceptance_criteria") or [],
-                            "scope": payload.get("scope", "task"),
-                            "non_goals": payload.get("non_goals") or [],
-                            "constraints": payload.get("constraints") or [],
-                            "risk_profile": payload.get("risk_profile", "normal"),
-                        }
-                    elif isinstance(contract_data, Mapping) and not str(contract_data.get("goal", "")).strip():
-                        contract_data = dict(contract_data)
-                        contract_data["goal"] = str(
-                            contract_data.get("description")
-                            or contract_data.get("summary")
-                            or contract_data.get("title")
-                            or contract_data.get("intent")
-                            or payload.get("goal")
-                            or payload.get("title")
-                            or payload.get("query")
-                            or payload.get("task")
-                            or ""
-                        ).strip()
-                    contract = GoalContract.from_dict(contract_data) if isinstance(contract_data, Mapping) else GoalContract(goal=str(contract_data))
+                    try:
+                        contract = _task_create_contract(payload)
+                    except (TypeError, ValueError) as exc:
+                        self._send(400, {
+                            "success": False, "error": str(exc),
+                            "terminal": True, "retryable": False,
+                        }); return
                     ctx_data = payload.get("context") or {}
                     context = ScopeContext(
                         repository_id=str(ctx_data.get("repository_id", "")),
