@@ -892,7 +892,6 @@ class ContextCompiler:
                     MemoryStatus.QUARANTINED.value,
                     MemoryStatus.REJECTED.value,
                     MemoryStatus.SUPERSEDED.value,
-                    "legacy_unscoped",
                 )
             }
             diagnostic_summary = None
@@ -962,16 +961,13 @@ class ContextCompiler:
                 quarantined = excluded_memory[MemoryStatus.QUARANTINED.value]
                 rejected = excluded_memory[MemoryStatus.REJECTED.value]
                 superseded = excluded_memory[MemoryStatus.SUPERSEDED.value]
-                legacy_unscoped = excluded_memory["legacy_unscoped"]
                 diagnostic_content = (
                     "[MEMORY DIAGNOSTICS] "
                     f"stale_count={stale['count']} quarantined_count={quarantined['count']} "
                     f"rejected_count={rejected['count']} "
                     f"superseded_count={superseded['count']} stale_ids={','.join(stale['ids'])} "
                     f"quarantined_ids={','.join(quarantined['ids'])} "
-                    f"rejected_ids={','.join(rejected['ids'])} superseded_ids={','.join(superseded['ids'])} "
-                    f"legacy_unscoped_count={legacy_unscoped['count']} "
-                    f"legacy_unscoped_ids={','.join(legacy_unscoped['ids'])}"
+                    f"rejected_ids={','.join(rejected['ids'])} superseded_ids={','.join(superseded['ids'])}"
                 )
                 candidates.append((
                     55,

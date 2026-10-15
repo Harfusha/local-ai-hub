@@ -156,15 +156,13 @@ def test_unconfigured_store_preserves_unowned_global_lookup(task_memory):
     store._save_record(record)
     assert store.get(record.record_id) == record
     assert store.find(scope=AgentScope.GLOBAL, key="legacy-global", semantic=False) == [record]
-    # Legacy opt-in must not erase the identity contract of an explicit task.
-    assert store.get(records["missing_both"].record_id, task_id="shared-task", allow_legacy_unscoped=True) is None
+    assert store.get(records["missing_both"].record_id, task_id="shared-task") is None
 
 
-@pytest.mark.parametrize("selector", ["query", "record_id", "legacy_record_id"])
+@pytest.mark.parametrize("selector", ["query", "record_id"])
 def test_unscoped_find_cannot_return_task_identity(task_memory, selector):
     store, _, records = task_memory
     request = {"query": "scope-guard"} if selector == "query" else {
         "record_id": records["missing_both"].record_id,
-        "allow_legacy_unscoped": selector == "legacy_record_id",
     }
     assert store.find(**request, semantic=False) == []

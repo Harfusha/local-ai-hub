@@ -718,8 +718,8 @@ def test_legacy_rootless_memory_is_not_included_without_root(tmp_path: Path):
     diagnostics = next(element for element in scoped_context.elements if element.source_kind == "memory_diagnostics")
     assert legacy.record_id not in scoped_ids
     assert other_tenant_legacy.record_id not in diagnostics.content
-    assert legacy.record_id in diagnostics.content
-    assert "legacy_unscoped_count=1" in diagnostics.content
+    assert legacy.record_id not in diagnostics.content
+    assert "legacy_unscoped" not in diagnostics.content
 
 
 def test_repository_root_aliases_match_context_scope(tmp_path: Path):

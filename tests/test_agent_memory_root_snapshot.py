@@ -282,7 +282,7 @@ def test_model_conclusion_is_candidate_not_repository_memory(store: MemoryStore)
     assert record.status is MemoryStatus.CANDIDATE
 
 
-def test_legacy_unscoped_lookup_rejects_nonempty_task_and_session_context(store: MemoryStore):
+def test_scoped_lookup_excludes_unscoped_task_and_session_records(store: MemoryStore):
     legacy_task = MemoryRecord.create(
         kind=MemoryKind.FINDING,
         scope=AgentScope.TASK,
@@ -316,8 +316,8 @@ def test_legacy_unscoped_lookup_rejects_nonempty_task_and_session_context(store:
 
     assert store.find(scope=AgentScope.TASK) == []
     assert store.find(scope=AgentScope.SESSION) == []
-    assert [record.value for record in store.find(allow_legacy_unscoped=True, task_id="task-1", root="C:/repo", tenant="tenant-1")] == ["task value"]
-    assert [record.value for record in store.find(allow_legacy_unscoped=True, session_id="session-1", tenant="tenant-1")] == ["session value"]
+    assert [record.value for record in store.find(task_id="task-1", root="C:/repo", tenant="tenant-1")] == ["task value"]
+    assert [record.value for record in store.find(session_id="session-1", tenant="tenant-1")] == ["session value"]
     assert store.find(scope=AgentScope.TASK, root="C:/repo") == []
     assert store.find(scope=AgentScope.SESSION, tenant="tenant-1") == []
     assert store.get(legacy_task.record_id, task_id="task-1") is None
@@ -411,9 +411,18 @@ def test_scoped_memory_delete_still_enforces_tenant(store: MemoryStore):
     assert store.get(session_record.record_id, scope=AgentScope.SESSION, scope_id="session-codex", tenant="codex") == session_record
 
 
-def test_legacy_memory_find_requires_explicit_root_or_identity(store: MemoryStore):
-    with pytest.raises(ValueError, match="explicit root or identity"):
-        store.find(allow_legacy_unscoped=True)
+def test_unscoped_memory_find_excludes_repository_rows(store: MemoryStore):
+    record = store.record(MemoryRecord.create(
+        kind=MemoryKind.FACT,
+        scope=AgentScope.REPOSITORY,
+        key="unscoped-repository",
+        value="repository value",
+        provenance={"root": "C:/repo", "repository_id": "repo-id", "tenant": "tenant-a"},
+    ))
+
+    assert store.find(key=record.key, semantic=False) == []
+    assert store.find(record_id=record.record_id, semantic=False) == []
+    assert store.get(record.record_id) is None
 
 
 def test_memory_find_enforces_root_repository_and_tenant_identity(store: MemoryStore):

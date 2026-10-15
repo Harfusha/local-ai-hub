@@ -4619,9 +4619,6 @@ class Handler(BaseHTTPRequestHandler):
                     if requested_root and project_identity is None:
                         self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
                     root_val, repository_id_val = project_identity or (None, None)
-                    query_repo_id = (query.get("repository_id") or [None])[0]
-                    if not repository_id_val and query_repo_id:
-                        repository_id_val = str(query_repo_id).strip()
                     query_tenant = (query.get("tenant") or [None])[0]
                     explicit_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
                     tenant_val = str(query_tenant).strip() if query_tenant else (str(explicit_tenant).strip() if explicit_tenant else None)
@@ -4687,9 +4684,6 @@ class Handler(BaseHTTPRequestHandler):
                 if requested_root and project_identity is None:
                     self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
                 root_val, repository_id_val = project_identity or (None, None)
-                query_repo_id = (query.get("repository_id") or [None])[0]
-                if not repository_id_val and query_repo_id:
-                    repository_id_val = str(query_repo_id).strip()
                 query_tenant = (query.get("tenant") or [None])[0]
                 explicit_tenant = self.headers.get("X-LocalAI-Tenant") or self.headers.get("X-Tenant-ID")
                 tenant_val = str(query_tenant).strip() if query_tenant else (str(explicit_tenant).strip() if explicit_tenant else None)
@@ -4703,58 +4697,41 @@ class Handler(BaseHTTPRequestHandler):
                     session_id_val, clone_id_val, worktree_id_val, branch_val,
                 ):
                     self._send(400, {"success": False, "error": "memory lookup requires explicit root or identity", "terminal": True, "retryable": False}); return
-                legacy_unscoped = scope_val is None and not any(
-                    str(value or "").strip()
-                    for value in (
-                        scope_id_val, task_id_val, session_id_val, clone_id_val, worktree_id_val,
-                        branch_val, root_val, repository_id_val, tenant_val,
-                    )
+                scope_val, scope_id_val, ambiguous_scope = _resolve_memory_scope(
+                    scope_val,
+                    scope_id=scope_id_val,
+                    root=root_val,
+                    repository_id=repository_id_val,
+                    tenant=tenant_val,
+                    task_id=task_id_val,
+                    session_id=session_id_val,
+                    clone_id=clone_id_val,
+                    worktree_id=worktree_id_val,
+                    branch=branch_val,
                 )
-                if legacy_unscoped:
-                    records = APP.agent_memory.find(
-                        scope=None,
-                        allow_legacy_unscoped=True,
-                        key=key_val,
-                        query=query_val,
-                        status=status_val,
-                        limit=limit_val,
-                    )
-                if not legacy_unscoped:
-                    scope_val, scope_id_val, ambiguous_scope = _resolve_memory_scope(
-                        scope_val,
-                        scope_id=scope_id_val,
-                        root=root_val,
-                        repository_id=repository_id_val,
-                        tenant=tenant_val,
-                        task_id=task_id_val,
-                        session_id=session_id_val,
-                        clone_id=clone_id_val,
-                        worktree_id=worktree_id_val,
-                        branch=branch_val,
-                    )
-                    if ambiguous_scope:
-                        self._send(400, {"success": False, "error": "ambiguous memory scope identity", "terminal": True, "retryable": False}); return
-                    scope_id_val = self._bound_memory_scope_id(scope_val, scope_id_val, task_id_val)
-                    if scope_val is AgentScope.TASK:
-                        task_id_val = scope_id_val
-                    elif scope_val is AgentScope.SESSION:
-                        session_id_val = scope_id_val
-                    records = APP.agent_memory.find(
-                            scope=scope_val if scope_raw is not None else None,
-                            scope_id=str(scope_id_val) if scope_id_val is not None else None,
-                            root=str(root_val) if root_val else None,
-                            repository_id=str(repository_id_val) if repository_id_val else None,
-                            tenant=str(tenant_val) if tenant_val else None,
-                            task_id=str(task_id_val) if task_id_val else None,
-                            session_id=str(session_id_val) if session_id_val else (str(scope_id_val) if (scope_raw is None and scope_val == AgentScope.SESSION) else None),
-                            clone_id=str(clone_id_val) if clone_id_val else None,
-                            worktree_id=str(worktree_id_val) if worktree_id_val else None,
-                            branch=str(branch_val) if branch_val else None,
-                            key=key_val,
-                            query=query_val,
-                            status=status_val,
-                            limit=limit_val,
-                    )
+                if ambiguous_scope:
+                    self._send(400, {"success": False, "error": "ambiguous memory scope identity", "terminal": True, "retryable": False}); return
+                scope_id_val = self._bound_memory_scope_id(scope_val, scope_id_val, task_id_val)
+                if scope_val is AgentScope.TASK:
+                    task_id_val = scope_id_val
+                elif scope_val is AgentScope.SESSION:
+                    session_id_val = scope_id_val
+                records = APP.agent_memory.find(
+                    scope=scope_val if scope_raw is not None else None,
+                    scope_id=str(scope_id_val) if scope_id_val is not None else None,
+                    root=str(root_val) if root_val else None,
+                    repository_id=str(repository_id_val) if repository_id_val else None,
+                    tenant=str(tenant_val) if tenant_val else None,
+                    task_id=str(task_id_val) if task_id_val else None,
+                    session_id=str(session_id_val) if session_id_val else (str(scope_id_val) if (scope_raw is None and scope_val == AgentScope.SESSION) else None),
+                    clone_id=str(clone_id_val) if clone_id_val else None,
+                    worktree_id=str(worktree_id_val) if worktree_id_val else None,
+                    branch=str(branch_val) if branch_val else None,
+                    key=key_val,
+                    query=query_val,
+                    status=status_val,
+                    limit=limit_val,
+                )
                 self._send(200, {"success": True, "records": [r.to_dict() for r in records]}); return
             if path == "/api/agent-state/events":
                 agent_state = getattr(APP, "agent_state", None)
@@ -6925,58 +6902,41 @@ class Handler(BaseHTTPRequestHandler):
                         session_id_val, clone_id_val, worktree_id_val, branch_val,
                     ):
                         self._send(400, {"success": False, "error": "memory lookup requires explicit root or identity", "terminal": True, "retryable": False}); return
-                    legacy_unscoped = scope_val is None and not any(
-                        str(value or "").strip()
-                        for value in (
-                            scope_id_val, task_id_val, session_id_val, clone_id_val, worktree_id_val,
-                            branch_val, root_val, repository_id_val, tenant_val,
-                        )
+                    scope_val, scope_id_val, ambiguous_scope = _resolve_memory_scope(
+                        scope_val,
+                        scope_id=scope_id_val,
+                        root=root_val,
+                        repository_id=repository_id_val,
+                        tenant=tenant_val,
+                        task_id=task_id_val,
+                        session_id=session_id_val,
+                        clone_id=clone_id_val,
+                        worktree_id=worktree_id_val,
+                        branch=branch_val,
                     )
-                    if legacy_unscoped:
-                        records = APP.agent_memory.find(
-                            scope=None,
-                            allow_legacy_unscoped=True,
-                            key=key_val,
-                            query=query_val,
-                            status=status_val,
-                            limit=limit_val,
-                        )
-                    if not legacy_unscoped:
-                        scope_val, scope_id_val, ambiguous_scope = _resolve_memory_scope(
-                            scope_val,
-                            scope_id=scope_id_val,
-                            root=root_val,
-                            repository_id=repository_id_val,
-                            tenant=tenant_val,
-                            task_id=task_id_val,
-                            session_id=session_id_val,
-                            clone_id=clone_id_val,
-                            worktree_id=worktree_id_val,
-                            branch=branch_val,
-                        )
-                        if ambiguous_scope:
-                            self._send(400, {"success": False, "error": "ambiguous memory scope identity", "terminal": True, "retryable": False}); return
-                        scope_id_val = self._bound_memory_scope_id(scope_val, scope_id_val, task_id_val)
-                        if scope_val is AgentScope.TASK:
-                            task_id_val = scope_id_val
-                        elif scope_val is AgentScope.SESSION:
-                            session_id_val = scope_id_val
-                        records = APP.agent_memory.find(
-                                scope=scope_val if scope_raw is not None else None,
-                                scope_id=str(scope_id_val) if scope_id_val is not None else None,
-                                root=str(root_val) if root_val else None,
-                                repository_id=str(repository_id_val) if repository_id_val else None,
-                                tenant=str(tenant_val) if tenant_val else None,
-                                task_id=str(task_id_val) if task_id_val else None,
-                                session_id=str(session_id_val) if session_id_val else (str(scope_id_val) if (scope_raw is None and scope_val == AgentScope.SESSION) else None),
-                                clone_id=str(clone_id_val) if clone_id_val else None,
-                                worktree_id=str(worktree_id_val) if worktree_id_val else None,
-                                branch=str(branch_val) if branch_val else None,
-                                key=key_val,
-                                query=query_val,
-                                status=status_val,
-                                limit=limit_val,
-                        )
+                    if ambiguous_scope:
+                        self._send(400, {"success": False, "error": "ambiguous memory scope identity", "terminal": True, "retryable": False}); return
+                    scope_id_val = self._bound_memory_scope_id(scope_val, scope_id_val, task_id_val)
+                    if scope_val is AgentScope.TASK:
+                        task_id_val = scope_id_val
+                    elif scope_val is AgentScope.SESSION:
+                        session_id_val = scope_id_val
+                    records = APP.agent_memory.find(
+                        scope=scope_val if scope_raw is not None else None,
+                        scope_id=str(scope_id_val) if scope_id_val is not None else None,
+                        root=str(root_val) if root_val else None,
+                        repository_id=str(repository_id_val) if repository_id_val else None,
+                        tenant=str(tenant_val) if tenant_val else None,
+                        task_id=str(task_id_val) if task_id_val else None,
+                        session_id=str(session_id_val) if session_id_val else (str(scope_id_val) if (scope_raw is None and scope_val == AgentScope.SESSION) else None),
+                        clone_id=str(clone_id_val) if clone_id_val else None,
+                        worktree_id=str(worktree_id_val) if worktree_id_val else None,
+                        branch=str(branch_val) if branch_val else None,
+                        key=key_val,
+                        query=query_val,
+                        status=status_val,
+                        limit=limit_val,
+                    )
                     self._send(200, {"success": True, "records": [r.to_dict() for r in records]}); return
                 def _memory_mutation_identity() -> tuple[dict[str, Any] | None, str | None]:
                     scope_val = _parse_memory_scope(payload.get("scope"))
