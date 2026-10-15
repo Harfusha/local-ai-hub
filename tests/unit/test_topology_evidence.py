@@ -7,7 +7,7 @@ def test_topology_reports_declared_python_imports_as_unresolved_heuristics(tmp_p
     root = tmp_path / "repo"
     (root / "src" / "pkg").mkdir(parents=True)
     (root / "src" / "pkg" / "service.py").write_text(
-        "import package.submodule\nfrom ..shared.parts import item\n"
+        "import package.submodule\nfrom ..shared.parts import item\nfrom . import sibling\n"
         "# import fake.comment\ntext = 'import fake.string'\n",
         encoding="utf-8",
     )
@@ -21,11 +21,17 @@ def test_topology_reports_declared_python_imports_as_unresolved_heuristics(tmp_p
     assert result["import_scope"].startswith("Python AST declared imports only")
     assert result["architecture_pattern_verified"] is False
     assert result["coverage"]["module_graph_resolved"] is False
-    assert result["hub_modules"] == [{"module": "package.submodule", "in_degree": 2}]
+    assert {item["module"]: item["in_degree"] for item in result["hub_modules"]} == {
+        "package.submodule": 2,
+        "..shared.parts": 1,
+        ".sibling": 1,
+    }
     assert "fake.comment" not in repr(result["hub_modules"])
     assert "fake.string" not in repr(result["hub_modules"])
     assert "src/contest.py" in result["layers"]["utilities"]
     assert "Blast Radius" not in result["summary_markdown"]
+    assert "Pattern hypothesis (unverified, path-based)" in result["summary_markdown"]
+    assert "Filename-based layer hypotheses (unverified)" in result["summary_markdown"]
 
 
 def test_topology_oversize_and_symlink_omissions_are_incomplete(tmp_path: Path) -> None:
