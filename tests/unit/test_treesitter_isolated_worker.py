@@ -61,6 +61,19 @@ def test_windows_worker_initializer_preserves_existing_wer_flags(monkeypatch):
     api.WerSetFlags.assert_called_once_with(0x0061)
 
 
+def test_windows_worker_initializer_treats_missing_wer_flags_as_zero(monkeypatch):
+    api = MagicMock()
+    api.GetCurrentProcess.return_value = 1234
+    api.WerGetFlags.return_value = -2147023728  # HRESULT 0x80070490, ERROR_NOT_FOUND
+    api.WerSetFlags.return_value = 0
+    monkeypatch.setattr(module, "_worker_runtime_is_windows", lambda: True)
+    monkeypatch.setattr(module, "_load_worker_windows_api", lambda: api)
+
+    module._initialize_isolated_worker()
+
+    api.WerSetFlags.assert_called_once_with(module._WER_FAULT_REPORTING_NO_UI)
+
+
 def test_windows_worker_initializer_rejects_null_current_process(monkeypatch):
     api = MagicMock()
     api.GetCurrentProcess.return_value = None

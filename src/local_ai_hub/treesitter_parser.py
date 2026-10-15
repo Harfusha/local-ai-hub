@@ -30,6 +30,7 @@ _WORKER_POOL_LOCK = threading.Lock()
 _WORKER_DISPATCH_LOCK = threading.Lock()
 _WORKER_DISABLED_CAUSE: str | None = None
 _WER_FAULT_REPORTING_NO_UI = 0x0020
+_WER_ERROR_NOT_FOUND_HRESULT = 0x80070490
 _TREE_CACHE: OrderedDict[tuple[str, str], tuple[bytes, Any, int]] = OrderedDict()
 _TREE_CACHE_BYTES = 0
 _TREE_CACHE_MAX_ENTRIES = 32
@@ -165,7 +166,10 @@ def _initialize_isolated_worker() -> None:
     flags = dword_type()
     result = get_flags(process, ctypes.byref(flags))
     if result < 0:
-        raise OSError(f"WerGetFlags failed with HRESULT 0x{result & 0xFFFFFFFF:08X}")
+        hresult = result & 0xFFFFFFFF
+        if hresult != _WER_ERROR_NOT_FOUND_HRESULT:
+            raise OSError(f"WerGetFlags failed with HRESULT 0x{hresult:08X}")
+        flags.value = 0
 
     set_flags = api.WerSetFlags
     set_flags.argtypes = [dword_type]
