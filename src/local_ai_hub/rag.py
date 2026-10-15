@@ -52,6 +52,11 @@ _CENTROID_CACHE_LOCK = threading.RLock()
 _CENTROID_BUILD_LOCK = threading.Lock()
 _CENTROID_CACHE: OrderedDict[tuple[Any, ...], tuple[Any, dict[int, tuple[tuple[str, int], ...]], int]] = OrderedDict()
 _CENTROID_CACHE_BYTES = 0
+_REGEX_AST_MAX_SOURCE_CHARS = 2_000_000
+_REGEX_AST_BUDGET_SECONDS = 0.5
+_REGEX_AST_MAX_BLOCK_DEPTH = 4096
+_REGEX_AST_MAX_BLOCKS = 4096
+_RUST_LIFETIME_RE = re.compile(r"'[A-Za-z_][A-Za-z0-9_]*")
 
 
 def _centroid_threshold_reached(chunk_count: int) -> bool:
@@ -187,6 +192,211 @@ def _python_ast_chunks(text: str, size: int | Any = 4500, overlap: int | Any = 4
     sz = size if isinstance(size, int) else 4500
     ov = overlap if isinstance(overlap, int) else 450
     return store._python_ast_chunks(text, sz, ov)
+
+
+def _regex_ast_chunks(text: str, language: str, size: int = 4500) -> list[str]:
+    """Conservatively split brace languages without cutting balanced code blocks.
+
+    This is lexical grouping, not parsing: each outermost brace block stays whole,
+    including oversized classes or functions. Ambiguous, malformed, or over-budget
+    input is kept as one complete chunk rather than split at an unsafe boundary.
+    """
+    if language not in {"typescript", "c_sharp", "go", "rust"}:
+        return []
+    if len(text) > _REGEX_AST_MAX_SOURCE_CHARS or size < 1:
+        return [text] if text.strip() else []
+
+    deadline = time.monotonic() + _REGEX_AST_BUDGET_SECONDS
+    spans: list[tuple[int, int]] = []
+    braces: list[int] = []
+    segment_start = 0
+    index = 0
+    text_length = len(text)
+
+    def skip_escaped_quote(start: int, quote: str) -> tuple[int, bool]:
+        cursor = start + 1
+        while cursor < text_length:
+            if cursor % 8192 == 0 and time.monotonic() >= deadline:
+                return text_length, False
+            char = text[cursor]
+            if char == "\\":
+                cursor += 2
+                continue
+            if char == quote:
+                return cursor + 1, True
+            cursor += 1
+        return text_length, False
+
+    def skip_verbatim_quote(quote_index: int) -> tuple[int, bool]:
+        cursor = quote_index + 1
+        while cursor < text_length:
+            if cursor % 8192 == 0 and time.monotonic() >= deadline:
+                return text_length, False
+            if text[cursor] == '"':
+                if cursor + 1 < text_length and text[cursor + 1] == '"':
+                    cursor += 2
+                    continue
+                return cursor + 1, True
+            cursor += 1
+        return text_length, False
+
+    while index < text_length:
+        if index % 8192 == 0 and time.monotonic() >= deadline:
+            return [text] if text.strip() else []
+
+        if text.startswith("//", index):
+            newline = text.find("\n", index + 2)
+            index = text_length if newline < 0 else newline + 1
+            continue
+        if text.startswith("/*", index):
+            cursor = index + 2
+            depth = 1
+            while cursor < text_length and depth:
+                if cursor % 8192 == 0 and time.monotonic() >= deadline:
+                    return [text] if text.strip() else []
+                if text.startswith("/*", cursor):
+                    depth += 1
+                    cursor += 2
+                elif text.startswith("*/", cursor):
+                    depth -= 1
+                    cursor += 2
+                else:
+                    cursor += 1
+            if depth:
+                return [text] if text.strip() else []
+            index = cursor
+            continue
+
+        if language == "c_sharp" and (text.startswith('@"', index)
+                or text.startswith('$@"', index) or text.startswith('@$"', index)):
+            quote_index = index + 1 if text.startswith('@"', index) else index + 2
+            index, closed = skip_verbatim_quote(quote_index)
+            if not closed:
+                return [text] if text.strip() else []
+            continue
+
+        raw_prefix = None
+        if language == "rust":
+            if text.startswith("br", index):
+                raw_prefix = index + 2
+            elif text[index] == "r":
+                raw_prefix = index + 1
+        if raw_prefix is not None:
+            hash_end = raw_prefix
+            while hash_end < text_length and text[hash_end] == "#":
+                if hash_end % 8192 == 0 and time.monotonic() >= deadline:
+                    return [text] if text.strip() else []
+                hash_end += 1
+            if hash_end < text_length and text[hash_end] == '"':
+                terminator = '"' + text[raw_prefix:hash_end]
+                close_at = text.find(terminator, hash_end + 1)
+                if close_at < 0:
+                    return [text] if text.strip() else []
+                index = close_at + len(terminator)
+                continue
+
+        if language == "c_sharp" and text[index] == '"':
+            quote_end = index
+            while quote_end < text_length and text[quote_end] == '"':
+                if quote_end % 8192 == 0 and time.monotonic() >= deadline:
+                    return [text] if text.strip() else []
+                quote_end += 1
+            delimiter_size = quote_end - index
+            if delimiter_size >= 3:
+                delimiter = '"' * delimiter_size
+                close_at = text.find(delimiter, quote_end)
+                if close_at < 0:
+                    return [text] if text.strip() else []
+                index = close_at + delimiter_size
+                continue
+
+        if language == "rust" and text[index] == "'":
+            lifetime = _RUST_LIFETIME_RE.match(text, index)
+            if lifetime is not None:
+                after_lifetime = index + lifetime.end()
+                if after_lifetime >= text_length or text[after_lifetime] != "'":
+                    index = after_lifetime
+                    continue
+
+        if text[index] in "'\"`":
+            index, closed = skip_escaped_quote(index, text[index])
+            if not closed:
+                return [text] if text.strip() else []
+            continue
+
+        if language == "typescript" and text[index] == "/":
+            prefix = text[max(0, index - 32):index].rstrip()
+            previous = prefix[-1:] if prefix else ""
+            starts_expression = (
+                not prefix
+                or previous in "([{=,:;!?&|+-*%^~>"
+                or re.search(r"\b(?:return|throw|case|yield|await|else|do)\s*$", prefix) is not None
+            )
+            if starts_expression:
+                cursor = index + 1
+                in_character_class = False
+                closed = False
+                while cursor < text_length and text[cursor] not in "\r\n":
+                    if cursor % 8192 == 0 and time.monotonic() >= deadline:
+                        return [text] if text.strip() else []
+                    if text[cursor] == "\\":
+                        cursor += 2
+                        continue
+                    if text[cursor] == "[":
+                        in_character_class = True
+                    elif text[cursor] == "]":
+                        in_character_class = False
+                    elif text[cursor] == "/" and not in_character_class:
+                        cursor += 1
+                        while cursor < text_length and text[cursor].isalpha():
+                            cursor += 1
+                        closed = True
+                        break
+                    cursor += 1
+                if closed:
+                    index = cursor
+                    continue
+                return [text] if text.strip() else []
+
+        if text[index] == "{":
+            if len(braces) >= _REGEX_AST_MAX_BLOCK_DEPTH:
+                return [text] if text.strip() else []
+            if not braces:
+                braces.append(segment_start)
+            else:
+                braces.append(index)
+            index += 1
+            continue
+        if text[index] == "}":
+            if not braces:
+                return [text] if text.strip() else []
+            braces.pop()
+            index += 1
+            if not braces:
+                if len(spans) >= _REGEX_AST_MAX_BLOCKS:
+                    return [text] if text.strip() else []
+                spans.append((segment_start, index))
+                segment_start = index
+            continue
+        index += 1
+
+    if braces:
+        return [text] if text.strip() else []
+    if not spans:
+        spans = [(0, text_length)]
+    if len(spans) + max(0, (text_length - segment_start + size - 1) // size) > _REGEX_AST_MAX_BLOCKS:
+        return [text] if text.strip() else []
+
+    chunks: list[str] = []
+    for start, end in spans:
+        block = text[start:end]
+        chunks.append(block)
+    while segment_start < text_length:
+        end = min(text_length, segment_start + size)
+        piece = text[segment_start:end]
+        chunks.append(piece)
+        segment_start = end
+    return chunks
 
 
 def _serialize_embedding(vector: Any) -> bytes | str | None:
@@ -542,9 +752,8 @@ class RAGStore:
     def _chunks(self, text: str, path: str = "") -> list[str]:
         """Split text into semantically meaningful chunks.
 
-        For source code files, try AST-aware splitting that keeps classes and
-        methods intact. Falls back to paragraph-aware overlap splitting when
-        tree-sitter is unavailable or for unsupported formats.
+        For source code files, try syntax-aware splitting first and conservative
+        lexical block grouping second. Unsupported formats use paragraph splitting.
         """
         cfg = self.config.get("rag", {})
         size = int(cfg.get("chunk_chars", 4500))
@@ -578,6 +787,10 @@ class RAGStore:
             ast_chunks = self._ast_chunks(text, lang, size, overlap)
             if ast_chunks:
                 return ast_chunks
+        if lang in {"typescript", "c_sharp", "go", "rust"}:
+            lexical_chunks = _regex_ast_chunks(text, lang, size)
+            if lexical_chunks:
+                return lexical_chunks
 
         # Paragraph-aware fallback (original logic)
         return self._text_chunks(text, size, overlap)
