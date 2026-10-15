@@ -8,6 +8,7 @@ import functools
 import hashlib
 import inspect
 import json
+import math
 import ntpath
 import os
 import queue
@@ -1496,11 +1497,12 @@ def _telemetry_status_projection(value: Any) -> dict[str, Any]:
         "fallback_count", "degraded_count", "retry_count", "cache_hit_rate", "net_cloud_token_delta_est",
     )
     projected_summary = {key: summary[key] for key in keep_summary if key in summary}
-    scope = report.get("scope")
+    scope = summary.get("scope", report.get("scope"))
     if isinstance(scope, str) and scope in {"window", "process"}:
         projected_summary["scope"] = scope
-    if type(report.get("summary_cache_stale")) is bool:
-        projected_summary["summary_cache_stale"] = report["summary_cache_stale"]
+    summary_cache_stale = summary.get("summary_cache_stale", report.get("summary_cache_stale"))
+    if type(summary_cache_stale) is bool:
+        projected_summary["summary_cache_stale"] = summary_cache_stale
     writer = summary.get("writer")
     if isinstance(writer, dict):
         projected_writer: dict[str, Any] = {}
@@ -1514,12 +1516,18 @@ def _telemetry_status_projection(value: Any) -> dict[str, Any]:
             "processed", "written", "pending", "dropped", "writer_errors", "writer_error_attempts",
         }
         for key in numeric_fields:
-            item = writer.get(key)
-            if type(item) in {int, float} or (key.endswith("_rate") and item is None):
+            if key not in writer:
+                continue
+            item = writer[key]
+            if key.endswith("_rate") and item is None:
                 projected_writer[key] = item
+            elif type(item) in {int, float} and math.isfinite(item):
+                lower, upper = (0.0, 1.0) if key.endswith("_rate") else (0.0, None)
+                if item >= lower and (upper is None or item <= upper):
+                    projected_writer[key] = item
         for key in count_fields:
             item = writer.get(key)
-            if type(item) is int:
+            if type(item) is int and item >= 0:
                 projected_writer[key] = item
         if isinstance(writer.get("scope"), str) and writer["scope"] == "current_process":
             projected_writer["scope"] = "current_process"
