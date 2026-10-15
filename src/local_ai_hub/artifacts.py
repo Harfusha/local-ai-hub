@@ -3,6 +3,7 @@ from __future__ import annotations
 from .json_utils import dumps as json_dumps
 
 import base64
+import codecs
 import hashlib
 import json
 import os
@@ -25,6 +26,11 @@ _ARTIFACT_V2_TABLE = "artifacts_v2"
 _ARTIFACT_PAGING_TABLE = "artifact_paging_metadata"
 MAX_ARTIFACT_SLICES = 16
 MAX_ARTIFACT_SLICE_CHARS = 50_000
+MAX_ARTIFACT_TEXT_CHUNK_BYTES = 64 * 1024
+MAX_ARTIFACT_BACKFILL_BYTES = 1_000_000
+MAX_ARTIFACT_SECTION_JSON_CHARS = 250_000
+MAX_ARTIFACT_HEADING_CHARS = 512
+MAX_ARTIFACT_SECTION_NAMES = 50
 _ARTIFACT_MIGRATION_BACKUP_SUFFIX = ".pre-tenant-identity.bak"
 
 
@@ -39,6 +45,14 @@ class ArtifactTransportError(ValueError):
 
 class ArtifactBatchCancelled(RuntimeError):
     """Raised when a caller cancels an artifact batch before commit."""
+
+
+class ArtifactTextReadError(RuntimeError):
+    """Bounded, typed failure when legacy TEXT cannot be streamed safely."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
 
 
 class _ArtifactBatch:
@@ -107,14 +121,15 @@ class _ArtifactBatch:
         self._check_cancelled()
         digest = hashlib.sha256((kind + "\0" + text).encode("utf-8")).hexdigest()[:24]
         artifact_id = self._store._scoped_artifact_id(self._connection, f"art_{digest}", self._tenant_identity)
-        section_names = self._store._section_names(text)
+        section_map, sections_truncated = self._store._section_data(text)
+        section_names = list(section_map)
         page_text, nul_mask = self._store._page_text_metadata(text)
         self._connection.execute(
             f"INSERT OR REPLACE INTO {self._store._table}(artifact_id, created_at, tenant, tenant_identity, kind, text) VALUES(?,?,?,?,?,?)",
             (artifact_id, time.time(), self._tenant_identity, self._tenant_identity, kind, text),
         )
         self._store._write_paging_metadata(
-            self._connection, artifact_id, text, section_names, page_text, nul_mask,
+            self._connection, artifact_id, text, section_names, page_text, nul_mask, sections_truncated,
         )
         return artifact_id
 
@@ -221,18 +236,20 @@ class ArtifactStore:
             f"""SELECT a.artifact_id FROM {table} AS a
                 LEFT JOIN {_ARTIFACT_PAGING_TABLE} AS p ON p.artifact_id=a.artifact_id
                 WHERE p.artifact_id IS NULL AND a.mime_type IS NULL AND a.created_at>=?
+                    AND length(CAST(a.text AS BLOB))<=?
                 ORDER BY a.created_at, a.artifact_id LIMIT 128""",
-            (cutoff,),
+            (cutoff, MAX_ARTIFACT_BACKFILL_BYTES),
         ).fetchall()]
         for artifact_id in artifact_ids:
             row = con.execute(f"SELECT text FROM {table} WHERE artifact_id=?", (artifact_id,)).fetchone()
             if row is None:
                 continue
             text = str(row[0] or "")
-            section_names = self._section_names(text)
+            section_map, sections_truncated = self._section_data(text)
+            section_names = list(section_map)
             page_text, nul_mask = self._page_text_metadata(text)
             self._write_paging_metadata(
-                con, artifact_id, text, section_names, page_text, nul_mask,
+                con, artifact_id, text, section_names, page_text, nul_mask, sections_truncated,
             )
 
     @staticmethod
@@ -243,6 +260,7 @@ class ArtifactStore:
         section_names: list[str],
         page_text: str | None,
         nul_mask: bytes | None,
+        sections_truncated: bool,
     ) -> None:
         con.execute(
             f"""INSERT INTO {_ARTIFACT_PAGING_TABLE}
@@ -250,7 +268,17 @@ class ArtifactStore:
                 VALUES(?,?,?,?,?) ON CONFLICT(artifact_id) DO UPDATE SET
                 char_count=excluded.char_count, section_names=excluded.section_names,
                 page_text=excluded.page_text, nul_mask=excluded.nul_mask""",
-            (artifact_id, len(text), json.dumps(section_names, ensure_ascii=False, separators=(",", ":")), page_text, nul_mask),
+            (
+                artifact_id,
+                len(text),
+                json.dumps(
+                    {"names": section_names, "truncated": sections_truncated},
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+                page_text,
+                nul_mask,
+            ),
         )
 
     @staticmethod
@@ -263,6 +291,166 @@ class ArtifactStore:
             if character == "\x00":
                 mask[index // 8] |= 1 << (index % 8)
         return text.replace("\x00", "\ufffd"), bytes(mask)
+
+    @staticmethod
+    def _decode_section_metadata(value: str) -> tuple[list[str], bool | None] | None:
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            return None
+        if isinstance(parsed, dict):
+            if set(parsed) != {"names", "truncated"}:
+                return None
+            names = parsed.get("names")
+            truncated = parsed.get("truncated")
+            if (
+                isinstance(names, list)
+                and len(names) <= MAX_ARTIFACT_SECTION_NAMES
+                and not any(not isinstance(name, str) for name in names)
+                and all(len(name) <= MAX_ARTIFACT_HEADING_CHARS for name in names)
+                and len(set(names)) == len(names)
+                and isinstance(truncated, bool)
+            ):
+                return names, truncated
+        return None
+
+    @staticmethod
+    def _sqlite_text_codec(encoding: str) -> str:
+        normalized = encoding.strip().casefold()
+        codec = {"utf-8": "utf-8", "utf-16le": "utf-16-le", "utf-16be": "utf-16-be"}.get(normalized)
+        if codec is None:
+            raise ArtifactTextReadError("artifact_text_encoding_unsupported", "unsupported SQLite text encoding")
+        return codec
+
+    def _read_small_text(
+        self, con: sqlite3.Connection, rowid: int, encoding: str, max_bytes: int,
+    ) -> str:
+        codec = self._sqlite_text_codec(encoding)
+        try:
+            with con.blobopen(self._table, "text", rowid, readonly=True) as text_blob:
+                size_bytes = len(text_blob)
+                if size_bytes > max_bytes:
+                    raise ArtifactTextReadError("artifact_section_too_large", "JSON section exceeds bounded parsing limit")
+                return text_blob.read(size_bytes).decode(codec, errors="strict")
+        except UnicodeError as exc:
+            raise ArtifactTextReadError("artifact_text_decode_failed", "artifact text could not be decoded safely") from exc
+        except sqlite3.Error as exc:
+            raise ArtifactTextReadError("artifact_text_stream_failed", "artifact text could not be streamed safely") from exc
+
+    def _stream_text(
+        self,
+        con: sqlite3.Connection,
+        rowid: int,
+        encoding: str,
+        spans: list[tuple[int, int]] | None = None,
+        *,
+        target_section: str = "",
+        parse_sections: bool = True,
+    ) -> dict[str, Any]:
+        spans = spans or []
+        codec = self._sqlite_text_codec(encoding)
+        decoder = codecs.getincrementaldecoder(codec)(errors="strict")
+        span_parts: list[list[str]] = [[] for _ in spans]
+        names: list[str] = []
+        seen_names: set[str] = set()
+        sections: dict[str, tuple[int, int]] = {}
+        truncated = False
+        current_name = ""
+        line_start = 0
+        line_chars: list[str] = []
+        line_overflow = False
+        target_start: int | None = None
+        target_end: int | None = None
+        total_chars = 0
+
+        def finish_line() -> None:
+            nonlocal current_name, truncated, target_start, target_end
+            line = "".join(line_chars) if not line_overflow else ""
+            if len(line) > MAX_ARTIFACT_HEADING_CHARS:
+                truncated = True
+                return
+            label = self._section_label(line) if line else None
+            if label is None:
+                if line_overflow:
+                    truncated = True
+                return
+            base = self._section_slug(label)
+            slug = base
+            suffix = 2
+            while slug in seen_names:
+                slug = f"{base}-{suffix}"
+                suffix += 1
+            if current_name:
+                start, _end = sections[current_name]
+                sections[current_name] = (start, line_start)
+            if target_start is not None and target_end is None:
+                target_end = line_start
+            current_name = ""
+            if len(names) < MAX_ARTIFACT_SECTION_NAMES:
+                names.append(slug)
+                seen_names.add(slug)
+                sections[slug] = (line_start, -1)
+                current_name = slug
+            else:
+                truncated = True
+            if slug == target_section and target_start is None:
+                target_start = line_start
+
+        def consume(decoded: str) -> None:
+            nonlocal total_chars, line_start, line_overflow
+            chunk_start = total_chars
+            chunk_end = chunk_start + len(decoded)
+            for index, (span_start, span_length) in enumerate(spans):
+                overlap_start = max(chunk_start, span_start)
+                overlap_end = min(chunk_end, span_start + span_length)
+                if overlap_start < overlap_end:
+                    span_parts[index].append(decoded[overlap_start - chunk_start:overlap_end - chunk_start])
+            if parse_sections:
+                for local_index, character in enumerate(decoded):
+                    if character == "\n":
+                        finish_line()
+                        line_start = chunk_start + local_index + 1
+                        line_chars.clear()
+                        line_overflow = False
+                    elif not line_overflow:
+                        if len(line_chars) < MAX_ARTIFACT_HEADING_CHARS + 1:
+                            line_chars.append(character)
+                        else:
+                            line_chars.clear()
+                            line_overflow = True
+            total_chars = chunk_end
+
+        try:
+            with con.blobopen(self._table, "text", rowid, readonly=True) as text_blob:
+                size_bytes = len(text_blob)
+                while True:
+                    chunk = text_blob.read(MAX_ARTIFACT_TEXT_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    consume(decoder.decode(chunk, final=False))
+                consume(decoder.decode(b"", final=True))
+        except sqlite3.Error as exc:
+            raise ArtifactTextReadError("artifact_text_stream_failed", "artifact text could not be streamed safely") from exc
+        except UnicodeError as exc:
+            raise ArtifactTextReadError("artifact_text_decode_failed", "artifact text could not be decoded safely") from exc
+
+        if parse_sections and (line_chars or line_overflow):
+            finish_line()
+        if current_name:
+            start, _end = sections[current_name]
+            sections[current_name] = (start, total_chars)
+        if target_start is not None and target_end is None:
+            target_end = total_chars
+        return {
+            "total_chars": total_chars,
+            "pieces": ["".join(parts) for parts in span_parts],
+            "section_names": names,
+            "sections": sections,
+            "sections_truncated": truncated,
+            "target_start": target_start,
+            "target_end": target_end,
+            "size_bytes": size_bytes,
+        }
 
     @staticmethod
     def _tenant_identity(tenant: str) -> str:
@@ -672,63 +860,79 @@ class ArtifactStore:
         }
 
     @staticmethod
-    def _section_names(text: str) -> list[str]:
-        """Return the bounded section-name projection exposed by paged reads."""
-        try:
-            parsed = json.loads(text)
-        except Exception:
-            parsed = None
-        if isinstance(parsed, dict):
-            names: list[str] = []
-            for key in parsed:
-                names.append(f"json:{str(key)}")
-                if len(names) == 50:
-                    break
-            return names
-
-        names: list[str] = []
-        heading = re.compile(r"(?m)^(?:#{1,6}\s+([^\n#].*?)|([A-Z][A-Z0-9 _/.-]{2,48}):)\s*$")
-        for match in heading.finditer(text):
-            label = (match.group(1) or match.group(2) or "").strip().rstrip(":")
-            if not label:
-                continue
-            slug = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")[:64] or "section"
-            base = slug
-            suffix = 2
-            while slug in names:
-                slug = f"{base}-{suffix}"
-                suffix += 1
-            names.append(slug)
-            if len(names) == 50:
-                break
-        return names
+    def _section_label(line: str) -> str | None:
+        if len(line) > MAX_ARTIFACT_HEADING_CHARS:
+            return None
+        match = re.match(r"^(?:#{1,6}\s+([^\n#].*?)|([A-Z][A-Z0-9 _/.-]{2,48}):)\s*$", line.rstrip("\r"))
+        label = (match.group(1) or match.group(2) or "").strip().rstrip(":") if match else ""
+        return label or None
 
     @staticmethod
-    def _section_map(text: str) -> dict[str, tuple[int, int]]:
-        """Return deterministic, addressable sections without asking an LLM to rewrite anything."""
-        sections: dict[str, tuple[int, int]] = {}
-        try:
-            parsed = json.loads(text)
-        except Exception:
-            parsed = None
-        if isinstance(parsed, dict):
-            # JSON artifacts are uncommon, but top-level keys are useful addresses. The offsets
-            # below are intentionally omitted because serializing one value is cheaper/safer.
-            return {f"json:{str(k)}": (-1, -1) for k in parsed.keys()}
+    def _section_slug(label: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")[:64] or "section"
 
-        matches: list[tuple[str, int]] = []
-        heading = re.compile(r"(?m)^(?:#{1,6}\s+([^\n#].*?)|([A-Z][A-Z0-9 _/.-]{2,48}):)\s*$")
-        for m in heading.finditer(text):
-            label = (m.group(1) or m.group(2) or "").strip().rstrip(":")
-            if label:
-                slug = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")[:64] or "section"
-                base = slug; n = 2
-                while slug in sections or any(name == slug for name, _ in matches):
-                    slug = f"{base}-{n}"; n += 1
-                matches.append((slug, m.start()))
-        for i, (name, start) in enumerate(matches):
-            end = matches[i + 1][1] if i + 1 < len(matches) else len(text)
+    @classmethod
+    def _section_data(cls, text: str) -> tuple[dict[str, tuple[int, int]], bool]:
+        """Build bounded section metadata; `True` means names were omitted."""
+        sections: dict[str, tuple[int, int]] = {}
+        if len(text) <= MAX_ARTIFACT_SECTION_JSON_CHARS:
+            try:
+                parsed = json.loads(text)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, dict):
+                names: list[str] = []
+                truncated = False
+                for key in parsed:
+                    if len(names) == MAX_ARTIFACT_SECTION_NAMES:
+                        truncated = True
+                        break
+                    name = f"json:{str(key)}"
+                    if len(name) > MAX_ARTIFACT_HEADING_CHARS:
+                        truncated = True
+                        continue
+                    names.append(name)
+                return {name: (-1, -1) for name in names}, truncated
+
+        names: list[str] = []
+        positions: list[tuple[str, int]] = []
+        seen: set[str] = set()
+        truncated = False
+        cursor = 0
+        while cursor < len(text):
+            newline = text.find("\n", cursor)
+            end = len(text) if newline < 0 else newline
+            if end - cursor > MAX_ARTIFACT_HEADING_CHARS:
+                truncated = True
+            else:
+                label = cls._section_label(text[cursor:end])
+                if label is not None:
+                    base = cls._section_slug(label)
+                    slug = base
+                    suffix = 2
+                    while slug in seen:
+                        slug = f"{base}-{suffix}"
+                        suffix += 1
+                    if len(names) < MAX_ARTIFACT_SECTION_NAMES:
+                        names.append(slug)
+                        seen.add(slug)
+                        positions.append((slug, cursor))
+                    else:
+                        truncated = True
+            cursor = end + 1 if newline >= 0 else len(text)
+        for index, (name, start) in enumerate(positions):
+            end = positions[index + 1][1] if index + 1 < len(positions) else len(text)
             sections[name] = (start, end)
+        return sections, truncated
+
+    @classmethod
+    def _section_names(cls, text: str) -> list[str]:
+        sections, _truncated = cls._section_data(text)
+        return list(sections)
+
+    @classmethod
+    def _section_map(cls, text: str) -> dict[str, tuple[int, int]]:
+        sections, _truncated = cls._section_data(text)
         return sections
 
     def compact(self, result: dict[str, Any], tenant: str, kind: str, *, field: str = "text") -> dict[str, Any]:
@@ -742,13 +946,15 @@ class ArtifactStore:
         head = int(self.max_inline_chars * 0.82)
         tail = self.max_inline_chars - head
         preview = text[:head] + "\n\n[... full local output stored as artifact ...]\n\n" + text[-tail:]
-        sections = list(self._section_map(text).keys())[:24]
+        section_map, sections_truncated = self._section_data(text)
+        sections = list(section_map)[:24]
         result[field] = preview
         result["artifact"] = {
             "id": artifact_id,
             "full_chars": len(text),
             "inline_chars": len(preview),
             "sections": sections,
+            "sections_truncated": sections_truncated,
             "hint": "Fetch only the needed section/slice if the compact preview is insufficient.",
         }
         return result
@@ -758,113 +964,88 @@ class ArtifactStore:
         max_chars = max(256, min(int(max_chars), 50_000))
         section = str(section or "").strip()
         cutoff = time.time() - self.ttl_seconds
+        tenant_identity = self._tenant_identity(tenant) if tenant is not None else None
 
-        def _do_get() -> tuple[Any, ...] | None:
+        def _do_get() -> dict[str, Any]:
             with closing(self._connect()) as con:
-                # Reads stay read-only; expiry cleanup happens on writes. This avoids
-                # turning every artifact slice fetch into a WAL writer.
-                if section:
-                    query = (
-                        f"SELECT a.kind, a.text, a.mime_type, a.created_at, p.char_count, "
-                        f"p.section_names, NULL, CASE WHEN p.artifact_id IS NULL THEN a.text END "
-                        f"FROM {self._table} AS a LEFT JOIN {_ARTIFACT_PAGING_TABLE} AS p "
-                        "ON p.artifact_id=a.artifact_id WHERE a.artifact_id=? AND a.created_at>=?"
-                    )
-                    params: list[Any] = [artifact_id, cutoff]
-                else:
-                    query = (
-                        f"SELECT a.kind, substr(COALESCE(p.page_text, a.text), ?, ?), "
-                        f"a.mime_type, a.created_at, p.char_count, p.section_names, "
-                        f"substr(p.nul_mask, ?, ?), CASE WHEN p.artifact_id IS NULL THEN a.text END "
-                        f"FROM {self._table} AS a LEFT JOIN {_ARTIFACT_PAGING_TABLE} AS p "
-                        "ON p.artifact_id=a.artifact_id WHERE a.artifact_id=? AND a.created_at>=?"
-                    )
-                    nul_byte_offset = offset % 8
-                    nul_byte_count = (nul_byte_offset + max_chars + 7) // 8
-                    sqlite_max_int = (1 << 63) - 1
-                    params = [
-                        min(offset + 1, sqlite_max_int),
-                        max_chars,
-                        min(offset // 8 + 1, sqlite_max_int),
-                        nul_byte_count,
-                        artifact_id,
-                        cutoff,
-                    ]
-                if tenant is not None:
+                con.execute("BEGIN")
+                params: list[Any] = [artifact_id, cutoff]
+                query = (
+                    f"SELECT a.rowid, a.kind, a.mime_type, typeof(a.text), p.section_names "
+                    f"FROM {self._table} AS a LEFT JOIN {_ARTIFACT_PAGING_TABLE} AS p "
+                    "ON p.artifact_id=a.artifact_id WHERE a.artifact_id=? AND a.created_at>=?"
+                )
+                if tenant_identity is not None:
                     query += " AND a.tenant_identity=?"
-                    params.append(self._tenant_identity(tenant))
-                return con.execute(query, params).fetchone()
+                    params.append(tenant_identity)
+                row = con.execute(query, params).fetchone()
+                if row is None:
+                    return {"success": False, "error": "artifact not found or expired", "artifact_id": artifact_id}
+                rowid, kind, mime_type, text_type, section_json = row
+                if mime_type:
+                    return {"success": False, "error": "binary artifact requires binary retrieval"}
+                if text_type != "text":
+                    return {"success": False, "error": "artifact text encoding unsupported", "error_code": "artifact_text_encoding_unsupported", "artifact_id": artifact_id}
+                encoding = str(con.execute("PRAGMA encoding").fetchone()[0])
 
-        row = retry_busy(_do_get, retries=3)
-        if not row:
-            return {"success": False, "error": "artifact not found or expired", "artifact_id": artifact_id}
-        if row[2]:
-            return {"success": False, "error": "binary artifact requires binary retrieval"}
+                if section:
+                    if section.startswith("json:"):
+                        text = self._read_small_text(con, int(rowid), encoding, MAX_ARTIFACT_BACKFILL_BYTES)
+                        try:
+                            parsed = json.loads(text)
+                        except Exception:
+                            parsed = None
+                        if isinstance(parsed, dict):
+                            section_map, sections_truncated = self._section_data(text)
+                            sections = list(section_map)[:MAX_ARTIFACT_SECTION_NAMES]
+                            key = section[5:]
+                            if key not in parsed:
+                                return {"success": False, "error": "artifact section not found", "artifact_id": artifact_id,
+                                        "sections": sections, "sections_truncated": sections_truncated}
+                            value = json_dumps(parsed[key], ensure_ascii=False, indent=2) if not isinstance(parsed[key], str) else parsed[key]
+                            piece = value[offset:offset + max_chars]
+                            return {"success": True, "artifact_id": artifact_id, "kind": kind, "section": section,
+                                    "text": piece, "offset": offset,
+                                    "next_offset": offset + len(piece) if offset + len(piece) < len(value) else None,
+                                    "total_chars": len(value), "sections": sections,
+                                    "sections_truncated": sections_truncated}
 
-        if section:
-            text = row[1]
-            sections = self._section_map(text)
-            try:
-                parsed = json.loads(text)
-            except Exception:
-                parsed = None
-            if section.startswith("json:") and isinstance(parsed, dict):
-                key = section[5:]
-                if key not in parsed:
-                    return {"success": False, "error": "artifact section not found", "artifact_id": artifact_id, "sections": list(sections)[:50]}
-                value = json_dumps(parsed[key], ensure_ascii=False, indent=2) if not isinstance(parsed[key], str) else parsed[key]
-                piece = value[offset:offset + max_chars]
-                return {"success": True, "artifact_id": artifact_id, "kind": row[0], "section": section, "text": piece,
-                        "offset": offset, "next_offset": offset + len(piece) if offset + len(piece) < len(value) else None,
-                        "total_chars": len(value), "sections": list(sections)[:50]}
-            if section not in sections:
-                return {"success": False, "error": "artifact section not found", "artifact_id": artifact_id, "sections": list(sections)[:50]}
-            start, end = sections[section]
-            section_text = text[start:end]
-            piece = section_text[offset:offset + max_chars]
-            return {"success": True, "artifact_id": artifact_id, "kind": row[0], "section": section, "text": piece,
-                    "offset": offset, "next_offset": offset + len(piece) if offset + len(piece) < len(section_text) else None,
-                    "total_chars": len(section_text), "sections": list(sections)[:50]}
+                    scan = self._stream_text(con, int(rowid), encoding, target_section=section)
+                    start, end = scan["target_start"], scan["target_end"]
+                    if start is None or end is None:
+                        return {"success": False, "error": "artifact section not found", "artifact_id": artifact_id,
+                                "sections": scan["section_names"], "sections_truncated": scan["sections_truncated"]}
+                    section_chars = max(0, end - start)
+                    piece_scan = self._stream_text(
+                        con, int(rowid), encoding, [(start + offset, max_chars)], parse_sections=False,
+                    )
+                    piece = piece_scan["pieces"][0]
+                    return {"success": True, "artifact_id": artifact_id, "kind": kind, "section": section,
+                            "text": piece, "offset": offset,
+                            "next_offset": offset + len(piece) if offset + len(piece) < section_chars else None,
+                            "total_chars": section_chars, "sections": scan["section_names"],
+                            "sections_truncated": scan["sections_truncated"]}
 
-        if row[4] is None or row[5] is None:
-            text = str(row[7] or "")
-            sections = self._section_names(text)
-            piece = text[offset:offset + max_chars]
-            total_chars = len(text)
-            return {
-                "success": True, "artifact_id": artifact_id, "kind": row[0], "text": piece,
-                "offset": offset,
-                "next_offset": offset + len(piece) if offset + len(piece) < total_chars else None,
-                "total_chars": total_chars, "sections": sections,
-            }
+                metadata = self._decode_section_metadata(section_json) if section_json else None
+                scan = self._stream_text(
+                    con, int(rowid), encoding, [(offset, max_chars)],
+                    parse_sections=metadata is None,
+                )
+                piece = scan["pieces"][0]
+                sections, sections_truncated = metadata or (
+                    scan["section_names"], scan["sections_truncated"]
+                )
+                total_chars = scan["total_chars"]
+                return {"success": True, "artifact_id": artifact_id, "kind": kind, "text": piece,
+                        "offset": offset,
+                        "next_offset": offset + len(piece) if offset + len(piece) < total_chars else None,
+                        "total_chars": total_chars, "sections": sections,
+                        "sections_truncated": sections_truncated}
+
         try:
-            sections = json.loads(row[5])
-        except Exception:
-            return {"success": False, "error": "artifact paging metadata unavailable", "artifact_id": artifact_id}
-        if not isinstance(sections, list) or any(not isinstance(name, str) for name in sections):
-            return {"success": False, "error": "artifact paging metadata unavailable", "artifact_id": artifact_id}
-        piece = row[1] or ""
-        nul_mask = row[6] or b""
-        if nul_mask:
-            chars = list(piece)
-            bit_offset = offset % 8
-            for index in range(len(chars)):
-                bit_index = bit_offset + index
-                mask_index = bit_index // 8
-                if mask_index < len(nul_mask) and nul_mask[mask_index] & (1 << (bit_index % 8)):
-                    chars[index] = "\x00"
-            piece = "".join(chars)
-        total_chars = int(row[4])
-        return {
-            "success": True,
-            "artifact_id": artifact_id,
-            "kind": row[0],
-            "text": piece,
-            "offset": offset,
-            "next_offset": offset + len(piece) if offset + len(piece) < total_chars else None,
-            "total_chars": total_chars,
-            "sections": sections,
-        }
+            return retry_busy(_do_get, retries=3)
+        except ArtifactTextReadError as exc:
+            return {"success": False, "error": str(exc), "error_code": exc.code, "artifact_id": artifact_id}
 
     def get_slices(
         self,
@@ -892,73 +1073,60 @@ class ArtifactStore:
             normalized.append((offset, max_chars))
 
         cutoff = time.time() - self.ttl_seconds
-        expressions: list[str] = []
-        params: list[Any] = []
-        sqlite_max_int = (1 << 63) - 1
-        for offset, max_chars in normalized:
-            expressions.append("substr(COALESCE(p.page_text, a.text), ?, ?)")
-            params.extend((min(offset + 1, sqlite_max_int), max_chars))
-            nul_byte_offset = offset % 8
-            nul_byte_count = (nul_byte_offset + max_chars + 7) // 8
-            expressions.append("substr(p.nul_mask, ?, ?)")
-            params.extend((min(offset // 8 + 1, sqlite_max_int), nul_byte_count))
-        query = (
-            f"SELECT a.kind, a.mime_type, p.char_count, p.section_names, "
-            f"CASE WHEN p.artifact_id IS NULL THEN a.text END, {', '.join(expressions)} "
-            f"FROM {self._table} AS a LEFT JOIN {_ARTIFACT_PAGING_TABLE} AS p "
-            "ON p.artifact_id=a.artifact_id WHERE a.artifact_id=? AND a.created_at>=?"
-        )
-        params.extend((artifact_id, cutoff))
-        if tenant is not None:
-            query += " AND a.tenant_identity=?"
-            params.append(self._tenant_identity(tenant))
+        tenant_identity = self._tenant_identity(tenant) if tenant is not None else None
 
-        def _do_get_slices() -> tuple[Any, ...] | None:
+        def _do_get_slices() -> dict[str, Any]:
             with closing(self._connect()) as con:
-                return con.execute(query, params).fetchone()
+                con.execute("BEGIN")
+                params: list[Any] = [artifact_id, cutoff]
+                query = (
+                    f"SELECT a.rowid, a.kind, a.mime_type, typeof(a.text), p.section_names "
+                    f"FROM {self._table} AS a LEFT JOIN {_ARTIFACT_PAGING_TABLE} AS p "
+                    "ON p.artifact_id=a.artifact_id WHERE a.artifact_id=? AND a.created_at>=?"
+                )
+                if tenant_identity is not None:
+                    query += " AND a.tenant_identity=?"
+                    params.append(tenant_identity)
+                row = con.execute(query, params).fetchone()
+                if row is None:
+                    return {"success": False, "error": "artifact not found or expired", "artifact_id": artifact_id}
+                rowid, kind, mime_type, text_type, section_json = row
+                if mime_type:
+                    return {"success": False, "error": "binary artifact requires binary retrieval", "artifact_id": artifact_id}
+                if text_type != "text":
+                    return {"success": False, "error": "artifact text encoding unsupported", "error_code": "artifact_text_encoding_unsupported", "artifact_id": artifact_id}
+                metadata = self._decode_section_metadata(section_json) if section_json else None
+                encoding = str(con.execute("PRAGMA encoding").fetchone()[0])
+                scan = self._stream_text(
+                    con, int(rowid), encoding,
+                    [(offset, size) for offset, size in normalized],
+                    parse_sections=metadata is None,
+                )
+                pieces = scan["pieces"]
+                sections, sections_truncated = metadata or (
+                    scan["section_names"], scan["sections_truncated"]
+                )
+                total_chars = scan["total_chars"]
 
-        row = retry_busy(_do_get_slices, retries=3)
-        if not row:
-            return {"success": False, "error": "artifact not found or expired", "artifact_id": artifact_id}
-        if row[1]:
-            return {"success": False, "error": "binary artifact requires binary retrieval", "artifact_id": artifact_id}
-        fallback_text = row[4]
-        if row[2] is None or row[3] is None:
-            text = str(fallback_text or "")
-            sections = self._section_names(text)
-            total_chars = len(text)
-        else:
-            try:
-                sections = json.loads(row[3])
-            except Exception:
-                return {"success": False, "error": "artifact paging metadata unavailable", "artifact_id": artifact_id}
-            if not isinstance(sections, list) or any(not isinstance(name, str) for name in sections):
-                return {"success": False, "error": "artifact paging metadata unavailable", "artifact_id": artifact_id}
-            total_chars = int(row[2])
-        result_slices: list[dict[str, Any]] = []
-        for index, (offset, _max_chars) in enumerate(normalized):
-            piece = str(fallback_text or "")[offset:offset + normalized[index][1]] if fallback_text is not None else (row[5 + index * 2] or "")
-            nul_mask = b"" if fallback_text is not None else (row[6 + index * 2] or b"")
-            if nul_mask:
-                chars = list(piece)
-                bit_offset = offset % 8
-                for char_index in range(len(chars)):
-                    bit_index = bit_offset + char_index
-                    mask_index = bit_index // 8
-                    if mask_index < len(nul_mask) and nul_mask[mask_index] & (1 << (bit_index % 8)):
-                        chars[char_index] = "\x00"
-                piece = "".join(chars)
-            result_slices.append({"offset": offset, "text": piece})
-        return {
-            "success": True,
-            "artifact_id": artifact_id,
-            "kind": row[0],
-            "slices": result_slices,
-            "total_chars": total_chars,
-            "sections": sections,
-            "truncated": False,
-            "budget_limited": False,
-        }
+                return {
+                    "success": True,
+                    "artifact_id": artifact_id,
+                    "kind": kind,
+                    "slices": [
+                        {"offset": offset, "text": pieces[index]}
+                        for index, (offset, _max_chars) in enumerate(normalized)
+                    ],
+                    "total_chars": total_chars,
+                    "sections": sections,
+                    "sections_truncated": sections_truncated,
+                    "truncated": False,
+                    "budget_limited": False,
+                }
+
+        try:
+            return retry_busy(_do_get_slices, retries=3)
+        except ArtifactTextReadError as exc:
+            return {"success": False, "error": str(exc), "error_code": exc.code, "artifact_id": artifact_id}
 
     def list(self, tenant: str = "", limit: int = 20) -> list[dict[str, Any]]:
         if not isinstance(tenant, str):
