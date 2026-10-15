@@ -6209,7 +6209,11 @@ class CommandBroker:
                 selected.append(line)
         if len(selected) < limit // 2:
             selected = lines[: max(8, limit // 5)] + selected
-        return "\n".join(selected[:limit])
+        # Reserve space for the final framework lines instead of appending them
+        # after a full limit of earlier skip/error diagnostics.
+        tail = tail[-max(1, limit):]
+        selected = [line for line in selected if line not in tail]
+        return "\n".join(selected[:max(0, limit - len(tail))] + tail)
 
     @staticmethod
     def _distill_error(result: dict[str, Any]) -> str:
@@ -11208,6 +11212,17 @@ class CommandBroker:
 
     def _compact(self, result: dict[str, Any], tenant: str, command: str) -> dict[str, Any]:
         stdout = str(result.get("stdout", "")); stderr = str(result.get("stderr", ""))
+        argv = self._tokens(command)
+        executable = Path(argv[0]).name.lower() if argv else ""
+        is_pytest = executable in {"pytest", "pytest.exe", "py.test", "py.test.exe"} or (
+            bool(re.fullmatch(r"(?:python(?:\d+(?:\.\d+)?)?|py)(?:\.exe)?", executable))
+            and argv[1:3] == ["-m", "pytest"]
+        )
+        if is_pytest:
+            from .command_summary import pytest_output_summary
+            reported_summary = pytest_output_summary(stdout, stderr)
+            if reported_summary is not None:
+                result["test_summary"] = reported_summary
         stdout_compact, stdout_meta = deduplicate_stack_traces(stdout)
         stderr_compact, stderr_meta = deduplicate_stack_traces(stderr)
         clusters = list(stdout_meta.get("clusters", [])) + list(stderr_meta.get("clusters", []))
