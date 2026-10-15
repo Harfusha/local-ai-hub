@@ -64,6 +64,18 @@ def test_oversized_function_body_remains_one_complete_chunk() -> None:
     assert any("fn next() { ok(); }" in chunk for chunk in chunks)
 
 
+def test_adjacent_small_functions_pack_without_splitting_units() -> None:
+    source = "".join(f"fn f{index}() {{ work_{index}(); }}\n" for index in range(20))
+
+    chunks = _regex_ast_chunks(source, "rust", size=100)
+
+    assert "".join(chunks) == source
+    assert len(chunks) < 20
+    for chunk in chunks:
+        assert chunk.count("fn f") == chunk.count("}")
+        assert "{ work_" in chunk
+
+
 @pytest.mark.parametrize("language", ["typescript", "go"])
 def test_long_braceless_source_is_returned_once(language) -> None:
     source = "const value = 1;\n" * 20 if language == "typescript" else "package p\n" + "var value = 1\n" * 20
@@ -96,6 +108,14 @@ def test_typescript_structural_return_type_keeps_function_together() -> None:
     source = "function shape(): { x: number } { return { x: 1 }; }\n"
 
     chunks = _regex_ast_chunks(source, "typescript", size=12)
+
+    assert chunks == [source]
+
+
+def test_ambiguous_csharp_interpolation_keeps_source_together() -> None:
+    source = 'class C { string M() { return $"{Call(\"}\")}"; } }\n'
+
+    chunks = _regex_ast_chunks(source, "c_sharp", size=12)
 
     assert chunks == [source]
 
