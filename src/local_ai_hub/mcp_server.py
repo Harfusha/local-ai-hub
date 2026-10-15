@@ -3498,9 +3498,13 @@ def _local_ai_repo_impl(
             "root": root, "limit": max_tokens or 50,
         }, timeout=_timeout("quick")), "architecture")
     if action == "secret_scan":
-        scan_git = bool(staged or (query and ("git" in query.lower() or "history" in query.lower())))
+        if not isinstance(staged, bool):
+            return _context_input_error("staged must be boolean for secret_scan")
+        normalized_history_query = " ".join(query.lower().replace("_", " ").split()) if isinstance(query, str) else ""
+        history_query = normalized_history_query in {"git", "history", "git history"}
+        scan_git = staged or history_query
         return _compact(CLIENT.post("/api/repo/secret_scan", {
-            "root": root, "path": path or query or task or None,
+            "root": root, "path": path or (None if history_query else query or task or None),
             "scan_git_history": scan_git,
         }, timeout=_timeout("quick")), "security")
     if action == "schema_inspect":
