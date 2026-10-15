@@ -27,6 +27,8 @@ _LAZY_LANGUAGE_PACKS = {"java": "java", "cpp": "cpp"}
 _IN_WORKER = False
 _WORKER_POOL: ProcessPoolExecutor | None = None
 _WORKER_POOL_LOCK = threading.Lock()
+_WORKER_DISPATCH_LOCK = threading.Lock()
+_WORKER_DISABLED_CAUSE: str | None = None
 _TREE_CACHE: OrderedDict[tuple[str, str], tuple[bytes, Any, int]] = OrderedDict()
 _TREE_CACHE_BYTES = 0
 _TREE_CACHE_MAX_ENTRIES = 32
@@ -117,9 +119,34 @@ def _parse_tree(parser: Any, source: bytes, language: str, source_key: str | Non
 def _get_worker_pool() -> ProcessPoolExecutor:
     global _WORKER_POOL
     with _WORKER_POOL_LOCK:
+        if _WORKER_DISABLED_CAUSE is not None:
+            raise RuntimeError("isolated Tree-sitter worker is disabled")
         if _WORKER_POOL is None:
             _WORKER_POOL = ProcessPoolExecutor(max_workers=1)
         return _WORKER_POOL
+
+
+def _disable_worker_pool(cause: str) -> bool:
+    """Trip the process-lifetime breaker before attempting worker cleanup."""
+    global _WORKER_DISABLED_CAUSE
+    with _WORKER_POOL_LOCK:
+        if _WORKER_DISABLED_CAUSE is None:
+            _WORKER_DISABLED_CAUSE = cause
+    return _reset_worker_pool()
+
+
+def _worker_disabled_result() -> dict[str, Any] | None:
+    with _WORKER_POOL_LOCK:
+        cause = _WORKER_DISABLED_CAUSE
+    if cause is None:
+        return None
+    return {
+        "result": None,
+        "status": "unavailable",
+        "fallback_reason": "worker_disabled",
+        "worker_disabled_cause": cause,
+        "syntax_error_count": 0,
+    }
 
 
 def _reset_worker_pool() -> bool:
@@ -130,7 +157,11 @@ def _reset_worker_pool() -> bool:
         if pool is None:
             return True
         confirmed = True
-        workers = list(dict(getattr(pool, "_processes", None) or {}).values())
+        try:
+            workers = list(dict(getattr(pool, "_processes", None) or {}).values())
+        except Exception:
+            workers = []
+            confirmed = False
         try:
             pool.shutdown(wait=False, cancel_futures=True)
         except Exception:
@@ -456,15 +487,38 @@ def parse_treesitter_with_status(text: str, language: str, *, source_key: str | 
     if not text or not text.strip():
         return {"result": ([], [], []), "status": "empty", "parser": "tree_sitter", "syntax_error_count": 0}
 
+    disabled = _worker_disabled_result()
+    if disabled is not None:
+        return disabled
+
     if _use_isolated_worker():
+        if not _WORKER_DISPATCH_LOCK.acquire(timeout=12.0):
+            disabled = _worker_disabled_result()
+            if disabled is not None:
+                return disabled
+            return {
+                "result": None,
+                "status": "failed",
+                "fallback_reason": "worker_dispatch_busy",
+                "syntax_error_count": 0,
+            }
         try:
+            disabled = _worker_disabled_result()
+            if disabled is not None:
+                return disabled
             pool = _get_worker_pool()
             future = (pool.submit(_worker_parse, text, language, source_key)
                       if source_key is not None else pool.submit(_worker_parse, text, language))
-            return future.result(timeout=10.0)
+            result = future.result(timeout=10.0)
+            if isinstance(result, dict) and result.get("fallback_reason") == "worker_error":
+                cleanup = _disable_worker_pool(
+                    f"worker_error:{result.get('error_type', 'unknown')}"
+                )
+                result["worker_cleanup_confirmed"] = cleanup
+            return result
         except BrokenProcessPool as exc:
-            logger.warning("Tree-sitter worker process crashed (access violation): %s", exc)
-            cleanup = _reset_worker_pool()
+            logger.warning("Tree-sitter worker pool broke: %s", exc)
+            cleanup = _disable_worker_pool(f"worker_crash:{type(exc).__name__}")
             return {
                 "result": None,
                 "status": "failed",
@@ -475,7 +529,7 @@ def parse_treesitter_with_status(text: str, language: str, *, source_key: str | 
             }
         except TimeoutError as exc:
             logger.warning("Tree-sitter worker timed out: %s", exc)
-            cleanup = _reset_worker_pool()
+            cleanup = _disable_worker_pool(f"worker_timeout:{type(exc).__name__}")
             return {
                 "result": None,
                 "status": "failed",
@@ -486,13 +540,17 @@ def parse_treesitter_with_status(text: str, language: str, *, source_key: str | 
             }
         except Exception as exc:
             logger.warning("Tree-sitter worker execution failed: %s", exc)
+            cleanup = _disable_worker_pool(f"worker_error:{type(exc).__name__}")
             return {
                 "result": None,
                 "status": "failed",
                 "fallback_reason": "worker_error",
                 "error_type": type(exc).__name__,
+                "worker_cleanup_confirmed": cleanup,
                 "syntax_error_count": 0,
             }
+        finally:
+            _WORKER_DISPATCH_LOCK.release()
 
     return (_parse_treesitter_internal(text, language, source_key=source_key)
             if source_key is not None else _parse_treesitter_internal(text, language))
