@@ -151,4 +151,5 @@ def test_circular_dependencies_reject_files_changed_after_indexing(tmp_path):
     result = DeterministicEngine(code_index=index).find_circular_dependencies(str(root))
 
     assert result["success"] is False
-    assert "stale" in result["error"].lower()
+    assert result["index_state"] == "stale"
+    assert "reindex" in result["error"].lower()
