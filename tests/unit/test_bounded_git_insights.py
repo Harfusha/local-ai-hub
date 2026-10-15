@@ -1,0 +1,122 @@
+"""Deferred source contracts for bounded Git history and hotspot ranking."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from local_ai_hub.deterministic import DeterministicEngine
+
+
+def _engine(tmp_path: Path) -> DeterministicEngine:
+    return DeterministicEngine({"server": {"state_dir": str(tmp_path / "state")}})
+
+
+def test_history_search_uses_two_bounded_literal_searches_and_deduplicates(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    calls = []
+    commit = b"a" * 40
+    record = (
+        commit + b"\0Ada Lovelace\0" + b"2026-01-10T12:00:00+00:00"
+        + b"\0needle subject\0\n"
+    )
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return SimpleNamespace(returncode=0, stdout=record, stdout_truncated=False, stderr_truncated=False)
+
+    monkeypatch.setattr("local_ai_hub.deterministic.run_hidden", fake_run)
+    monkeypatch.setattr("local_ai_hub.deterministic.shutil.which", lambda _name: "git.exe")
+    result = _engine(tmp_path).git_history_search(
+        str(repo), "needle", 5, author="Ada", since="2026-01-01",
+        until="2026-01-31", path="src/a.py",
+    )
+
+    assert len(calls) == 2
+    assert all(call[1]["timeout"] <= 8 for call in calls)
+    assert all(call[1]["max_output_bytes"] == 1_048_576 for call in calls)
+    assert all("--literal-pathspecs" in call[0] and "--no-textconv" in call[0] for call in calls)
+    assert all("--author=Ada" in call[0] and "src/a.py" in call[0] for call in calls)
+    assert result["complete"] is True
+    assert result["count"] == 1
+    assert result["commits"][0]["match_type"] == "message, diff_content"
+
+
+def test_history_search_reports_partial_git_failure_as_incomplete(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    commit = b"b" * 40
+    record = commit + b"\0Ada\0" + b"2026-01-10T12:00:00+00:00" + b"\0needle\0\n"
+    responses = iter((
+        SimpleNamespace(returncode=0, stdout=record, stdout_truncated=False, stderr_truncated=False),
+        SimpleNamespace(returncode=128, stdout=b"", stdout_truncated=False, stderr_truncated=False),
+    ))
+    monkeypatch.setattr("local_ai_hub.deterministic.run_hidden", lambda *_args, **_kwargs: next(responses))
+    result = _engine(tmp_path).git_history_search(str(repo), "needle")
+    assert result["success"] is True
+    assert result["complete"] is False
+    assert "diff_content_search_failed" in result["incomplete_reasons"]
+
+
+@pytest.mark.parametrize("field,value", [
+    ("since", "yesterday"),
+    ("until", "2026-01-01T12:00:00"),
+    ("path", "../outside.py"),
+])
+def test_history_search_rejects_invalid_filter_before_git(tmp_path, monkeypatch, field, value):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr("local_ai_hub.deterministic.run_hidden", lambda *_args, **_kwargs: pytest.fail("Git must not run"))
+    result = _engine(tmp_path).git_history_search(str(repo), "needle", **{field: value})
+    assert result["success"] is False
+
+
+def test_hotspots_apply_ninety_day_half_life_and_report_raw_churn(tmp_path, monkeypatch):
+    from local_ai_hub import deterministic
+
+    repo = tmp_path / "repo"
+    source = repo / "src" / "a.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("if True:\n    pass\n", encoding="utf-8")
+    now = 1_800_000_000.0
+    timestamp = int(now - 90 * 86_400)
+    output = b"\0LAH_HOTSPOT:" + str(timestamp).encode() + b"\0\nsrc/a.py\0\n"
+    monkeypatch.setattr(deterministic.time, "time", lambda: now)
+    monkeypatch.setattr("local_ai_hub.deterministic.shutil.which", lambda _name: "git.exe")
+    monkeypatch.setattr(
+        deterministic,
+        "run_hidden",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0, stdout=output, stdout_truncated=False, stderr_truncated=False,
+        ),
+    )
+
+    result = _engine(tmp_path).find_hotspots(str(repo), days=180, limit=10)
+    assert result["complete"] is True
+    assert result["algorithm"] == "git-recency-half-life-90d-v1"
+    assert result["hotspots"][0]["churn_commits"] == 1
+    assert result["hotspots"][0]["recency_weighted_churn"] == pytest.approx(0.5)
+    assert result["recency_half_life_days"] == 90
+
+
+def test_hotspot_truncation_is_incomplete_and_not_cached(tmp_path, monkeypatch):
+    from local_ai_hub import deterministic
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr("local_ai_hub.deterministic.shutil.which", lambda _name: "git.exe")
+    monkeypatch.setattr(
+        deterministic,
+        "run_hidden",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0, stdout=b"", stdout_truncated=True, stderr_truncated=False,
+        ),
+    )
+    result = _engine(tmp_path).find_hotspots(str(repo))
+    assert result["complete"] is False
+    assert "git_output_truncated" in result["incomplete_reasons"]
+    with _engine(tmp_path)._connect() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM hotspots_cache").fetchone()[0] == 0

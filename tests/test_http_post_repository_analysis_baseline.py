@@ -101,8 +101,13 @@ def _install_service_spies(monkeypatch, app):
     ("/api/repo_state", {}, ("repo_state", (), {})),
     ("/api/git/diff", {"path": "src/a.py", "staged": True, "max_lines": 17},
      ("git_diff", (), {"path": "src/a.py", "staged": True, "max_lines": 17})),
-    ("/api/git/history_search", {"query": "needle", "max_commits": 7},
-     ("git_history_search", ("needle",), {"max_commits": 7})),
+    ("/api/git/history_search", {
+        "query": "needle", "max_commits": 7, "author": "Ada",
+        "since": "2026-01-01", "until": "2026-01-02", "path": "src/a.py",
+    }, ("git_history_search", ("needle",), {
+        "max_commits": 7, "author": "Ada", "since": "2026-01-01",
+        "until": "2026-01-02", "path": "src/a.py",
+    })),
     ("/api/repo/hotspots", {"days": 8, "limit": 4},
      ("find_hotspots", (), {"days": 8, "limit": 4})),
     ("/api/hotspots", {"days": 8, "limit": 4},

@@ -4099,11 +4099,39 @@ class LocalAIServices:
             return self.deterministic.git_diff(root, path=path, staged=staged, max_lines=max_lines, rev1=rev1, rev2=rev2)
         return self.deterministic_operation("git-diff", root, {"path": path, "staged": staged, "max_lines": max_lines}, lambda: self.deterministic.git_diff(root, path=path, staged=staged, max_lines=max_lines))
 
-    def git_history_search(self, root: str, query: str, max_commits: int = 20) -> dict[str, Any]:
-        return self.deterministic_operation("git-history-search", root, {"query": query, "max_commits": max_commits}, lambda: self.deterministic.git_history_search(root, query, max_commits=max_commits))
+    def git_history_search(
+        self,
+        root: str,
+        query: str,
+        max_commits: int = 20,
+        *,
+        author: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        path: str | None = None,
+    ) -> dict[str, Any]:
+        params = {
+            "query": query,
+            "max_commits": max_commits,
+            "author": author,
+            "since": since,
+            "until": until,
+            "path": path,
+        }
+        return self.deterministic_operation(
+            "git-history-search", root, params,
+            lambda: self.deterministic.git_history_search(
+                root, query, max_commits=max_commits,
+                author=author, since=since, until=until, path=path,
+            ),
+        )
 
     def find_hotspots(self, root: str, days: int = 30, limit: int = 20) -> dict[str, Any]:
-        return self.deterministic_operation("find-hotspots", root, {"days": days, "limit": limit}, lambda: self.deterministic.find_hotspots(root, days=days, limit=limit))
+        return self.deterministic_operation(
+            "find-hotspots", root,
+            {"days": days, "limit": limit, "algorithm": "git-recency-half-life-90d-v1"},
+            lambda: self.deterministic.find_hotspots(root, days=days, limit=limit),
+        )
 
     def generate_tests_for_diff(self, root: str, diff: str | None = None, path: str | None = None) -> dict[str, Any]:
         return self.deterministic_operation("generate-tests-for-diff", root, {"diff": bool(diff), "path": path}, lambda: self.deterministic.generate_tests_for_diff(root, diff=diff, path=path))

@@ -2954,6 +2954,10 @@ def _local_ai_repo_impl(
     new_code: str | None = None,
     rev1: str | None = None,
     rev2: str | None = None,
+    max_commits: int = 50,
+    author: str = "",
+    since: str = "",
+    until: str = "",
 ) -> dict[str, Any]:
     """Primary bounded repository worker for the main agent.
 
@@ -3023,7 +3027,7 @@ def _local_ai_repo_impl(
         "cross_project_impact": ("task", "diff", "workspace", "path"),
         "generate_dataset": ("task", "diff", "workspace", "path"),
         "api_spec": ("task", "diff", "workspace", "path"),
-        "git_history_search": ("task", "diff", "workspace", "path"),
+        "git_history_search": ("task", "diff", "workspace", "max_tokens"),
     }
     input_values = {
         "query": query, "diff": diff, "task": task, "workspace": workspace,
@@ -3660,13 +3664,21 @@ def _local_ai_repo_impl(
                         extra_fields=[*(extra_fields or []), "stats_complete", "paths_complete", "diff_sha256", "comparison"])
     if action == "git_history_search":
         return _compact(CLIENT.post("/api/git/history_search", {
-            "root": root, "query": query, "max_commits": max_tokens or 50,
-        }, timeout=_timeout("quick")), "architecture")
+            "root": root, "query": query, "max_commits": max_commits,
+            "author": author or None, "since": since or None, "until": until or None,
+            "path": path or None,
+        }, timeout=_timeout("quick")), "architecture", extra_fields=[
+            *(extra_fields or []), "author", "since", "until", "path", "max_commits",
+            "count", "commits", "complete", "incomplete_reasons",
+        ])
     if action == "hotspots":
         days_val = int(diff) if (diff and diff.isdigit()) else 30
         return _compact(CLIENT.post("/api/repo/hotspots", {
             "root": root, "days": days_val, "limit": max_tokens or 20,
-        }, timeout=_timeout("quick")), "architecture")
+        }, timeout=_timeout("quick")), "architecture", extra_fields=[
+            *(extra_fields or []), "days", "algorithm", "recency_half_life_days",
+            "recency_weighting", "complete", "incomplete_reasons", "analysis", "hotspots",
+        ])
     if action == "generate_tests_for_diff":
         return _compact(CLIENT.post("/api/repo/generate_tests_for_diff", {
             "root": root, "diff": diff or None, "path": path or None,
@@ -3761,6 +3773,10 @@ def local_ai_repo(
     new_code: str | None = None,
     rev1: str | None = None,
     rev2: str | None = None,
+    max_commits: int = 50,
+    author: str = "",
+    since: str = "",
+    until: str = "",
 ) -> dict[str, Any]:
     """Primary bounded repository worker. Use when: indexed repository evidence is needed. Skip when: fresh evidence already answers it."""
     forward: dict[str, Any] = {}
@@ -3782,6 +3798,25 @@ def local_ai_repo(
         )
         if pagination_error is not None:
             return {"success": False, "error": pagination_error, "status_code": 400,
+                    "terminal": True, "retryable": False}
+    if resolved_action == "git_history_search":
+        if (
+            not isinstance(query, str)
+            or not query.strip()
+            or len(query) > 512
+            or any(ord(char) < 32 or ord(char) == 127 for char in query)
+        ):
+            return {"success": False, "error": "query must be a bounded literal string", "status_code": 400,
+                    "terminal": True, "retryable": False}
+        history_error = validate_operation_arguments(
+            "local_ai_repo", resolved_action,
+            {
+                "query": query, "max_commits": max_commits, "author": author,
+                "since": since, "until": until, "path": path,
+            },
+        )
+        if history_error is not None:
+            return {"success": False, "error": history_error, "status_code": 400,
                     "terminal": True, "retryable": False}
     if any(value is not None for value in context_controls.values()):
         if resolved_action == "context":
@@ -3816,7 +3851,8 @@ def local_ai_repo(
         include_diagnostics, clone_id, worktree_id, branch, repository_id, session_id, repository_revision,
         changed_paths, phase, focus, preload_profile, guarded, since_hash, approval, override_reason,
         token_budget, is_worktree, parent_root, steps, limit=limit, offset=offset,
-        old_symbol=old_symbol, new_symbol=new_symbol, old_code=old_code, new_code=new_code, rev1=rev1, rev2=rev2, **forward,
+        old_symbol=old_symbol, new_symbol=new_symbol, old_code=old_code, new_code=new_code, rev1=rev1, rev2=rev2,
+        max_commits=max_commits, author=author, since=since, until=until, **forward,
     )
 
 

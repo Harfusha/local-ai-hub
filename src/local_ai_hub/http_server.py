@@ -5317,9 +5317,22 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/git/history_search":
                 root = (query.get("root") or ["."])[0]
                 q = (query.get("query") or [""])[0]
-                max_c = int((query.get("max_commits") or [20])[0])
+                raw_max_c = (query.get("max_commits") or ["20"])[0]
+                if not isinstance(raw_max_c, str) or not raw_max_c.isascii() or not raw_max_c.isdigit():
+                    self._send(400, {"success": False, "error": "max_commits must be an integer from 1 to 100", "terminal": True, "retryable": False}); return
+                max_c = int(raw_max_c)
+                if not 1 <= max_c <= 100:
+                    self._send(400, {"success": False, "error": "max_commits must be an integer from 1 to 100", "terminal": True, "retryable": False}); return
                 if APP.deterministic is not None:
-                    self._send(200, APP.services.git_history_search(root, q, max_commits=max_c))
+                    self._send(200, APP.services.git_history_search(
+                        root,
+                        q,
+                        max_commits=max_c,
+                        author=(query.get("author") or [None])[0],
+                        since=(query.get("since") or [None])[0],
+                        until=(query.get("until") or [None])[0],
+                        path=(query.get("path") or [None])[0],
+                    ))
                 else:
                     self._send(200, {"success": False, "error": "deterministic engine disabled"})
                 return
