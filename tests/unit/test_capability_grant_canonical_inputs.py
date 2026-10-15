@@ -82,6 +82,17 @@ def test_string_denied_cannot_be_interpreted_as_characters_or_mask_write() -> No
     assert decision.allowed is True
 
 
+def test_explicit_canonical_deny_overrides_allow() -> None:
+    grant = CapabilityGrant.from_dict({
+        "grant_id": "g", "allowed": ["write"], "denied": ["write"],
+    })
+    decision = PolicyEngine().authorize(
+        ActionRequest(action="write", risk_class=RiskClass.WRITE), None, grant,
+    )
+    assert decision.allowed is False
+    assert "explicitly denied" in decision.reason
+
+
 def test_direct_constructor_rejects_mutable_capability_sets() -> None:
     with pytest.raises(ValueError):
         CapabilityGrant(grant_id="g", allowed={"write"})  # type: ignore[arg-type]
