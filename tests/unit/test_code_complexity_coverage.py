@@ -1,5 +1,9 @@
+import os
+import stat
 from pathlib import Path
+from types import SimpleNamespace
 
+from local_ai_hub import deterministic
 from local_ai_hub.deterministic import DeterministicEngine
 
 
@@ -51,3 +55,17 @@ def test_explicit_path_outside_root_is_rejected(tmp_path: Path) -> None:
     assert result["files_analyzed"] == 0
     assert result["complete"] is False
     assert result["read_error_count"] == 0
+
+
+def test_reparse_point_attribute_is_rejected_without_native_junction(tmp_path: Path, monkeypatch) -> None:
+    candidate = tmp_path / "ordinary.py"
+    candidate.write_text("def ordinary():\n    return 1\n", encoding="utf-8")
+    actual = os.lstat(candidate)
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    monkeypatch.setattr(
+        deterministic.os,
+        "lstat",
+        lambda _path: SimpleNamespace(st_mode=actual.st_mode, st_file_attributes=reparse_flag),
+    )
+
+    assert deterministic._is_symlink_or_reparse_point(candidate) is True

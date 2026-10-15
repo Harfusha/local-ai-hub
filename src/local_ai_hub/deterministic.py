@@ -66,6 +66,18 @@ _SECRET_SCAN_MAX_SECONDS = 5.0
 _SECRET_SCAN_MAX_FINDINGS = 100
 
 
+def _is_symlink_or_reparse_point(path: Path) -> bool:
+    info = os.lstat(path)
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    attributes = int(getattr(info, "st_file_attributes", 0) or 0)
+    is_junction = getattr(os.path, "isjunction", None)
+    return (
+        stat.S_ISLNK(info.st_mode)
+        or bool(attributes & reparse_flag)
+        or (callable(is_junction) and is_junction(path))
+    )
+
+
 def _bounded_schema_files(
     root: Path,
     *,
@@ -6626,13 +6638,22 @@ def test_{sym}_regression_edge_cases():
             if len(errors) < 20:
                 errors.append(code)
 
+        def _deadline_reached() -> bool:
+            nonlocal complete
+            if time.monotonic() < deadline:
+                return False
+            if "time" not in limits_hit:
+                limits_hit.append("time")
+            complete = False
+            return True
+
         def _check_candidate_path(candidate: Path) -> Path:
             resolved = candidate.resolve(strict=True)
             resolved.relative_to(p_root)
             current = p_root
             for part in candidate.relative_to(p_root).parts:
                 current = current / part
-                if current.is_symlink():
+                if _is_symlink_or_reparse_point(current):
                     raise ValueError("symbol scan path contains a link")
             return resolved
 
@@ -6673,7 +6694,7 @@ def test_{sym}_regression_edge_cases():
                                 pending.clear()
                                 break
                             candidate = Path(entry.path)
-                            if entry.is_symlink() or getattr(os.path, "isjunction", lambda _p: False)(entry.path):
+                            if _is_symlink_or_reparse_point(candidate):
                                 if entry.is_dir(follow_symlinks=False):
                                     skipped_directories += 1
                                 else:
@@ -6783,21 +6804,28 @@ def test_{sym}_regression_edge_cases():
                 parse_error_count += 1
                 _incomplete("file_parse_error")
                 continue
-            if time.monotonic() >= deadline:
-                limits_hit.append("time")
-                complete = False
             files_analyzed += 1
+            if _deadline_reached():
+                break
 
+            analysis_stopped = False
             for node in ast.walk(tree):
+                if _deadline_reached():
+                    analysis_stopped = True
+                    break
                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     fn_name = node.name
                     lineno = node.lineno
                     cyclomatic = 1
                     cognitive = 0
 
-                    def walk_cognitive(curr_node: ast.AST, depth: int):
+                    def walk_cognitive(curr_node: ast.AST, depth: int) -> bool:
                         nonlocal cyclomatic, cognitive
+                        if _deadline_reached():
+                            return False
                         for child in ast.iter_child_nodes(curr_node):
+                            if _deadline_reached():
+                                return False
                             inc_depth = False
                             if isinstance(child, (ast.If, ast.While, ast.For, ast.AsyncFor)):
                                 cyclomatic += 1
@@ -6816,9 +6844,13 @@ def test_{sym}_regression_edge_cases():
                                 cyclomatic += 1 + len(child.ifs)
                                 cognitive += (1 + depth)
 
-                            walk_cognitive(child, depth + (1 if inc_depth else 0))
+                            if not walk_cognitive(child, depth + (1 if inc_depth else 0)):
+                                return False
+                        return True
 
-                    walk_cognitive(node, 0)
+                    if not walk_cognitive(node, 0):
+                        analysis_stopped = True
+                        break
                     risk = "high" if (cyclomatic >= 10 or cognitive >= 15) else "medium" if (cyclomatic >= 6 or cognitive >= 8) else "low"
                     results.append({
                         "name": fn_name,
@@ -6828,6 +6860,8 @@ def test_{sym}_regression_edge_cases():
                         "cognitive_complexity": cognitive,
                         "risk": risk,
                     })
+            if analysis_stopped:
+                break
 
         results.sort(key=lambda x: (-x["cognitive_complexity"], -x["cyclomatic_complexity"]))
         scope = (
@@ -6861,6 +6895,7 @@ def test_{sym}_regression_edge_cases():
             "coverage": {
                 "complete": complete,
                 "scope": scope,
+                "deadline_kind": "cooperative",
                 "entries_visited": entries_visited,
                 "eligible_files": eligible_files,
                 "files_analyzed": files_analyzed,
