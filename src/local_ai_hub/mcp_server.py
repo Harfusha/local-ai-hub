@@ -30,6 +30,7 @@ except ModuleNotFoundError as exc:
     InProcessTransport = None  # type: ignore[assignment,misc]
 from local_ai_hub.compact import compact_result
 from local_ai_hub.response_budget import (
+    LIFECYCLE_PROTECTED_KEYS,
     _CONTEXT_PROTECTED_KEYS,
     _budget_rejection,
     _reconcile_existing_budget,
@@ -891,6 +892,7 @@ _SECURITY_PROTECTED_KEYS = (
 )
 
 _RELIABILITY_PROTECTED_KEYS = (
+    *LIFECYCLE_PROTECTED_KEYS,
     "success", "terminal", "retryable", "unsupported", "degraded", "stale",
     "fallback_used", "evidence", "evidence_ids", "cancelled", "cancel_requested", "cancel_reason",
 )
@@ -1347,6 +1349,7 @@ def _telemetry_failure(value: Any) -> dict[str, Any]:
 def _preserve_contract_state(raw: Any, projected: Any) -> Any:
     """Restore bounded result-state fields after projection and compaction."""
     state_keys = {
+        *LIFECYCLE_PROTECTED_KEYS,
         "success", "hub_online", "status_code", "error", "terminal", "retryable", "degraded",
         "stale", "evidence", "evidence_ids", "cancel", "cancelled", "timed_out",
     }

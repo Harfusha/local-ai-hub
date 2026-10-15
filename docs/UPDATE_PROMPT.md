@@ -236,7 +236,7 @@ Confirm:
 
 After updating, verify the generated schemas under the installation's `generated/` directory expose `max_response_tokens`, `response_profile` (default `"compact"`), and `reuse_key` on the existing Hub tools. These are installation artifacts, not checked-in source files. Treat generator output and configuration as trusted repository inputs; never copy tool fields from untrusted model output. Keep aggregate response budgeting enabled, preserve artifact-backed exact detail, and verify telemetry reports raw/projected/saved response estimates without prompt or source retention.
 - `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.
-- Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
+- Preserve protected status, error, evidence, context identity and lifecycle identity (operation/job/request IDs, accepted/completed/in_progress, delivery outcome); keep exact detail artifact-backed. Acceptance does not prove completion. A budget error does not authorize replay of a side effect.
 - Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
 - Reject `max_response_tokens` below 128; never raise the request silently.
 - Native fallback requires an explicit `terminal=true` and `retryable=false` result.
@@ -439,7 +439,7 @@ Local model policy: Model routing follows the active hardware profile and user o
 
 - Every Hub response is aggregate-bounded (default ≈3200 tokens).
 - `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.
-- Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
+- Preserve protected status, error, evidence, context identity and lifecycle identity (operation/job/request IDs, accepted/completed/in_progress, delivery outcome); keep exact detail artifact-backed. Acceptance does not prove completion. A budget error does not authorize replay of a side effect.
 - Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
 - Reject `max_response_tokens` below 128; never raise the request silently.
 - Native fallback requires an explicit `terminal=true` and `retryable=false` result.
@@ -464,7 +464,7 @@ Local model policy: Model routing follows the active hardware profile and user o
 - Bounded command outputs: Route tests and builds through `local_ai_command`; use `trim-run` only with bundled `tokcount`/`repo-map`, read-only `rg`/`fd`/`grep-ast`, or stdin pipelines such as `git log | trim-run`. Use `jq` for JSON.
 - Surgical edits: Prefer targeted block replacements over rewriting entire files.
 - `response_budget.returned_tokens` measures the final serialized response envelope in `estimated_tokens` and stays at or below the requested budget.
-- Preserve protected status, error, evidence, and context-identity fields; keep exact detail artifact-backed.
+- Preserve protected status, error, evidence, context identity and lifecycle identity (operation/job/request IDs, accepted/completed/in_progress, delivery outcome); keep exact detail artifact-backed. Acceptance does not prove completion. A budget error does not authorize replay of a side effect.
 - Claim savings only with a current `baseline_evidence_id`; report signed `token_savings_delta_est`, including negative values; keep `protocol_tokens_est`, `schema_tokens_est`, and `local_compute_reused_tokens_est` separate.
 - Reject `max_response_tokens` below 128; never raise the request silently.
 - Native fallback requires an explicit `terminal=true` and `retryable=false` result.
