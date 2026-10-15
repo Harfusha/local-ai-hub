@@ -193,7 +193,7 @@ class AgentStateStore:
         ("table", "agent_change_intents", "agent_change_intents"): "52ed988b0a31f820b145261f7c586ea869369958b8adcd21d6bd1ad7e1f8a9ca",
         ("table", "agent_entity_relations", "agent_entity_relations"): "7cb3cdb25d201d7e2e264eb0d2b3dda5bb831ffd531d7aea2dab79df6db26590",
         ("table", "agent_events", "agent_events"): "1dfef49210889dc707aa8405b65262a5a86acbc14bd940ca338293dde150b2a2",
-        ("table", "agent_incidents", "agent_incidents"): "c50729cd066336a983c276efd201af043306e117407c34407256891553feac48",
+        ("table", "agent_incidents", "agent_incidents"): "a2be58a71724133b64d9a7a773680a193488f64414ee245e378b06973454e420",
         ("table", "agent_knowledge_links", "agent_knowledge_links"): "729e5c852a59ef150c488ccfb998a8a4dab606a052d353d94360aa2793a62426",
         ("table", "agent_learning_candidates", "agent_learning_candidates"): "3b8650b155c972e370825d72cf2222c005401a696b7f996a991c1f9d552b5caa",
         ("table", "agent_memory_embeddings", "agent_memory_embeddings"): "468df99dabe588d9475009d02108f2fdadfcf63e83a7aedf6d7a36a9ead965b5",
@@ -210,11 +210,9 @@ class AgentStateStore:
         ("table", "agent_verification_receipts", "agent_verification_receipts"): "6aeb2ffafd9572d5325f56e99f7c62455989c3d44772bd83d3e47b6f3abe953a",
     }
     _EXPECTED_OBJECT_SQL_HASHES.update({
-        ("index", "idx_agent_incidents_scope", "agent_incidents"): "62821891e841a90165a5b95db5bf93c2c82fa294622cc1c95c04cac3334a26e2",
         ("index", "idx_agent_task_search_grams_gram", "agent_task_search_grams"): "47289e8fa6b5eb7e6837a56d77ad684e26fbc466f43f0f7af252e77fb8af5e0a",
         ("index", "idx_agent_verif_task_outbox_pending", "agent_verification_task_outbox"): "50dff1b755ee28d10c80d199270f9f6b12fb2ca958b4a8948cb59ac6ff751f48",
         ("table", "agent_event_cursors", "agent_event_cursors"): "0ecf2e08637aef9d2f4a9167feb61de083e1a9d9b8b927f79ae7a58e74b2ef71",
-        ("table", "agent_incidents", "agent_incidents"): "c50729cd066336a983c276efd201af043306e117407c34407256891553feac48",
         ("table", "agent_task_search_documents", "agent_task_search_documents"): "a291a7122e95c8b2f3f6b9a9a73269489b1794ceea3f4378d9ff6155fd900f93",
         ("table", "agent_task_search_grams", "agent_task_search_grams"): "d2f7c3b733bc0ffcee4d9ee72804edc3fedc36f73f7ceca5ce18662941a13b78",
         ("table", "agent_verification_task_outbox", "agent_verification_task_outbox"): "2f17423836ca86bf09a701a71a27ead55a2c458d02bb9f29e1445a0c0fc11d17",

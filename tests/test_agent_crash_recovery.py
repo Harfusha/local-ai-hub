@@ -753,7 +753,9 @@ def test_committed_compaction_group_survives_restart_before_publish(tmp_path, mo
     )
     assert len(active) == 1 and active[0].key.startswith("compacted_fact_")
     assert active[0].scope_id == "task-restart-compact"
-    assert active[0].provenance == {"root": str(tmp_path), "tenant": "tenant-a"}
+    assert active[0].provenance == {
+        "root": str(tmp_path), "repository_id": "repository-crash", "tenant": "tenant-a"
+    }
     assert {item.key for item in superseded} == {"source-0", "source-1"}
     assert all(item.status is MemoryStatus.SUPERSEDED for item in superseded)
     assert all(item.supersedes_record_id == active[0].record_id for item in superseded)

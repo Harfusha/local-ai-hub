@@ -862,7 +862,7 @@ def test_mark_stale_for_revision_guards_revision_paths_root_and_repeats(store: M
             value="evidence",
             status=MemoryStatus.CONFIRMED,
             provenance={
-                "root": str(tmp_path),
+                "repository_id": 'repo-evidence', "root": str(tmp_path),
                 "repository_revision": "rev-1",
                 "path_refs": ["src/guarded.py"],
                 "tenant": "tenant-a",
@@ -908,7 +908,7 @@ def test_mark_stale_for_revision_matches_beyond_100k_rows(store: MemoryStore, tm
             None,
             None,
             None,
-            json.dumps({"root": root, "tenant": "tenant-a", "repository_revision": "rev-1", "path_refs": [f"src/other-{index}.py"]}),
+            json.dumps({"repository_id": 'repo-evidence', "root": root, "tenant": "tenant-a", "repository_revision": "rev-1", "path_refs": [f"src/other-{index}.py"]}),
             float(index + 2),
             float(index + 2),
             None,
@@ -931,7 +931,7 @@ def test_mark_stale_for_revision_matches_beyond_100k_rows(store: MemoryStore, tm
             None,
             None,
             None,
-            json.dumps({"root": root, "tenant": "tenant-a", "repository_revision": "rev-1", "path_refs": ["src/match.py"]}),
+            json.dumps({"repository_id": 'repo-evidence', "root": root, "tenant": "tenant-a", "repository_revision": "rev-1", "path_refs": ["src/match.py"]}),
             1.0,
             1.0,
             None,
@@ -954,7 +954,7 @@ def test_mark_stale_for_revision_matches_beyond_100k_rows(store: MemoryStore, tm
         con.close()
 
     assert store.mark_stale_for_revision(root, "rev-2", ["src/match.py"]) == 1
-    assert store.get("bulk-match", scope=AgentScope.REPOSITORY, root=root, tenant="tenant-a").status is MemoryStatus.STALE
+    assert store.get("bulk-match", scope=AgentScope.REPOSITORY, repository_id='repo-evidence', root=root, tenant="tenant-a").status is MemoryStatus.STALE
 
 
 def test_mark_stale_for_revision_matches_relative_and_absolute_roots(store: MemoryStore, tmp_path: Path):
@@ -967,7 +967,7 @@ def test_mark_stale_for_revision_matches_relative_and_absolute_roots(store: Memo
             value="evidence",
             status=MemoryStatus.CONFIRMED,
             provenance={
-                "root": relative_root,
+                "repository_id": 'repo-evidence', "root": relative_root,
                 "tenant": "tenant-a",
                 "repository_revision": "rev-1",
                 "path_refs": ["src/relative.py"],
@@ -988,7 +988,7 @@ def test_mark_stale_for_revision_deduplicates_and_caps_changed_paths(store: Memo
             value="evidence",
             status=MemoryStatus.CONFIRMED,
             provenance={
-                "root": str(tmp_path),
+                "repository_id": 'repo-evidence', "root": str(tmp_path),
                 "repository_revision": "rev-1",
                 "path_refs": ["src/match.py"],
                 "tenant": "tenant-a",
@@ -1018,7 +1018,7 @@ def test_mark_stale_batch_rolls_back_and_repeats_idempotently(store: MemoryStore
                 value="evidence",
                 status=MemoryStatus.CONFIRMED,
                 provenance={
-                    "root": str(tmp_path),
+                    "repository_id": 'repo-evidence', "root": str(tmp_path),
                     "repository_revision": "rev-1",
                     "path_refs": [f"src/batch-{index}.py"],
                     "tenant": "tenant-a",

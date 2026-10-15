@@ -633,8 +633,8 @@ class TaskStore:
                     )
                     coordination_id = str(project.coordination_id or "").strip()
                 except Exception:
-                    # Failed or unavailable identity resolution keeps task
-                    # adoption scoped to this physical worktree.
+                    # Missing repository identity excludes repository memory;
+                    # independently scoped task/session/global records remain eligible.
                     coordination_id = ""
             self._check_memory_deadline(deadline, cancelled)
             tenant_key = hashlib.sha256(
@@ -679,6 +679,7 @@ class TaskStore:
                     summary = diagnostic_summary(
                         id_limit=0,
                         root=root or None,
+                        coordination_id=coordination_id,
                         tenant=tenant or None,
                         session_id=context.session_id or None,
                         clone_id=context.clone_id or None,
@@ -696,10 +697,10 @@ class TaskStore:
                 try:
                     expired_found = False
                     queries = [
-                        {"scope": AgentScope.GLOBAL},
+                        {"scope": AgentScope.GLOBAL, "tenant": tenant or None},
                         {
                             "scope": AgentScope.REPOSITORY,
-                            "scope_id": root or None,
+                            "repository_id": coordination_id or None,
                             "root": root or None,
                             "tenant": tenant or None,
                         },
@@ -760,6 +761,7 @@ class TaskStore:
                     try:
                         scoped_records = find_for_context(
                             root=root,
+                            coordination_id=coordination_id,
                             task_id=task_id,
                             tenant=tenant,
                             session_id=context.session_id,
