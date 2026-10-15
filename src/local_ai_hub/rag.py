@@ -267,6 +267,12 @@ def _regex_ast_chunks(text: str, language: str, size: int = 4500) -> list[str]:
             index = cursor
             continue
 
+        if language == "c_sharp" and text[index] in "$@":
+            if re.match(r"(?:\$+@?|@\$+)\"", text[index:]):
+                # Interpolation expressions may contain quoted strings and
+                # nested braces; this scanner cannot prove their boundaries.
+                return [text] if text.strip() else []
+
         if language == "c_sharp" and (text.startswith('@"', index)
                 or text.startswith('$@"', index) or text.startswith('@$"', index)):
             quote_index = index + 1 if text.startswith('@"', index) else index + 2
@@ -319,16 +325,16 @@ def _regex_ast_chunks(text: str, language: str, size: int = 4500) -> list[str]:
                     index = after_lifetime
                     continue
 
-        if language == "c_sharp" and text[index] == '"' and (
-            text[max(0, index - 2):index] in {"$@", "@$"}
-            or text[max(0, index - 1):index] == "$"
-        ):
-            # Interpolation expressions can contain quoted strings and nested
-            # braces. This lexical scanner cannot prove the outer boundary, so
-            # retain the complete source instead of guessing at a close brace.
-            return [text] if text.strip() else []
-
         if text[index] in "'\"`":
+            if language == "typescript" and text[index] == "`":
+                first_close = text.find("`", index + 1)
+                interpolation = text.find("${", index + 1, first_close if first_close >= 0 else text_length)
+                if interpolation >= 0:
+                    expression_close = text.find("}", interpolation + 2, first_close if first_close >= 0 else text_length)
+                    if expression_close < 0:
+                        # Nested templates inside ${...} need a real template
+                        # lexer; keep the source whole rather than ending early.
+                        return [text] if text.strip() else []
             index, closed = skip_escaped_quote(index, text[index])
             if not closed:
                 return [text] if text.strip() else []
