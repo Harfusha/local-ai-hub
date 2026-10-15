@@ -1030,16 +1030,20 @@ def test_missing_task_projection_with_durable_events_requires_recovery(tmp_path)
     )
     with closing(sqlite3.connect(db_path)) as con, con:
         con.execute("DROP TABLE agent_tasks_projection")
+    original = db_path.read_bytes()
 
-    with pytest.raises(DurableSchemaMismatchError, match="related events remain") as caught:
+    with pytest.raises(
+        DurableSchemaMismatchError,
+        match="missing required schema objects: table agent_tasks_projection",
+    ) as caught:
         TaskStore(AgentStateStore(db_path))
-    assert caught.value.backup_path and caught.value.backup_path.exists()
-    with closing(sqlite3.connect(caught.value.backup_path)) as con:
+    assert caught.value.backup_path is None
+    assert db_path.read_bytes() == original
+    with closing(sqlite3.connect(db_path)) as con:
         assert con.execute(
             "SELECT COUNT(*) FROM agent_events WHERE stream_id = ?",
             ("task:task-projection-preserve",),
         ).fetchone()[0] > 0
-    with closing(sqlite3.connect(db_path)) as con:
         assert con.execute(
             "SELECT name FROM sqlite_master WHERE name = 'agent_tasks_projection'"
         ).fetchone() is None

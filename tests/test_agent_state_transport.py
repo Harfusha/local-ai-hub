@@ -162,6 +162,7 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch, tmp_path):
     import local_ai_hub.mcp_server as mcp_mod
 
     calls = []
+    monkeypatch.setattr(mcp_mod.FEATURES, "status", True)
 
     class DummyClient:
         def post(self, path, payload, **kwargs):
@@ -441,9 +442,9 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
     repo_two.mkdir()
     app = LocalAIApp(str(cfg_path))
     for task_id, root, tenant in (
-        ("task-one", repo_one, "tenant-1"),
-        ("task-two", repo_two, "tenant-2"),
-        ("task-rich", repo_one, "tenant-1"),
+        ("task-one", repo_one, "api-token-default"),
+        ("task-two", repo_two, "api-token-default"),
+        ("task-rich", repo_one, "api-token-default"),
     ):
         created = app.agent_tasks.create(
             GoalContract(goal="Memory scope fixture"),
@@ -456,12 +457,12 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
     rich_record = MemoryRecord.create(
         kind="finding",
         scope=AgentScope.TASK,
-        scope_id=http_server._task_memory_scope_id("tenant-1", "task-rich"),
+        scope_id=http_server._task_memory_scope_id("api-token-default", "task-rich"),
         key="rich",
         value="rich-task",
         provenance={
             "root": str(repo_one),
-            "tenant": "tenant-1",
+            "tenant": "api-token-default",
             "repository_id": "repository-rich",
             "clone_id": "clone-rich",
             "worktree_id": "worktree-rich",
@@ -469,14 +470,14 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
         },
     )
     records = (
-        MemoryRecord.create(kind="finding", scope=AgentScope.TASK, scope_id=http_server._task_memory_scope_id("tenant-1", "task-one"), key="shared", value="task-one", provenance={"root": str(repo_one), "tenant": "tenant-1"}),
-        MemoryRecord.create(kind="finding", scope=AgentScope.TASK, scope_id=http_server._task_memory_scope_id("tenant-2", "task-two"), key="shared", value="task-two", provenance={"root": str(repo_two), "tenant": "tenant-2"}),
-        MemoryRecord.create(kind="finding", scope=AgentScope.TASK, key="shared", value="legacy-task", provenance={"root": str(repo_one), "tenant": "tenant-1"}),
-        MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="session-one", key="shared", value="session-one", provenance={"tenant": "session-one"}),
-        MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="session-two", key="shared", value="session-two", provenance={"tenant": "session-two"}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.TASK, scope_id=http_server._task_memory_scope_id("api-token-default", "task-one"), key="shared", value="task-one", provenance={"root": str(repo_one), "tenant": "api-token-default"}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.TASK, scope_id=http_server._task_memory_scope_id("api-token-default", "task-two"), key="shared", value="task-two", provenance={"root": str(repo_two), "tenant": "api-token-default"}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.TASK, key="shared", value="legacy-task", provenance={"root": str(repo_one), "tenant": "api-token-default"}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="session-one", key="shared", value="session-one", provenance={"tenant": "api-token-default"}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="session-two", key="shared", value="session-two", provenance={"tenant": "api-token-default"}),
         MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, key="shared", value="legacy-session"),
-        MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="tenant-1", key="tenant-shared", value="tenant-one", provenance={"tenant": "tenant-1"}),
-        MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="tenant-2", key="tenant-shared", value="tenant-two", provenance={"tenant": "tenant-2"}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="tenant-1", key="tenant-shared", value="tenant-one", provenance={"tenant": "api-token-default"}),
+        MemoryRecord.create(kind="finding", scope=AgentScope.SESSION, scope_id="tenant-2", key="tenant-shared", value="tenant-two", provenance={"tenant": "api-token-default"}),
         MemoryRecord.create(
             kind="finding",
             scope=AgentScope.SESSION,
@@ -485,7 +486,7 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
             value="session-rich-value",
             provenance={
                 "root": str(repo_one),
-                "tenant": "tenant-rich",
+                "tenant": "api-token-default",
                 "clone_id": "clone-session",
                 "worktree_id": "worktree-session",
                 "branch": "branch-session",
@@ -530,13 +531,13 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
             return json.loads(response.read().decode("utf-8"))
 
     try:
-        task_result = get(scope="task", scope_id="task-one", key="shared", root=str(repo_one), tenant="tenant-1")
+        task_result = get(scope="task", scope_id="task-one", key="shared", root=str(repo_one), tenant="api-token-default")
         assert [item["value"] for item in task_result["records"]] == ["task-one"]
-        session_result = get(scope="session", scope_id="session-one", key="shared", tenant="session-one")
+        session_result = get(scope="session", scope_id="session-one", key="shared", tenant="api-token-default")
         assert [item["value"] for item in session_result["records"]] == ["session-one"]
-        task_without_scope = get(task_id="task-one", key="shared", root=str(repo_one), tenant="tenant-1")
+        task_without_scope = get(task_id="task-one", key="shared", root=str(repo_one), tenant="api-token-default")
         assert [item["value"] for item in task_without_scope["records"]] == ["task-one"]
-        session_without_scope = get(session_id="session-one", key="shared", tenant="session-one")
+        session_without_scope = get(session_id="session-one", key="shared", tenant="api-token-default")
         assert [item["value"] for item in session_without_scope["records"]] == ["session-one"]
         repo_without_scope = get(root=str(repo_one), key="shared")
         assert {item["value"] for item in repo_without_scope["records"]} == {"repo-one", "repo-one-missing-id"}
@@ -544,23 +545,23 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
         assert [item["value"] for item in other_repo_without_scope["records"]] == ["repo-two"]
         repository_id_without_scope = get(repository_id="repository-one", key="shared", root=str(repo_one))
         assert [item["value"] for item in repository_id_without_scope["records"]] == ["repo-one"]
-        tenant_without_scope = get(tenant="tenant-1", key="tenant-shared")
+        tenant_without_scope = get(scope="session", scope_id="tenant-1", key="tenant-shared", tenant="api-token-default")
         assert [item["value"] for item in tenant_without_scope["records"]] == ["tenant-one"]
         global_record = next(record for record in records if record.scope is AgentScope.GLOBAL)
-        global_for_codex = post({
+        global_for_principal = post({
             "action": "get",
             "record_id": global_record.record_id,
             "scope": "global",
-            "tenant": "codex",
+            "tenant": "api-token-default",
             "root": str(repo_one),
             "repository_id": "repository-global",
         })
-        assert global_for_codex["record"]["value"] == "global-value"
+        assert global_for_principal["record"]["value"] == "global-value"
         global_deleted = post({
             "action": "delete",
             "record_id": global_record.record_id,
             "scope": "global",
-            "tenant": "codex",
+            "tenant": "api-token-default",
             "root": str(repo_one),
             "repository_id": "repository-global",
         })
@@ -572,7 +573,7 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
             "scope_id": "task-rich",
             "task_id": "task-rich",
             "root": str(repo_one),
-            "tenant": "tenant-1",
+            "tenant": "api-token-default",
             "repository_id": "repository-rich",
             "clone_id": "clone-rich",
             "worktree_id": "worktree-rich",
@@ -620,7 +621,7 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
             "scope_id": "session-rich",
             "session_id": "session-rich",
             "root": str(repo_one),
-            "tenant": "tenant-rich",
+            "tenant": "api-token-default",
             "clone_id": "clone-session",
             "worktree_id": "worktree-session",
             "branch": "branch-session",
@@ -635,7 +636,7 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
             "scope": "task",
             "scope_id": "task-one",
             "root": str(repo_one),
-            "tenant": "tenant-1",
+            "tenant": "api-token-default",
         })
         assert direct["record"]["value"] == "task-one"
         direct_without_scope = post({
@@ -643,7 +644,7 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
             "record_id": records[0].record_id,
             "task_id": "task-one",
             "root": str(repo_one),
-            "tenant": "tenant-1",
+            "tenant": "api-token-default",
         })
         assert direct_without_scope["record"]["value"] == "task-one"
         with pytest.raises(urllib.error.HTTPError) as mismatch:
@@ -653,7 +654,7 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
                 "scope": "task",
                 "scope_id": "task-two",
                 "root": str(repo_one),
-                "tenant": "tenant-1",
+                "tenant": "api-token-default",
             })
         assert mismatch.value.code == 404
         with pytest.raises(urllib.error.HTTPError) as task_mismatch_without_scope:
@@ -662,7 +663,7 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
                 "record_id": records[0].record_id,
                 "task_id": "task-two",
                 "root": str(repo_one),
-                "tenant": "tenant-1",
+                "tenant": "api-token-default",
             })
         assert task_mismatch_without_scope.value.code == 404
 
@@ -680,7 +681,7 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
                 scope_id="task-rich",
                 task_id="task-rich",
                 root=str(repo_one),
-                tenant="tenant-1",
+                tenant="api-token-default",
                 repository_id="repository-rich",
                 clone_id="clone-rich",
                 worktree_id="worktree-rich",
@@ -707,7 +708,7 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
                 "scope": "task",
                 "scope_id": "another-task",
                 "root": str(repo_one),
-                "tenant": "tenant-1",
+                "tenant": "api-token-default",
             })
         assert delete_mismatch.value.code == 404
         deleted = post({
@@ -717,7 +718,7 @@ def test_http_memory_get_is_scope_and_root_isolated(tmp_path: Path):
             "scope_id": "task-one",
             "task_id": "task-one",
             "root": str(repo_one),
-            "tenant": "tenant-1",
+            "tenant": "api-token-default",
         })
         assert deleted["success"] is True
         assert deleted["deleted"] is True
