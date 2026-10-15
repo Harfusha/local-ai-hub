@@ -176,12 +176,14 @@ def chunked_in_query(items: list[Any], chunk_size: int = 250):
 
 ### Task 45: Symbol-Aware Context Packs with Complete Function Bodies (#11)
 
+**2026-10-15 implementation checkpoint — validation deferred by operator.** Exact evidence uses the smallest enclosing function/class/type bounds from the symbol index only when its indexed content hash matches the freshly read file bytes. Repeated references to the same full range are deduplicated. Invalid/stale bounds fall back to explicitly non-complete line context. Context packing counts separators, includes whole source blocks only, and returns omitted evidence references when a full block cannot fit; no final character slice cuts a function body. Oversized fact/signature summaries mark truncation. Deferred cases in `tests/unit/test_symbol_context_pack_boundaries.py` cover a 42-line body, duplicate ranges, a 128-character budget and stale indexed hashes. They have **not been run**.
+
 **Files:**
 - Modify: `src/local_ai_hub/deterministic.py:2780-2820`
 - Test: `tests/unit/test_symbol_context_pack_boundaries.py`
 
-- [ ] **Step 1: Write test verifying `context` returns complete function or class definition, not just enum header**
-- [ ] **Step 2: Implement fix**
+- [x] **Step 1: Write regression source for complete symbol bodies (execution deferred)**
+- [x] **Step 2: Implement fix (source reviewed; validation pending)**
 Use AST node start and end line bounds from the symbol index instead of fixed +/- 4 line context windows.
 - [ ] **Step 3: Run test and verify pass & Commit**
 `git commit -m "feat(context): expand code context pack slices to full symbol boundaries"`

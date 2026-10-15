@@ -2504,6 +2504,22 @@ class CodeIndex:
             self._query_l1.set(cache_key, out)
         return out
 
+    def symbol_bounds_at(
+        self, root: str, path: str, line: int, *, content_hash: str
+    ) -> tuple[int, int] | None:
+        """Return enclosing body bounds only for the caller's current source bytes."""
+        with self._lock, closing(self._connect()) as con:
+            row = con.execute(
+                "SELECT s.line,s.end_line FROM symbols s JOIN files f "
+                "ON f.root=s.root AND f.path=s.path "
+                "WHERE s.root=? AND s.path=? AND f.content_hash=? "
+                "AND s.kind IN ('class','function','method','constructor','enum','interface','struct','trait','impl') "
+                "AND s.line<=? AND s.end_line>=? "
+                "ORDER BY (s.end_line-s.line),s.line DESC LIMIT 1",
+                (canonical_root(root), self._norm_rel(path), content_hash, line, line),
+            ).fetchone()
+        return (int(row[0]), int(row[1])) if row is not None else None
+
     def find_symbol(
         self,
         root: str,
