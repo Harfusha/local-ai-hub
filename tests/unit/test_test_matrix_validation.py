@@ -36,7 +36,28 @@ def test_test_matrix_uses_only_current_regular_contained_test_files(tmp_path: Pa
 
     assert [item["path"] for item in result["test_files"]] == ["tests/test_current.py"]
     assert result["test_files"][0]["cases"] == ["test_current_case"]
+    assert result["test_files"][0]["cases_scan_complete"] is True
+    assert result["test_files"][0]["case_detection"] == "python_test_function_name_heuristic"
     assert result["coverage"]["scan_complete"] is False
+    assert result["coverage"]["scope"] == "current supported test files emitted by repo_tools iterator"
+    assert result["coverage"]["max_depth"] == 25
+    assert result["coverage"]["inventory_omissions_unknown"] is True
+
+
+def test_test_matrix_reports_lexical_case_cap_as_incomplete(tmp_path: Path) -> None:
+    test_dir = tmp_path / "tests"
+    test_dir.mkdir()
+    test_file = test_dir / "test_many.py"
+    test_file.write_text("".join(f"def test_case_{index}(): pass\n" for index in range(20)), encoding="utf-8")
+    result = _engine(tmp_path).test_matrix(str(tmp_path))
+
+    row = result["test_files"][0]
+    assert row["cases_count"] == 16
+    assert len(row["cases"]) == 15
+    assert row["cases_truncated"] is True
+    assert row["cases_scan_complete"] is False
+    assert row["case_detection"] == "python_test_function_name_heuristic"
+    assert "test_case_result_limit_reached" in result["coverage"]["warnings"]
 
 
 def test_test_matrix_omits_reparse_point_and_unreadable_file(tmp_path: Path, monkeypatch) -> None:
