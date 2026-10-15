@@ -5,6 +5,16 @@ import re
 from typing import Any
 
 
+def _clean_line(raw: str) -> str:
+    """Accept source lines or unified diff content without parsing headers."""
+    line = raw.strip()
+    if line.startswith(("+++", "---", "@@", "diff --git ")):
+        return ""
+    if line.startswith(("+", "-")):
+        return line[1:].strip()
+    return line
+
+
 def extract_py_diff_defs(lines: list[str]) -> dict[str, dict[str, Any]]:
     """Extract Python function/class definitions from diff lines."""
     defs: dict[str, dict[str, Any]] = {}
@@ -12,13 +22,13 @@ def extract_py_diff_defs(lines: list[str]) -> dict[str, dict[str, Any]]:
     n = len(lines)
     while i < n:
         raw = lines[i]
-        s = raw.strip()
+        s = _clean_line(raw)
         if s.startswith(("def ", "async def ", "class ")):
             stmt = s
             paren_count = stmt.count("(") - stmt.count(")")
             while paren_count > 0 and i + 1 < n:
                 i += 1
-                stmt += " " + lines[i].strip()
+                stmt += " " + _clean_line(lines[i])
                 paren_count = stmt.count("(") - stmt.count(")")
             try:
                 to_parse = stmt
@@ -63,7 +73,7 @@ def extract_ts_diff_defs(lines: list[str]) -> dict[str, dict[str, Any]]:
         r"^\s*export\s+(?:default\s+)?(?:async\s+)?(function|class|interface|type|const|let|var)\s+([A-Za-z0-9_$]+)(?:\s*<.*?>)?(?:\s*\((.*?)\))?",
     )
     for raw in lines:
-        line = raw.strip()
+        line = _clean_line(raw)
         m = ts_pattern.search(line)
         if m:
             kind = m.group(1)
@@ -105,7 +115,7 @@ def extract_cs_diff_defs(lines: list[str]) -> dict[str, dict[str, Any]]:
     class_re = re.compile(r"^\s*public\s+(?:static\s+|sealed\s+|abstract\s+|partial\s+)*(class|interface|struct|record|enum)\s+([A-Za-z0-9_]+)")
     method_re = re.compile(r"^\s*public\s+(?:static\s+|virtual\s+|override\s+|async\s+|sealed\s+|abstract\s+)*([\w<>\[\],\s\?]+?)\s+([A-Za-z0-9_]+)\s*\((.*?)\)")
     for raw in lines:
-        line = raw.strip()
+        line = _clean_line(raw)
         cm = class_re.search(line)
         if cm:
             defs[cm.group(2)] = {"name": cm.group(2), "kind": cm.group(1), "sig": line}
@@ -125,7 +135,7 @@ def extract_go_diff_defs(lines: list[str]) -> dict[str, dict[str, Any]]:
     func_re = re.compile(r"^\s*func\s+(?:\([^)]+\)\s+)?([A-Z][A-Za-z0-9_]*)\s*\((.*?)\)")
     type_re = re.compile(r"^\s*type\s+([A-Z][A-Za-z0-9_]*)\s+(struct|interface)")
     for raw in lines:
-        line = raw.strip()
+        line = _clean_line(raw)
         fm = func_re.search(line)
         if fm:
             name = fm.group(1)
@@ -143,7 +153,7 @@ def extract_rust_diff_defs(lines: list[str]) -> dict[str, dict[str, Any]]:
     defs: dict[str, dict[str, Any]] = {}
     rust_re = re.compile(r"^\s*pub(?:\(.*?\))?\s+(fn|struct|enum|trait|type)\s+([A-Za-z0-9_]+)")
     for raw in lines:
-        line = raw.strip()
+        line = _clean_line(raw)
         rm = rust_re.search(line)
         if rm:
             kind, name = rm.group(1), rm.group(2)
