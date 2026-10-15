@@ -475,7 +475,7 @@ def test_bounded_repository_search_reports_local_candidate_baseline(tmp_path: Pa
     }
     tools = RepositoryTools(cfg)
     try:
-        result = tools.search(str(tmp_path), "cache", top_k=2)
+        result = tools.search(str(tmp_path), "cache", limit=2)
         assert result["success"] is True
         assert "token_saving" not in result
         assert result.get("candidate_context_tokens_est", 0) > 0

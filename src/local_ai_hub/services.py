@@ -3040,7 +3040,7 @@ class LocalAIServices:
                 )
 
             full_result = self.repo_tools.search(
-                root, query, candidate_limit, context_lines=eff_ctx_lines,
+                root, query, context_lines=eff_ctx_lines,
                 project_settings=project_context.settings,
                 git_inventory=file_inventory,
                 limit=page_limit,
@@ -5784,7 +5784,7 @@ class LocalAIServices:
                 completion = self.repo_tools.search(
                     root,
                     query,
-                    top_k=lexical_candidate_limit,
+                    limit=lexical_candidate_limit,
                 )
                 if isinstance(completion, dict) and completion.get("success"):
                     candidate_paths.extend(

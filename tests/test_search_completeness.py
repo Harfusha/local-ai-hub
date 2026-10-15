@@ -217,7 +217,7 @@ def test_python_repository_search_reports_omitted_match_limit(tmp_path: Path, mo
         },
     })
 
-    result = tools.search(str(tmp_path), "needle", top_k=10)
+    result = tools.search(str(tmp_path), "needle", limit=10)
 
     assert len(result["results"]) == 4
     assert result["truncated"] is True
@@ -260,7 +260,7 @@ def test_accelerated_repository_search_reports_candidate_cap(tmp_path: Path, mon
         lambda _base, _terms, _limit: ([(name, 1) for name in names], False),
     )
 
-    result = tools.search(str(tmp_path), "needle", top_k=10)
+    result = tools.search(str(tmp_path), "needle", limit=10)
 
     assert len(result["results"]) == 4
     assert result["truncated"] is True

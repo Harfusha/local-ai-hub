@@ -308,7 +308,7 @@ def test_git_grep_searches_source_files_when_rag_extensions_are_unconfigured(tmp
     source.write_text("def needle(): return 1\n", encoding="utf-8")
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
 
-    result = RepositoryTools(config).search(str(repo), "needle", top_k=5)
+    result = RepositoryTools(config).search(str(repo), "needle", limit=5)
 
     assert result["success"] is True
     assert result["engine"] == "ripgrep"
