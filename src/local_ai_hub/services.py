@@ -3884,8 +3884,8 @@ class LocalAIServices:
         return self.deterministic_operation("refactor-impact", root, {"file": file_path, "symbol": symbol}, lambda: self.deterministic.refactor_impact(root, file_path, symbol))
 
     def resolve_imports(self, root: str, symbols: list[str], language: str = "auto") -> dict[str, Any]:
-        params = {"symbols": sorted(str(x) for x in symbols), "language": language}
-        return self.deterministic_operation("resolve-imports", root, params, lambda: self.deterministic.resolve_imports(root, symbols, language))
+        # Revalidate source hashes rather than reuse workspace-only export proof.
+        return self.deterministic.resolve_imports(root, symbols, language)
 
     def callers(self, root: str, symbol: str, limit: int = 50) -> dict[str, Any]:
         if self.code_index is not None:

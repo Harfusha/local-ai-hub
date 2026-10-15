@@ -3704,9 +3704,7 @@ class DeterministicEngine:
         if requested_lang not in supported:
             return {"success": False, "root": resolved, "language": requested_lang, "error": f"unsupported language: {requested_lang}"}
 
-        def language_for(path: str) -> str:
-            if requested_lang != "auto":
-                return requested_lang
+        def language_for_path(path: str) -> str:
             suffix = Path(path).suffix.lower()
             if suffix == ".py": return "python"
             if suffix == ".cs": return "csharp"
@@ -3715,30 +3713,18 @@ class DeterministicEngine:
             if suffix in {".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte"}: return "javascript"
             return "auto"
 
-        def import_for(symbol: str, container: str, path: str, lang: str) -> str:
+        def import_for(symbol: str, container: str, path: str, lang: str, source: str) -> str:
             if lang == "csharp":
                 namespace = container
                 if not namespace:
-                    try:
-                        import re
-                        text = (Path(resolved) / path).read_text(encoding="utf-8", errors="replace")[:100000]
-                        match = re.search(r"(?m)^\s*namespace\s+([A-Za-z_][A-Za-z0-9_.]*)", text)
-                        if match:
-                            namespace = match.group(1)
-                    except OSError:
-                        pass
+                    match = re.search(r"(?m)^\s*namespace\s+([A-Za-z_][A-Za-z0-9_.]*)", source)
+                    namespace = match.group(1) if match else ""
                 return f"using {namespace};" if namespace else ""
             if lang == "php":
                 namespace = container
                 if not namespace:
-                    try:
-                        import re
-                        text = (Path(resolved) / path).read_text(encoding="utf-8", errors="replace")[:100000]
-                        match = re.search(r"(?m)^\s*namespace\s+([A-Za-z_][A-Za-z0-9_\\]*)", text)
-                        if match:
-                            namespace = match.group(1).rstrip(";")
-                    except OSError:
-                        pass
+                    match = re.search(r"(?m)^\s*namespace\s+([A-Za-z_][A-Za-z0-9_\\]*)", source)
+                    namespace = match.group(1) if match else ""
                 fqn = f"{namespace}\\{symbol}" if namespace else symbol
                 return f"use {fqn};"
             if lang == "python":
@@ -3747,6 +3733,8 @@ class DeterministicEngine:
                 parts = list(without_suffix.parts)
                 if parts and parts[-1] == "__init__":
                     parts.pop()
+                if any(not part.isidentifier() for part in parts if part not in {".", ""}):
+                    return ""
                 module = ".".join(part for part in parts if part not in {".", ""})
                 return f"from {module} import {symbol}" if module else f"import {symbol}"
             if lang in {"typescript", "javascript"}:
@@ -3756,39 +3744,89 @@ class DeterministicEngine:
                     normalized = str(pth.with_suffix("")).replace("\\", "/")
                 if not normalized.startswith("."):
                     normalized = "./" + normalized
+                normalized = normalized.replace("'", "\\'").replace("\n", "\\n").replace("\r", "\\r")
                 return f"import {{ {symbol} }} from '{normalized}';"
             return ""
 
+        if not isinstance(unknown_symbols, list) or len(unknown_symbols) > 64 or any(
+            not isinstance(symbol, str) or len(symbol) > 512 or "\0" in symbol for symbol in unknown_symbols
+        ):
+            return {"success": False, "root": resolved, "error": "symbols must be at most 64 strings of at most 512 characters"}
+        from .static_exports import named_export_status
         resolved_imports: list[dict[str, Any]] = []
         missing: list[str] = []
+        rejected: list[dict[str, str]] = []
+        snapshots: dict[str, tuple[str, str] | None] = {}
+        snapshot_bytes = 0
+        settings = None
         if self.code_index is not None:
             try:
-                with self.code_index._lock, closing(self.code_index._connect()) as con:
-                    for sym in unknown_symbols:
-                        clean_sym = str(sym).strip()
-                        if not clean_sym:
+                _api, context = self.code_index._project_config_context(resolved)
+                settings = context.settings if context is not None else None
+                for clean_sym in dict.fromkeys(symbol.strip() for symbol in unknown_symbols if symbol.strip()):
+                    # Snapshot rows while holding the index lock, never source I/O or parsing.
+                    with self.code_index._lock, closing(self.code_index._connect()) as con:
+                        rows = con.execute(
+                            "SELECT s.name,s.container,s.path,s.kind,s.access,f.content_hash FROM symbols s "
+                            "JOIN files f ON f.root=s.root AND f.path=s.path "
+                            "WHERE s.root=? AND s.name=? ORDER BY s.path,s.line LIMIT 17",
+                            (resolved, clean_sym),
+                        ).fetchall()
+                    accepted = False
+                    if len(rows) > 16:
+                        rejected.append({"symbol": clean_sym, "path": "", "reason": "candidate_limit"})
+                    for row in rows[:16]:
+                        name, container, path, kind, access, indexed_hash = (
+                            str(value or "") for value in row
+                        )
+                        lang = language_for_path(path)
+                        if requested_lang != "auto" and language_for_path(path) != requested_lang:
                             continue
-                        row = con.execute(
-                            "SELECT name, container, path, kind FROM symbols WHERE root=? AND (lower(name)=lower(?) OR name=?) ORDER BY path LIMIT 1",
-                            (resolved, clean_sym, clean_sym),
-                        ).fetchone()
-                        if not row:
-                            missing.append(clean_sym)
+                        if path not in snapshots:
+                            snapshots[path] = None
+                            target = Path(resolved) / path
+                            try:
+                                target.resolve(strict=True).relative_to(Path(resolved))
+                                if not self.repo_tools._project_file_allowed(Path(resolved), target, settings):
+                                    raise ValueError("path not allowed")
+                                size = target.stat().st_size
+                                if snapshot_bytes + size > 4_000_000:
+                                    rejected.append({"symbol": clean_sym, "path": path, "reason": "export_snapshot_budget"})
+                                    continue
+                                digest, lines = self.repo_tools._read_snapshot(target, force=True)
+                                text = "\n".join(lines)
+                                snapshot_bytes += len(text.encode("utf-8", errors="replace"))
+                                snapshots[path] = (str(digest), text)
+                            except (OSError, ValueError):
+                                pass
+                        snapshot = snapshots[path]
+                        if snapshot is None:
+                            valid, reason = False, "export_source_unavailable"
+                        elif not indexed_hash or snapshot[0] != indexed_hash:
+                            valid, reason = False, "stale_indexed_declaration"
+                        else:
+                            valid, reason = named_export_status(snapshot[1], lang, name,
+                                                               container=container, kind=kind, access=access)
+                        if not valid:
+                            rejected.append({"symbol": clean_sym, "path": path, "reason": reason})
                             continue
-                        s_name, container, path, kind = str(row[0]), str(row[1] or ""), str(row[2]), str(row[3])
-                        lang = language_for(path)
+                        statement = import_for(name, container, path, lang, snapshot[1])
+                        if not statement:
+                            rejected.append({"symbol": clean_sym, "path": path, "reason": "import_syntax_unavailable"})
+                            continue
                         resolved_imports.append({
-                            "symbol": s_name,
-                            "container": container,
-                            "path": path,
-                            "kind": kind,
-                            "language": lang,
-                            "import_statement": import_for(s_name, container, path, lang),
+                            "symbol": name, "container": container, "path": path, "kind": kind,
+                            "language": lang, "import_statement": statement,
+                            "export_validation": reason, "content_hash": snapshot[0],
                         })
+                        accepted = True
+                        break
+                    if not accepted:
+                        missing.append(clean_sym)
             except Exception as exc:
                 return {"success": False, "root": resolved, "language": requested_lang, "error": str(exc), "error_type": type(exc).__name__}
         else:
-            missing = [str(x).strip() for x in unknown_symbols if str(x).strip()]
+            missing = [symbol.strip() for symbol in unknown_symbols if symbol.strip()]
 
         statements = [x["import_statement"] for x in resolved_imports if x.get("import_statement")]
         return {
@@ -3799,6 +3837,10 @@ class DeterministicEngine:
             "resolved_imports": resolved_imports,
             "import_statements": list(dict.fromkeys(statements)),
             "unresolved_symbols": missing,
+            "rejected_candidates": rejected[:128],
+            "rejected_candidates_truncated": len(rejected) > 128,
+            "validation": "static_named_exports_of_current_indexed_candidates",
+            "complete": not missing and len(rejected) <= 128,
         }
 
     def git_status(self, root: str) -> dict[str, Any]:

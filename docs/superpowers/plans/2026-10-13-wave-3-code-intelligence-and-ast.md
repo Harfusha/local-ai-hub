@@ -228,12 +228,16 @@ In `skeletonize_code`, if `path` is registered, construct the skeleton directly 
 
 ### Task 48: Static Export Validation in `resolve_imports` (#38)
 
+**2026-10-15 implementation checkpoint — execution deferred.** The actual API accepts unresolved symbol names and suggests imports; it does not accept an existing import statement or target module. Previously it selected the first case-insensitive declaration, including nested symbols, without export/freshness verification. It now selects up to 16 exact-case indexed candidates per symbol, joins current indexed file hashes, checks root/path/project policy, and verifies bounded current snapshots outside the SQLite lock before suggesting imports. Requests are capped at 64 symbols; retained source is capped at 4 MB. Stale and unproven candidates are returned with explicit reasons. The service bypasses its workspace-only result cache so hash proof is renewed on each call.
+
+Static checks cover Python top-level class/function declarations (named imports correctly do not use `__all__`), JS/TS direct named exports and locally declared named-export lists, and indexed accessible namespace-level C#/PHP types. Default-only exports cannot become named-import suggestions. JS regex/division ambiguity, re-exports requiring target proof, unsupported source forms and nested members are conservatively unresolved rather than certified. This is current indexed-candidate static proof, not module execution, full language export enumeration or proof of successful runtime import. Namespace import construction reuses the bounded verified snapshot instead of a second unbounded source read. MCP preserves the rejection/validation fields. Deferred cases cover missing names in existing modules, stale declarations, nested methods, explicit and default exports, aliases, comments/strings and opaque regex cases. No tests/imports/builds were executed.
+
 **Files:**
 - Modify: `src/local_ai_hub/deterministic.py:5100-5150`
 - Test: `tests/unit/test_resolve_imports_export_validation.py`
 
-- [ ] **Step 1: Write test verifying importing non-existent symbol from existing file reports missing symbol error**
-- [ ] **Step 2: Implement fix**
+- [x] **Step 1: Write missing/stale/non-exported symbol regression source (execution deferred)**
+- [x] **Step 2: Implement bounded current-source export verification (validation pending)**
 In `resolve_imports`, verify that the imported symbol is present in the target module's exported symbol list in `symbols`.
 - [ ] **Step 3: Run test and verify pass & Commit**
 `git commit -m "feat(deterministic): validate symbol exports in resolve_imports"`
