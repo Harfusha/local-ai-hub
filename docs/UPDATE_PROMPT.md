@@ -1,5 +1,11 @@
 # Generic Agent Update & Upgrade Prompt for Local AI Hub
 
+`secret_scan` history coverage is bounded to textual changed lines in the requested reachable `HEAD` commits (default 20, integer depth 1..100). It is not a scan of all refs or every historical tree. Shared time, byte, line and finding limits, omitted merge/binary patches, malformed provenance or incomplete process capture prevent a complete/clean claim. History findings retain commit, path, added/removed status and exact hunk line; credential values stay masked.
+
+For MCP `secret_scan`, use `staged=true` to request history and `path` for a literal filename. Legacy exact query controls `git`, `history`, `git history` and `git_history` request history without becoming filenames; ordinary query filenames remain paths. HTTP history flags must be booleans and supplied history depth is validated without coercion. Capability grants cannot authorize after expiration or with malformed expiry; delegation preserves denials and cannot exceed remaining parent depth.
+
+VRAM pressure policy requires coherent measured usage and capacity for the same memory pool. Unavailable, malformed or inventory-only samples yield conservative unknown pressure. Raw reported usage remains separate from `policy_pressure_pct`, `policy_headroom_mb`, `policy_measurement_basis` and `policy_pressure_is_derived`; zero reported usage cannot cancel a higher measured pressure bound. RuntimeTuner rejects invalid measurements before updating profiles and uses the configured state directory (a private process fallback for partial configuration).
+
 Use this prompt with any AI coding agent (Claude Code, Codex, Cursor, Windsurf, Gemini, Roo, GitHub Copilot) in any repository to upgrade an existing Local AI Hub installation from V3 to V4 from the canonical `master` branch, upgrade dependencies, restart services, and refresh the repository's instruction policies.
 
 ## Current security and tool contract
