@@ -23,7 +23,11 @@ def _status(*, ollama_online=True, preprocessing_timeout=False):
         "ollama_online": ollama_online,
         "active_model": "qwen2.5-coder:3b",
         "scheduler": {"active_model": "qwen2.5-coder:3b"},
+        "installed_models": ["qwen2.5-coder:3b", "qwen3.5:9b"],
         "models": {
+            "fast_code": "qwen2.5-coder:3b",
+            "general": "qwen2.5-coder:3b",
+            "heavy_code": "qwen3.5:9b",
             "reasoning": "qwen3.5:9b",
             "vision": "qwen3.5:9b",
         },
@@ -40,6 +44,7 @@ class HubClientDouble:
     }
     calls: list[tuple[str, dict]] = []
     async_submit_payload = {"success": True, "job_id": "job-test"}
+    reason_payload = {"success": True, "text": "READY", "model": "qwen3.5:9b"}
 
     def __init__(self, **_kwargs):
         self.calls = type(self).calls
@@ -58,7 +63,7 @@ class HubClientDouble:
     def post(self, path, payload, **_kwargs):
         self.calls.append((path, deepcopy(payload)))
         if path == "/api/reason":
-            return {"success": True, "text": "READY", "model": "qwen2.5-coder:7b"}
+            return deepcopy(type(self).reason_payload)
         if path == "/api/benchmark/run":
             return {"success": True, "model": payload["model"]}
         if path == "/api/task/vision":
@@ -95,6 +100,10 @@ def smoke(monkeypatch):
     )
     monkeypatch.setattr(HubClientDouble, "calls", [])
     monkeypatch.setattr(HubClientDouble, "async_submit_payload", {"success": True, "job_id": "job-test"})
+    monkeypatch.setattr(
+        HubClientDouble, "reason_payload",
+        {"success": True, "text": "READY", "model": "qwen3.5:9b"},
+    )
 
     def run(tmp_path: Path):
         return run_live_smoke(tmp_path)
@@ -123,12 +132,57 @@ def test_live_smoke_uses_runtime_reason_routing_and_keeps_benchmark_model(smoke,
     assert "model" not in reason
     assert "model" not in async_submit
     assert checks["live-model"]["ok"] is True
+    assert checks["live-model"]["status"] == "verified"
+    assert checks["live-model"]["expected_response"] == "READY"
     assert checks["live-async-job"]["ok"] is True
     assert benchmark["model"] == "qwen2.5-coder:3b"
+    assert checks["live-hardware-benchmark"]["response_quality"] == "not_verified"
     assert post_order.index("/api/reason") < post_order.index("/api/async-jobs")
     assert post_order.index("/api/async-jobs") < post_order.index("/api/benchmark/run")
     assert post_order.index("/api/async-jobs") < post_order.index("/api/task/vision")
     assert post_order.index("/api/async-jobs") < post_order.index("/api/task/transcribe")
+
+
+def test_live_smoke_rejects_wrong_exact_response(smoke, tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        HubClientDouble, "reason_payload",
+        {"success": True, "text": "WRONG", "model": "qwen3.5:9b"},
+    )
+
+    result = smoke(tmp_path)
+    model_check = _checks(result)["live-model"]
+
+    assert result["success"] is False
+    assert model_check["ok"] is False
+    assert model_check["status"] == "failed"
+    assert model_check["classification"] == "response_mismatch"
+
+
+def test_live_smoke_skips_preprocessing_only_models(smoke, tmp_path, monkeypatch):
+    status = _status()
+    status["active_model"] = None
+    status["scheduler"]["active_model"] = None
+    status["models"].update({
+        "fast_code": "qwen2.5-coder:1.5b",
+        "general": "qwen2.5-coder:1.5b",
+        "heavy_code": "qwen2.5-coder:1.5b",
+        "reasoning": "qwen2.5-coder:1.5b",
+    })
+    status["installed_models"] = ["qwen2.5-coder:1.5b"]
+    monkeypatch.setattr(HubClientDouble, "status_payload", status)
+
+    result = smoke(tmp_path)
+    checks = _checks(result)
+    inference_paths = {
+        path for path, _payload in HubClientDouble.calls
+        if path in {"/api/reason", "/api/async-jobs", "/api/benchmark/run"}
+    }
+
+    assert result["success"] is False
+    assert checks["live-model"]["status"] == "not_verified"
+    assert checks["live-model"]["classification"] == "foreground_model_not_configured"
+    assert checks["live-hardware-benchmark"]["status"] == "not_verified"
+    assert inference_paths == set()
 
 
 def test_live_smoke_classifies_resource_pressure_without_retry(smoke, tmp_path, monkeypatch):

@@ -44,6 +44,56 @@ def _live_smoke_png() -> bytes:
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 64, 64, 8, 2, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(pixels)) + chunk(b"IEND", b"")
 
 
+_PREPROCESSING_ONLY_MODELS = {"qwen2.5-coder:0.5b", "qwen2.5-coder:1.5b"}
+
+
+def _installed_model_names(status: dict[str, object]) -> set[str] | None:
+    inventory = status.get("installed_models")
+    if not isinstance(inventory, list):
+        return None
+    return {str(name).strip().casefold() for name in inventory if str(name).strip()}
+
+
+def _configured_foreground_model(
+    status: dict[str, object], roles: tuple[str, ...],
+) -> tuple[str | None, str]:
+    inventory = _installed_model_names(status)
+    if inventory is None:
+        return None, "model_inventory_unavailable"
+    models = status.get("models") if isinstance(status.get("models"), dict) else {}
+    configured = {
+        str(models.get(role) or "").strip()
+        for role in roles
+        if str(models.get(role) or "").strip()
+    }
+    configured = {
+        model for model in configured
+        if model.casefold() not in _PREPROCESSING_ONLY_MODELS
+    }
+    if not configured:
+        return None, "foreground_model_not_configured"
+    active = str(
+        status.get("active_model")
+        or (status.get("scheduler", {}).get("active_model") if isinstance(status.get("scheduler"), dict) else "")
+        or ""
+    ).strip()
+    candidates = ([active] if active in configured else []) + [
+        str(models[role]).strip() for role in roles
+        if str(models.get(role) or "").strip() in configured
+    ]
+    for model in dict.fromkeys(candidates):
+        if model.casefold() in inventory:
+            return model, "available"
+    return None, "configured_model_unavailable"
+
+
+def _exact_response(payload: dict[str, object], expected: str) -> bool:
+    value = payload.get("text") or payload.get("summary") or payload.get("response") or payload.get("result")
+    if isinstance(value, dict):
+        value = value.get("text") or value.get("summary") or value.get("response")
+    return isinstance(value, str) and value.strip() == expected
+
+
 def _version_from_init(root: Path) -> str:
     text = (root / "src" / "local_ai_hub" / "__init__.py").read_text(encoding="utf-8")
     match = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', text, re.MULTILINE)
@@ -245,7 +295,10 @@ def run_live_smoke(root: Path) -> dict[str, object]:
 
         status = client.status(detail="brief")
         scheduler = status.get("scheduler") if isinstance(status.get("scheduler"), dict) else {}
-        benchmark_model = str(status.get("active_model") or scheduler.get("active_model") or "qwen2.5-coder:1.5b")
+        benchmark_model, benchmark_model_state = _configured_foreground_model(
+            status, ("fast_code", "general", "heavy_code", "reasoning"),
+        )
+        reasoning_model, reasoning_model_state = _configured_foreground_model(status, ("reasoning",))
         dependency_status = status.get("dependency_status") if isinstance(status.get("dependency_status"), dict) else {}
         degraded_dependencies = [
             {
@@ -268,29 +321,38 @@ def run_live_smoke(root: Path) -> dict[str, object]:
         if not status_ok:
             errors.append("live status check failed")
 
+        ollama_ready = status.get("ollama_online") is True
+        reason_available = ollama_ready and reasoning_model is not None
         reason = client.post("/api/reason", {
             "task": "Answer with exactly the word READY.",
             "context": "Release smoke test. No repository changes.",
             "max_tokens": 160,
             "delivery": "sync",
             "response_profile": "compact",
-        }, timeout=45)
-        text = str(reason.get("text") or reason.get("summary") or reason.get("result") or "").strip()
-        ollama_ready = status.get("ollama_online") is True
-        model_ok = ollama_ready and reason.get("success") is True and bool(text or reason.get("artifact_id"))
+        }, timeout=45) if reason_available else {}
+        model_ok = reason_available and reason.get("success") is True and _exact_response(reason, "READY")
+        model_state = "verified" if model_ok else "failed" if reason_available else "not_verified"
         checks.append({
             "name": "live-model", "ok": model_ok,
-            "model": reason.get("model"), "has_result": bool(text or reason.get("artifact_id")),
-            "classification": "success" if model_ok else "ollama_offline" if not ollama_ready else "request_failed",
+            "status": model_state,
+            "model": reason.get("model") or reasoning_model,
+            "expected_response": "READY",
+            "classification": (
+                "success" if model_ok
+                else "response_mismatch" if reason_available and reason.get("success") is True
+                else "request_failed" if reason_available
+                else "ollama_offline" if not ollama_ready
+                else reasoning_model_state
+            ),
         })
         if not model_ok:
-            errors.append("live model smoke returned no usable result")
+            errors.append("live model smoke failed or was not verified")
 
         async_job = client.post("/api/async-jobs", {
             "action": "submit", "job_action": "reason",
             "task": "Answer with exactly the word ASYNC_READY.",
             "context": "Release async smoke test.", "max_tokens": 160,
-        }, timeout=15)
+        }, timeout=15) if reason_available else {}
         job_id = str(async_job.get("job_id") or "")
         async_result: dict[str, object] = async_job
         if job_id:
@@ -298,8 +360,7 @@ def run_live_smoke(root: Path) -> dict[str, object]:
             if async_result.get("status") in {"completed", "succeeded", "done"} or async_result.get("state") in {"completed", "succeeded", "done"}:
                 async_result = client.post("/api/async-jobs", {"action": "result", "job_id": job_id}, timeout=15)
         async_payload = async_result.get("result") if isinstance(async_result.get("result"), dict) else async_result
-        async_text = str(async_payload.get("text") or async_payload.get("summary") or async_payload.get("result") or "").strip()
-        async_ok = ollama_ready and bool(job_id) and async_result.get("success") is True and bool(async_text or async_result.get("artifact_id"))
+        async_ok = reason_available and bool(job_id) and async_result.get("success") is True and _exact_response(async_payload, "ASYNC_READY")
         admission = async_job.get("admission") if isinstance(async_job.get("admission"), dict) else {}
         admission_rejected = (
             not job_id
@@ -313,6 +374,8 @@ def run_live_smoke(root: Path) -> dict[str, object]:
         async_queue_limited = admission_rejected and admission.get("reason") == "queue_limit"
         checks.append({
             "name": "live-async-job", "ok": async_ok, "job_id_present": bool(job_id),
+            "status": "verified" if async_ok else "not_verified" if not reason_available else "failed",
+            "expected_response": "ASYNC_READY",
             "blocked": async_blocked, "retryable": async_job.get("retryable"),
             "terminal": async_job.get("terminal"),
             "classification": (
@@ -320,11 +383,12 @@ def run_live_smoke(root: Path) -> dict[str, object]:
                 else "ollama_offline" if not ollama_ready
                 else "blocked_resource_pressure" if async_blocked
                 else "queue_limit" if async_queue_limited
+                else reasoning_model_state if reason_available is False and ollama_ready
                 else "request_failed"
             ),
         })
         if not async_ok:
-            errors.append("live async job smoke failed or returned no usable result")
+            errors.append("live async job smoke failed or was not verified")
 
         hardware = client.get("/api/hardware/gpu")
         hardware_ok = hardware.get("available") is True or hardware.get("available") is False
@@ -332,29 +396,44 @@ def run_live_smoke(root: Path) -> dict[str, object]:
         if not hardware_ok:
             errors.append("live hardware probe returned an invalid result")
 
+        benchmark_attempted = ollama_ready and benchmark_model is not None
         benchmark = client.post("/api/benchmark/run", {
-            "model": benchmark_model, "prompt": "Return exactly BENCH_READY.", "num_tokens": 8,
-        }, timeout=60)
-        benchmark_ok = ollama_ready and benchmark.get("success") is True and bool(benchmark.get("model"))
-        checks.append({"name": "live-hardware-benchmark", "ok": benchmark_ok, "model": benchmark.get("model")})
+            "model": benchmark_model, "prompt": "Return a short response.", "num_tokens": 8,
+        }, timeout=60) if benchmark_attempted else {}
+        benchmark_ok = (
+            ollama_ready and benchmark_model is not None
+            and benchmark.get("success") is True
+            and str(benchmark.get("model") or "").casefold() == benchmark_model.casefold()
+        )
+        checks.append({
+            "name": "live-hardware-benchmark", "ok": benchmark_ok,
+            "status": "available" if benchmark_ok else "failed" if benchmark_attempted else "not_verified",
+            "model": benchmark.get("model") or benchmark_model,
+            "model_state": benchmark_model_state,
+            "response_quality": "not_verified",
+        })
         if not benchmark_ok:
-            errors.append("live hardware benchmark failed")
+            errors.append("live hardware benchmark failed or model was not verified")
 
-        vision_models = status.get("models") if isinstance(status.get("models"), dict) else {}
-        vision_model = str(vision_models.get("vision") or "qwen3.5:9b")
+        vision_model, vision_model_state = _configured_foreground_model(status, ("vision",))
         # Valid 64x64 RGB PNG. Tiny malformed fixtures can fail before the model
         # is reached, so keep the release probe independent of image-decoder quirks.
         image_data = base64.b64decode(
             "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAfElEQVR4nNXOQREAMAjAsK7+PTMRPLhGQd7QJnESJ3ESJ3ESJ3ESJ3ESJ3ESJ3ESJ3ESJ3ESJ3ESJ3ESJ3ESJ3ESJ3ESJ3ESJ3ESJ3ESJ3ESJ3ESJ3ESJ3ESJ3ESJ3ESJ3ESJ3ESJ3ESJ3ESJ3ESJ3ESJ3ESJ3ESJ3ES53Vg6wNShQF/fRSLfgAAAABJRU5ErkJggg=="
         )
         image_data = _live_smoke_png()
+        vision_attempted = ollama_ready and vision_model is not None
         vision = client.post("/api/task/vision", {
             "prompt": "Describe this image briefly.",
             "image": "data:image/png;base64," + base64.b64encode(image_data).decode("ascii"),
             "model": vision_model,
-        }, timeout=90)
-        vision_ok = ollama_ready and vision.get("success") is True and bool(vision.get("response") or vision.get("review"))
-        checks.append({"name": "live-vision", "ok": vision_ok, "model": vision_model})
+        }, timeout=90) if vision_attempted else {}
+        vision_ok = ollama_ready and vision_model is not None and vision.get("success") is True and bool(vision.get("response") or vision.get("review"))
+        checks.append({
+            "name": "live-vision", "ok": vision_ok,
+            "status": "available" if vision_ok else "failed" if vision_attempted else "not_verified",
+            "model": vision_model, "model_state": vision_model_state,
+        })
         if not vision_ok:
             errors.append("live vision smoke failed")
 
