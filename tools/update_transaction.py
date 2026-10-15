@@ -22,6 +22,12 @@ def _is_link(path: Path) -> bool:
     return stat.S_ISLNK(info.st_mode) or bool(getattr(info, "st_file_attributes", 0) & _REPARSE_POINT)
 
 
+def _has_link_component(path: Path) -> bool:
+    """Check the lexical path and every existing ancestor without resolving it."""
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    return any(_is_link(component) for component in (absolute, *absolute.parents))
+
+
 def _tree_digest(root: Path, ignored: tuple[str, ...] = ()) -> str:
     digest = hashlib.sha256()
     paths = (
@@ -61,6 +67,8 @@ def stop_existing_runtime(
     python: Path,
     service_script: Path,
     runner: Callable[..., Any],
+    *,
+    env: dict[str, str] | None = None,
 ) -> tuple[bool, str]:
     """Require an observed successful stop whenever managed runtime files exist."""
     runtime_present = any(
@@ -69,10 +77,20 @@ def stop_existing_runtime(
     )
     if not runtime_present:
         return True, "no existing managed runtime"
-    if _is_link(python) or _is_link(service_script) or not python.is_file() or not service_script.is_file():
+    installed_config = install_dir / "config.toml"
+    if (
+        _has_link_component(install_dir) or _has_link_component(python)
+        or _has_link_component(service_script) or _has_link_component(installed_config)
+    ):
+        return False, "existing runtime paths contain a link or junction; stop refused"
+    if not installed_config.is_file():
+        return False, "existing runtime has no regular installed config.toml; stop refused"
+    if not python.is_file() or not service_script.is_file():
         return False, "existing runtime cannot be stopped with its managed Python and service script"
+    stop_env = os.environ.copy() if env is None else dict(env)
+    stop_env["LOCAL_AI_CONFIG"] = str(installed_config)
     try:
-        result = runner([str(python), str(service_script), "stop"], check=False, timeout=20)
+        result = runner([str(python), str(service_script), "stop"], check=False, timeout=20, env=stop_env)
     except Exception as exc:
         return False, f"managed runtime stop failed: {exc}"
     returncode = getattr(result, "returncode", None)
@@ -90,9 +108,18 @@ def replace_install_payload(
     ignored: tuple[str, ...] = ("__pycache__", "*.pyc", ".pytest_cache"),
     before_commit: Callable[[], tuple[bool, str]] | None = None,
 ) -> tuple[bool, str]:
-    """Stage and verify all payload, then swap with rollback on any failure."""
-    if _is_link(install_dir):
-        return False, f"install directory is a link; update refused: {install_dir}"
+    """Stage and verify payload, then swap with rollback on failure.
+
+    The caller owns runtime quiescence. Production setup supplies ``before_commit``
+    to confirm a stop; direct helper callers must ensure no process is using the
+    install while targets are swapped.
+    """
+    if _has_link_component(install_dir):
+        return False, f"install path contains a link or junction; update refused: {install_dir}"
+    if _has_link_component(source_root):
+        return False, f"source path contains a link or junction; update refused: {source_root}"
+    if _has_link_component(config_source):
+        return False, f"config source path contains a link or junction: {config_source}"
     entries: list[tuple[Path, Path, bool]] = []
     for name in ("src", "skills", "tools"):
         source, target = source_root / name, install_dir / name
@@ -144,6 +171,7 @@ def replace_install_payload(
     install_dir_created = False
     commit_complete = False
     stop_detail = ""
+    runtime_stopped = False
     try:
         for source, target, is_tree in entries:
             staged = payload_root / target.name
@@ -160,6 +188,7 @@ def replace_install_payload(
             stopped, stop_detail = before_commit()
             if not stopped:
                 return False, f"update blocked before live install swap or service start: {stop_detail}"
+            runtime_stopped = True
         install_dir_created = not install_dir.exists()
         install_dir.mkdir(parents=True, exist_ok=True)
         if _is_link(install_dir):
@@ -205,6 +234,8 @@ def replace_install_payload(
             detail = f"; recoverable backups retained at {backup_root}"
             if rollback_errors:
                 detail += "; " + "; ".join(rollback_errors)
+        if runtime_stopped:
+            detail += "; runtime remains stopped after rollback; service restart skipped"
         return False, f"update payload transaction failed: {exc}{detail}"
     finally:
         if not commit_complete and not any(backup.exists() for backup, _target in moved_old):
