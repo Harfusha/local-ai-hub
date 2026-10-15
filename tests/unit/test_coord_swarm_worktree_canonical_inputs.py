@@ -24,9 +24,17 @@ class FakeCoordClient:
 
 
 def _client(monkeypatch):
+    from local_ai_hub.operational_mode import OperationalModeSnapshot
+
     fake = FakeCoordClient()
     monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
     monkeypatch.setattr(mcp_server, "CLIENT", fake)
+    monkeypatch.setattr(
+        mcp_server, "load_operational_mode",
+        lambda _state_dir: OperationalModeSnapshot("active", 1, None),
+    )
+    monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_kwargs: None)
+    monkeypatch.setattr(mcp_server, "_record_adoption", lambda *_args, **_kwargs: None)
     return fake
 
 
