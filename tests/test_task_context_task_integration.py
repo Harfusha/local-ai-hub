@@ -1,4 +1,14 @@
 from local_ai_hub import mcp_server
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def isolated_task_context_transport(monkeypatch):
+    from local_ai_hub.operational_mode import OperationalModeSnapshot
+
+    monkeypatch.setattr(mcp_server, "load_operational_mode", lambda _state_dir: OperationalModeSnapshot("active", 1, None))
+    monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_kwargs: None)
+    monkeypatch.setattr(mcp_server, "_record_adoption", lambda *_args, **_kwargs: None)
 
 
 def test_local_ai_task_loads_unified_context_before_model_call(monkeypatch):
@@ -11,6 +21,7 @@ def test_local_ai_task_loads_unified_context_before_model_call(monkeypatch):
                 "success": True,
                 "complete": True,
                 "task_context": {
+                    "success": True, "complete": True,
                     "context_id": "taskctx-1",
                     "etag": "etag-1",
                     "evidence_ids": ["E1"],
@@ -18,7 +29,7 @@ def test_local_ai_task_loads_unified_context_before_model_call(monkeypatch):
                 },
                 "text": "Task goal and indexed evidence",
             }
-        return {"success": True, "answer": "ok"}
+        return {"success": True, "text": "ok"}
 
     monkeypatch.setattr(mcp_server.FEATURES, "tasks", True)
     monkeypatch.setattr(mcp_server.FEATURES, "has_any_model", lambda: True)
@@ -56,6 +67,7 @@ def test_local_ai_task_uses_agent_only_context_without_repository_root(monkeypat
                 "success": True,
                 "complete": True,
                 "task_context": {
+                    "success": True, "complete": True,
                     "context_id": "taskctx-agent-only",
                     "etag": "etag-agent-only",
                     "evidence_ids": [],
@@ -63,7 +75,7 @@ def test_local_ai_task_uses_agent_only_context_without_repository_root(monkeypat
                 },
                 "text": "Durable Agent OS task state",
             }
-        return {"success": True, "answer": "ok"}
+        return {"success": True, "text": "ok"}
 
     monkeypatch.setattr(mcp_server.FEATURES, "tasks", True)
     monkeypatch.setattr(mcp_server.FEATURES, "has_any_model", lambda: True)
@@ -86,7 +98,7 @@ def test_local_ai_task_keeps_unrelated_semantic_paths_as_advisory_warning(monkey
         return {
             "success": True,
             "complete": True,
-            "task_context": {"context_id": "taskctx-1", "etag": "etag-1", "text": "facts"},
+            "task_context": {"success": True, "complete": True, "context_id": "taskctx-1", "etag": "etag-1", "text": "facts"},
             "text": "facts",
         }
 
