@@ -47,17 +47,21 @@ def _live_smoke_png() -> bytes:
 _PREPROCESSING_ONLY_MODELS = {"qwen2.5-coder:0.5b", "qwen2.5-coder:1.5b"}
 
 
-def _installed_model_names(status: dict[str, object]) -> set[str] | None:
-    inventory = status.get("installed_models")
-    if not isinstance(inventory, list):
+def _installed_model_names(payload: dict[str, object]) -> set[str] | None:
+    inventory = payload.get("data")
+    if payload.get("object") != "list" or not isinstance(inventory, list):
         return None
-    return {str(name).strip().casefold() for name in inventory if str(name).strip()}
+    names: set[str] = set()
+    for item in inventory:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not item["id"].strip():
+            return None
+        names.add(item["id"].strip().casefold())
+    return names
 
 
 def _configured_foreground_model(
-    status: dict[str, object], roles: tuple[str, ...],
+    status: dict[str, object], inventory: set[str] | None, roles: tuple[str, ...],
 ) -> tuple[str | None, str]:
-    inventory = _installed_model_names(status)
     if inventory is None:
         return None, "model_inventory_unavailable"
     models = status.get("models") if isinstance(status.get("models"), dict) else {}
@@ -87,11 +91,23 @@ def _configured_foreground_model(
     return None, "configured_model_unavailable"
 
 
-def _exact_response(payload: dict[str, object], expected: str) -> bool:
+def _reported_route_state(payload: dict[str, object], expected: str) -> str:
+    route = payload.get("route") if isinstance(payload.get("route"), dict) else {}
+    actual = str(route.get("model") or "").strip()
+    if not actual:
+        return "model_route_unreported"
+    if actual.casefold() in _PREPROCESSING_ONLY_MODELS:
+        return "preprocessing_model_routed"
+    if actual.casefold() != expected.casefold():
+        return "model_route_mismatch"
+    return "available"
+
+
+def _response_text(payload: dict[str, object]) -> str | None:
     value = payload.get("text") or payload.get("summary") or payload.get("response") or payload.get("result")
     if isinstance(value, dict):
         value = value.get("text") or value.get("summary") or value.get("response")
-    return isinstance(value, str) and value.strip() == expected
+    return value.strip() if isinstance(value, str) else None
 
 
 def _version_from_init(root: Path) -> str:
@@ -287,6 +303,19 @@ def run_live_smoke(root: Path) -> dict[str, object]:
     errors: list[str] = []
 
     try:
+        try:
+            model_inventory_payload = client.get("/api/models", timeout=10)
+        except Exception:
+            model_inventory_payload = {}
+        installed_models = _installed_model_names(model_inventory_payload)
+        checks.append({
+            "name": "live-model-inventory", "ok": installed_models is not None,
+            "status": "available" if installed_models is not None else "not_verified",
+            "model_count": len(installed_models) if installed_models is not None else None,
+        })
+        if installed_models is None:
+            errors.append("live model inventory was not verified")
+
         health = client.get("/health")
         health_ok = health.get("success") is True and bool(health.get("hub_online"))
         checks.append({"name": "live-health", "ok": health_ok, "version": health.get("version")})
@@ -296,9 +325,9 @@ def run_live_smoke(root: Path) -> dict[str, object]:
         status = client.status(detail="brief")
         scheduler = status.get("scheduler") if isinstance(status.get("scheduler"), dict) else {}
         benchmark_model, benchmark_model_state = _configured_foreground_model(
-            status, ("fast_code", "general", "heavy_code", "reasoning"),
+            status, installed_models, ("fast_code", "general", "heavy_code", "reasoning"),
         )
-        reasoning_model, reasoning_model_state = _configured_foreground_model(status, ("reasoning",))
+        reasoning_model, reasoning_model_state = _configured_foreground_model(status, installed_models, ("reasoning",))
         dependency_status = status.get("dependency_status") if isinstance(status.get("dependency_status"), dict) else {}
         degraded_dependencies = [
             {
@@ -330,20 +359,38 @@ def run_live_smoke(root: Path) -> dict[str, object]:
             "delivery": "sync",
             "response_profile": "compact",
         }, timeout=45) if reason_available else {}
-        model_ok = reason_available and reason.get("success") is True and _exact_response(reason, "READY")
-        model_state = "verified" if model_ok else "failed" if reason_available else "not_verified"
+        reason_route_state = _reported_route_state(reason, reasoning_model) if reason_available else reasoning_model_state
+        reason_text = _response_text(reason)
+        model_ok = (
+            reason_available and reason.get("success") is True
+            and reason_route_state == "available" and reason_text == "READY"
+        )
+        model_state = (
+            "verified" if model_ok
+            else "not_verified" if not reason_available or (
+                reason.get("success") is True
+                and (reason_route_state == "model_route_unreported" or reason_text is None)
+            )
+            else "failed"
+        )
+        if model_ok:
+            model_classification = "success"
+        elif not reason_available:
+            model_classification = "ollama_offline" if not ollama_ready else reasoning_model_state
+        elif reason.get("success") is not True:
+            model_classification = "request_failed"
+        elif reason_route_state != "available":
+            model_classification = reason_route_state
+        elif reason_text is None:
+            model_classification = "response_not_available"
+        else:
+            model_classification = "response_mismatch"
         checks.append({
             "name": "live-model", "ok": model_ok,
             "status": model_state,
             "model": reason.get("model") or reasoning_model,
             "expected_response": "READY",
-            "classification": (
-                "success" if model_ok
-                else "response_mismatch" if reason_available and reason.get("success") is True
-                else "request_failed" if reason_available
-                else "ollama_offline" if not ollama_ready
-                else reasoning_model_state
-            ),
+            "classification": model_classification,
         })
         if not model_ok:
             errors.append("live model smoke failed or was not verified")
@@ -355,12 +402,35 @@ def run_live_smoke(root: Path) -> dict[str, object]:
         }, timeout=15) if reason_available else {}
         job_id = str(async_job.get("job_id") or "")
         async_result: dict[str, object] = async_job
+        async_wait: dict[str, object] = {}
         if job_id:
-            async_result = client.post("/api/async-jobs", {"action": "wait", "job_id": job_id, "timeout_seconds": 45}, timeout=50)
-            if async_result.get("status") in {"completed", "succeeded", "done"} or async_result.get("state") in {"completed", "succeeded", "done"}:
+            async_wait = client.post("/api/async-jobs", {"action": "wait", "job_id": job_id, "timeout_seconds": 45}, timeout=50)
+            async_result = async_wait
+            if async_wait.get("terminal") is True and async_wait.get("state") == "done":
                 async_result = client.post("/api/async-jobs", {"action": "result", "job_id": job_id}, timeout=15)
         async_payload = async_result.get("result") if isinstance(async_result.get("result"), dict) else async_result
-        async_ok = reason_available and bool(job_id) and async_result.get("success") is True and _exact_response(async_payload, "ASYNC_READY")
+        async_result_verified = (
+            async_wait.get("terminal") is True and async_wait.get("state") == "done"
+            and async_result.get("terminal") is True and async_result.get("state") == "done"
+            and async_result.get("success") is True
+        )
+        async_route_state = _reported_route_state(async_payload, reasoning_model) if async_result_verified else ""
+        async_text = _response_text(async_payload)
+        async_ok = (
+            reason_available and bool(job_id)
+            and async_result_verified
+            and async_route_state == "available"
+            and async_text == "ASYNC_READY"
+        )
+        async_terminal_failure = async_wait.get("terminal") is True and async_wait.get("state") != "done"
+        async_not_verified = (
+            not reason_available
+            or bool(job_id) and async_wait.get("terminal") is not True
+            or async_wait.get("state") == "done" and not async_result_verified
+            or async_result_verified and (
+                async_route_state == "model_route_unreported" or async_text is None
+            )
+        )
         admission = async_job.get("admission") if isinstance(async_job.get("admission"), dict) else {}
         admission_rejected = (
             not job_id
@@ -372,20 +442,37 @@ def run_live_smoke(root: Path) -> dict[str, object]:
             admission_rejected and admission.get("reason") == "resource_pressure"
         )
         async_queue_limited = admission_rejected and admission.get("reason") == "queue_limit"
+        if async_ok:
+            async_classification = "success"
+        elif not reason_available:
+            async_classification = "ollama_offline" if not ollama_ready else reasoning_model_state
+        elif async_blocked:
+            async_classification = "blocked_resource_pressure"
+        elif async_queue_limited:
+            async_classification = "queue_limit"
+        elif not job_id:
+            async_classification = "request_failed"
+        elif async_wait.get("terminal") is not True:
+            async_classification = "async_not_terminal"
+        elif async_terminal_failure:
+            async_classification = "async_terminal_failure"
+        elif not async_result_verified:
+            async_classification = "async_result_not_verified"
+        elif async_route_state != "available":
+            async_classification = async_route_state
+        elif async_text is None:
+            async_classification = "async_response_not_available"
+        else:
+            async_classification = "response_mismatch"
         checks.append({
             "name": "live-async-job", "ok": async_ok, "job_id_present": bool(job_id),
-            "status": "verified" if async_ok else "not_verified" if not reason_available else "failed",
+            "status": "verified" if async_ok else "not_verified" if async_not_verified else "failed",
             "expected_response": "ASYNC_READY",
             "blocked": async_blocked, "retryable": async_job.get("retryable"),
-            "terminal": async_job.get("terminal"),
-            "classification": (
-                "success" if async_ok
-                else "ollama_offline" if not ollama_ready
-                else "blocked_resource_pressure" if async_blocked
-                else "queue_limit" if async_queue_limited
-                else reasoning_model_state if reason_available is False and ollama_ready
-                else "request_failed"
-            ),
+            "terminal": async_result.get("terminal"),
+            "wait_state": async_wait.get("state"),
+            "result_state": async_result.get("state"),
+            "classification": async_classification,
         })
         if not async_ok:
             errors.append("live async job smoke failed or was not verified")
@@ -415,7 +502,7 @@ def run_live_smoke(root: Path) -> dict[str, object]:
         if not benchmark_ok:
             errors.append("live hardware benchmark failed or model was not verified")
 
-        vision_model, vision_model_state = _configured_foreground_model(status, ("vision",))
+        vision_model, vision_model_state = _configured_foreground_model(status, installed_models, ("vision",))
         # Valid 64x64 RGB PNG. Tiny malformed fixtures can fail before the model
         # is reached, so keep the release probe independent of image-decoder quirks.
         image_data = base64.b64decode(
