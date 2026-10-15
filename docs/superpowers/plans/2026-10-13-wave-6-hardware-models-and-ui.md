@@ -285,6 +285,8 @@ Add `action="traces"` to `local_ai_status`. Queries `debug_traces.sqlite3` with 
 
 ### Task 93: Database Schema Migration Drift Detection (#59)
 
+**2026-10-15 source reassessment/fixes — bundle execution deferred.** Existing detector already opens only an in-root live SQLite DB with `mode=ro`, scans bounded migration files and replays supported CREATE/ALTER/DROP table DDL into `:memory:` with a deadline/page cap. Fixed generated-column omission using `table_xinfo` on both sides, ASCII-only SQLite identifier normalization (retaining distinct Unicode names), sorted missing/extra column outputs, and bounded migration value/statement length plus replay metadata table/column/time limits. Added deferred temporary-DB cases for generated columns, ASCII/Unicode identifier behavior, ALTER rename/drop/add sequence, deterministic ordering and unchanged live DB bytes. No database was opened and no test/import executed during implementation. Required source comparison is present; final integrated temporary-DB/route/Windows acceptance remains open. Type/default/constraint equality is outside the original table/column drift criterion and is not implied by `type_mismatches={}`.
+
 **Files:**
 - Modify: `src/local_ai_hub/deterministic.py:6380-6430`
 - Test: `tests/unit/test_migration_drift_detection.py`

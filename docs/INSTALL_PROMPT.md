@@ -532,6 +532,8 @@ Managed llama.cpp preset generation carries each configured route's positive `co
 
 Trace search is available through `local_ai_status(action="traces", min_duration_ms=1000, trace_action="search")` and `HubClient.status("traces", min_duration_ms=1000, trace_action="search")`, using the existing operator-authorized trace endpoint. Duration must be an integer from 0 through 86400000; action accepts at most 64 characters. Invalid filters fail explicitly rather than widening the search. Results remain bounded metadata; this does not grant new trace-reading authority.
 
+Migration drift compares table/column names, including generated columns, using bounded in-memory SQLite migration replay and read-only live schema inspection. ASCII identifier case follows SQLite matching; results do not establish type/default/constraint equality. Limit or replay failures must remain unknown rather than `in_sync=true`.
+
 ## Local telemetry
 
 Basic aggregate telemetry remains enabled locally. Detailed request traces are disabled by default and can be toggled live in the dashboard. When enabled, they retain complete endpoint input/output locally, including sensitive values, within configured size and retention limits. Local telemetry and trace details stay on this device; only normal agent responses requested by cloud agents leave it.
