@@ -55,9 +55,10 @@ def test_setup_skip_service_still_restarts_hub_without_registering_service(tmp_p
 
     monkeypatch.setattr(setup, "select_config_source", lambda _path: (config_source, config, install_dir))
 
-    def copy_install_tree(destination, _source):
+    def copy_install_tree(destination, _source, *, before_commit=None):
         destination.mkdir(parents=True, exist_ok=True)
         (destination / "config.toml").write_text("[hardware]\nprofile = \"auto\"\n", encoding="utf-8")
+        return True
 
     monkeypatch.setattr(setup, "copy_install_tree", copy_install_tree)
     monkeypatch.setattr(setup, "load_hub_config", lambda _path: config)
@@ -80,6 +81,37 @@ def test_setup_skip_service_still_restarts_hub_without_registering_service(tmp_p
         for command in commands
     ) == 1
     assert not any(command[-1:] == ["install"] and any(part.endswith("tools/service.py") or part.endswith("tools\\service.py") for part in command) for command in commands)
+
+
+def test_setup_stop_failure_skips_runtime_setup_and_service_start(tmp_path, monkeypatch):
+    config_source = tmp_path / "config.toml"
+    config_source.write_text("[hardware]\nprofile = \"auto\"\n", encoding="utf-8")
+    install_dir = tmp_path / "install"
+    config = {"setup": {}}
+    events = []
+    stop_attempts = []
+
+    monkeypatch.setattr(setup, "select_config_source", lambda _path: (config_source, config, install_dir))
+
+    def fail_to_stop(*_args, **_kwargs):
+        stop_attempts.append(True)
+        return False, "stop outcome unknown"
+
+    monkeypatch.setattr(setup, "stop_existing_runtime", fail_to_stop)
+
+    def copy_install_tree(_destination, _source, *, before_commit=None):
+        assert before_commit is not None
+        stopped, _detail = before_commit()
+        return stopped
+
+    monkeypatch.setattr(setup, "copy_install_tree", copy_install_tree)
+    monkeypatch.setattr(setup, "ensure_venv", lambda _path: events.append("venv"))
+    monkeypatch.setattr(setup, "run", lambda command, **_kwargs: events.append(command))
+    monkeypatch.setattr(sys, "argv", ["setup.py", "--config", str(config_source)])
+
+    assert setup.main() == 1
+    assert stop_attempts == [True]
+    assert events == []
 
 
 def test_token_economy_launchers_and_trim_run_allowlist(tmp_path, monkeypatch):
