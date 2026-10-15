@@ -471,13 +471,19 @@ class TelemetryStore:
         # Persisted telemetry spans restarts. Keep an explicit in-memory boundary
         # so operators can separate current deploy/process behavior from history.
         self.process_started_at = time.time()
+        self._process_started_monotonic = time.monotonic()
         self._current_session_id: int | None = None
         self._current_pid: int = os.getpid()
         self._current_version: str = ""
         self._queue: queue.Queue[tuple[str, dict[str, Any]]] = queue.Queue(maxsize=max(100, int(queue_size)))
         self._stop = threading.Event()
         self._stats_lock = threading.Lock()
-        self._stats = {"queued": 0, "processed": 0, "written": 0, "dropped": 0, "writer_errors": 0, "batches": 0}
+        self._stats = {
+            "queued": 0, "processed": 0, "written": 0, "dropped": 0,
+            "writer_errors": 0, "batches": 0,
+            "attempted": 0, "accepted": 0,
+            "rejected_overflow": 0, "lost_after_acceptance": 0,
+        }
         self._live_lock = threading.Lock()
         self._live_seq = 0
         self._live_events: deque[dict[str, Any]] = deque(maxlen=max(100, int(live_buffer_size)))
@@ -859,13 +865,17 @@ class TelemetryStore:
         # afterwards lets flush() observe processed >= queued and return before
         # the item is actually visible in SQLite.
         with self._stats_lock:
+            self._stats["attempted"] += 1
             self._stats["queued"] += 1
+            self._stats["accepted"] += 1
             try:
                 self._queue.put_nowait((kind, payload))
             except queue.Full:
                 # Observability must never become a back-pressure source for foreground work.
                 self._stats["queued"] -= 1
+                self._stats["accepted"] -= 1
                 self._stats["dropped"] += 1
+                self._stats["rejected_overflow"] += 1
                 return False
             # Keep accepted queue order aligned with the live feed. The writer can
             # dequeue now, but cannot publish completion stats until this lock releases.
@@ -1538,20 +1548,32 @@ class TelemetryStore:
                     self._prune(); last_prune = time.monotonic()
                     self.session_heartbeat()
             except Exception as exc:
+                abandoned = 0
                 with self._stats_lock:
                     self._stats["writer_errors"] += 1
                     is_busy = is_busy_error(exc)
                     if is_busy:
                         busy_retries += 1
                     if not is_busy or busy_retries > 10 or (self._stop.is_set() and busy_retries > 2):
-                        self._stats["processed"] += len(batch)
-                        self._stats["dropped"] += len(batch)
+                        abandoned = len(batch)
                         batch.clear()
                         busy_retries = 0
+                if abandoned:
+                    self._record_writer_abandonment(abandoned)
                 retry_multiplier = max(1, busy_retries) if is_busy else 2
                 retry_delay = min(1.0, self.flush_interval_seconds * retry_multiplier)
                 sleep_dur = 0.05 if self._stop.is_set() else retry_delay
                 time.sleep(sleep_dur)
+
+    def _record_writer_abandonment(self, count: int) -> None:
+        """Account for accepted queue records permanently abandoned by the writer."""
+        abandoned = max(0, int(count))
+        if not abandoned:
+            return
+        with self._stats_lock:
+            self._stats["processed"] += abandoned
+            self._stats["dropped"] += abandoned
+            self._stats["lost_after_acceptance"] += abandoned
 
     def flush(self, timeout: float = 3.0) -> bool:
         if not self.enabled:
@@ -1728,14 +1750,20 @@ class TelemetryStore:
 
     @staticmethod
     def _detail_status(*, truncated: bool, flush_complete: bool, writer: dict[str, Any]) -> dict[str, Any]:
-        incomplete = bool(truncated or not flush_complete or writer.get("dropped") or writer.get("writer_errors"))
+        incomplete = bool(
+            truncated or not flush_complete or writer.get("pending")
+            or writer.get("dropped") or writer.get("writer_errors")
+            or not writer.get("activity_observed", False)
+        )
         omitted: list[str] = []
         if truncated:
             omitted.append("decision_grade_lists")
-        if not flush_complete:
+        if not flush_complete or writer.get("pending"):
             omitted.append("pending_events")
         if writer.get("dropped") or writer.get("writer_errors"):
             omitted.append("writer_failures")
+        if not writer.get("activity_observed", False):
+            omitted.append("writer_activity_unobserved")
         return {
             "status": "incomplete" if incomplete else "complete",
             "truncated": bool(truncated),
@@ -1743,6 +1771,79 @@ class TelemetryStore:
             "omitted_sections": omitted,
             "list_limit": _DECISION_DETAIL_LIMIT,
         }
+
+    def _writer_snapshot(self) -> dict[str, Any]:
+        """Snapshot current-process queue accounting, independent of report window."""
+        snapshot_end_at = time.time()
+        elapsed = max(0.0, time.monotonic() - self._process_started_monotonic)
+        with self._stats_lock:
+            writer = dict(self._stats)
+        attempted = int(writer.get("attempted", 0))
+        accepted = int(writer.get("accepted", writer.get("queued", 0)))
+        processed = int(writer.get("processed", 0))
+        written = int(writer.get("written", 0))
+        rejected = int(writer.get("rejected_overflow", 0))
+        lost = int(writer.get("lost_after_acceptance", 0))
+        pending = max(0, accepted - processed)
+        rejected_or_lost = rejected + lost
+        writer.update({
+            "scope": "current_process",
+            "process_started_at": self.process_started_at,
+            "snapshot_end_at": snapshot_end_at,
+            "interval_seconds": round(elapsed, 6),
+            "queue_depth": self._queue.qsize(),
+            "attempted": attempted,
+            "accepted": accepted,
+            "rejected_overflow": rejected,
+            "lost_after_acceptance": lost,
+            "pending": pending,
+            "activity_observed": attempted > 0,
+            "writer_error_attempts": int(writer.get("writer_errors", 0)),
+            "accounting_balanced": (
+                attempted == accepted + rejected
+                and int(writer.get("queued", accepted)) == accepted
+                and int(writer.get("dropped", rejected_or_lost)) == rejected_or_lost
+                and processed == written + lost
+                and accepted == written + lost + pending
+            ),
+            "writer_errors_unit": "caught writer exception attempts; may include retryable attempts",
+            "accepted_rate": round(accepted / attempted, 4) if attempted else None,
+            "overflow_rejection_rate": round(rejected / attempted, 4) if attempted else None,
+            "post_acceptance_loss_rate": round(lost / accepted, 4) if accepted else None,
+            "written_rate": round(written / accepted, 4) if accepted else None,
+            "pending_rate": round(pending / accepted, 4) if accepted else None,
+        })
+        return writer
+
+    def _refresh_cached_writer_status(
+        self, data: dict[str, Any], previous_writer: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Refresh cheap process counters so cache hits cannot preserve a false clean status."""
+        refreshed = dict(data)
+        writer = self._writer_snapshot()
+        changed = any(
+            int(writer.get(key, 0)) != int(previous_writer.get(key, 0))
+            for key in ("attempted", "accepted", "rejected_overflow", "lost_after_acceptance", "written", "writer_errors")
+        )
+        old_detail = refreshed.get("detail", {})
+        detail = self._detail_status(
+            truncated=bool(old_detail.get("truncated", False)) if isinstance(old_detail, dict) else False,
+            flush_complete=writer["pending"] == 0,
+            writer=writer,
+        )
+        if changed:
+            detail["status"] = "incomplete"
+            detail["incomplete"] = True
+            detail["omitted_sections"] = sorted(set(detail["omitted_sections"] + ["cached_summary_data"]))
+        refreshed["writer"] = writer
+        refreshed["detail"] = detail
+        refreshed["summary_cache_stale"] = changed
+        decision_grade = refreshed.get("decision_grade")
+        if isinstance(decision_grade, dict):
+            decision_grade = dict(decision_grade)
+            decision_grade["detail"] = detail
+            refreshed["decision_grade"] = decision_grade
+        return refreshed
 
     def summary(self, days: int = 30, *, scope: str = "window", _flush: bool = True) -> dict[str, Any]:
         if not self.enabled:
@@ -1756,7 +1857,9 @@ class TelemetryStore:
         with self._summary_cache_lock:
             cached = self._summary_cache.get(key)
         if cached and now - cached["time"] < 3.0:
-            return dict(cached["data"])
+            return self._refresh_cached_writer_status(
+                cached["data"], cached.get("writer_snapshot", {})
+            )
         flush_complete = True
         if _flush:
             flush_complete = self.flush(0.5)
@@ -1957,9 +2060,7 @@ class TelemetryStore:
         prep_events = int(prep_query[0] or 0)
         prep_hits = int(prep_query[1] or 0)
         prep_hit_rate = round(prep_hits / prep_events, 4) if prep_events else 0.0
-        with self._stats_lock:
-            writer = dict(self._stats)
-        writer["queue_depth"] = self._queue.qsize()
+        writer = self._writer_snapshot()
         decision_grade["detail"] = self._detail_status(
             truncated=bool(decision_grade.pop("_truncated", False)),
             flush_complete=flush_complete,
@@ -2037,9 +2138,10 @@ class TelemetryStore:
             "queue": decision_grade["queue"],
             "detail": decision_grade["detail"],
             "decision_grade": decision_grade,
+            "summary_cache_stale": False,
         }
         with self._summary_cache_lock:
-            self._summary_cache[key] = {"time": now, "data": res}
+            self._summary_cache[key] = {"time": now, "data": res, "writer_snapshot": dict(writer)}
             while len(self._summary_cache) > _SUMMARY_CACHE_LIMIT:
                 oldest_key = min(self._summary_cache, key=lambda item: self._summary_cache[item]["time"])
                 self._summary_cache.pop(oldest_key, None)
