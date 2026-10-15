@@ -1,4 +1,5 @@
 import subprocess
+import threading
 import time
 from pathlib import Path
 import pytest
@@ -137,12 +138,13 @@ def test_swarm_dag_broker_receives_structured_bounded_command(tmp_path: Path):
 
     broker = Broker()
     fence = object()
-    cancel_event = object()
+    cancel_event = threading.Event()
     result = execute_swarm_dag(
-        [{"id": "cmd", "command": ["python", "-V"]}],
+        [{"id": "cmd", "command": ["python", "", "  "]}],
         worktree_path=tmp_path,
         command_broker=broker,
-        command_timeout=17,
+        command_timeout=120,
+        overall_timeout=30,
         task_id="task-1",
         paths=["src/example.py"],
         work_attempt_fence=fence,
@@ -150,13 +152,53 @@ def test_swarm_dag_broker_receives_structured_bounded_command(tmp_path: Path):
     )
     invocation, kwargs = broker.call
     assert result["success"] is True
-    assert invocation.argv == ["python", "-V"]
+    assert invocation.argv == ["python", "", "  "]
     assert invocation.shell is False
-    assert kwargs["timeout"] == 17
+    assert 1 <= kwargs["timeout"] <= 30
     assert kwargs["task_id"] == "task-1"
     assert kwargs["paths"] == ["src/example.py"]
     assert kwargs["_work_attempt_fence"] is fence
     assert kwargs["request_cancel_event"] is cancel_event
+
+
+def test_swarm_dag_cancellation_stops_callbacks_before_start_and_between_waves():
+    already_cancelled = threading.Event()
+    already_cancelled.set()
+    called = []
+    pre_cancelled = execute_swarm_dag(
+        [{"id": "first", "fn": lambda: called.append("pre")}],
+        request_cancel_event=already_cancelled,
+    )
+    assert called == []
+    assert pre_cancelled["cancelled"] is True
+    assert pre_cancelled["step_results"]["first"]["status"] == "cancelled"
+
+    cancel_between_waves = threading.Event()
+
+    def cancel_after_first():
+        called.append("first")
+        cancel_between_waves.set()
+
+    stopped = execute_swarm_dag(
+        [
+            {"id": "first", "fn": cancel_after_first},
+            {"id": "later", "fn": lambda: called.append("later"), "depends_on": ["first"]},
+        ],
+        request_cancel_event=cancel_between_waves,
+    )
+    assert called == ["first"]
+    assert stopped["cancelled_steps"] == ["later"]
+
+
+def test_swarm_dag_rejects_invalid_cancellation_event_before_callbacks():
+    called = []
+    result = execute_swarm_dag(
+        [{"id": "first", "fn": lambda: called.append("ran")}],
+        request_cancel_event=object(),
+    )
+    assert result["success"] is False
+    assert called == []
+    assert "callable is_set" in result["error"]
 
 
 def test_swarm_dag_returns_aborted_steps_explicitly():
