@@ -3,6 +3,67 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 import math
+import re
+
+
+_SOURCE_QUERY = re.compile(
+    r"\b(?:source|runtime|implementation|implement|bug|fix|debug|diagnos\w*|"
+    r"trace|function|symbol|definition|defined|behavior|code)\b",
+    re.IGNORECASE,
+)
+_DOCUMENT_QUERY = re.compile(
+    r"\b(?:docs?|documentation|readme|guides?|manuals?|reference|prompts?|coverage|plans?|roadmap)\b",
+    re.IGNORECASE,
+)
+_SOURCE_SUFFIXES = {
+    ".py", ".pyi", ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".go",
+    ".rs", ".java", ".cs", ".cpp", ".cc", ".c", ".h", ".hpp", ".sql",
+}
+
+
+def is_source_context_query(query: str) -> bool:
+    """Recognize narrow source-work requests without changing doc-query behavior."""
+    text = str(query or "")
+    return bool(_SOURCE_QUERY.search(text)) and not bool(_DOCUMENT_QUERY.search(text))
+
+
+def source_context_path_tier(path: str) -> int:
+    """Rank current implementation files ahead of ordinary and historical docs."""
+    normalized = str(path or "").replace("\\", "/").strip("/").casefold()
+    parts = normalized.split("/") if normalized else []
+    name = parts[-1] if parts else ""
+    historical_doc = (
+        name == "api_coverage.md"
+        or any(part in {"plan", "plans", "historical", "archive", "archives"} for part in parts[:-1])
+    )
+    if historical_doc:
+        return 2
+    suffix = "." + name.rsplit(".", 1)[-1] if "." in name else ""
+    if suffix in _SOURCE_SUFFIXES:
+        return 0
+    return 1
+
+
+def prioritize_source_context_paths(
+    paths: Iterable[str], query: str, *, priority_paths: Iterable[str] = (),
+) -> list[str]:
+    """Stably prioritize source paths only for source-intent queries.
+
+    Priority paths represent explicit files, pins, or force-includes and remain
+    first even when they are documentation. No path is filtered from the result.
+    """
+    ordered = list(dict.fromkeys(str(path) for path in paths if str(path)))
+    if not is_source_context_query(query):
+        return ordered
+    priorities = {str(path).replace("\\", "/").casefold() for path in priority_paths}
+    ranks = {path: rank for rank, path in enumerate(ordered)}
+    return sorted(
+        ordered,
+        key=lambda path: (
+            0 if path.replace("\\", "/").casefold() in priorities else 1 + source_context_path_tier(path),
+            ranks[path],
+        ),
+    )
 
 
 def fuse_ranked_paths(
