@@ -1,5 +1,7 @@
 # Generic Agent Update & Upgrade Prompt for Local AI Hub
 
+Agent State uses `agent_state.sqlite`; old standalone filenames are never copied or merged automatically. Old-only state or an invalid canonical target hiding an old history is rejected while retaining the files. Archived old files alongside readable canonical state remain untouched. Unsupported durable schemas require explicit operator recovery; disposable derived metadata may rebuild.
+
 Task contracts require a nonempty string `goal`. Persisted title-only or missing-goal contracts are rejected without rewriting their contents. HTTP creation accepts a current contract object or the advertised goal/task shorthand; old intent/title/query coercions are removed. Completion requires the current full verification contract and rejects obsolete evaluator signatures.
 
 Persistent Biome lint uses only the reviewed Windows Biome 2.5.15 foreground-server protocol. The Hub verifies named-pipe ownership against its retained process, bounds source reads and IPC, and retains ownership when cleanup is unconfirmed. Unsupported versions/platforms return explicit unsupported results; they never adopt or stop a shared daemon. Installed behavior and performance require separate validation.
