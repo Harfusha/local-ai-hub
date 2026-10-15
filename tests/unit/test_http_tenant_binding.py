@@ -1,9 +1,10 @@
 from email.message import Message
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from local_ai_hub import http_server
+from local_ai_hub import http_server, project_config, state_paths
 
 
 def _handler(monkeypatch):
@@ -102,6 +103,35 @@ def test_tokenless_root_binding_uses_principal_instead_of_tenant_claim(
     assert handler._bind_root_tenant(str(tmp_path), ["caller-selected-tenant"]) is None
     assert responses[-1][0] == 403
     assert responses[-1][1]["error_code"] == "tenant_binding_mismatch"
+
+
+def test_post_memory_repository_id_requires_server_resolved_root(tmp_path, monkeypatch):
+    handler = _handler(monkeypatch)
+    responses = []
+    handler._send = lambda status, payload: responses.append((status, payload))
+
+    assert not handler._bind_memory_payload(
+        {
+            "action": "get",
+            "scope": "repository",
+            "repository_id": "caller-selected-repository",
+        }
+    )
+    assert responses[0][0] == 400
+    assert responses[0][1]["error_code"] == "root_required"
+
+    monkeypatch.setattr(
+        project_config,
+        "resolve_project_context",
+        lambda requested, _state: SimpleNamespace(
+            root=str(tmp_path), coordination_id="server-resolved-repository"
+        ),
+    )
+    monkeypatch.setattr(state_paths, "configured_state_dir", lambda _config: tmp_path)
+    assert handler._memory_project_identity(str(tmp_path)) == (
+        str(Path(tmp_path).resolve(strict=True)),
+        "server-resolved-repository",
+    )
 
 
 def test_configured_root_sandbox_requires_configured_principal(tmp_path, monkeypatch):
