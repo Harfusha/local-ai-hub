@@ -69,6 +69,7 @@ from local_ai_hub.task_memory_wire import (
 )
 from local_ai_hub.routing import semantic_handoff_hint
 from local_ai_hub.operation_contracts import (
+    operation_contract,
     operation_actions,
     operation_guide_cards,
     operation_enabled,
@@ -2954,6 +2955,34 @@ def _repo_pipeline_step_contract() -> dict[str, Any]:
     return repo_pipeline_step_schema(properties, FEATURES.supported_repo_actions())
 
 
+def _repo_validation_arguments(action: str, candidates: dict[str, Any]) -> dict[str, Any]:
+    """Keep action-required canonical inputs in every scoped validation call."""
+    contract = operation_contract("local_ai_repo")
+    action_contract = contract.get("actions", {}).get(action) if contract else None
+    if not isinstance(action_contract, dict):
+        return candidates
+    allowed = action_contract.get("allowed")
+    scoped_names = {"max_commits", "author", "since", "until", "days", "limit"}
+    required_names = tuple(action_contract.get("required", ()))
+    if allowed is None:
+        relevant_names = set(required_names) | scoped_names
+        return {
+            name: value for name, value in candidates.items()
+            if name in relevant_names and value is not None
+        }
+    allowed_names = set(allowed)
+    selected = {
+        name: candidates[name]
+        for name in required_names
+        if name in candidates and name in allowed_names
+    }
+    selected.update({
+        name: value for name, value in candidates.items()
+        if (name in allowed_names or name in scoped_names) and value is not None
+    })
+    return selected
+
+
 def _local_ai_repo_impl(
     action: RepoAction,
     root: str = ".",
@@ -3037,17 +3066,9 @@ def _local_ai_repo_impl(
         return {**contract_error("local_ai_repo is disabled in configuration", status_code=403), "unsupported": True}
     if not isinstance(phase, str) or phase not in REPO_PHASES:
         return contract_error(f"phase must be one of: {', '.join(REPO_PHASES[1:])}")
-    scoped_arguments = {
-        "max_commits": max_commits,
-        "author": author,
-        "since": since,
-        "until": until,
-        "days": days,
-        "limit": limit,
-    }
     scoped_error = validate_operation_arguments(
         "local_ai_repo", action,
-        {name: value for name, value in scoped_arguments.items() if value is not None},
+        _repo_validation_arguments(action, locals()),
     )
     if scoped_error is not None:
         return contract_error(scoped_error, status_code=400)
@@ -3183,7 +3204,8 @@ def _local_ai_repo_impl(
         if action == "generate_types" and diff:
             operation_inputs["diff"] = diff
         validation_error = validate_operation_arguments(
-            "local_ai_repo", action, operation_inputs, features=FEATURES,
+            "local_ai_repo", action,
+            _repo_validation_arguments(action, operation_inputs), features=FEATURES,
         )
         if validation_error is not None:
             return contract_error(validation_error)
@@ -3877,17 +3899,9 @@ def local_ai_repo(
             "local_ai_repo", resolved_action, operation_actions("local_ai_repo", FEATURES),
             "Use a canonical advertised repository action.",
         )
-    scoped_arguments = {
-        "max_commits": max_commits,
-        "author": author,
-        "since": since,
-        "until": until,
-        "days": days,
-        "limit": limit,
-    }
     scoped_validation = validate_operation_arguments(
         "local_ai_repo", resolved_action,
-        {name: value for name, value in scoped_arguments.items() if value is not None},
+        _repo_validation_arguments(resolved_action, locals()),
     )
     if scoped_validation is not None:
         return {"success": False, "error": scoped_validation, "status_code": 400,
@@ -3898,7 +3912,8 @@ def local_ai_repo(
     if resolved_action in {"search", "code_index", "callers", "callees", "implementations"}:
         effective_limit = 24 if limit is None else limit
         pagination_error = validate_operation_arguments(
-            "local_ai_repo", resolved_action, {"limit": effective_limit, "offset": offset}
+            "local_ai_repo", resolved_action,
+            _repo_validation_arguments(resolved_action, {**locals(), "limit": effective_limit}),
         )
         if pagination_error is not None:
             return {"success": False, "error": pagination_error, "status_code": 400,
@@ -3906,7 +3921,10 @@ def local_ai_repo(
     if resolved_action == "hotspots":
         hotspot_error = validate_operation_arguments(
             "local_ai_repo", resolved_action,
-            {"days": 30 if days is None else days, "limit": 20 if limit is None else limit},
+            _repo_validation_arguments(resolved_action, {
+                **locals(), "days": 30 if days is None else days,
+                "limit": 20 if limit is None else limit,
+            }),
         )
         if hotspot_error is not None:
             return {"success": False, "error": hotspot_error, "status_code": 400,
@@ -3936,7 +3954,7 @@ def local_ai_repo(
         if resolved_action == "context":
             validation_error = validate_operation_arguments(
                 "local_ai_repo", resolved_action,
-                {name: value for name, value in context_controls.items() if value is not None},
+                _repo_validation_arguments(resolved_action, {**locals(), **context_controls}),
             )
             if validation_error is not None:
                 return {"success": False, "error": validation_error, "status_code": 400,
@@ -3947,7 +3965,8 @@ def local_ai_repo(
                     "status_code": 400, "terminal": True, "retryable": False}
         elif path_hints is not None:
             validation_error = validate_operation_arguments(
-                "local_ai_repo", resolved_action, {"path_hints": path_hints}
+                "local_ai_repo", resolved_action,
+                _repo_validation_arguments(resolved_action, {**locals(), "path_hints": path_hints}),
             )
             if validation_error is not None:
                 return {"success": False, "error": validation_error, "status_code": 400,
