@@ -32,36 +32,14 @@ class AgentScope(str, Enum):
 
     @classmethod
     def parse(cls, value: Any, default: AgentScope | str | None = None) -> AgentScope:
-        resolved_default = cls.TASK if default is None else (default if isinstance(default, cls) else cls.parse(default, cls.TASK))
+        resolved_default = cls.TASK if default is None else cls(default)
         if isinstance(value, cls):
             return value
-        if not value:
+        if value is None:
             return resolved_default
-        raw = str(value).strip().lower()
-        _ALIASES: dict[str, AgentScope] = {
-            "code": cls.TASK,
-            "task": cls.TASK,
-            "tasks": cls.TASK,
-            "repo": cls.REPOSITORY,
-            "repository": cls.REPOSITORY,
-            "project": cls.REPOSITORY,
-            "workspace": cls.WORKTREE,
-            "worktree": cls.WORKTREE,
-            "worktrees": cls.WORKTREE,
-            "clone": cls.CLONE,
-            "branch": cls.BRANCH,
-            "branches": cls.BRANCH,
-            "session": cls.SESSION,
-            "sessions": cls.SESSION,
-            "global": cls.GLOBAL,
-            "user": cls.GLOBAL,
-        }
-        if raw in _ALIASES:
-            return _ALIASES[raw]
-        try:
-            return cls(raw)
-        except ValueError:
-            return resolved_default
+        if not isinstance(value, str):
+            raise ValueError("scope must be a canonical string")
+        return cls(value)
 
 
 @dataclass(frozen=True)

@@ -117,17 +117,21 @@ def test_equal_scope_resolves_by_evidence_confidence_and_freshness():
     assert chosen[0].value == 9090
 
 
-def test_agent_scope_parse_defaults_and_aliases():
+def test_agent_scope_parse_defaults_and_canonical_values():
     assert AgentScope.parse(None) is AgentScope.TASK
     assert isinstance(AgentScope.parse(None), AgentScope)
     assert AgentScope.parse(None).value == "task"
 
-    assert AgentScope.parse("") is AgentScope.TASK
-    assert AgentScope.parse("code") is AgentScope.TASK
-    assert AgentScope.parse("tasks") is AgentScope.TASK
-    assert AgentScope.parse("repo") is AgentScope.REPOSITORY
-    assert AgentScope.parse("workspace") is AgentScope.WORKTREE
+    assert AgentScope.parse(None, AgentScope.GLOBAL) is AgentScope.GLOBAL
+    assert AgentScope.parse(None, "clone") is AgentScope.CLONE
+    for scope in AgentScope:
+        assert AgentScope.parse(scope.value) is scope
+        assert AgentScope.parse(scope) is scope
 
-    assert AgentScope.parse("nonexistent_scope") is AgentScope.TASK
-    assert AgentScope.parse("nonexistent_scope", AgentScope.GLOBAL) is AgentScope.GLOBAL
-    assert AgentScope.parse("nonexistent_scope", "clone") is AgentScope.CLONE
+
+@pytest.mark.parametrize("value", ["", "code", "tasks", "repo", "project", "workspace",
+                                  "user", "sessions", "GLOBAL", " global ",
+                                  "nonexistent_scope", False, 0, [], {}])
+def test_agent_scope_rejects_aliases_and_invalid_values_even_with_default(value):
+    with pytest.raises(ValueError):
+        AgentScope.parse(value, AgentScope.GLOBAL)
