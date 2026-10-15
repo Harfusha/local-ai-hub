@@ -46,28 +46,36 @@ Expose `local_ai_task(action="browser")` and connect to `BrowserBridge.capture_p
 
 ### Task 80: Local Visual Diffing via Qwen-VL (#42)
 
+**2026-10-15 source integration — `88510fd8`.** `compare_screens` accepts the two PNG payloads and an explicitly injected existing vision runner; the shared `VisionService` resolves tenant-scoped baseline/candidate artifacts, invokes it, and reuses the existing model capability, cancellation, timeout, structured-output and availability handling. MCP accepts `baseline_screenshot_artifact_id` alongside `screenshot_artifact_id`. PNG chunks/CRC, byte limits, equal dimensions and a 16-megapixel limit are checked before inference. Both screenshots are untrusted evidence. Comparison hashes/byte equality are distinct from model findings. Cloud fallback is rejected. INSTALL/UPDATE prompts are synchronized.
+
+Validation: `python -m pytest tests/unit/test_frontend_visual_diff.py tests/test_frontend_review.py tests/test_vision_service.py tests/test_vision_service_orchestration.py tests/test_vision_service_phases.py tests/test_mcp_agent_routing.py -q --tb=short` — **169 passed**, request `req_a1d2fe1f3a2e`, execution `78ef29ae753e41deb843b34ddf798041`. Provider responses are stubbed in this suite: live Qwen-VL comparison quality and deployed MCP acceptance remain required. Current installed feature configuration disables vision in the generated MCP action enum; direct adapter tests enable features only within their fixture and are not deployed-wire proof. The bounded status response reported Ollama online but returned no installed-model inventory, so model availability remains unknown. Indexed review refused the 11-segment diff under its 8-segment limit (`req_c840e2876097`); primary specification/quality review was performed directly.
+
 **Files:**
 - Modify: `src/local_ai_hub/frontend_review.py:280-340`
 - Test: `tests/unit/test_frontend_visual_diff.py`
 
-- [ ] **Step 1: Write test comparing baseline vs candidate screenshots**
-- [ ] **Step 2: Implement visual diff**
-Implement `compare_screens(baseline_png: bytes, current_png: bytes) -> dict[str, Any]` in `frontend_review.py`. Uses Qwen-VL to detect visual shifts.
-- [ ] **Step 3: Run test and verify pass & Commit**
+- [x] **Step 1: Write test comparing baseline vs candidate screenshots**
+- [x] **Step 2: Implement visual diff**
+Implement `compare_screens(baseline_png, current_png, *, review)` in `frontend_review.py`, injecting the existing local vision service rather than constructing another runtime. Uses the configured vision model to detect visual shifts.
+- [x] **Step 3: Run test and verify pass & Commit**
 `git commit -m "feat(vision): implement local visual regression diffing via Qwen-VL"`
 
 ---
 
 ### Task 81: Ephemeral Port Bind for `mock_server` (#43, #45)
 
+**2026-10-15 source integration — `5d339a2c`.** Broker, service, HTTP, SDK client and MCP start defaults now preserve zero and request an ephemeral loopback port. The actual bound port is returned and used as the registry/status/stop key; explicit fixed ports remain supported. Cassette recording applies the existing safe response-header allowlist before writing, excluding Authorization/Cookie/Set-Cookie. INSTALL/UPDATE prompts document the new default and retaining the returned port.
+
+Validation: `python -m pytest tests/unit/test_mock_server_ephemeral_port.py tests/test_mcp_command_operation_acceptance.py::test_mcp_command_mock_server_start_uses_dedicated_endpoint_and_port -q --tb=short -r f` — **10 passed**, request `req_bfb22493bdbf`, execution `1f9c18fa5ae6409c8656bc6f862b268f`. Includes two actual loopback listeners (omitted and zero port), HTTP requests, status/stop and joined worker threads. The network-safety regression selection also exited 0 (`req_faba54bdb42c`); its compact output omitted the final count and reports platform capability skips, so no complete platform claim follows. A broader command-operation file also exposed unrelated `auto_fix` payload expectation drift (`req_dde793adb03e`); that regression remains open for API/command contract reconciliation rather than being silently relabeled passing.
+
 **Files:**
 - Modify: `src/local_ai_hub/commands.py:10100-10150`
 - Test: `tests/unit/test_mock_server_ephemeral_port.py`
 
-- [ ] **Step 1: Write test binding mock server on port=0 and verifying assigned port is returned**
-- [ ] **Step 2: Implement fix**
+- [x] **Step 1: Write test binding mock server on port=0 and verifying assigned port is returned**
+- [x] **Step 2: Implement fix**
 When `port` is 0 or omitted, bind socket to port 0 (`sock.bind(('127.0.0.1', 0))`) and return assigned ephemeral port. Sanitize `Authorization` and `Cookie` headers during `record_mock`.
-- [ ] **Step 3: Run test and verify pass & Commit**
+- [x] **Step 3: Run test and verify pass & Commit**
 `git commit -m "feat(mock): support ephemeral port binding and header sanitization in mock server"`
 
 ---
