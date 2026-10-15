@@ -109,7 +109,7 @@ def task_memory_essential_response(value: dict[str, Any]) -> dict[str, Any]:
     """Return the success/error envelope used as the MCP memory fallback."""
     essential = {key: copy.deepcopy(value[key]) for key in (
         "success", "status", "status_code", "error", "terminal", "retryable",
-        "context_id", "task_id", "stale", "degraded", "partial", "task",
+        "context_id", "task_id", "request_id", "stale", "degraded", "partial", "task",
         "supported", "unsupported", "outcome_unknown", "request_not_sent",
         "in_progress", "cancelled", "timed_out", "fallback_used",
         "mutation_applied", "operation_not_started",

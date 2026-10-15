@@ -104,9 +104,11 @@ def _round_trip(tmp_path, requests, monkeypatch, *, real_store=False, return_sto
         def do_POST(self):
             nonlocal current_audit
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
-            calls.append({"path": self.path, "body": body})
+            request_id = self.headers.get("X-LocalAI-Request-ID", "")
+            calls.append({"path": self.path, "body": body, "request_id": request_id})
             if tasks is not None:
-                token = trace_context.set_context(tenant="memory-wire-test")
+                token = trace_context.set_context(
+                    request_id=request_id, trace_id=request_id, tenant="memory-wire-test")
                 try:
                     action = body["action"]
                     if action == "create":
@@ -127,6 +129,7 @@ def _round_trip(tmp_path, requests, monkeypatch, *, real_store=False, return_sto
                                     "success": False, "error": str(exc), "status_code": status,
                                     "terminal": True, "retryable": False,
                                     "mutation_applied": False, "operation_not_started": True,
+                                    "request_id": request_id,
                                     "response_budget": {"requested_tokens": exc.requested_tokens,
                                                         "required_tokens": exc.required_tokens,
                                                         "unit": "estimated_tokens"},
@@ -134,6 +137,7 @@ def _round_trip(tmp_path, requests, monkeypatch, *, real_store=False, return_sto
                             else:
                                 status = 400
                                 payload = {"success": False, "error": str(exc), "status_code": status,
+                                           "request_id": request_id,
                                            "terminal": True, "retryable": False}
                             encoded = json.dumps(payload).encode()
                             self.send_response(status)
@@ -146,7 +150,8 @@ def _round_trip(tmp_path, requests, monkeypatch, *, real_store=False, return_sto
                         task = tasks.resume(TASK_ID, actor="wire-owner", idempotency_key="wire-resume")
                     else:
                         task = tasks.get(TASK_ID)
-                    encoded = json.dumps({"success": True, "task": task.to_dict()}).encode()
+                    encoded = json.dumps({"success": True, "task": task.to_dict(),
+                                          "request_id": request_id}).encode()
                 finally:
                     trace_context.reset_context(token)
                 self.send_response(200)
@@ -160,7 +165,7 @@ def _round_trip(tmp_path, requests, monkeypatch, *, real_store=False, return_sto
             elif body["action"] == "resume":
                 current_audit = None
             payload = {
-                "success": True, "context_id": "memory-context-17",
+                "success": True, "context_id": "memory-context-17", "request_id": request_id,
                 "task": {"task_id": TASK_ID, "status": "running", "owner": "wire-owner",
                          "context": {"task_id": TASK_ID, "clone_id": "clone-wire",
                                      "session_id": "session-wire", "repository_id": "repo-wire",
@@ -303,6 +308,7 @@ def test_registered_mcp_checkpoint_budget_preflight_is_atomic_at_128_tokens(tmp_
     assert payload["mutation_applied"] is False
     assert payload["operation_not_started"] is True
     assert "request_not_sent" not in payload
+    assert payload["request_id"] == calls[-1]["request_id"]
     assert payload["response_budget"]["returned_tokens"] == json_tokens(
         result.model_dump(mode="json", by_alias=True, exclude_none=True))
     task = tasks.get(TASK_ID)
@@ -320,6 +326,7 @@ def test_registered_mcp_checkpoint_preflight_allows_full_memory_wire(tmp_path, m
     ], monkeypatch, real_store=True, return_store=True)
     payload = results[1].structuredContent
     assert payload["success"] is True
+    assert payload["request_id"] == calls[-1]["request_id"]
     assert payload["task"]["checkpoint"]["state_data"]["memory_audit"] == audit
     assert tasks.get(TASK_ID).checkpoint.state_data["memory_audit"] == audit
     assert tasks.state_store.event_page(f"task:{TASK_ID}")["last_seq"] == 2
