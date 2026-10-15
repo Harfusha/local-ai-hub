@@ -313,7 +313,8 @@ def _regex_ast_chunks(text: str, language: str, size: int = 4500) -> list[str]:
         if language == "rust" and text[index] == "'":
             lifetime = _RUST_LIFETIME_RE.match(text, index)
             if lifetime is not None:
-                after_lifetime = index + lifetime.end()
+                # ``match(text, index)`` returns absolute match offsets.
+                after_lifetime = lifetime.end()
                 if after_lifetime >= text_length or text[after_lifetime] != "'":
                     index = after_lifetime
                     continue
@@ -359,6 +360,13 @@ def _regex_ast_chunks(text: str, language: str, size: int = 4500) -> list[str]:
                 return [text] if text.strip() else []
 
         if text[index] == "{":
+            if language == "typescript" and not braces:
+                # A typed function can contain a structural return type before
+                # its body. Brace balancing alone cannot distinguish that type
+                # from the body, so retain this source as one safe unit.
+                header = text[segment_start:index]
+                if re.search(r"\bfunction\b[^;{}]*\)[ \t]*:[ \t]*$", header):
+                    return [text] if text.strip() else []
             if len(braces) >= _REGEX_AST_MAX_BLOCK_DEPTH:
                 return [text] if text.strip() else []
             if not braces:
@@ -383,19 +391,18 @@ def _regex_ast_chunks(text: str, language: str, size: int = 4500) -> list[str]:
     if braces:
         return [text] if text.strip() else []
     if not spans:
-        spans = [(0, text_length)]
-    if len(spans) + max(0, (text_length - segment_start + size - 1) // size) > _REGEX_AST_MAX_BLOCKS:
+        return [text] if text.strip() else []
+    if len(spans) + int(segment_start < text_length) > _REGEX_AST_MAX_BLOCKS:
         return [text] if text.strip() else []
 
     chunks: list[str] = []
     for start, end in spans:
         block = text[start:end]
         chunks.append(block)
-    while segment_start < text_length:
-        end = min(text_length, segment_start + size)
-        piece = text[segment_start:end]
-        chunks.append(piece)
-        segment_start = end
+    # Unbraced declarations/expressions in the tail have no proven safe split.
+    # Keep the entire tail together even when it exceeds the requested size.
+    if segment_start < text_length:
+        chunks.append(text[segment_start:])
     return chunks
 
 

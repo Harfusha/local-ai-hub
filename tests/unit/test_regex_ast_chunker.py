@@ -64,6 +64,42 @@ def test_oversized_function_body_remains_one_complete_chunk() -> None:
     assert any("fn next() { ok(); }" in chunk for chunk in chunks)
 
 
+@pytest.mark.parametrize("language", ["typescript", "go"])
+def test_long_braceless_source_is_returned_once(language) -> None:
+    source = "const value = 1;\n" * 20 if language == "typescript" else "package p\n" + "var value = 1\n" * 20
+
+    chunks = _regex_ast_chunks(source, language, size=16)
+
+    assert chunks == [source]
+
+
+def test_unprovable_braceless_tail_is_not_split() -> None:
+    tail = "const compute = (value: number) => value + 1;\n" * 8
+    source = "function ready() { return true; }\n" + tail
+
+    chunks = _regex_ast_chunks(source, "typescript", size=24)
+
+    assert "".join(chunks) == source
+    assert chunks[-1] == tail
+
+
+def test_rust_lifetime_after_nonzero_prefix_does_not_shift_brace_scan() -> None:
+    source = "// prefix\nfn borrow<'a>(value: &'a str) -> &'a str { value }\n"
+
+    chunks = _regex_ast_chunks(source, "rust", size=12)
+
+    assert "".join(chunks) == source
+    assert any("fn borrow<'a>" in chunk and "{ value }" in chunk for chunk in chunks)
+
+
+def test_typescript_structural_return_type_keeps_function_together() -> None:
+    source = "function shape(): { x: number } { return { x: 1 }; }\n"
+
+    chunks = _regex_ast_chunks(source, "typescript", size=12)
+
+    assert chunks == [source]
+
+
 def test_tree_sitter_absence_dispatches_to_lexical_chunker(monkeypatch) -> None:
     store = RAGStore.__new__(RAGStore)
     store.config = {"rag": {"chunk_chars": 40, "chunk_overlap_chars": 0}}
