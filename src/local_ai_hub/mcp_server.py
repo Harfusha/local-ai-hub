@@ -4257,11 +4257,18 @@ def local_ai_coord(
     since_hash: str = "",
     expected_version: int | None = None,
     after_seq: int | None = None,
+    after_ts: float | None = None,
     format: str = "markdown",
     sync_action: str | None = None,
     stream_id: str | None = None,
     events: list[dict[str, Any]] | None = None,
     limit: int | None = None,
+    content: Any = None,
+    author: str = "agent",
+    remote_sections: dict[str, Any] | None = None,
+    topic: str = "default",
+    message: Any = None,
+    publisher: str = "agent",
 ) -> dict[str, Any]:
     """Cross-agent coordination for the main agent and bounded Hub workers. ask persists a root/tenant/session-scoped question; retrieve it later with the same question_id, root, tenant and session_id. answer records an operator response under the authenticated root and tenant. Public actions are limited to the contract enum; unscoped memory relation/reaping storage remains private. Claim overlapping edit paths before concurrent Hub work. Search/get memos before repeating expensive investigation and store concise reusable findings after discovery. Native peer subagents are coordinated by Codex rather than by this Hub tool."""
     if not FEATURES.coord:
@@ -4323,6 +4330,88 @@ def local_ai_coord(
         sync_error = validate_operation_arguments("local_ai_coord", action, sync_only_inputs)
         if sync_error is not None:
             return contract_error(sync_error, status_code=400)
+    board_actions = {
+        "blackboard_update", "blackboard_get", "blackboard_list",
+        "blackboard_merge", "blackboard_delete",
+    }
+    pubsub_actions = {"pubsub_publish", "pubsub_poll"}
+    if action in board_actions | pubsub_actions:
+        ignored_values = {
+            "paths": paths, "lease_id": lease_id, "key": key, "value": value,
+            "query": query, "command": command, "ttl_seconds": ttl_seconds,
+            "max_tokens": max_tokens, "task": task, "question_id": question_id,
+            "question": question, "answer": answer, "contract": contract,
+            "receipt": receipt, "checkpoint": checkpoint, "status": status,
+            "reason": reason, "record": record, "record_id": record_id,
+            "criterion": criterion, "scope": scope, "scope_id": scope_id,
+            "target_scope": target_scope, "approver": approver,
+            "fingerprint": fingerprint, "tool_outcome": tool_outcome,
+            "include_diagnostics": include_diagnostics, "include_stale": include_stale,
+            "clone_id": clone_id, "worktree_id": worktree_id, "branch": branch,
+            "repository_id": repository_id, "session_id": session_id,
+            "tenant": tenant, "repository_revision": repository_revision,
+            "phase": phase, "focus": focus, "preload_profile": preload_profile,
+            "since_hash": since_hash, "sync_action": sync_action,
+            "stream_id": stream_id, "events": events, "format": format,
+        }
+        unexpected_values = {
+            name: supplied for name, supplied in ignored_values.items()
+            if supplied is not None and supplied is not False and supplied != "" and supplied != 0
+            and not (name == "format" and supplied == "markdown")
+        }
+        if unexpected_values:
+            return contract_error(
+                f"action='{action}' accepts only canonical fields; unexpected field {sorted(unexpected_values)[0]!r}",
+                status_code=400,
+            )
+        canonical_inputs: dict[str, Any] = {"root": root}
+        if action in board_actions:
+            if not isinstance(task_id, str) or not isinstance(board_id, str) or not isinstance(section, str):
+                return contract_error("task_id, board_id, and section must be strings", status_code=400)
+            if task_id:
+                canonical_inputs["task_id"] = task_id
+            if action != "blackboard_list":
+                canonical_inputs["board_id"] = board_id or task_id or "default"
+            if action in {"blackboard_update", "blackboard_get", "blackboard_delete"} and section:
+                canonical_inputs["section"] = section
+            if action == "blackboard_update":
+                canonical_inputs.update(content=content, author=author)
+                if expected_version is not None:
+                    canonical_inputs["expected_version"] = expected_version
+            elif action == "blackboard_merge" and remote_sections is not None:
+                canonical_inputs["remote_sections"] = remote_sections
+            if action != "blackboard_update" and (
+                content is not None or author != "agent" or expected_version is not None
+            ):
+                return contract_error(f"content, author, and expected_version are only valid for action='blackboard_update'", status_code=400)
+            if action != "blackboard_merge" and remote_sections is not None:
+                return contract_error("remote_sections is only valid for action='blackboard_merge'", status_code=400)
+            if action in {"blackboard_list", "blackboard_merge"} and section:
+                return contract_error(f"section is not valid for action='{action}'", status_code=400)
+            if action == "blackboard_list" and board_id:
+                return contract_error("board_id is not valid for action='blackboard_list'", status_code=400)
+        else:
+            if task_id or board_id or section or content is not None or author != "agent" or remote_sections is not None or expected_version is not None:
+                return contract_error(f"task and blackboard fields are not valid for action='{action}'", status_code=400)
+            canonical_inputs.update(topic=topic)
+            if action == "pubsub_publish":
+                canonical_inputs.update(message=message, publisher=publisher)
+                if after_seq is not None or limit is not None or after_ts is not None:
+                    return contract_error("after_seq, limit, and after_ts are only valid for action='pubsub_poll'", status_code=400)
+            else:
+                if message is not None or publisher != "agent":
+                    return contract_error("message and publisher are only valid for action='pubsub_publish'", status_code=400)
+                if after_seq is not None:
+                    canonical_inputs["after_seq"] = after_seq
+                if limit is not None:
+                    canonical_inputs["limit"] = limit
+                if after_ts is not None:
+                    canonical_inputs["after_ts"] = after_ts
+        validation_error = validate_operation_arguments(
+            "local_ai_coord", action, canonical_inputs,
+        )
+        if validation_error is not None:
+            return contract_error(validation_error, status_code=400)
     legacy_coord_values: dict[str, dict[str, Any]] = {
         "ask": {"record_id": record_id, "key": key, "query": query, "value": value, "answer": answer},
         "answer": {"record_id": record_id, "key": key, "query": query, "value": value, "question": question},
@@ -4525,21 +4614,25 @@ def local_ai_coord(
         return _compact(CLIENT.post("/api/memory/delete", {"root": root, "key": key}))
     if action.startswith("blackboard_"):
         sub = action[len("blackboard_"):]
-        board = board_id.strip() or task_id or (key if sub in {"get", "list", "merge", "delete"} and not value else "") or "default"
-        sec = section.strip() or (key if (value and sub == "delete") else (key or target_scope or ("" if sub in {"get", "delete"} else "main")))
-        content = record if record is not None else (value or query)
-        author = approver or "agent"
-        exp_v = None
-        if isinstance(checkpoint, dict) and "expected_version" in checkpoint:
-            exp_v = checkpoint["expected_version"]
-        elif status and status.isdigit():
-            exp_v = int(status)
-        return _compact(CLIENT.post("/api/agent-state/blackboard", {
-            "action": sub, "board_id": board, "section": sec or None,
-            "content": content, "author": author,
-            "remote_sections": record or {},
-            "expected_version": exp_v,
-        }, timeout=_timeout("quick")), "status")
+        payload: dict[str, Any] = {
+            "action": sub,
+            "root": root,
+        }
+        if sub != "list":
+            payload["board_id"] = board_id or task_id or "default"
+        if task_id:
+            payload["task_id"] = task_id
+        if sub in {"update", "get", "delete"}:
+            payload["section"] = (section or "main") if sub == "update" else (section or None)
+        if sub == "update":
+            payload.update(content=content, author=author)
+            if expected_version is not None:
+                payload["expected_version"] = expected_version
+        elif sub == "merge":
+            payload["remote_sections"] = remote_sections
+        return _compact(CLIENT.post(
+            "/api/agent-state/blackboard", payload, timeout=_timeout("quick")
+        ), "status")
     if action == "swarm_dispatch":
         return _compact(CLIENT.post("/api/agent-state/swarm/dispatch", {
             "goal": task or value or query,
@@ -4573,9 +4666,15 @@ def local_ai_coord(
         del_branch = status.lower() not in {"false", "0", "no"} if status else True
         return _compact(CLIENT.coord(action="worktree_release", root=root, worktree_path=value or lease_id or key or "", worktree_id=worktree_id, delete_branch=del_branch, branch=key or task or task_id or None), "status")
     if action == "pubsub_publish":
-        return _compact(CLIENT.coord(action="pubsub_publish", topic=key or target_scope or "default", message=value or query or record or {}, publisher=approver or "agent", root=root), "status")
+        return _compact(CLIENT.coord(
+            action="pubsub_publish", topic=topic, message=message,
+            publisher=publisher, root=root,
+        ), "status")
     if action == "pubsub_poll":
-        return _compact(CLIENT.coord(action="pubsub_poll", topic=key or target_scope or "default", after_seq=after_seq, limit=ttl_seconds or 50, root=root), "status")
+        return _compact(CLIENT.coord(
+            action="pubsub_poll", topic=topic, after_seq=after_seq,
+            limit=limit, since_timestamp=after_ts, root=root,
+        ), "status")
     if action == "simulate_merge":
         return _compact(
             CLIENT.coord(

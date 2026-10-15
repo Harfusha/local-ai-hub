@@ -11,6 +11,7 @@ import http.client
 import inspect
 import io
 import json
+import math
 import os
 import socket
 import threading
@@ -1656,22 +1657,56 @@ class HubClient:
                 "branch": kwargs.get("branch") or kwargs.get("key") or kwargs.get("task_id"),
             })
         if act == "pubsub_publish":
+            allowed = {"root", "topic", "message", "publisher"}
+            if set(kwargs) - allowed:
+                return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
+                        "error": "pubsub_publish accepts only root, topic, message, and publisher"}
+            if "message" not in kwargs:
+                return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
+                        "error": "pubsub_publish requires message"}
+            topic = kwargs.get("topic", "default")
+            publisher = kwargs.get("publisher", "agent")
+            if not isinstance(topic, str) or not isinstance(publisher, str):
+                return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
+                        "error": "pubsub topic and publisher must be strings"}
             return self.post("/api/coord/pubsub_publish", {
                 "root": kwargs.get("root", "."),
-                "topic": kwargs.get("topic") if kwargs.get("topic") is not None else "default",
-                "message": kwargs.get("message") if kwargs.get("message") is not None else "",
-                "publisher": kwargs.get("publisher") if kwargs.get("publisher") is not None else "agent",
+                "topic": topic,
+                "message": kwargs["message"],
+                "publisher": publisher,
             })
         if act == "pubsub_poll":
+            allowed = {"root", "topic", "after_seq", "limit", "since_timestamp"}
+            if set(kwargs) - allowed:
+                return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
+                        "error": "pubsub_poll accepts only root, topic, after_seq, limit, and since_timestamp"}
+            topic = kwargs.get("topic", "default")
             limit = kwargs.get("limit")
             after_seq = kwargs.get("after_seq")
+            since_timestamp = kwargs.get("since_timestamp")
+            if not isinstance(topic, str):
+                return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
+                        "error": "pubsub topic must be a string"}
+            if limit is not None and (type(limit) is not int or not 1 <= limit <= 1000):
+                return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
+                        "error": "pubsub limit must be an integer from 1 through 1000"}
+            if after_seq is not None and (type(after_seq) is not int or not 0 <= after_seq <= 2**63 - 1):
+                return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
+                        "error": "pubsub after_seq must be a nonnegative 64-bit integer"}
+            if since_timestamp is not None and (
+                isinstance(since_timestamp, bool)
+                or not isinstance(since_timestamp, (int, float))
+                or not 0 <= since_timestamp <= 1e12
+                or not math.isfinite(since_timestamp)
+            ):
+                return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
+                        "error": "pubsub since_timestamp must be a finite number from 0 through 1e12"}
             payload = {
                 "root": kwargs.get("root", "."),
-                "topic": kwargs.get("topic") if kwargs.get("topic") is not None else "default",
+                "topic": topic,
                 "limit": limit if limit is not None else 50,
                 "after_seq": after_seq if after_seq is not None else 0,
             }
-            since_timestamp = kwargs.get("since_timestamp")
             if since_timestamp is not None:
                 payload["since_timestamp"] = since_timestamp
             return self.post("/api/coord/pubsub_poll", payload)
