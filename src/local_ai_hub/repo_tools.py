@@ -28,6 +28,8 @@ from .search_pagination import MAX_PAGE_SIZE, MAX_PAGE_WINDOW, pagination_bounds
 
 _WORD = re.compile(r"[A-Za-z_][A-Za-z0-9_./:-]{1,80}")
 MAX_EXACT_SEARCH_FILES = 8000
+MAX_EXACT_GIT_PATHS = 128_000
+MAX_EXACT_GIT_PATH_BYTES = 32 * 1024 * 1024
 
 
 class GitFileInventory(list[Path]):
@@ -1607,7 +1609,21 @@ class RepositoryTools:
                 timer.daemon = True
                 timer.start()
                 pending = bytearray()
-                previous_key: str | None = None
+                inventory: set[str] = set()
+                inventory_bytes = 0
+
+                def remember_path(raw: bytes) -> None:
+                    nonlocal inventory_bytes
+                    if not raw:
+                        return
+                    inventory_bytes += len(raw)
+                    if inventory_bytes > MAX_EXACT_GIT_PATH_BYTES:
+                        raise _IncompleteGitInventory("Git exact-search path bytes exceeded bounded inventory")
+                    relative = raw.decode("utf-8", errors="surrogateescape").replace("\\", "/")
+                    inventory.add(Path(relative).as_posix())
+                    if len(inventory) > MAX_EXACT_GIT_PATHS:
+                        raise _IncompleteGitInventory("Git exact-search path count exceeded bounded inventory")
+
                 try:
                     assert process.stdout is not None
                     while True:
@@ -1623,28 +1639,21 @@ class RepositoryTools:
                                 break
                             raw = bytes(pending[:separator])
                             del pending[:separator + 1]
-                            if not raw:
-                                continue
-                            relative = raw.decode("utf-8", errors="surrogateescape").replace("\\", "/")
-                            key = Path(relative).as_posix()
-                            if key == previous_key:
-                                continue
-                            if previous_key is not None and key < previous_key:
-                                raise _IncompleteGitInventory("Git emitted an unsorted exact-search inventory")
-                            previous_key = key
-                            yield base / relative
+                            remember_path(raw)
                     if pending:
-                        relative = pending.decode("utf-8", errors="surrogateescape").replace("\\", "/")
-                        key = Path(relative).as_posix()
-                        if key != previous_key:
-                            if previous_key is not None and key < previous_key:
-                                raise _IncompleteGitInventory("Git emitted an unsorted exact-search inventory")
-                            yield base / relative
+                        remember_path(bytes(pending))
                     return_code = process.wait()
                     if timed_out.is_set():
                         raise TimeoutError("exact Git inventory exceeded its configured time bound")
                     if return_code != 0:
                         raise OSError("Git exact-search inventory failed")
+                    # Git groups cached and untracked output separately; -co is
+                    # not globally ordered. Sort a hard-bounded, deduplicated set
+                    # only after successful enumeration, preserving exactness.
+                    for relative in sorted(inventory):
+                        if time.monotonic() >= deadline:
+                            raise TimeoutError("exact repository search exceeded 60 seconds")
+                        yield base / relative
                 finally:
                     timer.cancel()
                     if process.poll() is None:
@@ -1652,9 +1661,9 @@ class RepositoryTools:
                         process.wait()
                 return
 
-            # Exact mode never consumes a materialized cache inventory: it can be
-            # repository-sized even when the result page is small. Use the direct
-            # Git stream above or a streaming filesystem walk below.
+            # Exact mode does not consume an unchecked cached inventory. The Git
+            # stream above has independent path-count/byte bounds; filesystem
+            # fallback below remains streaming with the eligible-file scan cap.
             def raise_walk_error(error: OSError) -> None:
                 raise error
 
