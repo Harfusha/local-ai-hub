@@ -1119,7 +1119,12 @@ def _code_index_page_with_prefix(
     base: dict[str, Any], raw: dict[str, Any], symbols: list[Any], count: int,
 ) -> dict[str, Any]:
     """Build an honest code-index page containing a whole-symbol prefix."""
-    candidate = dict(base)
+    candidate = copy.deepcopy(base)
+    if raw.get("success") is True:
+        for key in ("error", "status_code", "terminal", "retryable"):
+            candidate.pop(key, None)
+            if key in raw:
+                candidate[key] = copy.deepcopy(raw[key])
     offset = raw.get("offset", 0)
     total = raw.get("total_matches", 0)
     requested_limit = raw.get("limit", 24)
@@ -1150,13 +1155,6 @@ def _code_index_prefix_fitting(
     for count in range(len(symbols), -1, -1):
         candidate = _code_index_page_with_prefix(base, raw, symbols, count)
         candidate = _normalize_deterministic(account_projection(raw, candidate))
-        response_meta = candidate.get("response_budget") if isinstance(candidate, dict) else None
-        if isinstance(response_meta, dict):
-            for _ in range(8):
-                returned = json_tokens(candidate)
-                if response_meta.get("returned_tokens") == returned:
-                    break
-                response_meta["returned_tokens"] = returned
         if json_tokens(candidate) > requested:
             continue
         if wire_budget:
