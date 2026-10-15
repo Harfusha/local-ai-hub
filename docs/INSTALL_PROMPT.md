@@ -257,6 +257,7 @@ Inspect current repository root for existing agent instruction files:
 Trigger map:
 - bounded health/cache/telemetry/debug-trace inspection (never poll): `local_ai_status`
 - GPU pressure status uses cached telemetry without waiting for hardware probes. A pending single-flight refresh returns conservative, explicitly stale pressure/budget metadata. Explicit benchmark sampling still requests a bounded fresh sample; stale status is not benchmark evidence.
+- Host/process/network observation commands (including tasklist, systeminfo, ipconfig and netstat) are allowed reads but never repository-cached. Command responses preserve explicit cache/coalescing markers; classify preserves its classification without extra_fields. The local status guide preserves empty required-field arrays and uses canonical context query and scoped memory_find examples.
 - repository facts/files/symbols: `local_ai_repo`
 - tests/lint/typecheck/build: `local_ai_command`
 - exact source/evidence text: `local_ai_artifact`

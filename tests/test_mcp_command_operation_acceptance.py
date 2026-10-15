@@ -141,7 +141,6 @@ def test_mcp_command_classify_preserves_classification_result(monkeypatch: Any, 
         command="git status --short",
         cwd=root,
         timeout=25,
-        extra_fields=["classification"],
     )
 
     assert backend.calls == [
@@ -370,7 +369,7 @@ def test_mcp_command_speculative_lint_submits_bounded_paths_and_job_identity(
 
     assert backend.calls == [
         (
-            "/api/speculative-lint",
+            "/api/command/speculative-lint",
             {
                 "action": "submit",
                 "root": root,

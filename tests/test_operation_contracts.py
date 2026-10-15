@@ -15,6 +15,7 @@ from local_ai_hub import mcp_server as local_ai_mcp
 from local_ai_hub.operation_contracts import (
     OPERATION_CONTRACTS,
     operation_actions,
+    operation_guide_cards,
     operation_input_schema,
     operation_metadata,
     operation_output_schema,
@@ -25,6 +26,30 @@ from local_ai_hub.operation_contracts import (
 
 
 TOOL = "local_ai_artifact"
+
+
+@pytest.mark.parametrize("profile", ["compact", "standard"])
+def test_guide_projection_preserves_empty_required_fields(profile, monkeypatch):
+    cards = operation_guide_cards()
+    token = local_ai_mcp._CURRENT_RESPONSE_OPTIONS.set({
+        "tool": "local_ai_status", "detail": "guide",
+        "response_profile": profile, "max_response_tokens": 6400,
+    })
+    try:
+        result = local_ai_mcp._compact(cards, "status", extra_fields=[
+            "guide_cards", "guide_scope", "guide_tips", "schema_token_reduction_verified",
+        ])
+    finally:
+        local_ai_mcp._CURRENT_RESPONSE_OPTIONS.reset(token)
+    assert validate_operation_output("local_ai_status", "guide", result) is None
+    assert result["guide_cards"] == cards["guide_cards"]
+    assert next(card for card in result["guide_cards"] if card["tool"] == "local_ai_status")["required"] == []
+
+
+def test_guide_examples_use_current_action_inputs():
+    for card in operation_guide_cards()["guide_cards"]:
+        example = card["example"]
+        assert validate_operation_arguments(card["tool"], example[card["selector"]], example) is None
 
 
 def _config(*, enabled: bool = True) -> dict:
