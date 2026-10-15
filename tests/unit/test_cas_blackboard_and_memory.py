@@ -23,21 +23,17 @@ def test_blackboard_cas_conflict_with_expected_version(tmp_path):
     assert res.get("expected_version") == v1
 
 
-def test_blackboard_cas_conflict_with_expected_etag(tmp_path):
-    board = BlackboardStore(tmp_path / "test.sqlite")
-    board.update("b1", "sec1", {"val": "initial"}, author="agent1")
-    current = board.get("b1", "sec1")
-    assert current.get("success") is True
-    etag = current["section"].get("etag")
-    assert etag is not None
+def test_blackboard_retired_expected_etag_rejected():
+    board = object.__new__(BlackboardStore)
+    with pytest.raises(TypeError, match="expected_etag"):
+        board.update("b1", "sec1", {}, author="agent1", expected_etag="v1")
 
-    # Update section
-    board.update("b1", "sec1", {"val": "second"}, author="agent2")
 
-    # Update with stale etag
-    res = board.update("b1", "sec1", {"val": "stale"}, author="agent1", expected_etag=etag)
-    assert res.get("success") is False
-    assert res.get("conflict") is True
+@pytest.mark.parametrize("value", [True, False, "1", 1.0, -1])
+def test_invalid_expected_version_rejects_before_store_access(value):
+    board = object.__new__(BlackboardStore)
+    with pytest.raises(ValueError, match="expected_version"):
+        board.update("b1", "sec1", {}, author="agent1", expected_version=value)
 
 
 def test_blackboard_cas_success_when_version_matches(tmp_path):
@@ -47,9 +43,7 @@ def test_blackboard_cas_success_when_version_matches(tmp_path):
     assert current.get("success") is True
     sec = current["section"]
 
-    # Update with matching expected_etag
-    etag = sec.get("etag")
-    res = board.update("b1", "sec1", {"val": "B"}, author="agent1", expected_etag=etag)
+    res = board.update("b1", "sec1", {"val": "B"}, author="agent1", expected_version=sec["version"])
     assert res.get("success") is True
     updated = board.get("b1", "sec1")["section"]
     assert updated["version"] == sec["version"] + 1
