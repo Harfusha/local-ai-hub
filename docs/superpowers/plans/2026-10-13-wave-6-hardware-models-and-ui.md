@@ -182,12 +182,16 @@ Support regex URL matching and query parameter wildcards in cassette definitions
 
 ### Task 88: Dynamic Timeout and Retry in `sqlite_support.py` (#51)
 
+**2026-10-15 source reassessment — execution deferred.** Existing `connect_sqlite` applies a caller-bounded connection/busy timeout, closes the connection on setup failures, and intentionally avoids selecting WAL on hot-path connection creation. Existing `retry_busy` already retries only lock/busy errors, caps attempts, doubles the delay up to `max_delay_seconds` and samples jitter in `[0.5*backoff, backoff]`. `714115e3` adds the explicit optional degraded result after exhaustion; other failures still propagate immediately. A second `connect_with_retry` API would duplicate these mechanisms and would not replace operation-level write retry. The plan's `sqlite3.BusyError` spelling is not the public exception used here: Python reports lock contention through `sqlite3.OperationalError` and SQLite error codes handled by `is_busy_error`.
+
+Added deferred cases for exact capped jitter ranges/attempt count, no retry on non-busy errors, and real two-connection writer contention in a `tmp_path` database, releasing the first writer between attempts. No SQLite test or contention workload was executed during this assessment. Whole-Hub lock behavior, latency and concurrent runtime acceptance remain final validation work.
+
 **Files:**
 - Modify: `src/local_ai_hub/sqlite_support.py:70-110`
 - Test: `tests/unit/test_sqlite_dynamic_retry.py`
 
-- [ ] **Step 1: Write test verifying busy timeout backs off exponentially under concurrency**
-- [ ] **Step 2: Implement fix**
+- [x] **Step 1: Write bounded jitter and real writer-contention regression source (execution deferred)**
+- [x] **Step 2: Existing bounded connection and operation-level exponential jitter confirmed; no duplicate API**
 Implement `connect_with_retry` with exponential jitter backoff on `sqlite3.BusyError`.
 - [ ] **Step 3: Run test and verify pass & Commit**
 `git commit -m "fix(sqlite): implement exponential backoff retry for SQLite busy timeouts"`
