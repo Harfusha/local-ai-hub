@@ -506,6 +506,8 @@ Migration drift compares table/column names, including generated columns, using 
 
 Circuit-breaker resource tracking is bounded (default 256 keys); reaching capacity refuses untracked resources without evicting existing protective failures or probes. Transaction snapshot traversal rejects directory cycles and excessive depth (default 64). Token trimming consumes the input once and retains the requested head/tail line count; zero prints no content lines. These source changes still require integrated validation before release acceptance.
 
+Pubsub retains bounded optional live cache (500 topics, 8 MiB serialized charge), 256 subscriptions and 4096 aggregate queue slots. New JSON message envelopes are limited to 64 KiB, 4096 nodes and 32 levels. Ephemeral capacity failure preserves admitted history; durable publication/replay continues with `cache_retained=false` if optional cache is full. Compaction expires cache without disconnecting active subscribers. These limits do not measure Python heap/RSS or prove live concurrency performance; retained durable data is preserved.
+
 ## Local telemetry
 
 Basic aggregate telemetry remains enabled locally. Detailed request traces are disabled by default and can be toggled live in the dashboard. When enabled, they retain complete endpoint input/output locally, including sensitive values, within configured size and retention limits. Local telemetry and trace details stay on this device; only normal agent responses requested by cloud agents leave it.
