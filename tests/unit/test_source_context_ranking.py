@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from local_ai_hub.repo_tools import RepositoryTools
+from local_ai_hub.services import LocalAIServices
 from local_ai_hub.retrieval import (
     is_source_context_query,
     prioritize_source_context_paths,
@@ -139,3 +140,68 @@ def test_source_context_expansion_never_shrinks_large_requested_top_k(monkeypatc
     tools.context_pack(".", "audit source runtime", top_k=100)
 
     assert observed == [100, 100]
+
+
+def test_hybrid_final_evidence_puts_source_first_and_retains_explicit_doc(tmp_path: Path) -> None:
+    _source_fixture(tmp_path)
+    old_plan = "docs/plans/old-runtime-plan.md"
+    runtime_source = "src/service.py"
+    explicit_doc = "docs/pinned-notes.md"
+    query = f"audit source runtime implementation service stop behavior {explicit_doc}"
+
+    class RepeatedDocs:
+        @staticmethod
+        def related_paths(*_args, **_kwargs):
+            return [old_plan]
+
+    class Preprocessor:
+        @staticmethod
+        def candidate_paths(*_args, **_kwargs):
+            return [old_plan]
+
+        @staticmethod
+        def indexed_paths(_root):
+            return [old_plan, runtime_source, explicit_doc]
+
+    class LegacyPack:
+        @staticmethod
+        def context_pack_paths(
+            root, _query, _paths, *, max_tokens, top_k,
+            directory_hints=(), exclude_paths=(), force_include_paths=(),
+        ):
+            evidence = [
+                {"path": old_plan, "start_line": 1, "end_line": 1, "score": 90.0, "raw": "old plan"},
+                {"path": explicit_doc, "start_line": 1, "end_line": 1, "score": 4.0, "raw": "pinned doc"},
+                {"path": runtime_source, "start_line": 1, "end_line": 1, "score": 1.0, "raw": "runtime source"},
+            ]
+            context = "".join(
+                f"--- {item['path']}:1-1 score={item['score']} ---\n{item['raw']}\n"
+                for item in evidence
+            )
+            return {"success": True, "root": root, "context": context, "evidence": evidence, "scanned_files": 3}
+
+    services = LocalAIServices.__new__(LocalAIServices)
+    services.config = {
+        "search": {"context_top_k": 6, "semantic_fraction": 0.0},
+        "features": {"rag": False},
+        "preprocessing": {"lookup_file_cards": 5},
+    }
+    services.learner = None
+    services.rag = None
+    services.deterministic = RepeatedDocs()
+    services.code_index = RepeatedDocs()
+    services.preprocessor = Preprocessor()
+    services.external_tools = None
+    services.evidence_store = None
+    services.repo_tools = LegacyPack()
+
+    result = services._hybrid_context_uncached(
+        str(tmp_path), query, "tenant", None, 1600,
+        path_hints=({"path": old_plan, "purpose": "candidate"},),
+    )
+
+    evidence_paths = [item["path"] for item in result["evidence"]]
+    assert evidence_paths[0] == runtime_source
+    assert result["context"].startswith(f"--- {runtime_source}:1-1 score=1.0 ---\n")
+    assert explicit_doc in evidence_paths
+    assert evidence_paths.index(explicit_doc) < evidence_paths.index(old_plan)
