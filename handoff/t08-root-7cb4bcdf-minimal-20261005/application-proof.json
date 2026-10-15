@@ -1,6 +1,0 @@
-{
-  "application": "exact application to isolated preimage copy; all five postimage hashes match",
-  "root": "all five root bytes still match preimage",
-  "static": "AST parse passed for all five proof paths",
-  "packet_sha256": "67fa823d978ecbc73cdace2804b3ddf5094b1905a7c04a5511f6b468154385eb"
-}

@@ -1,8 +1,0 @@
-[server]
-bind = "127.0.0.1"
-port = 59025
-state_dir = "C:/Users/Adam/.codex/worktrees/t04-integration/.local-ai-hub/artifacts/t04-sync-pytest-followup-20261006/test_mcp_delegate_autostarts_o0/state"
-[client]
-startup_wait_seconds = 2
-startup_poll_seconds = 0.05
-health_timeout_seconds = 0.2

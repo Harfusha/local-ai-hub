@@ -1,5 +1,0 @@
-[commands]
-lint = "ruff check"
-test = "python -m pytest"
-[verification_rules]
-test = ["test", "lint"]

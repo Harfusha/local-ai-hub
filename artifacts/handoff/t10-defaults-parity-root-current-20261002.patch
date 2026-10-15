@@ -1,9 +1,0 @@
-diff --git a/defaults.toml b/defaults.toml
---- a/defaults.toml
-+++ b/defaults.toml
-@@ -469,4 +469,5 @@ max_snippets_per_file = 3
- semantic_fraction = 0.35
- max_files = 8000
-+python_fallback_max_files = 8000 # independent file-count budget; ripgrep has its own timeout
- max_hits = 80
- snippet_lines = 5

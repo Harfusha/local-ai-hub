@@ -1,5 +1,0 @@
-[server]
-port=39123
-state_dir='C:/Users/Adam/.codex/worktrees/t04-integration/.local-ai-hub/artifacts/t04-sync-pytest-20261006/test_safe_post_restart_retry_w0/state'
-[client]
-max_request_timeout_seconds=5

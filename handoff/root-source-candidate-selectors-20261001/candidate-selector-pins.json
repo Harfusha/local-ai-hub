@@ -1,9 +1,0 @@
-{
-  "test_operational_mode.py": "df57dde0bb1c9613bfa7f3f7e31d4747748802e9f82806b9dc2b08d834439820",
-  "test_operational_mode_http.py": "6d1bd9d2b973f77e6fd249191703b559f98f4e7deee7a9cb973b4111a45b3bc5",
-  "test_mcp_agent_routing.py": "c3667f39b2ad245b12e622fb5bacd97baa0647b3a97103449dae76a82c49bb6a",
-  "test_client_transport.py": "917aaba90712669268fc593143e53e96435d5e381883f977413f765c4f7f0134",
-  "test_hubctl_operational_mode.py": "1383e9cb8bcaf0119dc038cb0bfc32c8a8b6ea68287dcb3b1671b68b25cd3e2a",
-  "test_preprocess_operational_mode.py": "040f43c457fa325309a5e342f5dc1766d813ee89dcee189ac63a612631ee73c6",
-  "test_t13_mode_resume_matrix.py": "d1968cbe266963a62d1393a503523559e696907a08276a7ed02f3fd8ca281c10"
-}

@@ -1,9 +1,0 @@
-{
-  "scope": "test-only root fixture correction",
-  "target": "tests/test_agent_context.py",
-  "base_sha256": "ec5c1a2226ad8c6705e523c1dfb841b2719fd324b62cef1dcbfceb21c73ffdfc",
-  "post_sha256": "e9b927a5fd9543cedc503c8d53fd8a07c68dee4b602e09baf0f1e0115d554c24",
-  "patch": "t08-context-reuse-root-fixture-20261005.patch",
-  "patch_sha256": "12df7384cc6209634a1ccbd9ad806ed40c4136814a78c1406c0fd2e2dd0e71e2",
-  "root_written": false
-}

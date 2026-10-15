@@ -1,8 +1,0 @@
-[server]
-state_dir = "C:/Users/Adam/.codex/worktrees/t01-coverage-main-verify/.local-ai-hub/.sync-t01-runtime"
-port = 19841
-api_token = "t01-sync-test-only"
-
-[hardware]
-auto_tune = false
-profile = "balanced"

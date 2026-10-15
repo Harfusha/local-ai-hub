@@ -1,8 +1,0 @@
-diff --git a/src/local_ai_hub/agent_events.py b/src/local_ai_hub/agent_events.py
---- a/src/local_ai_hub/agent_events.py
-+++ b/src/local_ai_hub/agent_events.py
-@@ -205,1 +205,4 @@
-+        ("table", "agent_incidents", "agent_incidents"): (
-+            "6ea9770af294cd83e1fd6dcc80a0c7950bc93d142c27d40996c5acf5a0b478d4",
-+        ),
-         # T08 adds root/version columns to the T05 swarm projection. Both layouts

@@ -1,9 +1,0 @@
---- a/tests/test_agent_state_transport.py
-+++ b/tests/test_agent_state_transport.py
-@@ -39,5 +39,5 @@
-     )
-     # Save a memo
--    app.memory.put(str(tmp_path), "known", "memo_value", 3600)
-+    app.memory.put(str(tmp_path), "known", "memo_value", "test", ttl_seconds=3600)
- 
-     # We mock or run directly via app or client

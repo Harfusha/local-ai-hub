@@ -1,8 +1,0 @@
-diff --git a/src/local_ai_hub/swarm.py b/src/local_ai_hub/swarm.py
---- a/src/local_ai_hub/swarm.py
-+++ b/src/local_ai_hub/swarm.py
-@@ -619,3 +619,3 @@
-             if receipt_id and self.verifications is not None:
--                _, receipt_events = self.verifications.record_in_transaction(con, receipt)
-+                receipt_events = self.verifications.record_in_transaction(con, receipt)
-                 published.extend(receipt_events)

@@ -1,9 +1,0 @@
-{
-  "phase": "RED before current-source path/mode/memory edits",
-  "command": "$env:PYTHONDONTWRITEBYTECODE='1'; $env:PYTEST_DISABLE_PLUGIN_AUTOLOAD='1'; python -B -m pytest -q -p no:cacheprovider --confcutdir=tests --noconftest tests/test_t19_current_prompt_adoption.py --tb=short",
-  "exit_code": 1,
-  "result": "6 failed, 5 passed in 0.15s",
-  "missing_contracts": ["scoped project overlays/current path controls", "active/gaming/maintenance gates", "memory automatic task context/use and non-use ID boundaries"],
-  "review_basis": "Read-only explicit current root source slices from T19 cwd; root source has project_config.py and operational_mode.py absent in T19.",
-  "subagent": "01a0f843-35ee-7443-b503-2c29d6598fcf read-only source scope; closed running without handoff; main reclaimed scope. No subagent edits integrated."
-}

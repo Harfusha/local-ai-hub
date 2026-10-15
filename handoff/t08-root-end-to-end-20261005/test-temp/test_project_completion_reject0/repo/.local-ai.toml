@@ -1,4 +1,0 @@
-[commands]
-test = "python -m pytest -q"
-[verification_rules]
-required_commands = ["test"]
