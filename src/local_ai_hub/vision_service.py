@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import base64
 import threading
 from dataclasses import asdict
 from typing import Any
 
-from .frontend_review import build_coder_context
+from .frontend_review import build_coder_context, compare_screens
 from .vision_contracts import (
     VISION_MAX_RUNTIME_OUTPUT_CHARS,
     bound_vision_result,
@@ -140,6 +141,36 @@ class VisionService:
             "additionalProperties": False,
         }
 
+    def _compare_artifacts(
+        self, args: dict[str, Any], tenant: str, cancel_event: threading.Event | None
+    ) -> dict[str, Any]:
+        if args.get("cloud_fallback"):
+            return {"success": False, "terminal": True, "retryable": False,
+                    "error_code": "visual_comparison_local_only",
+                    "error": "Screenshot comparison uses the configured local vision model only"}
+        screenshots: list[bytes] = []
+        for reference in (
+            args.get("baseline_screenshot_artifact_id"),
+            args.get("screenshot_artifact_id") or args.get("image_artifact_id"),
+        ):
+            if not isinstance(reference, str) or not reference.strip():
+                return {"success": False, "terminal": True, "retryable": False,
+                        "error_code": "visual_comparison_input_invalid",
+                        "error": "Comparison requires baseline and candidate screenshot artifact IDs"}
+            prepared = prepare_vision_inputs(
+                args={"image_artifact_id": reference}, image_path="", prompt="Compare screenshots",
+                tenant=tenant, artifacts=self.artifacts,
+            )
+            if isinstance(prepared, dict):
+                return prepared
+            screenshots.append(base64.b64decode(prepared.images[0], validate=True))
+
+        def review(comparison_args: dict[str, Any]) -> dict[str, Any]:
+            inherited = {key: args[key] for key in ("model", "max_tokens", "root", "cloud_fallback") if key in args}
+            return self.run({**inherited, **comparison_args}, tenant, cancel_event=cancel_event)
+
+        return compare_screens(screenshots[0], screenshots[1], review=review)
+
     def run(
         self,
         args: dict[str, Any],
@@ -172,6 +203,8 @@ class VisionService:
                 "error_code": "invalid_request",
                 "error": "Vision request must be an object.",
             }
+        if args.get("baseline_screenshot_artifact_id"):
+            return self._compare_artifacts(args, tenant, cancel_event)
         image_path = str(args.get("image", args.get("image_path", "")))
         prompt = str(args.get("prompt", args.get("task", "Describe this image in detail.")))
         model, model_error = select_vision_model(args, self.config)

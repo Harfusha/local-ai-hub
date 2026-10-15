@@ -288,6 +288,14 @@ def prepare_vision_inputs(
         if error:
             return error
 
+    comparison_image = args.get("comparison_image")
+    if comparison_image is not None:
+        if not isinstance(comparison_image, str) or not comparison_image or len(images) != 1:
+            return input_error("Visual comparison requires exactly two image inputs.")
+        error = append_image(comparison_image)
+        if error:
+            return error
+
     bundle_context = ""
     if bundle_artifact_id:
         bundle_context, error = resolve_artifact(bundle_artifact_id, VISION_MAX_BUNDLE_CHARS)
