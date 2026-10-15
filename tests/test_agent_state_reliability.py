@@ -360,3 +360,85 @@ def test_http_and_mcp_coordination_endpoints(tmp_path: Path) -> None:
             "clock": None,
         },
     )
+
+
+def test_incident_initialization_retries_transient_preflight_drift(tmp_path: Path, monkeypatch):
+    state = AgentStateStore(tmp_path / "agent_state.sqlite")
+    state._ensure_schema()
+    original = state._preflight_schema_read_only
+    attempts = []
+
+    def preflight():
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise sqlite3.OperationalError("database is locked: agent_state changed during schema preflight")
+        original()
+
+    monkeypatch.setattr(state, "_preflight_schema_read_only", preflight)
+    incidents = IncidentStore(state)
+    assert incidents._initialized
+    assert len(attempts) == 2
+
+
+def test_incident_initialization_rejects_invalid_schema_without_retry(tmp_path: Path, monkeypatch):
+    state = AgentStateStore(tmp_path / "agent_state.sqlite")
+    state._ensure_schema()
+    attempts = []
+
+    def preflight():
+        attempts.append(1)
+        raise RuntimeError("invalid durable schema")
+
+    monkeypatch.setattr(state, "_preflight_schema_read_only", preflight)
+    with pytest.raises(RuntimeError, match="invalid durable schema"):
+        IncidentStore(state)
+    assert len(attempts) == 1
+    with closing(sqlite3.connect(state.db_path)) as connection:
+        assert connection.execute("SELECT name FROM sqlite_master WHERE name = 'agent_incidents'").fetchone() is None
+
+
+def test_incident_schema_is_not_partially_visible_during_initialization(tmp_path: Path, monkeypatch):
+    from local_ai_hub import agent_incidents
+
+    state = AgentStateStore(tmp_path / "agent_state.sqlite")
+    state._ensure_schema()
+    real_connect = agent_incidents.connect_sqlite
+    observations = []
+
+    class ObservedConnection:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def __getattr__(self, name):
+            return getattr(self.connection, name)
+
+        def __enter__(self):
+            self.connection.__enter__()
+            return self
+
+        def __exit__(self, *exc):
+            return self.connection.__exit__(*exc)
+
+        def execute(self, sql, *args):
+            result = self.connection.execute(sql, *args)
+            if "create table" in sql.casefold() and "agent_incidents" in sql:
+                with closing(sqlite3.connect(state.db_path, timeout=0.2)) as reader:
+                    observations.append(reader.execute(
+                        "SELECT name FROM sqlite_master WHERE name = 'agent_incidents'"
+                    ).fetchall())
+            return result
+
+    monkeypatch.setattr(agent_incidents, "connect_sqlite", lambda *a, **kw: ObservedConnection(real_connect(*a, **kw)))
+    assert IncidentStore(state)._initialized
+    assert observations == [[]]
+
+
+def test_standalone_verification_schema_reopens_with_required_task_projection(tmp_path: Path):
+    path = tmp_path / "agent_state.sqlite"
+    verification = VerificationStore(AgentStateStore(path))
+    assert verification.task_store is None
+    reopened = AgentStateStore(path)
+    reopened._ensure_schema()
+    assert IncidentStore(reopened)._initialized
+    with closing(sqlite3.connect(path)) as connection:
+        assert connection.execute("SELECT name FROM sqlite_master WHERE name = 'agent_tasks_projection'").fetchone()
