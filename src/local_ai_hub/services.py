@@ -3306,7 +3306,9 @@ class LocalAIServices:
             try: self.learner.record(root, query)
             except Exception: pass
         try:
-            canonical = {"terms": sorted(set(self.code_index._query_terms(query))), "limit": limit, "offset": offset, "include_code": include_code}
+            # Exact identifier lookup differs from a token-equivalent fuzzy
+            # query (generate_tests versus generate tests).
+            canonical = {"query": query, "terms": sorted(set(self.code_index._query_terms(query))), "limit": limit, "offset": offset, "include_code": include_code}
         except Exception:
             canonical = {"query": " ".join(query.lower().split()), "limit": limit, "offset": offset, "include_code": include_code}
         def compute() -> dict[str, Any]:
