@@ -1360,7 +1360,10 @@ def _compact(value: Any, task_kind: str = "general", extra_fields: list[str] | N
 
 _TELEMETRY_DETAIL_LABELS = {
     "status": frozenset({"complete", "incomplete"}),
-    "omitted_sections": frozenset({"decision_grade_lists", "pending_events", "writer_failures"}),
+    "omitted_sections": frozenset({
+        "decision_grade_lists", "pending_events", "writer_failures",
+        "writer_activity_unobserved", "writer_accounting_unbalanced", "cached_summary_data",
+    }),
 }
 _TELEMETRY_HOTSPOT_LABELS = {
     "type": frozenset({"reliability", "latency", "efficiency", "quality", "observability"}),
@@ -1388,6 +1391,8 @@ def _sanitize_telemetry_payload(value: Any, *, field: str = "", context: str = "
     if not isinstance(value, str):
         return value
 
+    if field == "writer_error_attempts_unit" and value == "attempts":
+        return value
     if _TELEMETRY_SENSITIVE_TEXT_FIELD_RE.search(field):
         return "Error details omitted"
     if context == "detail":
@@ -1490,10 +1495,44 @@ def _telemetry_status_projection(value: Any) -> dict[str, Any]:
         "avoided_cloud_tokens", "avg_duration_ms", "failure_rate", "avg_queue_wait_ms",
         "fallback_count", "degraded_count", "retry_count", "cache_hit_rate", "net_cloud_token_delta_est",
     )
+    projected_summary = {key: summary[key] for key in keep_summary if key in summary}
+    scope = report.get("scope")
+    if isinstance(scope, str) and scope in {"window", "process"}:
+        projected_summary["scope"] = scope
+    if type(report.get("summary_cache_stale")) is bool:
+        projected_summary["summary_cache_stale"] = report["summary_cache_stale"]
+    writer = summary.get("writer")
+    if isinstance(writer, dict):
+        projected_writer: dict[str, Any] = {}
+        numeric_fields = {
+            "process_started_at", "snapshot_end_at", "interval_seconds",
+            "accepted_rate", "overflow_rejection_rate", "post_acceptance_loss_rate",
+            "written_rate", "pending_rate",
+        }
+        count_fields = {
+            "attempted", "accepted", "rejected_overflow", "lost_after_acceptance",
+            "processed", "written", "pending", "dropped", "writer_errors", "writer_error_attempts",
+        }
+        for key in numeric_fields:
+            item = writer.get(key)
+            if type(item) in {int, float} or (key.endswith("_rate") and item is None):
+                projected_writer[key] = item
+        for key in count_fields:
+            item = writer.get(key)
+            if type(item) is int:
+                projected_writer[key] = item
+        if isinstance(writer.get("scope"), str) and writer["scope"] == "current_process":
+            projected_writer["scope"] = "current_process"
+        for key in ("accounting_balanced", "activity_observed"):
+            if type(writer.get(key)) is bool:
+                projected_writer[key] = writer[key]
+        if "writer_error_attempts" in projected_writer:
+            projected_writer["writer_error_attempts_unit"] = "attempts"
+        projected_summary["writer"] = projected_writer
     projected: dict[str, Any] = {
         "success": envelope_success and bool(report.get("success", True)),
         "window": _sanitize_telemetry_payload(report.get("window") if isinstance(report.get("window"), dict) else {}, field="window"),
-        "summary": _sanitize_telemetry_payload({key: summary[key] for key in keep_summary if key in summary}, field="summary"),
+        "summary": _sanitize_telemetry_payload(projected_summary, field="summary"),
         "queue": _sanitize_telemetry_payload(report.get("queue") if isinstance(report.get("queue"), dict) else summary.get("queue", {}), field="queue"),
         "hotspots": _sanitize_telemetry_payload(list(report.get("hotspots") or [])[:12], field="hotspots"),
         "by_operation": _sanitize_telemetry_payload(list(report.get("by_operation") or [])[:20], field="by_operation"),
