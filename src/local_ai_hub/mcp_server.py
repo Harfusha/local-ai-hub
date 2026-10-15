@@ -4280,7 +4280,7 @@ def local_ai_coord(
     source_branch: str = "",
     target_branch: str = "HEAD",
     worktree_path: str = "",
-    delete_branch: bool = False,
+    delete_branch: bool = True,
     output_path: str = "training_dataset.jsonl",
     min_receipts: int = 1,
 ) -> dict[str, Any]:
@@ -4513,10 +4513,10 @@ def local_ai_coord(
         "swarm_status": {"root": root, "swarm_id": swarm_id},
         "swarm_list": {"root": root, "state": state},
         "swarm_cancel": {"root": root, "swarm_id": swarm_id, "reason": reason},
-        "worktree_lease": {"root": root, "branch": branch},
+        "worktree_lease": {"root": root, "branch": branch or None},
         "worktree_release": {
             "root": root, "worktree_path": worktree_path,
-            "worktree_id": worktree_id, "delete_branch": delete_branch, "branch": branch,
+            "worktree_id": worktree_id, "delete_branch": delete_branch, "branch": branch or None,
         },
         "simulate_merge": {"root": root, "source_branch": source_branch, "target_branch": target_branch},
         "curate_dataset": {

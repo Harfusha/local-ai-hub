@@ -782,7 +782,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "source_branch": {"type": "string", "default": ""},
             "target_branch": {"type": "string", "default": "HEAD"},
             "worktree_path": {"type": "string", "default": ""},
-            "delete_branch": {"type": "boolean", "default": False},
+            "delete_branch": {"type": "boolean", "default": True},
             "output_path": {"type": "string", "default": "training_dataset.jsonl"},
             "min_receipts": {"type": "integer", "default": 1},
             "session_id": {"type": "string", "default": "", "maxLength": 256},

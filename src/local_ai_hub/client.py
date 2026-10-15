@@ -1646,15 +1646,15 @@ class HubClient:
         if act == "worktree_lease":
             return self.post("/api/coord/worktree_lease", {
                 "root": kwargs.get("root", "."),
-                "branch": kwargs.get("branch"),
+                "branch": kwargs.get("branch") or None,
             })
         if act in {"worktree_release"}:
             return self.post("/api/coord/worktree_release", {
                 "root": kwargs.get("root", "."),
                 "worktree_path": kwargs.get("worktree_path", ""),
                 "worktree_id": kwargs.get("worktree_id", ""),
-                "delete_branch": kwargs.get("delete_branch", False),
-                "branch": kwargs.get("branch"),
+                "delete_branch": kwargs.get("delete_branch", True),
+                "branch": kwargs.get("branch") or None,
             })
         if act == "pubsub_publish":
             allowed = {"root", "topic", "message", "publisher"}

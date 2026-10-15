@@ -68,22 +68,26 @@ def test_worktree_merge_and_dataset_actions_keep_canonical_types_and_defaults(mo
         worktree_path="", delete_branch=False, branch="",
     )
     mcp_server.local_ai_coord(
+        action="worktree_release", root=str(tmp_path), worktree_id="wt-2",
+    )
+    mcp_server.local_ai_coord(
         action="simulate_merge", root=str(tmp_path), source_branch="feature", target_branch="main",
     )
     mcp_server.local_ai_coord(action="curate_dataset")
 
     lease = fake.calls[0][2]
-    assert lease == {"action": "worktree_lease", "root": str(tmp_path), "branch": ""}
+    assert lease == {"action": "worktree_lease", "root": str(tmp_path), "branch": None}
     release = fake.calls[1][2]
     assert release["worktree_path"] == ""
     assert release["worktree_id"] == "wt-1"
     assert release["delete_branch"] is False
-    assert release["branch"] == ""
-    assert fake.calls[2][2] == {
+    assert release["branch"] is None
+    assert fake.calls[2][2]["delete_branch"] is True
+    assert fake.calls[3][2] == {
         "action": "simulate_merge", "root": str(tmp_path),
         "source_branch": "feature", "target_branch": "main",
     }
-    dataset = fake.calls[3][2]
+    dataset = fake.calls[4][2]
     assert dataset["action"] == "curate_dataset"
     assert dataset["output_path"] == "training_dataset.jsonl"
     assert dataset["min_receipts"] == 1
@@ -144,16 +148,21 @@ def test_hub_client_coord_fallbacks_forward_canonical_fields_only() -> None:
         action="worktree_release", root="repo", worktree_path="", worktree_id="wt-1",
         delete_branch=False, branch="", value="retired", lease_id="retired",
     )
+    client.coord(action="worktree_release", root="repo", worktree_id="wt-2")
     client.coord(
         action="simulate_merge", root="repo", source_branch="source", target_branch="",
         key="retired", branch="retired", target_scope="retired",
     )
 
-    assert calls[0] == ("/api/coord/worktree_lease", {"root": "repo", "branch": ""})
+    assert calls[0] == ("/api/coord/worktree_lease", {"root": "repo", "branch": None})
     assert calls[1] == ("/api/coord/worktree_release", {
         "root": "repo", "worktree_path": "", "worktree_id": "wt-1",
-        "delete_branch": False, "branch": "",
+        "delete_branch": False, "branch": None,
     })
-    assert calls[2] == ("/api/coord/simulate_merge", {
+    assert calls[2] == ("/api/coord/worktree_release", {
+        "root": "repo", "worktree_path": "", "worktree_id": "wt-2",
+        "delete_branch": True, "branch": None,
+    })
+    assert calls[3] == ("/api/coord/simulate_merge", {
         "root": "repo", "source_branch": "source", "target_branch": "",
     })
