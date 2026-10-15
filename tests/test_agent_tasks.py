@@ -48,7 +48,7 @@ def contract_with_criteria(*criteria: str) -> GoalContract:
     )
 
 
-def test_capture_enrichment_remeasures_response_before_checkpoint_commit(store, tmp_path, monkeypatch):
+def test_capture_enrichment_rechecks_selective_wire_budget_before_checkpoint_commit(store, tmp_path, monkeypatch):
     task = store.create(contract_with_criteria(), task_context(), task_id="preflight-capture")
     before_seq = store.state_store.event_page(f"task:{task.task_id}")["last_seq"]
     memory = {
@@ -72,7 +72,7 @@ def test_capture_enrichment_remeasures_response_before_checkpoint_commit(store, 
     commits = []
     monkeypatch.setattr(store, "_commit_update", lambda *args, **kwargs: commits.append(args))
 
-    with pytest.raises(agent_tasks_module.CheckpointResponseBudgetError):
+    with pytest.raises(agent_tasks_module.CheckpointResponseBudgetError) as error:
         store.checkpoint(
             task.task_id,
             TaskCheckpoint(phase="edit", affected_paths=(str(captured),),
@@ -82,6 +82,8 @@ def test_capture_enrichment_remeasures_response_before_checkpoint_commit(store, 
         )
 
     assert len(measured_values) == 2
+    assert error.value.requested_tokens == 128
+    assert error.value.required_tokens == 129
     for projected in measured_values:
         assert projected["task"]["checkpoint"]["state_data"]["memory_context"] == memory
         assert "file_snapshots" not in projected["task"]["checkpoint"]["state_data"]
@@ -860,7 +862,16 @@ def test_completed_requires_repository_revision_for_active_project_rule(
     task = prepare_project_rule_completion(
         store, tmp_path, monkeypatch, with_revision=False
     )
-    store.set_verification_store(VerificationStore(store.state_store, task_store=store))
+    calls = []
+    verifier = VerificationStore(store.state_store, task_store=store)
+    evaluate = verifier.completion
+
+    def record_completion(*args, **kwargs):
+        calls.append((args, kwargs))
+        return evaluate(*args, **kwargs)
+
+    monkeypatch.setattr(verifier, "completion", record_completion)
+    store.set_verification_store(verifier)
 
     with pytest.raises(CompletionGateError, match="trusted repository_revision is unavailable"):
         store.transition(
