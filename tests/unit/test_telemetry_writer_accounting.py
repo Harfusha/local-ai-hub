@@ -1,3 +1,4 @@
+import time
 from pathlib import Path
 
 from local_ai_hub.telemetry import TelemetryStore
@@ -62,6 +63,19 @@ def test_zero_attempts_have_null_rates_and_unobserved_activity(tmp_path: Path) -
     assert "writer_activity_unobserved" in detail["omitted_sections"]
 
 
+def test_unbalanced_writer_counters_make_detail_incomplete(tmp_path: Path) -> None:
+    store = _store_without_writer(tmp_path)
+    writer = {
+        "activity_observed": True,
+        "accounting_balanced": False,
+    }
+
+    detail = store._detail_status(truncated=False, flush_complete=True, writer=writer)
+
+    assert detail["status"] == "incomplete"
+    assert "writer_accounting_unbalanced" in detail["omitted_sections"]
+
+
 def test_cached_summary_refreshes_writer_and_marks_new_rejection_incomplete(tmp_path: Path) -> None:
     store = _store_without_writer(tmp_path)
     with store._stats_lock:
@@ -82,3 +96,30 @@ def test_cached_summary_refreshes_writer_and_marks_new_rejection_incomplete(tmp_
     assert refreshed["detail"]["status"] == "incomplete"
     assert "cached_summary_data" in refreshed["detail"]["omitted_sections"]
     assert refreshed["decision_grade"]["detail"] == refreshed["detail"]
+
+
+def test_dashboard_and_realtime_cache_hits_refresh_writer_status(tmp_path: Path) -> None:
+    store = _store_without_writer(tmp_path)
+    with store._stats_lock:
+        store._stats.update(attempted=1, accepted=1, queued=1, processed=1, written=1)
+    previous = store._writer_snapshot()
+    summary = {
+        "writer": previous,
+        "detail": store._detail_status(truncated=False, flush_complete=True, writer=previous),
+        "decision_grade": {"detail": {}},
+        "scope": "window",
+    }
+    key = (30, "window")
+    store._dashboard_cache[key] = {"summary": summary}
+    store._dashboard_cache_at[key] = time.monotonic()
+    for index in range(100):
+        store._queue.put_nowait(("test", {"index": index}))
+    assert store._enqueue("test", {"overflow": True}) is False
+
+    dashboard = store.dashboard_report(30, scope="window")
+    live = store.realtime_summary(scope="window")
+
+    assert dashboard["summary"]["summary_cache_stale"] is True
+    assert dashboard["summary"]["detail"]["status"] == "incomplete"
+    assert live["summary_cache_stale"] is True
+    assert live["detail"]["status"] == "incomplete"
