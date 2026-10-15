@@ -2344,6 +2344,22 @@ class TaskStore:
                 counts["preserved"] += 1
         return counts
 
+    @staticmethod
+    def _preflight_response_budget(task: TaskState, response_budget_tokens: int | None) -> None:
+        if response_budget_tokens is None:
+            return
+        from .trace_context import current as current_trace_context
+        request_id = str(current_trace_context().get("request_id") or "")
+        raw_result = {"success": True, "task": task.to_dict()}
+        if request_id:
+            raw_result["request_id"] = request_id
+        projected = task_memory_projection(raw_result)
+        if projected is not None:
+            projected = normalize_task_memory_response(projected)
+            required_tokens = task_memory_wire_tokens(projected, response_budget_tokens)
+            if required_tokens > response_budget_tokens:
+                raise CheckpointResponseBudgetError(response_budget_tokens, required_tokens)
+
     def fail(
         self,
         task_id: str,
@@ -2351,6 +2367,7 @@ class TaskStore:
         reason: str = "failed by agent",
         actor: str = "agent",
         idempotency_key: str = "",
+        response_budget_tokens: int | None = None,
     ) -> TaskState:
         current = self.get(task_id)
         if not current:
@@ -2379,6 +2396,7 @@ class TaskStore:
                 checkpoint=current.checkpoint,
                 verification_receipts=current.verification_receipts,
             )
+            self._preflight_response_budget(updated, response_budget_tokens)
             event = AgentEvent.create(
                 stream_id=f"task:{task_id}",
                 kind="task.transitioned",
@@ -2452,18 +2470,7 @@ class TaskStore:
             verification_receipts=current.verification_receipts,
         )
 
-        if response_budget_tokens is not None:
-            from .trace_context import current as current_trace_context
-            request_id = str(current_trace_context().get("request_id") or "")
-            raw_result = {"success": True, "task": updated.to_dict()}
-            if request_id:
-                raw_result["request_id"] = request_id
-            projected = task_memory_projection(raw_result)
-            if projected is not None:
-                projected = normalize_task_memory_response(projected)
-                required_tokens = task_memory_wire_tokens(projected, response_budget_tokens)
-                if required_tokens > response_budget_tokens:
-                    raise CheckpointResponseBudgetError(response_budget_tokens, required_tokens)
+        self._preflight_response_budget(updated, response_budget_tokens)
 
         # File reads are optional checkpoint enrichment. Complete the response
         # preflight first so an undersized MCP budget has no filesystem work.
@@ -2493,18 +2500,7 @@ class TaskStore:
             updated = replace(updated, checkpoint=checkpoint)
             # Captured snapshots affect accounting of the full HTTP result.
             # Recheck the final exact envelope before policy handling/events.
-            if response_budget_tokens is not None:
-                from .trace_context import current as current_trace_context
-                request_id = str(current_trace_context().get("request_id") or "")
-                raw_result = {"success": True, "task": updated.to_dict()}
-                if request_id:
-                    raw_result["request_id"] = request_id
-                projected = task_memory_projection(raw_result)
-                if projected is not None:
-                    projected = normalize_task_memory_response(projected)
-                    required_tokens = task_memory_wire_tokens(projected, response_budget_tokens)
-                    if required_tokens > response_budget_tokens:
-                        raise CheckpointResponseBudgetError(response_budget_tokens, required_tokens)
+            self._preflight_response_budget(updated, response_budget_tokens)
 
         if self.policy_engine and current.status == TaskStatus.ACTIVE:
             budget = self.policy_engine.get_budget(task_id)
@@ -2513,6 +2509,7 @@ class TaskStore:
                     task_id,
                     reason=f"TASK_BUDGET_EXCEEDED: used_tokens={budget.used_tokens}/{budget.max_tokens}, used_compute_seconds={budget.used_compute_seconds:.1f}/{budget.max_compute_seconds:.1f}s",
                     actor="watchdog",
+                    response_budget_tokens=response_budget_tokens,
                 )
 
         event = AgentEvent.create(
