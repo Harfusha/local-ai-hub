@@ -3317,20 +3317,11 @@ def _coverage_markdown_cell(value: Any) -> str:
 
 def render_coverage_artifact(inventory: dict[str, Any], task_id: str | None = None) -> str:
     rows = coverage_rows(_findings(inventory), task_id)
-    machine_fields = (
-        "operation_id", "surface", "name", "status", "evidence_status", "owner", "owner_task",
-        "handler", "fixtures", "access_classification", "cache_key", "tenant_scope", "provenance",
-        "test_ids", "test_coverage", "behavioral_disposition", "benchmark_cohort", "state", "contract",
-        "acceptance", "condition", "reproduction", "evidence", "contract_gaps", "task_id",
-    )
     artifact = {
         "schema_version": 1,
         "description": "Deterministic static API surface coverage; not runtime or behavioral verification.",
         "task_id": task_id,
-        "coverage_rows": [
-            {field: row[field] for field in machine_fields if field in row}
-            for row in rows
-        ],
+        "coverage_rows": rows,
     }
     return json.dumps(artifact, indent=2, sort_keys=True) + "\n"
 
