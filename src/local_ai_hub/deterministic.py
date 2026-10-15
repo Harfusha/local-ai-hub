@@ -56,6 +56,13 @@ _MAX_SCHEMA_FILE_BYTES = 1_048_576
 _MAX_SCHEMA_TOTAL_BYTES = 16_777_216
 _MAX_SCHEMA_SCAN_SECONDS = 3.0
 _SCHEMA_DB_TIMEOUT_SECONDS = 1.0
+_SECRET_SCAN_MAX_ENTRIES = 20_000
+_SECRET_SCAN_MAX_FILES = 1_000
+_SECRET_SCAN_MAX_FILE_BYTES = 1_048_576
+_SECRET_SCAN_MAX_TOTAL_BYTES = 16_777_216
+_SECRET_SCAN_MAX_LINE_BYTES = 65_536
+_SECRET_SCAN_MAX_SECONDS = 5.0
+_SECRET_SCAN_MAX_FINDINGS = 100
 
 
 def _bounded_schema_files(
@@ -5894,171 +5901,226 @@ def test_{sym}_regression_edge_cases():
         p_root = Path(self._root(root))
         if not p_root.is_dir():
             return {"success": False, "error": f"root not found: {root}"}
-
-        def _shannon_entropy(s: str) -> float:
-            if not s:
-                return 0.0
-            import math
-            from collections import Counter
-            counts = Counter(s)
-            length = len(s)
-            return -sum((cnt / length) * math.log2(cnt / length) for cnt in counts.values())
-
-        def _is_test_file(rel_path: str) -> bool:
-            norm = rel_path.replace("\\", "/").lower()
-            parts = norm.split("/")
-            test_dirs = {"test", "tests", "fixtures", "fixture", "mock", "mocks", "__tests__", "spec", "specs"}
-            if any(p in test_dirs for p in parts[:-1]):
-                return True
-            fname = parts[-1]
-            if fname.startswith(("test_", "mock_")):
-                return True
-            test_suffixes = (
-                "_test.py", "_test.go", "_test.js", "_test.ts",
-                ".test.js", ".test.ts", ".test.tsx", ".test.jsx",
-                "_spec.rb", ".spec.ts", ".spec.js"
-            )
-            return any(fname.endswith(sfx) for sfx in test_suffixes)
-
-        def _is_placeholder(token: str) -> bool:
-            t = token.upper()
-            placeholders = (
-                "EXAMPLE", "DUMMY", "SAMPLE", "PLACEHOLDER", "CHANGE_ME", "REPLACE_ME",
-                "YOUR_KEY", "YOUR_API_KEY", "YOUR_SECRET", "MY_SECRET", "FAKETOKEN",
-                "123456789", "ABCDEFGHIJKL"
-            )
-            return any(p in t for p in placeholders)
-
-        patterns = _SECRET_SCAN_PATTERNS
-
+        scan_root = p_root.resolve(strict=True)
+        started = time.monotonic()
+        deadline = started + _SECRET_SCAN_MAX_SECONDS
+        excluded = {".git", "node_modules", "venv", ".venv", "tool-envs", "state", "build", "dist"}
+        binary_suffixes = {".png", ".jpg", ".jpeg", ".exe", ".bin", ".whl", ".pyc", ".db", ".sqlite3", ".zip", ".tar", ".gz", ".lock", ".wasm"}
         findings: list[dict[str, Any]] = []
-        if path:
-            scan_files = [p_root / path]
+        errors: list[str] = []
+        skipped_files = 0
+        visited_entries = 0
+        visited_files = 0
+        eligible_files = 0
+        bytes_read = 0
+        limits_hit: list[str] = []
+        complete = True
+        patterns = _SECRET_SCAN_PATTERNS
+        placeholders = {"EXAMPLE", "DUMMY", "SAMPLE", "PLACEHOLDER", "CHANGE_ME", "REPLACE_ME", "YOUR_KEY", "YOUR_API_KEY", "YOUR_SECRET", "MY_SECRET", "FAKETOKEN", "123456789", "ABCDEFGHIJKL"}
+
+        def _shannon_entropy(value: str) -> float:
+            if not value:
+                return 0.0
+            counts = Counter(value)
+            length = len(value)
+            return -sum((count / length) * math.log2(count / length) for count in counts.values())
+
+        def _placeholder(token: str) -> bool:
+            return token.upper() in placeholders
+
+        def _record_error(code: str) -> None:
+            nonlocal complete
+            complete = False
+            if len(errors) < 20:
+                errors.append(code)
+
+        if path is not None:
+            requested = Path(path)
+            target = requested if requested.is_absolute() else scan_root / requested
+            try:
+                resolved = target.resolve(strict=True)
+                resolved.relative_to(scan_root)
+                if target.is_symlink() or not resolved.is_file():
+                    raise ValueError
+                scan_files = [resolved]
+            except (OSError, ValueError):
+                scan_files = []
+                _record_error("requested_path_unreadable_or_outside_root")
         else:
             scan_files = []
-            for root_dir, dirs, files in os.walk(p_root):
-                dirs[:] = [d for d in dirs if not any(d.startswith(prefix) for prefix in (".", "node_modules", "venv", "tool-envs", "state", "build", "dist"))]
-                for f in files:
-                    scan_files.append(Path(root_dir) / f)
+            pending = [scan_root]
+            while pending:
+                if time.monotonic() >= deadline:
+                    limits_hit.append("time")
+                    complete = False
+                    break
+                current = pending.pop()
+                try:
+                    current.relative_to(scan_root)
+                    with os.scandir(current) as entries:
+                        for entry in entries:
+                            visited_entries += 1
+                            if visited_entries > _SECRET_SCAN_MAX_ENTRIES:
+                                limits_hit.append("visited_entries")
+                                complete = False
+                                pending.clear()
+                                break
+                            if entry.name in excluded or entry.name.startswith("."):
+                                skipped_files += 1
+                                continue
+                            if entry.is_symlink() or getattr(os.path, "isjunction", lambda _p: False)(entry.path):
+                                skipped_files += 1
+                                continue
+                            candidate = Path(entry.path)
+                            if entry.is_dir(follow_symlinks=False):
+                                pending.append(candidate)
+                            elif entry.is_file(follow_symlinks=False):
+                                scan_files.append(candidate)
+                except (OSError, PermissionError):
+                    _record_error("directory_unreadable")
 
-        for p in scan_files:
-            if not p.is_file():
-                continue
-            if p.suffix.lower() in (".png", ".jpg", ".jpeg", ".exe", ".bin", ".whl", ".pyc", ".db", ".sqlite3", ".zip", ".tar", ".gz", ".lock", ".wasm"):
-                continue
+        for candidate in scan_files:
+            if time.monotonic() >= deadline:
+                limits_hit.append("time")
+                complete = False
+                break
+            if visited_files >= _SECRET_SCAN_MAX_FILES:
+                limits_hit.append("visited_files")
+                complete = False
+                break
+            visited_files += 1
             try:
-                rel = str(p.relative_to(p_root)).replace("\\", "/")
-                is_test = _is_test_file(rel)
-                lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
-                for line_no, line in enumerate(lines, 1):
-                    stripped_line = line.strip()
-                    if not stripped_line or stripped_line.startswith(("#", "//", "/*", "*")):
-                        continue
-                    for rule_name, label, pat, base_sev in patterns:
-                        m = pat.search(line)
-                        if not m:
-                            continue
-                        secret_token = m.group(1) if m.groups() else m.group(0)
-                        entropy = _shannon_entropy(secret_token)
-                        placeholder = _is_placeholder(secret_token)
-                        if rule_name == "generic_secret_assignment" and entropy < 3.0 and not is_test:
-                            continue
-
-                        if len(secret_token) > 8:
-                            masked_secret = f"{secret_token[:4]}***{secret_token[-4:]}"
+                resolved = candidate.resolve(strict=True)
+                resolved.relative_to(scan_root)
+                if candidate.is_symlink() or not resolved.is_file():
+                    skipped_files += 1
+                    continue
+                rel = resolved.relative_to(scan_root).as_posix()
+                if resolved.suffix.lower() in binary_suffixes:
+                    skipped_files += 1
+                    continue
+                size = resolved.stat().st_size
+                if size > _SECRET_SCAN_MAX_FILE_BYTES or bytes_read + size > _SECRET_SCAN_MAX_TOTAL_BYTES:
+                    limits_hit.append("file_bytes" if size > _SECRET_SCAN_MAX_FILE_BYTES else "aggregate_bytes")
+                    complete = False
+                    skipped_files += 1
+                    continue
+                eligible_files += 1
+                with resolved.open("rb") as source:
+                    line_no = 0
+                    line_buffer = bytearray()
+                    too_long = False
+                    while True:
+                        chunk = source.read(8192)
+                        if not chunk:
+                            if line_buffer and not too_long:
+                                chunks = [bytes(line_buffer)]
+                            else:
+                                chunks = []
+                            eof = True
                         else:
-                            masked_secret = "***"
-
-                        redacted_line = line.replace(secret_token, masked_secret).strip()[:140]
-                        severity = "LOW" if (is_test or placeholder) else base_sev
-
-                        findings.append({
-                            "file": rel,
-                            "line": line_no,
-                            "rule": rule_name,
-                            "description": label,
-                            "secret_type": rule_name,
-                            "severity": severity,
-                            "is_test": is_test,
-                            "is_placeholder": placeholder,
-                            "entropy": round(entropy, 2),
-                            "match": masked_secret,
-                            "redacted_secret": masked_secret,
-                            "redacted_snippet": redacted_line,
-                        })
-                        if len(findings) >= 100:
+                            bytes_read += len(chunk)
+                            if bytes_read > _SECRET_SCAN_MAX_TOTAL_BYTES:
+                                limits_hit.append("aggregate_bytes")
+                                complete = False
+                                break
+                            segments = chunk.split(b"\n")
+                            chunks = []
+                            for index, segment in enumerate(segments):
+                                if too_long:
+                                    if index < len(segments) - 1:
+                                        too_long = False
+                                    continue
+                                if len(line_buffer) + len(segment) > _SECRET_SCAN_MAX_LINE_BYTES:
+                                    too_long = True
+                                    line_buffer.clear()
+                                    _record_error("line_exceeds_scan_limit")
+                                    continue
+                                line_buffer.extend(segment)
+                                if index < len(segments) - 1:
+                                    chunks.append(bytes(line_buffer))
+                                    line_buffer.clear()
+                            eof = False
+                        for raw_line in chunks:
+                            line_no += 1
+                            line = raw_line.decode("utf-8", errors="replace")
+                            stripped_line = line.strip()
+                            if not stripped_line or stripped_line.startswith(("#", "//", "/*", "*")):
+                                continue
+                            is_test = _is_test_file(rel)
+                            redacted_line = line
+                            matches: list[tuple[str, str, re.Pattern[str], str, str, float, bool]] = []
+                            for rule_name, label, pattern, base_sev in patterns:
+                                for match in pattern.finditer(line):
+                                    token = match.group(1) if match.groups() else match.group(0)
+                                    entropy = _shannon_entropy(token)
+                                    if rule_name == "generic_secret_assignment" and entropy < 3.0:
+                                        continue
+                                    masked = f"{token[:4]}***{token[-4:]}" if len(token) > 8 else "***"
+                                    matches.append((rule_name, label, pattern, base_sev, masked, entropy, _placeholder(token)))
+                                    redacted_line = redacted_line.replace(token, "[REDACTED]")
+                            for rule_name, label, _pattern, severity, masked, entropy, placeholder in matches:
+                                findings.append({
+                                    "file": rel, "line": line_no, "rule": rule_name,
+                                    "description": label, "secret_type": rule_name,
+                                    "severity": severity, "is_test": is_test,
+                                    "is_placeholder": placeholder, "triage_status": "untriaged",
+                                    "entropy": round(entropy, 2), "match": masked,
+                                    "redacted_secret": masked,
+                                    "redacted_snippet": redacted_line.strip()[:140],
+                                })
+                                if len(findings) >= _SECRET_SCAN_MAX_FINDINGS:
+                                    limits_hit.append("findings")
+                                    complete = False
+                                    break
+                            if len(findings) >= _SECRET_SCAN_MAX_FINDINGS:
+                                break
+                        if len(findings) >= _SECRET_SCAN_MAX_FINDINGS or (not chunk and eof):
                             break
-                    if len(findings) >= 100:
+                        if time.monotonic() >= deadline:
+                            limits_hit.append("time")
+                            complete = False
+                            break
+                    if not complete and limits_hit:
                         break
-            except Exception:
-                continue
+            except (OSError, UnicodeError, ValueError):
+                _record_error("file_unreadable_or_outside_root")
+            if not complete and limits_hit:
+                break
 
-        if scan_git_history and shutil.which("git"):
-            try:
-                proc = subprocess.run(
-                    ["git", "-C", str(p_root), "log", "-p", f"-n{max(1, int(commit_depth))}"],
-                    capture_output=True, text=True, check=False, timeout=15, **hidden_run_kwargs(),
-                )
-                if proc.returncode == 0:
-                    current_commit = "HEAD"
-                    current_file = "git-history"
-                    for h_line in proc.stdout.splitlines():
-                        if len(findings) >= 150:
-                            break
-                        if h_line.startswith("commit "):
-                            parts = h_line.split()
-                            if len(parts) >= 2:
-                                current_commit = parts[1][:8]
-                            continue
-                        elif h_line.startswith("diff --git "):
-                            parts = h_line.split()
-                            if len(parts) >= 4:
-                                current_file = parts[3].lstrip("b/")
-                            continue
-                        if not h_line.startswith("+") or h_line.startswith("+++"):
-                            continue
-                        raw_line = h_line[1:]
-                        for rule_name, label, pattern, base_sev in patterns:
-                            m = pattern.search(raw_line)
-                            if not m:
-                                continue
-                            secret_token = m.group(1) if m.groups() else m.group(0)
-                            entropy = _shannon_entropy(secret_token)
-                            placeholder = _is_placeholder(secret_token)
-                            if rule_name == "generic_secret_assignment" and entropy < 3.0:
-                                continue
-                            masked = f"{secret_token[:4]}***{secret_token[-4:]}" if len(secret_token) > 8 else "***"
-                            findings.append({
-                                "file": f"{current_file} (commit {current_commit})",
-                                "line": 0,
-                                "rule": rule_name,
-                                "description": f"{label} (in git history commit {current_commit})",
-                                "secret_type": rule_name,
-                                "severity": "LOW" if placeholder else base_sev,
-                                "is_test": _is_test_file(current_file),
-                                "is_placeholder": placeholder,
-                                "in_git_history": True,
-                                "commit": current_commit,
-                                "entropy": round(entropy, 2),
-                                "match": masked,
-                                "redacted_secret": masked,
-                                "redacted_snippet": raw_line.replace(secret_token, masked).strip()[:140],
-                            })
-            except Exception:
-                pass
+        history_status = "not_requested"
+        if scan_git_history:
+            history_status = "unsupported_bounded_process_capture"
+            _record_error("git_history_not_scanned")
 
-        real_leaks = [f for f in findings if not f["is_test"] and not f["is_placeholder"]]
-        test_fixtures = [f for f in findings if f["is_test"] or f["is_placeholder"]]
-
+        leak_count = len(findings)
         return {
             "success": True,
-            "leak_count": len(real_leaks),
-            "real_leaks_count": len(real_leaks),
-            "test_findings_count": len(test_fixtures),
-            "secrets_count": len(findings),
-            "scanned_git_history": bool(scan_git_history),
-            "clean": len(real_leaks) == 0,
-            "findings": findings[:100],
+            "leak_count": leak_count,
+            "real_leaks_count": leak_count,
+            "test_findings_count": sum(1 for item in findings if item["is_test"] or item["is_placeholder"]),
+            "secrets_count": leak_count,
+            "scanned_git_history": False,
+            "git_history_status": history_status,
+            "clean": complete and leak_count == 0,
+            "scan_complete": complete,
+            "coverage": {
+                "visited_entries": visited_entries,
+                "visited_files": visited_files,
+                "eligible_files": eligible_files,
+                "skipped_files": skipped_files,
+                "bytes_read": bytes_read,
+                "limits_hit": sorted(set(limits_hit)),
+                "errors": errors,
+                "elapsed_seconds": round(time.monotonic() - started, 3),
+                "max_entries": _SECRET_SCAN_MAX_ENTRIES,
+                "max_files": _SECRET_SCAN_MAX_FILES,
+                "max_file_bytes": _SECRET_SCAN_MAX_FILE_BYTES,
+                "max_total_bytes": _SECRET_SCAN_MAX_TOTAL_BYTES,
+                "max_seconds": _SECRET_SCAN_MAX_SECONDS,
+                "max_findings": _SECRET_SCAN_MAX_FINDINGS,
+            },
+            "findings": findings,
         }
 
     def schema_inspect(self, root: str, db_path: str | None = None) -> dict[str, Any]:
