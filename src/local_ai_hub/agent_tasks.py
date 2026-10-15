@@ -945,7 +945,7 @@ class TaskStore:
         audit = state_data.get("memory_audit")
         if not isinstance(audit, Mapping):
             raise CompletionGateError(
-                "Cannot transition to COMPLETED: memory context requires checkpoint memory_audit"
+                "Invalid checkpoint memory audit: memory context requires checkpoint memory_audit at state_data.memory_audit"
             )
         available_ids = {
             str(item.get("id", ""))
@@ -955,17 +955,17 @@ class TaskStore:
         used_ids = audit.get("used_ids", ())
         if not isinstance(used_ids, (list, tuple)) or any(not isinstance(value, str) for value in used_ids):
             raise CompletionGateError(
-                "Cannot transition to COMPLETED: memory_audit.used_ids must be a list of IDs"
+                "Invalid checkpoint memory audit: state_data.memory_audit.used_ids must be a list of IDs"
             )
         if not set(used_ids).issubset(available_ids):
             raise CompletionGateError(
-                "Cannot transition to COMPLETED: memory_audit references unavailable memory IDs"
+                "Invalid checkpoint memory audit: state_data.memory_audit references unavailable memory IDs"
             )
         raw_not_used_reason = audit.get("not_used_reason", "")
         not_used_reason = raw_not_used_reason.strip() if isinstance(raw_not_used_reason, str) else ""
         if not used_ids and not not_used_reason:
             raise CompletionGateError(
-                "Cannot transition to COMPLETED: record used memory IDs or not_used_reason in checkpoint"
+                "Invalid checkpoint memory audit: record used_ids or a nonempty not_used_reason in state_data.memory_audit"
             )
         volatile_used = {
             str(item.get("id", ""))
@@ -975,7 +975,7 @@ class TaskStore:
         source_checks = audit.get("source_checks", {})
         if volatile_used and not isinstance(source_checks, Mapping):
             raise CompletionGateError(
-                "Cannot transition to COMPLETED: volatile memory requires source_checks"
+                "Invalid checkpoint memory audit: volatile memory requires state_data.memory_audit.source_checks"
             )
         for record_id in volatile_used:
             check = source_checks.get(record_id) if isinstance(source_checks, Mapping) else None
@@ -990,7 +990,7 @@ class TaskStore:
                 )
             if not has_current_source:
                 raise CompletionGateError(
-                    f"Cannot transition to COMPLETED: volatile memory '{record_id}' lacks current-source check"
+                    f"Invalid checkpoint memory audit: volatile memory '{record_id}' lacks a current-source check in state_data.memory_audit.source_checks"
                 )
 
 

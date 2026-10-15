@@ -546,7 +546,28 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "ttl_seconds": {"type": "integer", "default": 0},
             "max_tokens": {"type": "integer", "default": 0},
             "contract": {"type": "object"},
-            "checkpoint": {"type": "object"},
+            "checkpoint": {
+                "type": "object",
+                "description": "TaskCheckpoint. When server memory items or warnings exist, every checkpoint must include state_data.memory_audit; completion checks the same audit.",
+                "properties": {"state_data": {
+                    "type": "object",
+                    "properties": {"memory_audit": {
+                        "type": "object",
+                        "description": "Cite only supplied memory IDs actually used; otherwise provide a nonempty not_used_reason. Used volatile IDs require a current-source check.",
+                        "properties": {
+                            "used_ids": {"type": "array", "items": {"type": "string"}},
+                            "not_used_reason": {"type": "string"},
+                            "source_checks": {
+                                "type": "object",
+                                "additionalProperties": {"type": "object", "properties": {
+                                    "source": {"type": "string"},
+                                    "evidence_ids": {"type": "array", "items": {"type": "string"}},
+                                }},
+                            },
+                        },
+                    }},
+                }},
+            },
             "record": {"type": "object"},
             "fingerprint": {"type": "object"},
             "tool_outcome": {"type": "object"},
