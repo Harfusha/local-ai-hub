@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 import math
+from pathlib import PurePosixPath
 import re
 
 
@@ -28,6 +29,17 @@ _SOURCE_SUFFIXES = {
     ".rs", ".java", ".cs", ".cpp", ".cc", ".c", ".h", ".hpp", ".sql",
 }
 _CONFIG_SUFFIXES = {".toml", ".yaml", ".yml", ".json"}
+_MAX_FUSION_PATHS_PER_GROUP = 4096
+
+
+def _canonical_fusion_path(value: object) -> str | None:
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip().replace("\\", "/")
+    if not candidate:
+        return None
+    normalized = str(PurePosixPath(candidate))
+    return None if normalized in {"", "."} else normalized
 
 
 def is_source_context_query(query: str) -> bool:
@@ -110,6 +122,13 @@ def fuse_ranked_paths(
     Reciprocal-rank fusion rewards agreement without allowing one noisy backend
     to dominate. The returned ordering is deterministic for reproducible packs.
     """
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+        raise ValueError("limit must be a positive integer")
+    if isinstance(max_per_path, bool) or not isinstance(max_per_path, int) or max_per_path <= 0:
+        raise ValueError("max_per_path must be a positive integer")
+    if not isinstance(groups, Mapping):
+        return []
+
     backend_weights = {
         "deterministic": 1.25,
         "code_index": 1.20,
@@ -120,29 +139,55 @@ def fuse_ranked_paths(
     }
     if isinstance(source_weights, Mapping):
         for source, configured in source_weights.items():
-            if (
-                str(source) not in {"deterministic", "code_index"}
-                and str(source) in backend_weights
-                and not isinstance(configured, bool)
-                and isinstance(configured, (int, float))
-                and math.isfinite(float(configured))
-                and 0.0 <= float(configured) <= 1.0
-            ):
-                backend_weights[str(source)] *= float(configured)
+            source_name = source if isinstance(source, str) else None
+            if source_name is None or source_name in {"deterministic", "code_index"}:
+                continue
+            if source_name not in backend_weights or isinstance(configured, bool):
+                continue
+            if isinstance(configured, int):
+                if configured not in (0, 1):
+                    continue
+                weight_scale = float(configured)
+            elif isinstance(configured, float):
+                if not math.isfinite(configured) or not 0.0 <= configured <= 1.0:
+                    continue
+                weight_scale = configured
+            else:
+                continue
+            backend_weights[source_name] *= weight_scale
     scores: dict[str, float] = defaultdict(float)
     sources: dict[str, set[str]] = defaultdict(set)
+    per_backend_cap = min(_MAX_FUSION_PATHS_PER_GROUP, max(128, limit * 8))
     # Backend results can arrive in different completion orders. Stable source
     # iteration prevents floating-point accumulation from reordering tied paths.
-    for source, paths in sorted(groups.items(), key=lambda item: str(item[0])):
-        weight = backend_weights.get(str(source), 0.75)
+    for source, paths in sorted(
+        ((name, values) for name, values in groups.items() if isinstance(name, str)),
+        key=lambda item: item[0],
+    ):
+        if (
+            not isinstance(paths, Iterable)
+            or isinstance(paths, (str, bytes, bytearray, Mapping))
+        ):
+            continue
+        weight = backend_weights.get(source, 0.75)
         seen: set[str] = set()
-        for rank, raw_path in enumerate(paths):
-            path = str(raw_path or "").replace("\\", "/").strip()
-            if not path or path in seen:
+        try:
+            iterator = iter(paths)
+        except (TypeError, ValueError):
+            continue
+        for rank in range(per_backend_cap):
+            try:
+                raw_path = next(iterator)
+            except StopIteration:
+                break
+            except Exception:
+                break
+            path = _canonical_fusion_path(raw_path)
+            if path is None or path in seen:
                 continue
             seen.add(path)
             scores[path] += weight / (60.0 + rank + 1.0)
-            sources[path].add(str(source))
+            sources[path].add(source)
 
     # Agreement bonus makes independent structural and lexical confirmation win
     # over a single generic text hit.
