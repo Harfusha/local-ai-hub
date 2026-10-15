@@ -2435,29 +2435,6 @@ class TaskStore:
         """Persist a validated agent checkpoint or server-owned bookkeeping."""
         task_id = current.task_id
 
-        if capture_files or checkpoint.state_data.get("capture_files"):
-            snaps = dict(checkpoint.state_data.get("file_snapshots") or {})
-            for p_str in checkpoint.affected_paths:
-                if p_str not in snaps:
-                    try:
-                        p = Path(p_str)
-                        if p.exists() and p.is_file():
-                            snaps[p_str] = p.read_text(encoding="utf-8", errors="ignore")
-                        else:
-                            snaps[p_str] = None
-                    except OSError:
-                        pass
-            new_sd = dict(checkpoint.state_data)
-            new_sd["file_snapshots"] = snaps
-            checkpoint = TaskCheckpoint(
-                phase=checkpoint.phase,
-                next_action=checkpoint.next_action,
-                affected_paths=checkpoint.affected_paths,
-                evidence_ids=checkpoint.evidence_ids,
-                blockers=checkpoint.blockers,
-                state_data=new_sd,
-            )
-
         now = time.time()
         heartbeat = now + self.default_heartbeat_ttl if current.status == TaskStatus.ACTIVE else current.heartbeat_expires_at
 
@@ -2483,6 +2460,32 @@ class TaskStore:
                 required_tokens = task_memory_wire_tokens(projected, response_budget_tokens)
                 if required_tokens > response_budget_tokens:
                     raise CheckpointResponseBudgetError(response_budget_tokens, required_tokens)
+
+        # File reads are optional checkpoint enrichment. Complete the response
+        # preflight first so an undersized MCP budget has no filesystem work.
+        if capture_files or checkpoint.state_data.get("capture_files"):
+            snaps = dict(checkpoint.state_data.get("file_snapshots") or {})
+            for p_str in checkpoint.affected_paths:
+                if p_str not in snaps:
+                    try:
+                        p = Path(p_str)
+                        if p.exists() and p.is_file():
+                            snaps[p_str] = p.read_text(encoding="utf-8", errors="ignore")
+                        else:
+                            snaps[p_str] = None
+                    except OSError:
+                        pass
+            new_sd = dict(checkpoint.state_data)
+            new_sd["file_snapshots"] = snaps
+            checkpoint = TaskCheckpoint(
+                phase=checkpoint.phase,
+                next_action=checkpoint.next_action,
+                affected_paths=checkpoint.affected_paths,
+                evidence_ids=checkpoint.evidence_ids,
+                blockers=checkpoint.blockers,
+                state_data=new_sd,
+            )
+            updated = replace(updated, checkpoint=checkpoint)
 
         if self.policy_engine and current.status == TaskStatus.ACTIVE:
             budget = self.policy_engine.get_budget(task_id)

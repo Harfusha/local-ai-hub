@@ -97,6 +97,7 @@ def task_memory_projection(value: Any) -> dict[str, Any] | None:
         "context_id", "task_id", "request_id", "artifact_id", "evidence_ids",
         "stale", "degraded", "partial", "supported", "unsupported", "outcome_unknown",
         "request_not_sent", "in_progress", "cancelled", "timed_out", "fallback_used",
+        "mutation_applied", "operation_not_started",
     ) if key in value}
     projected["task"] = projected_task
     if "task_id" in projected_task:
@@ -111,6 +112,7 @@ def task_memory_essential_response(value: dict[str, Any]) -> dict[str, Any]:
         "context_id", "task_id", "stale", "degraded", "partial", "task",
         "supported", "unsupported", "outcome_unknown", "request_not_sent",
         "in_progress", "cancelled", "timed_out", "fallback_used",
+        "mutation_applied", "operation_not_started",
     ) if key in value}
     task = essential.get("task")
     if isinstance(task, dict):

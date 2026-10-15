@@ -1137,6 +1137,8 @@ _OUTPUT_ENVELOPE_PROPERTIES: dict[str, dict[str, Any]] = {
     "retry_after_seconds": {"type": "number"},
     "outcome_unknown": {"type": "boolean"},
     "request_not_sent": {"type": "boolean"},
+    "mutation_applied": {"type": "boolean"},
+    "operation_not_started": {"type": "boolean"},
     "retried": {"type": "boolean"},
     "evidence_ids": {"type": "array", "items": {"type": "string"}},
     "evidence": {"type": "array", "items": _OPEN_OUTPUT_OBJECT},

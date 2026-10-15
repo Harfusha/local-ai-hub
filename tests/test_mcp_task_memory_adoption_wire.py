@@ -72,7 +72,7 @@ def _memory(root: Path):
     }
 
 
-def _round_trip(tmp_path, requests, monkeypatch, *, real_store=False):
+def _round_trip(tmp_path, requests, monkeypatch, *, real_store=False, return_store=False):
     repo = tmp_path / "repository"
     repo.mkdir()
     expected = _memory(repo)
@@ -85,7 +85,7 @@ def _round_trip(tmp_path, requests, monkeypatch, *, real_store=False):
         from local_ai_hub.agent_events import AgentStateStore
         from local_ai_hub.agent_identity import AgentScope, ScopeContext
         from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStatus, MemoryStore
-        from local_ai_hub.agent_tasks import GoalContract, TaskCheckpoint, TaskStore
+        from local_ai_hub.agent_tasks import CompletionGateError, GoalContract, TaskCheckpoint, TaskStore
         from local_ai_hub import trace_context
 
         state_store = AgentStateStore(tmp_path / "real-agent-state.sqlite3")
@@ -114,7 +114,34 @@ def _round_trip(tmp_path, requests, monkeypatch, *, real_store=False):
                             ScopeContext(repository_id=str(repo), task_id=TASK_ID), task_id=TASK_ID,
                             repo_root=str(repo), actor="wire-owner")
                     elif action == "checkpoint":
-                        task = tasks.checkpoint(TASK_ID, TaskCheckpoint.from_dict(body["checkpoint"]), actor="wire-owner")
+                        try:
+                            task = tasks.checkpoint(
+                                TASK_ID, TaskCheckpoint.from_dict(body["checkpoint"]),
+                                response_budget_tokens=body.get("response_budget_tokens"),
+                                actor="wire-owner")
+                        except (ValueError, CompletionGateError) as exc:
+                            from local_ai_hub.agent_tasks import CheckpointResponseBudgetError
+                            if isinstance(exc, CheckpointResponseBudgetError):
+                                status = 413
+                                payload = {
+                                    "success": False, "error": str(exc), "status_code": status,
+                                    "terminal": True, "retryable": False,
+                                    "mutation_applied": False, "operation_not_started": True,
+                                    "response_budget": {"requested_tokens": exc.requested_tokens,
+                                                        "required_tokens": exc.required_tokens,
+                                                        "unit": "estimated_tokens"},
+                                }
+                            else:
+                                status = 400
+                                payload = {"success": False, "error": str(exc), "status_code": status,
+                                           "terminal": True, "retryable": False}
+                            encoded = json.dumps(payload).encode()
+                            self.send_response(status)
+                            self.send_header("Content-Type", "application/json")
+                            self.send_header("Content-Length", str(len(encoded)))
+                            self.end_headers()
+                            self.wfile.write(encoded)
+                            return
                     elif action == "resume":
                         task = tasks.resume(TASK_ID, actor="wire-owner", idempotency_key="wire-resume")
                     else:
@@ -232,6 +259,8 @@ def _round_trip(tmp_path, requests, monkeypatch, *, real_store=False):
         requested = request.get("max_response_tokens", 3200)
         assert wire_tokens <= requested
         assert payload["response_budget"]["returned_tokens"] == wire_tokens
+    if return_store:
+        return expected, calls, results, tasks
     return expected, calls, results
 
 
@@ -259,6 +288,55 @@ def test_real_store_create_checkpoint_get_and_resume_deliver_memories_over_stdio
     assert results[2].structuredContent["task"]["checkpoint"]["state_data"]["memory_audit"] == audit
     assert results[3].structuredContent["task"]["checkpoint"]["state_data"]["memory_audit"] is None
     assert [call["body"]["action"] for call in calls] == ["create", "checkpoint", "get", "resume"]
+
+
+def test_registered_mcp_checkpoint_budget_preflight_is_atomic_at_128_tokens(tmp_path, monkeypatch):
+    audit = {"used_ids": ["mem_store_wire"]}
+    _, calls, results, tasks = _round_trip(tmp_path, [
+        {"action": "task_create", "contract": {"goal": "Verify renderer cache theme revision"}},
+        {"action": "task_checkpoint", "checkpoint": {"phase": "edit", "state_data": {"memory_audit": audit}},
+         "response_profile": "compact", "max_response_tokens": 128},
+    ], monkeypatch, real_store=True, return_store=True)
+    result = results[1]
+    payload = result.structuredContent
+    assert payload["success"] is False
+    assert payload["mutation_applied"] is False
+    assert payload["operation_not_started"] is True
+    assert "request_not_sent" not in payload
+    assert payload["response_budget"]["returned_tokens"] == json_tokens(
+        result.model_dump(mode="json", by_alias=True, exclude_none=True))
+    task = tasks.get(TASK_ID)
+    assert "memory_audit" not in task.checkpoint.state_data
+    assert tasks.state_store.event_page(f"task:{TASK_ID}")["last_seq"] == 1
+    assert calls[-1]["body"]["response_budget_tokens"] == 128
+
+
+def test_registered_mcp_checkpoint_preflight_allows_full_memory_wire(tmp_path, monkeypatch):
+    audit = {"used_ids": ["mem_store_wire"]}
+    _, calls, results, tasks = _round_trip(tmp_path, [
+        {"action": "task_create", "contract": {"goal": "Verify renderer cache theme revision"}},
+        {"action": "task_checkpoint", "checkpoint": {"phase": "edit", "state_data": {"memory_audit": audit}},
+         "response_profile": "compact", "max_response_tokens": 3200},
+    ], monkeypatch, real_store=True, return_store=True)
+    payload = results[1].structuredContent
+    assert payload["success"] is True
+    assert payload["task"]["checkpoint"]["state_data"]["memory_audit"] == audit
+    assert tasks.get(TASK_ID).checkpoint.state_data["memory_audit"] == audit
+    assert tasks.state_store.event_page(f"task:{TASK_ID}")["last_seq"] == 2
+    assert calls[-1]["body"]["response_budget_tokens"] == 3200
+
+
+def test_registered_mcp_checkpoint_rejects_malformed_audit_before_preflight(tmp_path, monkeypatch):
+    _, _, results, tasks = _round_trip(tmp_path, [
+        {"action": "task_create", "contract": {"goal": "Verify renderer cache theme revision"}},
+        {"action": "task_checkpoint", "checkpoint": {"phase": "edit", "state_data": {"memory_audit": {}}},
+         "response_profile": "compact", "max_response_tokens": 3200},
+    ], monkeypatch, real_store=True, return_store=True)
+    payload = results[1].structuredContent
+    assert payload["success"] is False
+    assert "memory_audit" in payload["error"]
+    assert tasks.state_store.event_page(f"task:{TASK_ID}")["last_seq"] == 1
+    assert "memory_audit" not in tasks.get(TASK_ID).checkpoint.state_data
 
 
 @pytest.mark.parametrize("action", ["task_create", "task_resume"])

@@ -4519,7 +4519,8 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                         "error": error[:error_chars],
                         **{
                             key: value[key]
-                            for key in ("status", "status_code", "terminal", "retryable", "request_id", "execution_id")
+                            for key in ("status", "status_code", "terminal", "retryable", "request_id", "execution_id",
+                                        "mutation_applied", "operation_not_started")
                             if key in value and key not in dropped
                         },
                     }

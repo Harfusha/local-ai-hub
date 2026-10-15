@@ -122,6 +122,21 @@ def test_coord_task_checkpoint_action_preserves_existing_memo_actions(running_ap
     assert memo_res["success"] is True
 
 
+def test_sdk_task_checkpoint_omits_unsupplied_response_budget(running_app_client):
+    client, _app = running_app_client
+    sent = {}
+
+    def capture(path, payload, **kwargs):
+        sent.update(path=path, payload=payload)
+        return {"success": True}
+
+    client.post = capture
+    result = client.coord(action="task_checkpoint", task_id="task-1", checkpoint={"phase": "edit"})
+    assert result["success"] is True
+    assert sent["path"] == "/api/agent-state/tasks"
+    assert "response_budget_tokens" not in sent["payload"]
+
+
 def test_agent_state_response_never_returns_raw_prompt_or_absolute_path(running_app_client):
     client, app = running_app_client
     def mock_get(path, **kwargs):
