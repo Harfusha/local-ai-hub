@@ -94,7 +94,7 @@ def test_current_memory_adoption_evidence_boundary(name: str) -> None:
         "`local_ai_task(task_id=...)` automatically compiles task context",
         "Use IDs are selected `memory_record` elements' `element_id` values",
         "Non-use IDs are bounded diagnostics",
-        "`stale_ids`, `quarantined_ids`, `rejected_ids`, `superseded_ids`, and `legacy_unscoped_ids`",
+        "`stale_ids`, `quarantined_ids`, `rejected_ids`, and `superseded_ids`",
         "only normal-sensitivity, unexpired `active`/`confirmed` memory",
         "IDs show selection or exclusion, not proof that a model followed memory",
         "Do not invent an exhaustive adoption/non-use receipt",
