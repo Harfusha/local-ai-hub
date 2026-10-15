@@ -319,6 +319,15 @@ def _regex_ast_chunks(text: str, language: str, size: int = 4500) -> list[str]:
                     index = after_lifetime
                     continue
 
+        if language == "c_sharp" and text[index] == '"' and (
+            text[max(0, index - 2):index] in {"$@", "@$"}
+            or text[max(0, index - 1):index] == "$"
+        ):
+            # Interpolation expressions can contain quoted strings and nested
+            # braces. This lexical scanner cannot prove the outer boundary, so
+            # retain the complete source instead of guessing at a close brace.
+            return [text] if text.strip() else []
+
         if text[index] in "'\"`":
             index, closed = skip_escaped_quote(index, text[index])
             if not closed:
@@ -396,13 +405,31 @@ def _regex_ast_chunks(text: str, language: str, size: int = 4500) -> list[str]:
         return [text] if text.strip() else []
 
     chunks: list[str] = []
+    pending = ""
     for start, end in spans:
         block = text[start:end]
-        chunks.append(block)
+        if pending and len(pending) + len(block) > size:
+            chunks.append(pending)
+            pending = ""
+        if len(block) > size:
+            if pending:
+                chunks.append(pending)
+                pending = ""
+            chunks.append(block)
+        else:
+            pending += block
     # Unbraced declarations/expressions in the tail have no proven safe split.
     # Keep the entire tail together even when it exceeds the requested size.
     if segment_start < text_length:
-        chunks.append(text[segment_start:])
+        tail = text[segment_start:]
+        if pending and len(pending) + len(tail) <= size:
+            pending += tail
+        else:
+            if pending:
+                chunks.append(pending)
+            pending = tail
+    if pending:
+        chunks.append(pending)
     return chunks
 
 
