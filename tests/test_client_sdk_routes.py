@@ -119,6 +119,27 @@ def test_verification_sdk_methods_forward_root_through_allowed_http_route(root_s
     assert rejected.get("success") is False
 
 
+def test_git_history_sdk_forwards_canonical_filters_once():
+    from local_ai_hub.client import HubClient
+
+    client = HubClient.__new__(HubClient)
+    calls = []
+    client.post = lambda path, payload: calls.append((path, payload)) or {"success": True}
+    result = client.git_history_search(
+        "repo", "literal phrase", 12, author="Ada", since="2026-01-01",
+        until="2026-01-31", path="src/a.py",
+    )
+    assert result == {"success": True}
+    assert calls == [(
+        "/api/git/history_search",
+        {
+            "root": "repo", "query": "literal phrase", "max_commits": 12,
+            "author": "Ada", "since": "2026-01-01", "until": "2026-01-31",
+            "path": "src/a.py",
+        },
+    )]
+
+
 def test_sdk_convenience_methods_map_to_production_http_handlers(live_client, tmp_path, http_post_paths):
     app, client = live_client
     routes = []

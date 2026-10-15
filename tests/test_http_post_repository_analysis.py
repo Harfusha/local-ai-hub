@@ -78,8 +78,14 @@ def test_all_six_route_ids_resolve_to_one_named_handler():
     ("post_git_status_1", {"root": 7}, ("git_status", ("7",), {})),
     ("post_git_diff_1", {"root": "r", "path": "a.py", "staged": "false", "max_lines": "8"},
      ("git_diff", ("r",), {"path": "a.py", "staged": True, "max_lines": 8})),
-    ("post_git_history_search_1", {"root": "r", "query": 9, "max_commits": "3"},
-     ("git_history_search", ("r", "9"), {"max_commits": 3})),
+    ("post_git_history_search_1", {
+        "root": "r", "query": "needle", "max_commits": 3,
+        "author": "Ada", "since": "2026-01-01", "until": "2026-01-31T23:00:00Z",
+        "path": "src/a.py",
+    }, ("git_history_search", ("r", "needle"), {
+        "max_commits": 3, "author": "Ada", "since": "2026-01-01",
+        "until": "2026-01-31T23:00:00Z", "path": "src/a.py",
+    })),
     ("post_hotspots_1", {"root": "r", "days": "5", "limit": "2"},
      ("find_hotspots", ("r",), {"days": 5, "limit": 2})),
     ("post_test_matrix_1", {"root": "r"}, ("test_matrix", ("r",), {})),
@@ -99,6 +105,19 @@ def test_disabled_engine_keeps_legacy_200_error_body():
     assert handled is True
     assert calls == []
     assert handler.responses == [(200, {"success": False, "error": "deterministic engine disabled"})]
+
+
+@pytest.mark.parametrize("payload", [
+    {"root": "r", "query": 7},
+    {"root": "r", "query": "needle", "max_commits": True},
+    {"root": "r", "query": "needle", "since": "yesterday"},
+])
+def test_history_route_rejects_noncanonical_filters_before_service(payload):
+    app, calls = _app()
+    handler = Handler()
+    assert handle_post_repository_analysis(handler, payload, ("post_git_history_search_1",), app) is True
+    assert calls == []
+    assert handler.responses[0][0] == 400
 
 
 def test_repo_state_fallback_error_and_missing_tracker_bodies():

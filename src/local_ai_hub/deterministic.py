@@ -23,7 +23,9 @@ import xml.etree.ElementTree as ET
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+from datetime import date as _datetime_date, datetime as _datetime, time as _datetime_time, timezone as _datetime_timezone
 from pathlib import Path
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Iterator
 
 from . import __version__
@@ -72,6 +74,81 @@ _SECRET_SCAN_MAX_LINE_BYTES = 65_536
 _SECRET_SCAN_MAX_SECONDS = 5.0
 _SECRET_SCAN_MAX_FINDINGS = 100
 _RELATION_SCAN_MAX_SECONDS = 3.0
+_GIT_INSIGHT_DEADLINE_SECONDS = 8.0
+_GIT_INSIGHT_STREAM_LIMIT = 1_048_576
+_GIT_HISTORY_QUERY_MAX_CHARS = 512
+_GIT_HISTORY_AUTHOR_MAX_CHARS = 256
+_GIT_HISTORY_PATH_MAX_CHARS = 4096
+_GIT_HISTORY_COMMIT_LIMIT = 100
+_HOTSPOT_ALGORITHM = "git-recency-half-life-90d-v1"
+_HOTSPOT_GIT_COMMIT_LIMIT = 5_000
+_HOTSPOT_PATH_LIMIT = 10_000
+_HOTSPOT_FILE_LIMIT = 100
+_HOTSPOT_FILE_BYTES_LIMIT = 262_144
+_HOTSPOT_TOTAL_BYTES_LIMIT = 4_194_304
+_HOTSPOT_ANALYSIS_SECONDS = 8.0
+
+
+def _git_history_timestamp(value: Any, field: str, *, upper_bound: bool) -> tuple[float | None, str | None]:
+    if value in (None, ""):
+        return None, None
+    if not isinstance(value, str) or len(value) > 64 or any(ord(ch) < 32 or ord(ch) == 127 for ch in value):
+        raise ValueError(f"{field} must be an ISO date or RFC3339 timestamp")
+    raw = value.strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+        parsed_date = _datetime_date.fromisoformat(raw)
+        parsed = _datetime.combine(
+            parsed_date,
+            _datetime_time.max if upper_bound else _datetime_time.min,
+            tzinfo=_datetime_timezone.utc,
+        )
+    else:
+        if not re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})",
+            raw,
+            flags=re.IGNORECASE,
+        ):
+            raise ValueError(f"{field} must be an RFC3339 timestamp with an explicit timezone")
+        normalized = raw[:-1] + "+00:00" if raw.endswith(("Z", "z")) else raw
+        parsed = _datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None or "T" not in raw.upper():
+            raise ValueError(f"{field} RFC3339 timestamp must include an explicit timezone")
+        parsed = parsed.astimezone(_datetime_timezone.utc)
+    timestamp = parsed.timestamp()
+    return timestamp, parsed.isoformat().replace("+00:00", "Z")
+
+
+def _git_history_pathspec(root: str, value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str) or len(value) > _GIT_HISTORY_PATH_MAX_CHARS:
+        raise ValueError("path must be a bounded repository-relative literal path")
+    normalized = value.replace("\\", "/")
+    windows_path = PureWindowsPath(value)
+    parts = PurePosixPath(normalized).parts
+    if (
+        not normalized
+        or normalized.startswith("/")
+        or windows_path.drive
+        or windows_path.is_absolute()
+        or any(ord(ch) < 32 or ord(ch) == 127 for ch in normalized)
+        or any(part in {"..", ""} for part in parts)
+    ):
+        raise ValueError("path must stay inside the repository root")
+    canonical_root = Path(root).resolve(strict=True)
+    candidate = (canonical_root / Path(*parts)).resolve(strict=False)
+    try:
+        candidate.relative_to(canonical_root)
+    except ValueError as exc:
+        raise ValueError("path must stay inside the repository root") from exc
+    pathspec = PurePosixPath(*parts).as_posix()
+    return None if pathspec == "." else pathspec
+
+
+def _git_author_literal_regex(value: str) -> str:
+    """Escape an author name for Git's POSIX extended-regex author filter."""
+    metacharacters = frozenset(r".^$*+?()[]{}|\\")
+    return "".join("\\" + char if char in metacharacters else char for char in value)
 
 
 def _is_symlink_or_reparse_point(path: Path) -> bool:
@@ -4009,78 +4086,175 @@ class DeterministicEngine:
         root: str,
         query: str,
         max_commits: int = 20,
+        *,
+        author: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        path: str | None = None,
     ) -> dict[str, Any]:
-        """Search git commit history by commit message and diff patch content."""
-        import subprocess, shutil
-        from .process_utils import hidden_run_kwargs
+        """Search bounded Git message and pickaxe history with explicit coverage."""
         resolved = self._root(root)
         git_exe = shutil.which("git") or "git"
-        clean_query = str(query or "").strip()
-        if not clean_query:
-            return {"success": False, "error": "query is required", "root": resolved}
-
-        git_timeout = 15.0
+        if (
+            not isinstance(query, str)
+            or not query.strip()
+            or len(query) > _GIT_HISTORY_QUERY_MAX_CHARS
+            or any(ord(ch) < 32 or ord(ch) == 127 for ch in query)
+        ):
+            return {"success": False, "error": "query must be a bounded literal string", "root": resolved}
+        if isinstance(max_commits, bool) or not isinstance(max_commits, int) or not 1 <= max_commits <= _GIT_HISTORY_COMMIT_LIMIT:
+            return {"success": False, "error": f"max_commits must be an integer from 1 to {_GIT_HISTORY_COMMIT_LIMIT}", "root": resolved}
+        clean_query = query.strip()
+        if author is not None and (
+            not isinstance(author, str)
+            or len(author) > _GIT_HISTORY_AUTHOR_MAX_CHARS
+            or any(ord(ch) < 32 or ord(ch) == 127 for ch in author)
+        ):
+            return {"success": False, "error": "author must be a bounded string", "root": resolved}
+        clean_author = author.strip() if isinstance(author, str) else ""
         try:
-            res_msg = None
-            try:
-                res_msg = subprocess.run(
-                    [git_exe, "-C", resolved, "log", f"-n{max_commits}", f"--grep={clean_query}", "-i", "--format=%H|%an|%ad|%s", "--date=short"],
-                    capture_output=True, text=True, timeout=git_timeout, check=False,
-                    encoding="utf-8", errors="replace",
-                    **hidden_run_kwargs(),
-                )
-            except subprocess.TimeoutExpired:
-                res_msg = None
-
-            res_code = None
-            try:
-                res_code = subprocess.run(
-                    [git_exe, "-C", resolved, "log", f"-n{max_commits}", f"-S{clean_query}", "-i", "--format=%H|%an|%ad|%s", "--date=short"],
-                    capture_output=True, text=True, timeout=git_timeout, check=False,
-                    encoding="utf-8", errors="replace",
-                    **hidden_run_kwargs(),
-                )
-            except subprocess.TimeoutExpired:
-                res_code = None
-
-            if res_msg is None and res_code is None:
-                return {"success": False, "error": f"git log timed out after {git_timeout}s", "root": resolved}
-
-            commits: dict[str, dict[str, Any]] = {}
-            sources = []
-            if res_msg is not None and getattr(res_msg, "stdout", None):
-                sources.append((res_msg.stdout, "message"))
-            if res_code is not None and getattr(res_code, "stdout", None):
-                sources.append((res_code.stdout, "diff_content"))
-
-            for out, match_type in sources:
-                for line in out.splitlines():
-                    parts = line.split("|", 3)
-                    if len(parts) >= 4:
-                        h, author, date, subj = parts[0], parts[1], parts[2], parts[3]
-                        if h not in commits:
-                            commits[h] = {
-                                "commit": h[:10],
-                                "full_hash": h,
-                                "author": author,
-                                "date": date,
-                                "subject": subj,
-                                "message": subj,
-                                "match_type": match_type,
-                            }
-                        elif match_type not in commits[h]["match_type"]:
-                            commits[h]["match_type"] += f", {match_type}"
-
-            res_list = list(commits.values())[:max_commits]
-            return {
-                "success": True,
-                "root": resolved,
-                "query": clean_query,
-                "count": len(res_list),
-                "commits": res_list,
-            }
-        except Exception as exc:
+            since_epoch, since_normalized = _git_history_timestamp(since, "since", upper_bound=False)
+            until_epoch, until_normalized = _git_history_timestamp(until, "until", upper_bound=True)
+            pathspec = _git_history_pathspec(resolved, path)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
             return {"success": False, "error": str(exc), "root": resolved}
+        if since_epoch is not None and until_epoch is not None and since_epoch > until_epoch:
+            return {"success": False, "error": "since must be earlier than or equal to until", "root": resolved}
+
+        deadline = time.monotonic() + _GIT_INSIGHT_DEADLINE_SECONDS
+        commits: dict[str, dict[str, Any]] = {}
+        incomplete: set[str] = set()
+        completed_searches = 0
+        for match_type in ("message", "diff_content"):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                incomplete.add("aggregate_deadline")
+                break
+            fmt = "%H%x00%an%x00%cI%x00%s%x00"
+            argv = [
+                git_exe, "-C", resolved, "--literal-pathspecs",
+                "-c", "diff.external=", "-c", "core.pager=cat", "log",
+                f"-n{max_commits + 1}", f"--format={fmt}", "-i",
+                "--no-ext-diff", "--no-textconv", "--no-renames",
+            ]
+            if match_type == "message":
+                argv.extend(("--fixed-strings", f"--grep={clean_query}"))
+            else:
+                argv.append(f"-S{clean_query}")
+            if clean_author:
+                argv.append(f"--author={_git_author_literal_regex(clean_author)}")
+            if since_epoch is not None:
+                argv.append(f"--since=@{math.ceil(since_epoch)}")
+            if until_epoch is not None:
+                argv.append(f"--until=@{math.floor(until_epoch)}")
+            argv.extend(("--end-of-options", "HEAD", "--"))
+            if pathspec is not None:
+                argv.append(pathspec)
+            try:
+                result = run_hidden(
+                    argv,
+                    cwd=resolved,
+                    capture_output=True,
+                    text=False,
+                    stdin=subprocess.DEVNULL,
+                    timeout=remaining,
+                    max_output_bytes=_GIT_INSIGHT_STREAM_LIMIT,
+                    env=clean_git_env(extra_env={
+                        "GIT_PAGER": "cat", "PAGER": "cat", "GIT_TERMINAL_PROMPT": "0",
+                        "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+                        "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "diff.external",
+                        "GIT_CONFIG_VALUE_0": "",
+                    }),
+                )
+            except (ProcessCancelledError, ProcessCleanupUnverifiedError, subprocess.TimeoutExpired, OSError, ValueError) as exc:
+                incomplete.add(f"{match_type}_search_{type(exc).__name__}")
+                continue
+            if getattr(result, "returncode", 1) != 0:
+                incomplete.add(f"{match_type}_search_failed")
+                continue
+            if getattr(result, "stdout_truncated", False) or getattr(result, "stderr_truncated", False):
+                incomplete.add(f"{match_type}_output_truncated")
+            raw_output = getattr(result, "stdout", b"")
+            if not isinstance(raw_output, bytes):
+                incomplete.add(f"{match_type}_malformed_output")
+                continue
+            fields = raw_output.split(b"\0")
+            if fields and fields[-1] == b"":
+                fields.pop()
+            if fields and fields[-1] in {b"\n", b"\r\n"}:
+                fields.pop()
+            if len(fields) % 4:
+                incomplete.add(f"{match_type}_malformed_output")
+            for index in range(0, len(fields) - 3, 4):
+                if time.monotonic() >= deadline:
+                    incomplete.add("aggregate_deadline")
+                    break
+                try:
+                    full_hash = fields[index].lstrip(b"\r\n").decode("ascii")
+                    commit_author = fields[index + 1].decode("utf-8", "strict")
+                    committed_at = fields[index + 2].decode("ascii", "strict")
+                    subject = fields[index + 3].decode("utf-8", "strict").strip("\r\n")
+                    if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", full_hash):
+                        raise ValueError("invalid commit hash")
+                    committed_dt = _datetime.fromisoformat(committed_at.replace("Z", "+00:00"))
+                    if committed_dt.tzinfo is None:
+                        raise ValueError("commit date has no timezone")
+                    committed_timestamp = committed_dt.timestamp()
+                    if since_epoch is not None and committed_timestamp < since_epoch:
+                        continue
+                    if until_epoch is not None and committed_timestamp > until_epoch:
+                        continue
+                    if clean_author and clean_author.casefold() not in commit_author.casefold():
+                        continue
+                except (UnicodeDecodeError, ValueError, OverflowError):
+                    incomplete.add(f"{match_type}_malformed_output")
+                    continue
+                current = commits.get(full_hash)
+                if current is None:
+                    current = {
+                        "commit": full_hash[:10],
+                        "full_hash": full_hash,
+                        "author": commit_author,
+                        "date": committed_dt.date().isoformat(),
+                        "subject": subject,
+                        "message": subject,
+                        "match_type": match_type,
+                        "_committed_timestamp": committed_timestamp,
+                        "_match_types": [match_type],
+                    }
+                    commits[full_hash] = current
+                elif match_type not in current["_match_types"]:
+                    current["_match_types"].append(match_type)
+            if len(fields) >= 4 * (max_commits + 1):
+                incomplete.add("commit_limit_reached")
+            completed_searches += 1
+
+        if completed_searches < 2 and time.monotonic() >= deadline:
+            incomplete.add("aggregate_deadline")
+        ordered = sorted(
+            commits.values(),
+            key=lambda item: (-float(item["_committed_timestamp"]), item["full_hash"]),
+        )
+        if len(ordered) > max_commits:
+            incomplete.add("commit_limit_reached")
+        res_list = ordered[:max_commits]
+        for item in res_list:
+            item["match_type"] = ", ".join(item.pop("_match_types"))
+            item.pop("_committed_timestamp", None)
+        return {
+            "success": completed_searches > 0,
+            "root": resolved,
+            "query": clean_query,
+            "author": clean_author or None,
+            "since": since_normalized,
+            "until": until_normalized,
+            "path": pathspec,
+            "max_commits": max_commits,
+            "count": len(res_list),
+            "commits": res_list,
+            "complete": not incomplete,
+            "incomplete_reasons": sorted(incomplete),
+        }
 
     def find_hotspots(
         self,
@@ -4088,9 +4262,11 @@ class DeterministicEngine:
         days: int = 30,
         limit: int = 20,
     ) -> dict[str, Any]:
-        """Identify technical debt hotspots combining git change churn with cyclomatic complexity."""
-        import subprocess, shutil, math
-        from .process_utils import hidden_run_kwargs
+        """Rank Git-touched files by bounded recency-weighted churn and complexity."""
+        if isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= 3650:
+            return {"success": False, "error": "days must be an integer from 1 to 3650"}
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 50:
+            return {"success": False, "error": "limit must be an integer from 1 to 50"}
         resolved = self._root(root)
         git_exe = shutil.which("git") or "git"
 
@@ -4099,7 +4275,12 @@ class DeterministicEngine:
             if row and (time.time() - float(row[0])) < 1800.0:
                 try:
                     data = json.loads(str(row[1]))
-                    if isinstance(data, dict) and data.get("success"):
+                    if (
+                        isinstance(data, dict)
+                        and data.get("success")
+                        and data.get("complete") is True
+                        and data.get("algorithm") == _HOTSPOT_ALGORITHM
+                    ):
                         data["hotspots"] = data.get("hotspots", [])[:limit]
                         data["count"] = len(data["hotspots"])
                         data["cached"] = True
@@ -4107,40 +4288,142 @@ class DeterministicEngine:
                 except Exception:
                     pass
 
+        deadline = time.monotonic() + _HOTSPOT_ANALYSIS_SECONDS
+        now = time.time()
+        cutoff = int(now - days * 86_400)
+        argv = [
+            git_exe, "-C", resolved, "--literal-pathspecs", "-c", "core.pager=cat",
+            "log", f"-n{_HOTSPOT_GIT_COMMIT_LIMIT + 1}", f"--since=@{cutoff}",
+            "--format=%x00LAH_HOTSPOT:%ct%x00", "--name-only", "-z", "--no-merges",
+            "--no-renames", "--no-ext-diff", "--no-textconv", "--end-of-options", "HEAD", "--",
+        ]
+        incomplete: set[str] = set()
         churn_counts: dict[str, int] = defaultdict(int)
+        weighted_counts: dict[str, float] = defaultdict(float)
         try:
-            res = subprocess.run(
-                [git_exe, "-C", resolved, "log", f"--since={max(1, int(days))} days ago", "--name-only", "--format=", "--no-merges"],
-                capture_output=True, text=True, timeout=5.0, check=False,
-                encoding="utf-8", errors="replace",
-                **hidden_run_kwargs(),
+            res = run_hidden(
+                argv,
+                cwd=resolved,
+                capture_output=True,
+                text=False,
+                stdin=subprocess.DEVNULL,
+                timeout=max(0.1, deadline - time.monotonic()),
+                max_output_bytes=_GIT_INSIGHT_STREAM_LIMIT,
+                env=clean_git_env(extra_env={
+                    "GIT_PAGER": "cat", "PAGER": "cat", "GIT_TERMINAL_PROMPT": "0",
+                    "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
+                    "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "diff.external",
+                    "GIT_CONFIG_VALUE_0": "",
+                }),
             )
-            if res.returncode == 0:
-                for line in res.stdout.splitlines():
-                    p = line.strip().replace("\\", "/")
-                    if p and not any(p.startswith(d) for d in (".git", "vendor", "node_modules", "dist", "build")):
-                        churn_counts[p] += 1
-        except Exception:
-            pass
-
-        if not churn_counts:
-            r_path = Path(resolved)
-            for p in list(r_path.rglob("*.py"))[:30]:
+            if getattr(res, "returncode", 1) != 0:
+                incomplete.add("git_history_failed")
+            if getattr(res, "stdout_truncated", False) or getattr(res, "stderr_truncated", False):
+                incomplete.add("git_output_truncated")
+            raw_output = getattr(res, "stdout", b"")
+            if not isinstance(raw_output, bytes):
+                incomplete.add("git_output_malformed")
+                raw_output = b""
+            segments = raw_output.split(b"\0LAH_HOTSPOT:")
+            if segments and not segments[0].strip(b"\r\n"):
+                segments = segments[1:]
+            if len(segments) > _HOTSPOT_GIT_COMMIT_LIMIT:
+                incomplete.add("commit_limit_reached")
+            for segment in segments[:_HOTSPOT_GIT_COMMIT_LIMIT]:
+                if time.monotonic() >= deadline:
+                    incomplete.add("analysis_deadline")
+                    break
                 try:
-                    rel = str(p.relative_to(r_path)).replace("\\", "/")
-                    churn_counts[rel] = 1
-                except Exception:
-                    pass
+                    timestamp_raw, separator, files_raw = segment.partition(b"\0")
+                    timestamp = int(timestamp_raw.strip())
+                    if not separator or timestamp < cutoff:
+                        raise ValueError("malformed commit record")
+                    # Git inserts one formatting newline around each NUL-delimited
+                    # name list. Remove only those framing bytes; preserve filename newlines.
+                    if files_raw.startswith(b"\n"):
+                        files_raw = files_raw[1:]
+                    if files_raw.endswith(b"\n"):
+                        files_raw = files_raw[:-1]
+                    per_commit: set[str] = set()
+                    for raw_path in files_raw.split(b"\0"):
+                        if not raw_path:
+                            continue
+                        relative = raw_path.decode("utf-8", "strict").replace("\\", "/")
+                        pure_path = PurePosixPath(relative)
+                        if pure_path.is_absolute() or any(part in {"..", ""} for part in pure_path.parts):
+                            incomplete.add("unsafe_git_path")
+                            continue
+                        if any(part.lower() in {".git", "vendor", "node_modules", "dist", "build"} for part in pure_path.parts):
+                            continue
+                        per_commit.add(pure_path.as_posix())
+                    age_days = max(0.0, (now - float(timestamp)) / 86_400.0)
+                    weight = 0.5 ** (age_days / 90.0)
+                    for relative in per_commit:
+                        if relative not in churn_counts and len(churn_counts) >= _HOTSPOT_PATH_LIMIT:
+                            incomplete.add("path_limit_reached")
+                            continue
+                        churn_counts[relative] += 1
+                        weighted_counts[relative] += weight
+                except (UnicodeDecodeError, ValueError, OverflowError):
+                    incomplete.add("git_output_malformed")
+            if len(segments) > _HOTSPOT_GIT_COMMIT_LIMIT:
+                incomplete.add("commit_limit_reached")
+            if time.monotonic() >= deadline:
+                incomplete.add("analysis_deadline")
+        except (ProcessCancelledError, ProcessCleanupUnverifiedError, subprocess.TimeoutExpired, OSError, ValueError) as exc:
+            incomplete.add(f"git_history_{type(exc).__name__}")
+
+        if not churn_counts and incomplete:
+            return {
+                "success": False,
+                "root": resolved,
+                "days": days,
+                "count": 0,
+                "hotspots": [],
+                "algorithm": _HOTSPOT_ALGORITHM,
+                "complete": False,
+                "incomplete_reasons": sorted(incomplete),
+                "recency_half_life_days": 90,
+            }
 
         hotspots: list[dict[str, Any]] = []
-        for file_rel, churn in sorted(churn_counts.items(), key=lambda x: x[1], reverse=True)[:limit * 2]:
+        candidates = sorted(
+            weighted_counts,
+            key=lambda file_rel: (-weighted_counts[file_rel], file_rel),
+        )
+        if len(candidates) > _HOTSPOT_FILE_LIMIT:
+            incomplete.add("file_limit_reached")
+        total_bytes = 0
+        analyzed_files = 0
+        canonical_root = Path(resolved).resolve(strict=True)
+        for file_rel in candidates[:_HOTSPOT_FILE_LIMIT]:
+            if time.monotonic() >= deadline:
+                incomplete.add("analysis_deadline")
+                break
             full_p = Path(resolved) / file_rel
-            if not full_p.is_file():
+            try:
+                canonical_file = full_p.resolve(strict=True)
+                canonical_file.relative_to(canonical_root)
+                if not canonical_file.is_file():
+                    incomplete.add("current_file_unavailable")
+                    continue
+                size = canonical_file.stat().st_size
+                if size > _HOTSPOT_FILE_BYTES_LIMIT:
+                    incomplete.add("file_byte_limit_reached")
+                    continue
+                if total_bytes + size > _HOTSPOT_TOTAL_BYTES_LIMIT:
+                    incomplete.add("aggregate_byte_limit_reached")
+                    break
+                content_bytes = canonical_file.read_bytes()
+                total_bytes += len(content_bytes)
+                analyzed_files += 1
+                content = content_bytes.decode("utf-8", "replace")
+            except (OSError, RuntimeError, ValueError):
+                incomplete.add("current_file_unavailable")
                 continue
             comp_score = 1
             loc = 0
             try:
-                content = full_p.read_text(encoding="utf-8", errors="replace")
                 loc = len(content.splitlines())
                 if full_p.suffix == ".py":
                     tree = ast.parse(content, filename=file_rel)
@@ -4150,14 +4433,18 @@ class DeterministicEngine:
                 else:
                     comp_score = max(1, loc // 15)
             except Exception:
+                incomplete.add("complexity_parse_failed")
                 comp_score = max(1, loc // 20)
 
-            hotspot_index = round(float(churn) * math.log2(1.0 + float(comp_score)), 2)
+            raw_churn = churn_counts[file_rel]
+            recency_weighted_churn = round(weighted_counts[file_rel], 6)
+            hotspot_index = round(recency_weighted_churn * math.log2(1.0 + float(comp_score)), 2)
             hotspots.append({
                 "file": file_rel,
                 "path": file_rel,
-                "churn": churn,
-                "churn_commits": churn,
+                "churn": raw_churn,
+                "churn_commits": raw_churn,
+                "recency_weighted_churn": recency_weighted_churn,
                 "complexity": comp_score,
                 "lines_of_code": loc,
                 "debt_score": hotspot_index,
@@ -4166,23 +4453,37 @@ class DeterministicEngine:
             })
 
         hotspots.sort(key=lambda x: x["hotspot_score"], reverse=True)
-        hotspots = hotspots[:limit]
         res_data = {
             "success": True,
             "root": resolved,
             "days": days,
+            "algorithm": _HOTSPOT_ALGORITHM,
+            "recency_half_life_days": 90,
+            "recency_weighting": "sum(0.5 ** (commit_age_days / 90)) over commits in the requested day window",
+            "complete": not incomplete,
+            "incomplete_reasons": sorted(incomplete),
+            "analysis": {
+                "git_commits_scanned": min(len(segments) if "segments" in locals() else 0, _HOTSPOT_GIT_COMMIT_LIMIT),
+                "files_seen": len(candidates),
+                "files_analyzed": analyzed_files,
+                "bytes_read": total_bytes,
+                "commit_limit": _HOTSPOT_GIT_COMMIT_LIMIT,
+                "file_limit": _HOTSPOT_FILE_LIMIT,
+                "per_file_bytes_limit": _HOTSPOT_FILE_BYTES_LIMIT,
+                "aggregate_bytes_limit": _HOTSPOT_TOTAL_BYTES_LIMIT,
+            },
             "count": len(hotspots),
             "hotspots": hotspots,
         }
-        try:
+        if res_data["complete"]:
             with self._lock, closing(self._connect()) as con:
                 con.execute(
                     "INSERT OR REPLACE INTO hotspots_cache(root, days, cached_at, data_json) VALUES(?, ?, ?, ?)",
                     (str(resolved), int(days), time.time(), json_dumps(res_data)),
                 )
                 con.commit()
-        except Exception:
-            pass
+        res_data["hotspots"] = hotspots[:limit]
+        res_data["count"] = len(res_data["hotspots"])
         return res_data
 
     def generate_tests_for_diff(

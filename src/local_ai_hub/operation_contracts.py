@@ -278,6 +278,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
         "local_ai_repo", "repo", "action", _REPO_ACTIONS, timeout="action-specific: search max 120s, other quick 180s, context 600s, model 1800s, long 2400s",
         projection="repository result", action_requirements=_REPO_CONDITIONS,
         required={
+            "git_history_search": ("query",),
             "verify_receipt": ("receipt",),
             "ast_outline": ("path",),
             "profile_digest": ("path",),
@@ -305,6 +306,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "type_stubs": ("path",),
         },
         non_empty={
+            "git_history_search": ("query",),
             "ast_outline": ("path",),
             "profile_digest": ("path",),
             "generate_types": ("path",),
@@ -332,6 +334,9 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "type_stubs": ("path",),
         },
         allowed={
+            "git_history_search": (
+                "root", "query", "max_commits", "author", "since", "until", "path",
+            ),
             "ast_outline": ("root", "path"),
             "affected_tests": ("root", "path"),
             "code_invariants": ("root", "path"),
@@ -371,7 +376,6 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "api_spec": ("root", "query"),
             "dependency_slice": ("root", "query", "path", "max_tokens"),
             "structural_search": ("root", "query", "path", "max_tokens"),
-            "git_history_search": ("root", "query", "max_tokens"),
             "migration_drift": ("root", "path"),
             "package_audit": ("root", "path"),
             "git_diff": ("root", "path", "staged", "max_tokens", "rev1", "rev2"),
@@ -389,13 +393,23 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "action": {"type": "string"},
             "root": {"type": "string", "default": "."},
             "query": {"type": "string", "default": ""},
+            "max_commits": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50},
+            "author": {"type": "string", "maxLength": 256, "default": "", "pattern": r"^[^\x00-\x1F\x7F]*$"},
+            "since": {
+                "type": "string", "maxLength": 64, "default": "",
+                "pattern": r"^(?:\d{4}-\d{2}-\d{2}|\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2}))?$",
+            },
+            "until": {
+                "type": "string", "maxLength": 64, "default": "",
+                "pattern": r"^(?:\d{4}-\d{2}-\d{2}|\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[Zz]|[+-]\d{2}:\d{2}))?$",
+            },
             "old_symbol": {"type": "string", "maxLength": 512},
             "new_symbol": {"type": "string", "maxLength": 512},
             "old_code": {"type": ["string", "null"], "default": None, "maxLength": 1_048_576},
             "new_code": {"type": ["string", "null"], "default": None, "maxLength": 1_048_576},
             "rev1": {"type": ["string", "null"], "default": None, "maxLength": 512},
             "rev2": {"type": ["string", "null"], "default": None, "maxLength": 512},
-            "path": {"type": "string", "default": ""},
+            "path": {"type": "string", "maxLength": 4096, "default": ""},
             "task": {"type": "string", "default": ""},
             "task_id": {"type": "string", "default": ""},
             "include_code": {"type": "boolean", "default": False},

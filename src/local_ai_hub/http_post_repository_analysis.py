@@ -5,7 +5,10 @@ tracing, and exception translation in do_POST; this helper owns route bodies.
 """
 from __future__ import annotations
 
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Iterable
+
+from .deterministic import _git_history_timestamp
 
 
 _ROUTE_PRIORITY = (
@@ -72,17 +75,74 @@ def handle_post_repository_analysis(
         return True
 
     if route_id == "post_git_history_search_1":
-        query = str(payload.get("query", ""))
-        max_commits = int(payload.get("max_commits", 20))
+        query = payload.get("query", "")
+        max_commits = payload.get("max_commits", 20)
+        filters = {name: payload.get(name) for name in ("author", "since", "until", "path")}
+        if (
+            not isinstance(query, str)
+            or not query.strip()
+            or len(query) > 512
+            or any(ord(char) < 32 or ord(char) == 127 for char in query)
+        ):
+            handler._send(400, {"success": False, "error": "query must be a bounded literal string", "terminal": True, "retryable": False})
+            return True
+        if isinstance(max_commits, bool) or not isinstance(max_commits, int) or not 1 <= max_commits <= 100:
+            handler._send(400, {"success": False, "error": "max_commits must be an integer from 1 to 100", "terminal": True, "retryable": False})
+            return True
+        for name, value in filters.items():
+            maximum = 256 if name == "author" else 64 if name in {"since", "until"} else 4096
+            if value is not None and (
+                not isinstance(value, str)
+                or len(value) > maximum
+                or any(ord(char) < 32 or ord(char) == 127 for char in value)
+            ):
+                handler._send(400, {"success": False, "error": f"{name} must be a bounded string", "terminal": True, "retryable": False})
+                return True
+        try:
+            since_epoch, _since = _git_history_timestamp(filters["since"], "since", upper_bound=False)
+            until_epoch, _until = _git_history_timestamp(filters["until"], "until", upper_bound=True)
+        except (TypeError, ValueError, OverflowError):
+            handler._send(400, {"success": False, "error": "since and until must be ISO dates or RFC3339 timestamps", "terminal": True, "retryable": False})
+            return True
+        if since_epoch is not None and until_epoch is not None and since_epoch > until_epoch:
+            handler._send(400, {"success": False, "error": "since must be earlier than or equal to until", "terminal": True, "retryable": False})
+            return True
+        raw_path = filters["path"]
+        if raw_path:
+            normalized_path = raw_path.replace("\\", "/")
+            path_parts = PurePosixPath(normalized_path).parts
+            if (
+                normalized_path.startswith("/")
+                or PureWindowsPath(raw_path).drive
+                or PureWindowsPath(raw_path).is_absolute()
+                or any(part in {"..", ""} for part in path_parts)
+                or any(ord(char) < 32 or ord(char) == 127 for char in normalized_path)
+            ):
+                handler._send(400, {"success": False, "error": "path must be a repository-relative literal path", "terminal": True, "retryable": False})
+                return True
         if app.deterministic is not None:
-            handler._send(200, app.services.git_history_search(root, query, max_commits=max_commits))
+            handler._send(200, app.services.git_history_search(
+                root,
+                query,
+                max_commits=max_commits,
+                author=filters["author"],
+                since=filters["since"],
+                until=filters["until"],
+                path=filters["path"],
+            ))
         else:
             handler._send(200, {"success": False, "error": "deterministic engine disabled"})
         return True
 
     if route_id == "post_hotspots_1":
-        days = int(payload.get("days", 30))
-        limit = int(payload.get("limit", 20))
+        days = payload.get("days", 30)
+        limit = payload.get("limit", 20)
+        if isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= 3650:
+            handler._send(400, {"success": False, "error": "days must be an integer from 1 to 3650", "terminal": True, "retryable": False})
+            return True
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 50:
+            handler._send(400, {"success": False, "error": "limit must be an integer from 1 to 50", "terminal": True, "retryable": False})
+            return True
         if app.deterministic is not None:
             handler._send(200, app.services.find_hotspots(root, days=days, limit=limit))
         else:

@@ -2072,8 +2072,26 @@ class HubClient:
             payload.update(rev1=rev1, rev2=rev2)
         return self.post("/api/git/diff", payload)
 
-    def git_history_search(self, root: str = ".", query: str = "", max_commits: int = 20) -> dict[str, Any]:
-        return self.post("/api/git/history_search", {"root": root, "query": query, "max_commits": max_commits})
+    def git_history_search(
+        self,
+        root: str = ".",
+        query: str = "",
+        max_commits: int = 20,
+        *,
+        author: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        path: str | None = None,
+    ) -> dict[str, Any]:
+        return self.post("/api/git/history_search", {
+            "root": root,
+            "query": query,
+            "max_commits": max_commits,
+            "author": author,
+            "since": since,
+            "until": until,
+            "path": path,
+        })
 
     def hotspots(self, root: str = ".", days: int = 30, limit: int = 20) -> dict[str, Any]:
         return self.post("/api/repo/hotspots", {"root": root, "days": days, "limit": limit})
