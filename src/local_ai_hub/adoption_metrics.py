@@ -4,10 +4,13 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from contextlib import closing
+import math
+import os
 import re
 import sqlite3
 import threading
 import time
+from numbers import Rational, Real
 from typing import Any
 
 from .sqlite_support import connect_sqlite, is_busy_error
@@ -26,24 +29,37 @@ def _identifier(value: str, field: str) -> str:
     return normalized
 
 
-def _duration_bucket(value: int | float | None) -> str | None:
-    if value is None:
+def _bucket_integer(value: int | float | None) -> int | None:
+    if value is None or isinstance(value, bool) or not isinstance(value, Real):
         return None
-    value = max(0, int(value))
-    if value <= 50: return "0-50ms"
-    if value <= 250: return "51-250ms"
-    if value <= 500: return "251-500ms"
-    if value <= 2000: return "501ms-2s"
+    if isinstance(value, Rational):
+        return int(value) if value >= 0 else None
+    try:
+        if not math.isfinite(value) or value < 0:
+            return None
+        return int(value)
+    except (OverflowError, TypeError, ValueError):
+        return None
+
+
+def _duration_bucket(value: int | float | None) -> str | None:
+    bucket_value = _bucket_integer(value)
+    if bucket_value is None:
+        return None
+    if bucket_value <= 50: return "0-50ms"
+    if bucket_value <= 250: return "51-250ms"
+    if bucket_value <= 500: return "251-500ms"
+    if bucket_value <= 2000: return "501ms-2s"
     return "2s+"
 
 
 def _output_bucket(value: int | None) -> str | None:
-    if value is None:
+    bucket_value = _bucket_integer(value)
+    if bucket_value is None:
         return None
-    value = max(0, int(value))
-    if value <= 255: return "0-255B"
-    if value <= 1023: return "256B-1KiB"
-    if value <= 4095: return "1-4KiB"
+    if bucket_value <= 255: return "0-255B"
+    if bucket_value <= 1023: return "256B-1KiB"
+    if bucket_value <= 4095: return "1-4KiB"
     return "4KiB+"
 
 
@@ -51,10 +67,21 @@ class AdoptionMetricsStore:
     """Stores only daily low-cardinality aggregates; never raw tool payloads."""
 
     def __init__(self, state_dir: Path | str, *, retention_days: int = 35, max_actions: int = 256):
-        self.path = Path(state_dir) / "adoption_metrics.sqlite3"
+        if isinstance(state_dir, bool) or not isinstance(state_dir, (str, os.PathLike)):
+            raise TypeError("state_dir must be a path string or path-like value")
+        state_path = os.fspath(state_dir)
+        if not isinstance(state_path, str):
+            raise TypeError("state_dir must resolve to a string path")
+        if "\x00" in state_path:
+            raise ValueError("state_dir cannot contain a NUL character")
+        if not state_path.strip():
+            raise ValueError("state_dir cannot be blank")
+        validated_retention_days = max(2, min(int(retention_days), 365))
+        validated_max_actions = max(16, min(int(max_actions), 1024))
+        self.path = Path(state_path) / "adoption_metrics.sqlite3"
+        self.retention_days = validated_retention_days
+        self.max_actions = validated_max_actions
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.retention_days = max(2, min(int(retention_days), 365))
-        self.max_actions = max(16, min(int(max_actions), 1024))
         self._lock = threading.RLock()
         self._initialize()
 
@@ -91,8 +118,8 @@ class AdoptionMetricsStore:
                 raise ValueError("fallback reason must be safe fallback category")
         if outcome in {"blocked", "failed", "bypassed"} and not reason:
             reason = "other"
-        current = now or datetime.now(timezone.utc)
-        day = current.astimezone(timezone.utc).date().isoformat()
+        current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        day = current.date().isoformat()
         latency = _duration_bucket(duration_ms)
         output = _output_bucket(output_size)
         with self._lock:
@@ -108,12 +135,14 @@ class AdoptionMetricsStore:
 
     def report(self, *, days: int = 7, now: datetime | None = None) -> dict[str, Any]:
         days = max(1, min(int(days), self.retention_days))
-        current = now or datetime.now(timezone.utc)
-        start = current.date() - timedelta(days=days - 1)
+        current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        end = current.date()
+        start = end - timedelta(days=days - 1)
         start_text = start.isoformat()
+        end_text = end.isoformat()
         with self._lock:
             with closing(self._connect()) as con:
-                rows = con.execute("SELECT day, tool, action, outcome, reason, latency_bucket, output_bucket, count FROM daily_adoption WHERE day >= ?", (start_text,)).fetchall()
+                rows = con.execute("SELECT day, tool, action, outcome, reason, latency_bucket, output_bucket, count FROM daily_adoption WHERE day >= ? AND day <= ?", (start_text, end_text)).fetchall()
                 dormant = con.execute("SELECT tool, action FROM adoption_actions WHERE last_seen_day < ? ORDER BY tool, action", (start_text,)).fetchall()
         daily = { (start + timedelta(days=index)).isoformat(): {"day": (start + timedelta(days=index)).isoformat(), **{outcome: 0 for outcome in _OUTCOMES}} for index in range(days) }
         totals = {outcome: 0 for outcome in _OUTCOMES}
