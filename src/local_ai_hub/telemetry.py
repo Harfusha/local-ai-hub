@@ -2041,7 +2041,9 @@ class TelemetryStore:
             # Channel counters are row-level evidence. Aggregate equality can hide
             # legacy rows when another row has overlapping input/output counters.
             unpriced_row = (
-                "gross_avoided_cloud_tokens > gross_input_tokens_avoided + gross_output_tokens_avoided "
+                "NOT (gross_avoided_cloud_tokens = gross_input_tokens_avoided + gross_output_tokens_avoided "
+                "OR (gross_input_tokens_avoided > 0 AND gross_avoided_cloud_tokens = gross_input_tokens_avoided) "
+                "OR (gross_input_tokens_avoided = 0 AND gross_avoided_cloud_tokens = gross_output_tokens_avoided)) "
                 "OR net_cloud_token_delta <> gross_avoided_cloud_tokens - tool_request_tokens - tool_response_tokens"
             )
             known_channel_rows = con.execute(

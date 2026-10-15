@@ -172,6 +172,18 @@ def test_missing_zero_channel_row_stays_unknown_when_signed_deltas_cancel(teleme
     assert summary["estimated_savings_pricing_mode"] == "incomplete"
 
 
+def test_channel_counters_exceeding_selected_baseline_are_unknown(telemetry_store):
+    telemetry_store.record_tool_accounting({
+        "gross_cloud_tokens_avoided_est": 100_000,
+        "gross_input_tokens_avoided_est": 200_000,
+        "net_cloud_token_delta_est": 100_000,
+    })
+    assert telemetry_store.flush()
+    summary = telemetry_store.report(scope="process")["summary"]
+    assert summary["estimated_savings_usd"] is None
+    assert summary["estimated_savings_pricing_mode"] == "incomplete"
+
+
 def test_missing_boundary_events_keep_cost_unknown(telemetry_store, monkeypatch):
     from datetime import datetime, timedelta, timezone
 
