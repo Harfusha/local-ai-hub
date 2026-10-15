@@ -2026,8 +2026,9 @@ class HubClient:
     def cross_repo_contract(self, backend_root: str = ".", frontend_root: str = ".") -> dict[str, Any]:
         return self.post("/api/repo/cross_repo_contract", {"backend_root": backend_root, "frontend_root": frontend_root})
 
-    def mock_server(self, action: str = "status", root: str = ".", spec_path: str | None = None, port: int = 11440) -> dict[str, Any]:
-        return self.post("/api/command/mock_server", {"action": action, "root": root, "spec_path": spec_path, "port": port})
+    def mock_server(self, action: str = "status", root: str = ".", spec_path: str | None = None, port: int | None = None) -> dict[str, Any]:
+        selected_port = (0 if action.strip().lower() == "start" else 11440) if port is None else port
+        return self.post("/api/command/mock_server", {"action": action, "root": root, "spec_path": spec_path, "port": selected_port})
 
     def ingest_diagram(self, workspace: str = "default", image_path: str = "", caption: str = "", metadata: dict[str, Any] | None = None) -> dict[str, Any]:
         return self.post("/api/rag/ingest_diagram", {"workspace": workspace, "image_path": image_path, "caption": caption, "metadata": metadata})

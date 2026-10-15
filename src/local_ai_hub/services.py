@@ -3983,7 +3983,7 @@ class LocalAIServices:
     def cross_repo_contract(self, backend_root: str, frontend_root: str) -> dict[str, Any]:
         return self.deterministic_operation("cross-repo-contract", backend_root, {"frontend_root": frontend_root}, lambda: self.deterministic.cross_repo_contract(backend_root, frontend_root))
 
-    def mock_server_start(self, root: str = ".", spec_path: str | None = None, port: int = 11440) -> dict[str, Any]:
+    def mock_server_start(self, root: str = ".", spec_path: str | None = None, port: int = 0) -> dict[str, Any]:
         if not self.commands:
             return {"success": False, "error": "command broker unavailable"}
         return self.commands.mock_server_start(root, spec_path=spec_path, port=port)

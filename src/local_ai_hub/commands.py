@@ -10569,7 +10569,7 @@ class CommandBroker:
             "url": _safe_network_url(url),
             "recorded_at": time.time(),
             "status_code": probe["status_code"],
-            "headers": probe.get("headers", {}),
+            "headers": _safe_response_headers(probe.get("headers", {})),
             "body": probe.get("body_preview", ""),
             "body_length": probe.get("body_length", 0),
         }
@@ -10966,13 +10966,15 @@ class CommandBroker:
         self,
         root: str = ".",
         spec_path: str | None = None,
-        port: int = 11440,
+        port: int = 0,
     ) -> dict[str, Any]:
         """Start an in-process mock HTTP server delivering simulated OpenAPI endpoints."""
         import http.server
         import socketserver
 
-        target_port = int(port or 11440)
+        if isinstance(port, bool) or not isinstance(port, int) or not 0 <= port <= 65535:
+            return {"success": False, "error": "port must be an integer between 0 and 65535"}
+        target_port = port
         with self._lock:
             if not hasattr(self, "_mock_servers"):
                 self._mock_servers: dict[int, dict[str, Any]] = {}
@@ -11080,6 +11082,7 @@ class CommandBroker:
 
         try:
             httpd = ReusableTCPServer(("127.0.0.1", target_port), MockHandler)
+            target_port = int(httpd.server_address[1])
             thread = threading.Thread(target=httpd.serve_forever, daemon=True, name=f"mock-srv-{target_port}")
             thread.start()
             with self._lock:

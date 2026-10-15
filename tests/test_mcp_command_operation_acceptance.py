@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Literal
+import pytest
 
 from local_ai_hub import mcp_server
 
@@ -289,20 +290,23 @@ def test_mcp_command_run_affected_forwards_task_acceptance_context(monkeypatch: 
     assert result["success"] is True
 
 
-def test_mcp_command_mock_server_start_uses_dedicated_endpoint_and_port(monkeypatch: Any, tmp_path: Any) -> None:
+@pytest.mark.parametrize("port_command,expected_port", [("11441", 11441), ("0", 0), ("", 0)])
+def test_mcp_command_mock_server_start_uses_dedicated_endpoint_and_port(
+    monkeypatch: Any, tmp_path: Any, port_command: str, expected_port: int
+) -> None:
     response = {"success": True, "status": "started", "port": 11441, "pid": 912}
     backend = _CommandBackend(response)
     _enable_command(monkeypatch, backend)
     root = str(tmp_path)
 
     result = mcp_server.local_ai_command(
-        action="mock_server_start", command="11441", cwd=root, criterion="tests/fixtures/openapi.json"
+        action="mock_server_start", command=port_command, cwd=root, criterion="tests/fixtures/openapi.json"
     )
 
     assert backend.calls == [
         (
             "/api/command/mock_server",
-            {"action": "start", "root": root, "port": 11441, "spec_path": "tests/fixtures/openapi.json"},
+            {"action": "start", "root": root, "port": expected_port, "spec_path": "tests/fixtures/openapi.json"},
             {"timeout": 77.0},
         )
     ]

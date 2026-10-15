@@ -8283,7 +8283,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, APP.rag.ingest_diagram(str(payload.get("workspace", "default")), str(payload.get("image_path", payload.get("path", ""))), caption=str(payload.get("caption", "")), metadata=payload.get("metadata") if isinstance(payload.get("metadata"), dict) else None, tenant=tenant)); return
             if 'post_command_mock_server_1' in post_route_ids:
                 act = str(payload.get("action", "status")).strip().lower()
-                port = int(payload.get("port", 11440))
+                port = payload.get("port", 0 if act == "start" else 11440)
                 if act == "start":
                     self._send(200, APP.services.mock_server_start(str(payload.get("root", ".")), spec_path=payload.get("spec_path"), port=port)); return
                 elif act == "stop":
