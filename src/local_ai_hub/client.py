@@ -856,7 +856,11 @@ class HubClient:
         if not isinstance(security, dict):
             return False
         allowed_roots = security.get("allowed_roots")
-        return bool(isinstance(allowed_roots, list) and allowed_roots)
+        return bool(
+            (isinstance(allowed_roots, list) and allowed_roots)
+            or security.get("tenant_derivation_key")
+            or security.get("api_token")
+        )
 
     def _root_scoped_tenant(self, roots: list[Any]) -> tuple[str | None, dict[str, Any] | None]:
         security = self.config.get("security", {})
@@ -868,7 +872,9 @@ class HubClient:
             if any(root != canonical_root for root in canonical_roots[1:]):
                 raise ValueError("root identity mismatch")
             allowed_roots = security.get("allowed_roots", [])
-            if not isinstance(allowed_roots, list) or not allowed_roots:
+            if not isinstance(allowed_roots, list):
+                raise ValueError("allowed roots are invalid")
+            if not allowed_roots:
                 raise ValueError("allowed roots are unavailable")
             allowed = False
             for raw_allowed in allowed_roots:
@@ -963,9 +969,38 @@ class HubClient:
             )
 
         principal = self._principal_tenant()
+        scoped_memory_scopes = {
+            "code", "task", "tasks", "repo", "repository", "project", "workspace",
+            "worktree", "worktrees", "clone", "branch", "branches",
+        }
+        if (
+            memory_route
+            and not roots
+            and (str(scope or "").strip().lower() in scoped_memory_scopes or has_task_identity)
+        ):
+            return None, self._identity_preflight(
+                "root is required for repository or task memory",
+                "root_required",
+            )
         if not self._root_sandbox_enabled():
-            effective_tenant = next((str(h).strip() for h in tenant_hints if h not in (None, "")), self.tenant or principal)
-            return effective_tenant, None
+            try:
+                if task_route and not roots:
+                    raise ValueError("root is required")
+                canonical_roots = [self._strict_root_path(root) for root in roots]
+                if any(root != canonical_roots[0] for root in canonical_roots[1:]):
+                    raise ValueError("root identity mismatch")
+            except (OSError, RuntimeError, TypeError, ValueError):
+                return None, self._identity_preflight(
+                    "root is missing, invalid, or not allowed",
+                    "root_not_allowed",
+                )
+            for hint in tenant_hints:
+                if hint is not None and str(hint).strip() != principal:
+                    return None, self._identity_preflight(
+                        "tenant does not match authenticated principal",
+                        "tenant_binding_mismatch",
+                    )
+            return principal, None
         effective_tenant = principal
         if task_route:
             effective_tenant, error = self._root_scoped_tenant(roots)
@@ -975,16 +1010,6 @@ class HubClient:
             effective_tenant, error = self._root_scoped_tenant(roots)
             if error is not None:
                 return None, error
-        else:
-            scoped_memory_scopes = {
-                "code", "task", "tasks", "repo", "repository", "project", "workspace",
-                "worktree", "worktrees", "clone", "branch", "branches",
-            }
-            if str(scope or "").strip().lower() in scoped_memory_scopes or has_task_identity:
-                return None, self._identity_preflight(
-                    "root is required for repository or task memory",
-                    "root_required",
-                )
 
         for hint in tenant_hints:
             if hint is not None and str(hint).strip() != effective_tenant:

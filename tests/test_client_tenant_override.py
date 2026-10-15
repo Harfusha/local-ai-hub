@@ -414,6 +414,68 @@ def test_rootless_memory_uses_principal_and_rejects_mismatched_hint(tmp_path, mo
     assert client.tenant == "tenant-default"
 
 
+def test_tokenless_agent_state_uses_server_principal_not_client_tenant(tmp_path):
+    client = _client(
+        tmp_path,
+        tenant="client-selected-tenant",
+        security_overrides={
+            "api_token": "",
+            "api_token_tenant": "",
+            "api_token_principal": "",
+            "tenant_derivation_key": "",
+            "allowed_roots": [],
+        },
+    )
+
+    tenant, error = client._request_tenant(
+        "/api/agent-state/memory",
+        {"action": "find", "scope": "global"},
+        None,
+    )
+    mismatch, mismatch_error = client._request_tenant(
+        "/api/agent-state/memory",
+        {"action": "find", "scope": "global", "tenant": "client-selected-tenant"},
+        None,
+    )
+
+    assert (tenant, error) == ("api-token-default", None)
+    assert mismatch is None
+    assert mismatch_error["error_code"] == "tenant_binding_mismatch"
+
+
+def test_configured_token_with_empty_allowlist_rejects_root_scoped_request(tmp_path):
+    client = _client(
+        tmp_path,
+        security_overrides={"allowed_roots": [], "tenant_derivation_key": ""},
+    )
+
+    tenant, error = client._request_tenant(
+        "/api/agent-state/tasks",
+        {"root": str(tmp_path), "task_id": "task-empty-allowlist"},
+        None,
+    )
+
+    assert tenant is None
+    assert error["error_code"] == "root_not_allowed"
+
+
+def test_explicit_root_allowlist_rejects_outside_agent_state_root(tmp_path):
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    client = _client(tmp_path, allowed_roots=[allowed])
+
+    tenant, error = client._request_tenant(
+        "/api/agent-state/tasks",
+        {"root": str(outside), "task_id": "task-outside-allowlist"},
+        None,
+    )
+
+    assert tenant is None
+    assert error["error_code"] == "root_not_allowed"
+
+
 @pytest.mark.parametrize(
     ("security_overrides", "expected_principal"),
     [
