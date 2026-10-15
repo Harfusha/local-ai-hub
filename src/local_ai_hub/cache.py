@@ -946,10 +946,9 @@ class TieredCache:
         """Store multiple entries while preserving coordinator failure handling."""
         if not items:
             return
-        if not hasattr(self.l2, "set_many"):
-            for key, value in items.items():
-                self.set(key, value)
-            return
+        batch_write = self.l2.set_many
+        if not callable(batch_write):
+            raise TypeError("L2 cache set_many must be callable")
         if self._coordinator is not None:
             try:
                 with self._coordinator.locked():
@@ -959,14 +958,14 @@ class TieredCache:
                         recovered = self._recover_poisoned_namespace(generation)
                         if recovered is None:
                             return
-                    self.l2.set_many(items)
+                    batch_write(items)
                     self.l1.set_many(items)
                 return
             except Exception:
                 self.l1.clear()
                 self._l1_generation = None
                 return
-        self.l2.set_many(items)
+        batch_write(items)
         self.l1.set_many(items)
 
     def delete(self, key: str) -> bool:
