@@ -16,7 +16,7 @@ Command statistics reflect the same fail-closed broker used by agents. Worktree 
 
 Operational telemetry is metadata-only; repository/model payloads are not written to telemetry.
 
-The metrics period selector applies to the overview: since restart or the last 30 days. Missing or stale telemetry displays `Unavailable`; dropped records and writer errors mark estimates incomplete and raise the operational health warning. An observed zero remains a zero, with `No accounted calls yet` when no tool-accounting evidence exists. Small USD estimates retain four decimal places. Open **How token savings are estimated** for baseline sources, protocol cost, schema exposure, local compute reuse, pricing rates and writer health. Process-session history uses the same signed tool-accounting delta as the overview, rather than local inference context reduction.
+The metrics period selector applies to historical telemetry in Overview, Models & RAG and Reliability: since restart or the last 30 days. It does not change live runtime checks, current queues, command counters or scoped Agent OS records. Missing or stale telemetry displays `Unavailable`; cumulative dropped records and writer errors mark estimates incomplete without changing current runtime health. An observed zero remains a zero, with `No accounted calls yet` when no tool-accounting evidence exists. Small USD estimates retain four decimal places. Open **How token savings are estimated** for baseline sources, protocol cost, schema exposure, local compute reuse, pricing rates and writer health. Process-session history uses the same signed tool-accounting delta as the overview, rather than local inference context reduction.
 
 The dark layout shares readable typography, consistent controls, visible keyboard focus and responsive cards. Configuration controls stay disabled until the current settings load; failed loading leaves saving disabled and allows a reload.
 
@@ -40,3 +40,19 @@ Debug traces are intentionally stored separately from aggregate operational tele
 ## UI coverage and limits
 
 UI verification covers all ten navigation pages, Agent OS subtabs, search/filter/reset states, project registration and configuration reset dialogs (cancelled), worktree selection, bundle import without a file, request/trace inspection and responsive layouts. Regression tests cover unavailable and partial data, rejected operations and retired controls. Diagnostics and destructive maintenance, project deletion, imports with real data, configuration saves and model inference require separate operational verification; opening their controls is not evidence that these actions succeeded.
+
+## Current state versus history
+
+Current runtime health uses service state, online probes, heartbeat, current blocked requests/open issues and current non-telemetry dependency checks. Request failures, policy rejections, inference retries, supervisor restarts, unclean exits and cumulative writer errors remain historical diagnostics. A failed period-specific telemetry query makes metrics unavailable; it does not establish a runtime outage. Stale live status cannot establish healthy current operation.
+
+The scope audit covers all ten pages:
+- Overview separates current checks from recorded failures and identifies Hub-wide Agent OS inventory. Enabled feature flags do not establish subsystem health; unreported flags remain unknown.
+- Queue & requests distinguishes live scheduler/API work from retained request history. The failed-history shortcut applies the failed filter and clears conflicting filters; it cannot reconstruct pruned requests.
+- Agent OS uses selected repository/client records. Trajectory paths and receipts are labeled as such, rather than invented step counts; reported token zero stays zero.
+- Projects distinguishes global enablement from active processing. Complete progress does not prove later file synchronization or watcher health.
+- Commands identifies counters since restart and registered/locked/prunable worktrees without implying that every checkout is actively used.
+- Models & RAG identifies selected-period aggregates. Charts record distinct status snapshots, clear on period changes/unavailable data, and do not claim instantaneous latency or throughput. Chunk presence does not prove index readiness; arena generation speed and end-to-end rate have distinct labels.
+- Reliability keeps live health independent from retained failures and up to 100 sessions started within 30 days. Unclean exit means no clean shutdown was recorded; cause remains unknown. The dashboard no longer exposes the misleading Resolve all errors action, which rewrote failure history rather than repairing causes. Existing historical data is preserved.
+- Configuration edits remain separate from loaded runtime state and require Save; load failures leave editing disabled.
+- Bundles does not declare an errored project ready merely because progress is 100 percent.
+- Live events distinguishes explicit success, failure, warning and informational events with no reported result.

@@ -577,23 +577,22 @@ def test_overview_health_summary_has_alert_first_rendering_contract() -> None:
     ]
     assert "dashboardHealth(snapshot)" in overview_source
     assert "dashboardFreshness(" in overview_source
-    assert "Needs attention" in overview_source
+    assert "health.label" in overview_source
+    assert "Status stale" in overview_source
     assert "switchTab(" in overview_source
 
 
 def test_overview_health_uses_live_observability_and_accessible_status_contract() -> None:
-    """Dropped live failure signals, receive time, or canvas summary must fail."""
+    """Current health uses live checks; historical counters stay separate."""
     health_source = DASHBOARD_HTML[
         DASHBOARD_HTML.index("function dashboardHealth(") : DASHBOARD_HTML.index(
             "function dashboardFreshness("
         )
     ]
     for signal in [
-        "agent_http",
-        "policy_rejection",
-        "degraded_count",
-        "retry_count",
-        "restarts",
+        "open_incidents",
+        "blocked_requests",
+        "dependency_status",
         "hub_online",
         "ollama_online",
     ]:

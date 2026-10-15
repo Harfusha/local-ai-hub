@@ -298,8 +298,8 @@ def test_projects_and_bundles_expose_canonical_identity_and_readiness() -> None:
 def test_rag_reliability_and_events_have_operational_filters() -> None:
     assert "Search RAG workspaces" in DASHBOARD_HTML
     assert "Workspace identity" in DASHBOARD_HTML
-    assert "Operational severity" in DASHBOARD_HTML
-    assert "Failure trend" in DASHBOARD_HTML
+    assert "Runtime health &amp; recorded history" in DASHBOARD_HTML
+    assert "Historical failures and unclean exits" in DASHBOARD_HTML
     assert "Event severity" in DASHBOARD_HTML
     assert "Event source" in DASHBOARD_HTML
 
@@ -429,22 +429,15 @@ def test_reliability_summary_footer_padding_and_severity_contract() -> None:
     trend_idx = DASHBOARD_HTML.index('id="reliabilityTrend"')
     action_idx = DASHBOARD_HTML.index('id="reliabilityAction"')
     assert footer_idx < trend_idx < action_idx
-    # Assert active crash rather than any historical crash determines attention severity
-    assert "activeCrash" in DASHBOARD_HTML
-    assert "failures||activeCrash?'attention':restarts?'warning':'healthy'" in DASHBOARD_HTML
+    assert "health=dashboardHealth(snapshot||{})" in DASHBOARD_HTML
+    assert "Historical failures and unclean exits describe past events" in DASHBOARD_HTML
 
 
-def test_operational_severity_resolve_errors_action() -> None:
-    assert 'id="resolveErrorsBtn"' in DASHBOARD_HTML
-    assert 'id="resolveAllErrorsBtn"' in DASHBOARD_HTML
-    assert 'function renderResolveErrorsModal(r)' in DASHBOARD_HTML
-    assert "/api/maintenance/resolve_errors" in DASHBOARD_HTML
-    assert "type==='resolve_errors'" in DASHBOARD_HTML
-    footer_idx = DASHBOARD_HTML.index('class="reliability-footer"')
-    trend_idx = DASHBOARD_HTML.index('id="reliabilityTrend"')
-    resolve_idx = DASHBOARD_HTML.index('id="resolveErrorsBtn"')
-    action_idx = DASHBOARD_HTML.index('id="reliabilityAction"')
-    assert footer_idx < trend_idx < resolve_idx < action_idx
+def test_dashboard_does_not_rewrite_failed_events_as_successful() -> None:
+    assert 'id="resolveErrorsBtn"' not in DASHBOARD_HTML
+    assert 'id="resolveAllErrorsBtn"' not in DASHBOARD_HTML
+    assert 'function renderResolveErrorsModal(r)' not in DASHBOARD_HTML
+    assert "/api/maintenance/resolve_errors" not in DASHBOARD_HTML
 
 
 
