@@ -3,6 +3,8 @@ import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from local_ai_hub.code_index import CodeIndex
 from local_ai_hub.deterministic import DeterministicEngine
 
@@ -33,12 +35,18 @@ def _index_project(index: CodeIndex, root: Path, paths: list[str]) -> None:
     assert result["success"] is True
 
 
-def test_circular_dependencies_keep_absolute_and_from_imports(tmp_path):
+@pytest.mark.parametrize("backend", ["configured", "ast"])
+def test_circular_dependencies_keep_absolute_and_from_imports(tmp_path, monkeypatch, backend):
+    if backend == "ast":
+        monkeypatch.setattr(
+            "local_ai_hub.treesitter_parser.parse_treesitter_with_status",
+            lambda *_args, **_kwargs: {"status": "unavailable", "result": None},
+        )
     root = tmp_path / "absolute-project"
     paths = _write_project(root, {
         "package/__init__.py": "",
-        "package/alpha.py": "import package.beta as child\\nfrom package import beta as sibling\\n",
-        "package/beta.py": "from package.alpha import Alpha\\n",
+        "package/alpha.py": "import package.beta as child\nfrom package import beta as sibling\n",
+        "package/beta.py": "from package.alpha import Alpha\n",
     })
     index = _index(root)
     _index_project(index, root, paths)
@@ -51,7 +59,13 @@ def test_circular_dependencies_keep_absolute_and_from_imports(tmp_path):
     ], result
 
 
-def test_circular_dependencies_use_indexed_relative_imports_without_source_scan(tmp_path, monkeypatch):
+@pytest.mark.parametrize("backend", ["configured", "ast"])
+def test_circular_dependencies_use_indexed_relative_imports_without_source_scan(tmp_path, monkeypatch, backend):
+    if backend == "ast":
+        monkeypatch.setattr(
+            "local_ai_hub.treesitter_parser.parse_treesitter_with_status",
+            lambda *_args, **_kwargs: {"status": "unavailable", "result": None},
+        )
     root = tmp_path / "project"
     paths = _write_project(root, {
         "package/__init__.py": "",
@@ -116,7 +130,8 @@ def test_circular_dependencies_isolate_roots_and_reflect_index_updates(tmp_path)
 def test_circular_dependencies_reject_missing_or_unindexed_code_index(tmp_path):
     unavailable = DeterministicEngine().find_circular_dependencies(str(tmp_path))
     assert unavailable["success"] is False
-    assert "code index" in unavailable["error"].lower()
+    assert "index" in unavailable["error"].lower()
+    assert unavailable["index_state"] == "unindexed"
 
     unindexed = DeterministicEngine(code_index=_index(tmp_path)).find_circular_dependencies(str(tmp_path))
     assert unindexed["success"] is False

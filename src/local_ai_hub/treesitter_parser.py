@@ -1130,17 +1130,23 @@ def _extract_python(
         ntype = node.type
 
         if ntype in ("import_statement", "import_from_statement"):
-            txt = _node_text(node, source_bytes)
-            dst = ""
+            module = ""
             if ntype == "import_from_statement":
                 mod_node = node.child_by_field_name("module_name")
                 if mod_node:
-                    dst = _node_text(mod_node, source_bytes)
-            else:
-                m = re.search(r"import\s+([\w.]+)", txt)
-                if m:
-                    dst = m.group(1)
-            if dst:
+                    module = _node_text(mod_node, source_bytes)
+            targets = {module} if module else set()
+            for imported in node.children_by_field_name("name"):
+                if imported.type == "aliased_import":
+                    imported = imported.child_by_field_name("name")
+                if imported is None:
+                    continue
+                name = _node_text(imported, source_bytes)
+                if not name or name == "*":
+                    continue
+                separator = "" if not module or module.endswith(".") else "."
+                targets.add(f"{module}{separator}{name}")
+            for dst in sorted(targets):
                 edges.append({
                     "src": "<module>",
                     "dst": dst,
