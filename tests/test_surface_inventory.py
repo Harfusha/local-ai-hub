@@ -397,7 +397,7 @@ def test_inventory_extracts_surfaces_and_resolves_dynamic_route_registry(tmp_pat
     assert inventory["conditional_mcp_actions"]["local_ai_command"]["speculative_lint"] == (
         "speculative_lint"
     )
-    assert inventory["mcp_action_aliases"]["local_ai_repo"]["ctx"] == "context"
+    assert inventory.get("mcp_action_aliases", {}) == {}
     assert {"agent-state", "clean"} <= set(inventory["cli_operations"])
     assert set(inventory["generated_manifests"]) == {
         "generated/schemas/local_ai_repo.json",

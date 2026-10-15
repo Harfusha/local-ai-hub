@@ -187,11 +187,6 @@ def test_mcp_actions_dispatch_and_compact(monkeypatch, tmp_path):
     assert st_res["success"] is True
     assert ("STATUS", "agent_state") in calls
 
-    calls.clear()
-    st_alias = mcp_mod.local_ai_status(action="agent_state")
-    assert st_alias["success"] is True
-    assert [call for call in calls if call[0] == "STATUS"] == [("STATUS", "agent_state")]
-
     # local_ai_coord actions
     c_res1 = mcp_mod.local_ai_coord(action="task_create", task_id="t1", contract={"goal": "g"})
     assert c_res1["success"] is True

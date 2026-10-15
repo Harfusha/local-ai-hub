@@ -205,12 +205,11 @@ def _build_mcp_client(tenant: str, config_path: str | None) -> _MCPHubClientAdap
 
 def _classify_mcp_operation(tool_name: str, arguments: dict[str, Any]) -> tuple[str, bool]:
     if tool_name == "local_ai_status":
-        action = str(arguments.get("detail") or arguments.get("action") or "brief")
+        action = arguments.get("detail", "brief")
     else:
-        action = str(arguments.get("action") or tool_name)
-    action = action.strip().lower().replace("-", "_")
-    if tool_name == "local_ai_status" and action in {"status", "health", "check", "info"}:
-        action = "brief"
+        action = arguments.get("action", tool_name)
+    if not isinstance(action, str):
+        action = ""
     lightweight_read = (
         tool_name == "local_ai_artifact"
         or (tool_name == "local_ai_status" and action in {"brief", "cache", "telemetry", "traces", "guide"})
@@ -352,112 +351,6 @@ def _normalize_repo_search_path_hints(
         hint_copy["path"] = relative_text or "."
         normalized.append(hint_copy)
     return normalized, None
-
-
-_ACTION_ALIASES: dict[str, dict[str, str]] = {
-    "coord": {
-        "ctx": "context_compile",
-        "compile_ctx": "context_compile",
-        "neg_rec": "negative_knowledge_record",
-        "neg_find": "negative_knowledge_find",
-        "mem_put": "memory_record",
-        "mem_rec": "memory_record",
-        "mem_get": "memory_get",
-        "mem_find": "memory_find",
-        "mem_search": "memory_find",
-        "task_new": "task_create",
-        "task_chk": "task_checkpoint",
-        "task_done": "task_complete",
-    },
-    "command": {
-        "patch": "patch_and_verify",
-        "fix": "auto_fix",
-        "repair": "repair_loop",
-        "fmt": "format",
-    },
-    "repo": {
-        "idx": "code_index",
-        "review": "review_diff",
-        "sec": "security_audit",
-        "ctx": "context",
-    },
-    "task": {
-        "gen": "delegate",
-        "rev": "review",
-        "del": "delegate",
-    },
-}
-
-
-def _resolve_action(tool_kind: str, action: str) -> str:
-    cleaned = str(action or "").strip().lower().replace("-", "_")
-    tool_aliases = _ACTION_ALIASES.get(tool_kind, {})
-    return tool_aliases.get(cleaned, cleaned)
-
-
-def _action_kind_for_tool(tool_name: str) -> str:
-    return {
-        "local_ai_coord": "coord",
-        "local_ai_command": "command",
-        "local_ai_repo": "repo",
-        "local_ai_task": "task",
-    }.get(tool_name, "")
-
-
-def _action_values_with_aliases(tool_name: str, features: Any = None) -> tuple[str, ...]:
-    tool_kind = _action_kind_for_tool(tool_name)
-    actions = operation_actions(tool_name, features)
-    aliases = _ACTION_ALIASES.get(tool_kind, {})
-    return tuple(dict.fromkeys((
-        *actions,
-        *(alias for alias, canonical in aliases.items() if canonical in actions),
-    )))
-
-
-def _input_schema_with_action_aliases(tool_name: str, schema: dict[str, Any]) -> dict[str, Any]:
-    """Publish short actions with the same conditional schema as their canonical action."""
-    tool_kind = _action_kind_for_tool(tool_name)
-    aliases = _ACTION_ALIASES.get(tool_kind, {})
-    if not aliases:
-        return schema
-
-    result = copy.deepcopy(schema)
-    actions = set(operation_actions(tool_name, FEATURES))
-    selector_schema = result.get("properties", {}).get("action")
-    if not isinstance(selector_schema, dict):
-        return result
-    selector_schema["enum"] = list(_action_values_with_aliases(tool_name, FEATURES))
-
-    if tool_name == "local_ai_task":
-        result.setdefault("properties", {})["request_id"] = {
-            "type": "string",
-            "default": "",
-            "description": "Stable async-job idempotency key and request correlation ID.",
-        }
-        non_async_actions = sorted(actions - {"submit", "status", "wait", "result", "cancel"})
-        if non_async_actions:
-            result.setdefault("allOf", []).append({
-                "if": {
-                    "properties": {"action": {"enum": non_async_actions}},
-                    "required": ["action"],
-                },
-                "then": {"not": {"required": ["request_id"]}},
-            })
-
-    conditions = result.get("allOf", [])
-    by_action = {
-        row.get("if", {}).get("properties", {}).get("action", {}).get("const"): row
-        for row in conditions
-        if isinstance(row, dict)
-    }
-    for alias, canonical in aliases.items():
-        canonical_rule = by_action.get(canonical)
-        if canonical not in actions or canonical_rule is None:
-            continue
-        alias_rule = copy.deepcopy(canonical_rule)
-        alias_rule["if"]["properties"]["action"]["const"] = alias
-        conditions.append(alias_rule)
-    return result
 
 
 def _normalize_deterministic(val: Any) -> Any:
@@ -795,7 +688,7 @@ def _desc_artifact() -> str:
     )
 
 
-TaskAction: TypeAlias = Literal.__getitem__(_action_values_with_aliases("local_ai_task", FEATURES))
+TaskAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_task", FEATURES))
 
 
 _REPO_ACTIONS = (
@@ -822,21 +715,15 @@ _REPO_ACTIONS = (
 
 
 def _repo_action_type(features: Any) -> Any:
-    return Literal.__getitem__(_action_values_with_aliases("local_ai_repo", features))
+    return Literal.__getitem__(operation_actions("local_ai_repo", features))
 
 
 RepoAction: TypeAlias = _repo_action_type(None)
 RagAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_rag"))
-CommandAction: TypeAlias = Literal.__getitem__(_action_values_with_aliases("local_ai_command", FEATURES))
-CoordAction: TypeAlias = Literal.__getitem__(_action_values_with_aliases("local_ai_coord", None))
+CommandAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_command", FEATURES))
+CoordAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_coord", None))
 StatusDetail: TypeAlias = Literal.__getitem__(operation_actions("local_ai_status"))
-_STATUS_ACTION_ALIASES = ("status", "health", "check", "info")
-StatusAction: TypeAlias = Literal.__getitem__(
-    tuple(dict.fromkeys((*operation_actions("local_ai_status"), *_STATUS_ACTION_ALIASES)))
-)
 STATUS_DETAILS = operation_actions("local_ai_status")
-STATUS_ALIASES = _STATUS_ACTION_ALIASES
-STATUS_ACTIONS = ("", *StatusAction.__args__)
 RepoPhase: TypeAlias = Literal.__getitem__(REPO_PHASES)
 StatusScope: TypeAlias = Literal["process", "window"]
 WorkAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_work"))
@@ -2006,9 +1893,6 @@ def _instrumented_tool():
             selector = "detail" if fn.__name__ == "local_ai_status" else "action"
             parameter = signature.parameters.get(selector)
             contract_action = arguments.get(selector, parameter.default if parameter is not None else "")
-            action_kind = _action_kind_for_tool(fn.__name__)
-            if action_kind and isinstance(contract_action, str):
-                contract_action = _resolve_action(action_kind, contract_action)
             output_error = validate_operation_output(fn.__name__, str(contract_action), clean)
             if output_error is not None:
                 clean = {
@@ -2104,10 +1988,8 @@ def _record_adoption(tool: str, arguments: dict[str, Any], result: Any, duration
 
 @mcp.tool()
 @_instrumented_tool()
-def local_ai_status(action: StatusAction = "", detail: StatusDetail = "brief", scope: str = "process", extra_fields: list[str] | None = None, adoption_signal: Literal["", "bypassed"] = "", target_tool: str = "", target_action: str = "", min_duration_ms: int = 0, trace_action: str = "", max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "") -> dict[str, Any]:
-    """Health/queue/token-saving status. detail: brief, cache, telemetry, full, agent_state, traces, guide. Guide returns local feature-aware tool cards without a health query. Traces accepts min_duration_ms and trace_action filters. scope: process (default) or window. action is an alias for detail. To report a deliberate bypass, set adoption_signal=bypassed with validated target_tool and target_action; omitted means no bypass. Telemetry is metadata-only. Do not poll status during normal repository work or while preprocessing/model startup is in progress; one bounded health check is enough before native fallback. Use when: make one bounded health, cache, telemetry, guide or debug-trace query. Skip when: repository evidence or task work is needed."""
-    if not isinstance(action, str) or action not in STATUS_ACTIONS:
-        return contract_error(f"action must be one of: {', '.join(STATUS_ACTIONS[1:])}")
+def local_ai_status(detail: StatusDetail = "brief", scope: str = "process", extra_fields: list[str] | None = None, adoption_signal: Literal["", "bypassed"] = "", target_tool: str = "", target_action: str = "", min_duration_ms: int = 0, trace_action: str = "", max_response_tokens: int = 0, response_profile: str = "", reuse_key: str = "") -> dict[str, Any]:
+    """Health/queue/token-saving status. detail: brief, cache, telemetry, full, agent_state, traces, guide. Guide returns local feature-aware tool cards without a health query. Traces accepts min_duration_ms and trace_action filters. scope: process (default) or window. To report a deliberate bypass, set adoption_signal=bypassed with validated target_tool and target_action; omitted means no bypass. Telemetry is metadata-only. Do not poll status during normal repository work or while preprocessing/model startup is in progress; one bounded health check is enough before native fallback. Use when: make one bounded health, cache, telemetry, guide or debug-trace query. Skip when: repository evidence or task work is needed."""
     if not isinstance(detail, str) or detail not in StatusDetail.__args__:
         return contract_error(f"detail must be one of: {', '.join(STATUS_DETAILS)}")
     if not isinstance(scope, str) or scope.strip().lower() not in {"process", "window"}:
@@ -2118,16 +2000,6 @@ def local_ai_status(action: StatusAction = "", detail: StatusDetail = "brief", s
         return contract_error("min_duration_ms must be an integer between 0 and 86400000")
     if not isinstance(trace_action, str) or len(trace_action) > 64:
         return contract_error("trace_action must be a string of at most 64 characters")
-    if action:
-        act = action.strip().lower()
-        if act in STATUS_DETAILS:
-            detail = act  # type: ignore
-        elif act in STATUS_ALIASES:
-            detail = "brief"
-        else:
-            return contract_error(
-                f"Unknown local_ai_status action '{act}'. Valid actions: {', '.join(STATUS_ACTIONS[1:])}."
-            )
     if adoption_signal not in {"", "bypassed"}:
         return contract_error("adoption_signal must be empty or bypassed")
     if adoption_signal == "bypassed" and _adoption_target({"adoption_signal": adoption_signal, "target_tool": target_tool, "target_action": target_action}) is None:
@@ -2329,12 +2201,11 @@ def local_ai_task(
     model. Use when: one bounded semantic task should run on a configured
     local model. Skip when: local-model tasks are disabled or Codex-owned
     subagent orchestration is the right owner; Local AI Hub does not route or manage native Codex agents."""
-    action = _resolve_action("task", action)
-    if action not in _action_values_with_aliases("local_ai_task", FEATURES):
+    if action not in operation_actions("local_ai_task", FEATURES):
         return _invalid_action(
             "local_ai_task",
             action,
-            _action_values_with_aliases("local_ai_task", FEATURES),
+            operation_actions("local_ai_task", FEATURES),
             "Use Local AI Hub only for bounded local-model work; use Codex-owned orchestration for peer subagents.",
         )
     try:
@@ -3018,7 +2889,6 @@ def _local_ai_repo_impl(
             return contract_error(f"{numeric_name} must be an integer")
         if numeric_value < 0 or numeric_value > 100000:
             return contract_error(f"{numeric_name} must be between 0 and 100000")
-    action = _resolve_action("repo", action)
     context_query = ""
     if action == "context":
         context_query = str(query).strip() or str(task).strip()
@@ -3500,12 +3370,11 @@ def _local_ai_repo_impl(
     if action == "secret_scan":
         if not isinstance(staged, bool):
             return _context_input_error("staged must be boolean for secret_scan")
-        normalized_history_query = " ".join(query.lower().replace("_", " ").split()) if isinstance(query, str) else ""
-        history_query = normalized_history_query in {"git", "history", "git history"}
-        scan_git = staged or history_query
+        if staged and (not isinstance(path, str) or not path.strip()):
+            return _context_input_error("path is required when staged history scanning is enabled")
         return _compact(CLIENT.post("/api/repo/secret_scan", {
-            "root": root, "path": path or (None if history_query else query or task or None),
-            "scan_git_history": scan_git,
+            "root": root, "path": path or query or task or None,
+            "scan_git_history": staged,
         }, timeout=_timeout("quick")), "security")
     if action == "schema_inspect":
         return _compact(CLIENT.post("/api/repo/schema_inspect", {
@@ -3702,7 +3571,12 @@ def local_ai_repo(
         "exclude_paths": exclude_paths,
         "force_include_paths": force_include_paths,
     }
-    resolved_action = _resolve_action("repo", action)
+    resolved_action = action
+    if not isinstance(resolved_action, str) or resolved_action not in operation_actions("local_ai_repo", FEATURES):
+        return _invalid_action(
+            "local_ai_repo", resolved_action, operation_actions("local_ai_repo", FEATURES),
+            "Use a canonical advertised repository action.",
+        )
     if resolved_action in {"search", "code_index"}:
         pagination_error = validate_operation_arguments(
             "local_ai_repo", resolved_action, {"limit": limit, "offset": offset}
@@ -3906,7 +3780,11 @@ def local_ai_command(
     """Bounded command broker. Set snapshot=true to record a best-effort Git snapshot. For action=run only, rollback_on_failure=true requires paths to list the flat, relative files directly under cwd that may be restored or removed; missing/unsafe paths reject execution. It cannot be combined with auto_fix. Rollback preserves all files outside that explicit scope. Other command and streaming behavior remains bounded and tenant-scoped. Use when: a repeatable test, lint, typecheck, build, analysis, or safe read-only command is needed. Skip when: no command is needed or a fresh cached result already answers it."""
     cwd = cwd if cwd is not None else root if root is not None else "."
     paths = paths if paths is not None else changed_paths if changed_paths is not None else files
-    action = _resolve_action("command", action)
+    if not isinstance(action, str) or action not in operation_actions("local_ai_command", FEATURES):
+        return _invalid_action(
+            "local_ai_command", action, operation_actions("local_ai_command", FEATURES),
+            "Use a canonical advertised command action.",
+        )
     _, requires_heavy_work = _classify_mcp_operation(
         "local_ai_command", {"action": action},
     )
@@ -3943,7 +3821,7 @@ def local_ai_command(
             "command": command,
             "job_id": job_id or execution_id,
         }
-        return _compact(CLIENT.post("/api/speculative-lint", payload, timeout=host_timeout), "command")
+        return _compact(CLIENT.post("/api/command/speculative-lint", payload, timeout=host_timeout), "command")
     if action.startswith("mock_server"):
         sub_act = "start" if action in {"mock_server", "mock_server_start"} else "stop" if action == "mock_server_stop" else "status"
         port_val = int(command) if (command and command.isdigit()) else (0 if sub_act == "start" else 11440)
@@ -4033,7 +3911,11 @@ def local_ai_coord(
         return {"success": False, "unsupported": True, "error": "local_ai_coord is disabled in configuration"}
     if after_seq is not None and (isinstance(after_seq, bool) or not isinstance(after_seq, int) or not 0 <= after_seq <= MAX_EVENT_SEQUENCE):
         return contract_error(f"after_seq must be an integer between 0 and {MAX_EVENT_SEQUENCE}")
-    action = _resolve_action("coord", action)
+    if not isinstance(action, str) or action not in operation_actions("local_ai_coord", None):
+        return _invalid_action(
+            "local_ai_coord", action, operation_actions("local_ai_coord", None),
+            "Use a canonical advertised coordination action.",
+        )
     if action in {"memory_reap", "relation_record", "relation_find", "relation_traverse"}:
         return _invalid_action(
             "local_ai_coord",
@@ -4465,9 +4347,22 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
         if _registered_tool is None or not _actions:
             continue
         if hasattr(_registered_tool, "parameters"):
-            _registered_tool.parameters = _input_schema_with_action_aliases(
-                _tool_name, operation_tool_input_schema(_tool_name, FEATURES)
-            )
+            _input_schema = operation_tool_input_schema(_tool_name, FEATURES)
+            if _tool_name == "local_ai_task":
+                _input_schema.setdefault("properties", {})["request_id"] = {
+                    "type": "string", "default": "",
+                    "description": "Stable async-job idempotency key and request correlation ID.",
+                }
+                _non_async_actions = sorted(set(_actions) - {"submit", "status", "wait", "result", "cancel"})
+                if _non_async_actions:
+                    _input_schema.setdefault("allOf", []).append({
+                        "if": {
+                            "properties": {"action": {"enum": _non_async_actions}},
+                            "required": ["action"],
+                        },
+                        "then": {"not": {"required": ["request_id"]}},
+                    })
+            _registered_tool.parameters = _input_schema
         _output_schema = operation_tool_output_schema(_tool_name, FEATURES)
         _fn_metadata = getattr(_registered_tool, "fn_metadata", None)
         if hasattr(_fn_metadata, "output_schema"):
@@ -4974,15 +4869,6 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
         try:
             selector = "detail" if name == "local_ai_status" else "action"
             validation_arguments = dict(arguments)
-            requested_action = validation_arguments.get(selector)
-            action_kind = _action_kind_for_tool(name)
-            canonical_action = (
-                _resolve_action(action_kind, requested_action)
-                if action_kind and isinstance(requested_action, str)
-                else requested_action
-            )
-            if isinstance(canonical_action, str):
-                validation_arguments[selector] = canonical_action
             validation = validate_operation_call(name, validation_arguments, features=FEATURES)
             if validation is not None:
                 status_code, error = validation
@@ -5005,14 +4891,6 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                 return finalize(_mcp_budget_payload(name, arguments, payload), account_unwrapped_error=True)
             selector = "detail" if name == "local_ai_status" else "action"
             action = arguments.get(selector)
-            if action_kind and isinstance(action, str):
-                action = _resolve_action(action_kind, action)
-            if name == "local_ai_status":
-                alias = arguments.get("action")
-                if isinstance(alias, str) and alias in {"status", "health", "check", "info"}:
-                    action = "brief"
-                elif isinstance(alias, str) and alias in operation_actions(name, FEATURES):
-                    action = alias
             if not isinstance(action, str) or action not in operation_actions(name, FEATURES):
                 available_actions = operation_actions(name, FEATURES)
                 action = available_actions[0] if available_actions else ""

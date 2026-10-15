@@ -38,7 +38,7 @@ def test_vision_feature_toggle_removes_vision_action_and_hint() -> None:
 
 
 @pytest.mark.parametrize("tool_name", ["local_ai_command", "local_ai_coord"])
-def test_live_mcp_alias_schemas_are_valid_without_empty_combinators(tool_name: str) -> None:
+def test_live_mcp_schemas_are_valid_without_empty_combinators(tool_name: str) -> None:
     from jsonschema import Draft202012Validator
 
     tool = local_ai_mcp.mcp._tool_manager._tools[tool_name]
@@ -48,13 +48,12 @@ def test_live_mcp_alias_schemas_are_valid_without_empty_combinators(tool_name: s
 
 def test_public_action_parameters_are_explicit_literals() -> None:
     expected = {
-        "local_ai_task": {"delegate", "explore", "reason", "continue", "review", "second_opinion", "compress", "route", "batch", "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report", "submit", "status", "wait", "result", "cancel", "candidate_create", "candidate_promote", "speculative_draft", "vision", "transcribe", "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold", "gen", "rev", "del"},
+        "local_ai_task": {"delegate", "explore", "reason", "continue", "review", "second_opinion", "compress", "route", "batch", "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report", "submit", "status", "wait", "result", "cancel", "candidate_create", "candidate_promote", "speculative_draft", "vision", "transcribe", "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold"},
         "local_ai_rag": {"index", "search", "list", "docset_index", "docset_search", "ingest_document", "ingest_diagram"},
-        "local_ai_coord": {"claim", "renew", "release", "leases", "memo_put", "memo_get", "memo_search", "memo_delete", "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_complete", "task_fail", "task_heartbeat", "memory_record", "memory_get", "memory_find", "memory_promote", "context_compile", "verify_receipt", "verify_completion", "negative_knowledge_record", "negative_knowledge_find", "incident_decision", "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_delete", "blackboard_merge", "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel", "worktree_lease", "worktree_release", "pubsub_publish", "pubsub_poll", "simulate_merge", "curate_dataset", "task_sync", "task_zombie_reap", "task_cleanup_worktree", "ctx", "compile_ctx", "neg_rec", "neg_find", "mem_put", "mem_rec", "mem_get", "mem_find", "mem_search", "task_new", "task_chk", "task_done"},
-        "local_ai_command": {"run", "cancel", "classify", "discover", "stats", "repair_loop", "auto_fix", "run_affected", "format", "lint_fix", "spawn_daemon", "daemon_status", "stop_daemon", "http_probe", "stash_save", "stash_restore", "record_mock", "replay_mock", "diff_hunk_stage", "flaky_detect", "webhook_replay", "mock_server", "mock_server_start", "mock_server_stop", "mock_server_status", "patch_and_verify", "preflight", "speculative_lint", "patch", "fix", "repair", "fmt"},
+        "local_ai_coord": {"claim", "renew", "release", "leases", "memo_put", "memo_get", "memo_search", "memo_delete", "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_complete", "task_fail", "task_heartbeat", "memory_record", "memory_get", "memory_find", "memory_promote", "context_compile", "verify_receipt", "verify_completion", "negative_knowledge_record", "negative_knowledge_find", "incident_decision", "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_delete", "blackboard_merge", "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel", "worktree_lease", "worktree_release", "pubsub_publish", "pubsub_poll", "simulate_merge", "curate_dataset", "task_sync", "task_zombie_reap", "task_cleanup_worktree"},
+        "local_ai_command": {"run", "cancel", "classify", "discover", "stats", "repair_loop", "auto_fix", "run_affected", "format", "lint_fix", "spawn_daemon", "daemon_status", "stop_daemon", "http_probe", "stash_save", "stash_restore", "record_mock", "replay_mock", "diff_hunk_stage", "flaky_detect", "webhook_replay", "mock_server", "mock_server_start", "mock_server_stop", "mock_server_status", "patch_and_verify", "preflight", "speculative_lint"},
     }
     expected["local_ai_task"].add("browser")
-    expected["local_ai_coord"].update({"ask", "answer", "verify_export"})
     if not local_ai_mcp.FEATURES.speculative_lint:
         expected["local_ai_command"].discard("speculative_lint")
     if not getattr(local_ai_mcp.FEATURES, "vision", False):
@@ -337,10 +336,7 @@ def test_async_task_submit_reuses_explicit_request_id(monkeypatch) -> None:
     features = FeaturesProxy()
     monkeypatch.setattr(local_ai_mcp, "FEATURES", features)
     assert "request_id" in inspect.signature(local_ai_mcp.local_ai_task).parameters
-    schema = local_ai_mcp._input_schema_with_action_aliases(
-        "local_ai_task",
-        local_ai_mcp.operation_tool_input_schema("local_ai_task", features),
-    )["properties"]
+    schema = local_ai_mcp.operation_tool_input_schema("local_ai_task", features)["properties"]
     assert "request_id" in schema
     calls: list[tuple[str, dict, dict]] = []
 

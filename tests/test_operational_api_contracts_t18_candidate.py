@@ -1602,14 +1602,13 @@ def test_admin_action_policy_covers_each_t18_operation(operation, method, path, 
     assert sent == []
 
 
-def test_status_action_aliases_match_live_and_generated_schemas():
+def test_status_uses_canonical_detail_schema_in_live_and_generated_tools():
     import asyncio
     from local_ai_hub import mcp_server
     from local_ai_hub.generator import generate_mcp_tool_schemas
     import mcp.types as mcp_types
 
     details = {"brief", "cache", "telemetry", "full", "agent_state"}
-    aliases = {"status", "health", "check", "info"}
     schemas = generate_mcp_tool_schemas({})["local_ai_status"]["parameters"]["properties"]
     list_handler = mcp_server.mcp._mcp_server.request_handlers[mcp_types.ListToolsRequest]
     response = asyncio.run(list_handler(mcp_types.ListToolsRequest(method="tools/list")))
@@ -1618,14 +1617,13 @@ def test_status_action_aliases_match_live_and_generated_schemas():
 
     assert set(live["detail"]["enum"]) == details
     assert set(schemas["detail"]["enum"]) == details
-    assert live["action"].get("enum") == schemas["action"]["enum"]
-    assert (details | aliases) <= set(live["action"].get("enum", []))
+    assert "action" not in live
+    assert "action" not in schemas
 
 
-def test_status_action_aliases_route_to_expected_live_status_scope(monkeypatch):
+def test_status_detail_values_route_to_expected_live_status_scope(monkeypatch):
     from local_ai_hub import mcp_server
 
-    aliases = {"status", "health", "check", "info"}
     calls = []
     status = {"success": True, "hub_online": True, "version": "test", "scheduler": {}, "observability": {}, "runtime_stats": {}}
 
@@ -1645,7 +1643,6 @@ def test_status_action_aliases_route_to_expected_live_status_scope(monkeypatch):
     monkeypatch.setattr(mcp_server, "CLIENT", Client())
     monkeypatch.setattr(mcp_server, "FEATURES", SimpleNamespace(status=True, tasks=False, has_any_model=lambda: False))
     expected_calls = {
-        **{alias: ["/api/live/status?light=1&scope=process"] for alias in aliases},
         "brief": ["/api/live/status?light=1&scope=process"],
         "cache": ["/api/live/status?light=1&scope=process"],
         "telemetry": ["/api/telemetry/report?days=30&scope=process"],
@@ -1654,7 +1651,7 @@ def test_status_action_aliases_route_to_expected_live_status_scope(monkeypatch):
     }
     for action, expected in expected_calls.items():
         calls.clear()
-        result = mcp_server.local_ai_status(action=action, detail="telemetry")
+        result = mcp_server.local_ai_status(detail=action)
         assert result["success"] is True
         assert calls == expected
 

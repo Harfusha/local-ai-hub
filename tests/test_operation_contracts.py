@@ -356,7 +356,7 @@ def test_registry_schemas_keep_feature_filters_and_action_specific_requirements(
     assert work_action_rules["continue"] == ["work_id", "answer"]
 
 
-def test_status_action_aliases_match_live_and_generated_schemas():
+def test_status_uses_only_canonical_detail_schema():
     config = _config()
     config["features"].update({"status": True, "agent_os": True})
     feature_set = FeatureSet.from_config(config)
@@ -364,7 +364,7 @@ def test_status_action_aliases_match_live_and_generated_schemas():
     detail_actions = list(operation_actions("local_ai_status", feature_set))
 
     assert schema["detail"]["enum"] == detail_actions
-    assert schema["action"]["enum"] == detail_actions + ["status", "health", "check", "info"]
+    assert "action" not in schema
 
     import asyncio
 
@@ -372,10 +372,7 @@ def test_status_action_aliases_match_live_and_generated_schemas():
         tool for tool in asyncio.run(local_ai_mcp.mcp.list_tools())
         if tool.name == "local_ai_status"
     )
-    live_actions = list(operation_actions("local_ai_status", local_ai_mcp.FEATURES))
-    assert live_tool.inputSchema["properties"]["action"]["enum"] == (
-        live_actions + ["status", "health", "check", "info"]
-    )
+    assert "action" not in live_tool.inputSchema["properties"]
 
 
 def test_live_repo_action_literal_respects_batch_replacement_feature():

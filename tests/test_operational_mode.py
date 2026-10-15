@@ -206,11 +206,11 @@ def test_mcp_agent_inference_is_rejected_before_dispatch_but_status_remains_avai
         "get",
         lambda path: status_calls.append(path) or {"hub_online": True, "runtime_stats": {}},
     )
-    mcp_server.local_ai_status(action="health")
+    mcp_server.local_ai_status(detail="brief")
     assert status_calls
 
     set_operational_mode(tmp_path, "maintenance")
-    maintenance_status = mcp_server.local_ai_status(action="health")
+    maintenance_status = mcp_server.local_ai_status(detail="brief")
     assert maintenance_status["success"] is True
     assert "mode" not in maintenance_status
     assert len(status_calls) == 2

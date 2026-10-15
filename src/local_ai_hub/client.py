@@ -27,7 +27,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from .config import load_config
-from .operation_contracts import normalize_transport_error
+from .operation_contracts import normalize_transport_error, operation_actions
 
 
 CURRENT_REQUEST_CANCEL_EVENT: contextvars.ContextVar[threading.Event | None] = contextvars.ContextVar(
@@ -1480,7 +1480,12 @@ class HubClient:
         response_budget_tokens: int | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        act = action.strip().lower().replace("-", "_")
+        if not isinstance(action, str) or action not in operation_actions("local_ai_coord"):
+            return {
+                "success": False, "status_code": 400, "terminal": True, "retryable": False,
+                "error": f"unknown coord action '{action}'",
+            }
+        act = action
         if act in {"ask", "answer"}:
             payload = {
                 "action": act,
