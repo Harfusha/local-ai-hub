@@ -1473,13 +1473,45 @@ def test_archived_legacy_database_does_not_block_canonical_state(tmp_path):
     from local_ai_hub.sqlite_support import require_canonical_agent_state_database
 
     canonical = tmp_path / "agent_state.sqlite"
-    with closing(sqlite3.connect(canonical)):
-        pass
+    with closing(sqlite3.connect(canonical)) as con, con:
+        con.execute("CREATE TABLE canonical_marker (value TEXT)")
     archived = tmp_path / "leases.sqlite3"
     archived.write_bytes(b"preserve archived state")
 
     assert require_canonical_agent_state_database(tmp_path) == canonical
     assert archived.read_bytes() == b"preserve archived state"
+
+
+@pytest.mark.parametrize("canonical_kind", ["zero", "corrupt", "directory"])
+def test_invalid_canonical_path_does_not_hide_legacy_state(tmp_path, canonical_kind):
+    from local_ai_hub.sqlite_support import (
+        UnsupportedLegacyStateDatabase,
+        require_canonical_agent_state_database,
+    )
+
+    canonical = tmp_path / "agent_state.sqlite"
+    if canonical_kind == "zero":
+        canonical.touch()
+    elif canonical_kind == "corrupt":
+        canonical.write_bytes(b"SQLite format 3\x00" + bytes(84))
+    else:
+        canonical.mkdir()
+
+    legacy = tmp_path / "leases.sqlite3"
+    with closing(sqlite3.connect(legacy)) as con, con:
+        con.execute("CREATE TABLE leases (lease_id TEXT PRIMARY KEY)")
+        con.execute("INSERT INTO leases VALUES ('keep')")
+    legacy_before = legacy.read_bytes()
+    canonical_before = None if canonical.is_dir() else canonical.read_bytes()
+
+    with pytest.raises(UnsupportedLegacyStateDatabase, match="canonical database is missing or not a readable SQLite file"):
+        require_canonical_agent_state_database(tmp_path)
+
+    assert legacy.read_bytes() == legacy_before
+    assert canonical.exists()
+    assert canonical.is_dir() == (canonical_kind == "directory")
+    if canonical_before is not None:
+        assert canonical.read_bytes() == canonical_before
 
 
 def test_legacy_lease_wait_schema_is_rejected_before_schema_changes(tmp_path):
@@ -1493,6 +1525,7 @@ def test_legacy_lease_wait_schema_is_rejected_before_schema_changes(tmp_path):
             PRIMARY KEY(tenant, blocked_by, requested_path))""")
     with closing(sqlite3.connect(canonical)) as con:
         before = con.execute("SELECT sql FROM sqlite_master WHERE name='lease_waits'").fetchone()[0]
+    before_bytes = canonical.read_bytes()
 
     with pytest.raises(sqlite3.DatabaseError):
         ScopeLeaseStore(tmp_path)
@@ -1500,6 +1533,8 @@ def test_legacy_lease_wait_schema_is_rejected_before_schema_changes(tmp_path):
     with closing(sqlite3.connect(canonical)) as con:
         after = con.execute("SELECT sql FROM sqlite_master WHERE name='lease_waits'").fetchone()[0]
     assert after == before
+    assert canonical.read_bytes() == before_bytes
+    assert not list(tmp_path.glob("agent_state.sqlite.schema-mismatch-*.sqlite3"))
 
 def test_cache_rebuild_does_not_erase_agent_state_records(tmp_path):
     agent_state = tmp_path / "agent_state.sqlite"

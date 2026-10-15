@@ -23,6 +23,39 @@ from .sqlite_support import (
 _COORDINATION_ID_UNSET = object()
 from .process_utils import canonical_root
 
+_LEASE_DURABLE_SCHEMA = {
+    "leases": [
+        ("lease_id", "TEXT", 1, 1), ("tenant", "TEXT", 1, 0),
+        ("root_id", "TEXT", 1, 0), ("root_path", "TEXT", 1, 0),
+        ("path", "TEXT", 1, 2), ("purpose", "TEXT", 1, 0),
+        ("created_at", "REAL", 1, 0), ("expires_at", "REAL", 1, 0),
+    ],
+    "lease_waits": [
+        ("tenant", "TEXT", 1, 2), ("blocked_by", "TEXT", 1, 3),
+        ("root_id", "TEXT", 1, 1), ("requested_path", "TEXT", 1, 4),
+        ("updated_at", "REAL", 1, 0),
+    ],
+}
+_LEASE_REQUIRED_UNIQUE = {
+    "leases": (("lease_id", "path"),),
+    "lease_waits": (("root_id", "tenant", "blocked_by", "requested_path"),),
+}
+
+
+def _preflight_lease_schema(path: Path) -> None:
+    """Check existing lease tables read-only before opening a writer connection."""
+    if not path.is_file() or path.stat().st_size == 0:
+        return
+    uri = f"{path.resolve().as_uri()}?mode=ro"
+    with closing(sqlite3.connect(uri, uri=True, timeout=0.5)) as con:
+        validate_durable_schema(
+            con,
+            path,
+            _LEASE_DURABLE_SCHEMA,
+            required_unique=_LEASE_REQUIRED_UNIQUE,
+            backup_on_mismatch=False,
+        )
+
 
 def _norm_rel(value: str, root: str = "") -> str:
     raw = str(value or "").strip()
@@ -89,25 +122,14 @@ class ScopeLeaseStore:
         with self._lock:
             if self._initialized:
                 return
+            _preflight_lease_schema(self.path)
             def _setup() -> None:
                 with closing(self._connect()) as con:
-                    expected = {
-                        "leases": [("lease_id", "TEXT", 1, 1), ("tenant", "TEXT", 1, 0),
-                                   ("root_id", "TEXT", 1, 0), ("root_path", "TEXT", 1, 0),
-                                   ("path", "TEXT", 1, 2), ("purpose", "TEXT", 1, 0),
-                                   ("created_at", "REAL", 1, 0), ("expires_at", "REAL", 1, 0)],
-                        "lease_waits": [("tenant", "TEXT", 1, 2), ("blocked_by", "TEXT", 1, 3),
-                                        ("root_id", "TEXT", 1, 1), ("requested_path", "TEXT", 1, 4),
-                                        ("updated_at", "REAL", 1, 0)],
-                    }
                     validate_durable_schema(
                         con,
                         self.path,
-                        expected,
-                        required_unique={
-                            "leases": (("lease_id", "path"),),
-                            "lease_waits": (("root_id", "tenant", "blocked_by", "requested_path"),),
-                        },
+                        _LEASE_DURABLE_SCHEMA,
+                        required_unique=_LEASE_REQUIRED_UNIQUE,
                     )
                     initialize_wal(con)
                     con.execute(
