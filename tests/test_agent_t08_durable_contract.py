@@ -476,51 +476,26 @@ def test_add_verification_receipt_wrapper_rolls_back_when_event_append_fails(tmp
 
 # Historical stash 16269603: restored contract intent, not a replacement of newer guards.
 
-def test_durable_schema_mismatch_backups_and_preserves_original(tmp_path):
+def test_durable_schema_mismatch_rejects_without_backup_or_source_write(tmp_path):
     db_path = tmp_path / "agent_state.sqlite3"
     with closing(sqlite3.connect(db_path)) as con, con:
         con.execute("CREATE TABLE agent_events (stream_id TEXT, seq INTEGER)")
         con.execute("INSERT INTO agent_events VALUES ('task:keep', 7)")
+    original = db_path.read_bytes()
 
     store = AgentStateStore(db_path)
     with pytest.raises(DurableSchemaMismatchError) as caught:
         store._ensure_schema()
 
-    error = caught.value
-    assert error.recovery_required is True
-    assert error.backup_path is not None
-    assert error.backup_path.exists()
-    with closing(sqlite3.connect(db_path)) as con, con:
-        assert con.execute("SELECT stream_id, seq FROM agent_events").fetchall() == [("task:keep", 7)]
-    with closing(sqlite3.connect(error.backup_path)) as con, con:
-        assert con.execute("SELECT stream_id, seq FROM agent_events").fetchall() == [("task:keep", 7)]
-
-
-def test_durable_schema_mismatch_retains_original_when_backup_fails(tmp_path, monkeypatch):
-    db_path = tmp_path / "agent_state.sqlite3"
-    with closing(sqlite3.connect(db_path)) as con, con:
-        con.execute("CREATE TABLE agent_events (stream_id TEXT, seq INTEGER)")
-        con.execute("INSERT INTO agent_events VALUES ('task:keep', 7)")
-
-    def fail_backup(*_args, **_kwargs):
-        raise OSError("disk full")
-
-    monkeypatch.setattr(AgentStateStore, "_verified_backup", fail_backup)
-
-    with pytest.raises(DurableSchemaMismatchError) as caught:
-        AgentStateStore(db_path)._ensure_schema()
-
-    error = caught.value
-    assert error.recovery_required is True
-    assert error.backup_path is None
-    assert error.backup_error == "disk full"
-    assert "backup error=disk full" in str(error)
+    assert caught.value.recovery_required is True
+    assert caught.value.backup_path is None
+    assert db_path.read_bytes() == original
     with closing(sqlite3.connect(db_path)) as con, con:
         assert con.execute("SELECT stream_id, seq FROM agent_events").fetchall() == [("task:keep", 7)]
     assert not list(tmp_path.glob(f"{db_path.name}.schema-mismatch-*.sqlite3"))
 
 
-def test_durable_schema_mismatch_backup_includes_committed_wal_sidecar(tmp_path):
+def test_durable_schema_mismatch_preserves_database_and_wal_sidecars(tmp_path):
     db_path = tmp_path / "agent_state.sqlite3"
     writer = sqlite3.connect(db_path)
     try:
@@ -531,15 +506,18 @@ def test_durable_schema_mismatch_backup_includes_committed_wal_sidecar(tmp_path)
 
         wal_path = db_path.with_name(f"{db_path.name}-wal")
         assert wal_path.exists() and wal_path.stat().st_size > 0
+        paths = tuple(
+            db_path.with_name(f"{db_path.name}{suffix}")
+            for suffix in ("", "-wal", "-shm", "-journal")
+        )
+        before = tuple(path.read_bytes() if path.is_file() else None for path in paths)
 
         with pytest.raises(DurableSchemaMismatchError) as caught:
             AgentStateStore(db_path)._ensure_schema()
 
-        error = caught.value
-        assert error.backup_path is not None and error.backup_path.exists()
+        assert caught.value.backup_path is None
+        assert tuple(path.read_bytes() if path.is_file() else None for path in paths) == before
         with closing(sqlite3.connect(db_path)) as con:
-            assert con.execute("SELECT stream_id, seq FROM agent_events").fetchall() == [("task:wal", 9)]
-        with closing(sqlite3.connect(error.backup_path)) as con:
             assert con.execute("SELECT stream_id, seq FROM agent_events").fetchall() == [("task:wal", 9)]
     finally:
         writer.close()
