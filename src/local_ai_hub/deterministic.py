@@ -145,12 +145,6 @@ def _git_history_pathspec(root: str, value: Any) -> str | None:
     return None if pathspec == "." else pathspec
 
 
-def _git_author_literal_regex(value: str) -> str:
-    """Escape an author name for Git's POSIX extended-regex author filter."""
-    metacharacters = frozenset(r".^$*+?()[]{}|\\")
-    return "".join("\\" + char if char in metacharacters else char for char in value)
-
-
 def _is_symlink_or_reparse_point(path: Path) -> bool:
     info = os.lstat(path)
     reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
@@ -4101,25 +4095,30 @@ class DeterministicEngine:
             or len(query) > _GIT_HISTORY_QUERY_MAX_CHARS
             or any(ord(ch) < 32 or ord(ch) == 127 for ch in query)
         ):
-            return {"success": False, "error": "query must be a bounded literal string", "root": resolved}
+            return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
+                    "error": "query must be a bounded literal string", "root": resolved}
         if isinstance(max_commits, bool) or not isinstance(max_commits, int) or not 1 <= max_commits <= _GIT_HISTORY_COMMIT_LIMIT:
-            return {"success": False, "error": f"max_commits must be an integer from 1 to {_GIT_HISTORY_COMMIT_LIMIT}", "root": resolved}
+            return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
+                    "error": f"max_commits must be an integer from 1 to {_GIT_HISTORY_COMMIT_LIMIT}", "root": resolved}
         clean_query = query.strip()
         if author is not None and (
             not isinstance(author, str)
             or len(author) > _GIT_HISTORY_AUTHOR_MAX_CHARS
             or any(ord(ch) < 32 or ord(ch) == 127 for ch in author)
         ):
-            return {"success": False, "error": "author must be a bounded string", "root": resolved}
+            return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
+                    "error": "author must be a bounded string", "root": resolved}
         clean_author = author.strip() if isinstance(author, str) else ""
         try:
             since_epoch, since_normalized = _git_history_timestamp(since, "since", upper_bound=False)
             until_epoch, until_normalized = _git_history_timestamp(until, "until", upper_bound=True)
             pathspec = _git_history_pathspec(resolved, path)
-        except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            return {"success": False, "error": str(exc), "root": resolved}
+        except (OSError, RuntimeError, TypeError, ValueError, OverflowError) as exc:
+            return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
+                    "error": str(exc), "root": resolved}
         if since_epoch is not None and until_epoch is not None and since_epoch > until_epoch:
-            return {"success": False, "error": "since must be earlier than or equal to until", "root": resolved}
+            return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
+                    "error": "since must be earlier than or equal to until", "root": resolved}
 
         deadline = time.monotonic() + _GIT_INSIGHT_DEADLINE_SECONDS
         commits: dict[str, dict[str, Any]] = {}
@@ -4134,17 +4133,17 @@ class DeterministicEngine:
             argv = [
                 git_exe, "-C", resolved, "--literal-pathspecs",
                 "-c", "diff.external=", "-c", "core.pager=cat", "log",
-                f"-n{max_commits + 1}", f"--format={fmt}", "-i",
+                f"-n{max_commits + 1}", f"--format={fmt}", "-i", "--fixed-strings",
                 "--no-ext-diff", "--no-textconv", "--no-renames",
             ]
             if match_type == "message":
-                argv.extend(("--fixed-strings", f"--grep={clean_query}"))
+                argv.append(f"--grep={clean_query}")
             else:
                 argv.append(f"-S{clean_query}")
             if clean_author:
-                argv.append(f"--author={_git_author_literal_regex(clean_author)}")
+                argv.append(f"--author={clean_author}")
             if since_epoch is not None:
-                argv.append(f"--since=@{math.ceil(since_epoch)}")
+                argv.append(f"--since-as-filter=@{math.ceil(since_epoch)}")
             if until_epoch is not None:
                 argv.append(f"--until=@{math.floor(until_epoch)}")
             argv.extend(("--end-of-options", "HEAD", "--"))
@@ -4203,8 +4202,6 @@ class DeterministicEngine:
                     if since_epoch is not None and committed_timestamp < since_epoch:
                         continue
                     if until_epoch is not None and committed_timestamp > until_epoch:
-                        continue
-                    if clean_author and clean_author.casefold() not in commit_author.casefold():
                         continue
                 except (UnicodeDecodeError, ValueError, OverflowError):
                     incomplete.add(f"{match_type}_malformed_output")
@@ -4270,30 +4267,16 @@ class DeterministicEngine:
         resolved = self._root(root)
         git_exe = shutil.which("git") or "git"
 
-        with self._lock, closing(self._connect()) as con:
-            row = con.execute("SELECT cached_at, data_json FROM hotspots_cache WHERE root=? AND days=?", (str(resolved), int(days))).fetchone()
-            if row and (time.time() - float(row[0])) < 1800.0:
-                try:
-                    data = json.loads(str(row[1]))
-                    if (
-                        isinstance(data, dict)
-                        and data.get("success")
-                        and data.get("complete") is True
-                        and data.get("algorithm") == _HOTSPOT_ALGORITHM
-                    ):
-                        data["hotspots"] = data.get("hotspots", [])[:limit]
-                        data["count"] = len(data["hotspots"])
-                        data["cached"] = True
-                        return data
-                except Exception:
-                    pass
+        # The service-level repository cache keys this operation by the current
+        # repository fingerprint. Do not consult the older root/days-only table:
+        # it cannot detect changed HEADs or current-file contents.
 
         deadline = time.monotonic() + _HOTSPOT_ANALYSIS_SECONDS
         now = time.time()
         cutoff = int(now - days * 86_400)
         argv = [
             git_exe, "-C", resolved, "--literal-pathspecs", "-c", "core.pager=cat",
-            "log", f"-n{_HOTSPOT_GIT_COMMIT_LIMIT + 1}", f"--since=@{cutoff}",
+            "log", f"-n{_HOTSPOT_GIT_COMMIT_LIMIT + 1}", f"--since-as-filter=@{cutoff}",
             "--format=%x00LAH_HOTSPOT:%ct%x00", "--name-only", "-z", "--no-merges",
             "--no-renames", "--no-ext-diff", "--no-textconv", "--end-of-options", "HEAD", "--",
         ]
@@ -4394,6 +4377,7 @@ class DeterministicEngine:
         if len(candidates) > _HOTSPOT_FILE_LIMIT:
             incomplete.add("file_limit_reached")
         total_bytes = 0
+        reserved_bytes = 0
         analyzed_files = 0
         canonical_root = Path(resolved).resolve(strict=True)
         for file_rel in candidates[:_HOTSPOT_FILE_LIMIT]:
@@ -4401,26 +4385,83 @@ class DeterministicEngine:
                 incomplete.add("analysis_deadline")
                 break
             full_p = Path(resolved) / file_rel
+            fd = -1
+            content_buffer = bytearray()
             try:
+                current_component = canonical_root
+                for part in PurePosixPath(file_rel).parts:
+                    current_component = current_component / part
+                    if _is_symlink_or_reparse_point(current_component):
+                        raise ValueError("reparse_point")
+                before = os.stat(full_p, follow_symlinks=False)
+                if not stat.S_ISREG(before.st_mode):
+                    raise ValueError("not_regular")
                 canonical_file = full_p.resolve(strict=True)
                 canonical_file.relative_to(canonical_root)
-                if not canonical_file.is_file():
-                    incomplete.add("current_file_unavailable")
-                    continue
-                size = canonical_file.stat().st_size
+                size = before.st_size
                 if size > _HOTSPOT_FILE_BYTES_LIMIT:
                     incomplete.add("file_byte_limit_reached")
                     continue
-                if total_bytes + size > _HOTSPOT_TOTAL_BYTES_LIMIT:
+                reservation = size + 1
+                if reserved_bytes + reservation > _HOTSPOT_TOTAL_BYTES_LIMIT:
                     incomplete.add("aggregate_byte_limit_reached")
                     break
-                content_bytes = canonical_file.read_bytes()
-                total_bytes += len(content_bytes)
+                reserved_bytes += reservation
+                flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
+                if getattr(os, "O_NOFOLLOW", 0):
+                    flags |= os.O_NOFOLLOW
+                fd = os.open(full_p, flags)
+                opened = os.fstat(fd)
+                if (
+                    not stat.S_ISREG(opened.st_mode)
+                    or (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
+                ):
+                    raise ValueError("file_identity_changed")
+                opened_path = Path(full_p).resolve(strict=True)
+                opened_path.relative_to(canonical_root)
+                source = os.fdopen(fd, "rb", buffering=0)
+                fd = -1
+                with source:
+                    remaining_read = reservation
+                    while remaining_read:
+                        chunk = source.read(min(65_536, remaining_read))
+                        if not chunk:
+                            break
+                        content_buffer.extend(chunk)
+                        total_bytes += len(chunk)
+                        remaining_read -= len(chunk)
+                    after = os.fstat(source.fileno())
+                current_path_stat = os.stat(full_p, follow_symlinks=False)
+                current_path = full_p.resolve(strict=True)
+                current_path.relative_to(canonical_root)
+                before_state = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns)
+                after_state = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns)
+                if (
+                    before_state != after_state
+                    or (current_path_stat.st_dev, current_path_stat.st_ino) != (after.st_dev, after.st_ino)
+                    or current_path != canonical_file
+                    or _is_symlink_or_reparse_point(full_p)
+                ):
+                    incomplete.add("file_changed_during_read")
+                    continue
+                content_bytes = bytes(content_buffer)
+                if len(content_buffer) > size:
+                    incomplete.add("file_grew_during_read")
+                    continue
+                content = content_bytes.decode("utf-8", "strict")
                 analyzed_files += 1
-                content = content_bytes.decode("utf-8", "replace")
-            except (OSError, RuntimeError, ValueError):
+            except UnicodeDecodeError:
+                incomplete.add("file_decode_failed")
+                continue
+            except ValueError as exc:
+                incomplete.add("reparse_point_skipped" if str(exc) == "reparse_point" else "file_identity_changed")
+                continue
+            except (OSError, RuntimeError):
                 incomplete.add("current_file_unavailable")
                 continue
+            finally:
+                if fd >= 0:
+                    os.close(fd)
             comp_score = 1
             loc = 0
             try:
@@ -4467,6 +4508,7 @@ class DeterministicEngine:
                 "files_seen": len(candidates),
                 "files_analyzed": analyzed_files,
                 "bytes_read": total_bytes,
+                "bytes_reserved": reserved_bytes,
                 "commit_limit": _HOTSPOT_GIT_COMMIT_LIMIT,
                 "file_limit": _HOTSPOT_FILE_LIMIT,
                 "per_file_bytes_limit": _HOTSPOT_FILE_BYTES_LIMIT,
@@ -4475,13 +4517,6 @@ class DeterministicEngine:
             "count": len(hotspots),
             "hotspots": hotspots,
         }
-        if res_data["complete"]:
-            with self._lock, closing(self._connect()) as con:
-                con.execute(
-                    "INSERT OR REPLACE INTO hotspots_cache(root, days, cached_at, data_json) VALUES(?, ?, ?, ?)",
-                    (str(resolved), int(days), time.time(), json_dumps(res_data)),
-                )
-                con.commit()
         res_data["hotspots"] = hotspots[:limit]
         res_data["count"] = len(res_data["hotspots"])
         return res_data
