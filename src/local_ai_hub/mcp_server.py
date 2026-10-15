@@ -3018,7 +3018,7 @@ def _local_ai_repo_impl(
         "deterministic": ("task", "diff", "workspace", "path"),
         "resolve_imports": ("task", "diff", "workspace", "path"),
         "validate_patch": ("task", "diff", "workspace", "path"),
-        "synthesize_commit": ("task", "diff", "workspace", "task_id", "path"),
+        "synthesize_commit": ("task", "diff", "workspace", "path"),
         "cross_project_symbols": ("task", "diff", "workspace", "path"),
         "cross_project_impact": ("task", "diff", "workspace", "path"),
         "generate_dataset": ("task", "diff", "workspace", "path"),
@@ -3046,6 +3046,10 @@ def _local_ai_repo_impl(
         value = input_values[required_field]
         if not isinstance(value, str) or not value.strip():
             return contract_error(f"{action} requires non-empty {required_field}")
+    if action == "synthesize_commit" and task_id != "" and (
+        not isinstance(task_id, str) or not task_id.strip()
+    ):
+        return contract_error("synthesize_commit task_id must be a non-empty string when supplied")
     if action in {"migration_drift", "package_audit", "git_diff", "type_stubs", "split_changes"} and diff:
         return contract_error(f"{action} accepts path; diff is not an input alias")
     if action == "skeletonize" and not (isinstance(query, str) and query.strip()) and not (isinstance(path, str) and path.strip()):
@@ -3347,6 +3351,8 @@ def _local_ai_repo_impl(
         return _compact(CLIENT.post("/api/repo/state", {"root": root}, timeout=_timeout("quick")), "status")
     if action == "synthesize_commit":
         synth_payload = {"root": root, "hint": query}
+        if task_id:
+            synth_payload["task_id"] = task_id
         return _compact(CLIENT.post("/api/git/synthesize_commit", synth_payload, timeout=_timeout("quick")), "status")
     if action == "verify":
         return _compact(CLIENT.post("/api/evidence/verify", {"root": root, "evidence": evidence or []}), "verify")
