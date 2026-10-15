@@ -6040,6 +6040,7 @@ def test_{sym}_regression_edge_cases():
                 "error_code": "invalid_commit_depth",
                 "scan_complete": False, "clean": False, "scanned_git_history": False,
                 "git_history_status": "invalid_commit_depth",
+                "status_code": 400, "terminal": True, "retryable": False,
             }
         p_root = Path(self._root(root))
         if not p_root.is_dir():
@@ -6062,6 +6063,7 @@ def test_{sym}_regression_edge_cases():
                     "error_code": "invalid_pathspec",
                     "scan_complete": False, "clean": False, "scanned_git_history": False,
                     "git_history_status": "invalid_pathspec",
+                    "status_code": 400, "terminal": True, "retryable": False,
                 }
         excluded = {".git", "node_modules", "venv", ".venv", "tool-envs", "state", "build", "dist", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox"}
         binary_suffixes = {".png", ".jpg", ".jpeg", ".exe", ".bin", ".whl", ".pyc", ".db", ".sqlite3", ".zip", ".tar", ".gz", ".lock", ".wasm"}
@@ -6347,6 +6349,7 @@ def test_{sym}_regression_edge_cases():
                     try:
                         process_result = run_hidden(
                             argv, cwd=str(scan_root), capture_output=True, text=False,
+                            stdin=subprocess.DEVNULL,
                             timeout=remaining_time, max_output_bytes=per_stream_limit,
                             env=clean_git_env(extra_env={
                                 "GIT_PAGER": "cat", "PAGER": "cat", "GIT_TERMINAL_PROMPT": "0",

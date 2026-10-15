@@ -91,6 +91,7 @@ def test_git_history_scans_deleted_secret_line_with_commit_and_hunk_metadata(tmp
     assert "--no-ext-diff" in argv and "--no-textconv" in argv
     assert "HEAD" in argv
     assert kwargs["capture_output"] is True and kwargs["text"] is False
+    assert kwargs["stdin"] is subprocess.DEVNULL
     assert "shell" not in kwargs
     assert kwargs["timeout"] <= 5.0
 
@@ -129,6 +130,9 @@ def test_git_history_rejects_path_escape_before_process_run(tmp_path: Path, monk
 
     assert calls == []
     assert result["git_history_status"] == "invalid_pathspec"
+    assert result["status_code"] == 400
+    assert result["terminal"] is True
+    assert result["retryable"] is False
     assert result["clean"] is False
     assert "findings" not in result
 
@@ -210,6 +214,9 @@ def test_git_history_rejects_invalid_depth_without_running_git(tmp_path: Path, m
     assert result["clean"] is False
     assert result["success"] is False
     assert "leak_count" not in result
+    assert result["status_code"] == 400
+    assert result["terminal"] is True
+    assert result["retryable"] is False
 
 
 def test_git_history_truncated_capture_is_not_parsed_as_complete(tmp_path: Path, monkeypatch) -> None:
@@ -307,6 +314,68 @@ def test_git_history_merge_commit_omission_is_incomplete(tmp_path: Path, monkeyp
     assert result["scan_complete"] is False
     assert "git_history_merge_commit_omitted" in result["coverage"]["errors"]
     assert result["findings"][0]["git_change"] == "removed"
+
+
+def test_git_history_malformed_hunk_header_cannot_hide_following_secret(tmp_path: Path, monkeypatch) -> None:
+    output = (
+        b"\x00LAH_SECRET_SCAN_COMMIT:" + b"f" * 40 + b" PARENTS:\x00\n"
+        b"diff --git a/config.env b/config.env\n--- a/config.env\n+++ b/config.env\n"
+        b"@@ malformed @@\n-sk-proj-123456789012345678901234\n"
+    )
+    _mock_history(monkeypatch, output)
+
+    result = DeterministicEngine().secret_scan(str(tmp_path), scan_git_history=True)
+
+    assert result["findings"] == []
+    assert result["scan_complete"] is False
+    assert "git_history_malformed_hunk_header" in result["coverage"]["errors"]
+
+
+def test_git_history_patch_line_without_hunk_is_incomplete(tmp_path: Path, monkeypatch) -> None:
+    output = (
+        b"\x00LAH_SECRET_SCAN_COMMIT:" + b"f" * 40 + b" PARENTS:\x00\n"
+        b"diff --git a/config.env b/config.env\n--- a/config.env\n+++ b/config.env\n"
+        b"-sk-proj-123456789012345678901234\n"
+    )
+    _mock_history(monkeypatch, output)
+
+    result = DeterministicEngine().secret_scan(str(tmp_path), scan_git_history=True)
+
+    assert result["findings"] == []
+    assert result["scan_complete"] is False
+    assert "git_history_patch_line_without_hunk" in result["coverage"]["errors"]
+
+
+def test_git_history_malformed_commit_marker_clears_previous_context(tmp_path: Path, monkeypatch) -> None:
+    output = (
+        b"\x00LAH_SECRET_SCAN_COMMIT:" + b"f" * 40 + b" PARENTS:\x00\n"
+        b"\x00LAH_SECRET_SCAN_COMMIT:bad PARENTS:\x00\n"
+        b"diff --git a/config.env b/config.env\n--- a/config.env\n+++ b/config.env\n"
+        b"@@ -7 +7,0 @@\n-sk-proj-123456789012345678901234\n"
+    )
+    _mock_history(monkeypatch, output)
+
+    result = DeterministicEngine().secret_scan(str(tmp_path), scan_git_history=True)
+
+    assert result["findings"] == []
+    assert result["scan_complete"] is False
+    assert "git_history_malformed_commit_marker" in result["coverage"]["errors"]
+
+
+def test_git_history_out_of_range_octal_path_is_unresolved(tmp_path: Path, monkeypatch) -> None:
+    output = (
+        b"\x00LAH_SECRET_SCAN_COMMIT:" + b"f" * 40 + b" PARENTS:\x00\n"
+        b'diff --git "a/config\\777.env" "b/config\\777.env"\n'
+        b'--- "a/config\\777.env"\n+++ "b/config\\777.env"\n'
+        b"@@ -7 +7,0 @@\n-sk-proj-123456789012345678901234\n"
+    )
+    _mock_history(monkeypatch, output)
+
+    result = DeterministicEngine().secret_scan(str(tmp_path), scan_git_history=True)
+
+    assert result["findings"] == []
+    assert result["scan_complete"] is False
+    assert "git_history_path_unresolved" in result["coverage"]["errors"]
 
 
 def test_env_file_is_scanned(tmp_path: Path) -> None:
