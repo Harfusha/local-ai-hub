@@ -386,9 +386,23 @@ def test_audio_transcription_service_without_whisper_is_not_false_success(tmp_pa
 def test_audio_transcription_service(tmp_path: Path, monkeypatch):
     from unittest.mock import MagicMock
     from types import SimpleNamespace
+    import wave
+    from local_ai_hub.whisper_policy import WhisperModelPolicy
 
     dummy_audio = tmp_path / "voice.wav"
-    dummy_audio.write_bytes(b"RIFFdummywaveheader12345678")
+    with wave.open(str(dummy_audio), "wb") as audio:
+        audio.setnchannels(1)
+        audio.setsampwidth(2)
+        audio.setframerate(16000)
+        audio.writeframes(b"\x00\x00" * 160)
+    checkpoint = tmp_path / "base.pt"
+    checkpoint.write_bytes(b"unit checkpoint")
+    monkeypatch.setattr(
+        "local_ai_hub.whisper_policy.prepare_whisper_model",
+        lambda *_args, **_kwargs: WhisperModelPolicy(
+            ok=True, model="base", model_dir=str(tmp_path), cached_model=str(checkpoint),
+        ),
+    )
     monkeypatch.setattr("local_ai_hub.services.shutil.which", lambda _name: "whisper")
     monkeypatch.setattr(
         "local_ai_hub.process_utils.run_hidden",

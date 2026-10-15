@@ -88,7 +88,7 @@ def test_vector_search_streams_rows_and_keeps_golden_relevance(tmp_path, monkeyp
 
         def execute(self, sql, *args):
             cursor = self._connection.execute(sql, *args)
-            if "SELECT path, chunk_no, embedding, content_hash FROM chunks" in sql:
+            if "SELECT chunks.path, chunks.chunk_no, chunks.embedding, chunks.content_hash FROM chunks AS chunks" in sql:
                 return _Cursor(cursor)
             return cursor
 
@@ -314,6 +314,9 @@ def test_fallback_embedding_reports_identity_of_backend_that_produced_vectors():
 
         def set(self, key, value):
             self.values[key] = value
+
+        def set_many(self, values):
+            self.values.update(values)
 
     model = EmbeddingModel.__new__(EmbeddingModel)
     model.config = {
@@ -542,7 +545,7 @@ def test_search_uses_larger_bounded_vector_batches_when_configured(
 
         def execute(self, sql, *args):
             cursor = self._connection.execute(sql, *args)
-            if "SELECT path, chunk_no, embedding, content_hash FROM chunks" in sql:
+            if "SELECT chunks.path, chunks.chunk_no, chunks.embedding, chunks.content_hash FROM chunks AS chunks" in sql:
                 return _Cursor(cursor)
             return cursor
 
@@ -591,7 +594,7 @@ def test_vector_cursor_closes_before_scoring_and_after_search(tmp_path, monkeypa
 
         def execute(self, sql, *args):
             cursor = self._connection.execute(sql, *args)
-            if "SELECT path, chunk_no, embedding, content_hash FROM chunks" in sql:
+            if "SELECT chunks.path, chunks.chunk_no, chunks.embedding, chunks.content_hash FROM chunks AS chunks" in sql:
                 return _Cursor(cursor)
             return cursor
 
