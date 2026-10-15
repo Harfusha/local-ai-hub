@@ -40,6 +40,12 @@ class DummyClient:
     ("complete_code", {"prompt": "prefix", "candidate": "suffix"}, {"task": "old suffix"}),
     ("scaffold", {"prompt": "spec", "language": "rust"}, {"task": "old spec"}),
     ("scaffold", {"prompt": "spec", "language": "rust"}, {"candidate": "rust"}),
+    ("transcribe", {"candidate": "audio.wav"}, {"context": "old audio"}),
+    ("transcribe", {"candidate": "audio.wav"}, {"task": "old audio"}),
+    ("transcribe", {"candidate": "audio.wav"}, {"prompt": "old audio"}),
+    ("eval_suite", {"task": "suite"}, {"prompt": "old suite"}),
+    ("prompt_eval", {"prompt": "template"}, {"task": "old template"}),
+    ("prompt_eval", {"prompt": "template"}, {"context": "old variables"}),
 ])
 def test_registered_task_handler_rejects_retired_aliases_before_dispatch(
     action, canonical, retired, monkeypatch,
@@ -70,6 +76,17 @@ def test_registered_task_handler_rejects_retired_aliases_before_dispatch(
     ("complete_code", {}, "/api/complete", {"prefix": "", "suffix": "", "max_tokens": 80}),
     ("scaffold", {"prompt": "spec", "language": "auto", "context": "ctx"}, "/api/task/scaffold",
      {"spec": "spec", "context": "ctx", "language": "python", "max_tokens": 4096, "model": ""}),
+    ("transcribe", {"candidate": "audio.wav", "model": "m", "language": "fr"}, "/api/task/transcribe",
+     {"audio_path": "audio.wav", "model": "m", "language": "fr"}),
+    ("eval_suite", {"task": "suite-a", "model": "m", "cases": [
+        {"id": "smoke", "input": "x", "expected": "y"},
+    ]}, "/api/task/eval_suite", {
+        "suite_name": "suite-a", "model": "m",
+        "cases": [{"id": "smoke", "input": "x", "expected": "y"}],
+    }),
+    ("eval_suite", {}, "/api/task/eval_suite", {"suite_name": "default"}),
+    ("prompt_eval", {"prompt": "template", "candidate_data": {}}, "/api/task/prompt_eval",
+     {"template": "template", "variables": {}}),
 ])
 def test_registered_task_handler_dispatches_canonical_inputs(
     action, arguments, path, expected, monkeypatch,
@@ -109,6 +126,9 @@ def test_vision_contract_keeps_distinct_artifact_inputs():
     ("eval_drift", {"task": "suite"}, {"prompt": "old suite"}),
     ("complete_code", {"prompt": "prefix", "candidate": "suffix"}, {"task": "old suffix"}),
     ("scaffold", {"prompt": "spec", "language": "rust"}, {"candidate": "old language"}),
+    ("transcribe", {"candidate": "audio.wav"}, {"prompt": "old audio"}),
+    ("eval_suite", {"task": "suite"}, {"prompt": "old suite"}),
+    ("prompt_eval", {"prompt": "template"}, {"context": "old variables"}),
 ])
 def test_direct_task_impl_rejects_retired_aliases(action, arguments, alias, monkeypatch):
     client = DummyClient()
@@ -120,6 +140,7 @@ def test_direct_task_impl_rejects_retired_aliases(action, arguments, alias, monk
     result = implementation(action=action, **arguments, **alias)
 
     assert result["success"] is False
+    assert result["status_code"] == 400
     assert result["terminal"] is True
     assert result["retryable"] is False
     assert client.calls == []
@@ -134,6 +155,9 @@ def test_task_action_contract_accepts_canonical_task_inputs_and_rejects_aliases(
         ("eval_drift", {}, {"prompt": "alias"}),
         ("complete_code", {"prompt": "prefix", "candidate": "suffix"}, {"task": "alias"}),
         ("scaffold", {"prompt": "spec", "language": "auto"}, {"candidate": "alias"}),
+        ("transcribe", {"candidate": "audio.wav"}, {"context": "alias"}),
+        ("eval_suite", {"task": "suite"}, {"prompt": "alias"}),
+        ("prompt_eval", {"prompt": "template"}, {"task": "alias"}),
     ]
     for action, canonical, alias in cases:
         assert validate_operation_arguments("local_ai_task", action, canonical) is None

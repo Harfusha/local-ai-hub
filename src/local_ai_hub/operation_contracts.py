@@ -540,6 +540,9 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "eval_drift": ("task",),
             "complete_code": ("prompt", "candidate", "max_tokens"),
             "scaffold": ("prompt", "context", "language", "max_tokens", "model"),
+            "transcribe": ("candidate", "model", "language"),
+            "eval_suite": ("task", "model", "cases"),
+            "prompt_eval": ("prompt", "candidate_data"),
         },
         properties={
             "action": {"type": "string"},
