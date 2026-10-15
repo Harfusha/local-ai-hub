@@ -3,15 +3,22 @@ from types import SimpleNamespace
 import pytest
 
 from local_ai_hub import mcp_server
+from local_ai_hub.features import FeatureSet
 
 
 @pytest.fixture
 def isolated_mcp_wrappers(monkeypatch):
-    monkeypatch.setattr(mcp_server, "FEATURES", SimpleNamespace(rag=True, work_orchestrator=True))
+    monkeypatch.setattr(
+        mcp_server,
+        "FEATURES",
+        FeatureSet({"features": {"rag": True, "work_orchestrator": True}}),
+    )
     monkeypatch.setattr(mcp_server, "configured_state_dir", lambda *args, **kwargs: ".")
-    monkeypatch.setattr(mcp_server, "load_operational_mode", lambda *_args, **_kwargs: object())
-    monkeypatch.setattr(mcp_server, "operational_mode_gate_error", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(mcp_server, "_classify_mcp_operation", lambda *_args, **_kwargs: ("bounded_read", False))
+    monkeypatch.setattr(
+        mcp_server,
+        "load_operational_mode",
+        lambda *_args, **_kwargs: mcp_server.OperationalModeSnapshot("active", 1, None),
+    )
     monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_kwargs: None)
     monkeypatch.setattr(mcp_server, "_record_adoption", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(mcp_server, "_client_root", lambda root: root)
