@@ -10,6 +10,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+from skill_ownership import remove_skill as remove_owned_skill
+
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
@@ -123,6 +125,7 @@ def main() -> int:
         "tool-orchestration",
         "ollama-quality-routing",
     ]
+    ownership_manifest = install / ".local-ai-hub-skill-ownership.json"
     for skill in skills_to_clean:
         for base in [
             home / ".agents" / "skills",
@@ -132,9 +135,11 @@ def main() -> int:
             home / ".gemini" / "config" / "skills",
         ]:
             path = base / skill
-            if path.exists():
-                shutil.rmtree(path)
-                print(f"removed {path}")
+            if path.exists() or path.is_symlink() or getattr(path, "is_junction", lambda: False)():
+                try:
+                    print(remove_owned_skill(path, base, ownership_manifest, skill))
+                except ValueError as exc:
+                    print(f"preserved conflicting skill tree: {path} ({exc})")
 
     if install.exists() and not args.keep_install:
         try:

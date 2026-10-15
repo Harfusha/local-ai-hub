@@ -12,6 +12,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from skill_ownership import install_skill as install_owned_skill
+
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
 SRC = SOURCE_ROOT / "src"
 if str(SRC) not in sys.path:
@@ -174,11 +176,13 @@ def backup(path: Path, enabled: bool) -> None:
 
 
 def install_skill(source_skill: Path, target: Path) -> None:
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists():
-        shutil.rmtree(target)
-    shutil.copytree(source_skill, target)
-    log(f"Skill installed: {target}")
+    install_root = source_skill.parent.parent
+    manifest = install_root / ".local-ai-hub-skill-ownership.json"
+    try:
+        result = install_owned_skill(source_skill, target, target.parent, manifest, target.name)
+    except ValueError as exc:
+        result = f"skill not installed; ownership safety check failed: {exc}"
+    log(result)
 
 
 COMPANION_SKILLS: list[str] = [
