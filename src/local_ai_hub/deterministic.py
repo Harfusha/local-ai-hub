@@ -4483,14 +4483,32 @@ def test_{sym}_regression_edge_cases():
         resolved_root = Path(self._root(root))
         root_str = str(resolved_root)
         test_files: list[dict[str, Any]] = []
+        warnings: list[str] = []
+        incomplete = False
         framework = "unknown"
         run_all_cmd = ""
+
+        dotnet_project = False
+        if resolved_root.is_dir():
+            try:
+                with os.scandir(root_str) as root_entries:
+                    for index, entry in enumerate(root_entries):
+                        if index >= 128:
+                            incomplete = True
+                            warnings.append("root_framework_scan_limit_reached")
+                            break
+                        if entry.name.endswith((".sln", ".csproj")) and entry.is_file(follow_symlinks=False):
+                            dotnet_project = True
+                            break
+            except OSError:
+                incomplete = True
+                warnings.append("root_framework_scan_failed")
 
         # Fast framework detection via files in root
         if (resolved_root / "pytest.ini").exists() or (resolved_root / "pyproject.toml").exists() or any((resolved_root / f).is_file() for f in ("setup.py", "requirements.txt", "requirements-core.txt")):
             framework = "pytest"
             run_all_cmd = "python -m pytest"
-        elif resolved_root.is_dir() and any((resolved_root / f).is_file() for f in os.listdir(root_str) if f.endswith((".sln", ".csproj"))):
+        elif dotnet_project:
             framework = "dotnet"
             run_all_cmd = "dotnet test"
         elif (resolved_root / "package.json").exists():
@@ -4503,15 +4521,8 @@ def test_{sym}_regression_edge_cases():
             framework = "go"
             run_all_cmd = "go test ./..."
 
-        # Query indexed test files from database first (0.1 ms)
-        try:
-            with closing(self._connect()) as con:
-                db_test_paths = [str(r[0]) for r in con.execute("SELECT path FROM files WHERE root=? AND is_test=1 LIMIT 100", (root_str,)).fetchall()]
-        except Exception:
-            db_test_paths = []
-
         def is_test_source(rel_path: str) -> bool:
-            """Reject indexed fixture/docs paths even when the index is stale."""
+            """Recognize supported test naming conventions in the current tree."""
             normalized = rel_path.replace("\\", "/").lower()
             suffix = Path(normalized).suffix
             if suffix not in {".py", ".go", ".cs", ".ts", ".tsx", ".js", ".jsx", ".java", ".rs", ".cpp", ".cc", ".c"}:
@@ -4523,50 +4534,123 @@ def test_{sym}_regression_edge_cases():
                 any(part in {"test", "tests", "spec", "specs"} for part in Path(normalized).parts)
             )
 
-        # The indexed is_test bit is advisory and can be stale after generated
-        # fixtures are added. Always re-validate the path and language here.
-        db_test_paths = [rel for rel in db_test_paths if is_test_source(rel)]
-        if not db_test_paths:
-            # Fallback to repo_tools iter_files which respects .gitignore and ignores Library/node_modules
-            all_files = [str(p.relative_to(resolved_root)).replace("\\", "/") for p in self.repo_tools.iter_files(str(resolved_root))]
-            for rel in all_files:
-                _ = rel.lower()
-                if is_test_source(rel):
-                    db_test_paths.append(rel)
-                    if len(db_test_paths) >= 50:
-                        break
-
-        target_rels = [rel for rel in db_test_paths if is_test_source(rel)][:40]
-
-        def _extract_file_info(rel: str) -> dict[str, Any]:
-            f = resolved_root / rel
-            cases: list[str] = []
-            if f.is_file():
+        # Only current filesystem entries can back a matrix row. Keep directory
+        # enumeration bounded; the durable index is deliberately not a source
+        # of truth for test targets because it can lag deletions and renames.
+        max_files = 2000
+        max_targets = 40
+        max_file_bytes = min(int(getattr(self.repo_tools, "max_file_bytes", 1_000_000)), 256_000)
+        max_total_bytes = 2_000_000
+        deadline = time.monotonic() + 2.0
+        target_paths: list[tuple[str, Path, os.stat_result]] = []
+        enumerated = 0
+        try:
+            for candidate, snapshot_stat in self.repo_tools._iter_files_with_stat(
+                root_str, max_depth=25, max_files=max_files,
+            ):
+                if time.monotonic() >= deadline:
+                    incomplete = True
+                    warnings.append("test_file_enumeration_deadline_exceeded")
+                    break
+                enumerated += 1
                 try:
-                    txt = f.read_text(encoding="utf-8", errors="replace")
-                    if f.suffix == ".py":
-                        for ln in txt.splitlines():
-                            if ln.strip().startswith("def test_"):
-                                cases.append(ln.strip().split("(")[0].replace("def ", "").strip())
-                    elif f.suffix == ".cs":
-                        import re
-                        for m in re.finditer(r"\[(?:Test|UnityTest|Fact)\].*?void\s+([A-Za-z0-9_]+)", txt, re.S):
-                            cases.append(m.group(1))
-                except Exception:
-                    pass
+                    rel = candidate.relative_to(resolved_root).as_posix()
+                    if not is_test_source(rel):
+                        continue
+                    lst = candidate.lstat()
+                    if stat.S_ISLNK(lst.st_mode) or (getattr(lst, "st_file_attributes", 0) & 0x400):
+                        incomplete = True
+                        warnings.append("test_file_reparse_point_skipped")
+                        continue
+                    current_stat = candidate.stat()
+                    candidate.resolve(strict=True).relative_to(resolved_root)
+                    if not stat.S_ISREG(current_stat.st_mode) or current_stat.st_size > max_file_bytes:
+                        incomplete = True
+                        warnings.append("test_file_invalid_or_too_large_skipped")
+                        continue
+                    if current_stat.st_size != snapshot_stat.st_size or current_stat.st_mtime_ns != snapshot_stat.st_mtime_ns:
+                        incomplete = True
+                        warnings.append("test_file_changed_during_enumeration")
+                        continue
+                    target_paths.append((rel, candidate, current_stat))
+                except (OSError, ValueError):
+                    incomplete = True
+                    warnings.append("test_file_unavailable_or_outside_root")
+            if enumerated >= max_files:
+                incomplete = True
+                warnings.append("test_file_enumeration_limit_reached")
+        except Exception:
+            incomplete = True
+            warnings.append("test_file_enumeration_failed")
 
-            run_file_cmd = f"pytest {rel}" if framework == "pytest" else (f"dotnet test --filter FullyQualifiedName~{f.stem}" if framework == "dotnet" else f"npm test {rel}")
+        target_paths.sort(key=lambda item: item[0])
+        if len(target_paths) > max_targets:
+            incomplete = True
+            warnings.append("test_file_result_limit_reached")
+            target_paths = target_paths[:max_targets]
+
+        def _extract_file_info(item: tuple[str, Path, os.stat_result]) -> dict[str, Any] | None:
+            rel, f, before = item
+            cases: list[str] = []
+            try:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("test matrix read deadline exceeded")
+                digest, lines = self.repo_tools._read_snapshot(f, stat=before, max_bytes=max_file_bytes)
+                txt = "\n".join(lines)
+                after = f.stat()
+                if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                    raise OSError("file changed during bounded read")
+                if f.suffix.lower() == ".py":
+                    for ln in txt.splitlines():
+                        if ln.strip().startswith("def test_"):
+                            cases.append(ln.strip().split("(")[0].replace("def ", "").strip())
+                elif f.suffix.lower() == ".cs":
+                    for match in re.finditer(r"\[(?:Test|UnityTest|Fact)\].*?void\s+([A-Za-z0-9_]+)", txt, re.S):
+                        cases.append(match.group(1))
+            except Exception as exc:
+                return {"_omitted": type(exc).__name__}
+
+            # Commands are suggestions only when the file language and its
+            # corresponding project manifest establish a compatible runner.
+            suffix = f.suffix.lower()
+            if suffix == ".py" and framework == "pytest":
+                run_file_cmd = f"python -m pytest {rel}"
+            elif suffix == ".cs" and framework == "dotnet":
+                run_file_cmd = f"dotnet test --filter FullyQualifiedName~{f.stem}"
+            elif suffix in {".js", ".jsx", ".ts", ".tsx"} and framework == "npm":
+                run_file_cmd = f"npm test -- {rel}"
+            elif suffix == ".go" and framework == "go":
+                run_file_cmd = f"go test ./{str(Path(rel).parent).replace(chr(92), '/')}"
+            elif suffix == ".rs" and framework == "cargo":
+                run_file_cmd = "cargo test"
+            else:
+                run_file_cmd = ""
             return {
                 "path": rel,
                 "cases_count": len(cases),
                 "cases": cases[:15],
                 "run_command": run_file_cmd,
+                "content_sha256": digest,
             }
 
-        if target_rels:
-            max_workers = min(8, len(target_rels))
-            with ThreadPoolExecutor(max_workers=max_workers) as pool:
-                test_files = list(pool.map(_extract_file_info, target_rels))
+        selected: list[tuple[str, Path, os.stat_result]] = []
+        remaining_bytes = max_total_bytes
+        for item in target_paths:
+            size = int(item[2].st_size)
+            if size > remaining_bytes:
+                incomplete = True
+                warnings.append("test_file_total_byte_limit_reached")
+                break
+            remaining_bytes -= size
+            selected.append(item)
+        if selected:
+            with ThreadPoolExecutor(max_workers=min(8, len(selected))) as pool:
+                for row in pool.map(_extract_file_info, selected):
+                    if row is None or "_omitted" in row:
+                        incomplete = True
+                        warnings.append("test_file_read_failed")
+                        continue
+                    test_files.append(row)
 
         return {
             "success": True,
@@ -4574,6 +4658,7 @@ def test_{sym}_regression_edge_cases():
             "run_all_command": run_all_cmd,
             "test_files_count": len(test_files),
             "test_files": test_files,
+            "coverage": {"scan_complete": not incomplete, "warnings": sorted(set(warnings))},
         }
 
     def affected_tests(self, root: str, changed_paths: list[str] | None = None, base: str = "HEAD") -> dict[str, Any]:
