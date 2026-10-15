@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import importlib.util
 import json
 import os
 import re
@@ -12,7 +13,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from skill_ownership import install_skill as install_owned_skill
+_skill_ownership_spec = importlib.util.spec_from_file_location(
+    "_local_ai_hub_skill_ownership", Path(__file__).with_name("skill_ownership.py")
+)
+if _skill_ownership_spec is None or _skill_ownership_spec.loader is None:
+    raise ImportError("could not load sibling skill_ownership.py")
+_skill_ownership_module = importlib.util.module_from_spec(_skill_ownership_spec)
+_skill_ownership_spec.loader.exec_module(_skill_ownership_module)
+install_owned_skill = _skill_ownership_module.install_skill
 
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
 SRC = SOURCE_ROOT / "src"

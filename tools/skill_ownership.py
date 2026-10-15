@@ -141,11 +141,56 @@ def install_skill(source: Path, target: Path, skills_root: Path, manifest: Path,
             return f"preserved unmanaged or modified skill tree: {target}"
         if _is_link(target):
             return f"preserved conflicting skill tree: {target}"
-        shutil.rmtree(target)
     target.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(source, target, symlinks=False)
-    entries[key] = {"name": skill_name, "sha256": source_hash}
-    _manifest_write(manifest, entries)
+    stage_root = Path(tempfile.mkdtemp(prefix=f".{skill_name}.lah-stage-", dir=target.parent))
+    staged = stage_root / "replacement"
+    backup = stage_root / "previous"
+    had_target = target.exists()
+    moved_old = False
+    installed_new = False
+    try:
+        shutil.copytree(source, staged, symlinks=False)
+        if _safe_tree_hash(staged) != source_hash:
+            raise OSError("staged skill content differs from source")
+        if had_target:
+            if _safe_tree_hash(target) != current_hash or _is_link(target):
+                return f"preserved changed skill tree during replacement: {target}"
+            os.replace(target, backup)
+            moved_old = True
+        elif target.exists() or _is_link(target):
+            return f"preserved conflicting skill tree created during install: {target}"
+        os.replace(staged, target)
+        installed_new = True
+        entries[key] = {"name": skill_name, "sha256": source_hash}
+        _manifest_write(manifest, entries)
+    except (OSError, ValueError) as exc:
+        rollback_error: Exception | None = None
+        try:
+            if installed_new and target.exists() and _safe_tree_hash(target) == source_hash:
+                shutil.rmtree(target)
+            if moved_old and backup.exists() and not target.exists():
+                os.replace(backup, target)
+        except (OSError, ValueError) as rollback_exc:
+            rollback_error = rollback_exc
+        if backup.exists():
+            recovery = f"; previous skill recoverable at {backup}"
+        else:
+            recovery = "; previous skill restored" if had_target and target.exists() else "; target unchanged"
+        if rollback_error:
+            recovery += f"; rollback failed: {rollback_error}"
+        return f"skill replacement failed for {target}: {exc}{recovery}"
+    finally:
+        if not backup.exists():
+            shutil.rmtree(stage_root, ignore_errors=True)
+    if backup.exists():
+        try:
+            shutil.rmtree(backup)
+        except OSError as exc:
+            return f"installed Hub-owned skill: {target}; previous version retained at {backup}: {exc}"
+    try:
+        shutil.rmtree(stage_root)
+    except OSError:
+        pass
     return f"installed Hub-owned skill: {target}"
 
 
