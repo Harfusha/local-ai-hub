@@ -11,7 +11,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 _skill_ownership_spec = importlib.util.spec_from_file_location(
     "_local_ai_hub_skill_ownership", Path(__file__).with_name("skill_ownership.py")
@@ -21,6 +21,16 @@ if _skill_ownership_spec is None or _skill_ownership_spec.loader is None:
 _skill_ownership_module = importlib.util.module_from_spec(_skill_ownership_spec)
 _skill_ownership_spec.loader.exec_module(_skill_ownership_module)
 install_owned_skill = _skill_ownership_module.install_skill
+
+_update_transaction_spec = importlib.util.spec_from_file_location(
+    "_local_ai_hub_update_transaction", Path(__file__).with_name("update_transaction.py")
+)
+if _update_transaction_spec is None or _update_transaction_spec.loader is None:
+    raise ImportError("could not load sibling update_transaction.py")
+_update_transaction_module = importlib.util.module_from_spec(_update_transaction_spec)
+_update_transaction_spec.loader.exec_module(_update_transaction_module)
+replace_install_payload = _update_transaction_module.replace_install_payload
+stop_existing_runtime = _update_transaction_module.stop_existing_runtime
 
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
 SRC = SOURCE_ROOT / "src"
@@ -152,26 +162,19 @@ def install_requirements(python: Path, requirement: Path, *, optional: bool = Fa
         raise
 
 
-def copy_install_tree(install_dir: Path, config_source: Path) -> None:
-    install_dir.mkdir(parents=True, exist_ok=True)
-    for name in ["src", "skills", "tools"]:
-        src, dst = SOURCE_ROOT / name, install_dir / name
-        if src.resolve() == dst.resolve():
-            continue
-        if dst.exists():
-            shutil.rmtree(dst)
-        shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".pytest_cache"))
-    for name in [
+def copy_install_tree(
+    install_dir: Path, config_source: Path, *, before_commit: Callable[[], tuple[bool, str]] | None = None,
+) -> bool:
+    file_names = (
         "requirements-core.txt", "requirements-token-economy.txt", "requirements-local-nlp.txt", "requirements-openvino.txt", "defaults.toml", "config.toml.example", "pyproject.toml",
         "README.md", "FEATURES.md", "AGENTS.md", "LICENSE", "CHANGELOG.md", "THIRD_PARTY.md",
         "RELEASE.json", "CONTRIBUTING.md", "SECURITY.md", "install.ps1", "install.sh",
-    ]:
-        src, dst = SOURCE_ROOT / name, install_dir / name
-        if src.exists() and src.resolve() != dst.resolve():
-            shutil.copy2(src, dst)
-    config_dest = install_dir / "config.toml"
-    if config_source.exists() and config_source.resolve() != config_dest.resolve():
-        shutil.copy2(config_source, config_dest)
+    )
+    success, detail = replace_install_payload(
+        SOURCE_ROOT, install_dir, config_source, file_names, before_commit=before_commit,
+    )
+    log(detail if success else f"ERROR: {detail}")
+    return success
 
 
 def backup(path: Path, enabled: bool) -> None:
@@ -796,13 +799,13 @@ def main() -> int:
     # normal idempotent setup behavior for this installation target.
     old_python = venv_python(install_dir / ".venv")
     old_service = install_dir / "tools" / "service.py"
-    if old_python.exists() and old_service.exists():
-        try:
-            run([str(old_python), str(old_service), "stop"], check=False, timeout=20)
-        except Exception:
-            pass
 
-    copy_install_tree(install_dir, config_source)
+    def stop_before_commit() -> tuple[bool, str]:
+        return stop_existing_runtime(install_dir, old_python, old_service, run)
+
+    if not copy_install_tree(install_dir, config_source, before_commit=stop_before_commit):
+        log("Setup incomplete: install transaction did not commit; runtime setup and service start skipped.")
+        return 1
     installed_config = install_dir / "config.toml"
     if args.profile:
         text = installed_config.read_text(encoding="utf-8")
