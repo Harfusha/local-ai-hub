@@ -2895,7 +2895,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _authorized(self, action: str | None = None, *, permission: str | None = None) -> bool:
         self._authorization_actor = "unrecognized"
+        self._authorization_root = None
         self._authorization_tenant = None
+        self._authenticated_principal_tenant = None
         self._authorization_permissions = frozenset()
         self._authorization_status = 401
         if APP is None:

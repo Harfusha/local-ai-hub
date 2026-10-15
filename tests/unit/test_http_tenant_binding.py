@@ -41,6 +41,49 @@ def test_authenticated_principal_tenant_is_used_before_configured_fallback(monke
     assert handler._authorization_tenant == "authenticated-user-tenant"
 
 
+def test_same_handler_reauthorization_discards_previous_user_and_root(
+    tmp_path, monkeypatch
+):
+    second_root = tmp_path / "second"
+    second_root.mkdir()
+    handler = _handler(monkeypatch)
+    monkeypatch.setattr(
+        http_server,
+        "APP",
+        SimpleNamespace(
+            config={
+                "security": {
+                    "users": {
+                        "user-one": {
+                            "token": "first-token",
+                            "tenant": "tenant-one",
+                            "permissions": ["tasks:read"],
+                        },
+                        "user-two": {
+                            "token": "second-token",
+                            "tenant": "tenant-two",
+                            "permissions": ["tasks:read"],
+                        },
+                    }
+                }
+            }
+        ),
+    )
+    handler.headers["X-LocalAI-Token"] = "first-token"
+    assert handler._authorized(permission="tasks:read")
+    assert handler._bind_root_tenant(str(tmp_path)) == (
+        str(tmp_path.resolve()),
+        "tenant-one",
+    )
+
+    handler.headers["X-LocalAI-Token"] = "second-token"
+    assert handler._authorized(permission="tasks:read")
+    assert handler._bind_root_tenant(str(second_root)) == (
+        str(second_root.resolve()),
+        "tenant-two",
+    )
+
+
 def test_tokenless_root_binding_uses_principal_instead_of_tenant_claim(
     tmp_path, monkeypatch
 ):
