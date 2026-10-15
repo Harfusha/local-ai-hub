@@ -2996,6 +2996,50 @@ def _local_ai_repo_impl(
             tuple(FEATURES.supported_repo_actions()),
             "Keep work bounded in Local AI Hub; use Codex-owned orchestration for peer subagents.",
         )
+    if action in {
+        "ast_outline", "affected_tests", "code_invariants", "profile_digest", "schema_inspect",
+        "generate_types", "complexity", "declaration", "ast_refactor", "context_compile",
+        "verify_completion",
+    }:
+        operation_inputs: dict[str, Any] = {"root": root}
+        path_actions = {
+            "ast_outline", "affected_tests", "code_invariants", "profile_digest", "schema_inspect",
+            "generate_types", "complexity", "declaration", "ast_refactor",
+        }
+        if action in path_actions:
+            operation_inputs["path"] = path
+        if action == "declaration":
+            operation_inputs["query"] = query
+        elif query:
+            operation_inputs["query"] = query
+        if task:
+            operation_inputs["task"] = task
+        if action == "ast_refactor":
+            operation_inputs.update(old_symbol=old_symbol, new_symbol=new_symbol, staged=staged)
+        if action == "context_compile":
+            operation_inputs.update(
+                task_id=task_id, max_tokens=max_tokens, include_diagnostics=include_diagnostics,
+                clone_id=clone_id, worktree_id=worktree_id, branch=branch,
+                repository_id=repository_id, session_id=session_id,
+                repository_revision=repository_revision,
+            )
+            if changed_paths is not None:
+                operation_inputs["changed_paths"] = changed_paths
+        elif action == "verify_completion":
+            operation_inputs["task_id"] = task_id
+        elif action in {"profile_digest", "complexity"}:
+            operation_inputs["max_tokens"] = max_tokens
+        if action == "complexity":
+            operation_inputs["include_tests"] = include_tests
+        if action == "ast_refactor" and diff:
+            operation_inputs["diff"] = diff
+        if action == "generate_types" and diff:
+            operation_inputs["diff"] = diff
+        validation_error = validate_operation_arguments(
+            "local_ai_repo", action, operation_inputs, features=FEATURES,
+        )
+        if validation_error is not None:
+            return contract_error(validation_error)
     if action in {"preprocess", "preprocess_refresh", "preprocess_cancel", "preprocess_unregister"}:
         candidate = Path(root).expanduser()
         if not candidate.is_absolute():
@@ -3206,15 +3250,15 @@ def _local_ai_repo_impl(
     if action == "audit_dependencies":
         return _compact(CLIENT.post("/api/audit_dependencies", {"root": root}, timeout=_timeout("quick")), "context")
     if action == "ast_outline":
-        return _compact(CLIENT.post("/api/code/ast_outline", {"root": root, "path": path or query or task}, timeout=_timeout("quick")), "architecture")
+        return _compact(CLIENT.post("/api/code/ast_outline", {"root": root, "path": path}, timeout=_timeout("quick")), "architecture")
     if action == "affected_tests":
-        paths_arg = [path] if path else ([query] if query and not query.startswith("-") else None)
+        paths_arg = [path] if path else None
         return _compact(CLIENT.post("/api/repo/affected_tests", {"root": root, "paths": paths_arg}, timeout=_timeout("quick")), "architecture")
     if action == "topology":
         return _compact(CLIENT.post("/api/repo/topology", {"root": root}, timeout=_timeout("quick")), "topology")
     if action == "ast_refactor":
-        old_name = old_symbol if old_symbol is not None else query or task
-        new_name = new_symbol if new_symbol is not None else diff
+        old_name = old_symbol
+        new_name = new_symbol
         if any(not isinstance(name, str) or not name.strip() or "\x00" in name or len(name) > 512
                for name in (old_name, new_name)):
             return contract_error("ast_refactor requires non-empty old_symbol and new_symbol (at most 512 characters each)")
@@ -3386,7 +3430,7 @@ def _local_ai_repo_impl(
         return _compact(CLIENT.post("/api/preprocess", {"action": "unregister", "root": root}), "preprocess")
     if action == "context_compile":
         return _compact(CLIENT.post("/api/agent-state/context", {
-            "action": "compile", "task_id": task_id or query or task,
+            "action": "compile", "task_id": task_id,
             "token_budget": max_tokens or 4000, "root": root,
             "include_diagnostics": bool(include_diagnostics),
             "clone_id": clone_id,
@@ -3403,7 +3447,7 @@ def _local_ai_repo_impl(
         }, timeout=_timeout("quick")), "verify")
     if action == "verify_completion":
         return _compact(CLIENT.post("/api/agent-state/verification", {
-            "action": "completion", "task_id": task_id or query or task, "root": root,
+            "action": "completion", "task_id": task_id, "root": root,
         }, timeout=_timeout("quick")), "verify")
     if action in {"cross_project_graph", "cross_repo_graph"}:
         return _compact(CLIENT.post("/api/cross_project_graph", {"roots": [root] if root else []}, timeout=_timeout("quick")), "architecture")
@@ -3425,7 +3469,7 @@ def _local_ai_repo_impl(
         return _compact(CLIENT.post("/api/repo/call_graph_diff", {"root": root or ".", "diff": diff or "" if diff else None}, timeout=_timeout("quick")), "impact")
     if action == "code_invariants":
         return _compact(CLIENT.post("/api/repo/code_invariants", {
-            "root": root, "path": path or query or task or None,
+            "root": root, "path": path or None,
         }, timeout=_timeout("quick")), "architecture")
     if action == "generate_dataset":
         return _compact(CLIENT.post("/api/repo/generate_dataset", {
@@ -3434,7 +3478,7 @@ def _local_ai_repo_impl(
             "format": relation or "json",
         }, timeout=_timeout("quick")), "architecture")
     if action == "profile_digest":
-        profile_path = path or query or task
+        profile_path = path
         if profile_path and not is_rooted_path(profile_path):
             profile_path = str(Path(_client_root(root)) / profile_path)
         return _compact(CLIENT.post("/api/repo/profile_digest", {
@@ -3469,7 +3513,7 @@ def _local_ai_repo_impl(
         }, timeout=_timeout("quick")), "architecture", page_key="implementations")
     if action == "declaration":
         return _compact(CLIENT.post("/api/code/declaration", {
-            "root": root, "symbol": query or task or path, "path": path or None,
+            "root": root, "symbol": query, "path": path or None,
         }, timeout=_timeout("quick")), "architecture")
     if action == "dead_code":
         return _compact(CLIENT.post("/api/repo/dead_code", {
@@ -3486,7 +3530,7 @@ def _local_ai_repo_impl(
         }, timeout=_timeout("quick")), "security")
     if action == "schema_inspect":
         return _compact(CLIENT.post("/api/repo/schema_inspect", {
-            "root": root, "db_path": path or query or task or None,
+            "root": root, "db_path": path or None,
         }, timeout=_timeout("quick")), "architecture")
     if action == "explain_query":
         return _compact(CLIENT.post("/api/repo/explain_query", {
@@ -3501,19 +3545,12 @@ def _local_ai_repo_impl(
             "root": root, "language": query or task or "python",
         }, timeout=_timeout("quick")), "architecture")
     if action == "generate_types":
-        if diff:
-            return {
-                "success": False,
-                "error": "generate_types is read-only; diff must be empty",
-                "terminal": True,
-                "retryable": False,
-            }
         return _compact(CLIENT.post("/api/repo/generate_types", {
-            "root": root, "file": path or query or task, "write_stub": False,
+            "root": root, "file": path, "write_stub": False,
         }, timeout=_timeout("quick")), "architecture")
     if action == "complexity":
         return _compact(CLIENT.post("/api/repo/complexity", {
-            "root": root, "path": path or query or task or None, "max_results": max_tokens or 20,
+            "root": root, "path": path or None, "max_results": max_tokens or 20,
             "include_tests": bool(include_tests),
         }, timeout=_timeout("quick")), "complexity")
     if action == "api_spec":
