@@ -905,7 +905,7 @@ class TelemetryStore:
             cached = self._dashboard_cache.get(key)
             cached_at = self._dashboard_cache_at.get(key, 0.0)
             if cached and now - cached_at < max(1.0, float(ttl_seconds)):
-                return dict(cached)
+                return self._refresh_dashboard_report_writer(cached)
             try:
                 report = self.report(bounded_days, recent_errors=12, scope=scope, _flush=False)
                 report["recent_http"] = self.recent_http(200, _flush=False)
@@ -916,6 +916,8 @@ class TelemetryStore:
                     **report.get("summary", {}), "data_available": False,
                     "stale": bool(cached), "degraded": True,
                 }
+                if cached:
+                    report = self._refresh_dashboard_report_writer(report)
             self._dashboard_cache[key] = report
             self._dashboard_cache_at[key] = now
             while len(self._dashboard_cache) > _DASHBOARD_CACHE_LIMIT:
@@ -923,6 +925,16 @@ class TelemetryStore:
                 self._dashboard_cache.pop(oldest_key, None)
                 self._dashboard_cache_at.pop(oldest_key, None)
             return dict(report)
+
+    def _refresh_dashboard_report_writer(self, report: dict[str, Any]) -> dict[str, Any]:
+        """Refresh cached dashboard writer evidence without querying SQLite."""
+        refreshed = dict(report)
+        summary = refreshed.get("summary")
+        if isinstance(summary, dict):
+            refreshed["summary"] = self._refresh_cached_writer_status(
+                summary, summary.get("writer", {})
+            )
+        return refreshed
 
     def realtime_summary(self, *, scope: str = "process") -> dict[str, Any]:
         with self._live_lock:
@@ -961,6 +973,8 @@ class TelemetryStore:
             "data_available": bool(history.get("data_available", self.enabled and "net_cloud_token_delta_est" in history)),
             "stale": bool(history.get("stale", False)),
             "writer": history.get("writer", {}),
+            "detail": history.get("detail", {}),
+            "summary_cache_stale": bool(history.get("summary_cache_stale", False)),
             "scope": str(history.get("scope", scope) or scope),
             "process_started_at": history.get("process_started_at") if scope == "process" else None,
             "window_events": len(events), "live_inference_events": len(inference),
@@ -1754,6 +1768,7 @@ class TelemetryStore:
             truncated or not flush_complete or writer.get("pending")
             or writer.get("dropped") or writer.get("writer_errors")
             or not writer.get("activity_observed", False)
+            or writer.get("accounting_balanced") is False
         )
         omitted: list[str] = []
         if truncated:
@@ -1764,6 +1779,8 @@ class TelemetryStore:
             omitted.append("writer_failures")
         if not writer.get("activity_observed", False):
             omitted.append("writer_activity_unobserved")
+        if writer.get("accounting_balanced") is False:
+            omitted.append("writer_accounting_unbalanced")
         return {
             "status": "incomplete" if incomplete else "complete",
             "truncated": bool(truncated),
@@ -1774,10 +1791,10 @@ class TelemetryStore:
 
     def _writer_snapshot(self) -> dict[str, Any]:
         """Snapshot current-process queue accounting, independent of report window."""
-        snapshot_end_at = time.time()
-        elapsed = max(0.0, time.monotonic() - self._process_started_monotonic)
         with self._stats_lock:
             writer = dict(self._stats)
+            snapshot_end_at = time.time()
+            elapsed = max(0.0, time.monotonic() - self._process_started_monotonic)
         attempted = int(writer.get("attempted", 0))
         accepted = int(writer.get("accepted", writer.get("queued", 0)))
         processed = int(writer.get("processed", 0))
@@ -1821,7 +1838,7 @@ class TelemetryStore:
         """Refresh cheap process counters so cache hits cannot preserve a false clean status."""
         refreshed = dict(data)
         writer = self._writer_snapshot()
-        changed = any(
+        changed = bool(data.get("summary_cache_stale") or data.get("stale")) or any(
             int(writer.get(key, 0)) != int(previous_writer.get(key, 0))
             for key in ("attempted", "accepted", "rejected_overflow", "lost_after_acceptance", "written", "writer_errors")
         )
