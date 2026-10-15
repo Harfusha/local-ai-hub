@@ -5715,7 +5715,18 @@ class LocalAIServices:
                         "force_include_paths": force_include_paths,
                     })
                 if source_query:
-                    pack_kwargs["priority_paths"] = list(source_priority_paths)
+                    try:
+                        import inspect
+
+                        pack_signature = inspect.signature(self.repo_tools.context_pack_paths).parameters
+                        supports_priority_paths = "priority_paths" in pack_signature or any(
+                            parameter.kind == parameter.VAR_KEYWORD
+                            for parameter in pack_signature.values()
+                        )
+                    except (TypeError, ValueError):
+                        supports_priority_paths = False
+                    if supports_priority_paths:
+                        pack_kwargs["priority_paths"] = list(source_priority_paths)
                 lexical = self.repo_tools.context_pack_paths(
                     root, query, candidate_paths, **pack_kwargs,
                 )
@@ -5766,7 +5777,25 @@ class LocalAIServices:
                 source_weights=retrieval_weights,
             )
         evidence_rank = {path: rank for rank, (path, _score) in enumerate(fused_evidence)}
-        evidence.sort(key=lambda item: (evidence_rank.get(str(item.get("path", "")), 999), str(item.get("path", ""))))
+        if source_query:
+            priority_keys = {path.replace("\\", "/").casefold() for path in source_priority_paths}
+
+            def final_evidence_rank(item: dict[str, Any]) -> tuple[int, int, int, str]:
+                path = str(item.get("path", ""))
+                normalized_path = path.replace("\\", "/").casefold()
+                return (
+                    source_context_path_tier(path),
+                    0 if normalized_path in priority_keys else 1,
+                    evidence_rank.get(path, 999),
+                    path,
+                )
+
+            evidence.sort(key=final_evidence_rank)
+        else:
+            evidence.sort(key=lambda item: (
+                evidence_rank.get(str(item.get("path", "")), 999),
+                str(item.get("path", "")),
+            ))
         if self.evidence_store is not None:
             try:
                 stored_evidence = self.evidence_store.put_many(str(lexical.get("root", root)), evidence)
