@@ -5495,11 +5495,30 @@ class Handler(BaseHTTPRequestHandler):
         ))
 
     def do_POST(self) -> None:
+        path = urlparse(self.path).path
+        post_route_ids = select_http_routes("POST", path)
+        retired_aliases = {
+            "/api/transcribe",
+            "/api/worktree_release",
+            "/api/worktrees",
+            "/api/lint_fix",
+            "/api/pubsub_poll",
+            "/api/simulate_merge",
+            "/api/flaky_detect",
+            "/api/webhook_replay",
+        }
+        if path in retired_aliases and not post_route_ids:
+            self._send(404, {
+                "success": False,
+                "error": "route not found",
+                "terminal": True,
+                "retryable": False,
+            })
+            return
         self._handler_execution_started = time.perf_counter()
         if APP is None:
             self._send(503, {"success": False, "error": "hub starting up; please retry", "status_code": 503, "retryable": True})
             return
-        path = urlparse(self.path).path
         if not self._require_authorized():
             return
         early_mode_rejection = None
@@ -6045,7 +6064,6 @@ class Handler(BaseHTTPRequestHandler):
                 # Debug persistence is optional and must not strand a claimed request.
                 pass
         try:
-            post_route_ids = select_http_routes("POST", path)
             post_handler_name = select_post_handler(post_route_ids)
             if post_handler_name is not None:
                 post_handler = getattr(self, post_handler_name)
@@ -8346,7 +8364,7 @@ class Handler(BaseHTTPRequestHandler):
                 query = str(payload.get("query", ""))
                 top_k = int(payload.get("top_k", 8))
                 self._send(200, APP.rag.docset_search(name, query, tenant, top_k=top_k)); return
-            if path in {"/api/task/transcribe", "/api/transcribe"}:
+            if path == "/api/task/transcribe":
                 from .process_utils import ProcessCleanupUnverifiedError
                 token, cancel_event = _ACTIVE_TRANSCRIPTIONS.begin()
                 result: Any = {}
@@ -8375,9 +8393,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, APP.services.profile_digest(str(payload.get("profile_path") or payload.get("path") or ""), top_n=int(payload.get("top_n", 15)))); return
             if 'post_coord_worktree_lease_1' in post_route_ids:
                 self._send(200, APP.services.worktree_lease(str(payload.get("root", ".")), branch_name=payload.get("branch"))); return
-            if path in {"/api/coord/worktree_release", "/api/worktree_release"}:
+            if path == "/api/coord/worktree_release":
                 self._send(200, APP.services.worktree_release(str(payload.get("root", ".")), str(payload.get("worktree_path", "")), delete_branch=bool(payload.get("delete_branch", True)), branch_name=payload.get("branch"), worktree_id=str(payload.get("worktree_id", "")))); return
-            if path in {"/api/coord/worktrees", "/api/worktrees"}:
+            if path == "/api/coord/worktrees":
                 self._send(200, APP.services.list_worktrees(str(payload.get("root", ".")))); return
             if 'post_coord_worktree_prune_1' in post_route_ids:
                 self._send(200, APP.services.prune_worktrees(str(payload.get("root", ".")))); return
@@ -8392,7 +8410,7 @@ class Handler(BaseHTTPRequestHandler):
                     self._send(200, APP.services.daemon_status(
                         payload.get("daemon_id"), task_id=str(payload.get("task_id", ""))
                     )); return
-            if path in {"/api/command/lint_fix", "/api/lint_fix"}:
+            if path == "/api/command/lint_fix":
                 self._send(200, APP.services.lint_fix(str(payload.get("root", ".")), command=payload.get("command"), paths=payload.get("paths"), tenant=tenant, timeout=payload.get("timeout"))); return
             if 'post_command_http_probe_1' in post_route_ids:
                 self._send(200, APP.services.http_probe(str(payload.get("url", "")), expected_status=int(payload.get("expected_status", 200)), json_path=payload.get("json_path"), timeout=float(payload.get("timeout", 5.0)), headers=payload.get("headers"))); return
@@ -8431,7 +8449,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, APP.services.env_compat(str(payload.get("root", ".")))); return
             if 'post_coord_pubsub_publish_1' in post_route_ids:
                 self._send(200, APP.services.pubsub_publish(str(payload.get("topic", "default")), payload.get("message", ""), sender=str(payload.get("publisher", payload.get("sender", "agent"))))); return
-            if path in {"/api/coord/pubsub_poll", "/api/pubsub_poll"}:
+            if path == "/api/coord/pubsub_poll":
                 poll_kwargs: dict[str, Any] = {}
                 if "after_seq" in payload:
                     poll_kwargs["after_seq"] = int(payload["after_seq"])
@@ -8440,7 +8458,7 @@ class Handler(BaseHTTPRequestHandler):
                 if "limit" in payload:
                     poll_kwargs["limit"] = int(payload["limit"])
                 self._send(200, APP.services.pubsub_poll(str(payload.get("topic", "default")), **poll_kwargs)); return
-            if path in {"/api/coord/simulate_merge", "/api/simulate_merge"}:
+            if path == "/api/coord/simulate_merge":
                 self._send(200, APP.services.simulate_merge(str(payload.get("root", ".")), str(payload.get("source_branch", "")), target_branch=str(payload.get("target_branch", "HEAD")))); return
             if 'post_eval_suite_1' in post_route_ids:
                 self._send(200, APP.services.eval_suite(payload, tenant)); return
@@ -8485,9 +8503,9 @@ class Handler(BaseHTTPRequestHandler):
 
             if 'post_command_diff_hunk_stage_1' in post_route_ids:
                 self._send(200, APP.services.diff_hunk_stage(str(payload.get("root", payload.get("cwd", "."))), str(payload.get("patch", "")))); return
-            if path in {"/api/command/flaky_detect", "/api/flaky_detect"}:
+            if path == "/api/command/flaky_detect":
                 self._send(200, APP.services.test_flaky_detect(str(payload.get("root", payload.get("cwd", "."))), str(payload.get("command", "")), runs=int(payload.get("runs", 5)), timeout_per_run=int(payload.get("timeout", 30)))); return
-            if path in {"/api/command/webhook_replay", "/api/webhook_replay"}:
+            if path == "/api/command/webhook_replay":
                 self._send(200, APP.services.webhook_replay(str(payload.get("url", "")), payload.get("payload", {}), secret=str(payload.get("secret", "")), signature_header=str(payload.get("signature_header", "X-Hub-Signature-256")), timeout=float(payload.get("timeout", 10.0)))); return
 
             # Optional Ollama/OpenAI protocol proxy. Local AI applies
