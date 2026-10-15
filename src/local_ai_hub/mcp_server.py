@@ -4258,7 +4258,7 @@ def local_ai_coord(
     expected_version: int | None = None,
     after_seq: int | None = None,
     after_ts: float | None = None,
-    format: str = "markdown",
+    format: str | None = None,
     sync_action: str | None = None,
     stream_id: str | None = None,
     events: list[dict[str, Any]] | None = None,
@@ -4269,6 +4269,20 @@ def local_ai_coord(
     topic: str = "default",
     message: Any = None,
     publisher: str = "agent",
+    goal: str = "",
+    target_paths: list[str] | None = None,
+    test_command: str = "",
+    swarm_id: str = "",
+    role: str = "Coder",
+    swarm_action: str = "submit_patch",
+    payload: dict[str, Any] | None = None,
+    state: str = "",
+    source_branch: str = "",
+    target_branch: str = "HEAD",
+    worktree_path: str = "",
+    delete_branch: bool = False,
+    output_path: str = "training_dataset.jsonl",
+    min_receipts: int = 1,
 ) -> dict[str, Any]:
     """Cross-agent coordination for the main agent and bounded Hub workers. ask persists a root/tenant/session-scoped question; retrieve it later with the same question_id, root, tenant and session_id. answer records an operator response under the authenticated root and tenant. Public actions are limited to the contract enum; unscoped memory relation/reaping storage remains private. Claim overlapping edit paths before concurrent Hub work. Search/get memos before repeating expensive investigation and store concise reusable findings after discovery. Native peer subagents are coordinated by Codex rather than by this Hub tool."""
     if not FEATURES.coord:
@@ -4426,6 +4440,35 @@ def local_ai_coord(
         },
         "verify_completion": {"query": query, "value": value, "key": key},
         "verify_export": {"query": query, "value": value, "key": key, "section": section, "status": status},
+        "swarm_dispatch": {
+            "task": task, "value": value, "query": query, "paths": paths,
+            "command": command, "approver": approver, "target_scope": target_scope,
+            "key": key, "task_id": task_id,
+        },
+        "swarm_step": {
+            "task": task, "task_id": task_id, "key": key, "target_scope": target_scope,
+            "query": query, "record": record, "value": value, "paths": paths,
+            "command": command, "approver": approver,
+        },
+        "swarm_status": {"task_id": task_id, "key": key, "task": task},
+        "swarm_list": {"status": status},
+        "swarm_cancel": {
+            "task": task, "task_id": task_id, "key": key, "target_scope": target_scope,
+            "query": query, "record": record, "value": value,
+        },
+        "worktree_lease": {"task": task, "task_id": task_id, "key": key, "value": value, "lease_id": lease_id, "worktree_path": worktree_path},
+        "worktree_release": {
+            "task": task, "task_id": task_id, "key": key, "value": value,
+            "lease_id": lease_id, "target_scope": target_scope, "status": status,
+        },
+        "simulate_merge": {
+            "task": task, "task_id": task_id, "key": key, "value": value,
+            "branch": branch, "target_scope": target_scope, "query": query,
+        },
+        "curate_dataset": {
+            "task": task, "task_id": task_id, "key": key, "value": value,
+            "query": query, "status": status, "target_scope": target_scope,
+        },
     }
     if action in legacy_coord_values and any(
         (value != "" if isinstance(value, str) else value != 0 if type(value) is int else value is not None)
@@ -4436,8 +4479,10 @@ def local_ai_coord(
         return contract_error("receipt is only valid for action='verify_receipt'", status_code=400)
     if since_hash != "" and action != "context_compile":
         return contract_error("since_hash is only valid for action='context_compile'", status_code=400)
-    if format != "markdown" and action != "verify_export":
-        return contract_error("format is only valid for action='verify_export'", status_code=400)
+    if format is not None and action not in {"verify_export", "curate_dataset"}:
+        return contract_error("format is only valid for action='verify_export' or 'curate_dataset'", status_code=400)
+    if action == "curate_dataset" and type(min_receipts) is not int:
+        return contract_error("min_receipts must be an integer for action='curate_dataset'", status_code=400)
     coord_canonical_inputs: dict[str, dict[str, Any]] = {
         "ask": {
             "root": root, "tenant": tenant, "session_id": session_id,
@@ -4455,7 +4500,30 @@ def local_ai_coord(
         },
         "verify_receipt": {"root": root, "receipt": receipt},
         "verify_completion": {"root": root, "task_id": task_id, "repository_revision": repository_revision},
-        "verify_export": {"root": root, "task_id": task_id, "format": format},
+        "verify_export": {"root": root, "task_id": task_id, "format": "markdown" if format is None else format},
+        "swarm_dispatch": {
+            "root": root, "goal": goal,
+            "target_paths": [] if target_paths is None else target_paths,
+            "test_command": test_command, "author": author,
+        },
+        "swarm_step": {
+            "root": root, "swarm_id": swarm_id, "role": role,
+            "swarm_action": swarm_action, "payload": {} if payload is None else payload,
+        },
+        "swarm_status": {"root": root, "swarm_id": swarm_id},
+        "swarm_list": {"root": root, "state": state},
+        "swarm_cancel": {"root": root, "swarm_id": swarm_id, "reason": reason},
+        "worktree_lease": {"root": root, "branch": branch},
+        "worktree_release": {
+            "root": root, "worktree_path": worktree_path,
+            "worktree_id": worktree_id, "delete_branch": delete_branch, "branch": branch,
+        },
+        "simulate_merge": {"root": root, "source_branch": source_branch, "target_branch": target_branch},
+        "curate_dataset": {
+            "output_path": output_path,
+            "min_receipts": min_receipts,
+            "format": "jsonl" if format is None else format,
+        },
     }
     if action in coord_canonical_inputs:
         canonical_inputs = coord_canonical_inputs[action]
@@ -4466,6 +4534,8 @@ def local_ai_coord(
         )
         if validation_error is not None:
             return contract_error(validation_error, status_code=400)
+    if action == "worktree_release" and not worktree_path and not worktree_id:
+        return contract_error("worktree_path or worktree_id is required for action='worktree_release'", status_code=400)
     requested_root = str(root or "").strip()
     root = _client_root(root)
     if action.startswith("task_"):
@@ -4635,36 +4705,33 @@ def local_ai_coord(
         ), "status")
     if action == "swarm_dispatch":
         return _compact(CLIENT.post("/api/agent-state/swarm/dispatch", {
-            "goal": task or value or query,
-            "target_paths": paths or [],
-            "test_command": command or target_scope or "",
-            "author": approver or "agent",
+            "goal": goal,
+            "target_paths": [] if target_paths is None else target_paths,
+            "test_command": test_command,
+            "author": author,
             "root": root or ".",
         }, timeout=_timeout("quick")), "status")
     if action == "swarm_step":
         return _compact(CLIENT.post("/api/agent-state/swarm/step", {
-            "swarm_id": task_id or key or "",
-            "role": target_scope or "Coder",
-            "action": query or "submit_patch",
-            "payload": record or ({"value": value} if value else {}),
+            "swarm_id": swarm_id,
+            "role": role,
+            "action": swarm_action,
+            "payload": {} if payload is None else payload,
             "root": root or ".",
         }, timeout=_timeout("quick")), "status")
     if action == "swarm_status":
-        sid = task_id or key or ""
-        return _compact(CLIENT.get(f"/api/agent-state/swarm/{quote(sid)}?root={quote(root)}", timeout=_timeout("quick")), "status")
+        return _compact(CLIENT.get(f"/api/agent-state/swarm/{quote(swarm_id)}?root={quote(root)}", timeout=_timeout("quick")), "status")
     if action == "swarm_list":
         params = [f"root={quote(root)}"]
-        if status:
-            params.append(f"state={quote(status)}")
+        if state:
+            params.append(f"state={quote(state)}")
         return _compact(CLIENT.get(f"/api/agent-state/swarm?{'&'.join(params)}", timeout=_timeout("quick")), "status")
     if action == "swarm_cancel":
-        sid = task_id or key or ""
-        return _compact(CLIENT.post("/api/agent-state/swarm/cancel", {"swarm_id": sid, "reason": reason or value or "cancelled by agent", "root": root or "."}, timeout=_timeout("quick")), "status")
+        return _compact(CLIENT.post("/api/agent-state/swarm/cancel", {"swarm_id": swarm_id, "reason": reason, "root": root or "."}, timeout=_timeout("quick")), "status")
     if action == "worktree_lease":
-        return _compact(CLIENT.coord(action="worktree_lease", root=root, branch=key or task or task_id or None), "status")
+        return _compact(CLIENT.coord(action="worktree_lease", root=root, branch=branch), "status")
     if action == "worktree_release":
-        del_branch = status.lower() not in {"false", "0", "no"} if status else True
-        return _compact(CLIENT.coord(action="worktree_release", root=root, worktree_path=value or lease_id or key or "", worktree_id=worktree_id, delete_branch=del_branch, branch=key or task or task_id or None), "status")
+        return _compact(CLIENT.coord(action="worktree_release", root=root, worktree_path=worktree_path, worktree_id=worktree_id, delete_branch=delete_branch, branch=branch), "status")
     if action == "pubsub_publish":
         return _compact(CLIENT.coord(
             action="pubsub_publish", topic=topic, message=message,
@@ -4680,18 +4747,18 @@ def local_ai_coord(
             CLIENT.coord(
                 action="simulate_merge",
                 root=root,
-                source_branch=key or task_id or value,
-                target_branch=target_scope or "HEAD",
+                source_branch=source_branch,
+                target_branch=target_branch,
             ),
             "general",
             extra_fields=["mergeable", "conflicts", "exit_code"],
         )
-    if action in {"curate_dataset", "curate_training_dataset"}:
+    if action == "curate_dataset":
         return _compact(CLIENT.post("/api/agent-state/tasks", {
             "action": "curate_dataset",
-            "output_path": key or value or query or "training_dataset.jsonl",
-            "min_receipts": int(status) if (status and status.isdigit()) else 1,
-            "format": target_scope or "jsonl",
+            "output_path": output_path,
+            "min_receipts": min_receipts,
+            "format": "jsonl" if format is None else format,
         }, timeout=_timeout("quick")), "status")
     return _invalid_action("local_ai_coord", action, tuple(CoordAction.__args__), "Use coordination for bounded shared state; the main agent remains the owner of final integration.")
 
