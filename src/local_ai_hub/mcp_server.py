@@ -4324,8 +4324,8 @@ def local_ai_coord(
         if sync_error is not None:
             return contract_error(sync_error, status_code=400)
     legacy_coord_values: dict[str, dict[str, Any]] = {
-        "ask": {"task_id": task_id, "record_id": record_id, "key": key, "query": query, "value": value, "answer": answer},
-        "answer": {"task_id": task_id, "record_id": record_id, "key": key, "query": query, "value": value, "question": question},
+        "ask": {"record_id": record_id, "key": key, "query": query, "value": value, "answer": answer},
+        "answer": {"record_id": record_id, "key": key, "query": query, "value": value, "question": question},
         "task_cleanup_worktree": {"key": key},
         "context_compile": {
             "query": query, "value": value, "key": key, "record_id": record_id,
@@ -4335,7 +4335,7 @@ def local_ai_coord(
             "checkpoint": checkpoint, "task_id": task_id, "criterion": criterion,
             "key": key, "value": value, "query": query, "status": status, "record": record,
         },
-        "verify_completion": {"query": query, "value": value, "key": key, "repository_revision": repository_revision},
+        "verify_completion": {"query": query, "value": value, "key": key},
         "verify_export": {"query": query, "value": value, "key": key, "section": section, "status": status},
     }
     if action in legacy_coord_values and any(
@@ -4352,9 +4352,9 @@ def local_ai_coord(
     coord_canonical_inputs: dict[str, dict[str, Any]] = {
         "ask": {
             "root": root, "tenant": tenant, "session_id": session_id,
-            "question_id": question_id, "question": question,
+            "question_id": question_id, "question": question, "task_id": task_id,
         },
-        "answer": {"root": root, "tenant": tenant, "question_id": question_id, "answer": answer},
+        "answer": {"root": root, "tenant": tenant, "question_id": question_id, "answer": answer, "task_id": task_id},
         "task_cleanup_worktree": {"root": root, "task_id": task_id},
         "context_compile": {
             "root": root, "task_id": task_id, "since_hash": since_hash,
@@ -4365,7 +4365,7 @@ def local_ai_coord(
             "focus": focus or [], "preload_profile": preload_profile,
         },
         "verify_receipt": {"root": root, "receipt": receipt},
-        "verify_completion": {"root": root, "task_id": task_id},
+        "verify_completion": {"root": root, "task_id": task_id, "repository_revision": repository_revision},
         "verify_export": {"root": root, "task_id": task_id, "format": format},
     }
     if action in coord_canonical_inputs:
@@ -4468,6 +4468,7 @@ def local_ai_coord(
     if action == "verify_completion":
         return _compact(CLIENT.post("/api/agent-state/verification", {
             "action": "completion", "task_id": task_id, "root": root,
+            "repository_revision": repository_revision,
         }, timeout=_timeout("quick")), "verify")
     if action == "verify_export":
         return _compact(CLIENT.post("/api/agent-state/verification", {
