@@ -1133,34 +1133,19 @@ class CodeIndex:
         CREATE INDEX IF NOT EXISTS idx_parse_blobs_updated ON parse_blobs(updated_at);
         """)
         edge_columns = {str(row["name"]) for row in con.execute("PRAGMA table_info(edges)").fetchall()}
-        if "src_name" not in edge_columns:
-            con.execute("ALTER TABLE edges ADD COLUMN src_name TEXT")
-        if "dst_name" not in edge_columns:
-            con.execute("ALTER TABLE edges ADD COLUMN dst_name TEXT")
         file_columns = {str(row["name"]) for row in con.execute("PRAGMA table_info(files)").fetchall()}
-        if "mtime_ns" not in file_columns:
-            con.execute("ALTER TABLE files ADD COLUMN mtime_ns INTEGER")
-        if "size_bytes" not in file_columns:
-            con.execute("ALTER TABLE files ADD COLUMN size_bytes INTEGER")
-        with closing(con.execute("SELECT rowid, src, dst FROM edges WHERE src_name IS NULL OR dst_name IS NULL")) as rows:
-            con.executemany(
-                "UPDATE edges SET src_name=?, dst_name=? WHERE rowid=?",
-                [
-                    (_edge_endpoint_name(str(row[1])), _edge_endpoint_name(str(row[2])), int(row[0]))
-                    for row in rows.fetchall()
-                ],
-            )
+        if not {"src_name", "dst_name"}.issubset(edge_columns) or not {
+            "analyzer_version", "mtime_ns", "size_bytes"
+        }.issubset(file_columns):
+            # Derived state is disposable: let the existing initialization
+            # recovery archive and rebuild it instead of migrating old rows.
+            raise sqlite3.DatabaseError("stale derived code-index schema; rebuild this cache")
         con.execute(
             "CREATE INDEX IF NOT EXISTS idx_edges_root_kind_dst_name ON edges(root, kind, dst_name)"
         )
         con.execute(
             "CREATE INDEX IF NOT EXISTS idx_edges_root_kind_src_name ON edges(root, kind, src_name)"
         )
-        file_columns = {str(row["name"]) for row in con.execute("PRAGMA table_info(files)").fetchall()}
-        if "analyzer_version" not in file_columns:
-            raise sqlite3.DatabaseError(
-                "stale derived code-index schema; rebuild this cache"
-            )
         initialize_row_counts(con, ("files", "symbols", "refs", "edges"))
 
     def _init_db(self) -> None:

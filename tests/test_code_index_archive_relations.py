@@ -1,5 +1,8 @@
 from contextlib import closing
 from pathlib import Path
+import sqlite3
+
+import pytest
 
 from local_ai_hub.code_index import CodeIndex
 from local_ai_hub.repo_tools import RepositoryTools
@@ -47,11 +50,11 @@ def test_archive_relation_rows_cannot_starve_live_retrieval_or_impact(tmp_path: 
                 (resolved_root, archived_path, "Base", 2, "read"),
             )
             con.executemany(
-                "INSERT INTO edges(root,src,dst,kind,path,line) VALUES(?,?,?,?,?,?)",
+                "INSERT INTO edges(root,src,dst,src_name,dst_name,kind,path,line) VALUES(?,?,?,?,?,?,?,?)",
                 [
-                    (resolved_root, "LiveCaller", "Base", "calls", archived_path, 2),
-                    (resolved_root, "Concrete", "Base", "inherits", archived_path, 1),
-                    (resolved_root, "src/current.py", "src/base.py", "imports", archived_path, 1),
+                    (resolved_root, "LiveCaller", "Base", "LiveCaller", "Base", "calls", archived_path, 2),
+                    (resolved_root, "Concrete", "Base", "Concrete", "Base", "inherits", archived_path, 1),
+                    (resolved_root, "src/current.py", "src/base.py", "current.py", "base.py", "imports", archived_path, 1),
                 ],
             )
         con.execute(
@@ -59,11 +62,11 @@ def test_archive_relation_rows_cannot_starve_live_retrieval_or_impact(tmp_path: 
             (resolved_root, live_path, "Base", 2, "read"),
         )
         con.executemany(
-            "INSERT INTO edges(root,src,dst,kind,path,line) VALUES(?,?,?,?,?,?)",
+            "INSERT INTO edges(root,src,dst,src_name,dst_name,kind,path,line) VALUES(?,?,?,?,?,?,?,?)",
             [
-                (resolved_root, "LiveCaller", "Base", "calls", live_path, 2),
-                (resolved_root, "Concrete", "Base", "inherits", live_path, 1),
-                (resolved_root, "src/current.py", "src/base.py", "imports", live_path, 1),
+                (resolved_root, "LiveCaller", "Base", "LiveCaller", "Base", "calls", live_path, 2),
+                (resolved_root, "Concrete", "Base", "Concrete", "Base", "inherits", live_path, 1),
+                (resolved_root, "src/current.py", "src/base.py", "current.py", "base.py", "imports", live_path, 1),
             ],
         )
         con.commit()
@@ -84,3 +87,36 @@ def test_archive_relation_rows_cannot_starve_live_retrieval_or_impact(tmp_path: 
     assert impact["coverage"]["dependent_candidate_count"] == 1
     assert [item["path"] for item in impact["likely_dependents"]] == [live_path]
     assert impact["coverage"]["dependent_candidate_count_exact"] is True
+
+
+@pytest.mark.parametrize("old_edges,old_files", [(True, False), (False, True), (True, True)])
+def test_old_derived_index_is_rebuilt_without_in_place_migration(tmp_path: Path, old_edges: bool, old_files: bool):
+    state = tmp_path / "state"
+    state.mkdir()
+    database = state / "code-index.sqlite3"
+    endpoint_columns = "" if old_edges else ",src_name TEXT,dst_name TEXT"
+    metadata_columns = "" if old_files else ",mtime_ns INTEGER,size_bytes INTEGER"
+    with closing(sqlite3.connect(database)) as connection:
+        connection.execute(
+            "CREATE TABLE files(root TEXT,path TEXT,content_hash TEXT,analyzer_version TEXT,"
+            f"language TEXT,updated_at REAL{metadata_columns},PRIMARY KEY(root,path))"
+        )
+        connection.execute(
+            f"CREATE TABLE edges(root TEXT,src TEXT,dst TEXT,kind TEXT,path TEXT,line INTEGER{endpoint_columns})"
+        )
+        connection.execute("INSERT INTO files(root,path) VALUES('old-root','old.py')")
+        connection.commit()
+    config = {"server": {"state_dir": str(state)}}
+    index = CodeIndex(config, repo_tools=RepositoryTools(config))
+    with closing(index._connect()) as connection:
+        assert {"src_name", "dst_name"} <= {row["name"] for row in connection.execute("PRAGMA table_info(edges)")}
+        assert {"mtime_ns", "size_bytes"} <= {row["name"] for row in connection.execute("PRAGMA table_info(files)")}
+        assert connection.execute("SELECT COUNT(*) FROM files").fetchone()[0] == 0
+    archives = list(state.glob("code-index.sqlite3.corrupt-*"))
+    assert len(archives) == 1
+    with closing(sqlite3.connect(archives[0])) as connection:
+        assert connection.execute("SELECT path FROM files").fetchone()[0] == "old.py"
+        if old_edges:
+            assert "src_name" not in {row[1] for row in connection.execute("PRAGMA table_info(edges)")}
+        if old_files:
+            assert "mtime_ns" not in {row[1] for row in connection.execute("PRAGMA table_info(files)")}

@@ -13,17 +13,71 @@ _INVENTORY = json.loads(_FIXTURE.read_text(encoding="utf-8"))
 _CROSSWALK_FIXTURE = Path(__file__).parent / "fixtures" / "http_post_api_coverage_route_crosswalk_t18.json"
 _CROSSWALK = json.loads(_CROSSWALK_FIXTURE.read_text(encoding="utf-8"))
 _RETIRED_ROUTE_IDS = {"post_control_1"}
-_ADDED_ROUTE_IDS = {"post_task_browser_1", "post_context_pack_1"}
-_CURRENT_ADDED_ROUTES = {
-    "post_task_browser_1": "/api/task/browser",
-    "post_context_pack_1": "/api/context/pack",
-}
-_CURRENT_COMMAND_ROUTES = {
-    "post_command_daemon_1": "/api/command/daemon",
-    "post_command_lint_fix_1": "/api/command/lint_fix",
-    "post_command_http_probe_1": "/api/command/http_probe",
-    "post_command_mock_server_1": "/api/command/mock_server",
-}
+# Frozen, reviewed public-contract deltas from the immutable historical preimage.
+_CURRENT_ROUTE_PATHS = {'post_command_speculative_lint_1': ['/api/command/speculative-lint'],
+ 'post_repo_state_1': ['/api/repo/state'],
+ 'post_hotspots_1': ['/api/repo/hotspots'],
+ 'post_generate_tests_for_diff_1': ['/api/repo/generate_tests_for_diff'],
+ 'post_cross_repo_contract_1': ['/api/repo/cross_repo_contract'],
+ 'post_affected_tests_1': ['/api/repo/affected_tests'],
+ 'post_repo_topology_1': ['/api/repo/topology'],
+ 'post_ast_rename_1': ['/api/code/ast_rename'],
+ 'post_code_generate_mocks_1': ['/api/code/generate_mocks'],
+ 'post_code_batch_replace_1': ['/api/code/batch_replace'],
+ 'post_dead_code_1': ['/api/repo/dead_code'],
+ 'post_speculative_draft_1': ['/api/task/speculative_draft'],
+ 'post_scaffold_1': ['/api/task/scaffold'],
+ 'post_reachability_dead_code_1': ['/api/repo/reachability_dead_code'],
+ 'post_mutation_test_1': ['/api/repo/mutation_test'],
+ 'post_repo_type_stubs_1': ['/api/repo/type_stubs'],
+ 'post_repo_skeletonize_1': ['/api/repo/skeletonize'],
+ 'post_repo_split_changes_1': ['/api/repo/split_changes'],
+ 'post_repo_synthesize_rules_1': ['/api/repo/synthesize_rules'],
+ 'post_rag_docset_index_1': ['/api/rag/docset/index'],
+ 'post_rag_docset_search_1': ['/api/rag/docset/search'],
+ 'post_task_transcribe_1': ['/api/task/transcribe'],
+ 'post_code_invariants_1': ['/api/repo/code_invariants'],
+ 'post_generate_dataset_1': ['/api/repo/generate_dataset'],
+ 'post_profile_digest_1': ['/api/repo/profile_digest'],
+ 'post_coord_worktree_lease_1': ['/api/coord/worktree_lease'],
+ 'post_coord_worktree_release_1': ['/api/coord/worktree_release'],
+ 'post_coord_worktrees_1': ['/api/coord/worktrees'],
+ 'post_coord_worktree_prune_1': ['/api/coord/worktree_prune'],
+ 'post_command_daemon_1': ['/api/command/daemon'],
+ 'post_command_lint_fix_1': ['/api/command/lint_fix'],
+ 'post_command_http_probe_1': ['/api/command/http_probe'],
+ 'post_callers_1': ['/api/repo/callers'],
+ 'post_repo_secret_scan_1': ['/api/repo/secret_scan'],
+ 'post_repo_schema_inspect_1': ['/api/repo/schema_inspect'],
+ 'post_explain_query_1': ['/api/repo/explain_query'],
+ 'post_env_compat_1': ['/api/repo/env_compat'],
+ 'post_coord_pubsub_publish_1': ['/api/coord/pubsub_publish'],
+ 'post_coord_pubsub_poll_1': ['/api/coord/pubsub_poll'],
+ 'post_coord_simulate_merge_1': ['/api/coord/simulate_merge'],
+ 'post_eval_suite_1': ['/api/task/eval_suite'],
+ 'post_prompt_eval_1': ['/api/task/prompt_eval'],
+ 'post_eval_drift_1': ['/api/task/eval_drift'],
+ 'post_circular_dependencies_1': ['/api/repo/circular_dependencies'],
+ 'post_generate_types_1': ['/api/repo/generate_types'],
+ 'post_complexity_1': ['/api/repo/complexity'],
+ 'post_api_spec_1': ['/api/repo/api_spec'],
+ 'post_dependency_slice_1': ['/api/repo/dependency_slice'],
+ 'post_migration_drift_1': ['/api/repo/migration_drift'],
+ 'post_package_audit_1': ['/api/repo/package_audit'],
+ 'post_repo_structural_search_1': ['/api/repo/structural_search'],
+ 'post_context_budget_1': ['/api/repo/context_budget'],
+ 'post_ingest_document_1': ['/api/rag/ingest_document'],
+ 'post_ingest_diagram_1': ['/api/rag/ingest_diagram'],
+ 'post_command_mock_server_1': ['/api/command/mock_server'],
+ 'post_command_diff_hunk_stage_1': ['/api/command/diff_hunk_stage'],
+ 'post_command_flaky_detect_1': ['/api/command/flaky_detect'],
+ 'post_command_webhook_replay_1': ['/api/command/webhook_replay']}
+_CURRENT_ADDED_ROUTES = {'post_task_browser_1': {'paths': ['/api/task/browser'], 'before': 'post_repo_split_changes_1'},
+ 'post_callees_1': {'paths': ['/api/code/callees'], 'before': 'post_repo_secret_scan_1'},
+ 'post_implementations_1': {'paths': ['/api/code/implementations'], 'before': 'post_repo_secret_scan_1'},
+ 'post_declaration_1': {'paths': ['/api/code/declaration'], 'before': 'post_repo_secret_scan_1'},
+ 'post_context_pack_1': {'paths': ['/api/context/pack'], 'before': 'post_ingest_document_1'}}
+_ADDED_ROUTE_IDS = set(_CURRENT_ADDED_ROUTES)
 
 
 def _rules_as_rows(registry):
@@ -33,31 +87,20 @@ def _rules_as_rows(registry):
     ]
 
 
-def test_post_registry_matches_root_preimage_route_inventory_in_order() -> None:
-    expected = [
-        {"route_id": row["route_id"], "paths": sorted(row["paths"])}
+def _expected_current_routes():
+    rows = [
+        {"route_id": row["route_id"], "paths": sorted(_CURRENT_ROUTE_PATHS.get(row["route_id"], row["paths"]))}
         for row in _INVENTORY["post_route_rules"]
-        if row["route_id"] not in (_RETIRED_ROUTE_IDS | _ADDED_ROUTE_IDS)
+        if row["route_id"] not in _RETIRED_ROUTE_IDS
     ]
-    for row in expected:
-        if row["route_id"] == "post_command_speculative_lint_1":
-            row["paths"] = [path for path in row["paths"] if path != "/api/speculative-lint"]
-        if row["route_id"] in _CURRENT_COMMAND_ROUTES:
-            row["paths"] = [_CURRENT_COMMAND_ROUTES[row["route_id"]]]
-    context_pack_route_index = next(
-        index for index, row in enumerate(expected) if row["route_id"] == "post_ingest_document_1"
-    )
-    expected.insert(
-        context_pack_route_index,
-        {"route_id": "post_context_pack_1", "paths": [_CURRENT_ADDED_ROUTES["post_context_pack_1"]]},
-    )
-    browser_route_index = next(
-        index for index, row in enumerate(expected) if row["route_id"] == "post_repo_split_changes_1"
-    )
-    expected.insert(
-        browser_route_index,
-        {"route_id": "post_task_browser_1", "paths": [_CURRENT_ADDED_ROUTES["post_task_browser_1"]]},
-    )
+    for route_id, addition in _CURRENT_ADDED_ROUTES.items():
+        position = next((i for i, row in enumerate(rows) if row["route_id"] == addition["before"]), len(rows))
+        rows.insert(position, {"route_id": route_id, "paths": addition["paths"]})
+    return rows
+
+
+def test_post_registry_matches_root_preimage_route_inventory_in_order() -> None:
+    expected = _expected_current_routes()
     assert _rules_as_rows(POST_ROUTE_REGISTRY) == expected
     current_matches: dict[str, list[str]] = {}
     for row in expected:
@@ -65,7 +108,9 @@ def test_post_registry_matches_root_preimage_route_inventory_in_order() -> None:
             current_matches.setdefault(path, []).append(row["route_id"])
     for path, route_ids in current_matches.items():
         assert select_http_routes("POST", path) == tuple(route_ids)
-    assert select_http_routes("POST", "/api/speculative-lint") == ()
+    historical_paths = {path for row in _INVENTORY["post_route_rules"] for path in row["paths"]}
+    for retired_path in historical_paths - set(current_matches):
+        assert select_http_routes("POST", retired_path) == ()
 
 
 def test_candidate_and_root_preimages_have_route_path_and_priority_parity() -> None:
@@ -110,6 +155,8 @@ def test_do_post_registered_dispatch_branches_match_inventory_without_moving_gat
         for node in do_post.body + dispatch.body
         if isinstance(node, ast.If)
         and any(isinstance(name, ast.Name) and name.id == "post_route_ids" for name in ast.walk(node.test))
+        and any(isinstance(value, ast.Constant) and isinstance(value.value, str)
+                and value.value.startswith("post_") for value in ast.walk(node.test))
     ]
     selected_ids = [
         next(
@@ -119,13 +166,10 @@ def test_do_post_registered_dispatch_branches_match_inventory_without_moving_gat
         )
         for node in branches
     ]
-    expected_orders = [
-        [row["route_id"] for row in _INVENTORY["post_route_rules"]],
-        [row["route_id"] for row in _INVENTORY["candidate_post_route_rules"]],
-    ]
+    expected_orders = [[row["route_id"] for row in _expected_current_routes()]]
     early_routes = {"post_admin_mode_1", "post_bundle_import_1"}
     named_boundaries = set(POST_ROUTE_HANDLER_BOUNDARIES)
-    known_ids = set(expected_orders[0]) | set(expected_orders[1]) | _ADDED_ROUTE_IDS
+    known_ids = set(expected_orders[0])
     assert selected_ids
     assert len(selected_ids) == len(set(selected_ids))
     assert set(selected_ids) <= known_ids
@@ -149,11 +193,7 @@ def test_do_post_registered_dispatch_branches_match_inventory_without_moving_gat
     request_id_lines = [line for line, name in calls if name == "validate_request_id"]
     route_select_line = min(selector_lines)
     handler_select_lines = [line for line, name in calls if name == "select_post_handler"]
-    dispatch_lines = [
-        node.lineno
-        for node in ast.walk(do_post)
-        if isinstance(node, ast.If) and "post_route_ids" in (ast.get_source_segment(source, node.test) or "")
-    ]
+    dispatch_lines = [node.lineno for node in branches]
     assert len(selector_lines) == 1
     assert len(handler_select_lines) == 1
     assert body_lines
@@ -167,8 +207,29 @@ def test_do_post_registered_dispatch_branches_match_inventory_without_moving_gat
     )
     assert route_select_line < startup_line < auth_line < min(mode_lines) < min(trace_lines)
     assert min(trace_lines) < min(request_id_lines) < min(body_lines)
-    assert max(mode_lines) < min(body_lines)
+    payload_mode_lines = [
+        node.lineno for node in ast.walk(do_post)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        and node.func.id == "_http_mode_gate_error" and len(node.args) == 3
+    ]
+    validation_lines = [line for line, name in calls if name == "_validate_payload"]
+    recovery_lines = [line for line, name in calls if name == "_claim_recovery"]
+    assert len(payload_mode_lines) == 1
+    assert max(body_lines) < min(validation_lines) < payload_mode_lines[0]
+    assert payload_mode_lines[0] < max(recovery_lines) < min(handler_select_lines)
     assert route_select_line < min(handler_select_lines) < min(dispatch_lines)
+
+    bundle_branch = next(
+        node for node in do_post.body if isinstance(node, ast.If)
+        and ast.unparse(node.test) == "path == '/api/bundle/import'"
+    )
+    bundle_calls = {
+        node.func.id if isinstance(node.func, ast.Name) else node.func.attr: node.lineno
+        for node in ast.walk(bundle_branch)
+        if isinstance(node, ast.Call) and isinstance(node.func, (ast.Name, ast.Attribute))
+    }
+    assert bundle_calls["_http_mode_gate_error"] < bundle_calls["_read_body"]
+    assert bundle_calls["_read_body"] < bundle_calls["_claim_recovery"] < bundle_calls["import_bundle"]
 
 
 def test_root_api_coverage_route_crosswalk_is_row_exact() -> None:
