@@ -8306,7 +8306,19 @@ class Handler(BaseHTTPRequestHandler):
             if 'post_declaration_1' in post_route_ids:
                 self._send(200, APP.services.code_find_declaration(str(payload.get("root", ".")), str(payload.get("symbol", "")), path=payload.get("path"))); return
             if 'post_repo_secret_scan_1' in post_route_ids:
-                self._send(200, APP.services.secret_scan(str(payload.get("root", ".")), payload.get("path"), scan_git_history=bool(payload.get("scan_git_history", payload.get("git_history", False))), commit_depth=int(payload.get("commit_depth", 20)))); return
+                scan_git_history = payload.get("scan_git_history", payload.get("git_history", False))
+                if not isinstance(scan_git_history, bool):
+                    self._send(400, {
+                        "success": False, "error": "scan_git_history must be a boolean",
+                        "status_code": 400, "terminal": True, "retryable": False,
+                    }); return
+                result = APP.services.secret_scan(
+                    str(payload.get("root", ".")), payload.get("path"),
+                    scan_git_history=scan_git_history,
+                    commit_depth=payload.get("commit_depth", 20),
+                )
+                status = result.get("status_code", 200) if isinstance(result, dict) else 200
+                self._send(status if status in {400, 409, 422, 500, 503} else 200, result); return
             if 'post_repo_schema_inspect_1' in post_route_ids:
                 self._send(200, APP.services.schema_inspect(str(payload.get("root", ".")), payload.get("db_path"))); return
             if 'post_explain_query_1' in post_route_ids:
