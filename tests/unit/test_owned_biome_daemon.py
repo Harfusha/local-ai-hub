@@ -22,10 +22,35 @@ def test_pipe_peer_must_be_the_retained_child_before_stream_use():
 
 
 def test_only_explicit_supported_biome_version_is_accepted():
-    assert biome._VERSION.fullmatch("biome 2.5.15")
-    assert not biome._VERSION.fullmatch("biome 2.3.8")
-    assert not biome._VERSION.fullmatch("biome 3.0.0")
+    assert biome._VERSION.fullmatch("Version: 2.5.15")
+    assert not biome._VERSION.fullmatch("Version: 2.3.8")
+    assert not biome._VERSION.fullmatch("Version: 3.0.0")
+    assert not biome._VERSION.fullmatch("biome 2.5.15")
     assert not biome._VERSION.fullmatch("Biome version unknown")
+
+
+def test_version_capture_accepts_canonical_bpaf_output_and_releases_streams(monkeypatch):
+    released = []
+
+    class Process:
+        pid = 78
+        stdout = io.BytesIO(b"Version: 2.5.15\n")
+        stderr = io.BytesIO()
+        returncode = 0
+
+        @staticmethod
+        def poll():
+            return 0
+
+    process = Process()
+    monkeypatch.setattr(biome, "popen_managed", lambda *args, **kwargs: process)
+    monkeypatch.setattr(biome, "_release_process_job", lambda proc: released.append(proc) or True)
+    daemon = biome.OwnedBiomeDaemon("biome")
+
+    assert daemon._capture_version(time.monotonic() + 1) == "2.5.15"
+    assert daemon._version_proc is None
+    assert process.stdout.closed and process.stderr.closed
+    assert released
 
 
 def test_non_windows_owned_transport_is_typed_unsupported(tmp_path, monkeypatch):
@@ -121,7 +146,7 @@ def test_unknown_binary_version_never_starts_foreground_server(monkeypatch):
 
     class FakeVersionProcess:
         pid = 79
-        stdout = io.BytesIO(b"biome 2.5.16\n")
+        stdout = io.BytesIO(b"Version: 2.5.16\n")
         stderr = io.BytesIO()
         returncode = 0
 
