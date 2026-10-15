@@ -1514,6 +1514,56 @@ def test_invalid_canonical_path_does_not_hide_legacy_state(tmp_path, canonical_k
         assert canonical.read_bytes() == canonical_before
 
 
+def test_wal_canonical_probe_uses_immutable_mode_without_sidecars(tmp_path):
+    from local_ai_hub.sqlite_support import require_canonical_agent_state_database
+
+    canonical = tmp_path / "agent_state.sqlite"
+    with closing(sqlite3.connect(canonical)) as con, con:
+        assert con.execute("PRAGMA journal_mode=WAL").fetchone()[0].lower() == "wal"
+        con.execute("CREATE TABLE canonical_marker (value TEXT)")
+        con.execute("INSERT INTO canonical_marker VALUES ('keep')")
+    legacy = tmp_path / "leases.sqlite3"
+    legacy.write_bytes(b"archived legacy state")
+    wal_path = Path(f"{canonical}-wal")
+    shm_path = Path(f"{canonical}-shm")
+    assert not wal_path.exists() and not shm_path.exists()
+
+    assert require_canonical_agent_state_database(tmp_path) == canonical
+
+    assert not wal_path.exists() and not shm_path.exists()
+    assert legacy.read_bytes() == b"archived legacy state"
+
+
+@pytest.mark.parametrize("sidecar_name", ["agent_state.sqlite-wal", "agent_state.sqlite-shm"])
+def test_wal_canonical_probe_rejects_incomplete_sidecars_without_creating_files(tmp_path, sidecar_name):
+    from local_ai_hub.sqlite_support import (
+        UnsupportedLegacyStateDatabase,
+        require_canonical_agent_state_database,
+    )
+
+    canonical = tmp_path / "agent_state.sqlite"
+    with closing(sqlite3.connect(canonical)) as con, con:
+        assert con.execute("PRAGMA journal_mode=WAL").fetchone()[0].lower() == "wal"
+        con.execute("CREATE TABLE canonical_marker (value TEXT)")
+    legacy = tmp_path / "leases.sqlite3"
+    legacy.write_bytes(b"archived legacy state")
+    legacy_before = legacy.read_bytes()
+    canonical_before = canonical.read_bytes()
+    sidecar = tmp_path / sidecar_name
+    sidecar.write_bytes(b"existing sidecar")
+    missing_sidecar = tmp_path / (
+        "agent_state.sqlite-shm" if sidecar_name.endswith("-wal") else "agent_state.sqlite-wal"
+    )
+
+    with pytest.raises(UnsupportedLegacyStateDatabase, match="canonical database is missing or not a readable SQLite file"):
+        require_canonical_agent_state_database(tmp_path)
+
+    assert sidecar.read_bytes() == b"existing sidecar"
+    assert not missing_sidecar.exists()
+    assert canonical.read_bytes() == canonical_before
+    assert legacy.read_bytes() == legacy_before
+
+
 def test_legacy_lease_wait_schema_is_rejected_before_schema_changes(tmp_path):
     from local_ai_hub.leases import ScopeLeaseStore
 
