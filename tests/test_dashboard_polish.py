@@ -249,15 +249,14 @@ assert.equal(formatEstimatedUsd(1.234),'≈ $1.23');
 """)
 
 
-def test_overview_health_reports_failed_telemetry_instead_of_healthy():
+def test_telemetry_completeness_does_not_override_runtime_health():
     source = extract("function dashboardHealth(", "function dashboardFreshness(")
     run_javascript(source, """
 const base={hub_online:true,ollama_online:true,headless:{state:'running'}};
-assert.equal(dashboardHealth({...base,observability:{writer:{dropped:12}}}).level,'attention');
-assert.match(dashboardHealth({...base,observability:{writer:{dropped:12}}}).reason,/telemetry/i);
-assert.equal(dashboardHealth({...base,observability:{data_available:false}}).level,'attention');
+assert.equal(dashboardHealth({...base,observability:{writer:{dropped:12}}}).level,'healthy');
+assert.equal(dashboardHealth({...base,observability:{data_available:false}}).level,'healthy');
 assert.equal(dashboardHealth({...base,observability:{data_available:true,writer:{dropped:0,writer_errors:0}}}).level,'healthy');
-assert.equal(dashboardHealth({...base,degraded:true,dependency_status:{'preprocessing.status':{degraded:true}}}).level,'degraded');
+assert.equal(dashboardHealth({...base,degraded:true,dependency_status:{'preprocessing.status':{degraded:true}}}).level,'attention');
 """)
 
 

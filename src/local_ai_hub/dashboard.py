@@ -311,7 +311,6 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
         <button class="btn" id="detailedTelemetryToggle" aria-pressed="false">Detailed telemetry: Off</button>
         <span class="tiny control-notice">Agent debug traces · off by default; payloads available when enabled</span>
         <button class="btn ok" id="optDbBtn">Optimize databases</button>
-        <button class="btn ok" id="resolveAllErrorsBtn">Resolve all errors</button>
         <button class="btn" id="doctorBtn">Run diagnostics</button>
         <button class="btn" id="pauseEvents">Pause live events</button>
         <div class="tiny muted">Runtime control</div>
@@ -342,10 +341,11 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
 
 <div id="overview" class="page active">
   <section id="overviewHealthSummary" class="section" style="margin-bottom:12px;padding:14px;border-left:4px solid var(--accent)">
-    <div class="label">Operational summary</div>
+    <div class="label">Current runtime health</div>
     <div class="value primary-metric" id="overviewHealthLevel">Loading runtime health…</div>
     <div class="sub" id="overviewHealthEvidence">Waiting for live status.</div>
     <div class="tiny muted" id="overviewFreshness">Timestamp unavailable</div>
+    <div class="tiny muted" id="overviewHistorySummary" style="margin-top:8px">Historical telemetry loading…</div>
     <button type="button" class="btn" id="overviewHealthAction" style="margin-top:10px">Open details</button>
     <div id="overviewAnnouncement" aria-live="polite" aria-atomic="true" style="position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0"></div>
   </section>
@@ -367,7 +367,7 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
       <div class="card"><div class="label">Estimated savings</div><div class="value primary-metric" id="dollarsSaved">…</div><div class="sub" id="dollarsSavedSub"></div></div>
       <div class="card"><div class="label">Generation cache hit rate</div><div class="value primary-metric" id="cache">…</div><div class="sub" id="cacheSub"></div></div>
       <div class="card"><div class="label">Latency p50 / p95 / p99</div><div class="value" id="latency">…</div><div class="sub" id="queueWait"></div><canvas id="latencySpark" class="spark-canvas" width="160" height="30"></canvas></div>
-      <div class="card"><div class="label">Reliability</div><div class="value primary-metric" id="reliabilityValue">…</div><div class="sub" id="reliabilitySub"></div></div>
+      <div class="card"><div class="label">Recorded request failures</div><div class="value primary-metric" id="reliabilityValue">…</div><div class="sub" id="reliabilitySub"></div></div>
     </div>
     <details class="metric-details"><summary>How token savings are estimated</summary><p>Signed source/context baseline minus the tokens spent calling tools and reading their responses. Negative values mean additional cloud token cost. Local compute reuse and schema exposure are separate diagnostics.</p><pre id="efficiencyBreakdown">Waiting for accounting data.</pre></details>
   </div>
@@ -390,7 +390,7 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
 
   <div class="split" style="margin-top:12px">
     <section class="section"><h2>Current workload <span class="tiny" id="currentSummary"></span></h2><div class="table-wrap"><table><thead><tr><th>State</th><th>Agent</th><th>Source</th><th>Model</th><th>Wait</th><th>Processing</th><th>Reason</th></tr></thead><tbody id="overviewJobs"></tbody></table></div></section>
-    <section class="section"><h2>Hotspots</h2><div id="hotspots" class="kv"></div></section>
+    <section class="section"><h2>Historical telemetry hotspots <span class="tiny">Selected metrics period · retained samples</span></h2><div id="hotspots" class="kv"></div></section>
   </div>
 </div>
 
@@ -458,7 +458,7 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
       </div>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Task</th><th>Goal</th><th>Steps</th><th>Tokens Used</th><th>State</th><th>Actions</th></tr></thead>
+          <thead><tr><th>Task</th><th>Goal</th><th>Paths / receipts</th><th>Reported tokens</th><th>State</th><th>Actions</th></tr></thead>
           <tbody id="trajTableBody"></tbody>
         </table>
       </div>
@@ -489,9 +489,9 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
 <div id="commands" class="page">
   <div id="cmdDisabledBanner" class="diag-banner bad" style="display:none">⚠️ <b>Commands feature is disabled in configuration</b> (<code>features.commands = false</code>). Command classification and execution are blocked.</div>
   <section class="section"><h2>Running commands <span class="tiny" id="commandState">0 running</span></h2><div class="table-wrap"><table><thead><tr><th>Command</th><th>CWD</th><th>Tenant</th><th>Class</th><th>Age</th><th>Timeout</th></tr></thead><tbody id="activeCommands"></tbody></table></div></section>
-  <div class="split"><section class="section"><h2>Command broker statistics</h2><div id="commandStats" class="kv"></div></section><section class="section"><h2>Blocked by policy</h2><div class="table-wrap"><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody id="blockedReasons"></tbody></table></div></section></div>
+  <div class="split"><section class="section"><h2>Command broker statistics <span class="tiny">Since restart</span></h2><div id="commandStats" class="kv"></div></section><section class="section"><h2>Blocked by policy</h2><div class="table-wrap"><table><thead><tr><th>Reason</th><th>Count</th></tr></thead><tbody id="blockedReasons"></tbody></table></div></section></div>
   <section class="section" style="margin-top:12px">
-    <h2>Active Git Worktrees &amp; Subagent Sandboxes <span class="tiny" id="worktreeSummary">0 worktrees</span></h2>
+    <h2>Registered Git Worktrees &amp; Subagent Sandboxes <span class="tiny" id="worktreeSummary">Choose a repository root</span></h2>
     <div class="project-toolbar">
       <input id="worktreeRoot" aria-label="Repository root for worktrees" placeholder="Choose or enter repository root" list="worktreeRoots" style="flex:1;min-width:220px">
       <datalist id="worktreeRoots"></datalist>
@@ -511,11 +511,11 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
 
 <div id="performance" class="page">
   <section class="section">
-    <h2>Live Telemetry Waves <span class="tiny">p95 latency (ms) &amp; queue wait (ms) · HTML5 Canvas</span></h2>
+    <h2>Telemetry snapshots <span class="tiny" id="performanceMetricsScope">Selected metrics period · retained samples</span></h2>
     <div style="padding:12px">
       <div style="display:flex;justify-content:space-between;margin-bottom:6px;font-size:11px">
-        <span><span class="chip" style="border-color:#38bdf8;color:#38bdf8">● Latency p95</span> <span class="chip" style="border-color:#34d399;color:#34d399">● Queue Wait</span></span>
-        <span class="tiny muted">30 rolling sample ticks</span>
+        <span><span class="chip" style="border-color:#38bdf8;color:#38bdf8">● Latency p95</span> <span class="chip" style="border-color:#34d399;color:#34d399">● Period average queue wait</span></span>
+        <span class="tiny muted">Last 30 status snapshots · not individual requests</span>
       </div>
       <canvas id="liveChartCanvas" role="img" aria-label="Live telemetry graph. Waiting for samples." width="800" height="150" style="width:100%;height:150px;background:#080c13;border-radius:6px;border:1px solid #1e293b;display:block"></canvas>
       <div id="liveChartEmpty" class="tiny muted" style="display:none;padding-top:8px">No latency or queue samples yet.</div>
@@ -553,20 +553,20 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
 
   <section class="section" style="margin-top:12px"><h2>Execution profiles <span class="tiny">configured capacity; context packing remains adaptive</span></h2>
 <div class="table-wrap"><table><thead><tr><th>Model</th><th>Tier</th><th>Context</th><th>Max</th><th>Parallel</th><th>Thinking</th><th>Prompt cap</th></tr></thead><tbody id="executionProfiles"></tbody></table></div></section>
-  <div class="split"><section class="section"><h2>Model statistics</h2><div class="table-wrap"><table><thead><tr><th>Model</th><th>Calls</th><th>Avg</th><th>Load</th><th>Fails</th></tr></thead><tbody id="models"></tbody></table></div></section><section class="section"><h2>Cache layers</h2><div class="table-wrap"><table><thead><tr><th>Layer</th><th>Calls</th><th>Avg</th><th>Context tokens avoided</th></tr></thead><tbody id="cacheLayers"></tbody></table></div></section></div>
+  <div class="split"><section class="section"><h2>Model statistics <span class="tiny">Selected metrics period · retained samples</span></h2><div class="table-wrap"><table><thead><tr><th>Model</th><th>Calls</th><th>Avg</th><th>Load</th><th>Fails</th></tr></thead><tbody id="models"></tbody></table></div></section><section class="section"><h2>Cache layers</h2><div class="table-wrap"><table><thead><tr><th>Layer</th><th>Calls</th><th>Avg</th><th>Context tokens avoided</th></tr></thead><tbody id="cacheLayers"></tbody></table></div></section></div>
   <div class="split"><section class="section"><h2>Agents</h2><div class="table-wrap"><table><thead><tr><th>Agent</th><th>Requests</th><th>Local AI</th><th>Avg</th><th>Fails</th></tr></thead><tbody id="agents"></tbody></table></div></section><section class="section"><h2>Execution routes</h2><div class="table-wrap"><table><thead><tr><th>Route</th><th>Task</th><th>Complexity</th><th>Calls</th><th>Avg</th><th>Fails</th></tr></thead><tbody id="routes"></tbody></table></div></section></div>
   <section class="section"><h2>HTTP tail latency <span class="tiny">per action · excludes policy rejections</span></h2><div class="table-wrap"><table><thead><tr><th>Action</th><th>Calls</th><th>p50</th><th>p95</th><th>p99</th><th>Fails</th></tr></thead><tbody id="httpTail"></tbody></table></div></section>
   <section class="section"><h2>Active Multi-Agent File Leases <span class="tiny">Prevents conflicting agent edits</span></h2><div class="table-wrap"><table><thead><tr><th>Lease ID</th><th>Paths</th><th>Tenant</th><th>Purpose</th><th>Expires</th><th>Actions</th></tr></thead><tbody id="activeLeasesBody"></tbody></table></div></section>
 </div>
 
 <div id="reliability" class="page">
-  <section class="section" id="reliabilitySummary"><h2>Operational severity <span class="tiny">Aggregates current failures, restart history, and request health.</span></h2><div id="reliabilityHeadline" class="kv"></div><div class="reliability-footer" style="padding:10px 14px;border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap"><div class="tiny muted" id="reliabilityTrend">Failure trend unavailable until telemetry arrives.</div><div style="display:flex;gap:8px;align-items:center"><button class="btn ok" id="resolveErrorsBtn" style="display:none;padding:4px 10px">Resolve all errors</button><button class="btn" id="reliabilityAction">Open affected requests</button></div></div></section>
+  <section class="section" id="reliabilitySummary"><h2>Runtime health &amp; recorded history <span class="tiny">Current checks and historical totals are independent.</span></h2><div id="reliabilityHeadline" class="kv"></div><div class="reliability-footer" style="padding:10px 14px;border-top:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap"><div class="tiny muted" id="reliabilityTrend">Historical telemetry loading…</div><button class="btn" id="reliabilityAction">Open request history</button></div></section>
   <div class="split">
     <section class="section"><h2>Recent error fingerprints</h2><div class="table-wrap"><table><thead><tr><th>Component</th><th>Operation</th><th>Diagnostic</th><th>Count</th><th>Recovered</th><th>Last seen</th></tr></thead><tbody id="errors"></tbody></table></div></section>
-    <section class="section"><h2>Runtime / scheduler counters</h2><div id="runtimeCounters" class="kv"></div></section>
+    <section class="section"><h2>Runtime / scheduler counters <span class="tiny">Since restart · independent of metrics period</span></h2><div id="runtimeCounters" class="kv"></div></section>
   </div>
   <section class="section">
-    <h2>Process session &amp; restart history <span class="tiny">last 30 days · crash detection &amp; session token economics</span></h2>
+    <h2>Process session &amp; restart history <span class="tiny">Up to 100 sessions started in the last 30 days · retained event accounting</span></h2>
     <div class="table-wrap">
       <table>
         <thead>
@@ -609,7 +609,7 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
   </section>
 </div>
 
-<div id="events" class="page"><section class="section"><h2>Live activity <span class="tiny">RAM ring buffer · display pause does not pause runtime</span></h2><div class="project-toolbar"><select id="eventSeverity" aria-label="Event severity"><option value="">All severities</option><option value="failure">Failures</option><option value="warning">Warnings</option><option value="success">Successful</option></select><input id="eventSource" type="search" placeholder="Event source, agent, action…" aria-label="Event source"><span class="tiny" id="eventSummary">No events received.</span></div><div class="event-header"><span>Time</span><span>Agent</span><span>Type</span><span>Action / Stage</span><span class="hide-sm">Model / Tenant</span><span>Duration</span><span>Status</span></div><div id="eventList" class="events"></div></section></div>
+<div id="events" class="page"><section class="section"><h2>Live activity <span class="tiny">RAM ring buffer · display pause does not pause runtime</span></h2><div class="project-toolbar"><select id="eventSeverity" aria-label="Event severity"><option value="">All severities</option><option value="failure">Failures</option><option value="warning">Warnings</option><option value="success">Successful</option><option value="info">Informational / result unreported</option></select><input id="eventSource" type="search" placeholder="Event source, agent, action…" aria-label="Event source"><span class="tiny" id="eventSummary">No events received.</span></div><div class="event-header"><span>Time</span><span>Agent</span><span>Type</span><span>Action / Stage</span><span class="hide-sm">Model / Tenant</span><span>Duration</span><span>Status</span></div><div id="eventList" class="events"></div></section></div>
 
 <div id="modalBg" class="modal-bg" role="dialog" aria-modal="true" aria-labelledby="modalTitle"><div class="modal"><div class="modal-head"><strong id="modalTitle">Details</strong><span id="modalLive" class="tiny" style="margin-left:10px"></span><button class="btn spacer" id="modalClose">Close</button></div><div id="modalBody"></div></div></div>
 <div id="visionReviewModal" class="modal-bg" role="dialog" aria-modal="true" aria-label="Frontend vision review"><div class="modal vision-review-modal"><div class="modal-head"><strong>Frontend vision review</strong><span class="tiny" id="visionReviewStatus" aria-live="polite"></span><button class="btn spacer" id="visionReviewClose">Close</button></div><div id="visionReviewBody" class="modal-body-wrap"><div class="modal-card"><div class="modal-card-head"><span>Review input</span><span class="tiny">PNG/JPEG or current-tab evidence</span></div><div class="modal-card-body"><label class="modal-form"><span>Screenshot</span><input id="visionScreenshot" aria-label="Screenshot for frontend review" type="file" accept="image/png,image/jpeg,image/webp"></label><label class="modal-form"><span>Prompt</span><textarea id="visionPrompt" aria-label="Frontend review instructions" rows="4" maxlength="20000" placeholder="What should the visual critic inspect?"></textarea></label><div class="modal-actions-bar"><button class="btn" id="visionCaptureCurrentTab" type="button">Capture current tab</button><span id="visionCaptureState" class="trace-capture-state not-captured" data-capture-state="not_captured">Capture state · Not captured</span></div><div id="visionCaptureError" class="diag-banner bad" role="alert" style="display:none"></div><input id="visionFindingId" type="hidden"><button class="btn ok" id="visionReviewSubmit" type="button">Run vision review</button></div></div><div id="visionReviewResult" aria-live="polite"></div></div></div></div>
@@ -617,6 +617,7 @@ table{font-size:12px}th,td{padding:10px 12px}tbody tr:hover{background:#142135}
 <script>
 let cursor=0,paused=false,last=null,lastTraces=[],lastOverviewAnnouncement='',lastOverviewReceivedAt=0;
 const latencySparkData=[], throughputSparkData=[], liveChartLatency=[], liveChartQueue=[];
+let lastChartSnapshot=null,lastChartScope=null;
 
 const traceStyles=document.createElement('style');
 document.head.append(traceStyles);
@@ -628,9 +629,10 @@ const $=id=>document.getElementById(id), esc=s=>String(s??'').replace(/[&<>"']/g
 const n=v=>Number(v||0).toLocaleString(), ms=v=>{v=Number(v||0);return v>=1000?(v/1000).toFixed(v>=10000?1:2)+' s':Math.round(v)+' ms'}, durSec=s=>{s=Number(s||0);if(s<60)return Math.round(s)+'s';if(s<3600)return Math.floor(s/60)+'m '+Math.round(s%60)+'s';if(s<86400)return Math.floor(s/3600)+'h '+Math.floor((s%3600)/60)+'m';return Math.floor(s/86400)+'d '+Math.floor((s%86400)/3600)+'h'}, age=msv=>durSec(Number(msv||0)/1000);
 
 function dashboardHealthBadge(status={}){
-  const dependencies=status.dependency_status&&typeof status.dependency_status==='object'&&!Array.isArray(status.dependency_status)?Object.values(status.dependency_status):[];
+  const dependencies=status.dependency_status&&typeof status.dependency_status==='object'&&!Array.isArray(status.dependency_status)?Object.entries(status.dependency_status).filter(([name])=>name!=='telemetry.summary').map(([,value])=>value):[];
   const degradedCount=dependencies.filter(item=>item&&item.degraded===true).length;
-  const degraded=status.success===false||degradedCount>0;
+  const telemetryOnlyFailure=status.dependency_status?.['telemetry.summary']?.degraded&&degradedCount===0;
+  const degraded=(status.success===false&&!telemetryOnlyFailure)||degradedCount>0;
   const ollamaState=status.ollama_status||((status.ollama_online==null)?'unknown':status.ollama_online?'online':'offline');
   const className=status.hub_online?(degraded||ollamaState!=='online'?'warn-t':'ok'):'bad-t';
   const degradedLabel=degradedCount?` / ${String(degradedCount)} degraded check${degradedCount===1?'':'s'}`:degraded?' / status degraded':'';
@@ -689,33 +691,40 @@ function preprocessingSummary(preprocessing={},dependencies={}){
   return {available,text:available?count(preprocessing.active_projects)+' monitored · '+count(preprocessing.processing_projects)+' processing projects · '+count(preprocessing.max_preprocessing_projects)+' concurrent slots':'Preprocessing status unavailable'};
 }
 
+function telemetryPeriod(observability={}){return observability.scope==='window'?'Last 30 days':'Since restart';}
+
+function recordTelemetrySnapshot(o={}){
+  if(o===lastChartSnapshot)return;
+  lastChartSnapshot=o;
+  if(o.scope!==lastChartScope||o.data_available===false||o.stale===true){
+    for(const points of [latencySparkData,throughputSparkData,liveChartLatency,liveChartQueue])points.length=0;
+  }
+  lastChartScope=o.scope;
+  if(o.data_available===false||o.stale===true||!o.cohorts?.agent_http?.events)return;
+  const latency=Number(o.cohorts.agent_http.p95_duration_ms)||0,wait=Number(o.avg_queue_wait_ms)||0;
+  for(const [points,value,limit] of [[latencySparkData,latency,25],[throughputSparkData,Number(o.cohorts.agent_http.events)||0,25],[liveChartLatency,latency,30],[liveChartQueue,wait,30]]){
+    points.push(value);if(points.length>limit)points.shift();
+  }
+}
+
 function dashboardHealth(snapshot={}){
   const current=snapshot.current||snapshot.live||snapshot.headless||snapshot;
-  const observability=snapshot.observability||{},cohorts=observability.cohorts||{},agentHttp=cohorts.agent_http||{},policy=cohorts.policy_rejection||{},inference=cohorts.inference||{};
-  const status=String(current.health||current.status||current.service_status||'').toLowerCase();
+  const status=String(current.health||current.status||current.service_status||current.state||'').toLowerCase();
   const count=value=>Math.max(0,Number(value)||0);
-  const openIssues=count(current.open_incidents??current.active_errors??current.blocked_requests??0),agentFailures=count(agentHttp.failures),policyRejections=count(policy.events),degradedCount=count(inference.degraded_count),retryCount=count(inference.retry_count),restarts=count(current.restarts??snapshot.headless?.restarts),hubOnline=snapshot.hub_online??current.hub_online,ollamaOnline=snapshot.ollama_online??current.ollama_online,heartbeatStale=current.heartbeat_stale===true||snapshot.heartbeat_stale===true;
+  const openIssues=Math.max(count(current.open_incidents),count(current.active_errors),count(current.blocked_requests)),hubOnline=snapshot.hub_online??current.hub_online,ollamaOnline=snapshot.ollama_online??current.ollama_online,heartbeatStale=current.heartbeat_stale===true||snapshot.heartbeat_stale===true;
   const ollamaStatus=String(snapshot.ollama_status??current.ollama_status??(ollamaOnline==null?'unknown':ollamaOnline?'online':'offline')).toLowerCase();
   const signals=[];
-  const failedChecks=Object.entries(snapshot.dependency_status||{}).filter(([,value])=>value?.degraded).map(([name])=>name);
+  const failedChecks=Object.entries(snapshot.dependency_status||{}).filter(([name,value])=>name!=='telemetry.summary'&&value?.degraded).map(([name])=>name);
   if(failedChecks.length)signals.push('unavailable checks: '+failedChecks.join(', '));
-  const writer=observability.writer||{};
-  if(Number(writer.dropped)>0)signals.push(`${Number(writer.dropped).toLocaleString()} telemetry records dropped`);
-  if(Number(writer.writer_errors)>0)signals.push(`${Number(writer.writer_errors).toLocaleString()} telemetry write errors`);
-  if(observability.data_available===false||observability.stale===true)signals.push('telemetry data is unavailable or stale');
-  if(agentFailures)signals.push(`${agentFailures} agent HTTP failure${agentFailures===1?'':'s'}`);
-  if(policyRejections)signals.push(`${policyRejections} policy rejection${policyRejections===1?'':'s'}`);
-  if(degradedCount)signals.push(`${degradedCount} degraded inference${degradedCount===1?'':'s'}`);
-  if(retryCount)signals.push(`${retryCount} retr${retryCount===1?'y':'ies'}`);
-  if(restarts)signals.push(`${restarts} supervisor restart${restarts===1?'':'s'}`);
   const actionTab=openIssues||count(current.blocked_requests)?'work':'reliability';
   const actionLabel=actionTab==='work'?'Open queue and requests':'Open reliability details';
-  if(hubOnline===false||heartbeatStale||['degraded','down','offline','unavailable','crashed','stopped','stale'].includes(status)||current.degraded===true||snapshot.degraded===true||snapshot.success===false){
+  if(hubOnline===false||heartbeatStale||['degraded','down','offline','unavailable','crashed','stopped','stale'].includes(status)||current.degraded===true){
     const reason=hubOnline===false?'Hub is offline.':heartbeatStale||status==='stale'?'Runtime heartbeat is stale.':signals.length?`Current runtime is degraded: ${signals.join(', ')}.`:'Current runtime reports an unavailable service.';
     return {level:'degraded',label:'Degraded',reason,actionTab,actionLabel};
   }
   if(ollamaStatus==='unknown')signals.push('Ollama status is unknown');
   else if(ollamaStatus==='offline')signals.push('Ollama is offline');
+  if(hubOnline==null&&!status)signals.push('Hub status is unknown');
   if(['attention','warning','warn','partial'].includes(status)||openIssues||signals.length){
     const reason=openIssues?`Current runtime has ${openIssues} open issue${openIssues===1?'':'s'}${signals.length?`; ${signals.join(', ')}`:''}.`:signals.length?`Current runtime needs attention: ${signals.join(', ')}.`:'Current runtime reports a warning state.';
     return {level:'attention',label:'Needs attention',reason,actionTab,actionLabel};
@@ -736,13 +745,14 @@ function dashboardFreshness(timestamp,now=Date.now(),staleAfterMs=120000){
 function renderOverviewHealth(snapshot={},receivedAt=Date.now(),now=Date.now()){
   const runtime=snapshot.headless||{};
   const current={...runtime,health:runtime.health||runtime.state||snapshot.health||snapshot.status||snapshot.service_status};
-  const health=dashboardHealth(snapshot);
-  const timestamp=snapshot.updated_at??snapshot.generated_at??snapshot.timestamp??snapshot.observability?.updated_at??runtime.updated_at;
+  let health=dashboardHealth(snapshot);
+  const timestamp=snapshot.updated_at??snapshot.generated_at??snapshot.timestamp??runtime.updated_at;
   let freshness=dashboardFreshness(timestamp,now);
   if(freshness.state==='unknown'&&Number.isFinite(Number(receivedAt)))freshness=dashboardFreshness(receivedAt,now);
+  if(freshness.state!=='fresh'||snapshot.snapshot_stale===true)health={...health,level:'attention',label:'Status stale',reason:'Live status is stale; current health cannot be verified.'};
   const level=$('overviewHealthLevel'),evidence=$('overviewHealthEvidence'),freshnessEl=$('overviewFreshness'),action=$('overviewHealthAction'),summary=$('overviewHealthSummary'),announcement=$('overviewAnnouncement');
   if(!level||!evidence||!freshnessEl||!action||!summary)return;
-  const label=health.level==='attention'?'Needs attention':health.label;
+  const label=health.label;
   const target=health.actionTab||'reliability';
   const targetLabel=health.actionLabel||'Open reliability details';
   const stateText=current.health||current.status||current.service_status||'unreported';
@@ -751,6 +761,8 @@ function renderOverviewHealth(snapshot={},receivedAt=Date.now(),now=Date.now()){
   level.textContent=label;
   level.className='value primary-metric '+(health.level==='healthy'?'ok':health.level==='attention'?'warn-t':'bad-t');
   evidence.textContent=evidenceText;
+  const history=$('overviewHistorySummary'),o=snapshot.observability||{};
+  if(history)history.textContent=o.enabled===false||o.data_available!==true||o.stale===true?'Historical telemetry unavailable · current runtime checks shown above.':`${telemetryPeriod(o)} · retained samples · ${Number(o.cohorts?.agent_http?.failures||0).toLocaleString()} recorded request failures · ${Number(o.cohorts?.policy_rejection?.events||0).toLocaleString()} policy rejections. Historical totals do not determine current health.`;
   freshnessEl.textContent=freshness.ageMs===null?freshness.label:`${freshness.label} · updated ${age(freshness.ageMs)} ago`;
   freshnessEl.className='tiny '+(freshness.state==='stale'?'warn-t':'muted');
   summary.style.borderLeftColor=health.level==='healthy'?'var(--ok)':health.level==='attention'?'var(--warn)':'var(--bad)';
@@ -773,10 +785,11 @@ function redactDiagnostic(value){
 
 // Lightweight pure-canvas chart renderer
 function drawSpark(canvasId, points, strokeColor, fillColor){
-  const cv=$(canvasId);if(!cv||!points.length)return;
+  const cv=$(canvasId);if(!cv)return;
   const ctx=cv.getContext('2d');if(!ctx)return;
   const w=cv.width,h=cv.height;
   ctx.clearRect(0,0,w,h);
+  if(!points.length)return;
   const maxVal=Math.max(...points, 1);
   const minVal=Math.min(...points, 0);
   const range=maxVal-minVal||1;
@@ -2167,7 +2180,6 @@ function openModal(obj,title='',entityType=''){
     type==='command'?'Active Command':
     type==='error'?'Error Fingerprint':
     type==='db_opt'?'Database Optimization':
-    type==='resolve_errors'?'Operational Errors Resolved':
     type==='cache_purge'?'Cache Purge Summary':
     type==='http_tail'?'HTTP Tail Latency':
     type==='execution_profile'?'Execution Profile':
@@ -2192,7 +2204,6 @@ function openModal(obj,title='',entityType=''){
   else if(type==='command')renderActiveCommandModal(obj);
   else if(type==='error')renderErrorFingerprintModal(obj);
   else if(type==='db_opt')renderDbOptModal(obj);
-  else if(type==='resolve_errors')renderResolveErrorsModal(obj);
   else if(type==='cache_purge')renderCachePurgeModal(obj);
   else if(type==='http_tail')renderHttpTailModal(obj);
   else if(type==='execution_profile')renderExecutionProfileModal(obj);
@@ -3464,37 +3475,6 @@ function renderDbOptModal(r){
   `;
 }
 
-function renderResolveErrorsModal(r){
-  const tel=r?.telemetry||{};
-  $('modalBody').innerHTML=`
-    <div class="modal-hero">
-      <div style="display:flex;justify-content:space-between;align-items:center">
-        <div>
-          <div class="tiny muted mono">OPERATIONAL RECOVERY</div>
-          <h2 style="margin:2px 0 0;font-size:16px">Operational Errors &amp; Failures Resolved</h2>
-        </div>
-        <span class="badge-status badge-complete">HEALTHY</span>
-      </div>
-    </div>
-    <div class="modal-body-wrap">
-      <div class="modal-card">
-        <div class="modal-card-head"><span>Resolution Summary</span></div>
-        <div class="modal-card-body">
-          <div class="kv" style="padding:0">
-            <div>Resolved request failures</div><div>${n(tel.resolved_events||0)}</div>
-            <div>Cleared error records</div><div>${n(tel.cleared_errors||0)}</div>
-            <div>Cleaned process sessions</div><div>${n(tel.cleaned_sessions||0)}</div>
-            <div>Resolved agent incidents</div><div>${n(r?.resolved_incidents||0)}</div>
-          </div>
-        </div>
-      </div>
-      <div class="modal-actions-bar" style="justify-content:flex-end">
-        <button class="btn ok" onclick="$('modalClose')?.click()">Done</button>
-      </div>
-    </div>
-  `;
-}
-
 function renderCachePurgeModal(r){
   $('modalBody').innerHTML=`
     <div class="modal-hero">
@@ -4192,11 +4172,11 @@ function projectIdentity(project){
 }
 function projectState(x){
   const progress=Number(x.overall_progress_pct||0);
-  if(x.phase==='complete'||x.status==='complete'||progress>=100)return 'ready';
-  if(x.paused||x.status==='paused')return 'paused';
   if(x.status==='error'||x.last_error)return 'error';
+  if(x.paused||x.status==='paused')return 'paused';
   if(x.waiting||x.status==='waiting')return 'waiting';
   if(x.status==='running')return 'running';
+  if(x.phase==='complete'||x.status==='complete'||progress>=100)return 'ready';
   return 'queued';
 }
 
@@ -4270,7 +4250,6 @@ function openControlConfirmation(action){
   if(confirmBtn)confirmBtn.onclick=async()=>{try{await post('/api/maintenance/purge_cache',{days:7});$('modalClose')?.click();}catch(error){if($('modalLive'))$('modalLive').textContent='Action failed: '+String(error?.message||error);}};
 }
 $('optDbBtn').onclick=async()=>{try{const r=await post('/api/maintenance/optimize_db',{});openModal(r,'Database Optimization & WAL Checkpoint Results','db_opt')}catch(e){openModal({error:String(e)},'Error')}};
-if($('resolveAllErrorsBtn'))$('resolveAllErrorsBtn').onclick=async()=>{try{const r=await post('/api/maintenance/resolve_errors',{});openModal(r,'Operational Errors Resolved','resolve_errors');await pollStatus();}catch(e){openModal({error:String(e)},'Resolution Error')}};
 $('purgeCacheBtn').onclick=()=>openControlConfirmation('purge_cache');
 $('doctorBtn').onclick=openDoctorModal;
 
@@ -4358,23 +4337,26 @@ function render(s){
     const pills=$('featurePills');
     if(pills){
       const disabledMods=mods.filter(m=>feat[m.k]===false);
-      const enabledCount=mods.filter(m=>feat[m.k]!==false).length;
+      const enabledCount=mods.filter(m=>feat[m.k]===true).length,unknownCount=mods.filter(m=>feat[m.k]==null).length;
       pills.innerHTML=mods.map(m=>{
-        const off=feat[m.k]===false;
-        return `<button class="chip" data-goto-tab="${m.tab}" style="cursor:pointer;${off?'border-color:#7f1d1d;color:#f87171;background:#450a0a33':'border-color:#065f46;color:#34d399;background:#064e3b22'}" title="${m.k}: ${off?'disabled':'active'} · tool: ${m.tool}"><b>${m.label}</b> ${off?'<span class="tiny bad-t">✗ off</span>':'<span class="tiny ok">✓ on</span>'}</button>`;
+        const off=feat[m.k]===false,unknown=feat[m.k]==null;
+        if(unknown)return `<button class="chip" data-goto-tab="${m.tab}">${esc(m.label)} · unreported</button>`;
+        return `<button class="chip" data-goto-tab="${m.tab}" style="cursor:pointer;${off?'border-color:#7f1d1d;color:#f87171;background:#450a0a33':'border-color:#065f46;color:#34d399;background:#064e3b22'}" title="${m.k}: ${off?'disabled':'enabled'} · tool: ${m.tool}"><b>${m.label}</b> ${off?'<span class="tiny bad-t">✗ off</span>':'<span class="tiny ok">✓ on</span>'}</button>`;
       }).join('');
       pills.querySelectorAll('[data-goto-tab]').forEach(btn=>btn.onclick=()=>switchTab(btn.dataset.gotoTab));
       const txt=$('featStatusText');
       if(txt){
-        if(disabledMods.length){txt.innerHTML=`<span class="warn-t">${disabledMods.length} module${disabledMods.length>1?'s':''} disabled</span>`;txt.title=disabledMods.map(m=>m.k).join(', ');}
-        else{txt.innerHTML='<span class="ok">All 12 modules active</span>';txt.title='';}
+        if(unknownCount){txt.textContent=unknownCount+' module states unreported';txt.title='';}
+        else if(disabledMods.length){txt.innerHTML=`<span class="warn-t">${disabledMods.length} module${disabledMods.length>1?'s':''} disabled</span>`;txt.title=disabledMods.map(m=>m.k).join(', ');}
+        else{txt.innerHTML='<span class="ok">All 12 modules enabled</span>';txt.title='';}
       }
       const sumEl=$('featSummary');
       if(sumEl){
         sumEl.style.cursor='pointer';
         sumEl.onclick=()=>switchTab('config');
-        if(disabledMods.length){sumEl.textContent=enabledCount+'/'+mods.length+' modules active';sumEl.className='pill tiny warn-t';}
-        else{sumEl.textContent='12/12 modules active ✓';sumEl.className='pill tiny ok';}
+        if(unknownCount){sumEl.textContent=enabledCount+'/'+mods.length+' modules enabled · '+unknownCount+' unreported';sumEl.className='pill tiny warn-t';}
+        else if(disabledMods.length){sumEl.textContent=enabledCount+'/'+mods.length+' modules enabled';sumEl.className='pill tiny warn-t';}
+        else{sumEl.textContent='12/12 modules enabled ✓';sumEl.className='pill tiny ok';}
       }
     }
     document.querySelectorAll('.tabbtn[data-feature]').forEach(b=>{
@@ -4404,7 +4386,7 @@ function render(s){
   if($('worktreeRoots'))$('worktreeRoots').innerHTML=[...new Set((p.projects||[]).map(project=>project.root).filter(Boolean))].sort().map(root=>`<option value="${esc(root)}"></option>`).join('');
 
   const statusBadge=dashboardHealthBadge(s);
-  $('health').innerHTML=`<span class="${statusBadge.className}">${s.hub_online?'hub ✓':'hub ✗'} / ${s.ollama_online?'ollama ✓':'ollama ✗'} / ${esc(h.state||'n/a')}${statusBadge.degradedLabel}</span>`;
+  $('health').innerHTML=`<span class="${statusBadge.className}">${s.hub_online==null?'hub ?':s.hub_online?'hub ✓':'hub ✗'} / ${s.ollama_online==null?'ollama ?':s.ollama_online?'ollama ✓':'ollama ✗'} / ${esc(h.state||'n/a')}${statusBadge.degradedLabel}</span>`;
   $('uptime').textContent='uptime '+durSec(s.uptime_seconds)+' · supervisor restarts '+n(h.restarts);
 
   const ep=(rp.execution||{}).models||[];
@@ -4421,44 +4403,42 @@ function render(s){
   $('tokensSavedSub').textContent='baseline '+n(grossSaved)+' − protocol '+n(protocolTokens)+' (call '+n(toolCallTokens)+' + read '+n(toolReadTokens)+')'+(tokenOverhead?' · overhead '+n(tokenOverhead):'')+' · schema-adjusted '+n(schemaDelta)+' (catalog ≈'+n(schemaTokens)+')';
   $('dollarsSaved').textContent='≈ $'+savedUsd.toFixed(2);
   $('dollarsSavedSub').textContent=o.estimated_savings_pricing_mode==='input_output'?'input ≈ $'+Number(inputSavedUsd||0).toFixed(4)+' @ $'+inputRate.toFixed(2)+' / 1M · output ≈ $'+Number(outputSavedUsd||0).toFixed(4)+' @ $'+outputRate.toFixed(2)+' / 1M':'estimate · blended $'+rate.toFixed(2)+' / 1M';
-  const qHitRate=(Number(o.preprocessed_query_hit_rate??p.query_hit_rate??0)*100).toFixed(1),ingReuse=(Number(p.ingestion_reuse_rate??0)*100).toFixed(1);
-  $('cache').textContent=((o.generation_cache_hit_rate ?? o.cache_hit_rate ?? 0)*100).toFixed(1)+'%';
+  const qHitRate=(Number(o.preprocessed_query_hit_rate??0)*100).toFixed(1),ingReuse=(Number(p.ingestion_reuse_rate??0)*100).toFixed(1);
+  $('cache').textContent=Number(generation.events??inference.events??o.events)>0?((o.generation_cache_hit_rate ?? o.cache_hit_rate ?? 0)*100).toFixed(1)+'%':'No samples';
   $('cacheSub').textContent=n(generation.hits)+' generation · '+n(repository.hits)+' repository ('+qHitRate+'% index hit) · '+n(commandCache.hits)+' command hits · '+n(localComputeSaved)+' local tokens avoided';
   $('latency').textContent=ms(agentHttp.p50_duration_ms)+' / '+ms(agentHttp.p95_duration_ms)+' / '+ms(agentHttp.p99_duration_ms);
   $('queueWait').textContent='local inference p95 '+ms(inference.p95_duration_ms)+' · avg queue wait '+ms(o.avg_queue_wait_ms);
   $('reliabilityValue').innerHTML=`<span class="${agentHttp.failures?'warn-t':'ok'}">${n(agentHttp.failures)} failures</span>`;
-  $('reliabilitySub').textContent=n(policy.events)+' policy rejections · '+n(inference.fallback_count)+' fallbacks · '+n(inference.degraded_count)+' degraded · '+n(inference.retry_count)+' retries';
+  $('reliabilitySub').textContent=telemetryPeriod(o)+' · retained samples · '+n(policy.events)+' policy rejections · '+n(inference.fallback_count)+' fallbacks · '+n(inference.degraded_count)+' degraded · '+n(inference.retry_count)+' retries';
 
   renderTelemetryMetrics(o);
 
-  // Update real-time rolling sparkline and wave data
+  // Plot selected-period aggregates observed at each distinct status refresh.
   const curP95=Number(agentHttp.p95_duration_ms||0);
   const curWait=Number(o.avg_queue_wait_ms||0);
   const curRps=Number(agentHttp.events||0);
-  latencySparkData.push(curP95);if(latencySparkData.length>25)latencySparkData.shift();
-  throughputSparkData.push(curRps);if(throughputSparkData.length>25)throughputSparkData.shift();
-  liveChartLatency.push(curP95);if(liveChartLatency.length>30)liveChartLatency.shift();
-  liveChartQueue.push(curWait);if(liveChartQueue.length>30)liveChartQueue.shift();
+  recordTelemetrySnapshot(o);
 
   drawSpark('latencySpark', latencySparkData, '#38bdf8', 'rgba(56,189,248,0.12)');
   drawSpark('throughputSpark', throughputSparkData, '#34d399', 'rgba(52,211,153,0.12)');
   drawDualChart('liveChartCanvas', liveChartLatency, liveChartQueue);
   const liveChartEmpty=$('liveChartEmpty');
-  const hasLiveChartSamples=Boolean(agentHttp.events||curP95||curWait),liveChartCanvas=$('liveChartCanvas'),liveChartSummary=$('liveChartSummary');
+  const hasLiveChartSamples=liveChartLatency.length>0,liveChartCanvas=$('liveChartCanvas'),liveChartSummary=$('liveChartSummary');
   if(liveChartEmpty)liveChartEmpty.style.display=hasLiveChartSamples?'none':'block';
-  const liveChartLabel=hasLiveChartSamples?`Live telemetry graph. Current p95 latency ${ms(curP95)}. Current queue wait ${ms(curWait)}. ${liveChartLatency.length} rolling samples.`:'Live telemetry graph. No latency or queue samples yet.';
+  const liveChartLabel=hasLiveChartSamples?`${telemetryPeriod(o)} aggregate snapshots. Period p95 latency ${ms(curP95)}. Period average queue wait ${ms(curWait)}. ${liveChartLatency.length} status snapshots.`:'No available telemetry samples for the selected period.';
   if(liveChartCanvas)liveChartCanvas.setAttribute('aria-label',liveChartLabel);
-  if(liveChartSummary)liveChartSummary.textContent=hasLiveChartSamples?`Current p95 latency ${ms(curP95)} · queue wait ${ms(curWait)} · ${liveChartLatency.length} rolling samples`:'No latency or queue samples yet.';
+  if(liveChartSummary)liveChartSummary.textContent=liveChartLabel;
+  if($('performanceMetricsScope'))$('performanceMetricsScope').textContent=telemetryPeriod(o)+' · retained samples · model, cache, agent, route and HTTP statistics below';
 
   const agState=s.agent_state||{};
   if($('agentStateVal')){
-    if(agState.enabled){
+    if(agState.enabled&&s.features?.agent_os!==false){
       const act=agState.active_tasks_count||0,mem=agState.memory_records_count;
-      $('agentStateVal').innerHTML='<span class="ok">healthy ✓</span>';
-      $('agentStateSub').textContent=n(act)+' active task'+(act===1?'':'s')+(mem!==undefined?' · '+n(mem)+' memories':'');
+      $('agentStateVal').innerHTML='<span>Enabled</span>';
+      $('agentStateSub').textContent='Hub-wide inventory · '+n(act)+' active task'+(act===1?'':'s')+(mem!==undefined?' · '+n(mem)+' memories':'')+' · inspector uses selected repository and client';
     }else{
-      $('agentStateVal').innerHTML='<span class="muted">disabled</span>';
-      $('agentStateSub').textContent='agent_state.enabled = false';
+      $('agentStateVal').textContent=agState.enabled===false||s.features?.agent_os===false?'Disabled':'Unavailable';
+      $('agentStateSub').textContent=agState.enabled===false||s.features?.agent_os===false?'Agent OS is disabled':'Hub-wide Agent OS inventory unavailable';
     }
   }
   if($('agentStateCard'))$('agentStateCard').onclick=()=>switchTab('agentos');
@@ -4473,7 +4453,7 @@ function render(s){
   rows('overviewJobs',allJobs.slice(0,12),j=>schedulerRow(j,`<td>${esc(j.state)}</td><td>${esc(j.tenant)}</td><td>${esc(j.source)}</td><td>${esc(j.model)}</td><td>${ms(j.wait_ms)}</td><td>${ms(j.service_ms)}</td><td>${esc(j.wait_reason)}</td>`),7);
 
   const hs=o.hotspots||[];
-  if($('hotspots'))$('hotspots').innerHTML=hs.length?hs.map((x,i)=>`<div>${esc(x.type||'signal')}</div><div><span class="chip">${esc(x.signal||'')}</span> ${esc(x.value??x.value_ms??x.count??'')}</div>`).join(''):'<div>Status</div><div class="ok">No persistent hotspot detected</div>';
+  if($('hotspots'))$('hotspots').innerHTML=hs.length?hs.map((x,i)=>`<div>${esc(x.type||'signal')}</div><div><span class="chip">${esc(x.signal||'')}</span> ${esc(x.value??x.value_ms??x.count??'')}</div>`).join(''):'<div>Status</div><div class="muted">No hotspot reported in available telemetry</div>';
 
   const recentRequests=o.recent_http||[],visibleJobs=workVisible(allJobs),visibleActive=workVisible(o.active_requests||[]),visibleRecent=filterRecentRequests(workVisible(recentRequests),recentRequests);
   if($('queueSummary'))$('queueSummary').textContent=n(q.foreground_queued)+' fg + '+n(q.background_queued)+' bg queued · '+n(q.foreground_inflight)+' fg + '+n(q.inflight_background)+' bg running';
@@ -4490,9 +4470,9 @@ function render(s){
 
   const diagBar=$('prepDiagnosticBar');
   if(diagBar){
-    const projs=p.projects||[], isGlobPaused=!!p.paused, isEnabled=p.enabled!==false;
+    const projs=p.projects||[], isGlobPaused=!!p.paused, isEnabled=p.enabled!==false&&s.features?.preprocessing!==false;
     const hasErr=projs.some(x=>x.status==='error'||x.last_error);
-    const allDone=projs.length>0&&projs.every(x=>x.status==='complete'||(x.overall_progress_pct||0)>=100);
+    const allDone=projs.length>0&&projs.every(x=>projectState(x)==='ready');
     const bgYield=p.scheduler_background_allowed===false;
     diagBar.style.display='flex';
     if(!prepStatus.available){
@@ -4513,19 +4493,19 @@ function render(s){
       diagBar.innerHTML=`<span style="flex:1">⚠️ <b>Errors detected in project preprocessing:</b> ${esc(errProjs)}. Check status column below for error details.</span><button class="btn" onclick="pollStatus()" style="padding:3px 8px;font-size:11px">Refresh status</button>`;
     }else if(allDone){
       diagBar.className='diag-banner ok';
-      diagBar.innerHTML=`<span>✅ <b>All ${projs.length} registered project(s) are 100% indexed and synchronized</b>. Real-time file change watcher (FS watcher) is active.</span>`;
+      diagBar.innerHTML=`<span><b>All ${projs.length} registered project entries report complete indexing progress</b>. This snapshot does not verify synchronization with later file changes.</span>`;
     }else if(bgYield){
       diagBar.className='diag-banner warn';
       diagBar.innerHTML=`<span>⏳ <b>Background preprocessing is yielding:</b> Foreground agent requests are currently active on GPU/models. Preprocessing will resume automatically when queue clears.</span>`;
     }else{
       const runningNames=projs.filter(x=>x.status==='running').map(x=>x.project).join(', ');
       diagBar.className='diag-banner info';
-      diagBar.innerHTML=`<span>⚡ <b>Preprocessing is active:</b> ${esc(runningNames||'Processing queue')}. Extracting AST symbols, RAG embeddings and semantic cards...</span>`;
+      diagBar.innerHTML=runningNames?`<span><b>Preprocessing is processing:</b> ${esc(runningNames)}</span>`:'<span>Preprocessing is enabled. No project reports active processing in this snapshot.</span>';
     }
   }
 
   const prepPaused=!!p.paused;
-  $('prepState').textContent=n((p.projects||[]).length)+' registered projects · global '+(prepPaused?'paused':'running');
+  $('prepState').textContent=n((p.projects||[]).length)+' registered project entries · global '+(p.enabled===false?'disabled':prepPaused?'paused':'enabled');
   if(!prepStatus.available)$('prepState').textContent='Project inventory unavailable';
   $('prepAllToggle').disabled=!prepStatus.available;
   $('cleanMissingBtn').disabled=!prepStatus.available;
@@ -4550,7 +4530,7 @@ function render(s){
 
   if($('hubHealthCard'))$('hubHealthCard').onclick=()=>switchTab('reliability');
   rows('sessionRows',o.sessions||[],x=>{
-    const st=x.status||'unknown',stBadge=st==='active'?`<span class="badge ok">Active (PID ${n(x.pid)})</span>`:st==='clean_stop'?`<span class="badge" style="background:#1e293b;color:#94a3b8;border:1px solid #334155">Clean stop</span>`:`<span class="badge bad" title="Exit unclean or process terminated unexpectedly">Crashed / Killed</span>`,hitPct=((Number(x.cache_hit_rate||0))*100).toFixed(1),started=x.started_at?new Date(x.started_at*1000).toLocaleString():'—';
+    const st=x.status||'unknown',stBadge=st==='active'?`<span class="badge ok">Active (PID ${n(x.pid)})</span>`:st==='clean_stop'?`<span class="badge" style="background:#1e293b;color:#94a3b8;border:1px solid #334155">Clean stop</span>`:st==='crashed'?`<span class="badge bad" title="No clean shutdown recorded; the termination cause is unknown">Unclean exit</span>`:'<span class="badge">Status unknown</span>',hitPct=((Number(x.cache_hit_rate||0))*100).toFixed(1),started=x.started_at?new Date(x.started_at*1000).toLocaleString():'—';
     return clickableRow(x,`<td>${started}</td><td>${durSec(x.duration_seconds)}</td><td>${stBadge}</td><td>${n(x.events)}</td><td>${hitPct}% <span class="tiny muted">(${n(x.cache_hits)})</span></td><td>${n(x.tokens_saved)}</td><td><code>${esc(x.version||'—')}</code></td>`,'session');
   },7);
 
@@ -4558,40 +4538,17 @@ function render(s){
 }
 
 function renderReliabilitySummary(snapshot){
-  const observability=snapshot?.observability||{},cohorts=observability.cohorts||{},agent=cohorts.agent_http||{},runtime=snapshot?.headless||{},sessions=observability.sessions||[];
-  const failures=Math.max(0,Number(agent.failures||0)),restarts=Math.max(0,Number(runtime.restarts||0)),crashes=sessions.filter(x=>!['active','clean_stop'].includes(String(x.status||''))).length;
-  const activeCrash=Boolean(sessions[0]&&!['active','clean_stop'].includes(String(sessions[0].status||'')));
-  const severity=failures||activeCrash?'attention':restarts?'warning':'healthy';
-  const label=severity==='attention'?'Needs attention':severity==='warning'?'Monitor':'Healthy';
-  const headline=$('reliabilityHeadline'),trend=$('reliabilityTrend'),action=$('reliabilityAction'),resolveBtn=$('resolveErrorsBtn');
-  if(headline)headline.innerHTML=`<div>Current severity</div><div><span class="${severity==='healthy'?'ok':severity==='attention'?'bad-t':'warn-t'}"><b>${label}</b></span></div><div>Operational failures</div><div>${n(failures)}</div><div>Supervisor restarts</div><div>${n(restarts)}</div><div>Unclean sessions</div><div>${n(crashes)}</div>`;
-  if(trend){const prior=sessions.slice(1),priorCrashes=prior.filter(x=>!['active','clean_stop'].includes(String(x.status||''))).length;trend.textContent=`Failure trend: ${failures?'active request failures need review':'no active request failures'}; ${crashes} unclean session${crashes===1?'':'s'} in retained history${priorCrashes?` (${priorCrashes} earlier)`:' '}.`;}
-  if(action){action.textContent=failures?'Open failed request history':'Open restart history';action.onclick=()=>{if(failures){switchTab('work');}else{switchTab('reliability');$('sessionRows')?.closest('.section')?.scrollIntoView({behavior:'smooth'});}};}
-  if(resolveBtn){
-    if(failures>0||crashes>0||activeCrash){
-      resolveBtn.style.display='';
-      resolveBtn.onclick=async()=>{
-        resolveBtn.disabled=true;
-        resolveBtn.textContent='Resolving...';
-        try{
-          const r=await post('/api/maintenance/resolve_errors',{});
-          resolveBtn.textContent='Resolved!';
-          openModal(r,'Operational Errors Resolved','resolve_errors');
-          await pollStatus();
-        }catch(e){
-          resolveBtn.textContent='Error';
-          openModal({error:String(e)},'Resolution Error');
-        }finally{
-          setTimeout(()=>{
-            resolveBtn.disabled=false;
-            resolveBtn.textContent='Resolve all errors';
-          },1500);
-        }
-      };
-    }else{
-      resolveBtn.style.display='none';
-    }
-  }
+  const o=snapshot?.observability||{},agent=o.cohorts?.agent_http||{},sessions=o.sessions||[],health=dashboardHealth(snapshot||{});
+  const available=o.enabled!==false&&o.data_available===true&&o.stale!==true;
+  const failures=Math.max(0,Number(agent.failures)||0),unclean=sessions.filter(x=>x.status==='crashed').length;
+  const headline=$('reliabilityHeadline'),trend=$('reliabilityTrend'),action=$('reliabilityAction');
+  if(headline)headline.innerHTML=`<div>Current runtime</div><div class="${health.level==='healthy'?'ok':'warn-t'}"><b>${esc(health.label)}</b> · ${esc(health.reason)}</div><div>Recorded request failures · ${telemetryPeriod(o)}</div><div>${available?n(failures):'Unavailable'} <span class="tiny muted">retained samples</span></div><div>Supervisor restarts · supervisor lifetime</div><div>${n(snapshot?.headless?.restarts)}</div><div>Unclean exits · retained 30-day sessions</div><div>${available?n(unclean):'Unavailable'}</div>`;
+  if(trend)trend.textContent='Historical failures and unclean exits describe past events, not active incidents. Session history retains at most 100 entries; absence of a clean shutdown does not establish a crash cause.';
+  if(action){action.textContent='Open failed request history';action.onclick=()=>{
+    for(const id of ['workSearch','workState','requestHistorySearch','requestHistoryAction','requestHistoryPeriod'])if($(id))$(id).value='';
+    if($('requestHistoryStatus'))$('requestHistoryStatus').value='failed';
+    switchTab('work');if(last)render(last);
+  };}
 }
 
 function schedulerRow(job,html,cols){const linked=lastTraces.find(x=>String(x.scheduler_job_id||'')===String(job.job_id||''));const id=linked?.trace_id||job.trace_id;if(id)return `<tr class="click" data-trace-id="${esc(id)}">${html}</tr>`;return clickableRow(job,html,'scheduler_job');}
@@ -4701,9 +4658,10 @@ statusPoller.start();
 let liveEvents=[],eventsPollInFlight=false,tracesPollInFlight=false,eventsPollHasLoaded=false;
 let eventsPollAbortController=null,tracesPollAbortController=null;
 function eventSeverity(event){
-  if(event?.success===false||/fail|error|crash|reject/i.test([event?.kind,event?.event_type,event?.status].join(' ')))return 'failure';
+  if(event?.success===false||Number(event?.status_code)>=400||/fail|error|crash|reject/i.test([event?.kind,event?.event_type,event?.status].join(' ')))return 'failure';
   if(/warn|retry|degrad|stale/i.test([event?.kind,event?.event_type,event?.status].join(' ')))return 'warning';
-  return 'success';
+  if(event?.success===true)return 'success';
+  return 'info';
 }
 function renderEvents(events=liveEvents){
   if(Array.isArray(events)&&events.length){liveEvents=[...events,...liveEvents].slice(0,300);}
@@ -4712,7 +4670,7 @@ function renderEvents(events=liveEvents){
   const severity=String($('eventSeverity')?.value||''),source=String($('eventSource')?.value||'').trim().toLowerCase();
   const filtered=liveEvents.filter(event=>{const kind=eventSeverity(event),hay=[event.agent,event.kind,event.event_type,event.action,event.stage,event.model,event.tenant].filter(Boolean).join(' ').toLowerCase();return (!severity||kind===severity)&&(!source||hay.includes(source));}).slice(0,120);
   const summary=$('eventSummary');if(summary)summary.textContent=`${filtered.length} of ${liveEvents.length} retained events`;
-  const html=filtered.map(e=>{const id='d'+(++seq),severity=eventSeverity(e),traceId=e.trace_id?String(e.trace_id):'',traceAttr=traceId?` data-trace-id="${esc(traceId)}"`:'';dataStore.set(id,{data:e,type:'event'});if(dataStore.size>5000){dataStore.delete(dataStore.keys().next().value);}const label=severity==='failure'?'FAIL':severity==='warning'?'WARN':'OK';return `<div class="event click"${traceAttr} data-detail="${id}" data-type="event"><span>${new Date((e.created_at||0)*1000).toLocaleTimeString()}</span><span>${esc(e.agent||e.kind||'')}</span><span>${esc(e.event_type||'')}</span><span>${esc(e.action||e.stage||'')}</span><span class="hide-sm">${esc(e.model||e.tenant||'')}</span><span>${e.duration_ms?ms(e.duration_ms):''}</span><span class="${severity==='failure'?'bad-t':severity==='warning'?'warn-t':'ok'}">${label}</span></div>`}).join('');
+  const html=filtered.map(e=>{const id='d'+(++seq),severity=eventSeverity(e),traceId=e.trace_id?String(e.trace_id):'',traceAttr=traceId?` data-trace-id="${esc(traceId)}"`:'';dataStore.set(id,{data:e,type:'event'});if(dataStore.size>5000){dataStore.delete(dataStore.keys().next().value);}const label=severity==='failure'?'FAIL':severity==='warning'?'WARN':severity==='success'?'OK':'INFO';return `<div class="event click"${traceAttr} data-detail="${id}" data-type="event"><span>${new Date((e.created_at||0)*1000).toLocaleTimeString()}</span><span>${esc(e.agent||e.kind||'')}</span><span>${esc(e.event_type||'')}</span><span>${esc(e.action||e.stage||'')}</span><span class="hide-sm">${esc(e.model||e.tenant||'')}</span><span>${e.duration_ms?ms(e.duration_ms):''}</span><span class="${severity==='failure'?'bad-t':severity==='warning'?'warn-t':severity==='success'?'ok':'muted'}">${label}</span></div>`}).join('');
   box.innerHTML=html||'<div class="empty">No events match current severity/source filters.</div>';
 }
 $('eventSeverity')?.addEventListener('change',()=>renderEvents([]));
@@ -4750,7 +4708,7 @@ function renderBundles(s){
   if(!preprocessingSummary(s?.preprocessing||{}).available){$('bundleExportTable').innerHTML='<tr><td colspan="4" class="empty warn-t">Project inventory unavailable. Export readiness cannot be verified.</td></tr>';return;}
   const projs=groupedProjects(s?.preprocessing?.projects||[]);
   $('bundleExportTable').innerHTML=projs.length?projs.map(p=>{
-    const state=projectState(p),progress=Math.round(Number(p.overall_progress_pct||0)),ready=state==='ready'||progress>=100;
+    const state=projectState(p),progress=Math.round(Number(p.overall_progress_pct||0)),ready=state==='ready';
     const contents=[Number(p.files||0)&&`${n(p.files)} files`,Number(p.rag_files||0)&&`${n(p.rag_files)} RAG`,Number(p.file_cards||0)&&`${n(p.file_cards)} cards`].filter(Boolean).join(' · ')||'Index summary unavailable';
     const variants=(p.variants||[]).length;
     return `<tr><td><b>${esc(p.project||'Unnamed repository')}</b><div class="tiny mono muted" title="${esc(p.repository_identity||p.root||'')}">${esc(p.repository_identity||p.root||'—')}</div>${variants>1?`<div class="tiny">${variants} project entries grouped</div>`:''}</td><td><span class="${ready?'ok':'warn-t'}">${ready?'Ready to export':'Partial index'}</span><div class="tiny">${progress}% · ${esc(state)}</div></td><td class="tiny">${esc(contents)}</td><td><button class="btn" data-export-root="${esc(p.root||'')}" title="Exports available index content; does not alter this repository">Export bundle</button></td></tr>`;
@@ -4950,7 +4908,7 @@ function renderRagWorkspaces(){
   const visible=ragWorkspaces.filter(w=>{const identity=ragWorkspaceIdentity(w);return !query||[identity,w.status,w.state,w.model].filter(Boolean).join(' ').toLowerCase().includes(query)});
   const summary=$('ragWorkspaceSummary');if(summary)summary.textContent=`${visible.length} of ${ragWorkspaces.length} workspaces · canonical identity and index state`;
   list.innerHTML=visible.length?`<div class="table-wrap"><table><thead><tr><th>Workspace identity</th><th>Index status</th><th>Contents</th></tr></thead><tbody>${visible.map(w=>{
-    const identity=ragWorkspaceIdentity(w),chunks=Number(w.chunks??w.document_count??w.count??0),state=String(w.status||w.state||(chunks?'ready':'empty')),stateClass=/error|failed/i.test(state)?'bad-t':chunks?'ok':'warn-t';
+    const identity=ragWorkspaceIdentity(w),chunks=Number(w.chunks??w.document_count??w.count??0),state=String(w.status||w.state||'status unreported'),stateClass=/error|failed/i.test(state)?'bad-t':/^(ready|complete|completed)$/i.test(state)?'ok':'muted';
     const contents=[chunks&&`${n(chunks)} chunks`,w.files&&`${n(w.files)} files`,w.embedding_model&&String(w.embedding_model)].filter(Boolean).join(' · ')||'No indexed content reported';
     return `<tr><td><b>${esc(identity.split('/').filter(Boolean).pop()||identity)}</b><div class="tiny muted mono" title="${esc(identity)}">${esc(identity)}</div></td><td><span class="${stateClass}">${esc(humanLabel(state))}</span></td><td class="tiny">${esc(contents)}</td></tr>`;
   }).join('')}</tbody></table></div>`:'<span class="muted">No RAG workspace matches current search.</span>';
@@ -5004,14 +4962,14 @@ async function loadWorktrees(){
     if($('worktreeRoot')?.value?.trim()!==root)return;
     if($('pruneWorktreesBtn'))$('pruneWorktreesBtn').disabled=false;
     const wts=d.worktrees||[];
-    if($('worktreeSummary'))$('worktreeSummary').textContent=`${wts.length} active worktree${wts.length===1?'':'s'}`;
+    if($('worktreeSummary'))$('worktreeSummary').textContent=`${wts.length} registered · ${wts.filter(w=>w.prunable).length} prunable · ${wts.filter(w=>w.locked).length} locked`;
     rows('worktreesTable',wts,w=>{
       const dir=esc(w.worktree||'—');
       const br=esc(String(w.branch||'—').replace('refs/heads/',''));
       const head=esc(String(w.head||'—').slice(0,8));
       const isLocked=!!w.locked;
       const isPrunable=!!w.prunable;
-      let statusBadge='<span class="chip ok">active</span>';
+      let statusBadge='<span class="chip">registered</span>';
       if(isLocked) statusBadge='<span class="chip warn-t">locked</span>';
       else if(isPrunable) statusBadge='<span class="chip bad-t">prunable</span>';
       const act=`<button class="action-btn-sm danger" data-release-worktree="${dir}">Remove</button>`;
@@ -5074,7 +5032,7 @@ $('arenaRunBtn')?.addEventListener('click',async()=>{
       const gen=res.eval_count||res.tokens_generated||0;
       const tps=res.eval_duration?Math.round((gen/(res.eval_duration/1e9))*10)/10:(lat>0&&gen>0?Math.round((gen/(lat/1000))*10)/10:'—');
       if(labelEl)labelEl.textContent=`${complexity==='auto'?'Fast Tier':'Smart Tier'} (${model})`;
-      if(statsEl)statsEl.innerHTML=`<span class="chip ok">⚡ ${lat}ms</span> <span class="chip">Tokens: ${gen}</span> <span class="chip">Speed: ${tps} t/s</span>`;
+      if(statsEl)statsEl.innerHTML=`<span class="chip ok">⚡ ${lat}ms</span> <span class="chip">Tokens: ${gen}</span> <span class="chip">${res.eval_duration?'Generation speed':'End-to-end rate'}: ${tps} t/s</span>`;
       if(outEl)outEl.textContent=res.response||res.content||JSON.stringify(res,null,2);
     }catch(err){
       if(statsEl)statsEl.innerHTML=`<span class="chip bad-t">Error</span>`;
@@ -5119,10 +5077,10 @@ function renderTrajectories(){
     const goal=esc(t.contract?.goal||'—');
     const st=String(t.status||'planned').toLowerCase();
     const cls=st==='completed'?'badge-complete':(st==='failed'?'badge-error':(st==='active'?'badge-running':'badge-waiting'));
-    const stepsCount=(t.checkpoint?.affected_paths?.length||0)+Object.keys(t.verification_receipts||{}).length;
-    const tokensUsed=t.checkpoint?.state_data?.tokens_used?n(t.checkpoint.state_data.tokens_used):'—';
+    const stepsCount=n(t.checkpoint?.affected_paths?.length)+' paths / '+n(Object.keys(t.verification_receipts||{}).length)+' receipts';
+    const tokensUsed=t.checkpoint?.state_data?.tokens_used!=null?n(t.checkpoint.state_data.tokens_used):'Unreported';
     const act=`<button class="action-btn-sm" data-view-traj="${tid}">Inspect</button>`;
-    return `<tr class="click" data-view-traj="${tid}"><td><strong>${tid}</strong></td><td style="max-width:280px;overflow:hidden;text-overflow:ellipsis" title="${goal}">${goal}</td><td><span class="chip">${stepsCount} steps</span></td><td class="tiny mono">${tokensUsed}</td><td><span class="badge-status ${cls}">${esc(st.toUpperCase())}</span></td><td>${act}</td></tr>`;
+    return `<tr class="click" data-view-traj="${tid}"><td><strong>${tid}</strong></td><td style="max-width:280px;overflow:hidden;text-overflow:ellipsis" title="${goal}">${goal}</td><td><span class="chip">${stepsCount}</span></td><td class="tiny mono">${tokensUsed}</td><td><span class="badge-status ${cls}">${esc(st.toUpperCase())}</span></td><td>${act}</td></tr>`;
   },6);
 }
 
