@@ -1452,320 +1452,67 @@ def test_compaction_event_failure_rolls_back_digest_sources_and_relations(tmp_pa
         ).fetchone()[0] == 0
 
 
-def _seed_legacy_agent_state(path):
-    with closing(sqlite3.connect(path)) as con, con:
-        for table, column in (
-            ("agent_tasks_projection", "task_id"),
-            ("agent_events", "event_id"),
-            ("agent_memory_records", "record_id"),
-            ("agent_verification_receipts", "receipt_id"),
-        ):
-            con.execute(f'CREATE TABLE "{table}" ("{column}" TEXT PRIMARY KEY, payload TEXT NOT NULL)')
-            con.execute(f'INSERT INTO "{table}" VALUES (?, ?)', (f"kept-{table}", '{"ok":true}'))
+@pytest.mark.parametrize("filename", ["agent_state.sqlite3", "leases.sqlite3", "agent_blackboard.sqlite3"])
+def test_legacy_only_durable_state_is_rejected_without_writes(tmp_path, filename):
+    from local_ai_hub.sqlite_support import (
+        UnsupportedLegacyStateDatabase,
+        require_canonical_agent_state_database,
+    )
+
+    legacy = tmp_path / filename
+    legacy.write_bytes(b"preserve legacy state")
+
+    with pytest.raises(UnsupportedLegacyStateDatabase, match="unsupported legacy durable state database"):
+        require_canonical_agent_state_database(tmp_path)
+
+    assert legacy.read_bytes() == b"preserve legacy state"
+    assert not (tmp_path / "agent_state.sqlite").exists()
 
 
-def _durable_rows(path):
-    with closing(sqlite3.connect(path)) as con:
-        return {
-            table: con.execute(f'SELECT * FROM "{table}" ORDER BY 1').fetchall()
-            for table in (
-                "agent_tasks_projection",
-                "agent_events",
-                "agent_memory_records",
-                "agent_verification_receipts",
-            )
-        }
+def test_archived_legacy_database_does_not_block_canonical_state(tmp_path):
+    from local_ai_hub.sqlite_support import require_canonical_agent_state_database
+
+    canonical = tmp_path / "agent_state.sqlite"
+    with closing(sqlite3.connect(canonical)):
+        pass
+    archived = tmp_path / "leases.sqlite3"
+    archived.write_bytes(b"preserve archived state")
+
+    assert require_canonical_agent_state_database(tmp_path) == canonical
+    assert archived.read_bytes() == b"preserve archived state"
 
 
-def test_agent_state_filename_migration_backs_up_and_preserves_durable_records(tmp_path):
-    legacy = tmp_path / "agent_state.sqlite3"
-    target = tmp_path / "agent_state.sqlite"
-    _seed_legacy_agent_state(legacy)
-    expected = _durable_rows(legacy)
+def test_legacy_lease_wait_schema_is_rejected_before_schema_changes(tmp_path):
+    from local_ai_hub.leases import ScopeLeaseStore
 
-    migrated = sqlite_support.migrate_agent_state_database(tmp_path)
+    canonical = tmp_path / "agent_state.sqlite"
+    with closing(sqlite3.connect(canonical)) as con, con:
+        con.execute("""CREATE TABLE lease_waits (
+            tenant TEXT NOT NULL, blocked_by TEXT NOT NULL, root_id TEXT NOT NULL,
+            requested_path TEXT NOT NULL, updated_at REAL NOT NULL,
+            PRIMARY KEY(tenant, blocked_by, requested_path))""")
+    with closing(sqlite3.connect(canonical)) as con:
+        before = con.execute("SELECT sql FROM sqlite_master WHERE name='lease_waits'").fetchone()[0]
 
-    backups = list(tmp_path.glob("agent_state.sqlite3.path-migration-*.sqlite3"))
-    assert migrated == target
-    assert legacy.exists()
-    assert target.exists()
-    assert len(backups) == 1
-    assert _durable_rows(target) == expected
-    assert _durable_rows(backups[0]) == expected
+    with pytest.raises(sqlite3.DatabaseError):
+        ScopeLeaseStore(tmp_path)
 
-
-def test_agent_state_filename_migration_preserves_committed_wal_records(tmp_path):
-    legacy = tmp_path / "agent_state.sqlite3"
-    writer = sqlite3.connect(legacy)
-    try:
-        assert writer.execute("PRAGMA journal_mode=WAL").fetchone()[0].lower() == "wal"
-        writer.execute("CREATE TABLE agent_events (event_id TEXT PRIMARY KEY, payload TEXT NOT NULL)")
-        writer.execute("INSERT INTO agent_events VALUES ('wal-event', '{\"kept\":true}')")
-        writer.commit()
-        wal_path = legacy.with_name(f"{legacy.name}-wal")
-        assert wal_path.exists() and wal_path.stat().st_size > 0
-
-        target = sqlite_support.migrate_agent_state_database(tmp_path)
-
-        with closing(sqlite3.connect(target)) as con:
-            assert con.execute("SELECT event_id, payload FROM agent_events").fetchall() == [
-                ("wal-event", '{"kept":true}')
-            ]
-        backups = list(tmp_path.glob("agent_state.sqlite3.path-migration-*.sqlite3"))
-        assert len(backups) == 1
-        with closing(sqlite3.connect(backups[0])) as con:
-            assert con.execute("SELECT event_id, payload FROM agent_events").fetchall() == [
-                ("wal-event", '{"kept":true}')
-            ]
-    finally:
-        writer.close()
-
-
-def test_agent_state_filename_migration_interrupted_copy_keeps_source_and_backup(tmp_path, monkeypatch):
-    legacy = tmp_path / "agent_state.sqlite3"
-    target = tmp_path / "agent_state.sqlite"
-    _seed_legacy_agent_state(legacy)
-    expected = _durable_rows(legacy)
-
-    def fail_after_partial_copy(_source, destination):
-        destination.write_bytes(b"partial copy")
-        raise OSError("simulated interrupted copy")
-
-    monkeypatch.setattr("local_ai_hub.sqlite_support.shutil.copyfile", fail_after_partial_copy)
-
-    with pytest.raises(OSError, match="simulated interrupted copy"):
-        sqlite_support.migrate_agent_state_database(tmp_path)
-
-    backups = list(tmp_path.glob("agent_state.sqlite3.path-migration-*.sqlite3"))
-    assert legacy.exists()
-    assert not target.exists()
-    assert len(backups) == 1
-    assert _durable_rows(legacy) == expected
-    assert _durable_rows(backups[0]) == expected
-    assert not list(tmp_path.glob("agent_state.sqlite.migrating-*"))
-
-
-def test_agent_state_filename_migration_is_idempotent_when_files_match(tmp_path):
-    legacy = tmp_path / "agent_state.sqlite3"
-    _seed_legacy_agent_state(legacy)
-
-    first = sqlite_support.migrate_agent_state_database(tmp_path)
-    first_rows = _durable_rows(first)
-    first_backups = list(tmp_path.glob("agent_state.sqlite3.path-migration-*.sqlite3"))
-    second = sqlite_support.migrate_agent_state_database(tmp_path)
-
-    assert second == first
-    assert _durable_rows(second) == first_rows
-    assert len(list(tmp_path.glob("agent_state.sqlite3.path-migration-*.sqlite3"))) == len(first_backups) == 1
-
-
-def test_agent_state_filename_migration_adopts_legacy_data_over_empty_target(tmp_path):
-    legacy = tmp_path / "agent_state.sqlite3"
-    target = tmp_path / "agent_state.sqlite"
-    _seed_legacy_agent_state(legacy)
-    expected = _durable_rows(legacy)
-    with closing(sqlite3.connect(target)) as con, con:
-        con.execute("CREATE TABLE empty_target (value TEXT)")
-
-    migrated = sqlite_support.migrate_agent_state_database(tmp_path)
-
-    assert migrated == target
-    assert _durable_rows(target) == expected
-    assert len(list(tmp_path.glob("agent_state.sqlite3.path-migration-*.sqlite3"))) == 1
-    assert len(list(tmp_path.glob("agent_state.sqlite.path-migration-*.sqlite3"))) == 1
-
-
-def test_agent_state_filename_migration_conflict_preserves_both_histories(tmp_path):
-    legacy = tmp_path / "agent_state.sqlite3"
-    target = tmp_path / "agent_state.sqlite"
-    _seed_legacy_agent_state(legacy)
-    _seed_legacy_agent_state(target)
-    with closing(sqlite3.connect(target)) as con, con:
-        con.execute(
-            'UPDATE "agent_events" SET payload=? WHERE event_id=?',
-            ('{"target":true}', "kept-agent_events"),
-        )
-    expected_legacy = _durable_rows(legacy)
-    expected_target = _durable_rows(target)
-
-    with pytest.raises(sqlite3.DatabaseError, match="durable filename migration conflict"):
-        sqlite_support.migrate_agent_state_database(tmp_path)
-
-    source_backups = list(tmp_path.glob("agent_state.sqlite3.path-migration-*.sqlite3"))
-    target_backups = list(tmp_path.glob("agent_state.sqlite.path-migration-*.sqlite3"))
-    assert legacy.exists() and target.exists()
-    assert _durable_rows(legacy) == expected_legacy
-    assert _durable_rows(target) == expected_target
-    assert len(source_backups) == len(target_backups) == 1
-    assert _durable_rows(source_backups[0]) == expected_legacy
-    assert _durable_rows(target_backups[0]) == expected_target
-
-
-def test_agent_state_filename_migration_detects_legacy_writer_after_cutover(tmp_path):
-    legacy = tmp_path / "agent_state.sqlite3"
-    _seed_legacy_agent_state(legacy)
-    target = sqlite_support.migrate_agent_state_database(tmp_path)
-    with closing(sqlite3.connect(legacy)) as con, con:
-        con.execute(
-            'INSERT INTO "agent_events" VALUES (?, ?)',
-            ("late-old-writer", '{"ok":false}'),
-        )
-    expected_legacy = _durable_rows(legacy)
-    expected_target = _durable_rows(target)
-
-    with pytest.raises(sqlite3.DatabaseError, match="legacy Agent State changed after migration"):
-        sqlite_support.migrate_agent_state_database(tmp_path)
-
-    assert _durable_rows(legacy) == expected_legacy
-    assert _durable_rows(target) == expected_target
-    assert len(list(tmp_path.glob("agent_state.sqlite3.path-migration-*.sqlite3"))) == 2
-    assert len(list(tmp_path.glob("agent_state.sqlite.path-migration-target-*.sqlite3"))) == 1
-
-
-def test_agent_blackboard_legacy_database_merges_and_retries_idempotently(tmp_path):
-    state_legacy = tmp_path / "agent_state.sqlite3"
-    blackboard_legacy = tmp_path / "agent_blackboard.sqlite3"
-    _seed_legacy_agent_state(state_legacy)
-    with closing(sqlite3.connect(blackboard_legacy)) as con, con:
-        con.execute(
-            """CREATE TABLE agent_blackboard (
-                   board_id TEXT NOT NULL, section TEXT NOT NULL, content TEXT NOT NULL,
-                   author TEXT NOT NULL, vector_clock TEXT NOT NULL, timestamp REAL NOT NULL,
-                   version INTEGER NOT NULL, PRIMARY KEY(board_id, section))"""
-        )
-        con.execute("CREATE INDEX idx_blackboard_board ON agent_blackboard(board_id)")
-        con.execute(
-            "INSERT INTO agent_blackboard VALUES ('board-1','plan','keep','agent-1','{}',3.5,2)"
-        )
-
-    target = sqlite_support.migrate_agent_state_database(tmp_path)
-
-    with closing(sqlite3.connect(target)) as con:
-        assert con.execute(
-            "SELECT board_id, section, content, author, vector_clock, timestamp, version "
-            "FROM agent_blackboard"
-        ).fetchall() == [("board-1", "plan", "keep", "agent-1", "{}", 3.5, 2)]
-        markers = con.execute(
-            "SELECT migration_key FROM agent_state_migrations "
-            "WHERE migration_key LIKE 'agent-blackboard-sqlite3-to-agent-state-v1:%'"
-        ).fetchall()
-        assert len(markers) == 1
-
-    sqlite_support.migrate_agent_state_database(tmp_path)
-
-    assert len(list(tmp_path.glob("agent_blackboard.sqlite3.path-migration-*.sqlite3"))) == 1
-
-
-def test_agent_blackboard_migration_rejects_legacy_writer_after_cutover(tmp_path):
-    state_legacy = tmp_path / "agent_state.sqlite3"
-    blackboard_legacy = tmp_path / "agent_blackboard.sqlite3"
-    _seed_legacy_agent_state(state_legacy)
-    with closing(sqlite3.connect(blackboard_legacy)) as con, con:
-        con.execute(
-            """CREATE TABLE agent_blackboard (
-                   board_id TEXT NOT NULL, section TEXT NOT NULL, content TEXT NOT NULL,
-                   author TEXT NOT NULL, vector_clock TEXT NOT NULL, timestamp REAL NOT NULL,
-                   version INTEGER NOT NULL, PRIMARY KEY(board_id, section))"""
-        )
-        con.execute(
-            "INSERT INTO agent_blackboard VALUES ('board-1','plan','before','agent-1','{}',3.5,2)"
-        )
-
-    target = sqlite_support.migrate_agent_state_database(tmp_path)
-    with closing(sqlite3.connect(blackboard_legacy)) as con, con:
-        con.execute(
-            "UPDATE agent_blackboard SET content='after' WHERE board_id='board-1' AND section='plan'"
-        )
-    expected_target = _durable_rows(target)
-
-    with pytest.raises(sqlite3.DatabaseError, match="legacy blackboard changed after migration"):
-        sqlite_support.migrate_agent_state_database(tmp_path)
-
-    with closing(sqlite3.connect(target)) as con:
-        assert con.execute(
-            "SELECT content FROM agent_blackboard WHERE board_id='board-1' AND section='plan'"
-        ).fetchone() == ("before",)
-    assert _durable_rows(target) == expected_target
-    assert len(list(tmp_path.glob("agent_blackboard.sqlite3.path-migration-*.sqlite3"))) == 2
-    assert len(list(tmp_path.glob("agent_state.sqlite.path-migration-target-*.sqlite3"))) == 1
-    with closing(sqlite3.connect(target)) as con:
-        assert con.execute("SELECT COUNT(*) FROM agent_blackboard").fetchone()[0] == 1
-
+    with closing(sqlite3.connect(canonical)) as con:
+        after = con.execute("SELECT sql FROM sqlite_master WHERE name='lease_waits'").fetchone()[0]
+    assert after == before
 
 def test_cache_rebuild_does_not_erase_agent_state_records(tmp_path):
     agent_state = tmp_path / "agent_state.sqlite"
     cache_db = tmp_path / "cache.sqlite"
-    _seed_legacy_agent_state(agent_state)
-    expected = _durable_rows(agent_state)
+    with closing(sqlite3.connect(agent_state)) as con, con:
+        con.execute("CREATE TABLE durable_record (record_id TEXT PRIMARY KEY)")
+        con.execute("INSERT INTO durable_record VALUES ('keep')")
     cache_db.write_bytes(b"damaged disposable cache")
 
     cache = SQLiteCache(cache_db, "t08-cache-isolation")
     cache.set("rebuilt", {"ready": True})
 
     assert cache.get("rebuilt") == {"ready": True}
-    assert _durable_rows(agent_state) == expected
+    with closing(sqlite3.connect(agent_state)) as con:
+        assert con.execute("SELECT record_id FROM durable_record").fetchall() == [("keep",)]
     assert len(list(tmp_path.glob("cache.sqlite.corrupt-*"))) == 1
-
-
-def test_scope_leases_migrate_into_versioned_agent_state_database(tmp_path):
-    legacy = tmp_path / "leases.sqlite3"
-    with closing(sqlite3.connect(legacy)) as con, con:
-        con.execute(
-            """CREATE TABLE leases (
-                   lease_id TEXT NOT NULL, tenant TEXT NOT NULL, root_id TEXT NOT NULL,
-                   root_path TEXT NOT NULL, path TEXT NOT NULL, purpose TEXT NOT NULL,
-                   created_at REAL NOT NULL, expires_at REAL NOT NULL,
-                   PRIMARY KEY(lease_id, path))"""
-        )
-        con.execute(
-            """CREATE TABLE lease_waits (
-                   tenant TEXT NOT NULL, blocked_by TEXT NOT NULL, root_id TEXT NOT NULL,
-                   requested_path TEXT NOT NULL, updated_at REAL NOT NULL,
-                   PRIMARY KEY(tenant, blocked_by, requested_path))"""
-        )
-        con.execute(
-            "INSERT INTO leases VALUES ('lease-1','default','root-1','C:/repo','src/a.py','test',1,9999999999)"
-        )
-        con.execute(
-            "INSERT INTO lease_waits VALUES ('default','agent-2','root-1','src/a.py',2)"
-        )
-    expected_leases = [("lease-1", "default", "root-1", "C:/repo", "src/a.py", "test", 1.0, 9999999999.0)]
-    expected_waits = [("default", "agent-2", "root-1", "src/a.py", 2.0)]
-
-    store = ScopeLeaseStore(tmp_path)
-    durable_path = tmp_path / "agent_state.sqlite"
-
-    assert store.path == durable_path
-    assert legacy.exists()
-    assert len(list(tmp_path.glob("leases.sqlite3.path-migration-*.sqlite3"))) == 1
-    with closing(sqlite3.connect(durable_path)) as con:
-        assert con.execute("SELECT * FROM leases").fetchall() == expected_leases
-        assert con.execute("SELECT * FROM lease_waits").fetchall() == expected_waits
-        assert con.execute(
-            "SELECT version FROM agent_state_schema_versions WHERE component='leases'"
-        ).fetchone() == (1,)
-    agent_state = AgentStateStore(durable_path)
-    agent_state._ensure_schema()
-    with closing(sqlite3.connect(durable_path)) as con:
-        assert con.execute("SELECT COUNT(*) FROM leases").fetchone()[0] == 1
-
-    ScopeLeaseStore(tmp_path)
-
-    assert len(list(tmp_path.glob("leases.sqlite3.path-migration-*.sqlite3"))) == 1
-
-
-def test_scope_lease_schema_mismatch_keeps_legacy_and_verified_backup(tmp_path):
-    legacy = tmp_path / "leases.sqlite3"
-    with closing(sqlite3.connect(legacy)) as con, con:
-        con.execute("CREATE TABLE leases (legacy_id TEXT)")
-        con.execute("INSERT INTO leases VALUES ('preserve-me')")
-
-    with pytest.raises(sqlite3.DatabaseError, match="legacy lease schema mismatch: leases"):
-        ScopeLeaseStore(tmp_path)
-
-    backups = list(tmp_path.glob("leases.sqlite3.path-migration-*.sqlite3"))
-    assert legacy.exists()
-    assert len(backups) == 1
-    for path in (legacy, backups[0]):
-        with closing(sqlite3.connect(path)) as con:
-            assert con.execute("SELECT legacy_id FROM leases").fetchall() == [("preserve-me",)]

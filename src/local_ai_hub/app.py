@@ -45,7 +45,7 @@ from .learning import UsageLearner
 from .autotune import RuntimeTuner
 from .deterministic import DeterministicEngine
 from .logging_setup import configure_logging, shutdown_logging
-from .sqlite_support import migrate_agent_state_database
+from .sqlite_support import require_canonical_agent_state_database
 from .external_tools import ExternalCodeIntelligence
 from .async_jobs import AsyncJobManager
 from .speculative_lint import SpeculativeLintQueue
@@ -319,7 +319,7 @@ class LocalAIApp:
     def __init__(self, config_path: str | None = None):
         self.config = load_config(config_path)
         state_dir = Path(self.config["server"]["state_dir"])
-        migrate_agent_state_database(state_dir)
+        require_canonical_agent_state_database(state_dir)
         saving = self.config.get("token_saving", {})
         self.started_at = time.time()
         self._shutdown = threading.Event()

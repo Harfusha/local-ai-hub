@@ -1,15 +1,12 @@
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import random
 import re
-import shutil
 import sqlite3
 import stat
 import time
-import uuid
 import threading
 import weakref
 from contextlib import closing
@@ -339,254 +336,24 @@ def backup_durable_database(path: Path | str, *, purpose: str = "schema-mismatch
     return backup_path
 
 
-def _durable_database_signature(
-    path: Path,
-) -> tuple[int, str, tuple[tuple[str, int, str], ...]]:
-    """Return integrity, schema hash, row counts, and row hashes for migration proof."""
-    uri = f"{path.resolve().as_uri()}?mode=ro"
-    with closing(sqlite3.connect(uri, uri=True, timeout=5.0)) as con:
-        integrity = con.execute("PRAGMA quick_check").fetchone()
-        if not integrity or str(integrity[0]).lower() != "ok":
-            raise sqlite3.DatabaseError(f"database integrity check failed: {path}")
-        schema_rows = [
-            tuple(row)
-            for row in con.execute(
-                "SELECT type, name, tbl_name, sql FROM sqlite_master "
-                "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
-            )
-        ]
-        schema_hash = hashlib.sha256(repr(schema_rows).encode("utf-8")).hexdigest()
-        tables = [
-            str(row[0])
-            for row in con.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' "
-                "AND name NOT LIKE 'sqlite_%' ORDER BY name"
-            )
-        ]
-        counts = []
-        for table in tables:
-            quoted = '"' + table.replace('"', '""') + '"'
-            row_hash = hashlib.sha256()
-            count = 0
-            for row in con.execute(f"SELECT * FROM {quoted}"):
-                count += 1
-                for value in row:
-                    if value is None:
-                        encoded = b"N"
-                    elif isinstance(value, bytes):
-                        encoded = b"B" + value
-                    elif isinstance(value, str):
-                        encoded = b"S" + value.encode("utf-8")
-                    elif isinstance(value, int):
-                        encoded = b"I" + str(value).encode("ascii")
-                    elif isinstance(value, float):
-                        encoded = b"F" + value.hex().encode("ascii")
-                    else:
-                        encoded = type(value).__name__.encode("utf-8") + repr(value).encode("utf-8")
-                    row_hash.update(len(encoded).to_bytes(8, "big"))
-                    row_hash.update(encoded)
-            counts.append((table, count, row_hash.hexdigest()))
-        user_version = int(con.execute("PRAGMA user_version").fetchone()[0])
-    return user_version, schema_hash, tuple(counts)
+class UnsupportedLegacyStateDatabase(sqlite3.DatabaseError):
+    """Raised when only an unsupported standalone durable state file exists."""
 
 
-def _database_has_rows(signature: tuple[int, str, tuple[tuple[str, int, str], ...]]) -> bool:
-    return any(row_count for _table, row_count, _digest in signature[2])
-
-
-def _signature_token(signature: tuple[int, str, tuple[tuple[str, int, str], ...]]) -> str:
-    return hashlib.sha256(repr(signature).encode("utf-8")).hexdigest()
-
-
-def _migration_markers(path: Path, prefix: str) -> set[str]:
-    if not path.exists():
-        return set()
-    uri = f"{path.resolve().as_uri()}?mode=ro"
-    with closing(sqlite3.connect(uri, uri=True, timeout=5.0)) as con:
-        table = con.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_state_migrations'"
-        ).fetchone()
-        if not table:
-            return set()
-        return {
-            str(row[0])
-            for row in con.execute(
-                "SELECT migration_key FROM agent_state_migrations WHERE migration_key LIKE ?",
-                (f"{prefix}%",),
-            )
-        }
-
-
-def _record_migration_marker(path: Path, key: str) -> None:
-    with closing(connect_sqlite(path, isolation_level=None)) as con:
-        con.execute(
-            "CREATE TABLE IF NOT EXISTS agent_state_migrations "
-            "(migration_key TEXT PRIMARY KEY, applied_at REAL NOT NULL)"
-        )
-        con.execute(
-            "INSERT OR IGNORE INTO agent_state_migrations(migration_key, applied_at) VALUES (?, ?)",
-            (key, time.time()),
-        )
-
-
-def _install_database_copy(source: Path, target: Path) -> None:
-    expected = _durable_database_signature(source)
-    temporary = target.with_name(f"{target.name}.migrating-{uuid.uuid4().hex}")
-    try:
-        shutil.copyfile(source, temporary)
-        if _durable_database_signature(temporary) != expected:
-            raise sqlite3.DatabaseError("durable database migration verification mismatch")
-        os.replace(temporary, target)
-    except Exception:
-        temporary.unlink(missing_ok=True)
-        raise
-
-
-def migrate_legacy_agent_blackboard_database(state_dir: Path | str) -> Path:
-    """Merge legacy standalone blackboard rows into the durable Agent State DB."""
+def require_canonical_agent_state_database(state_dir: Path | str) -> Path:
+    """Return the canonical state path, rejecting legacy-only state without touching it."""
     root = Path(state_dir)
-    target = root / "agent_state.sqlite"
-    legacy = root / "agent_blackboard.sqlite3"
-    if not legacy.exists():
-        return target
-
-    marker_prefix = "agent-blackboard-sqlite3-to-agent-state-v1:"
-    signature = _durable_database_signature(legacy)
-    migration_key = marker_prefix + _signature_token(signature)
-    existing_markers = _migration_markers(target, marker_prefix)
-    if migration_key in existing_markers:
-        return target
-    if existing_markers:
-        source_backup = backup_durable_database(legacy, purpose="path-migration")
-        target_backup = backup_durable_database(target, purpose="path-migration-target")
-        raise sqlite3.DatabaseError(
-            "legacy blackboard changed after migration; both histories preserved; "
-            f"target backup={target_backup}; legacy backup={source_backup}"
-        )
-    backup = backup_durable_database(legacy, purpose="path-migration")
-    expected_columns = (
-        "board_id", "section", "content", "author", "vector_clock", "timestamp", "version",
-    )
-    with closing(connect_sqlite(target, isolation_level=None)) as con:
-        con.execute("ATTACH DATABASE ? AS legacy_blackboard", (str(backup),))
-        try:
-            con.execute("BEGIN IMMEDIATE")
-            con.execute(
-                "CREATE TABLE IF NOT EXISTS agent_state_migrations "
-                "(migration_key TEXT PRIMARY KEY, applied_at REAL NOT NULL)"
+    canonical = root / "agent_state.sqlite"
+    if canonical.exists():
+        return canonical
+    for name in ("agent_state.sqlite3", "leases.sqlite3", "agent_blackboard.sqlite3"):
+        legacy = root / name
+        if legacy.exists():
+            raise UnsupportedLegacyStateDatabase(
+                f"unsupported legacy durable state database: {legacy}; "
+                f"expected canonical database: {canonical}"
             )
-            if con.execute(
-                "SELECT 1 FROM agent_state_migrations WHERE migration_key = ?",
-                (migration_key,),
-            ).fetchone():
-                con.execute("COMMIT")
-                return target
-
-            source_columns = tuple(
-                str(row[1]) for row in con.execute("PRAGMA legacy_blackboard.table_info(agent_blackboard)")
-            )
-            if source_columns != expected_columns:
-                raise sqlite3.DatabaseError("legacy blackboard schema mismatch")
-            con.execute(
-                """CREATE TABLE IF NOT EXISTS agent_blackboard (
-                       board_id TEXT NOT NULL, section TEXT NOT NULL, content TEXT NOT NULL,
-                       author TEXT NOT NULL, vector_clock TEXT NOT NULL, timestamp REAL NOT NULL,
-                       version INTEGER NOT NULL, PRIMARY KEY(board_id, section))"""
-            )
-            columns = ", ".join(expected_columns)
-            keys = "legacy.board_id = current.board_id AND legacy.section = current.section"
-            different = " OR ".join(
-                f"legacy.{column} IS NOT current.{column}"
-                for column in expected_columns if column not in ("board_id", "section")
-            )
-            conflict_count = int(con.execute(
-                "SELECT COUNT(*) FROM legacy_blackboard.agent_blackboard AS legacy "
-                f"JOIN main.agent_blackboard AS current ON {keys} WHERE {different}"
-            ).fetchone()[0])
-            if conflict_count:
-                raise sqlite3.DatabaseError("legacy blackboard conflicts with Agent State rows")
-            con.execute(
-                f"INSERT OR IGNORE INTO main.agent_blackboard ({columns}) "
-                f"SELECT {columns} FROM legacy_blackboard.agent_blackboard"
-            )
-            missing = int(con.execute(
-                "SELECT COUNT(*) FROM legacy_blackboard.agent_blackboard AS legacy "
-                "LEFT JOIN main.agent_blackboard AS current ON " + keys +
-                " WHERE current.board_id IS NULL"
-            ).fetchone()[0])
-            if missing:
-                raise sqlite3.DatabaseError("legacy blackboard migration verification failed")
-            con.execute("CREATE INDEX IF NOT EXISTS idx_blackboard_board ON agent_blackboard(board_id)")
-            con.execute(
-                """CREATE TABLE IF NOT EXISTS agent_state_schema_versions (
-                       component TEXT PRIMARY KEY, version INTEGER NOT NULL, updated_at REAL NOT NULL)"""
-            )
-            con.execute(
-                """INSERT INTO agent_state_schema_versions(component, version, updated_at)
-                   VALUES ('agent_blackboard', 1, ?) ON CONFLICT(component) DO UPDATE SET
-                   version = MAX(agent_state_schema_versions.version, excluded.version),
-                   updated_at = excluded.updated_at""",
-                (time.time(),),
-            )
-            con.execute(
-                "INSERT INTO agent_state_migrations(migration_key, applied_at) VALUES (?, ?)",
-                (migration_key, time.time()),
-            )
-            con.execute("COMMIT")
-        except Exception:
-            if con.in_transaction:
-                con.execute("ROLLBACK")
-            raise
-        finally:
-            con.execute("DETACH DATABASE legacy_blackboard")
-    return target
-
-
-def migrate_agent_state_database(state_dir: Path | str) -> Path:
-    """Copy legacy ``agent_state.sqlite3`` to ``agent_state.sqlite`` with verified backup.
-
-    Legacy source is retained. Identical/empty pairs are idempotent; conflicting
-    non-empty histories fail closed after backing up both files.
-    """
-    root = Path(state_dir)
-    root.mkdir(parents=True, exist_ok=True)
-    target = root / "agent_state.sqlite"
-    legacy = root / "agent_state.sqlite3"
-    if legacy.exists():
-        legacy_signature = _durable_database_signature(legacy)
-        marker_prefix = "agent-state-sqlite3-to-agent-state-v1:"
-        migration_key = marker_prefix + _signature_token(legacy_signature)
-        existing_markers = _migration_markers(target, marker_prefix)
-        if migration_key not in existing_markers:
-            if existing_markers:
-                target_backup = backup_durable_database(target, purpose="path-migration-target")
-                legacy_backup = backup_durable_database(legacy, purpose="path-migration")
-                raise sqlite3.DatabaseError(
-                    "legacy Agent State changed after migration; both histories preserved; "
-                    f"target backup={target_backup}; legacy backup={legacy_backup}"
-                )
-            if not target.exists():
-                backup = backup_durable_database(legacy, purpose="path-migration")
-                _install_database_copy(backup, target)
-            else:
-                target_signature = _durable_database_signature(target)
-                if target_signature != legacy_signature:
-                    target_has_rows = _database_has_rows(target_signature)
-                    legacy_has_rows = _database_has_rows(legacy_signature)
-                    if not target_has_rows and legacy_has_rows:
-                        backup_durable_database(target, purpose="path-migration-target")
-                        backup = backup_durable_database(legacy, purpose="path-migration")
-                        _install_database_copy(backup, target)
-                    elif target_has_rows and legacy_has_rows:
-                        target_backup = backup_durable_database(target, purpose="path-migration-target")
-                        legacy_backup = backup_durable_database(legacy, purpose="path-migration")
-                        raise sqlite3.DatabaseError(
-                            "durable filename migration conflict; both histories preserved; "
-                            f"target backup={target_backup}; legacy backup={legacy_backup}"
-                        )
-            _record_migration_marker(target, migration_key)
-    migrate_legacy_agent_blackboard_database(root)
-    return target
+    return canonical
 
 
 def validate_durable_schema(
