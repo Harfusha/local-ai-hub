@@ -196,7 +196,7 @@ def test_direct_mcp_impl_rejects_history_and_hotspot_fields_outside_actions(
         SimpleNamespace(post=lambda *args, **kwargs: calls.append((args, kwargs))),
     )
     result = mcp_server._local_ai_repo_impl(
-        action="code_index", root=str(tmp_path), **{field: value},
+        action="route" if field == "limit" else "code_index", root=str(tmp_path), **{field: value},
     )
     assert result["success"] is False
     assert calls == []
