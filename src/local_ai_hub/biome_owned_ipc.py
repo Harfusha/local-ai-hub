@@ -12,6 +12,7 @@ import math
 import os
 import queue
 import re
+import stat
 import subprocess
 import threading
 import time
@@ -19,9 +20,12 @@ from collections import OrderedDict, deque
 from pathlib import Path
 from typing import Any, Callable
 
-from .process_utils import popen_managed, terminate_tree
+from .process_utils import _release_process_job, popen_managed, terminate_tree
 
 _MAX_FRAME = 2_100_000
+_MAX_INBOUND_FRAME = 256_000
+_INBOUND_QUEUE_SIZE = 4
+_INBOUND_SESSION_QUEUE_BUDGET = 2 * _INBOUND_QUEUE_SIZE * _MAX_INBOUND_FRAME
 _MAX_CAPTURE = 8192
 # This implementation is grounded to the currently reviewed upstream protocol
 # source and release only.  Any other installed version fails before server IPC.
@@ -78,7 +82,7 @@ def _frame(message: dict[str, Any]) -> bytes:
     return b"Content-Length: " + str(len(body)).encode("ascii") + b"\r\n\r\n" + body
 
 
-def _read(stream: Any) -> dict[str, Any] | None:
+def _read(stream: Any, *, max_frame: int = _MAX_FRAME) -> dict[str, Any] | None:
     length = None
     for _ in range(16):
         line = stream.readline(2049)
@@ -95,7 +99,7 @@ def _read(stream: Any) -> dict[str, Any] | None:
             length = int(value.strip())
     else:
         raise ValueError("Biome LSP header limit exceeded")
-    if length is None or not 0 < length <= _MAX_FRAME:
+    if length is None or not 0 < length <= max_frame:
         raise ValueError("Biome LSP frame limit exceeded")
     data = bytearray()
     while len(data) < length:
@@ -107,6 +111,31 @@ def _read(stream: Any) -> dict[str, Any] | None:
     if not isinstance(value, dict):
         raise ValueError("Biome LSP message must be an object")
     return value
+
+
+def _read_source_snapshot(candidate: Path, root: Path) -> tuple[Path, str]:
+    target = candidate.resolve(strict=True)
+    target.relative_to(root)
+    if not target.is_file():
+        raise ValueError("Biome source path must name a regular file")
+    flags = (os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
+             | getattr(os, "O_NOFOLLOW", 0))
+    descriptor = os.open(target, flags)
+    with os.fdopen(descriptor, "rb") as source:
+        before = os.fstat(source.fileno())
+        if not stat.S_ISREG(before.st_mode) or before.st_size > 2_000_000:
+            raise ValueError("Biome source must be a regular file within the 2 MB bound")
+        data = source.read(2_000_001)
+        after = os.fstat(source.fileno())
+    if len(data) > 2_000_000 or b"\x00" in data:
+        raise ValueError("Biome source is binary or exceeds the 2 MB bound")
+    current_target = candidate.resolve(strict=True)
+    current_target.relative_to(root)
+    current = current_target.stat()
+    identity = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
+    if current_target != target or identity(before) != identity(after) or identity(after) != identity(current):
+        raise ValueError("Biome source changed while reading")
+    return target, data.decode("utf-8", errors="strict")
 
 
 def _windows_pipe(path: str, expected_pid: int, *, deadline: float):
@@ -200,6 +229,30 @@ class OwnedBiomeDaemon:
     def supported_here() -> bool:
         return os.name == "nt"
 
+    def _finish_version_capture(self, proc: Any, readers: tuple[threading.Thread, ...], deadline: float) -> bool:
+        for reader in readers:
+            reader.join(min(0.1, max(0.0, deadline - time.monotonic())))
+        if any(reader.is_alive() for reader in readers):
+            for stream in (proc.stdout, proc.stderr):
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+            for reader in readers:
+                reader.join(min(0.1, max(0.0, deadline - time.monotonic())))
+        if proc.poll() is None or any(reader.is_alive() for reader in readers):
+            return False
+        for stream in (proc.stdout, proc.stderr):
+            try:
+                stream.close()
+            except Exception:
+                pass
+        if not _release_process_job(proc):
+            return False
+        self._version_proc = None
+        self._version_readers = ()
+        return True
+
     def _capture_version(self, deadline: float) -> str:
         proc = popen_managed([self.executable, "--version"], stdin=subprocess.DEVNULL,
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0)
@@ -228,29 +281,19 @@ class OwnedBiomeDaemon:
         out.start(); err.start()
         while proc.poll() is None and time.monotonic() < deadline:
             time.sleep(0.01)
-        if proc.poll() is None:
+        timed_out = proc.poll() is None
+        if timed_out:
             terminate_tree(proc.pid, grace_seconds=min(0.2, max(0.0, deadline - time.monotonic())), process_handle=proc)
-            for stream in (proc.stdout, proc.stderr):
-                try:
-                    stream.close()
-                except Exception:
-                    pass
-            out.join(min(0.2, max(0.0, deadline - time.monotonic())))
-            err.join(min(0.2, max(0.0, deadline - time.monotonic())))
+        else:
+            # A completed CLI may have left descendants holding inherited pipes.
+            # Releasing its owned Job Object closes those handles before draining.
+            _release_process_job(proc)
+        cleanup_ok = self._finish_version_capture(proc, (out, err), deadline)
+        if not cleanup_ok:
+            raise BiomeOwnershipError("Biome version process cleanup is unconfirmed")
+        if timed_out:
             raise TimeoutError("Biome version capture timed out")
-        out.join(min(0.2, max(0.0, deadline - time.monotonic())))
-        err.join(min(0.2, max(0.0, deadline - time.monotonic())))
-        if not out.is_alive() and not err.is_alive():
-            self._version_proc = None
-            self._version_readers = ()
-        if proc.returncode != 0 or errors or truncated.is_set() or out.is_alive() or err.is_alive():
-            for stream in (proc.stdout, proc.stderr):
-                try:
-                    stream.close()
-                except Exception:
-                    pass
-            out.join(min(0.2, max(0.0, deadline - time.monotonic())))
-            err.join(min(0.2, max(0.0, deadline - time.monotonic())))
+        if proc.returncode != 0 or errors or truncated.is_set():
             raise BiomeOwnershipError("Biome version could not be captured cleanly")
         match = _VERSION.fullmatch(output.decode("utf-8", errors="strict").strip())
         if not match:
@@ -304,8 +347,9 @@ class OwnedBiomeDaemon:
             session["writes"].put((_frame(message), done, errors), timeout=min(0.05, remaining))
         except queue.Full as exc:
             raise TimeoutError("Biome LSP write queue is full") from exc
-        if not done.wait(max(0.0, deadline - time.monotonic())):
-            raise TimeoutError("Biome LSP write timed out")
+        while not done.wait(min(0.05, max(0.0, deadline - time.monotonic()))):
+            if session["should_stop"]() or time.monotonic() >= deadline:
+                raise TimeoutError("Biome LSP write timed out or cancelled")
         if errors:
             raise EOFError("Biome LSP write failed") from errors[0]
 
@@ -351,11 +395,11 @@ class OwnedBiomeDaemon:
                     time.sleep(min(0.02, max(0.001, deadline - time.monotonic())))
             if pipe is None:
                 raise BiomeOwnershipError("owned Biome protocol endpoint did not become available")
-            incoming: queue.Queue[dict[str, Any] | None] = queue.Queue(maxsize=64)
+            incoming: queue.Queue[dict[str, Any] | None] = queue.Queue(maxsize=_INBOUND_QUEUE_SIZE)
             writes: queue.Queue[Any] = queue.Queue(maxsize=8)
             stop_reader = threading.Event()
             session = {"pipe": pipe, "incoming": incoming, "stop": stop_reader,
-                       "writes": writes, "deferred": deque(maxlen=64), "seq": 0,
+                       "writes": writes, "deferred": deque(maxlen=_INBOUND_QUEUE_SIZE), "seq": 0,
                        "documents": OrderedDict(), "reader": None, "writer": None,
                        "last_used": time.monotonic(), "deadline": deadline,
                        "should_stop": should_stop, "overflow": threading.Event(),
@@ -364,7 +408,7 @@ class OwnedBiomeDaemon:
             def read_loop() -> None:
                 try:
                     while not stop_reader.is_set():
-                        message = _read(pipe)
+                        message = _read(pipe, max_frame=_MAX_INBOUND_FRAME)
                         if message is None:
                             break
                         incoming.put(message, timeout=0.2)
@@ -459,42 +503,43 @@ class OwnedBiomeDaemon:
             raise TimeoutError("Biome LSP request timed out or cancelled")
 
         try:
-            if not session.get("initialized"):
-                request("initialize", {"processId": os.getpid(), "rootUri": Path(root).resolve().as_uri(),
-                                        "capabilities": {"workspace": {"configuration": True},
-                                                         "textDocument": {"publishDiagnostics": {"relatedInformation": True}}}})
-                self._send(pipe, {"jsonrpc": "2.0", "method": "initialized", "params": {}})
-                session["initialized"] = True
             diagnostics: list[dict[str, Any]] = []
             versions: dict[str, int] = {}
             original_paths: dict[str, str] = {}
             total_bytes = 0
             root_path = Path(root).resolve(strict=True)
+            prepared: list[tuple[str, Path, str, str, str, int, dict[str, Any] | None]] = []
             for path in paths:
-                candidate = Path(path)
-                absolute = str((candidate if candidate.is_absolute() else root_path / candidate).resolve(strict=True))
-                if not Path(absolute).is_relative_to(root_path):
-                    raise ValueError("Biome LSP path escapes project root")
-                with Path(absolute).open("rb") as handle:
-                    raw = handle.read(2_000_001)
-                total_bytes += len(raw)
-                if len(raw) > 2_000_000 or total_bytes > 8_000_000:
+                candidate = Path(path).expanduser()
+                if not candidate.is_absolute():
+                    candidate = root_path / candidate
+                target, text = _read_source_snapshot(candidate, root_path)
+                source_size = len(text.encode("utf-8"))
+                total_bytes += source_size
+                if source_size > 2_000_000 or total_bytes > 8_000_000:
                     raise ValueError("Biome LSP source budget exceeded")
-                uri = Path(absolute).as_uri()
+                absolute = str(target)
+                uri = target.as_uri()
                 old_document = session["documents"].get(uri)
                 version_num = (old_document["version"] + 1) if old_document else 1
-                versions[uri] = version_num
-                original_paths[uri] = path
-                session["documents"][uri] = {"version": version_num, "path": path,
-                                              "language_id": None, "last_used": time.monotonic()}
-                text = raw.decode("utf-8", errors="replace")
                 language_id = {".json": "json", ".jsonc": "jsonc", ".js": "javascript",
                                ".jsx": "javascriptreact", ".mjs": "javascript", ".cjs": "javascript",
                                ".ts": "typescript", ".tsx": "typescriptreact", ".mts": "typescript",
                                ".cts": "typescript"}.get(Path(absolute).suffix.lower())
                 if language_id is None:
                     raise ValueError("unsupported Biome document type")
-                session["documents"][uri]["language_id"] = language_id
+                prepared.append((path, target, uri, text, language_id, version_num, old_document))
+            if not session.get("initialized"):
+                request("initialize", {"processId": os.getpid(), "rootUri": root_path.as_uri(),
+                                        "capabilities": {"workspace": {"configuration": True},
+                                                         "textDocument": {"publishDiagnostics": {"relatedInformation": True}}}})
+                self._send(pipe, {"jsonrpc": "2.0", "method": "initialized", "params": {}})
+                session["initialized"] = True
+            for path, target, uri, text, language_id, version_num, old_document in prepared:
+                versions[uri] = version_num
+                original_paths[uri] = path
+                session["documents"][uri] = {"version": version_num, "path": path,
+                                              "language_id": language_id, "last_used": time.monotonic()}
                 if old_document is None:
                     self._send(pipe, {"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": {
                         "textDocument": {"uri": uri, "languageId": language_id, "version": version_num, "text": text}}})
@@ -599,21 +644,22 @@ class OwnedBiomeDaemon:
             except Exception:
                 child_confirmed = False
             finally:
-                if child is version_proc:
-                    for stream in (child.stdout, child.stderr):
-                        try:
-                            stream.close()
-                        except Exception:
-                            pass
-                    readers = self._version_readers
-                else:
-                    readers = tuple(self._drainers)
+                readers = self._version_readers if child is version_proc else tuple(self._drainers)
+                for stream in (getattr(child, "stdout", None), getattr(child, "stderr", None)):
+                    if stream is None:
+                        continue
+                    try:
+                        stream.close()
+                    except Exception:
+                        pass
                 for reader in readers:
                     try:
                         reader.join(min(0.2, max(0.0, deadline - time.monotonic()) if deadline is not None else 0.2))
                     except Exception:
                         pass
-                child_confirmed = child_confirmed and child.poll() is not None and not any(r.is_alive() for r in readers)
+                child_confirmed = (child_confirmed and child.poll() is not None
+                                   and not any(r.is_alive() for r in readers)
+                                   and _release_process_job(child))
             confirmed = child_confirmed and confirmed
             if child_confirmed:
                 if child is version_proc:

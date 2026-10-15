@@ -44,6 +44,11 @@ def test_lsp_framing_is_bounded_and_roundtrips_complete_json_object():
     assert biome._read(io.BytesIO(wire)) == {"jsonrpc": "2.0", "id": 1, "result": {"ready": True}}
     with pytest.raises(ValueError, match="frame limit"):
         biome._frame({"payload": "x" * biome._MAX_FRAME})
+    oversized_notification = biome._frame({"params": "x" * (biome._MAX_INBOUND_FRAME + 32)})
+    with pytest.raises(ValueError, match="frame limit"):
+        biome._read(io.BytesIO(oversized_notification), max_frame=biome._MAX_INBOUND_FRAME)
+    assert biome._MAX_FRAME > biome._MAX_INBOUND_FRAME
+    assert biome._INBOUND_SESSION_QUEUE_BUDGET == 2_048_000
 
 
 def test_diagnostic_flood_and_malformed_envelopes_fail_instead_of_truncating():
@@ -53,6 +58,30 @@ def test_diagnostic_flood_and_malformed_envelopes_fail_instead_of_truncating():
         biome._normalize_diagnostics([{"message": "x", "severity": True}], "app.ts")
     with pytest.raises(ValueError, match="range"):
         biome._normalize_diagnostics([{"message": "x", "range": {"start": {"line": True}}}], "app.ts")
+
+
+def test_source_snapshot_rejects_path_retargeted_outside_root(tmp_path, monkeypatch):
+    root = tmp_path / "root"
+    outside = tmp_path / "outside"
+    root.mkdir(); outside.mkdir()
+    inside_file = root / "app.ts"
+    outside_file = outside / "app.ts"
+    inside_file.write_text("const inside = true;\n", encoding="utf-8")
+    outside_file.write_text("const outside = true;\n", encoding="utf-8")
+    candidate = root / "app.ts"
+    original_resolve = biome.Path.resolve
+    calls = 0
+
+    def changing_resolve(path, *args, **kwargs):
+        nonlocal calls
+        if path == candidate:
+            calls += 1
+            return inside_file if calls == 1 else outside_file
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(biome.Path, "resolve", changing_resolve)
+    with pytest.raises(ValueError):
+        biome._read_source_snapshot(candidate, root.resolve())
 
 
 def test_server_launch_uses_only_owned_foreground_entrypoint(monkeypatch):
@@ -88,6 +117,7 @@ def test_server_launch_uses_only_owned_foreground_entrypoint(monkeypatch):
 
 def test_unknown_binary_version_never_starts_foreground_server(monkeypatch):
     calls = []
+    released = []
 
     class FakeVersionProcess:
         pid = 79
@@ -104,11 +134,13 @@ def test_unknown_binary_version_never_starts_foreground_server(monkeypatch):
         return FakeVersionProcess()
 
     monkeypatch.setattr(biome, "popen_managed", launch)
+    monkeypatch.setattr(biome, "_release_process_job", lambda proc: released.append(proc) or True)
     daemon = biome.OwnedBiomeDaemon("biome")
     monkeypatch.setattr(daemon, "supported_here", lambda: True)
     with pytest.raises(biome.BiomeOwnershipError, match="unsupported Biome version"):
         daemon._ensure_server(10**12)
     assert calls == [["biome", "--version"]]
+    assert released and released[0].stdout.closed and released[0].stderr.closed
 
 
 def test_unknown_peer_is_rejected_before_pipe_becomes_a_stream(monkeypatch):
@@ -175,12 +207,19 @@ def test_blocked_fake_pipe_write_times_out_and_cleanup_closes_only_owned_stream(
     daemon._proc, daemon._version = process, "2.5.15"
     monkeypatch.setattr(daemon, "_ensure_server", lambda deadline: (process, "2.5.15"))
     monkeypatch.setattr(biome, "_windows_pipe", lambda path, expected_pid, *, deadline: pipe)
-    monkeypatch.setattr(biome, "_read", lambda stream: stream.incoming.get(timeout=2))
+    monkeypatch.setattr(biome, "_read", lambda stream, **kwargs: stream.incoming.get(timeout=2))
     monkeypatch.setattr(biome, "terminate_tree", lambda *args, **kwargs: True)
+    source = tmp_path / "src" / "app.ts"
+    source.parent.mkdir()
+    source.write_text("const value = 1;\n", encoding="utf-8")
+    stop = threading.Event()
+    timer = threading.Timer(0.05, stop.set)
+    timer.start()
 
-    with pytest.raises(TimeoutError, match="write timed out"):
+    with pytest.raises(TimeoutError, match="write timed out or cancelled"):
         daemon.diagnostics("tenant-a", str(tmp_path), ["src/app.ts"],
-                           deadline=time.monotonic() + 0.05, should_stop=lambda: False)
+                           deadline=time.monotonic() + 2, should_stop=stop.is_set)
+    timer.join()
     assert pipe.closed
     assert daemon.close() is True
 
@@ -268,6 +307,13 @@ def test_verified_client_session_reuses_pipe_and_versions_documents(tmp_path, mo
     versions = [item["params"]["textDocument"]["version"] for item in pipes[0].sent
                 if item.get("method") in {"textDocument/didOpen", "textDocument/didChange"}]
     assert versions == [1, 2]
+
+    sent_before_invalid = len(pipes[0].sent)
+    path.write_bytes(b"const invalid = '\xff';\n")
+    with pytest.raises(UnicodeDecodeError):
+        daemon.diagnostics("tenant-a", str(tmp_path), [str(path)], deadline=time.monotonic() + 1,
+                           should_stop=lambda: False)
+    assert len(pipes[0].sent) == sent_before_invalid
 
     path.write_bytes(b"x" * 2_000_001)
     with pytest.raises(ValueError, match="source budget"):
