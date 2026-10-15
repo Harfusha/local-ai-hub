@@ -100,6 +100,23 @@ def test_source_accepts_stable_file_when_path_and_handle_ctime_differ(tmp_path, 
     assert result["text"] == "unchanged\n"
 
 
+def test_source_rejects_handle_for_different_path_identity(tmp_path, monkeypatch):
+    source = tmp_path / "sample.py"
+    source.write_text("unchanged\n", encoding="utf-8")
+    real_fstat = os.fstat
+
+    def other_handle_stat(fd):
+        observed = real_fstat(fd)
+        values = {name: getattr(observed, name) for name in dir(observed) if name.startswith("st_")}
+        values["st_ino"] += 1
+        return SimpleNamespace(**values)
+
+    monkeypatch.setattr(source_slice.os, "fstat", other_handle_stat)
+    result = read_source_slice(str(tmp_path), "sample.py")
+    assert result["success"] is False
+    assert "changed while reading" in result["error"]
+
+
 def test_source_rejects_path_identity_change_during_read(tmp_path, monkeypatch):
     source = tmp_path / "sample.py"
     source.write_text("unchanged\n", encoding="utf-8")
