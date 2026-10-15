@@ -5497,17 +5497,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         path = urlparse(self.path).path
         post_route_ids = select_http_routes("POST", path)
-        retired_aliases = {
-            "/api/transcribe",
-            "/api/worktree_release",
-            "/api/worktrees",
-            "/api/lint_fix",
-            "/api/pubsub_poll",
-            "/api/simulate_merge",
-            "/api/flaky_detect",
-            "/api/webhook_replay",
-        }
-        if path in retired_aliases and not post_route_ids:
+        if not post_route_ids:
             self._send(404, {
                 "success": False,
                 "error": "route not found",

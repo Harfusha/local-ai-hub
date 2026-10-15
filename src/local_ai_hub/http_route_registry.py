@@ -168,6 +168,7 @@ POST_ROUTE_REGISTRY: tuple[RouteRule, ...] = (
     RouteRule('post_package_audit_1', frozenset(('/api/repo/package_audit',))),
     RouteRule('post_repo_structural_search_1', frozenset(('/api/repo/structural_search',))),
     RouteRule('post_context_budget_1', frozenset(('/api/repo/context_budget',))),
+    RouteRule('post_context_pack_1', frozenset(('/api/context/pack',))),
     RouteRule('post_ingest_document_1', frozenset(('/api/rag/ingest_document',))),
     RouteRule('post_ingest_diagram_1', frozenset(('/api/rag/ingest_diagram',))),
     RouteRule('post_command_mock_server_1', frozenset(('/api/command/mock_server',))),
