@@ -1413,6 +1413,7 @@ class MemoryStore:
         *,
         id_limit: int = 8,
         root: str | None = None,
+        coordination_id: str = "",
         task_id: str | None = None,
         session_id: str | None = None,
         tenant: str | None = None,
@@ -1435,6 +1436,7 @@ class MemoryStore:
         request_scope_provided = any(
             value is not None for value in (root, task_id, tenant, session_id, clone_id, worktree_id, branch)
         )
+        request_scope_provided = request_scope_provided or bool(coordination_id)
         con = connect_sqlite(self.state_store.db_path)
         try:
             con.create_function(
@@ -1447,6 +1449,7 @@ class MemoryStore:
             if request_scope_provided:
                 scope_sql, scope_params = _context_scope_sql(
                     root=root or "",
+                    coordination_id=coordination_id,
                     task_id=task_id or "",
                     tenant=tenant or "",
                     session_id=session_id or "",

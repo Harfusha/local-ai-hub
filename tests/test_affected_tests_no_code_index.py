@@ -7,6 +7,7 @@ from local_ai_hub.repo_tools import RepositoryTools
 def test_affected_tests_include_transitive_importers_without_code_index(tmp_path: Path) -> None:
     (tmp_path / "src").mkdir()
     (tmp_path / "tests").mkdir()
+    (tmp_path / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
     sources = {
         "src/shared.py": "VALUE = 1\n",
         "src/core.py": "from src.shared import VALUE\n",

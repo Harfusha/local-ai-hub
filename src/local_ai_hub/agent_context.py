@@ -901,6 +901,7 @@ class ContextCompiler:
                     diagnostic_summary = summary_fn(
                         id_limit=8,
                         root=request.root,
+                        coordination_id=request.coordination_id,
                         task_id=request.task_id,
                         tenant=context_tenant,
                         session_id=request.session_id,
