@@ -56,6 +56,7 @@ def test_parser_initialization_is_serialized(monkeypatch) -> None:
 
 
 def test_parser_lock_covers_native_tree_walk_when_parser_is_reused(monkeypatch) -> None:
+    monkeypatch.setattr(treesitter_parser, "_use_isolated_worker", lambda: False)
     class Parser:
         def parse(self, _source: bytes) -> SimpleNamespace:
             return SimpleNamespace(root_node=object())
