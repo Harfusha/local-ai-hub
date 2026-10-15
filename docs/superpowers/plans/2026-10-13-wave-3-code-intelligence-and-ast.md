@@ -152,7 +152,7 @@ On Windows Python 3.13, run tree-sitter parsing in a separate pool worker subpro
 
 ### Task 44: SQLite Parameter Overflow Guard (#99)
 
-**2026-10-15 implementation checkpoint — validation deferred by operator.** Shared `sqlite_batches` limits path/pair batches to 250. Applied to `files_needing_reindex` (now reads only requested files), candidate freshness, parse outcomes, parse/fact blob lookup, test-source links and module facts. Multi-query reads use one read transaction where introduced; module facts retain the global path/line ordering and 120-row cap, stopping once filled. Unbounded kind filters use one JSON1 table parameter, preserving one globally ordered query without a variable per kind. Test-source links are deduplicated and deterministically sorted. The plan's old `batch_replace` file hint does not match the current engine API; actual bulk cache/fact paths above are covered instead.
+**2026-10-15 implementation checkpoint — validation deferred by operator.** Shared `sqlite_batches` limits path/pair batches to 250. Applied to `files_needing_reindex` (now reads only requested files), candidate freshness, parse outcomes, parse/fact blob lookup, test-source links and module facts. Multi-query reads use one read transaction where introduced; module facts retain the global path/line ordering and 120-row cap, stopping once filled. Unbounded kind filters use one JSON1 table parameter, preserving one globally ordered query without a variable per kind. Test-source links are deduplicated and deterministically sorted. The current `batch_replace` method applies source-file replacements rather than generating a bulk SQL IN query; the SQL guards apply to the actual bulk cache/fact paths above.
 
 Deferred regression source: `tests/unit/test_sqlite_parameter_overflow.py` uses temporary SQLite databases with `SQLITE_LIMIT_VARIABLE_NUMBER=512` and 2,000 requested paths/links. The new tests have **not been executed**; no passing, performance or release claim is made. Run them only after the remaining implementation/integration bundle, per the latest user instruction.
 
@@ -206,12 +206,14 @@ Before returning `confidence: 0.925`, inspect file `mtime`. If changed, mark res
 
 ### Task 47: AST Skeletonize Directly from Code Index (#34)
 
+**2026-10-15 implementation checkpoint — source review only, tests deferred.** `local_ai_repo(action="skeletonize", root=ABS_ROOT, path=FILE)` with no inline source routes to a bounded indexed symbol outline through the existing HTTP action. Root/path containment, project path policy and indexed mtime/size are checked; metadata is rechecked after the query. No source text is read or reparsed. Missing/stale indexes fail explicitly rather than silently loading source. The outline is capped at 2,000 symbols/64,000 characters, marks truncation and declares omitted imports/decorators/docstrings/bodies. Existing inline-source skeletonization retains its behavior, including its existing path-as-target convention. Retaining selected function bodies requires explicit inline source. Deferred regression source: `tests/unit/test_skeletonize_from_index.py`; not executed.
+
 **Files:**
 - Modify: `src/local_ai_hub/deterministic.py:7320-7360`
 - Test: `tests/unit/test_skeletonize_from_index.py`
 
-- [ ] **Step 1: Write test skeletonizing a large source file without sending file content**
-- [ ] **Step 2: Implement fix**
+- [x] **Step 1: Write regression source forbidding source reads (execution deferred)**
+- [x] **Step 2: Implement fix (source reviewed; validation pending)**
 In `skeletonize_code`, if `path` is registered, construct the skeleton directly from table `symbols` (classes, functions, signatures) without reading and parsing the file.
 - [ ] **Step 3: Run test and verify pass & Commit**
 `git commit -m "perf(ast): construct file skeleton directly from indexed symbols"`

@@ -2504,6 +2504,61 @@ class CodeIndex:
             self._query_l1.set(cache_key, out)
         return out
 
+    def indexed_skeleton(self, root: str, path: str) -> dict[str, Any]:
+        """Render an authorized, stat-current symbol outline without reading source."""
+        if not Path(root).is_absolute() or not path:
+            return {"success": False, "terminal": True, "retryable": False,
+                    "error": "indexed skeleton requires an absolute root and file path"}
+        base = Path(canonical_root(root))
+        try:
+            target = (base / path).resolve(strict=True)
+            relative = target.relative_to(base).as_posix()
+            before = target.stat()
+            if not target.is_file():
+                raise ValueError("not a regular file")
+        except (OSError, ValueError, RuntimeError):
+            return {"success": False, "terminal": True, "retryable": False, "error": "invalid source path"}
+        api, project_context = self._project_config_context(str(base))
+        settings = project_context.settings if project_context is not None else None
+        if api is not None and settings is not None and (
+            not api.phase_is_allowed(settings, "call_graph")
+            or not api.path_is_allowed(str(base), target, settings, phase="call_graph", size_bytes=before.st_size)
+        ):
+            return {"success": False, "terminal": True, "retryable": False,
+                    "error_code": "project_path_excluded", "error": "project policy excludes this indexed path"}
+        with self._lock, closing(self._connect()) as con:
+            con.execute("BEGIN")
+            metadata = con.execute(
+                "SELECT mtime_ns,size_bytes,language FROM files WHERE root=? AND path=?", (str(base), relative),
+            ).fetchone()
+            if metadata is None or metadata[0] != before.st_mtime_ns or metadata[1] != before.st_size:
+                return {"success": False, "stale": metadata is not None, "terminal": True, "retryable": False,
+                        "error_code": "indexed_skeleton_unavailable", "error": "index this file or supply source text explicitly"}
+            rows = con.execute(
+                "SELECT name,kind,name_path,signature,line,end_line FROM symbols WHERE root=? AND path=? "
+                "ORDER BY line,name LIMIT 2001", (str(base), relative),
+            ).fetchall()
+        if not self._file_stat_is_current(target, before):
+            return {"success": False, "stale": True, "terminal": True, "retryable": False,
+                    "error_code": "indexed_skeleton_changed", "error": "file changed during outline retrieval"}
+        lines: list[str] = []
+        used, truncated = 0, len(rows) > 2000
+        for row in rows[:2000]:
+            signature = str(row["signature"] or f"{row['kind']} {row['name']}").splitlines()[0]
+            indent = "    " * min(8, str(row["name_path"] or "").count("/"))
+            text = f"{indent}{signature}  # lines {row['line']}-{row['end_line']}"
+            if used + len(text) + 1 > 64_000:
+                truncated = True
+                break
+            lines.append(text)
+            used += len(text) + 1
+        skeleton = "\n".join(lines)
+        return {"success": True, "path": relative, "source": "code_index", "language": metadata[2],
+                "skeleton_code": skeleton, "skeleton_chars": len(skeleton), "source_size_bytes": before.st_size,
+                "skeleton_format": "symbol_outline", "symbols_returned": len(lines), "truncated": truncated,
+                "freshness_verification": "mtime_ns_and_size", "imports_included": False,
+                "omissions": ["imports", "decorators", "docstrings", "bodies"]}
+
     def symbol_bounds_at(
         self, root: str, path: str, line: int, *, content_hash: str
     ) -> tuple[int, int] | None:
