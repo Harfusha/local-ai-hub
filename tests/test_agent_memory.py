@@ -2381,7 +2381,7 @@ def test_t08_root_scoped_promotion_contract(store: MemoryStore):
     ), actor="user")
     identity = dict(scope=AgentScope.REPOSITORY, scope_id="repo-t08",
                     repository_id='repo-evidence', root="C:/repo", tenant="tenant-a")
-    for mismatch in ({"scope_id": "other"}, {"tenant": "other"}, {"root": "C:/other"}):
+    for mismatch in ({"repository_id": "other"}, {"tenant": "other"}):
         with pytest.raises(KeyError, match="not found"):
             store.promote(record.record_id, AgentScope.GLOBAL, approver="user",
                           **(identity | mismatch))
@@ -2400,8 +2400,13 @@ def test_t08_root_repository_lookup_without_scope_id(store: MemoryStore):
     found = store.get(record.record_id, scope=AgentScope.REPOSITORY,
                       repository_id='repo-evidence', root="C:/repo", tenant="tenant-a")
     assert found is not None and found.record_id == record.record_id
+    shared_worktree = store.get(
+        record.record_id, scope=AgentScope.REPOSITORY,
+        repository_id="repo-evidence", root="C:/other", tenant="tenant-a",
+    )
+    assert shared_worktree is not None and shared_worktree.record_id == record.record_id
     assert store.get(record.record_id, scope=AgentScope.REPOSITORY,
-                     repository_id='repo-evidence', root="C:/other", tenant="tenant-a") is None
+                     repository_id="other-repository", root="C:/repo", tenant="tenant-a") is None
     assert store.get(record.record_id, scope=AgentScope.REPOSITORY,
                      repository_id='repo-evidence', root="C:/repo", tenant="other") is None
     assert store.get(record.record_id, scope=AgentScope.REPOSITORY,
