@@ -256,6 +256,13 @@ rollback_on_failure = true
 default_response_profile = "compact"
 default_max_output_tokens = 1600
 
+[transcription]
+# The optional Whisper CLI uses verified cached weights; downloads require operator opt-in.
+allow_model_downloads = false
+# GPU CLI transcription is not admitted without a separate resource admission implementation.
+device = "cpu"
+# Optional cache_dir override; otherwise XDG_CACHE_HOME/whisper or ~/.cache/whisper is used.
+
 [debug_traces]
 enabled = false
 terminal_ttl_seconds = 259200
