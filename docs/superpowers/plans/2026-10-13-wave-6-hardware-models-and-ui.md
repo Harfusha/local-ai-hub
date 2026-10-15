@@ -82,14 +82,18 @@ When `port` is 0 or omitted, bind socket to port 0 (`sock.bind(('127.0.0.1', 0))
 
 ### Task 82: Non-Blocking GPU Telemetry in `VRAMBalancer` (#53, #97)
 
+**2026-10-15 reassessment and source integration — `5cf40494`.** The prior implementation launched a background probe but still waited up to three seconds in ordinary `status()`. It did not meet the nonblocking criterion. Ordinary status now returns fresh cache immediately or a conservative explicitly stale snapshot while one background sampler runs. Refresh is request-driven; no permanent polling thread is introduced. Explicit `status(force=True)` and `sample_vram()` preserve bounded fresh sampling for benchmarks. Thread-start failure clears the single-flight flag and reports its actual cause without falsely claiming a wait timeout. Existing pressure tests now explicitly request fresh sampling; they retain their pressure assertions. INSTALL/UPDATE prompts are synchronized.
+
+Validation: `python -m pytest tests/unit/test_vram_balancer_non_blocking.py tests/test_vram_balancer.py tests/test_model_policy_repetition.py tests/test_sqlite_resilience.py -q --tb=short` — **33 passed**, request `req_9fa4200641a2`, execution `9752c5ccbc5f46879961b682edf79efd`. A blocked probe stays blocked while ordinary status returns; eleven calls share one probe. Forced sampling, pressure thresholds, pin updates, timeout fallback, fresh-cache reuse and sampler-start failure are covered. This proves the non-waiting contract; the plan's sub-0.1-ms live latency target remains unmeasured. Indexed review degraded because its generated response exceeded the requested budget; no successful local-review claim follows. Primary specification and code-quality review was performed directly.
+
 **Files:**
 - Modify: `src/local_ai_hub/vram_balancer.py:50-95`
 - Test: `tests/unit/test_vram_balancer_non_blocking.py`
 
-- [ ] **Step 1: Write test verifying `vram_balancer.status()` returns immediately without waiting for `nvidia-smi`**
-- [ ] **Step 2: Implement fix**
-Maintain a single background daemon thread with periodic polling. `vram_balancer.status()` always returns the cached snapshot in memory (<0.1 ms).
-- [ ] **Step 3: Run test and verify pass & Commit**
+- [x] **Step 1: Write test verifying `vram_balancer.status()` returns immediately without waiting for `nvidia-smi`**
+- [x] **Step 2: Implement fix**
+Use one request-driven background sampler with cached ordinary status; preserve an explicit bounded fresh-sampling API. Measure the separate <0.1 ms latency target at the runtime acceptance gate.
+- [x] **Step 3: Run test and verify pass & Commit**
 `git commit -m "perf(vram): make GPU telemetry non-blocking via background sampling worker"`
 
 ---
