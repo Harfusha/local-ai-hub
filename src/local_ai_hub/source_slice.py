@@ -47,6 +47,7 @@ def read_source_slice(
         relative = target.relative_to(root)
         if not target.is_file():
             return failure("source path must name a regular file")
+        path_before = target.stat()
         # Nonblocking/no-follow flags also reject or avoid hanging on swapped
         # special files where the host provides these flags.
         flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
@@ -65,7 +66,11 @@ def read_source_slice(
         current_target.relative_to(root)
         current = current_target.stat()
         identity = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
-        if current_target != target or identity(before) != identity(after) or identity(after) != identity(current):
+        if (
+            current_target != target
+            or identity(path_before) != identity(current)
+            or identity(before) != identity(after)
+        ):
             return failure("source changed while reading; slice not returned")
         if b"\x00" in data:
             return failure("source is binary or uses an unsupported encoding")

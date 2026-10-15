@@ -4,10 +4,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from local_ai_hub import source_slice
 from local_ai_hub.source_slice import MAX_SOURCE_BYTES, read_source_slice
 
 
@@ -78,6 +81,46 @@ def test_source_file_and_line_bounds_are_explicit(tmp_path):
     source.write_bytes(b"#" * (MAX_SOURCE_BYTES + 1))
     assert read_source_slice(str(tmp_path), "large.py")["success"] is False
     assert read_source_slice(str(tmp_path), "large.py", line_start=1, line_end=201)["success"] is False
+
+
+def test_source_accepts_stable_file_when_path_and_handle_ctime_differ(tmp_path, monkeypatch):
+    source = tmp_path / "sample.py"
+    source.write_text("unchanged\n", encoding="utf-8")
+    real_fstat = os.fstat
+
+    def handle_stat(fd):
+        observed = real_fstat(fd)
+        values = {name: getattr(observed, name) for name in dir(observed) if name.startswith("st_")}
+        values["st_ctime_ns"] += 1_000_000
+        return SimpleNamespace(**values)
+
+    monkeypatch.setattr(source_slice.os, "fstat", handle_stat)
+    result = read_source_slice(str(tmp_path), "sample.py")
+    assert result["success"] is True, result
+    assert result["text"] == "unchanged\n"
+
+
+def test_source_rejects_path_identity_change_during_read(tmp_path, monkeypatch):
+    source = tmp_path / "sample.py"
+    source.write_text("unchanged\n", encoding="utf-8")
+    real_stat = Path.stat
+    source_stat_calls = 0
+
+    def changed_path_stat(path, *, follow_symlinks=True):
+        nonlocal source_stat_calls
+        observed = real_stat(path, follow_symlinks=follow_symlinks)
+        if path == source:
+            source_stat_calls += 1
+            if source_stat_calls == 3:
+                values = {name: getattr(observed, name) for name in dir(observed) if name.startswith("st_")}
+                values["st_mtime_ns"] += 1
+                return SimpleNamespace(**values)
+        return observed
+
+    monkeypatch.setattr(Path, "stat", changed_path_stat)
+    result = read_source_slice(str(tmp_path), "sample.py")
+    assert result["success"] is False
+    assert "changed while reading" in result["error"]
 
 
 def test_source_symlink_escape_is_rejected(tmp_path):
