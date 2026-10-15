@@ -24,7 +24,7 @@ from local_ai_hub.agent_tasks import (
     TaskStatus,
     TaskStore,
 )
-from local_ai_hub.agent_verification import VerificationReceipt, VerificationStore
+from local_ai_hub.agent_verification import CompletionResult, VerificationReceipt, VerificationStore
 from local_ai_hub.sqlite_support import connect_sqlite
 import local_ai_hub.agent_tasks as agent_tasks_module
 from local_ai_hub import trace_context
@@ -82,9 +82,9 @@ def test_capture_enrichment_remeasures_response_before_checkpoint_commit(store, 
         )
 
     assert len(measured_values) == 2
-    before = measured_values[0]["_token_accounting"]["raw_response_tokens_est"]
-    after = measured_values[1]["_token_accounting"]["raw_response_tokens_est"]
-    assert after > before
+    for projected in measured_values:
+        assert projected["task"]["checkpoint"]["state_data"]["memory_context"] == memory
+        assert "file_snapshots" not in projected["task"]["checkpoint"]["state_data"]
     assert commits == []
     assert store.state_store.event_page(f"task:{task.task_id}")["last_seq"] == before_seq
 
@@ -132,7 +132,8 @@ def test_budget_watchdog_preflights_failed_state_with_preserved_checkpoint(store
     assert measured[1]["task"]["status"] == "failed"
     assert measured[1]["task"]["owner"] == "watchdog"
     assert measured[1]["task"]["checkpoint"]["phase"] == "old-phase"
-    assert measured[1]["task"]["checkpoint"]["next_action"] == old_checkpoint.next_action
+    assert measured[1]["task"]["checkpoint"]["state_data"]["memory_context"] == memory
+    assert "next_action" not in measured[1]["task"]["checkpoint"]
     assert commits == []
     assert store.state_store.event_page(f"task:{task.task_id}")["last_seq"] == before_seq
 
@@ -246,7 +247,7 @@ def test_goal_contract_requires_nonempty_goal():
         GoalContract(goal=" ")
 
 
-def test_legacy_empty_goal_is_loadable_with_explicit_fallback(store: TaskStore):
+def test_persisted_empty_goal_is_rejected_without_legacy_fallback(store: TaskStore):
     task = store.create(contract_with_criteria("tests"), task_context(), task_id="legacy-goal")
     con = connect_sqlite(store.state_store.db_path, isolation_level=None)
     try:
@@ -263,9 +264,8 @@ def test_legacy_empty_goal_is_loadable_with_explicit_fallback(store: TaskStore):
     finally:
         con.close()
 
-    loaded = store.get(task.task_id)
-    assert loaded is not None
-    assert loaded.contract.goal == "Legacy task contract: legacy-goal"
+    with pytest.raises(ValueError, match="requires goal"):
+        store.get(task.task_id)
 
 
 def test_task_creation_and_retrieval(store: TaskStore):
@@ -538,7 +538,10 @@ def test_completed_succeeds_when_verified(
     )
     monkeypatch.setitem(sys.modules, "local_ai_hub.project_config", project_config)
 
-    class CurrentVerifierAdapter:
+    class CurrentVerifierAdapter(VerificationStore):
+        def __init__(self):
+            super().__init__(store.state_store, task_store=store, artifact_store=artifact_store)
+
         def completion(
             self,
             task_id,
@@ -550,11 +553,7 @@ def test_completed_succeeds_when_verified(
         ):
             assert verification_rules == {}
             assert configured_criteria == ()
-            return VerificationStore(
-                store.state_store, task_store=store, artifact_store=artifact_store
-            ).completion(
-                task_id, current_revision=current_revision
-            )
+            return super().completion(task_id, current_revision=current_revision)
 
     store.set_verification_store(CurrentVerifierAdapter())
     completed = store.transition(task.task_id, TaskStatus.COMPLETED, reason="all passed", actor="agent", idempotency_key="c")
@@ -592,8 +591,10 @@ def test_repeated_complete_revalidates_completed_task_with_trusted_project_evalu
     )
     monkeypatch.setitem(sys.modules, "local_ai_hub.project_config", project_config)
 
-    class ChangingVerifier:
-        calls = 0
+    class ChangingVerifier(VerificationStore):
+        def __init__(self):
+            super().__init__(store.state_store, task_store=store)
+            self.calls = 0
 
         def completion(
             self,
@@ -616,8 +617,8 @@ def test_repeated_complete_revalidates_completed_task_with_trusted_project_evalu
             assert configured_commands == {"test": "pytest"}
             assert project_root == repo_root
             if self.calls == 1:
-                return SimpleNamespace(complete=True, unsatisfied_criteria=(), stale_criteria=())
-            return SimpleNamespace(complete=False, unsatisfied_criteria=("tests",), stale_criteria=())
+                return CompletionResult(task_id, True, ("tests",), (), (), ())
+            return CompletionResult(task_id, False, (), ("tests",), (), ())
 
     verifier = ChangingVerifier()
     store.set_verification_store(verifier)
@@ -765,8 +766,9 @@ def test_completed_forwards_project_rules_to_verification_completion(
     project_config.resolve_project_context = resolve_project_context
     monkeypatch.setitem(sys.modules, "local_ai_hub.project_config", project_config)
 
-    class RecordingVerifier:
+    class RecordingVerifier(VerificationStore):
         def __init__(self):
+            super().__init__(store.state_store, task_store=store)
             self.calls = []
 
         def completion(
@@ -793,7 +795,7 @@ def test_completed_forwards_project_rules_to_verification_completion(
                 configured_environment_sha256,
                 project_root,
             ))
-            return SimpleNamespace(complete=True, unsatisfied_criteria=(), stale_criteria=())
+            return CompletionResult(task_id, True, ("tests",), (), (), ())
 
     verifier = RecordingVerifier()
     store.set_verification_store(verifier)
@@ -843,34 +845,13 @@ def test_nonapplicable_project_rule_does_not_bypass_missing_repository_revision(
     )
     monkeypatch.setitem(sys.modules, "local_ai_hub.project_config", project_config)
 
-    calls = []
-
-    class NonapplicableRuleVerifier:
-        def completion(
-            self,
-            task_id,
-            *,
-            current_revision,
-            current_mutation_generation,
-            verification_rules,
-            configured_criteria,
-        ):
-            calls.append((
-                current_revision,
-                current_mutation_generation,
-                verification_rules,
-                configured_criteria,
-            ))
-            return verifications.completion(task_id, current_revision=current_revision)
-
-    store.set_verification_store(NonapplicableRuleVerifier())
+    store.set_verification_store(verifications)
     with pytest.raises(CompletionGateError, match="criterion 'tests' receipt"):
         store.transition(
             task.task_id, TaskStatus.COMPLETED, reason="verified", actor="agent", idempotency_key="c"
         )
     current = store.get(task.task_id)
     assert current is not None and current.status is TaskStatus.VERIFYING
-    assert calls == [("", 4, {"lint": ("lint",)}, ("lint",))]
 
 
 def test_completed_requires_repository_revision_for_active_project_rule(
@@ -879,22 +860,7 @@ def test_completed_requires_repository_revision_for_active_project_rule(
     task = prepare_project_rule_completion(
         store, tmp_path, monkeypatch, with_revision=False
     )
-    calls = []
-
-    class ProjectRuleVerifier:
-        def completion(
-            self,
-            task_id,
-            *,
-            current_revision,
-            current_mutation_generation,
-            verification_rules,
-            configured_criteria,
-        ):
-            calls.append(task_id)
-            return SimpleNamespace(complete=True, unsatisfied_criteria=(), stale_criteria=())
-
-    store.set_verification_store(ProjectRuleVerifier())
+    store.set_verification_store(VerificationStore(store.state_store, task_store=store))
 
     with pytest.raises(CompletionGateError, match="trusted repository_revision is unavailable"):
         store.transition(
@@ -922,7 +888,7 @@ def test_completed_rejects_generic_kwargs_evaluator_for_project_rules(
 
     store.set_verification_store(GenericKwargsVerifier())
 
-    with pytest.raises(CompletionGateError, match="does not support project rules"):
+    with pytest.raises(CompletionGateError, match="evaluator is unsupported"):
         store.transition(
             task.task_id, TaskStatus.COMPLETED, reason="verified", actor="agent", idempotency_key="c"
         )
@@ -937,7 +903,10 @@ def test_completed_rejects_non_boolean_verifier_result(
 ):
     task = prepare_project_rule_completion(store, tmp_path, monkeypatch)
 
-    class MalformedResultVerifier:
+    class MalformedResultVerifier(VerificationStore):
+        def __init__(self):
+            super().__init__(store.state_store, task_store=store)
+
         def completion(
             self,
             task_id,
@@ -951,7 +920,7 @@ def test_completed_rejects_non_boolean_verifier_result(
             configured_environment_sha256,
             project_root,
         ):
-            return {"complete": complete}
+            return CompletionResult(task_id, complete, (), ("tests",), (), ())
 
     store.set_verification_store(MalformedResultVerifier())
 
@@ -971,7 +940,10 @@ def test_completion_verifier_failure_does_not_complete_task_or_add_receipt(
     task = prepare_project_rule_completion(store, tmp_path, monkeypatch)
     before = store.get(task.task_id)
 
-    class FailingVerifier:
+    class FailingVerifier(VerificationStore):
+        def __init__(self):
+            super().__init__(store.state_store, task_store=store)
+
         def completion(
             self,
             task_id,
@@ -1145,7 +1117,7 @@ def test_checkpoint_rejects_client_change_to_nested_worktree_repo_root(
         )
 
 
-def test_completed_forwards_project_rules_to_compatible_verifier(
+def test_completed_forwards_project_rules_to_supported_verification_store(
     store: TaskStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     repo_root = tmp_path / "repository"
@@ -1177,8 +1149,9 @@ def test_completed_forwards_project_rules_to_compatible_verifier(
     )
     monkeypatch.setitem(sys.modules, "local_ai_hub.project_config", project_config)
 
-    class RecordingVerifier:
+    class RecordingVerifier(VerificationStore):
         def __init__(self):
+            super().__init__(store.state_store, task_store=store)
             self.calls = []
 
         def completion(
@@ -1197,7 +1170,7 @@ def test_completed_forwards_project_rules_to_compatible_verifier(
             self.calls.append(
                 (task_id, current_revision, current_mutation_generation, verification_rules, configured_criteria)
             )
-            return SimpleNamespace(complete=True, unsatisfied_criteria=(), stale_criteria=())
+            return CompletionResult(task_id, True, ("tests",), (), (), ())
 
     verifier = RecordingVerifier()
     store.verification_store = verifier
@@ -1341,29 +1314,18 @@ def test_stores_schema_initialized_flag(tmp_path: Path):
     assert ls._initialized is True
 
 
-def test_goal_contract_normalizes_scope_string_and_serializes_without_error():
+def test_goal_contract_accepts_only_canonical_scope_values():
     # Constructing with string scope directly
     c1 = GoalContract(goal="test 1", scope="task")
     assert isinstance(c1.scope, AgentScope)
     assert c1.scope == AgentScope.TASK
     assert c1.to_dict()["scope"] == "task"
 
-    # Constructing with alias string
-    c2 = GoalContract(goal="test 2", scope="code")
-    assert isinstance(c2.scope, AgentScope)
-    assert c2.scope == AgentScope.TASK
-    assert c2.to_dict()["scope"] == "task"
-
-    # Constructing via from_dict with empty/None scope
-    c3 = GoalContract.from_dict({"goal": "test 3", "scope": None})
-    assert isinstance(c3.scope, AgentScope)
-    assert c3.scope == AgentScope.TASK
-    assert c3.to_dict()["scope"] == "task"
-
-    c4 = GoalContract.from_dict({"goal": "test 4", "scope": ""})
-    assert isinstance(c4.scope, AgentScope)
-    assert c4.scope == AgentScope.TASK
-    assert c4.to_dict()["scope"] == "task"
+    with pytest.raises(ValueError, match="not a valid AgentScope"):
+        GoalContract(goal="test 2", scope="code")
+    for scope in (None, ""):
+        with pytest.raises(ValueError):
+            GoalContract.from_dict({"goal": "test 3", "scope": scope})
 
 
 def test_structured_description_survives_contract_and_task_round_trip(store: TaskStore):
@@ -1519,7 +1481,7 @@ def test_task_keyword_index_backfills_existing_projection_on_startup(store: Task
     assert [item.task_id for item in reloaded_store.list_tasks(query="searchable marker")] == [task.task_id]
 
 
-def test_task_keyword_index_backfills_legacy_title_field(store: TaskStore):
+def test_task_keyword_index_does_not_recover_goal_from_legacy_title(store: TaskStore):
     task = store.create(
         GoalContract(goal="Legacy task"),
         task_context(),
@@ -1537,9 +1499,8 @@ def test_task_keyword_index_backfills_legacy_title_field(store: TaskStore):
     finally:
         con.close()
 
-    matches = store.list_tasks(query="quasar")
-    assert [item.task_id for item in matches] == [task.task_id]
-    assert matches[0].contract.goal == "Legacy title quasar marker"
+    with pytest.raises(ValueError, match="requires goal"):
+        store.list_tasks(query="quasar")
 
 
 def test_task_keyword_index_repairs_partial_grams_on_startup(store: TaskStore):
