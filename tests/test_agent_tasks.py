@@ -89,6 +89,54 @@ def test_capture_enrichment_remeasures_response_before_checkpoint_commit(store, 
     assert store.state_store.event_page(f"task:{task.task_id}")["last_seq"] == before_seq
 
 
+def test_budget_watchdog_preflights_failed_state_with_preserved_checkpoint(store, monkeypatch):
+    memory = {
+        "schema_version": 1, "tenant_key": "tenant-test", "instruction": "Use memory carefully",
+        "items": [], "warnings": [], "estimated_tokens": 1,
+    }
+    old_checkpoint = TaskCheckpoint(
+        phase="old-phase", next_action="old action " * 100,
+        state_data={"memory_context": memory, "old_checkpoint_data": "preserve me"},
+    )
+    task = store.create(contract_with_criteria(), task_context(), task_id="preflight-watchdog")
+    current = replace(task, status=TaskStatus.ACTIVE, checkpoint=old_checkpoint)
+    monkeypatch.setattr(store, "get", lambda task_id: current)
+    monkeypatch.setattr(store, "_validate_memory_audit", lambda _task: None)
+    store.policy_engine = SimpleNamespace(
+        get_budget=lambda _task_id: SimpleNamespace(
+            is_exhausted=lambda: True, used_tokens=1, max_tokens=1,
+            used_compute_seconds=1.0, max_compute_seconds=1.0,
+        )
+    )
+
+    measured = []
+
+    def measure(projected, requested):
+        measured.append(projected)
+        return 129 if projected["task"]["status"] == "failed" else 64
+
+    monkeypatch.setattr(agent_tasks_module, "task_memory_wire_tokens", measure)
+    before_seq = store.state_store.event_page(f"task:{task.task_id}")["last_seq"]
+    commits = []
+    monkeypatch.setattr(store, "_commit_update", lambda *args, **kwargs: commits.append(args))
+
+    with pytest.raises(agent_tasks_module.CheckpointResponseBudgetError):
+        store.checkpoint(
+            task.task_id,
+            TaskCheckpoint(phase="new-phase", state_data={"memory_audit": {"not_used_reason": "not relevant"}}),
+            response_budget_tokens=128,
+        )
+
+    assert len(measured) == 2
+    assert measured[0]["task"]["checkpoint"]["phase"] == "new-phase"
+    assert measured[1]["task"]["status"] == "failed"
+    assert measured[1]["task"]["owner"] == "watchdog"
+    assert measured[1]["task"]["checkpoint"]["phase"] == "old-phase"
+    assert measured[1]["task"]["checkpoint"]["next_action"] == old_checkpoint.next_action
+    assert commits == []
+    assert store.state_store.event_page(f"task:{task.task_id}")["last_seq"] == before_seq
+
+
 def make_trusted_repository(parent: Path) -> tuple[Path, str]:
     root = parent / "repo"
     root.mkdir()
