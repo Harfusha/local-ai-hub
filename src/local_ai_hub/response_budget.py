@@ -19,7 +19,8 @@ from .token_accounting import json_tokens, token_efficiency_metadata
 LIFECYCLE_PROTECTED_KEYS = (
     "operation", "operation_id", "action", "status", "state", "accepted", "completed",
     "job_id", "task_id", "work_id", "request_id", "execution_id", "in_progress",
-    "request_not_sent", "outcome_unknown", "complete", "partial", "cancel_requested",
+    "request_not_sent", "outcome_unknown", "mutation_applied", "operation_not_started",
+    "complete", "partial", "cancel_requested",
     "expires_at", "artifact_id", "output_artifact_id",
 )
 

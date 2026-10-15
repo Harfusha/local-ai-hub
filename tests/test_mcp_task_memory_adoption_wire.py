@@ -106,6 +106,19 @@ def _round_trip(tmp_path, requests, monkeypatch, *, real_store=False, return_sto
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
             request_id = self.headers.get("X-LocalAI-Request-ID", "")
             calls.append({"path": self.path, "body": body, "request_id": request_id})
+            if body.get("reason") == "large_error":
+                encoded = json.dumps({
+                    "success": False, "status_code": 413, "terminal": True, "retryable": False,
+                    "error": "checkpoint response budget rejected " * 1200,
+                    "mutation_applied": False, "operation_not_started": True,
+                    "request_id": request_id,
+                }).encode()
+                self.send_response(413)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(encoded)))
+                self.end_headers()
+                self.wfile.write(encoded)
+                return
             if tasks is not None:
                 token = trace_context.set_context(
                     request_id=request_id, trace_id=request_id, tenant="memory-wire-test")
@@ -344,6 +357,21 @@ def test_registered_mcp_checkpoint_rejects_malformed_audit_before_preflight(tmp_
     assert "memory_audit" in payload["error"]
     assert tasks.state_store.event_page(f"task:{TASK_ID}")["last_seq"] == 1
     assert "memory_audit" not in tasks.get(TASK_ID).checkpoint.state_data
+
+
+@pytest.mark.parametrize("profile", ["compact", "minimal", "delta"])
+def test_registered_mcp_large_checkpoint_error_keeps_mutation_flags(tmp_path, monkeypatch, profile):
+    _, calls, results = _round_trip(tmp_path, [{
+        "action": "task_checkpoint", "reason": "large_error", "checkpoint": {"phase": "edit"},
+        "response_profile": profile, "reuse_key": f"checkpoint-large-error:{profile}",
+        "max_response_tokens": 512,
+    }], monkeypatch)
+    payload = results[0].structuredContent
+    assert payload["success"] is False
+    assert payload["mutation_applied"] is False
+    assert payload["operation_not_started"] is True
+    assert payload["request_id"] == calls[0]["request_id"]
+    assert results[0].isError is False
 
 
 @pytest.mark.parametrize("action", ["task_create", "task_resume"])
