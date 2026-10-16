@@ -362,41 +362,6 @@ def test_reused_chunks_keep_original_space_when_embedder_falls_back(tmp_path):
         )
         assert tuple(embedding) == (float(len(shared_text)), float(ord("b")))
         assert rows["shared.py"][1] != source_embedding
-def test_same_workspace_blank_space_chunk_is_reembedded_not_relabelled(tmp_path):
-    services = _Services(space_id="space-current")
-    store = _store(tmp_path, services)
-    root = tmp_path / "project"
-    root.mkdir()
-    source = root / "same.py"
-    source.write_text("def same_value():\n    return 4\n", encoding="utf-8")
-    workspace = "same-workspace"
-    assert store.index_paths_step(str(root), "tenant", workspace, ["same.py"])["success"]
-    calls_before = len(services.calls)
-    with closing(store._connect()) as con:
-        con.execute(
-            "UPDATE chunks SET embedding='[99.0, 99.0]', embedding_space='' "
-            "WHERE tenant=? AND workspace=? AND path=?",
-            (store._scope_key("tenant"), workspace, "same.py"),
-        )
-        con.commit()
-
-    result = store.index_paths_step(str(root), "tenant", workspace, ["same.py"])
-
-    assert result["success"] is True
-    assert len(services.calls) > calls_before
-    with closing(store._connect()) as con:
-        row = con.execute(
-            "SELECT text,embedding,embedding_space FROM chunks "
-            "WHERE tenant=? AND workspace=? AND path=?",
-            (store._scope_key("tenant"), workspace, "same.py"),
-        ).fetchone()
-    assert row[2] == "space-current"
-    embedding = (
-        struct.unpack(f"{len(row[1]) // 4}f", row[1])
-        if isinstance(row[1], bytes)
-        else json.loads(row[1])
-    )
-    assert tuple(embedding) == (float(len(row[0])), 1.0)
 
 
 def test_configured_embedding_space_id_is_stable_across_store_instances(tmp_path):
@@ -622,7 +587,7 @@ def test_search_rechecks_generation_after_uncertain_source_read(tmp_path, monkey
     indexed = store.index(str(root), "tenant")
     workspace = indexed["workspace"]
     initial = store.search("value query", "tenant", workspace, use_reranker=False)
-    assert initial["results"][0]["text"] == "def old_value():\n    return 1\n"
+    assert initial["results"][0]["text"].replace("\r\n", "\n") == "def old_value():\n    return 1\n"
 
     source.write_text("def new_value():\n    return 2\n", encoding="utf-8")
     original_open = Path.open
@@ -863,47 +828,6 @@ def test_independent_stores_publish_concurrently_without_partial_snapshot(tmp_pa
         ).fetchall()
     assert {row[0] for row in rows} == {"one.py", "two.py"}
 
-
-def test_search_rechecks_generation_after_uncertain_source_read(tmp_path, monkeypatch):
-    root = tmp_path / "project"
-    root.mkdir()
-    source = root / "one.py"
-    source.write_text("def old_value():\n    return 1\n", encoding="utf-8")
-    store = _store(tmp_path, _Services())
-    store.services.space_id = "race-space"
-    store.config["rag"]["max_file_bytes"] = 32
-    indexed = store.index(str(root), "tenant")
-    workspace = indexed["workspace"]
-    initial = store.search("value query", "tenant", workspace, use_reranker=False)
-    assert initial["results"][0]["text"].replace("\r\n", "\n") == "def old_value():\n    return 1\n"
-
-    source.write_text("def new_value():\n    return 2\n", encoding="utf-8")
-    original_open = Path.open
-
-    def grow_after_stat(candidate: Path, mode="r", *args, **kwargs):
-        if candidate.resolve() == source.resolve() and mode == "rb":
-            return io.BytesIO(b"x" * 33)
-        return original_open(candidate, mode, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "open", grow_after_stat)
-    original_lookup = store.search_flight.get_or_compute
-    interleaved = {}
-
-    def publish_uncertainty_before_lookup(key, compute):
-        staged = store.index_paths_step(str(root), "tenant", workspace, ["one.py"])
-        assert staged["success"] is True
-        assert staged["read_uncertain_paths"] == ["one.py"]
-        raw, hit, coalesced = original_lookup(key, compute)
-        interleaved["hit"] = hit
-        return raw, hit, coalesced
-
-    monkeypatch.setattr(store.search_flight, "get_or_compute", publish_uncertainty_before_lookup)
-    result = store.search("value query", "tenant", workspace, use_reranker=False)
-
-    assert interleaved["hit"] is True
-    assert result["search_cache"]["hit"] is False
-    assert result["results"] == []
-    assert result["fallback"] == "source_read_uncertain"
 
 def test_index_step_reembeds_same_workspace_blank_space_chunk(tmp_path):
     class _SpaceServices(_Services):
