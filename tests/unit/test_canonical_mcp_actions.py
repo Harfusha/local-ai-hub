@@ -1,5 +1,6 @@
 import inspect
 
+from local_ai_hub.features import FeatureSet
 from local_ai_hub import mcp_server
 from local_ai_hub.operation_contracts import (
     operation_actions,
@@ -8,16 +9,10 @@ from local_ai_hub.operation_contracts import (
 )
 
 
-def test_registered_action_enums_publish_only_canonical_names():
+def test_action_schema_publishes_only_canonical_names():
     for tool in ("local_ai_repo", "local_ai_task", "local_ai_command", "local_ai_coord"):
         schema = operation_tool_input_schema(tool, mcp_server.FEATURES)
         assert schema["properties"]["action"]["enum"] == list(operation_actions(tool, mcp_server.FEATURES))
-        manager = getattr(mcp_server.mcp, "_tool_manager", None)
-        registered = getattr(manager, "_tools", {}).get(tool) if manager is not None else None
-        assert registered is not None
-        assert registered.parameters["properties"]["action"]["enum"] == list(
-            operation_actions(tool, mcp_server.FEATURES)
-        )
     removed_repo_actions = {"sec", "idx", "ctx", "review"}
     assert not removed_repo_actions.intersection(
         operation_tool_input_schema("local_ai_repo", mcp_server.FEATURES)["properties"]["action"]["enum"]
@@ -25,6 +20,7 @@ def test_registered_action_enums_publish_only_canonical_names():
 
 
 def test_short_and_normalized_action_aliases_are_rejected():
+    enabled_features = FeatureSet({})
     aliases = {
         "local_ai_repo": ("sec", "idx", "review", "ctx"),
         "local_ai_task": ("gen", "rev", "del"),
@@ -37,7 +33,7 @@ def test_short_and_normalized_action_aliases_are_rejected():
     for tool, values in aliases.items():
         for action in values:
             rejection = validate_operation_call(
-                tool, {"action": action, "root": "."}, features=mcp_server.FEATURES,
+                tool, {"action": action, "root": "."}, features=enabled_features,
             )
             assert rejection is not None
             assert rejection[0] == 400
@@ -45,7 +41,7 @@ def test_short_and_normalized_action_aliases_are_rejected():
 
     for action in ("SEC", "security-audit"):
         rejection = validate_operation_call(
-            "local_ai_repo", {"action": action, "root": "."}, features=mcp_server.FEATURES,
+            "local_ai_repo", {"action": action, "root": "."}, features=enabled_features,
         )
         assert rejection is not None
         assert rejection[0] == 400

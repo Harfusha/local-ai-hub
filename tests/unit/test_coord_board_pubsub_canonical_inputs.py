@@ -58,7 +58,7 @@ def test_pubsub_publish_preserves_falsey_message(monkeypatch, tmp_path, message)
         message=message, publisher="agent-x",
     )
 
-    assert result["success"] is True
+    assert result["success"] is True, result
     assert client.calls == [("coord", {
         "action": "pubsub_publish", "topic": "events", "message": message,
         "publisher": "agent-x", "root": str(tmp_path),
@@ -75,10 +75,10 @@ def test_pubsub_poll_forwards_sequence_limit_and_timestamp(monkeypatch, tmp_path
         after_seq=0, limit=17, after_ts=12.5,
     )
 
-    assert result["success"] is True
+    assert result["success"] is True, result
     assert client.calls == [("coord", {
         "action": "pubsub_poll", "topic": "events", "after_seq": 0,
-        "limit": 17, "since_timestamp": 12.5, "root": str(tmp_path),
+        "limit": 17, "after_ts": 12.5, "root": str(tmp_path),
     })]
 
 
@@ -146,12 +146,12 @@ def test_client_pubsub_poll_forwards_canonical_timestamp_filter(monkeypatch):
     calls = []
     monkeypatch.setattr(client, "post", lambda path, payload: calls.append((path, payload)) or {"success": True})
 
-    result = client.coord("pubsub_poll", topic="events", after_seq=0, limit=17, since_timestamp=12.5)
+    result = client.coord("pubsub_poll", topic="events", after_seq=0, limit=17, after_ts=12.5)
 
     assert result["success"] is True
     assert calls == [("/api/coord/pubsub_poll", {
         "root": ".", "topic": "events", "limit": 17, "after_seq": 0,
-        "since_timestamp": 12.5,
+        "after_ts": 12.5,
     })]
 
 

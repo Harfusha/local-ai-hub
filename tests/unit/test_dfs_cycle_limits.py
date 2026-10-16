@@ -1,12 +1,26 @@
 from __future__ import annotations
 
 import pytest
+import hashlib
+from types import SimpleNamespace
 
+from local_ai_hub.code_index import CodeIndex
 from local_ai_hub.deterministic import DeterministicEngine
 
 
 def _engine(tmp_path):
-    return DeterministicEngine(config={"server": {"state_dir": str(tmp_path / "state")}})
+    def read_snapshot(path, **_kwargs):
+        content = path.read_bytes()
+        return hashlib.sha256(content).hexdigest(), content.decode("utf-8").splitlines()
+
+    index = CodeIndex(
+        {"server": {"state_dir": str(tmp_path / "state")}},
+        SimpleNamespace(max_file_bytes=10_000_000, _read_snapshot=read_snapshot),
+    )
+    paths = [path.relative_to(tmp_path).as_posix() for path in tmp_path.glob("*.py")]
+    if paths:
+        assert index.update_files_batch(str(tmp_path), paths)["success"] is True
+    return DeterministicEngine(code_index=index)
 
 
 def _write_modules(root, imports):

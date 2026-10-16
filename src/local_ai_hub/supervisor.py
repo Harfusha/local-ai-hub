@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from .json_utils import dumps as json_dumps
-
+import ctypes
 import json
 import os
 import signal
@@ -15,6 +14,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from .json_utils import dumps as json_dumps
 from .config import load_config
 from .ollama import OllamaRuntime
 from .llama_cpp_runtime import llama_cpp_managed_selected
@@ -416,9 +416,15 @@ class Supervisor:
         env["PYTHONPATH"] = source_root + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
         py_exe = sys.executable
         if sys.platform == "win32":
-            pyw_candidate = Path(sys.executable).parent / "pythonw.exe"
-            if pyw_candidate.exists():
-                py_exe = str(pyw_candidate)
+            executable = Path(sys.executable)
+            if executable.name.casefold() == "pythonw.exe":
+                # The child pipes stderr; pythonw can surface startup failures as GUI dialogs.
+                console_candidate = executable.with_name("python.exe")
+                if not console_candidate.is_file():
+                    raise FileNotFoundError(
+                        f"Windows console interpreter is unavailable: {console_candidate}"
+                    )
+                py_exe = str(console_candidate)
         logs_dir = self.state_dir / "logs"
         logs_dir.mkdir(parents=True, exist_ok=True)
         kwargs: dict[str, Any] = {
@@ -427,7 +433,18 @@ class Supervisor:
         }
         if os.name != "nt":
             kwargs["start_new_session"] = True
-        return subprocess.Popen([py_exe, "-X", "utf8", "-m", "local_ai_hub.http_server"], **kwargs)
+        command = [py_exe, "-X", "utf8", "-m", "local_ai_hub.http_server"]
+        if sys.platform == "win32":
+            # Windows children inherit this mode; suppress WER dialogs for background services.
+            set_error_mode = ctypes.WinDLL("kernel32", use_last_error=True).SetErrorMode
+            set_error_mode.argtypes = [ctypes.c_uint]
+            set_error_mode.restype = ctypes.c_uint
+            previous_error_mode = set_error_mode(0x0001 | 0x0002)
+            try:
+                return subprocess.Popen(command, **kwargs)
+            finally:
+                set_error_mode(previous_error_mode)
+        return subprocess.Popen(command, **kwargs)
 
     def _persist_hub_owner(self, owner: dict[str, Any]) -> bool:
         if not atomic_json(self.hub_owner_path, owner):

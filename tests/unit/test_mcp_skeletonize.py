@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 from local_ai_hub.mcp_server import mcp
 
@@ -7,7 +8,7 @@ def _call_repo_tool(arguments):
     return asyncio.run(mcp.call_tool("local_ai_repo", arguments))
 
 
-def test_skeletonize_mcp_payload_forwards_root_and_preserves_query_precedence(
+def test_skeletonize_mcp_payload_forwards_canonical_query(
     monkeypatch, tmp_path
 ):
     captured = {}
@@ -25,8 +26,6 @@ def test_skeletonize_mcp_payload_forwards_root_and_preserves_query_precedence(
             "action": "skeletonize",
             "root": str(tmp_path),
             "query": "def from_query(): pass",
-            "diff": "def from_diff(): pass",
-            "task": "def from_task(): pass",
             "path": "module.py",
         }
     )
@@ -39,29 +38,23 @@ def test_skeletonize_mcp_payload_forwards_root_and_preserves_query_precedence(
     }
 
 
-def test_skeletonize_mcp_payload_uses_task_when_query_and_diff_are_empty(
+def test_skeletonize_mcp_payload_rejects_retired_task_alias(
     monkeypatch, tmp_path
 ):
-    captured = {}
-
     class DummyClient:
         def post(self, url, payload, **kwargs):
-            if url == "/api/repo/skeletonize":
-                captured.update(url=url, payload=payload)
-            return {"success": True, "skeleton": "def foo(): ..."}
+            raise AssertionError("retired task alias must be rejected before dispatch")
 
     monkeypatch.setattr("local_ai_hub.mcp_server.CLIENT", DummyClient())
 
-    _call_repo_tool(
+    wire_result = _call_repo_tool(
         {
             "action": "skeletonize",
             "root": str(tmp_path),
             "task": "def from_task(): pass",
         }
     )
-
-    assert captured["payload"] == {
-        "root": str(tmp_path),
-        "code": "def from_task(): pass",
-        "targets": None,
-    }
+    contents = wire_result[0] if isinstance(wire_result, tuple) else wire_result
+    projected = json.loads(next(item.text for item in contents if item.type == "text"))
+    assert projected["success"] is False
+    assert not projected.get("skeleton")

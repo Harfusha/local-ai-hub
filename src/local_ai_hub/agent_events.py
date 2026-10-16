@@ -708,7 +708,7 @@ class AgentStateStore:
         self._ensure_schema()
 
         def _do_append() -> AppendResult:
-            con = connect_sqlite(self.db_path, isolation_level=None, timeout_seconds=0.25)
+            con = connect_sqlite(self.db_path, isolation_level=None, timeout_seconds=2.0)
             try:
                 con.execute("BEGIN IMMEDIATE")
                 result = self.append_in_transaction(

@@ -140,7 +140,7 @@ def test_mcp_incident_actions_send_canonical_scoped_payloads(monkeypatch, tmp_pa
             "action": "incident_decision", "fingerprint": FINGERPRINT,
             "state_revision": "rev-7", "root": str(tmp_path), "tenant": "tenant-x",
         }),
-    ]
+    ], client.calls
 
 
 def test_find_limit_schema_is_action_scoped():

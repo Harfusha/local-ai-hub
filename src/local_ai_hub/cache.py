@@ -895,7 +895,7 @@ class TieredCache:
             self.l1_hits += sum(1 for key in keys if key in results)
             missing_keys = [key for key in keys if key not in results]
             if missing_keys:
-                l2_results = self.l2.get_many(missing_keys) if hasattr(self.l2, "get_many") else {}
+                l2_results = self.l2.get_many(missing_keys)
                 if l2_results:
                     self.l2_hits += len(l2_results)
                     self.l1.set_many(l2_results)

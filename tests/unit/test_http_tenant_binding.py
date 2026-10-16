@@ -77,7 +77,7 @@ def test_same_handler_reauthorization_discards_previous_user_and_root(
         "tenant-one",
     )
 
-    handler.headers["X-LocalAI-Token"] = "second-token"
+    handler.headers.replace_header("X-LocalAI-Token", "second-token")
     assert handler._authorized(permission="tasks:read")
     assert handler._bind_root_tenant(str(second_root)) == (
         str(second_root.resolve()),

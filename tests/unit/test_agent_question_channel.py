@@ -29,14 +29,18 @@ def test_question_and_answer_survive_public_mcp_projection(tmp_path, monkeypatch
     monkeypatch.setattr(mcp_server, "CLIENT", Client())
     monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_: None)
     for action in ("ask", "answer"):
-        wire = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
-            "action": action, "root": str(tmp_path), "session_id": "session-a",
-            "question_id": "q_123", "answer": "Option A", "max_response_tokens": 1024,
-            "response_profile": "compact",
-        }))
+        payload = {
+            "action": action, "root": str(tmp_path),
+            "max_response_tokens": 1024, "response_profile": "compact",
+        }
+        if action == "ask":
+            payload.update(session_id="session-a", question="Which option?")
+        else:
+            payload.update(question_id="q_123", answer="Option A")
+        wire = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", payload))
         contents = wire[0] if isinstance(wire, tuple) else wire
         result = json.loads(next(item.text for item in contents if item.type == "text"))
-        assert result["question"] == question
+        assert result.get("question") == question, result
     assert [call["action"] for call in calls] == ["ask", "answer"]
 
 

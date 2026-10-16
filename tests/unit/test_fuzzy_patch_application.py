@@ -85,12 +85,12 @@ def test_patch_and_verify_crlf_whitespace_tolerance(tmp_path: Path, monkeypatch)
         patch=diff,
         cwd=str(tmp_path),
         tenant="test-agent",
-        command="python -c \"import sys; sys.exit(0)\"",
+        command="git -c core.whitespace=cr-at-eol diff --check",
         task_id="task-fuzzy",
         criterion="quick pass",
     )
 
-    assert res["success"] is True
+    assert res["success"] is True, {key: res.get(key) for key in ("error", "command", "exit_code", "stdout", "stderr")}
     assert res["applied"] is True
     assert res["tests_passed"] is True
     content = target_file.read_bytes()
@@ -127,12 +127,12 @@ def test_patch_and_verify_whitespace_change_tolerance(tmp_path: Path, monkeypatc
         patch=diff,
         cwd=str(tmp_path),
         tenant="test-agent",
-        command="python -c \"import sys; sys.exit(0)\"",
+        command="git diff --check",
         task_id="task-ws",
         criterion="quick pass",
     )
 
-    assert res["success"] is True
+    assert res["success"] is True, res.get("error")
     assert res["applied"] is True
     assert res["tests_passed"] is True
     content = target_file.read_text(encoding="utf-8")

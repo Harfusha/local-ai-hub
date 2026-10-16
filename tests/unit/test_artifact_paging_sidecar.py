@@ -7,7 +7,7 @@ from contextlib import closing
 
 import pytest
 
-from local_ai_hub.artifacts import ArtifactStore
+from local_ai_hub.artifacts import ArtifactStore, UnsupportedArtifactSchema
 
 
 def _tenant_identity(label: str) -> str:
@@ -164,7 +164,7 @@ def test_new_core_schema_keeps_paging_fields_out_of_artifacts(tmp_path) -> None:
     assert {"artifact_id", "char_count", "section_names", "page_text", "nul_mask"} <= sidecar_columns
 
 
-def test_existing_core_paging_extras_are_ignored_and_rebuilt_in_sidecar(tmp_path) -> None:
+def test_noncanonical_core_paging_schema_is_rejected(tmp_path) -> None:
     artifact_id = "art_durable_current_core"
     text = "head\x00middle\x00tail"
     tenant = _tenant_identity("owner")
@@ -194,20 +194,5 @@ def test_existing_core_paging_extras_are_ignored_and_rebuilt_in_sidecar(tmp_path
         )
         connection.commit()
 
-    store = ArtifactStore(tmp_path)
-    result = store.get(artifact_id, offset=4, max_chars=6, tenant="owner")
-    assert result["success"] is True
-    assert result["text"] == text[4:10]
-    assert result["total_chars"] == len(text)
-    with closing(sqlite3.connect(db_path)) as connection:
-        core_row = connection.execute(
-            "SELECT artifact_id, text, char_count, section_names, page_text FROM artifacts WHERE artifact_id=?",
-            (artifact_id,),
-        ).fetchone()
-        sidecar = connection.execute(
-            "SELECT char_count, section_names, page_text, nul_mask FROM artifact_paging_metadata WHERE artifact_id=?",
-            (artifact_id,),
-        ).fetchone()
-    assert core_row == (artifact_id, text, 0, "[]", "stale")
-    assert sidecar[0] == len(text)
-    assert sidecar[3] is not None
+    with pytest.raises(UnsupportedArtifactSchema, match="unsupported artifact"):
+        ArtifactStore(tmp_path).get(artifact_id, offset=4, max_chars=6, tenant="owner")

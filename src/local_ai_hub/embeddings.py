@@ -661,7 +661,7 @@ class EmbeddingModel:
             for text in texts:
                 clean_text = str(text).replace("\r\n", "\n")
                 batch_keys.append(self._embedding_cache_key(cache_identity, query, clean_text))
-            cached_map = self.cache.get_many(batch_keys) if hasattr(self.cache, "get_many") else {}
+            cached_map = self.cache.get_many(batch_keys)
         else:
             cached_map = {}
 
@@ -669,7 +669,7 @@ class EmbeddingModel:
             clean_text = str(text).replace("\r\n", "\n")
             key = batch_keys[i] if cache_identity_usable and i < len(batch_keys) else (self._embedding_cache_key(cache_identity, query, clean_text) if cache_identity_usable else "")
             if cache_identity_usable and key:
-                cached = cached_map.get(key) if hasattr(self.cache, "get_many") else self.cache.get(key)
+                cached = cached_map.get(key)
             else:
                 cached = None
             # Runtime dimension is shared mutable state. Concurrent requests may

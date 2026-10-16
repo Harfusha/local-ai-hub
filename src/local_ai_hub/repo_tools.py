@@ -54,6 +54,8 @@ def is_root_archive_path(relative: str | Path) -> bool:
     )
     if not parts:
         return False
+    if parts[0] == ".validation":
+        return True
     if parts[:3] == ("docs", "integration", "archive") and re.search(
         r"\.(?:py|pyi|js|jsx|ts|tsx|cs|go|rs|java|c|cc|cpp|h|hpp)(?:\.txt)?$", parts[-1]
     ):

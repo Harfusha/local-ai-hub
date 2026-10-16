@@ -3,7 +3,7 @@ from local_ai_hub.agent_verification import ChangeIntent
 
 
 def _change(paths: tuple[str, ...]) -> ChangeIntent:
-    return ChangeIntent(change_id="test-change", task_id="test-task", affected_paths=paths)
+    return ChangeIntent(change_id="test-change", task_id="test-task", affected_paths=paths, created_at=100.0)
 
 
 def test_existing_posix_python_test_path_is_selected_verbatim():

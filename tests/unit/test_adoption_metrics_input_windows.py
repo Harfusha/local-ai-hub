@@ -76,7 +76,7 @@ def test_store_validates_numeric_limits_before_creating_state_dir(tmp_path, opti
     monkeypatch.setattr(Path, "mkdir", fail_if_called)
     monkeypatch.setattr(adoption_metrics, "connect_sqlite", fail_if_called)
 
-    with pytest.raises(ValueError):
+    with pytest.raises(TypeError):
         adoption_metrics.AdoptionMetricsStore(state_dir, **options)
 
 

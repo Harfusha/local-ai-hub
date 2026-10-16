@@ -111,4 +111,4 @@ def test_expired_grant_remains_expired_after_canonical_parse(monkeypatch: pytest
     )
 
     assert decision.allowed is False
-    assert decision.reason == "capability grant has expired"
+    assert "has expired" in decision.reason

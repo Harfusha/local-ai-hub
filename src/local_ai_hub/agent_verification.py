@@ -303,30 +303,35 @@ class ChangeIntent:
     change_id: str
     task_id: str
     affected_paths: tuple[str, ...]
+    created_at: float
     affected_symbols: tuple[str, ...] = ()
     expected_impact: str = ""
     rollback_description: str = ""
-    created_at: float = 0.0
 
     def __post_init__(self) -> None:
-        cid = str(self.change_id or "").replace("\x00", "").strip()
-        tid = str(self.task_id or "").replace("\x00", "").strip()
-        ap = tuple(str(x).replace("\x00", "").strip() for x in (self.affected_paths or ()) if str(x).replace("\x00", "").strip())
-        asym = tuple(str(x).replace("\x00", "").strip() for x in (self.affected_symbols or ()) if str(x).replace("\x00", "").strip())
-        imp = str(self.expected_impact or "").replace("\x00", "").strip()
-        rb = str(self.rollback_description or "").replace("\x00", "").strip()
+        for name in ("change_id", "task_id"):
+            value = getattr(self, name)
+            if type(value) is not str or "\x00" in value or value != value.strip():
+                raise ValueError(f"{name} must be a canonical string")
+        for name in ("affected_paths", "affected_symbols"):
+            values = getattr(self, name)
+            if type(values) not in (list, tuple):
+                raise TypeError(f"{name} must be a list or tuple of strings")
+            if any(type(value) is not str or not value or "\x00" in value for value in values):
+                raise ValueError(f"{name} must contain nonempty strings without NUL")
+            object.__setattr__(self, name, tuple(values))
+        for name in ("expected_impact", "rollback_description"):
+            value = getattr(self, name)
+            if type(value) is not str or "\x00" in value:
+                raise ValueError(f"{name} must be a string without NUL")
+        if type(self.created_at) not in (int, float):
+            raise ValueError("created_at must be a finite nonnegative number")
         try:
-            ca = float(self.created_at)
-            ca = max(0.0, ca) if math.isfinite(ca) else 0.0
-        except (ValueError, TypeError):
-            ca = 0.0
-        object.__setattr__(self, "change_id", cid)
-        object.__setattr__(self, "task_id", tid)
-        object.__setattr__(self, "affected_paths", ap)
-        object.__setattr__(self, "affected_symbols", asym)
-        object.__setattr__(self, "expected_impact", imp)
-        object.__setattr__(self, "rollback_description", rb)
-        object.__setattr__(self, "created_at", ca)
+            finite_timestamp = math.isfinite(self.created_at)
+        except OverflowError:
+            finite_timestamp = False
+        if not finite_timestamp or self.created_at < 0:
+            raise ValueError("created_at must be a finite nonnegative number")
 
     @classmethod
     def create(
@@ -337,6 +342,9 @@ class ChangeIntent:
         expected_impact: str = "",
         rollback_description: str = "",
     ) -> ChangeIntent:
+        for name, values in (("affected_paths", affected_paths), ("affected_symbols", affected_symbols)):
+            if type(values) not in (list, tuple):
+                raise TypeError(f"{name} must be a list or tuple of strings")
         return cls(
             change_id=f"chg_{uuid.uuid4().hex[:12]}",
             task_id=task_id,
@@ -363,45 +371,48 @@ class ChangeIntent:
         if not isinstance(data, Mapping):
             raise TypeError("change intent data must be a mapping")
         return cls(
-            change_id=str(data["change_id"]),
-            task_id=str(data["task_id"]),
-            affected_paths=tuple(data.get("affected_paths") or ()),
-            affected_symbols=tuple(data.get("affected_symbols") or ()),
-            expected_impact=str(data.get("expected_impact", "")),
-            rollback_description=str(data.get("rollback_description", "")),
-            created_at=float(data.get("created_at", 0.0)),
+            change_id=data["change_id"],
+            task_id=data["task_id"],
+            affected_paths=data["affected_paths"],
+            affected_symbols=data.get("affected_symbols", ()),
+            expected_impact=data.get("expected_impact", ""),
+            rollback_description=data.get("rollback_description", ""),
+            created_at=data["created_at"],
         )
 
 
 @dataclass(frozen=True)
 class OutcomeRecord:
     outcome_id: str
+    kind: str
+    actor: str
+    created_at: float
     change_id: str = ""
     task_id: str = ""
-    kind: str = "accepted"
-    actor: str = "user"
     details: dict[str, Any] = field(default_factory=dict)
-    created_at: float = 0.0
 
     def __post_init__(self) -> None:
-        oid = str(self.outcome_id or "").replace("\x00", "").strip()
-        cid = str(self.change_id or "").replace("\x00", "").strip()
-        tid = str(self.task_id or "").replace("\x00", "").strip()
-        knd = str(self.kind or "accepted").replace("\x00", "").strip().lower()
-        act = str(self.actor or "user").replace("\x00", "").strip()
-        det = dict(self.details) if isinstance(self.details, Mapping) else {}
+        for name in ("outcome_id", "change_id", "task_id", "actor"):
+            value = getattr(self, name)
+            if type(value) is not str or "\x00" in value or value != value.strip():
+                raise ValueError(f"{name} must be a canonical string")
+            if name in {"outcome_id", "actor"} and not value:
+                raise ValueError(f"{name} must not be empty")
+        if type(self.kind) is not str or self.kind not in {
+            "accepted", "reverted", "corrected", "regressed", "rejected",
+        }:
+            raise ValueError("kind must be an explicit canonical outcome")
+        if not isinstance(self.details, Mapping):
+            raise TypeError("outcome details must be a mapping")
+        if type(self.created_at) not in (int, float):
+            raise ValueError("created_at must be a finite nonnegative number")
         try:
-            ca = float(self.created_at)
-            ca = max(0.0, ca) if math.isfinite(ca) else 0.0
-        except (ValueError, TypeError):
-            ca = 0.0
-        object.__setattr__(self, "outcome_id", oid)
-        object.__setattr__(self, "change_id", cid)
-        object.__setattr__(self, "task_id", tid)
-        object.__setattr__(self, "kind", knd)
-        object.__setattr__(self, "actor", act)
-        object.__setattr__(self, "details", det)
-        object.__setattr__(self, "created_at", ca)
+            finite_timestamp = math.isfinite(self.created_at)
+        except OverflowError:
+            finite_timestamp = False
+        if not finite_timestamp or self.created_at < 0:
+            raise ValueError("created_at must be a finite nonnegative number")
+        object.__setattr__(self, "details", dict(self.details))
 
     def is_accepted(self) -> bool:
         return self.kind == "accepted"
@@ -433,7 +444,7 @@ class OutcomeRecord:
             task_id=task_id,
             kind="reverted",
             actor=actor,
-            details=dict(details or {}),
+            details={} if details is None else details,
             created_at=time.time(),
         )
 
@@ -452,7 +463,7 @@ class OutcomeRecord:
             task_id=task_id,
             kind="accepted",
             actor=actor,
-            details=dict(details or {}),
+            details={} if details is None else details,
             created_at=time.time(),
         )
 
@@ -471,7 +482,7 @@ class OutcomeRecord:
             task_id=task_id,
             kind="corrected",
             actor=actor,
-            details=dict(details or {}),
+            details={} if details is None else details,
             created_at=time.time(),
         )
 
@@ -490,7 +501,7 @@ class OutcomeRecord:
             task_id=task_id,
             kind="regressed",
             actor=actor,
-            details=dict(details or {}),
+            details={} if details is None else details,
             created_at=time.time(),
         )
 
@@ -509,7 +520,7 @@ class OutcomeRecord:
             task_id=task_id,
             kind="rejected",
             actor=actor,
-            details=dict(details or {}),
+            details={} if details is None else details,
             created_at=time.time(),
         )
 
@@ -529,13 +540,13 @@ class OutcomeRecord:
         if not isinstance(data, Mapping):
             raise TypeError("outcome record data must be a mapping")
         return cls(
-            outcome_id=str(data["outcome_id"]),
-            change_id=str(data.get("change_id", "")),
-            task_id=str(data.get("task_id", "")),
-            kind=str(data.get("kind", "accepted")),
-            actor=str(data.get("actor", "user")),
-            details=dict(data.get("details") or {}),
-            created_at=float(data.get("created_at", 0.0)),
+            outcome_id=data["outcome_id"],
+            change_id=data.get("change_id", ""),
+            task_id=data.get("task_id", ""),
+            kind=data["kind"],
+            actor=data["actor"],
+            details=data.get("details", {}),
+            created_at=data["created_at"],
         )
 
 
@@ -550,19 +561,39 @@ class CompletionResult:
     consistency: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        tid = str(self.task_id or "").replace("\x00", "").strip()
-        sat = tuple(str(x).replace("\x00", "").strip() for x in (self.satisfied_criteria or ()) if str(x).replace("\x00", "").strip())
-        unsat = tuple(str(x).replace("\x00", "").strip() for x in (self.unsatisfied_criteria or ()) if str(x).replace("\x00", "").strip())
-        stale = tuple(str(x).replace("\x00", "").strip() for x in (self.stale_criteria or ()) if str(x).replace("\x00", "").strip())
-        rcpts = tuple(self.receipts or ())
-        cons = dict(self.consistency) if isinstance(self.consistency, Mapping) else {}
-        object.__setattr__(self, "task_id", tid)
-        object.__setattr__(self, "complete", self.complete is True)
-        object.__setattr__(self, "satisfied_criteria", sat)
-        object.__setattr__(self, "unsatisfied_criteria", unsat)
-        object.__setattr__(self, "stale_criteria", stale)
-        object.__setattr__(self, "receipts", rcpts)
-        object.__setattr__(self, "consistency", cons)
+        if type(self.task_id) is not str or "\x00" in self.task_id or self.task_id != self.task_id.strip():
+            raise ValueError("task_id must be a canonical string")
+        if type(self.complete) is not bool:
+            raise ValueError("complete must be a boolean")
+        for name in ("satisfied_criteria", "unsatisfied_criteria", "stale_criteria"):
+            values = getattr(self, name)
+            if type(values) not in (list, tuple):
+                raise TypeError(f"{name} must be a list or tuple of canonical strings")
+            if any(
+                type(value) is not str or not value or "\x00" in value or value != value.strip()
+                for value in values
+            ):
+                raise ValueError(f"{name} must contain nonempty canonical strings")
+            object.__setattr__(self, name, tuple(values))
+        if self.complete and (self.unsatisfied_criteria or self.stale_criteria):
+            raise ValueError("complete cannot be true with unsatisfied or stale criteria")
+        if self.complete and not self.satisfied_criteria:
+            raise ValueError("complete requires at least one satisfied criterion")
+        if type(self.receipts) not in (list, tuple) or any(
+            not isinstance(receipt, VerificationReceipt) for receipt in self.receipts
+        ):
+            raise TypeError("receipts must be a list or tuple of VerificationReceipt objects")
+        if not isinstance(self.consistency, Mapping):
+            raise TypeError("consistency must be a mapping")
+        if self.complete:
+            backed_criteria = {
+                receipt.criterion for receipt in self.receipts
+                if receipt.task_id == self.task_id and receipt.passed and receipt.evidence_id
+            }
+            if not set(self.satisfied_criteria).issubset(backed_criteria):
+                raise ValueError("complete requires passing evidence receipts for every satisfied criterion")
+        object.__setattr__(self, "receipts", tuple(self.receipts))
+        object.__setattr__(self, "consistency", dict(self.consistency))
 
     def is_complete(self) -> bool:
         return self.complete

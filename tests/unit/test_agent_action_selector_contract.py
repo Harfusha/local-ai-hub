@@ -13,19 +13,30 @@ def test_agent_state_post_rejects_noncanonical_action_selectors(action):
 
 
 @pytest.mark.parametrize(
-    ("path", "action"),
+    ("path", "action", "payload"),
     [
-        ("/api/agent-state/memory", "record"),
-        ("/api/agent-state/tasks", "create"),
-        ("/api/agent-state/verification", "receipt"),
-        ("/api/agent-state/events/delta", "export"),
-        ("/api/agent-state/blackboard", "update"),
-        ("/api/agent-state/incidents", "decision"),
-        ("/api/agent-state/swarm/cancel", "cancel"),
+        ("/api/agent-state/memory", "record", {}),
+        ("/api/agent-state/tasks", "create", {}),
+        ("/api/agent-state/verification", "receipt", {}),
+        ("/api/agent-state/events/delta", "export", {}),
+        ("/api/agent-state/blackboard", "update", {}),
+        (
+            "/api/agent-state/incidents",
+            "decision",
+            {
+                "fingerprint": {
+                    "error_class": "CommandExecutionError",
+                    "operation_class": "command",
+                    "signature_hash": "a" * 64,
+                },
+                "state_revision": "r1",
+            },
+        ),
+        ("/api/agent-state/swarm/cancel", "cancel", {}),
     ],
 )
-def test_agent_state_post_accepts_canonical_action_grammar(path, action):
-    Handler._validate_payload(path, {"action": action})
+def test_agent_state_post_accepts_canonical_action_grammar(path, action, payload):
+    Handler._validate_payload(path, {"action": action, **payload})
 
 
 @pytest.mark.parametrize(

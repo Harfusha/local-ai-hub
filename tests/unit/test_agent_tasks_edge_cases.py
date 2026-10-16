@@ -16,15 +16,15 @@ from local_ai_hub.agent_tasks import (
 )
 
 
-def test_goal_contract_sanitization_and_helpers() -> None:
+def test_goal_contract_canonical_fields_and_helpers() -> None:
     gc = GoalContract(
-        goal=" achieve goal\x00 ",
-        description=" desc\x00 ",
-        acceptance_criteria=(" crit1\x00 ", ""),
+        goal=" achieve goal ",
+        description=" desc ",
+        acceptance_criteria=(" crit1 ", ""),
         scope=AgentScope.TASK,
-        non_goals=(" nongoal1\x00 ",),
-        constraints=(" constr1\x00 ",),
-        risk_profile=" high\x00 ",
+        non_goals=(" nongoal1 ",),
+        constraints=(" constr1 ",),
+        risk_profile=" high ",
     )
     assert gc.goal == "achieve goal"
     assert gc.description == "desc"
@@ -43,6 +43,9 @@ def test_goal_contract_sanitization_and_helpers() -> None:
     # Empty goal raises ValueError
     with pytest.raises(ValueError):
         GoalContract(goal=" \x00 ")
+
+    with pytest.raises(ValueError, match="description must be a string without null bytes"):
+        GoalContract(goal="valid goal", description="bad\x00description")
 
 
 def test_task_checkpoint_sanitization_and_helpers() -> None:

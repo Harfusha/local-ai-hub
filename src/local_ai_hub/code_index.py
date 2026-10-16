@@ -1007,6 +1007,7 @@ class CodeIndex:
         self._parse_blob_l1 = MemoryLRUCache(max_entries=4096, ttl_seconds=3600)
         self._parse_diagnostic = threading.local()
         self._query_l1 = MemoryLRUCache(max_entries=2048, ttl_seconds=1800)
+        self._symbol_l1 = MemoryLRUCache(max_entries=2048, ttl_seconds=1800)
         self._impact_result_l1 = MemoryLRUCache(max_entries=512, ttl_seconds=1800)
         self._impact_path_format_l1 = MemoryLRUCache(max_entries=256, ttl_seconds=1800)
         self._impact_candidate_count_l1 = MemoryLRUCache(max_entries=256, ttl_seconds=1800)
@@ -1027,8 +1028,16 @@ class CodeIndex:
         with self._cache_guard:
             version = self._cache_observer.version()
             if version is None or version != self._observed_data_version:
-                for cache in (self._query_l1, self._parse_blob_l1, self._impact_result_l1, self._impact_path_format_l1, self._impact_candidate_count_l1):
-                    cache.clear()
+                for cache in (
+                    getattr(self, "_query_l1", None),
+                    getattr(self, "_symbol_l1", None),
+                    getattr(self, "_parse_blob_l1", None),
+                    getattr(self, "_impact_result_l1", None),
+                    getattr(self, "_impact_path_format_l1", None),
+                    getattr(self, "_impact_candidate_count_l1", None),
+                ):
+                    if cache is not None:
+                        cache.clear()
                 self._status_cache.clear()
                 self._advance_query_cache_generation()
             self._observed_data_version = version
@@ -2736,6 +2745,24 @@ class CodeIndex:
         if not pat:
             return {"success": False, "error": "name_path_pattern required"}
 
+        cache_generation = self._cache_generation()
+        cache_key = stable_hash({
+            "root": resolved_root,
+            "pattern": pat,
+            "depth": depth,
+            "include_body": include_body,
+            "include_info": include_info,
+            "include_kinds": include_kinds,
+            "exclude_kinds": exclude_kinds,
+            "substring_matching": substring_matching,
+            "relative_path": relative_path,
+            "limit": limit,
+            "generation": cache_generation,
+        })
+        cached = self._symbol_l1.get(cache_key)
+        if isinstance(cached, dict):
+            return copy.deepcopy(cached)
+
         where = ["root = ?", _root_archive_path_sql("path")]
         args: list[Any] = [resolved_root]
 
@@ -2829,13 +2856,15 @@ class CodeIndex:
 
             results.append(item)
 
-        return {
+        result = {
             "success": True,
             "root": resolved_root,
             "pattern": pat,
             "matches_count": len(results),
             "symbols": results,
         }
+        self._symbol_l1.set(cache_key, copy.deepcopy(result))
+        return result
 
     def find_declaration(self, root: str, symbol_name: str, path: str | None = None) -> dict[str, Any]:
         res = self.find_symbol(root, symbol_name, depth=0, include_body=True, include_info=True, relative_path=path, limit=5)

@@ -42,9 +42,13 @@ def test_repo_tools_ignores_artifacts_and_validation_by_default(tmp_path):
 
     (tmp_path / "artifacts").mkdir()
     (tmp_path / "artifacts" / "generated.py").write_text("def generated_symbol(): pass")
+    (tmp_path / "artifacts" / "release").mkdir()
+    (tmp_path / "artifacts" / "release" / "notes.md").write_text("release notes")
     (tmp_path / ".validation").mkdir()
     (tmp_path / ".validation" / "validation.py").write_text("def validation_symbol(): pass")
     (tmp_path / "src").mkdir()
+    (tmp_path / "src" / ".validation").mkdir()
+    (tmp_path / "src" / ".validation" / "legitimate.py").write_text("def legitimate(): pass")
     (tmp_path / "src" / "code.py").write_text("def ok(): pass")
 
     rt = RepositoryTools({})
@@ -52,5 +56,7 @@ def test_repo_tools_ignores_artifacts_and_validation_by_default(tmp_path):
     relative_paths = {path.relative_to(tmp_path).as_posix() for path in files}
 
     assert "src/code.py" in relative_paths
+    assert "src/.validation/legitimate.py" in relative_paths
+    assert "artifacts/release/notes.md" in relative_paths
     assert "artifacts/generated.py" not in relative_paths
     assert ".validation/validation.py" not in relative_paths
