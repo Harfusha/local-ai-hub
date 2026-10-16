@@ -35,6 +35,11 @@ def test_route_request_validation_and_helpers() -> None:
     req_nan = RouteRequest(cost_limit=float("nan"))  # type: ignore
     assert req_nan.cost_limit == 0.0
 
+    # Invalid boolean/null budgets must not restore the permissive default.
+    assert RouteRequest(cost_limit=True).cost_limit == 0.0  # type: ignore[arg-type]
+    assert RouteRequest(cost_limit=False).cost_limit == 0.0  # type: ignore[arg-type]
+    assert RouteRequest(cost_limit=None).cost_limit == 0.0  # type: ignore[arg-type]
+
 
 def test_routing_decision_validation_and_helpers() -> None:
     dec = RoutingDecision(
