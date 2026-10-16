@@ -197,6 +197,28 @@ class CapabilityGrant:
         )
 
 
+def _safe_int(val: Any, default: int = 0, min_val: int | None = None) -> int:
+    if isinstance(val, bool):
+        return default
+    try:
+        i = int(val)
+        return max(min_val, i) if min_val is not None else i
+    except (ValueError, TypeError, OverflowError):
+        return default
+
+
+def _safe_float(val: Any, default: float = 0.0, min_val: float | None = None) -> float:
+    if isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        if not math.isfinite(f):
+            return default
+        return max(min_val, f) if min_val is not None else f
+    except (ValueError, TypeError, OverflowError):
+        return default
+
+
 @dataclass(frozen=True)
 class BudgetCost:
     tokens: int = 0
@@ -204,19 +226,9 @@ class BudgetCost:
     external_calls: int = 0
 
     def __post_init__(self) -> None:
-        try:
-            tok = max(0, int(self.tokens))
-        except (ValueError, TypeError):
-            tok = 0
-        try:
-            cs = float(self.compute_seconds)
-            cs = max(0.0, cs) if math.isfinite(cs) else 0.0
-        except (ValueError, TypeError):
-            cs = 0.0
-        try:
-            ec = max(0, int(self.external_calls))
-        except (ValueError, TypeError):
-            ec = 0
+        tok = _safe_int(self.tokens, default=0, min_val=0)
+        cs = _safe_float(self.compute_seconds, default=0.0, min_val=0.0)
+        ec = _safe_int(self.external_calls, default=0, min_val=0)
         object.__setattr__(self, "tokens", tok)
         object.__setattr__(self, "compute_seconds", cs)
         object.__setattr__(self, "external_calls", ec)
@@ -237,32 +249,12 @@ class Budget:
 
     def __post_init__(self) -> None:
         tid = str(self.task_id or "").replace("\x00", "").strip()
-        try:
-            mt = max(0, int(self.max_tokens))
-        except (ValueError, TypeError):
-            mt = 100_000
-        try:
-            ut = max(0, int(self.used_tokens))
-        except (ValueError, TypeError):
-            ut = 0
-        try:
-            mcs = float(self.max_compute_seconds)
-            mcs = max(0.0, mcs) if math.isfinite(mcs) else 600.0
-        except (ValueError, TypeError):
-            mcs = 600.0
-        try:
-            ucs = float(self.used_compute_seconds)
-            ucs = max(0.0, ucs) if math.isfinite(ucs) else 0.0
-        except (ValueError, TypeError):
-            ucs = 0.0
-        try:
-            mec = max(0, int(self.max_external_calls))
-        except (ValueError, TypeError):
-            mec = 50
-        try:
-            uec = max(0, int(self.used_external_calls))
-        except (ValueError, TypeError):
-            uec = 0
+        mt = _safe_int(self.max_tokens, default=100_000, min_val=0)
+        ut = _safe_int(self.used_tokens, default=0, min_val=0)
+        mcs = _safe_float(self.max_compute_seconds, default=600.0, min_val=0.0)
+        ucs = _safe_float(self.used_compute_seconds, default=0.0, min_val=0.0)
+        mec = _safe_int(self.max_external_calls, default=50, min_val=0)
+        uec = _safe_int(self.used_external_calls, default=0, min_val=0)
         object.__setattr__(self, "task_id", tid)
         object.__setattr__(self, "max_tokens", mt)
         object.__setattr__(self, "used_tokens", ut)

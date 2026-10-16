@@ -1,6 +1,7 @@
 from contextlib import closing
 import sqlite3
 import numpy as np
+import pytest
 from pathlib import Path
 import local_ai_hub.semantic_cache as semantic_cache
 from local_ai_hub.semantic_cache import SemanticGenerationCache
@@ -14,6 +15,19 @@ class _StubEmbeddings:
             "success": True,
             "embeddings": [[float(i + 1) for i in range(self.dim)] for _ in texts],
         }
+
+
+@pytest.mark.parametrize("vector", [[], [float("nan")] * 4, [float("inf")] * 4, [0.0] * 4, [1.0]])
+def test_corrupt_blob_never_reuses_value_at_zero_threshold(tmp_path: Path, vector):
+    cache = SemanticGenerationCache(
+        {"server": {"state_dir": str(tmp_path)}, "semantic_cache": {"threshold": 0.0}},
+        _StubEmbeddings(),
+    )
+    cache.set("scope", "stored original query", {"answer": "must not reuse"})
+    with closing(sqlite3.connect(cache.path)) as con:
+        con.execute("UPDATE semantic_entries SET vector_blob=?", (np.asarray(vector, dtype=np.float32).tobytes(),))
+        con.commit()
+    assert cache.get("scope", "different query text") == (None, 0.0)
 
 def test_semantic_cache_exposes_only_canonical_class():
     assert not hasattr(semantic_cache, "SemanticCache")

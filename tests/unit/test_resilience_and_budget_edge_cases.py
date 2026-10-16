@@ -9,34 +9,22 @@ from local_ai_hub.response_budget import _safe_limit, _bounded_string, is_valid_
 
 
 def test_circuit_breaker_edge_cases():
-    # NaN, Inf, bool in constructor
-    cb = CircuitBreakerRegistry(
-        failure_threshold=float("nan"),  # type: ignore
-        cooldown_seconds=float("inf"),  # type: ignore
-        probe_timeout_seconds=True,  # type: ignore
-    )
-    assert cb.failure_threshold >= 1
-    assert math.isfinite(cb.cooldown_seconds)
-    assert math.isfinite(cb.probe_timeout_seconds)
-
-    # Null bytes and None keys
-    assert cb.is_allowed(None) is True  # type: ignore
-    assert cb.is_open(None) is False  # type: ignore
-
-    cb.failure("model\x00bad")
-    cb.failure("model\x00bad")
-    cb.failure("model\x00bad")
-    assert cb.is_open("model\x00bad") is True
-    assert cb.is_allowed("model\x00bad") is False
-
-    # reset
-    cb.reset("model\x00bad")
-    assert cb.is_open("model\x00bad") is False
-
-    cb.failure("m1")
-    cb.failure("m2")
-    cb.reset(None)
-    assert len(cb.status()) == 0
+    for kwargs in ({"failure_threshold": float("nan")}, {"cooldown_seconds": float("inf")}, {"probe_timeout_seconds": True}):
+        with pytest.raises(ValueError):
+            CircuitBreakerRegistry(**kwargs)
+    cb = CircuitBreakerRegistry()
+    for key in (None, "model\x00bad"):
+        with pytest.raises(ValueError):
+            cb.allow(key)
+        with pytest.raises(ValueError):
+            cb.failure(key)
+    assert cb.allow("model") is True
+    for _ in range(3):
+        cb.failure("model")
+    assert cb.status()["model"]["open"] is True
+    assert cb.allow("model") is False
+    cb.success("model")
+    assert cb.allow("model") is True
 
 
 def test_response_budget_safe_limit_and_evidence():

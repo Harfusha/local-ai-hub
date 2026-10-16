@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import math
 import sqlite3
 import threading
 import time
@@ -139,7 +140,18 @@ class SemanticGenerationCache:
             vectors = result.get("embeddings", [])
             if not vectors:
                 return None
-            return [float(value) for value in vectors[0]]
+            values = vectors[0]
+            if not isinstance(values, (list, tuple)) or not values:
+                return None
+            vector = []
+            for value in values:
+                if isinstance(value, bool) or not isinstance(value, (int, float)):
+                    return None
+                number = float(value)
+                if not math.isfinite(number) or abs(number) > 3.4028234663852886e38:
+                    return None
+                vector.append(number)
+            return vector
         except Exception:
             return None
 
@@ -207,8 +219,10 @@ class SemanticGenerationCache:
             best: tuple[int, dict[str, Any], float] | None = None
             query_vector = numpy.asarray(vector, dtype=numpy.float32)
             query_norm = float(numpy.linalg.norm(query_vector))
-            if query_norm > 1e-9:
-                query_vector = query_vector / query_norm
+            if not math.isfinite(query_norm) or query_norm <= 1e-9:
+                self.misses += 1
+                return None, 0.0
+            query_vector = query_vector / query_norm
 
             vector_rows: list[Any] = []
             for row in rows:
@@ -225,8 +239,10 @@ class SemanticGenerationCache:
 
             matrix = numpy.vstack(vector_rows)
             norms = numpy.linalg.norm(matrix, axis=1, keepdims=True)
-            norms[norms < 1e-9] = 1.0
+            valid_rows = numpy.isfinite(matrix).all(axis=1) & numpy.isfinite(norms[:, 0]) & (norms[:, 0] > 1e-9)
+            norms[~valid_rows] = 1.0
             scores = numpy.dot(matrix / norms, query_vector)
+            scores[~valid_rows] = -numpy.inf
             self.comparisons += len(rows)
 
             best_index = int(numpy.argmax(scores))

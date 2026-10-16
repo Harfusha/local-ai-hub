@@ -11,7 +11,7 @@ from local_ai_hub.work_fencing import (
 )
 
 
-def test_vram_balancer_safe_numeric_and_null_bytes() -> None:
+def test_vram_balancer_safe_numeric_and_null_bytes(monkeypatch) -> None:
     balancer = VRAMBalancer()
 
     # _safe_float must not coerce bool to float
@@ -19,17 +19,18 @@ def test_vram_balancer_safe_numeric_and_null_bytes() -> None:
     assert balancer._safe_float(False, default=5.0) == 5.0
     assert balancer._safe_float(float("nan"), default=3.0) == 3.0
 
-    # recommended_context_budget
-    assert balancer.recommended_context_budget(float("nan")) >= 4096
-    assert balancer.recommended_context_budget(True) >= 4096
-    assert balancer.recommended_context_budget(-500) == 4096
-
-    # Null bytes in pin_model and is_model_pinned
-    res = balancer.pin_model("qwen-pinned\x00", ttl_seconds=60)
+    monkeypatch.setattr(balancer, "status", lambda: {"context_budget_factor": 1.0, "pressure_level": "normal"})
+    for budget in (float("nan"), True, -500):
+        with pytest.raises(ValueError):
+            balancer.recommended_context_budget(budget)
+    assert balancer.recommended_context_budget(10**1000) == 10**1000
+    with pytest.raises(ValueError):
+        balancer.pin_model("qwen-pinned\x00", ttl_seconds=60)
+    assert balancer.is_model_pinned("qwen-pinned\x00") is False
+    res = balancer.pin_model("qwen-pinned", ttl_seconds=60)
     assert res["pinned"] is True
-    assert "\x00" not in res["model"]
     assert res["model"] == "qwen-pinned"
-    assert balancer.is_model_pinned("qwen-pinned\x00") is True
+    assert balancer.is_model_pinned("qwen-pinned") is True
 
     # Inspection helpers
     assert balancer.is_sampling() is False

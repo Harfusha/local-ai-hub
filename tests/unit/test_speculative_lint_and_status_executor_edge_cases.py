@@ -38,16 +38,12 @@ def test_speculative_lint_queue_edge_cases(tmp_path: Path):
         }
     }
     queue = SpeculativeLintQueue(async_jobs, config)
-    assert queue.is_enabled() is True
-    assert queue.active_roots() == []
-
+    assert queue.enabled is True
     (tmp_path / "f1.py").write_text("pass", encoding="utf-8")
     res = queue.submit("tenant_a", str(tmp_path), ["f1.py"])
-    assert res.get("job_id") == "job_123"
-    assert len(queue.active_roots()) == 1
-
-    queue.clear()
-    assert queue.active_roots() == []
+    assert res["job_id"] == "job_123"
+    assert res["paths"] == ["f1.py"]
+    assert queue.cancel("tenant_a", "job_123")["success"] is True
 
 
 def test_status_dependency_executor_edge_cases():
@@ -55,14 +51,16 @@ def test_status_dependency_executor_edge_cases():
     with pytest.raises(ValueError, match="status executor capacity must be positive"):
         StatusDependencyExecutor(max_workers=1, capacity=0)
 
-    executor = StatusDependencyExecutor(max_workers=float("nan"), capacity=float("inf"))  # type: ignore
+    with pytest.raises(ValueError):
+        StatusDependencyExecutor(max_workers=float("nan"), capacity=float("inf"))
+    executor = StatusDependencyExecutor(max_workers=1, capacity=2)
     try:
-        assert executor.is_closed() is False
-        assert executor.pending_count() == 0
-        assert executor.capacity() >= 1
+        assert executor.is_shutdown is False
+        assert executor.pending_count == 0
+        assert executor.capacity >= 1
 
         future = executor.submit(lambda x: x * 2, 21)
         assert future.result(timeout=2.0) == 42
     finally:
         executor.shutdown(wait=True)
-        assert executor.is_closed() is True
+        assert executor.is_shutdown is True

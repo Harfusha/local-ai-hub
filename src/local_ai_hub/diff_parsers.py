@@ -6,11 +6,20 @@ import re
 from typing import Any
 
 
+def _is_valid_lines(lines: Any) -> bool:
+    return (
+        lines is not None
+        and not isinstance(lines, bool)
+        and isinstance(lines, (list, tuple, Sequence))
+        and not isinstance(lines, (str, bytes))
+    )
+
+
 def _clean_line(raw: Any) -> str:
     """Accept source lines or unified diff content without parsing headers."""
-    if not isinstance(raw, str):
+    if not isinstance(raw, str) or isinstance(raw, bool):
         return ""
-    line = raw.strip()
+    line = raw.replace("\x00", "").strip()
     if line.startswith(("+++", "---", "@@", "diff --git ")):
         return ""
     if line.startswith(("+", "-")):
@@ -42,7 +51,7 @@ def _split_bracket_aware(text: str) -> list[str]:
 
 def extract_py_diff_defs(lines: list[str] | Sequence[str] | None) -> dict[str, dict[str, Any]]:
     """Extract Python function/class definitions from diff lines."""
-    if not lines:
+    if not _is_valid_lines(lines):
         return {}
     defs: dict[str, dict[str, Any]] = {}
     i = 0
@@ -101,7 +110,7 @@ def extract_py_diff_defs(lines: list[str] | Sequence[str] | None) -> dict[str, d
 
 def extract_ts_diff_defs(lines: list[str] | Sequence[str] | None) -> dict[str, dict[str, Any]]:
     """Extract TypeScript/JavaScript definitions from diff lines."""
-    if not lines:
+    if not _is_valid_lines(lines):
         return {}
     defs: dict[str, dict[str, Any]] = {}
     ts_pattern = re.compile(
@@ -136,7 +145,7 @@ def extract_ts_diff_defs(lines: list[str] | Sequence[str] | None) -> dict[str, d
 
 def extract_cs_diff_defs(lines: list[str] | Sequence[str] | None) -> dict[str, dict[str, Any]]:
     """Extract C# class and method definitions from diff lines."""
-    if not lines:
+    if not _is_valid_lines(lines):
         return {}
     defs: dict[str, dict[str, Any]] = {}
     class_re = re.compile(r"^\s*public\s+(?:static\s+|sealed\s+|abstract\s+|partial\s+)*(class|interface|struct|record|enum)\s+([A-Za-z0-9_]+)")
@@ -158,7 +167,7 @@ def extract_cs_diff_defs(lines: list[str] | Sequence[str] | None) -> dict[str, d
 
 def extract_go_diff_defs(lines: list[str] | Sequence[str] | None) -> dict[str, dict[str, Any]]:
     """Extract Go exported functions and types from diff lines."""
-    if not lines:
+    if not _is_valid_lines(lines):
         return {}
     defs: dict[str, dict[str, Any]] = {}
     func_re = re.compile(r"^\s*func\s+(?:\([^)]+\)\s+)?([A-Z][A-Za-z0-9_]*)\s*\((.*?)\)")
@@ -179,7 +188,7 @@ def extract_go_diff_defs(lines: list[str] | Sequence[str] | None) -> dict[str, d
 
 def extract_rust_diff_defs(lines: list[str] | Sequence[str] | None) -> dict[str, dict[str, Any]]:
     """Extract Rust pub items from diff lines."""
-    if not lines:
+    if not _is_valid_lines(lines):
         return {}
     defs: dict[str, dict[str, Any]] = {}
     rust_re = re.compile(r"^\s*pub(?:\(.*?\))?\s+(fn|struct|enum|trait|type)\s+([A-Za-z0-9_]+)")

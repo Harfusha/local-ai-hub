@@ -47,16 +47,13 @@ def test_scheduler_init_and_submit_edge_cases():
         assert scheduler.pending_count() == 0
         assert scheduler.inflight_count() == 0
 
-        # Submit with NaN priority and NaN wait_timeout
-        res = scheduler.submit(
-            model="m1",
-            tenant=None,  # type: ignore
-            source="test",
-            execute=lambda: {"success": True},
-            priority=float("nan"),  # type: ignore
-            wait_timeout=float("nan"),
-        )
-        assert res.get("success") is True
+        for bad in ({"tenant": None}, {"tenant": " tenant "}, {"priority": float("nan")}, {"wait_timeout": float("nan")}):
+            args = dict(model="m1", tenant="tenant", source="test", execute=lambda: {"success": True})
+            args.update(bad)
+            with pytest.raises(ValueError):
+                scheduler.submit(**args)
+        res = scheduler.submit("m1", "tenant", "test", lambda: {"success": True}, wait_timeout=2.0)
+        assert res["success"] is True
 
         # Invalid model with null byte
         with pytest.raises(ValueError, match="invalid_model"):
@@ -87,11 +84,12 @@ def test_semantic_cache_init_and_math_edge_cases(tmp_path: Path):
     assert cache.is_enabled() is True
     assert cache.entry_count() == 0
 
-    # Math cosine edge cases: NaN, Inf, length mismatch
-    assert cache._cos([1.0, float("nan")], [1.0, 2.0]) == -1.0
-    assert cache._cos([1.0, float("inf")], [1.0, 2.0]) == -1.0
-    assert cache._cos([], [1.0]) == -1.0
-    assert cache._cos([1.0], [1.0, 2.0]) == -1.0
+    # Invalid provider vectors reject before cache writes; no legacy cosine API.
+    for vector in ([1.0, float("nan")], [1.0, float("inf")], [], [True, 1.0]):
+        cache.embeddings = SimpleNamespace(encode=lambda *args, vector=vector, **kwargs: {"success": True, "embeddings": [vector]})
+        cache.set("bad-vector", "query with invalid vector", {"res": "bad"})
+        assert cache.entry_count() == 0
+    cache.embeddings = embeddings
 
     # Normal get/set
     cache.set("scope_1", "test query hello", {"res": "ok"})

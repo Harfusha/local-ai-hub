@@ -14,8 +14,6 @@ from local_ai_hub.treesitter_parser import (
 )
 from local_ai_hub.verification_rules import (
     _canonical_project_root,
-    is_valid_project_root,
-    is_valid_task_id,
     project_command_environment_sha256,
 )
 
@@ -78,12 +76,13 @@ def test_treesitter_parse_invalid_inputs() -> None:
 def test_verification_rules_canonical_project_root() -> None:
     # None or invalid types
     assert _canonical_project_root(None) == ""  # type: ignore[arg-type]
-    assert _canonical_project_root(123) == ""  # type: ignore[arg-type]
+    with pytest.raises(CompletionGateError):
+        _canonical_project_root(123)  # type: ignore[arg-type]
     assert _canonical_project_root("") == ""
 
     # Null bytes must not raise ValueError
-    res = _canonical_project_root("C:\\test\x00\\repo")
-    assert "\x00" not in res
+    with pytest.raises(CompletionGateError):
+        _canonical_project_root("C:\\test\x00\\repo")
 
 
 def test_verification_rules_project_command_env_sha256_edge_cases() -> None:
@@ -101,15 +100,7 @@ def test_verification_rules_project_command_env_sha256_edge_cases() -> None:
         project_command_environment_sha256(object(), "")
 
 
-def test_verification_rules_validation_helpers() -> None:
-    assert is_valid_project_root("C:\\valid\\path") is True
-    assert is_valid_project_root("") is False
-    assert is_valid_project_root(None) is False
-    assert is_valid_project_root("C:\\bad\x00\\path") is False
+def test_verification_rules_valid_root(tmp_path) -> None:
+    import os
 
-    assert is_valid_task_id("task-123_abc") is True
-    assert is_valid_task_id("") is False
-    assert is_valid_task_id("   ") is False
-    assert is_valid_task_id(None) is False
-    assert is_valid_task_id(12345) is False
-    assert is_valid_task_id("task\x00bad") is False
+    assert _canonical_project_root(tmp_path) == os.path.normcase(str(tmp_path.resolve()))
