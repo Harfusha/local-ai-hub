@@ -22,8 +22,8 @@ class RepositoryTestImpactService:
 
     @staticmethod
     def _validate_root(root: str | Path | None) -> str:
-        if root is None:
-            raise ValueError("root must be non-empty")
+        if root is None or isinstance(root, bool) or not isinstance(root, (str, Path)):
+            raise ValueError("root must be a valid path string or Path")
         root_str = str(root).strip()
         if not root_str:
             raise ValueError("root must be non-empty")
@@ -49,15 +49,24 @@ class RepositoryTestImpactService:
     ) -> dict[str, Any]:
         canonical_root = self._validate_root(root)
         if changed_paths is not None:
-            if not isinstance(changed_paths, Iterable) or isinstance(changed_paths, (str, bytes)):
+            if isinstance(changed_paths, bool) or not isinstance(changed_paths, Iterable) or isinstance(changed_paths, (str, bytes)):
                 raise TypeError("changed_paths must be iterable or None")
-            normalized_paths = [str(path) for path in changed_paths]
+            normalized_paths = []
+            for p in changed_paths:
+                if p is None or isinstance(p, bool) or not isinstance(p, (str, Path)):
+                    continue
+                p_str = str(p).replace("\x00", "").strip()
+                if p_str:
+                    normalized_paths.append(p_str)
         else:
             normalized_paths = None
-        clean_base = str(base).strip() if base is not None else ""
-        if not clean_base:
+
+        if isinstance(base, bool) or not isinstance(base, (str, Path)):
             clean_base = "HEAD"
-        clean_params = dict(params) if params is not None else {}
+        else:
+            clean_base = str(base).replace("\x00", "").strip() or "HEAD"
+
+        clean_params = dict(params) if isinstance(params, dict) else {}
         return self.operation_runner(
             "affected-tests",
             canonical_root,
