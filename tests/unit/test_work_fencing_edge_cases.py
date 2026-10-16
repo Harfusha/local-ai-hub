@@ -16,8 +16,7 @@ from local_ai_hub.work_fencing import (
 
 
 def test_normalize_paths_edge_cases() -> None:
-    # None paths collection
-    with pytest.raises(ValueError, match="writer lease requires at least one exact path"):
+    with pytest.raises(ValueError, match="writer lease paths must be a sequence of exact paths"):
         normalize_paths(None)  # type: ignore[arg-type]
 
     # None or non-string elements in paths collection
