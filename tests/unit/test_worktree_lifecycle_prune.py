@@ -62,6 +62,16 @@ def _cleanup_task_worktree(repo, task):
     if path.is_dir():
         remove_git_worktree(repo, path, worktree_id=worktree.get("worktree_id", ""), force=True)
 
+
+def _run_owned_task_cleanup(repo, tasks, task):
+    root_head = process_utils.run_hidden(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True, timeout=5,
+    ).stdout.strip()
+    return tasks.cleanup_worktree(
+        task.task_id, actor="agent-1", _required_base_commit=root_head,
+    )
+
 def test_remove_git_worktree_prunes_stale_metadata(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -143,7 +153,7 @@ def test_remove_reports_prune_failure_after_git_removal(monkeypatch, tmp_path):
     assert not wt_path.exists()
 
 
-def test_task_completion_cleans_clean_owned_worktree(tmp_path):
+def test_task_completion_schedules_then_owner_cleans_clean_worktree(tmp_path):
     repo, tasks, task = _create_owned_task(tmp_path)
     worktree = Path(task.checkpoint.state_data["worktree"]["worktree_path"])
 
@@ -151,8 +161,12 @@ def test_task_completion_cleans_clean_owned_worktree(tmp_path):
         completed = tasks.complete(task.task_id, actor="agent-1")
 
         assert completed.status is TaskStatus.COMPLETED
+        assert worktree.is_dir()
+        assert completed.checkpoint.state_data["worktree"]["cleanup_scheduled"] is True
+        assert completed.checkpoint.state_data["worktree"]["cleanup_pending"] is True
+        assert _run_owned_task_cleanup(repo, tasks, completed)["success"] is True
         assert not worktree.exists()
-        assert completed.checkpoint.state_data["worktree"]["cleanup_success"] is True
+        assert tasks.get(task.task_id).checkpoint.state_data["worktree"]["cleanup_success"] is True
     finally:
         _cleanup_task_worktree(repo, tasks.get(task.task_id))
 
@@ -175,7 +189,7 @@ def test_task_completion_preserves_dirty_worktree_with_pending_cleanup(tmp_path)
         _cleanup_task_worktree(repo, tasks.get(task.task_id))
 
 
-def test_task_completion_cleans_worktree_merged_into_newer_root_head(tmp_path):
+def test_owner_cleanup_removes_completed_worktree_merged_into_newer_root_head(tmp_path):
     repo, tasks, task = _create_owned_task(tmp_path)
     worktree = Path(task.checkpoint.state_data["worktree"]["worktree_path"])
     (repo / "root-update.txt").write_text("new root head")
@@ -186,8 +200,11 @@ def test_task_completion_cleans_worktree_merged_into_newer_root_head(tmp_path):
         completed = tasks.complete(task.task_id, actor="agent-1")
 
         assert completed.status is TaskStatus.COMPLETED
+        assert worktree.is_dir()
+        assert completed.checkpoint.state_data["worktree"]["cleanup_scheduled"] is True
+        assert _run_owned_task_cleanup(repo, tasks, completed)["success"] is True
         assert not worktree.exists()
-        assert completed.checkpoint.state_data["worktree"]["cleanup_success"] is True
+        assert tasks.get(task.task_id).checkpoint.state_data["worktree"]["cleanup_success"] is True
     finally:
         _cleanup_task_worktree(repo, tasks.get(task.task_id))
 
@@ -223,21 +240,30 @@ def test_completion_rechecks_history_before_remove_and_preserves_racing_commit(m
         if not injected and "merge-base" in command:
             injected = True
             (wt / "racing-commit.txt").write_text("retain unique commit")
-            subprocess.run(["git", "add", "racing-commit.txt"], cwd=str(wt), check=True)
-            subprocess.run(["git", "commit", "-m", "racing unique commit"], cwd=str(wt), check=True, capture_output=True)
+            original_run_hidden(["git", "add", "racing-commit.txt"], cwd=str(wt), check=True, timeout=5)
+            original_run_hidden(["git", "commit", "-m", "racing unique commit"], cwd=str(wt), check=True, capture_output=True, timeout=5)
         return original_run_hidden(command, *args, **kwargs)
 
     monkeypatch.setattr(process_utils, "run_hidden", commit_before_ancestry_proof)
-    completed = tasks.complete(task.task_id, actor="agent-1")
+    try:
+        completed = tasks.complete(task.task_id, actor="agent-1")
 
-    assert completed.status is TaskStatus.COMPLETED
-    assert injected
-    assert wt.is_dir()
-    assert (wt / "racing-commit.txt").read_text() == "retain unique commit"
-    assert completed.checkpoint.state_data["worktree"]["cleanup_pending"] is True
-    assert subprocess.run(["git", "-C", str(repo), "branch", "--list", task.checkpoint.state_data["worktree"]["branch"]], capture_output=True, text=True, check=True).stdout.strip()
-    monkeypatch.setattr(process_utils, "run_hidden", original_run_hidden)
-    _cleanup_task_worktree(repo, tasks.get(task.task_id))
+        assert completed.status is TaskStatus.COMPLETED
+        assert injected is False
+        assert completed.checkpoint.state_data["worktree"]["cleanup_scheduled"] is True
+        cleanup = _run_owned_task_cleanup(repo, tasks, completed)
+        assert cleanup["success"] is False
+        assert injected
+        assert wt.is_dir()
+        assert (wt / "racing-commit.txt").read_text() == "retain unique commit"
+        assert completed.checkpoint.state_data["worktree"]["cleanup_pending"] is True
+        assert original_run_hidden(
+            ["git", "-C", str(repo), "branch", "--list", task.checkpoint.state_data["worktree"]["branch"]],
+            capture_output=True, text=True, check=True, timeout=5,
+        ).stdout.strip()
+    finally:
+        monkeypatch.setattr(process_utils, "run_hidden", original_run_hidden)
+        _cleanup_task_worktree(repo, tasks.get(task.task_id))
 
 
 def test_idle_sweep_removes_only_expired_terminal_dead_owner_checkout(monkeypatch, tmp_path):
