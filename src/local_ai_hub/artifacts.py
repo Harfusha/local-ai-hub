@@ -1196,7 +1196,7 @@ class ArtifactStore:
 
         def _do_get() -> tuple[Any, ...] | None:
             with closing(self._connect()) as con:
-                query = f"SELECT kind, text, mime_type, created_at, char_count FROM {self._table} WHERE artifact_id=? AND created_at>=?"
+                query = f"SELECT kind, text, mime_type, created_at FROM {self._table} WHERE artifact_id=? AND created_at>=?"
                 params: list[Any] = [artifact_id, cutoff]
                 if tenant is not None:
                     query += " AND tenant_identity=?"
