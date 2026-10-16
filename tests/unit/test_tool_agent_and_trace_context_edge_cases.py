@@ -16,7 +16,7 @@ from local_ai_hub.trace_context import (
     is_trace_active,
     set_context,
     set_metadata,
-    trace_scope,
+    scoped_context,
     _sanitize_ident,
 )
 
@@ -151,8 +151,9 @@ def test_tool_aware_local_agent_execute_tool_sanitization() -> None:
 
 def test_trace_context_sanitize_ident_edge_cases() -> None:
     # NaN, Inf, negative limit
-    assert _sanitize_ident("hello world", limit=float("nan")) == "hello world"  # type: ignore[arg-type]
-    assert _sanitize_ident("hello world", limit=-5) == ""
+    for limit in (float("nan"), -5, True):
+        with pytest.raises(ValueError):
+            _sanitize_ident("hello world", limit=limit)
     assert _sanitize_ident("hello world", limit=5) == "hello"
     assert _sanitize_ident(None) == ""
     assert _sanitize_ident("abc\x00def") == "abcdef"
@@ -179,7 +180,7 @@ def test_trace_context_helpers() -> None:
     assert current_agent() == ""
     assert current_tenant() == ""
 
-    with trace_scope(request_id="req-99", trace_id="tr-88", agent="ag-77", tenant="ten-66"):
+    with scoped_context(request_id="req-99", trace_id="tr-88", agent="ag-77", tenant="ten-66"):
         assert has_context() is True
         assert is_trace_active() is True
         assert current_request_id() == "req-99"

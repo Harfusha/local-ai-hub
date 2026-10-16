@@ -1918,6 +1918,47 @@ class TaskStore:
 
         return retry_busy(_fetch_count, retries=5, base_delay_seconds=0.02)
 
+    def get_active_task(
+        self,
+        repo_root: str | None = None,
+        tenant: str | None = None,
+    ) -> TaskState | None:
+        """Find the most recently updated active/planned task matching repository and tenant."""
+        if not self._db_path_available():
+            return None
+        target_root = self._canonical_memory_root(repo_root) if repo_root else ""
+        target_tenant_key = ""
+        if tenant:
+            try:
+                target_tenant_key = _tenant_scope_key(tenant)
+            except Exception:
+                pass
+
+        def _matches(task: TaskState) -> bool:
+            if task.is_stale or task.is_terminal():
+                return False
+            task_root, task_tenant = _task_scope_values(task)
+            if target_tenant_key and task_tenant and task_tenant != target_tenant_key:
+                return False
+            if target_root:
+                resolved_task_root = self._canonical_memory_root(
+                    task_root
+                    or task.checkpoint.state_data.get("repo_root")
+                    or task.context.repository_id
+                )
+                if resolved_task_root and resolved_task_root != target_root:
+                    return False
+                if not resolved_task_root:
+                    return False
+            return True
+
+        for st in (TaskStatus.ACTIVE, TaskStatus.VERIFYING, TaskStatus.PLANNED):
+            tasks = self.list_tasks(status=st, limit=20, include_stale=False)
+            for t in tasks:
+                if _matches(t):
+                    return t
+        return None
+
     def _run_ordered_task_write(
         self,
         write: Any,

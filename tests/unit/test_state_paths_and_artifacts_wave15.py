@@ -15,7 +15,8 @@ def test_state_paths_clean_candidate():
     assert _clean_dir_candidate(None) is None
     assert _clean_dir_candidate("") is None
     assert _clean_dir_candidate("   ") is None
-    assert _clean_dir_candidate("path\x00bad") is None
+    with pytest.raises(ValueError):
+        _clean_dir_candidate("path\x00bad")
 
     candidate = _clean_dir_candidate("valid/path")
     assert isinstance(candidate, Path)

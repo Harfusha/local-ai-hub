@@ -75,12 +75,14 @@ def test_hardware_profile_overrides_null_handling() -> None:
 
 def test_autotune_bool_guard_and_null_bytes(tmp_path: Path) -> None:
     # Malformed state_dir with null byte
-    tuner = RuntimeTuner({"server": {"state_dir": "bad\0dir"}})
+    with pytest.raises(ValueError):
+        RuntimeTuner({"server": {"state_dir": "bad\0dir"}})
+    tuner = RuntimeTuner({"server": {"state_dir": str(tmp_path)}})
     assert tuner.enabled is True
 
     # Observe with boolean in numeric fields
     tuner.observe("test-model", {"eval_count": True, "load_duration_ns": False}, 100.0)
     profile = tuner.get_model_profile("test-model")
-    assert profile is not None
-    # TPS should be 0.0 because eval_count was boolean (ignored/0.0)
-    assert profile["tps"] == 0.0
+    assert profile is None
+    tuner.observe("test-model", {"eval_count": 0, "eval_duration_ns": 0}, 100.0)
+    assert tuner.get_model_profile("test-model")["tps"] == 0.0

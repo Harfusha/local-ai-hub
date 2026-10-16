@@ -25,11 +25,14 @@ class RouteRequest:
     def __post_init__(self) -> None:
         q = str(self.query or "").replace("\x00", "").strip()
         tt = str(self.task_type or "").replace("\x00", "").strip()
-        try:
-            cl = float(self.cost_limit)
-            cl = max(0.0, cl) if math.isfinite(cl) else 0.0
-        except (ValueError, TypeError):
-            cl = 0.0
+        if isinstance(self.cost_limit, bool) or self.cost_limit is None:
+            cl = 1.0
+        else:
+            try:
+                cl = float(self.cost_limit)
+                cl = max(0.0, cl) if math.isfinite(cl) else 0.0
+            except (ValueError, TypeError, OverflowError):
+                cl = 0.0
         object.__setattr__(self, "query", q)
         object.__setattr__(self, "task_type", tt)
         object.__setattr__(self, "has_fresh_cache", self.has_fresh_cache is True)
@@ -64,14 +67,17 @@ class RoutingDecision:
             k = "deterministic"
         t = str(self.target or "").replace("\x00", "").strip()
         r = str(self.reason or "").replace("\x00", "").strip()
-        try:
-            conf = float(self.confidence)
-            if not math.isfinite(conf):
+        if isinstance(self.confidence, bool) or self.confidence is None:
+            conf = 1.0
+        else:
+            try:
+                conf = float(self.confidence)
+                if not math.isfinite(conf):
+                    conf = 0.0
+                else:
+                    conf = max(0.0, min(1.0, conf))
+            except (ValueError, TypeError, OverflowError):
                 conf = 0.0
-            else:
-                conf = max(0.0, min(1.0, conf))
-        except (ValueError, TypeError):
-            conf = 0.0
         object.__setattr__(self, "kind", k)
         object.__setattr__(self, "target", t)
         object.__setattr__(self, "reason", r)
@@ -113,11 +119,15 @@ class TestSelection:
 
     def __post_init__(self) -> None:
         def _clean_tuple(items: Any) -> tuple[str, ...]:
-            if not items:
+            if not items or isinstance(items, bool):
                 return ()
+            if not hasattr(items, "__iter__") or isinstance(items, (str, bytes)):
+                items = [items]
             cleaned: list[str] = []
             for item in items:
-                s = str(item or "").replace("\x00", "").strip()
+                if item is None or isinstance(item, bool):
+                    continue
+                s = str(item).replace("\x00", "").strip()
                 if s:
                     cleaned.append(s)
             return tuple(cleaned)
@@ -157,16 +167,22 @@ class ToolObservation:
 
     def __post_init__(self) -> None:
         tn = str(self.tool_name or "").replace("\x00", "").strip()
-        try:
-            d = float(self.duration_ms)
-            d = max(0.0, d) if math.isfinite(d) else 0.0
-        except (ValueError, TypeError):
+        if isinstance(self.duration_ms, bool) or self.duration_ms is None:
             d = 0.0
-        try:
-            c = float(self.cost_estimate)
-            c = max(0.0, c) if math.isfinite(c) else 0.0
-        except (ValueError, TypeError):
+        else:
+            try:
+                d = float(self.duration_ms)
+                d = max(0.0, d) if math.isfinite(d) else 0.0
+            except (ValueError, TypeError, OverflowError):
+                d = 0.0
+        if isinstance(self.cost_estimate, bool) or self.cost_estimate is None:
             c = 0.0
+        else:
+            try:
+                c = float(self.cost_estimate)
+                c = max(0.0, c) if math.isfinite(c) else 0.0
+            except (ValueError, TypeError, OverflowError):
+                c = 0.0
         object.__setattr__(self, "tool_name", tn)
         object.__setattr__(self, "duration_ms", d)
         object.__setattr__(self, "success", self.success is True)

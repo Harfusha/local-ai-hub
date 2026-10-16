@@ -21,6 +21,25 @@ from .sqlite_support import connect_sqlite, retry_busy
 LOGGER = logging.getLogger(__name__)
 
 
+def _safe_float(val: Any, default: float = 0.0) -> float:
+    if isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        return f if math.isfinite(f) else default
+    except (ValueError, TypeError, OverflowError):
+        return default
+
+
+def _safe_int(val: Any, default: int = 0) -> int:
+    if isinstance(val, bool):
+        return default
+    try:
+        return int(val)
+    except (ValueError, TypeError, OverflowError):
+        return default
+
+
 class CandidateStatus(str, Enum):
     CANDIDATE = "candidate"
     REPLAY_PASSED = "replay_passed"
@@ -40,20 +59,9 @@ class SLOObservation:
     error_count: int = 0
 
     def __post_init__(self) -> None:
-        try:
-            lat = float(self.latency_ms)
-            lat = max(0.0, lat) if math.isfinite(lat) else 0.0
-        except (ValueError, TypeError):
-            lat = 0.0
-        try:
-            c = float(self.cost)
-            c = max(0.0, c) if math.isfinite(c) else 0.0
-        except (ValueError, TypeError):
-            c = 0.0
-        try:
-            ec = max(0, int(self.error_count))
-        except (ValueError, TypeError):
-            ec = 0
+        lat = max(0.0, _safe_float(self.latency_ms, 0.0))
+        c = max(0.0, _safe_float(self.cost, 0.0))
+        ec = max(0, _safe_int(self.error_count, 0))
         object.__setattr__(self, "latency_ms", lat)
         object.__setattr__(self, "success", self.success is True)
         object.__setattr__(self, "cost", c)
@@ -150,34 +158,18 @@ class ImprovementCandidate:
             st = CandidateStatus.CANDIDATE
 
         thresh: dict[str, float] = {}
-        if isinstance(self.slo_thresholds, Mapping):
+        if isinstance(self.slo_thresholds, Mapping) and not isinstance(self.slo_thresholds, bool):
             for k, v in self.slo_thresholds.items():
-                try:
-                    val = float(v)
-                    thresh[str(k).replace("\x00", "").strip()] = val if math.isfinite(val) else 0.0
-                except (ValueError, TypeError):
-                    thresh[str(k).replace("\x00", "").strip()] = 0.0
+                thresh[str(k).replace("\x00", "").strip()] = _safe_float(v, 0.0)
 
         mets: dict[str, float] = {}
-        if isinstance(self.metrics, Mapping):
+        if isinstance(self.metrics, Mapping) and not isinstance(self.metrics, bool):
             for k, v in self.metrics.items():
-                try:
-                    val = float(v)
-                    mets[str(k).replace("\x00", "").strip()] = val if math.isfinite(val) else 0.0
-                except (ValueError, TypeError):
-                    mets[str(k).replace("\x00", "").strip()] = 0.0
+                mets[str(k).replace("\x00", "").strip()] = _safe_float(v, 0.0)
 
         app = str(self.approver or "").replace("\x00", "").strip()
-        try:
-            ca = float(self.created_at)
-            ca = max(0.0, ca) if math.isfinite(ca) else 0.0
-        except (ValueError, TypeError):
-            ca = 0.0
-        try:
-            ua = float(self.updated_at)
-            ua = max(0.0, ua) if math.isfinite(ua) else 0.0
-        except (ValueError, TypeError):
-            ua = 0.0
+        ca = max(0.0, _safe_float(self.created_at, 0.0))
+        ua = max(0.0, _safe_float(self.updated_at, 0.0))
 
         object.__setattr__(self, "candidate_id", cid)
         object.__setattr__(self, "name", nm)
@@ -238,24 +230,28 @@ class ImprovementCandidate:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> ImprovementCandidate:
-        if not isinstance(data, Mapping):
+        if not isinstance(data, Mapping) or isinstance(data, bool):
             raise TypeError("improvement candidate data must be a mapping")
         status_raw = data.get("status")
         try:
             status = CandidateStatus(status_raw)
         except (ValueError, TypeError):
             status = CandidateStatus.CANDIDATE
+        slo_raw = data.get("slo_thresholds")
+        slo_dict = dict(slo_raw) if isinstance(slo_raw, Mapping) and not isinstance(slo_raw, bool) else {}
+        mets_raw = data.get("metrics")
+        mets_dict = dict(mets_raw) if isinstance(mets_raw, Mapping) and not isinstance(mets_raw, bool) else {}
         return cls(
-            candidate_id=str(data["candidate_id"]),
-            name=str(data["name"]),
-            baseline_version=str(data["baseline_version"]),
-            candidate_version=str(data["candidate_version"]),
+            candidate_id=str(data.get("candidate_id", "")),
+            name=str(data.get("name", "")),
+            baseline_version=str(data.get("baseline_version", "")),
+            candidate_version=str(data.get("candidate_version", "")),
             status=status,
-            slo_thresholds=dict(data.get("slo_thresholds") or {}),
-            metrics=dict(data.get("metrics") or {}),
+            slo_thresholds=slo_dict,
+            metrics=mets_dict,
             approver=str(data.get("approver", "")),
-            created_at=float(data.get("created_at", 0.0)),
-            updated_at=float(data.get("updated_at", 0.0)),
+            created_at=_safe_float(data.get("created_at"), 0.0),
+            updated_at=_safe_float(data.get("updated_at"), 0.0),
         )
 
 
@@ -577,15 +573,31 @@ class LearningStore:
             created_at,
             updated_at,
         ) = row
+        try:
+            status = CandidateStatus(status_val)
+        except (ValueError, TypeError):
+            status = CandidateStatus.CANDIDATE
+        try:
+            thresholds = json.loads(thresholds_raw) if thresholds_raw else {}
+            if not isinstance(thresholds, Mapping):
+                thresholds = {}
+        except Exception:
+            thresholds = {}
+        try:
+            metrics = json.loads(metrics_raw) if metrics_raw else {}
+            if not isinstance(metrics, Mapping):
+                metrics = {}
+        except Exception:
+            metrics = {}
         return ImprovementCandidate(
-            candidate_id=candidate_id,
-            name=name,
-            baseline_version=baseline_version,
-            candidate_version=candidate_version,
-            status=CandidateStatus(status_val),
-            slo_thresholds=json.loads(thresholds_raw) if thresholds_raw else {},
-            metrics=json.loads(metrics_raw) if metrics_raw else {},
-            approver=approver,
-            created_at=float(created_at),
-            updated_at=float(updated_at),
+            candidate_id=str(candidate_id or ""),
+            name=str(name or ""),
+            baseline_version=str(baseline_version or ""),
+            candidate_version=str(candidate_version or ""),
+            status=status,
+            slo_thresholds=thresholds,
+            metrics=metrics,
+            approver=str(approver or ""),
+            created_at=_safe_float(created_at, 0.0),
+            updated_at=_safe_float(updated_at, 0.0),
         )

@@ -19,21 +19,17 @@ def test_token_economy_edge_cases(capsys: pytest.CaptureFixture):
     assert strip_ansi(None) == ""  # type: ignore
 
     # Non-string input to count_tokens
-    assert count_tokens(None) == (0, 0, 0, 0, 0)  # type: ignore
+    with pytest.raises(TypeError):
+        count_tokens(None)  # type: ignore
 
     # filter_and_print_trimmed with NaN / Inf / bool max_lines
     lines = [f"line {i}" for i in range(10)]
-    filter_and_print_trimmed(lines, max_lines=float("nan"))  # type: ignore
-    out_nan, _ = capsys.readouterr()
-    assert "line 0" in out_nan
-
-    filter_and_print_trimmed(lines, max_lines=float("inf"))  # type: ignore
-    out_inf, _ = capsys.readouterr()
-    assert "line 0" in out_inf
-
-    filter_and_print_trimmed(lines, max_lines=True)  # type: ignore
-    out_bool, _ = capsys.readouterr()
-    assert "line 0" in out_bool
+    for limit in (float("nan"), float("inf"), True):
+        with pytest.raises(ValueError):
+            filter_and_print_trimmed(lines, max_lines=limit)
+    filter_and_print_trimmed(lines, max_lines=4)
+    out, _ = capsys.readouterr()
+    assert "line 0" in out
 
     # Helper function is_allowed_trim_command
     assert is_allowed_trim_command("rg") is True

@@ -67,8 +67,11 @@ _OPERATION_GUIDANCE = {
 
 def capability_for(model: str, *, role: str = "") -> ModelCapability:
     """Return conservative capabilities for a configured or custom model."""
-
-    normalized = str(model or "").strip().lower()
+    if isinstance(model, bool) or not isinstance(model, str):
+        model = ""
+    if isinstance(role, bool) or not isinstance(role, str):
+        role = ""
+    normalized = str(model or "").replace("\x00", "").strip().lower()
     known = _CAPABILITIES.get(normalized)
     if known is not None:
         if str(role).lower() == "vision" and "visual_review" not in known.can:
@@ -90,12 +93,14 @@ def capability_for(model: str, *, role: str = "") -> ModelCapability:
 def _clip(value: str, limit: int) -> str:
     if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
         return ""
-    text = str(value or "").replace("\x00", "")
+    if value is None or isinstance(value, bool):
+        return ""
+    text = str(value).replace("\x00", "")
     return text if len(text) <= limit else text[: max(0, limit - 24)] + "\n...[bounded]"
 
 
 def _lines(values: Iterable[str] | None, limit: int = 12) -> str:
-    if values is None:
+    if values is None or isinstance(values, bool):
         return "- none supplied"
     if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
         return "- none supplied"
@@ -105,9 +110,9 @@ def _lines(values: Iterable[str] | None, limit: int = 12) -> str:
         items = [
             str(value).replace("\x00", "").replace("\r", " ").replace("\n", " ").strip()
             for value in values
-            if value is not None and str(value).strip()
+            if value is not None and not isinstance(value, bool) and str(value).strip()
         ]
-    except TypeError:
+    except (TypeError, ValueError):
         return "- none supplied"
     return "\n".join(f"- {item}" for item in items[:limit]) or "- none supplied"
 
@@ -182,7 +187,7 @@ def supported_operations() -> tuple[str, ...]:
 
 def is_operation_supported(operation: str) -> bool:
     """Return True if operation is explicitly recognized in prompt guidance."""
-    if not operation or not isinstance(operation, str):
+    if not operation or isinstance(operation, bool) or not isinstance(operation, str):
         return False
     return operation.strip().lower() in _OPERATION_GUIDANCE
 
@@ -194,15 +199,18 @@ def get_model_tier(model: str) -> str:
 
 def can_model_perform(model: str, action: str) -> bool:
     """Return True if the model's conservative capability matrix includes action."""
-    if not model or not action or not isinstance(action, str):
+    if not model or isinstance(model, bool) or not isinstance(model, str):
+        return False
+    if not action or isinstance(action, bool) or not isinstance(action, str):
         return False
     cap = capability_for(model)
     return action.strip().lower() in cap.can
 
-
 def cannot_model_perform(model: str, action: str) -> bool:
     """Return True if the model's capability matrix excludes action."""
-    if not model or not action or not isinstance(action, str):
+    if not model or isinstance(model, bool) or not isinstance(model, str):
+        return True
+    if not action or isinstance(action, bool) or not isinstance(action, str):
         return True
     cap = capability_for(model)
     return action.strip().lower() in cap.cannot
@@ -211,4 +219,3 @@ def cannot_model_perform(model: str, action: str) -> bool:
 def list_supported_models() -> tuple[str, ...]:
     """Return tuple of known static capability models."""
     return tuple(_CAPABILITIES.keys())
-

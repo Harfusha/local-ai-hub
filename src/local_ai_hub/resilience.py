@@ -83,7 +83,7 @@ class CircuitBreakerRegistry:
 
     @staticmethod
     def _clean_key(key: str) -> str:
-        if not isinstance(key, str) or not key.strip() or len(key) > 512:
+        if not isinstance(key, str) or not key.strip() or len(key) > 512 or "\x00" in key:
             raise ValueError("circuit breaker key must be a non-empty string of at most 512 characters")
         return key.strip()
 

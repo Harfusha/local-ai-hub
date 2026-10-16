@@ -13,7 +13,8 @@ def test_process_utils_path_helpers(tmp_path: Path):
     # canonical_root edge cases
     c_root = process_utils.canonical_root(tmp_path)
     assert Path(c_root).is_absolute()
-    assert "\x00" not in process_utils.canonical_root("repo\x00bad")
+    with pytest.raises(ValueError):
+        process_utils.canonical_root("repo\x00bad")
 
     # canonical_workspace_id edge cases
     ws_id = process_utils.canonical_workspace_id("my_project")

@@ -6825,6 +6825,10 @@ class Handler(BaseHTTPRequestHandler):
                         if requested_root and project_identity is None:
                             self._send(400, {"success": False, "error": "memory project identity could not be resolved", "terminal": True, "retryable": False}); return
                         root_val, repository_id_val = project_identity or (None, None)
+                        if not root_val and not repository_id_val:
+                            default_identity = self._memory_project_identity(".")
+                            if default_identity and default_identity != ("", ""):
+                                root_val, repository_id_val = default_identity
                         tenant_val = self._tenant()
                         scope_val, resolved_scope_id, ambiguous_scope = _resolve_memory_scope(
                             requested_scope,
@@ -6840,7 +6844,21 @@ class Handler(BaseHTTPRequestHandler):
                         )
                         if ambiguous_scope:
                             self._send(400, {"success": False, "error": "ambiguous memory scope identity", "terminal": True, "retryable": False}); return
-                        scope_val = scope_val or AgentScope.TASK
+                        if (
+                            requested_scope is None
+                            and (root_val or repository_id_val)
+                            and kind_val in (
+                                MemoryKind.FACT,
+                                MemoryKind.DECISION,
+                                MemoryKind.CONVENTION,
+                                MemoryKind.PLAYBOOK,
+                                MemoryKind.GOTCHA,
+                            )
+                        ):
+                            scope_val = AgentScope.REPOSITORY
+                            resolved_scope_id = str(root_val or repository_id_val)
+                        else:
+                            scope_val = scope_val or AgentScope.TASK
                         resolved_scope_id = self._bound_memory_scope_id(
                             scope_val,
                             resolved_scope_id,
@@ -8155,6 +8173,15 @@ class Handler(BaseHTTPRequestHandler):
                             "query": query_text,
                             "delivery_mode": mode,
                         }); return
+                auto_injected_task = False
+                if not str(payload.get("task_id", "")).strip() and getattr(APP, "agent_tasks", None):
+                    try:
+                        active_task = APP.agent_tasks.get_active_task(repo_root=root, tenant=tenant)
+                        if active_task is not None:
+                            payload["task_id"] = active_task.task_id
+                            auto_injected_task = True
+                    except Exception:
+                        pass
                 guarded = payload.get("guarded", False)
                 if not isinstance(guarded, bool):
                     self._send(400, {"success": False, "terminal": True, "retryable": False, "error": "guarded must be boolean"}); return
@@ -8251,15 +8278,16 @@ class Handler(BaseHTTPRequestHandler):
                             "error": f"repository context unavailable: {type(exc).__name__}",
                         }
                     repository_failed = isinstance(result, dict) and result.get("success") is False
-                    if repository_failed and not (guarded_requested and has_task_id):
+                    if repository_failed and (not (guarded_requested and has_task_id) or auto_injected_task):
                         status_code = 503 if result.get("retryable") is True else 500
                         self._send(status_code, result); return
                     if guarded_requested and has_task_id and not getattr(APP, "agent_context", None):
-                        self._send(503, {
-                            "success": False, "terminal": False, "retryable": True,
-                            "stop_code": "context_task_context_unavailable",
-                            "error": "task context compiler unavailable",
-                        }); return
+                        if not auto_injected_task:
+                            self._send(503, {
+                                "success": False, "terminal": False, "retryable": True,
+                                "stop_code": "context_task_context_unavailable",
+                                "error": "task context compiler unavailable",
+                            }); return
                     if guarded_requested and has_task_id and getattr(APP, "agent_context", None):
                         task_request_payload = {
                             "task_id": payload.get("task_id", ""),
@@ -8283,6 +8311,7 @@ class Handler(BaseHTTPRequestHandler):
                             task_request_payload, tenant=tenant, identity=self._agent(),
                             project_context=_trusted_project_context(root),
                         )
+                        unified = None
                         try:
                             compiled = APP.agent_context.compile(task_request)
                             unified = compose_task_context(
@@ -8292,32 +8321,38 @@ class Handler(BaseHTTPRequestHandler):
                                 token_budget=task_request.token_budget,
                             )
                         except Exception as exc:
-                            self._send(503, {
-                                "success": False, "terminal": False, "retryable": True,
-                                "stop_code": "context_task_context_unavailable",
-                                "error": f"task context receipt unavailable: {type(exc).__name__}",
-                            }); return
-                        provenance = unified.get("provenance") if isinstance(unified, dict) else None
-                        receipt_complete = bool(
-                            isinstance(unified, dict)
-                            and unified.get("success") is True
-                            and unified.get("complete") is True
-                            and str(unified.get("context_id") or "").strip()
-                            and str(unified.get("etag") or "").strip()
-                            and isinstance(provenance, dict)
-                            and str(provenance.get("repository_revision") or "").strip()
-                            and provenance.get("status") == "success"
-                        )
-                        if not receipt_complete:
-                            self._send(503, {
-                                "success": False, "terminal": True, "retryable": False,
-                                "stop_code": "context_task_context_incomplete",
-                                "error": "task context receipt is missing, stale, or incomplete",
-                                "task_context": unified if isinstance(unified, dict) else {},
-                            }); return
-                        if isinstance(result, dict):
-                            result["task_context"] = unified
-                            result["task_context_id"] = unified["context_id"]
+                            if not auto_injected_task:
+                                self._send(503, {
+                                    "success": False, "terminal": False, "retryable": True,
+                                    "stop_code": "context_task_context_unavailable",
+                                    "error": f"task context receipt unavailable: {type(exc).__name__}",
+                                }); return
+                        if unified is not None:
+                            provenance = unified.get("provenance") if isinstance(unified, dict) else None
+                            receipt_complete = bool(
+                                isinstance(unified, dict)
+                                and unified.get("success") is True
+                                and unified.get("complete") is True
+                                and str(unified.get("context_id") or "").strip()
+                                and str(unified.get("etag") or "").strip()
+                                and isinstance(provenance, dict)
+                                and str(provenance.get("repository_revision") or "").strip()
+                                and provenance.get("status") == "success"
+                            )
+                            if not receipt_complete:
+                                if not auto_injected_task:
+                                    self._send(503, {
+                                        "success": False, "terminal": True, "retryable": False,
+                                        "stop_code": "context_task_context_incomplete",
+                                        "error": "task context receipt is missing, stale, or incomplete",
+                                        "task_context": unified if isinstance(unified, dict) else {},
+                                    }); return
+                            else:
+                                if isinstance(result, dict):
+                                    result["task_context"] = unified
+                                    result["task_context_id"] = unified["context_id"]
+                                    if auto_injected_task:
+                                        result["task_id"] = payload.get("task_id", "")
                     self._send(200, result); return
                 if mode == "fast":
                     result = APP.services.fast_context(root, query_text, max_tokens)
