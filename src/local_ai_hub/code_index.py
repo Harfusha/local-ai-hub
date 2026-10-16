@@ -991,6 +991,35 @@ def _escape_like_literal(value: str) -> str:
     return value.replace("!", "!!").replace("%", "!%").replace("_", "!_")
 
 
+def _code_index_candidate_score(
+    name: Any,
+    name_path: Any,
+    container: Any,
+    path: Any,
+    terms: list[str],
+    exact_identifier: str | None,
+) -> float:
+    name_l = str(name or "").lower()
+    if exact_identifier is not None and name_l == exact_identifier.lower():
+        return 1000.0
+    name_path_l = str(name_path or "").lower()
+    container_l = str(container or "").lower()
+    path_l = str(path or "").lower()
+    score = 0.0
+    for term in terms:
+        if name_l == term:
+            score += 8.0
+        elif name_l.startswith(term):
+            score += 5.0
+        elif term in name_l:
+            score += 3.0
+        elif term in name_path_l or term in container_l:
+            score += 2.0
+        elif exact_identifier is None and term in path_l:
+            score += 1.0
+    return score
+
+
 class CodeIndex:
     def __init__(self, config: dict[str, Any], repo_tools: Any):
         self.config = config
@@ -2441,23 +2470,9 @@ class CodeIndex:
             return self._apply_query_freshness(copy.deepcopy(cached), verify_content=False)
 
         def score_match(name: Any, name_path: Any, container: Any, path: Any) -> float:
-            name_l = str(name or "").lower()
-            name_path_l = str(name_path or "").lower()
-            container_l = str(container or "").lower()
-            path_l = str(path or "").lower()
-            score = 0.0
-            for term in terms:
-                if name_l == term:
-                    score += 8.0
-                elif name_l.startswith(term):
-                    score += 5.0
-                elif term in name_l:
-                    score += 3.0
-                elif term in name_path_l or term in container_l:
-                    score += 2.0
-                elif exact_identifier is None and term in path_l:
-                    score += 1.0
-            return score
+            return _code_index_candidate_score(
+                name, name_path, container, path, terms, exact_identifier,
+            )
 
         score_sql = "hub_code_index_score(name,name_path,container,path)"
         ignored_paths = []
