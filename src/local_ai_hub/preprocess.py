@@ -1169,10 +1169,10 @@ class ProjectPreprocessor:
 
     def register(self, root: str, *, force: bool = False, source: str = "agent", is_worktree: bool = False, parent_root: str | None = None) -> dict[str, Any]:
         if not self.enabled:
-            return {"success": False, "enabled": False, "error": "preprocessing disabled"}
+            return {"success": False, "enabled": False, "error": "preprocessing disabled", "terminal": True, "retryable": False}
         resolved = self._root(root)
         if not Path(resolved).is_dir():
-            return {"success": False, "error": f"root directory does not exist: {resolved}"}
+            return {"success": False, "error": f"root directory does not exist: {resolved}", "terminal": True, "retryable": False}
         if self._is_internal_root(resolved):
             return {"success": True, "ignored": True, "reason": "internal Local AI install/state directory", "project": Path(resolved).name}
         if self._is_ephemeral_root(resolved):

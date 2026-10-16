@@ -1261,6 +1261,8 @@ def _telemetry_http_outcome(status: int, data: Any, path: str = "") -> tuple[boo
         return True, "in_progress", False
     if payload.get("terminal") and status < 500:
         return True, "terminal_client_result", False
+    if path == "/api/artifact/get" and payload.get("error") == "artifact not found or expired":
+        return True, "terminal_client_result", False
     if success:
         return True, "", False
     if path == "/api/command":
@@ -5595,9 +5597,11 @@ class Handler(BaseHTTPRequestHandler):
         return False
 
     def _handle_post_artifact_get(self, payload: dict[str, Any], tenant: str) -> None:
+        header_tenant = self.headers.get("X-LocalAI-Tenant")
+        effective_tenant = (str(header_tenant).strip() if header_tenant else None) or self._configured_principal_tenant() or tenant or self._tenant()
         allowed_fields = {"artifact_id", "offset", "max_chars", "section", "binary", "slices"}
         if not isinstance(payload, dict) or set(payload) - allowed_fields:
-            self._send(400, {"success": False, "error": "artifact request contains unsupported fields"})
+            self._send(400, {"success": False, "error": "artifact request contains unsupported fields", "terminal": True, "retryable": False})
             return
         artifact_id = payload.get("artifact_id", "")
         offset = payload.get("offset", 0)
@@ -5605,61 +5609,61 @@ class Handler(BaseHTTPRequestHandler):
         section = payload.get("section", "")
         binary = payload.get("binary", False)
         if not isinstance(artifact_id, str) or not artifact_id:
-            self._send(400, {"success": False, "error": "artifact_id must be a non-empty string"})
+            self._send(400, {"success": False, "error": "artifact_id must be a non-empty string", "terminal": True, "retryable": False})
             return
         if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
-            self._send(400, {"success": False, "error": "offset must be a non-negative integer"})
+            self._send(400, {"success": False, "error": "offset must be a non-negative integer", "terminal": True, "retryable": False})
             return
         if isinstance(max_chars, bool) or not isinstance(max_chars, int) or not 1 <= max_chars <= 50_000:
-            self._send(400, {"success": False, "error": "max_chars must be between 1 and 50000"})
+            self._send(400, {"success": False, "error": "max_chars must be between 1 and 50000", "terminal": True, "retryable": False})
             return
         if not isinstance(section, str) or len(section) > 512:
-            self._send(400, {"success": False, "error": "section must be a string of at most 512 characters"})
+            self._send(400, {"success": False, "error": "section must be a string of at most 512 characters", "terminal": True, "retryable": False})
             return
         if not isinstance(binary, bool):
-            self._send(400, {"success": False, "error": "binary must be a boolean"})
+            self._send(400, {"success": False, "error": "binary must be a boolean", "terminal": True, "retryable": False})
             return
         if "slices" in payload and not isinstance(payload["slices"], list):
-            self._send(400, {"success": False, "error": "slices must be an array"})
+            self._send(400, {"success": False, "error": "slices must be an array", "terminal": True, "retryable": False})
             return
         slices = payload.get("slices")
         if slices is not None:
             if binary or set(payload) - {"artifact_id", "slices", "binary"}:
-                self._send(400, {"success": False, "error": "multi-slice retrieval accepts only artifact_id, slices, and binary=false"})
+                self._send(400, {"success": False, "error": "multi-slice retrieval accepts only artifact_id, slices, and binary=false", "terminal": True, "retryable": False})
                 return
             if not 1 <= len(slices) <= 16:
-                self._send(400, {"success": False, "error": "slices must contain 1 to 16 ranges"})
+                self._send(400, {"success": False, "error": "slices must contain 1 to 16 ranges", "terminal": True, "retryable": False})
                 return
             requested = 0
             for item in slices:
                 if not isinstance(item, dict) or set(item) != {"offset", "max_chars"}:
-                    self._send(400, {"success": False, "error": "each slice must contain only offset and max_chars"})
+                    self._send(400, {"success": False, "error": "each slice must contain only offset and max_chars", "terminal": True, "retryable": False})
                     return
                 item_offset, item_max = item["offset"], item["max_chars"]
                 if isinstance(item_offset, bool) or not isinstance(item_offset, int) or item_offset < 0:
-                    self._send(400, {"success": False, "error": "slice offset must be a non-negative integer"})
+                    self._send(400, {"success": False, "error": "slice offset must be a non-negative integer", "terminal": True, "retryable": False})
                     return
                 if isinstance(item_max, bool) or not isinstance(item_max, int) or not 1 <= item_max <= 50_000:
-                    self._send(400, {"success": False, "error": "slice max_chars must be between 1 and 50000"})
+                    self._send(400, {"success": False, "error": "slice max_chars must be between 1 and 50000", "terminal": True, "retryable": False})
                     return
                 requested += item_max
                 if requested > 50_000:
-                    self._send(400, {"success": False, "error": "combined slice max_chars cannot exceed 50000"})
+                    self._send(400, {"success": False, "error": "combined slice max_chars cannot exceed 50000", "terminal": True, "retryable": False})
                     return
-            self._send(200, APP.artifacts.get_slices(artifact_id, slices, tenant=tenant))
+            self._send(200, APP.artifacts.get_slices(artifact_id, slices, tenant=effective_tenant))
             return
         if binary:
             if section:
-                self._send(400, {"success": False, "error": "section is not valid for binary retrieval"})
+                self._send(400, {"success": False, "error": "section is not valid for binary retrieval", "terminal": True, "retryable": False})
                 return
-            self._send(200, APP.artifacts.get_binary(artifact_id, tenant=tenant))
+            self._send(200, APP.artifacts.get_binary(artifact_id, tenant=effective_tenant))
             return
         self._send(200, APP.artifacts.get(
             artifact_id,
             offset,
             max_chars,
             section,
-            tenant=tenant,
+            tenant=effective_tenant,
         ))
 
     @staticmethod
