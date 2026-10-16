@@ -74,9 +74,8 @@ def _wire_measure(result: object) -> tuple[int, dict, dict | None]:
 
 
 @pytest.mark.parametrize("profile", ["", "compact", "minimal"])
-@pytest.mark.parametrize("selector", ["detail", "action"])
 def test_status_telemetry_wire_satisfies_output_contract_and_budget(
-    monkeypatch: pytest.MonkeyPatch, profile: str, selector: str
+    monkeypatch: pytest.MonkeyPatch, profile: str
 ) -> None:
     monkeypatch.setattr(
         mcp_server,
@@ -89,9 +88,9 @@ def test_status_telemetry_wire_satisfies_output_contract_and_budget(
     monkeypatch.setattr(mcp_server.CONTEXT_LEDGER, "record", lambda **_kwargs: None)
 
     arguments = {
-        selector: "telemetry",
+        "detail": "telemetry",
         "max_response_tokens": 1800,
-        "reuse_key": f"status-telemetry-wire:{selector}:{profile or 'default'}",
+        "reuse_key": f"status-telemetry-wire:detail:{profile or 'default'}",
     }
     if profile:
         arguments["response_profile"] = profile
@@ -109,3 +108,33 @@ def test_status_telemetry_wire_satisfies_output_contract_and_budget(
         assert isinstance(payload["summary"]["events"], int)
         assert isinstance(payload["summary"]["avg_duration_ms"], float)
         assert isinstance(payload["summary"]["net_cloud_token_delta_est"], float)
+
+
+@pytest.mark.parametrize("profile", ["", "compact", "minimal"])
+def test_status_telemetry_wire_rejects_retired_action_selector(
+    monkeypatch: pytest.MonkeyPatch, profile: str,
+) -> None:
+    monkeypatch.setattr(
+        mcp_server, "load_operational_mode",
+        lambda _state_dir: OperationalModeSnapshot("active", 0, None),
+    )
+    monkeypatch.setattr(mcp_server.FEATURES, "status", True)
+    monkeypatch.setattr(mcp_server._ACCOUNTING_REPORTER, "record", lambda _event: None)
+    monkeypatch.setattr(mcp_server.CONTEXT_LEDGER, "record", lambda **_kwargs: None)
+
+    def forbidden_get(*_args, **_kwargs):
+        raise AssertionError("invalid selector must reject before HTTP dispatch")
+
+    monkeypatch.setattr(mcp_server.CLIENT, "get", forbidden_get)
+    arguments = {"action": "telemetry", "max_response_tokens": 1800}
+    if profile:
+        arguments["response_profile"] = profile
+    result = asyncio.run(mcp_server.mcp.call_tool("local_ai_status", arguments))
+    wire_tokens, decoded_text, structured = _wire_measure(result)
+    assert decoded_text == structured
+    assert wire_tokens <= 1800
+    assert structured["success"] is False
+    assert structured["status_code"] == 400
+    assert "action" in structured["error"]
+    assert structured["terminal"] is True
+    assert structured["retryable"] is False
