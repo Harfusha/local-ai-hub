@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import logging.handlers
 import queue
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -46,9 +47,30 @@ def configure_logging(state_dir: Path, config: dict[str, Any]) -> logging.Logger
     source text or model output into log messages.
     """
     global _listener, _log_path, _previous_propagate
+    if not isinstance(state_dir, Path) or "\x00" in str(state_dir):
+        raise ValueError("state_dir must be a Path without null bytes")
+    if not isinstance(config, dict):
+        raise TypeError("logging configuration must be a mapping")
     cfg = config.get("logging", {})
+    if not isinstance(cfg, dict):
+        raise TypeError("logging settings must be a mapping")
+    level_name = cfg.get("level", "INFO")
+    if not isinstance(level_name, str) or not level_name or "\x00" in level_name:
+        raise ValueError("logging level must name a standard logging level")
+    level = getattr(logging, level_name.upper(), None)
+    if isinstance(level, bool) or not isinstance(level, int):
+        raise ValueError("logging level must name a standard logging level")
+
+    def positive_integer(name: str, default: int) -> int:
+        value = cfg.get(name, default)
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= sys.maxsize:
+            raise ValueError(f"logging {name} must be a positive integer at most sys.maxsize")
+        return value
+
+    queue_size = max(100, positive_integer("queue_size", 5000))
+    max_bytes = max(256 * 1024, positive_integer("max_bytes", 5_000_000))
+    backup_count = positive_integer("backup_count", 5)
     logger = logging.getLogger("local_ai_hub")
-    level = getattr(logging, str(cfg.get("level", "INFO")).upper(), logging.INFO)
     logger.setLevel(level)
 
     logs_dir = state_dir / "logs"
@@ -65,13 +87,13 @@ def configure_logging(state_dir: Path, config: dict[str, Any]) -> logging.Logger
         _previous_propagate = logger.propagate
     logger.propagate = False
 
-    q: queue.Queue[logging.LogRecord] = queue.Queue(maxsize=max(100, int(cfg.get("queue_size", 5000))))
+    q: queue.Queue[logging.LogRecord] = queue.Queue(maxsize=queue_size)
     logger.addHandler(_DropQueueHandler(q))
 
     handler = SafeWindowsRotatingFileHandler(
         log_path,
-        maxBytes=max(256 * 1024, int(cfg.get("max_bytes", 5_000_000))),
-        backupCount=max(1, int(cfg.get("backup_count", 5))),
+        maxBytes=max_bytes,
+        backupCount=backup_count,
         encoding="utf-8",
         delay=True,
     )
