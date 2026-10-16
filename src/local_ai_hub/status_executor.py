@@ -1,9 +1,27 @@
 """Bounded status probes without worker creation on the HTTP request thread."""
 from concurrent.futures import Executor, Future, InvalidStateError, ThreadPoolExecutor
 from functools import partial
+import math
 import queue
 import threading
+from typing import Any
 import weakref
+
+
+def _safe_int(val: Any, default: int, min_val: int | None = None, max_val: int | None = None) -> int:
+    if isinstance(val, bool) or val is None:
+        return default
+    try:
+        if isinstance(val, float) and not math.isfinite(val):
+            return default
+        res = int(val)
+    except (ValueError, TypeError, OverflowError):
+        return default
+    if min_val is not None and res < min_val:
+        return min_val
+    if max_val is not None and res > max_val:
+        return max_val
+    return res
 
 
 def _release(future, pending, lock, slots):
@@ -77,11 +95,13 @@ class StatusDependencyExecutor(Executor):
     """At most capacity accepted probes; submission never starts pool workers."""
 
     def __init__(self, *, max_workers: int, capacity: int):
-        if capacity < 1:
+        if not isinstance(capacity, bool) and isinstance(capacity, (int, float)) and capacity < 1:
             raise ValueError("status executor capacity must be positive")
-        self._pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="local-ai-status")
-        self._work = queue.Queue(maxsize=capacity)
-        self._slots = threading.BoundedSemaphore(capacity)
+        safe_capacity = _safe_int(capacity, default=1, min_val=1)
+        safe_max_workers = _safe_int(max_workers, default=1, min_val=1)
+        self._pool = ThreadPoolExecutor(max_workers=safe_max_workers, thread_name_prefix="local-ai-status")
+        self._work = queue.Queue(maxsize=safe_capacity)
+        self._slots = threading.BoundedSemaphore(safe_capacity)
         self._lock = threading.Lock()
         self._pending = set()
         self._closed = threading.Event()
@@ -95,6 +115,16 @@ class StatusDependencyExecutor(Executor):
         self._finalizer = weakref.finalize(
             self, _stop, self._lock, self._closed, self._pending, self._cancel, True,
         )
+
+    def is_closed(self) -> bool:
+        return self._closed.is_set()
+
+    def pending_count(self) -> int:
+        with self._lock:
+            return len(self._pending)
+
+    def capacity(self) -> int:
+        return self._work.maxsize
 
     def submit(self, fn, /, *args, **kwargs):
         with self._lock:
