@@ -15,26 +15,26 @@ from local_ai_hub.state_paths import (
 
 
 def test_configured_state_dir_defensive_config() -> None:
-    # None or non-dict inputs must not raise AttributeError
+    # None or empty dict inputs return fallback dir
     p1 = configured_state_dir(None)
     assert p1.is_dir()
 
-    p2 = configured_state_dir("not-a-dict")  # type: ignore[arg-type]
-    assert p2 == p1
+    # Non-mapping config or server must raise TypeError
+    with pytest.raises(TypeError, match="config must be a mapping or None"):
+        configured_state_dir("not-a-dict")  # type: ignore[arg-type]
 
-    p3 = configured_state_dir({"server": "not-a-dict"})
-    assert p3 == p1
+    with pytest.raises(TypeError, match="config.server must be a mapping or None"):
+        configured_state_dir({"server": "not-a-dict"})
 
-    p4 = configured_state_dir({"server": {"state_dir": 12345}})
-    # Non-string or numeric path should be stringified or fallback safely
-    assert p4.is_dir()
+    # Non-pathlike state_dir must raise TypeError
+    with pytest.raises(TypeError, match="server.state_dir must be a path string or path-like value"):
+        configured_state_dir({"server": {"state_dir": 12345}})
 
 
 def test_configured_state_dir_null_byte_prevention() -> None:
-    # Null byte in path must not crash with ValueError, should fallback
-    fallback_pid = configured_state_dir({"server": {"state_dir": "state\x00poison"}})
-    assert fallback_pid.is_dir()
-    assert "\x00" not in str(fallback_pid)
+    # Null byte in state_dir path must raise ValueError
+    with pytest.raises(ValueError, match="server.state_dir cannot contain a NUL character"):
+        configured_state_dir({"server": {"state_dir": "state\x00poison"}})
 
 
 def test_configured_cache_dir(tmp_path: Path) -> None:
@@ -51,11 +51,10 @@ def test_configured_cache_dir(tmp_path: Path) -> None:
     assert cdir2 == custom_state / "cache"
     assert cdir2.is_dir()
 
-    # Null byte or malformed config
+    # Null byte in cache_dir must raise ValueError
     bad_cfg = {"server": {"cache_dir": "cache\x00poison"}}
-    cdir_fallback = configured_cache_dir(bad_cfg)
-    assert cdir_fallback.is_dir()
-    assert "\x00" not in str(cdir_fallback)
+    with pytest.raises(ValueError, match="configured directory cannot contain a NUL character"):
+        configured_cache_dir(bad_cfg)
 
 
 def test_fallback_state_dir_cleanup_and_inspection() -> None:

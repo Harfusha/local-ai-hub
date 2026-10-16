@@ -18,7 +18,7 @@ def test_canonical_project_root_does_not_resolve_empty_values_to_cwd(root: objec
 
 @pytest.mark.parametrize("criterion", ["", "   "])
 def test_project_command_environment_rejects_empty_criterion(criterion: str) -> None:
-    with pytest.raises(CompletionGateError, match="criterion must not be empty"):
+    with pytest.raises(CompletionGateError, match="project command criterion is invalid"):
         project_command_environment_sha256(SimpleNamespace(commands={}), criterion)
 
 
