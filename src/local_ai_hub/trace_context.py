@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
+import math
 from typing import Any, Iterator, Mapping
 
 _request_id: ContextVar[str] = ContextVar("local_ai_request_id", default="")
@@ -15,9 +16,15 @@ _efficiency_metadata: ContextVar[dict[str, Any]] = ContextVar("local_ai_token_ef
 def _sanitize_ident(val: Any, limit: int = 256) -> str:
     if val is None:
         return ""
+    if isinstance(limit, bool) or not isinstance(limit, (int, float)) or (isinstance(limit, float) and not math.isfinite(limit)):
+        lim = 256
+    else:
+        lim = int(limit)
+    if lim < 0:
+        return ""
     text = str(val) if not isinstance(val, str) else val
     clean = "".join(ch for ch in text if ch >= " " and ch != "\x7f").strip()
-    return clean[:limit]
+    return clean[:lim]
 
 
 def set_context(*, request_id: Any = "", trace_id: Any = "", agent: Any = "", tenant: Any = "") -> tuple[Token, Token, Token, Token]:
@@ -77,7 +84,7 @@ def set_metadata(metadata: Mapping[str, Any] | None = None, **fields: Any) -> To
     """Set payload-free token metadata for the current request context."""
     from .token_accounting import token_efficiency_metadata
 
-    value = dict(metadata or {})
+    value = dict(metadata) if isinstance(metadata, Mapping) else {}
     value.update(fields)
     return _efficiency_metadata.set(token_efficiency_metadata(value))
 
@@ -117,9 +124,34 @@ def clear_context() -> None:
     _efficiency_metadata.set({})
 
 
+def has_context() -> bool:
+    return bool(_request_id.get() or _trace_id.get())
+
+
+def is_trace_active() -> bool:
+    return bool(_trace_id.get())
+
+
+def current_request_id() -> str:
+    return _request_id.get()
+
+
+def current_trace_id() -> str:
+    return _trace_id.get()
+
+
+def current_agent() -> str:
+    return _agent.get()
+
+
+def current_tenant() -> str:
+    return _tenant.get()
+
+
 def current() -> dict[str, Any]:
     value = {"request_id": _request_id.get(), "trace_id": _trace_id.get(), "agent": _agent.get(), "tenant": _tenant.get()}
     metadata = efficiency_metadata()
     if metadata:
         value["token_efficiency"] = metadata
     return value
+
