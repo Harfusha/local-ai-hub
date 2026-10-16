@@ -929,7 +929,10 @@ def _reuse_only(key: str, value: Any) -> bool:
 def _reuse_state(key: str, value: Any) -> tuple[bool, Any]:
     if not key:
         return False, None
-    digest = hashlib.sha256(repr(_normalize_deterministic(value)).encode("utf-8", errors="replace")).hexdigest()
+    # Transport correlation changes for each request, even when its answer does
+    # not. Retain the current identity in the response and stored snapshot.
+    identity = {field: item for field, item in value.items() if field != "request_id"} if isinstance(value, dict) else value
+    digest = hashlib.sha256(repr(_normalize_deterministic(identity)).encode("utf-8", errors="replace")).hexdigest()
     previous = _REUSE_DIGESTS.get(key)
     previous_value = _REUSE_VALUES.get(key)
     _REUSE_DIGESTS[key] = digest
@@ -5130,7 +5133,7 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
             # the compact command envelope below must not consume their fields.
             error = str(value.get("error") or "tool failed")
             for error_chars in (512, 256, 128, 64, 48, 40, 32, 24, 16, 8, 1):
-                for dropped in ((), ("status_code",), ("status_code", "terminal", "retryable")):
+                for compact_text in (False, True):
                     candidate = {
                         "success": False,
                         "error": error[:error_chars],
@@ -5138,11 +5141,11 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                             key: value[key]
                             for key in ("status", "status_code", "terminal", "retryable", "request_id", "execution_id",
                                         "mutation_applied", "operation_not_started")
-                            if key in value and key not in dropped
+                            if key in value
                         },
                     }
                     for key in (*_CONTEXT_PROTECTED_KEYS, "evidence", "evidence_id", "evidence_ids", "artifact_id", "artifact_ids"):
-                        if key != "error" and key in value and key not in dropped:
+                        if key != "error" and key in value:
                             candidate[key] = value[key]
                     for metadata in (
                         {"requested_tokens": requested, "returned_tokens": 0, "unit": "estimated_tokens"},
@@ -5150,13 +5153,23 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                     ):
                         trial = dict(candidate)
                         trial["response_budget"] = dict(metadata)
+
+                        def wire_payload() -> dict[str, Any]:
+                            wire = _mcp_wire_view(trial, structured=True)
+                            if compact_text:
+                                wire["content"][0]["text"] = json_dumps({
+                                    "success": False, "error": trial["error"],
+                                })
+                            return wire
+
                         for _ in range(16):
-                            returned = json_tokens(_mcp_wire_view(trial, structured=True))
+                            returned = json_tokens(wire_payload())
                             trial["response_budget"]["returned_tokens"] = returned
-                            if json_tokens(_mcp_wire_view(trial, structured=True)) == returned:
+                            if json_tokens(wire_payload()) == returned:
                                 break
-                        if json_tokens(_mcp_wire_view(trial, structured=True)) <= requested:
-                            return [mcp_types.TextContent(type="text", text=json_dumps(trial))], trial
+                        wire = wire_payload()
+                        if json_tokens(wire) <= requested:
+                            return [mcp_types.TextContent(type="text", text=wire["content"][0]["text"])], trial
             return None
         error = str(value.get("error") or "")
         metadata_variants = (

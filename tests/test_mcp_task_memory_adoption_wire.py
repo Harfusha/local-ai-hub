@@ -410,9 +410,12 @@ def test_stdio_delta_keeps_unchanged_memory_and_usage_instructions(tmp_path, mon
 def test_stdio_reused_memory_pointer_still_delivers_complete_advice(tmp_path, monkeypatch):
     arguments = {"action": "task_resume", "reason": "unchanged", "response_profile": "minimal",
                  "max_response_tokens": 2000, "reuse_key": "memory-wire-unchanged"}
-    expected, _, results = _round_trip(tmp_path, [arguments, arguments], monkeypatch)
+    expected, calls, results = _round_trip(tmp_path, [arguments, arguments], monkeypatch)
+    assert len(calls) == 2
+    assert calls[0]["request_id"] != calls[1]["request_id"]
     assert results[1].structuredContent["reused"] is True
-    for result in results:
+    for call, result in zip(calls, results, strict=True):
+        assert result.structuredContent["request_id"] == call["request_id"]
         assert result.structuredContent["task"]["checkpoint"]["state_data"]["memory_context"] == expected
 
 
@@ -519,7 +522,7 @@ def test_task_memory_wire_cannot_succeed_with_overlong_identity_at_tiny_budget()
         "action": "task_resume", "max_response_tokens": 128,
     }, {"success": True, "task_id": "t" * 2000, "task": {
         "task_id": "t" * 2000, "status": "running", "checkpoint": {
-            "state_data": {"memory_context": _memory(Path("repository"))}}}})
+            "state_data": {"memory_context": _memory("repository")}}}})
     assert structured["success"] is False
     assert structured["error"] == "budget_too_small"
     assert structured["terminal"] is True and structured["retryable"] is False
