@@ -404,6 +404,14 @@ def _regex_ast_chunks(text: str, language: str, size: int = 4500) -> list[str]:
             if not braces:
                 if len(spans) >= _REGEX_AST_MAX_BLOCKS:
                     return [text] if text.strip() else []
+                cursor = index
+                while cursor < text_length and text[cursor] in " \t":
+                    cursor += 1
+                if cursor < text_length and text[cursor] == "\r":
+                    cursor += 1
+                if cursor < text_length and text[cursor] == "\n":
+                    cursor += 1
+                    index = cursor
                 spans.append((segment_start, index))
                 segment_start = index
             continue
