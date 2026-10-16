@@ -104,6 +104,12 @@ def _replace_state_file(source: str, destination: Path) -> None:
             time.sleep(0.02)
 
 
+def is_valid_operational_mode(value: object) -> bool:
+    if isinstance(value, bool) or not isinstance(value, str):
+        return False
+    return value.replace("\x00", "").strip().lower() in _ALLOWED_MODES
+
+
 @dataclass(frozen=True)
 class OperationalModeSnapshot:
     mode: OperationalMode
@@ -111,6 +117,18 @@ class OperationalModeSnapshot:
     updated_at: str | None
     degraded: bool = False
     error: str = ""
+
+    def is_active(self) -> bool:
+        return self.mode == "active"
+
+    def is_gaming(self) -> bool:
+        return self.mode == "gaming"
+
+    def is_maintenance(self) -> bool:
+        return self.mode == "maintenance"
+
+    def is_healthy(self) -> bool:
+        return not self.degraded and not self.error
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -210,8 +228,13 @@ def operational_mode_gate_error(
         return None
     mode = snapshot.mode if snapshot is not None else "maintenance"
     degraded = snapshot is None or snapshot.degraded
+    clean_action = (
+        ""
+        if action is None or isinstance(action, bool)
+        else str(action).replace("\x00", "").strip().lower().replace("-", "_")
+    )
     safe_job_actions = {"status", "wait", "result", "cancel", "evaluation_report"}
-    if not degraded and mode == "gaming" and action.strip().lower().replace("-", "_") in safe_job_actions:
+    if not degraded and mode == "gaming" and clean_action in safe_job_actions:
         return None
     if not degraded and mode == "gaming" and not requires_heavy_work:
         return None
@@ -220,7 +243,7 @@ def operational_mode_gate_error(
         "mode": mode,
         "operational_mode": mode,
         "error_code": "operational_mode_blocked",
-        "action": action.strip().lower().replace("-", "_"),
+        "action": clean_action,
         "error": f"hub paused: {mode} mode active",
         "terminal": False,
         "retryable": True,
