@@ -38,14 +38,15 @@ def ensure_extended_path(p: Path | str, threshold: int = 240) -> Path:
     """Prepend Windows extended-length path prefix (\\\\?\\) if path length exceeds threshold."""
     if os.name != "nt":
         return Path(p)
-    raw = str(p)
+    raw = str(p or "").replace("\x00", "")
     if raw.startswith(("\\\\?\\", "\\\\.\\")):
         return Path(raw)
+    thresh = threshold if isinstance(threshold, int) and not isinstance(threshold, bool) and threshold >= 0 else 240
     try:
         resolved = os.path.abspath(raw)
     except Exception:
         resolved = raw
-    if len(resolved) > threshold:
+    if len(resolved) > thresh:
         if resolved.startswith("\\\\"):
             return Path("\\\\?\\UNC\\" + resolved.lstrip("\\"))
         return Path("\\\\?\\" + resolved)
@@ -1854,10 +1855,14 @@ def canonical_root(path: str | Path) -> str:
     Resolves symlinks, relative segments, and user home directory.
     On Windows, Path.resolve() normalizes drive letter casing to the disk filesystem.
     """
+    raw = str(path or "").replace("\x00", "").strip()
     try:
-        resolved = Path(path).expanduser().resolve()
+        resolved = Path(raw).expanduser().resolve()
     except Exception:
-        resolved = Path(path).expanduser().absolute()
+        try:
+            resolved = Path(raw).expanduser().absolute()
+        except Exception:
+            resolved = Path.cwd().resolve()
     return str(resolved)
 
 
@@ -1876,15 +1881,37 @@ def is_rooted_path(path: str | Path) -> bool:
     recognize both forms so cross-platform client payloads are never joined onto
     the current workspace by accident.
     """
-    raw = str(path or "").strip()
+    raw = str(path or "").replace("\x00", "").strip()
     if not raw:
         return False
     if raw.startswith(("/", "\\")):
         return True
-    if Path(raw).is_absolute():
-        return True
-    win = PureWindowsPath(raw)
-    return bool(win.drive) or win.is_absolute()
+    try:
+        if Path(raw).is_absolute():
+            return True
+    except Exception:
+        pass
+    try:
+        win = PureWindowsPath(raw)
+        return bool(win.drive) or win.is_absolute()
+    except Exception:
+        return False
+
+
+def is_valid_pid(pid: Any) -> bool:
+    """Return True if pid is a valid positive non-boolean integer."""
+    return pid is not None and not isinstance(pid, bool) and isinstance(pid, int) and pid > 0
+
+
+def is_safe_path(path: Any) -> bool:
+    """Return True if path is a non-empty string or Path without null bytes."""
+    if path is None or isinstance(path, bool):
+        return False
+    try:
+        s = str(path)
+        return bool(s.strip()) and "\x00" not in s
+    except Exception:
+        return False
 
 
 def _job_kernel32() -> Any:
