@@ -188,12 +188,12 @@ For workspaces exceeding 10,000 chunks, compute k-means cluster centroids. Pre-f
 ### Task 29: Index-backed `circular_dependencies` (#21)
 
 **Files:**
-- Modify: `src/local_ai_hub/deterministic.py:5900-5940`
+- Modify: `src/local_ai_hub/deterministic.py:7328`
 - Test: `tests/unit/test_circular_dependencies_index_backed.py`
 
-- [ ] **Step 1: Write test verifying `circular_dependencies` queries the existing index instead of reading raw files from disk**
-- [ ] **Step 2: Implement fix**
-In `find_circular_dependencies`, query table `dependencies` in `deterministic.sqlite3` instead of calling `rglob("*.py")` and parsing ASTs from scratch.
+- [x] **Step 1: Write test verifying `circular_dependencies` queries the existing index instead of reading raw files from disk**
+- [x] **Step 2: Implement fix**
+In `find_circular_dependencies`, consume indexed Python import edges (`edges.kind='imports'`) through `CodeIndex.python_module_import_graph`; reject missing or stale derived index data. Do not call `rglob("*.py")` or parse source in the query path.
 - [ ] **Step 3: Run test and verify pass & Commit**
 `git commit -m "perf(dependencies): make circular dependency analysis index-backed"`
 
