@@ -828,7 +828,7 @@ def test_batch_reindex_detects_same_stat_rewrite_and_replaces_dependencies(
                 (canonical_root(str(root)), "consumer.py"),
             ).fetchall()
         }
-    assert import_targets == {"modern"}
+    assert import_targets == {"modern", "modern.new_call"}
 
 
 def test_verified_hash_revalidation_is_not_reported_as_cache_hit_and_refreshes_lru(

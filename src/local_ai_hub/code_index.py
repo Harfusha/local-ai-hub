@@ -20,7 +20,7 @@ from typing import Any, Iterator
 
 from . import __version__
 
-_PARSER_ANALYZER_VERSION = f"{__version__}:call-edges-v15-native-point-tuples"
+_PARSER_ANALYZER_VERSION = f"{__version__}:call-edges-v16-multiline-arrow-scope"
 from .cache import MemoryLRUCache, stable_hash
 from .normalizer import tokenize_query_terms
 from .process_utils import canonical_root
@@ -1615,7 +1615,9 @@ class CodeIndex:
                     if match.group(1) not in known_names
                 )
             raw_sig = raw_lines[i - 1].strip() if i - 1 < len(raw_lines) else line.strip()
-            clean_sig = re.sub(r"\s*(?:\{|=>|;)\s*$", "", raw_sig)[:160]
+            # Keep a terminal arrow: multiline expression-body call ownership
+            # uses it to stop at the body's terminating semicolon.
+            clean_sig = re.sub(r"\s*(?:\{|;)\s*$", "", raw_sig)[:160]
             for kind, name in declarations:
                 raw_syms.append({
                     "name": name,
