@@ -109,7 +109,9 @@ class Reranker:
     def _candidate_specs(self) -> list[tuple[str, str]]:
         if self.backend == "openvino":
             candidates = [("openvino", device) for device in openvino_device_candidates(self.config, self.device)]
-            if bool(self.config.get("openvino", {}).get("cpu_fallback", True)):
+            openvino_cfg = self.config.get("openvino") if isinstance(self.config, dict) else None
+            cpu_fallback = bool(openvino_cfg.get("cpu_fallback", True)) if isinstance(openvino_cfg, dict) else True
+            if cpu_fallback:
                 candidates.append(("torch", "cpu"))
             result: list[tuple[str, str]] = []
             seen: set[tuple[str, str]] = set()
@@ -157,7 +159,9 @@ class Reranker:
                 try:
                     return CrossEncoder(self.model_name, local_files_only=True, **kwargs)
                 except Exception:
-                    if self.config.get("models", {}).get("allow_hf_downloads") is not True:
+                    models_cfg = self.config.get("models") if isinstance(self.config, dict) else None
+                    allow_hf = bool(models_cfg.get("allow_hf_downloads", False)) if isinstance(models_cfg, dict) else False
+                    if not allow_hf:
                         raise
                     return CrossEncoder(self.model_name, **kwargs)
 
