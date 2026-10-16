@@ -576,7 +576,7 @@ def test_gaming_cancels_active_whisper_before_unload_and_blocks_new_transcriptio
         return {"success": False, "reason": "cancelled", "cancelled": True}
 
     request_handler, app, request_responses = _handler(
-        monkeypatch, tmp_path, method="POST", path="/api/transcribe", payload={"audio": "voice.wav"}, manager=manager,
+        monkeypatch, tmp_path, method="POST", path="/api/task/transcribe", payload={"audio": "voice.wav"}, manager=manager,
     )
     app.runtime = runtime
     app.services = SimpleNamespace(transcribe=transcribe)
@@ -600,7 +600,7 @@ def test_gaming_cancels_active_whisper_before_unload_and_blocks_new_transcriptio
     assert runtime.unload_calls == ["fast:latest"]
 
     new_handler, _new_app, new_responses = _handler(
-        monkeypatch, tmp_path, method="POST", path="/api/transcribe", payload={"audio": "later.wav"}, manager=manager,
+        monkeypatch, tmp_path, method="POST", path="/api/task/transcribe", payload={"audio": "later.wav"}, manager=manager,
     )
     monkeypatch.setattr(http_server, "APP", app)
     http_server.Handler.do_POST(new_handler)
@@ -666,7 +666,7 @@ def test_gaming_keeps_release_token_when_whisper_cleanup_is_unverified(monkeypat
         monkeypatch,
         tmp_path,
         method="POST",
-        path="/api/transcribe",
+        path="/api/task/transcribe",
         payload={"audio": "voice.wav"},
         manager=manager,
         runtime=runtime,

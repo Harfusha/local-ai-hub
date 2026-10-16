@@ -8515,7 +8515,7 @@ class Handler(BaseHTTPRequestHandler):
                 query = str(payload.get("query", ""))
                 top_k = int(payload.get("top_k", 8))
                 self._send(200, APP.rag.docset_search(name, query, tenant, top_k=top_k)); return
-            if path == "/api/task/transcribe":
+            if 'post_task_transcribe_1' in post_route_ids:
                 from .process_utils import ProcessCleanupUnverifiedError
                 token, cancel_event = _ACTIVE_TRANSCRIPTIONS.begin()
                 result: Any = {}

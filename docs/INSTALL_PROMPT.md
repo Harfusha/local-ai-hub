@@ -1,5 +1,7 @@
 # Generic Agent Installation & Integration Prompt for Local AI Hub
 
+Durable `local_ai_task(action="submit")` accepts optional string `request_id` as its explicit retry identity. This field belongs only to `submit`; omit it for other actions. The public tool schema and argument validator expose the same input.
+
 The optional model-free claim validator requires explicit inputs: `python tools/validate_t02_acceptance_claims.py <manifest.json> <receipt.json>`. Evidence counts require JSON integers; booleans and floats reject. It does not load historical handoff files or establish current release acceptance; synthetic unit fixtures verify only claim-validation behavior.
 
 Both compact and full `local_ai_status` descriptions advertise the `detail` selector. Use `detail="brief"`, `"cache"`, `"telemetry"`, `"full"`, or an enabled advertised detail; never substitute `action`.
