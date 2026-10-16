@@ -23,7 +23,7 @@ _PROFILE_FIELDS: dict[str, tuple[str, ...] | None] = {
 
 
 def _dense(value: str, limit: int) -> str:
-    if limit <= 0:
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
         return ""
     text = str(value or "").replace("\x00", "").strip()
     if len(text) <= limit:
@@ -80,7 +80,10 @@ def project_response(
         selected = canonical if allowed is None else {k: canonical[k] for k in allowed if k in canonical}
 
     try:
-        raw_tokens = float(max_output_tokens or 0)
+        if isinstance(max_output_tokens, bool):
+            raw_tokens = 0.0
+        else:
+            raw_tokens = float(max_output_tokens or 0)
         if not math.isfinite(raw_tokens) or raw_tokens <= 0:
             token_budget = 0
         else:
@@ -162,4 +165,9 @@ def profile_fields(profile: str) -> tuple[str, ...] | None:
     if not profile or not isinstance(profile, str):
         return None
     return _PROFILE_FIELDS.get(profile.strip().lower())
+
+
+def default_profile() -> str:
+    """Return default profile name."""
+    return "compact"
 
