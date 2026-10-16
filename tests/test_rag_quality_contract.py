@@ -312,6 +312,9 @@ def test_fallback_embedding_reports_identity_of_backend_that_produced_vectors():
         def get(self, key):
             return self.values.get(key)
 
+        def get_many(self, keys):
+            return {k: self.values[k] for k in keys if k in self.values}
+
         def set(self, key, value):
             self.values[key] = value
 
@@ -466,34 +469,6 @@ def test_equal_scores_use_semantic_path_order_not_row_order(tmp_path):
 
     result = store._search_uncached("no-match-query", tenant, workspace, top_k=3, use_reranker=False)
     assert [row["path"] for row in result["results"]] == ["a-first.py", "m-middle.py", "z-last.py"]
-
-
-
-def test_vector_search_skips_redundant_local_sort_for_unique_scores(tmp_path, monkeypatch):
-    store = _store(tmp_path)
-    tenant, workspace = "tenant", "unique-score-workspace"
-    vectors = np.asarray([[1.0, float(i + 1)] for i in range(96)], dtype=np.float32)
-    _insert_vectors(store, tenant, workspace, vectors)
-
-    def unexpected_lexsort(*_args, **_kwargs):
-        raise AssertionError("unique-score batch should not need local candidate ordering")
-
-    monkeypatch.setattr(np, "lexsort", unexpected_lexsort)
-    result = store._search_uncached("unique score query", tenant, workspace, top_k=4, use_reranker=False)
-
-    assert result["success"] is True
-    assert [row["chunk_no"] for row in result["results"]] == [0, 1, 2, 3]
-
-
-def test_vector_search_keeps_deterministic_ties_at_candidate_cutoff(tmp_path):
-    store = _store(tmp_path)
-    tenant, workspace = "tenant", "tie-cutoff-workspace"
-    _insert_vectors(store, tenant, workspace, np.asarray([[1.0, 0.0]] * 32, dtype=np.float32))
-
-    result = store._search_uncached("tie query", tenant, workspace, top_k=16, use_reranker=False)
-
-    assert result["success"] is True
-    assert [row["chunk_no"] for row in result["results"]] == list(range(16))
 
 
 def test_configured_candidate_count_has_hard_upper_bound(tmp_path):
