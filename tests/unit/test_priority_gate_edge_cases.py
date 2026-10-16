@@ -10,8 +10,10 @@ from local_ai_hub.priority_gate import CooperativePriorityGate
 
 
 def test_priority_gate_defensive_initialization_and_params() -> None:
-    # Non-integer foreground_priority defaults to 3
-    gate = CooperativePriorityGate("invalid")  # type: ignore[arg-type]
+    # Non-integer foreground_priority raises ValueError
+    with pytest.raises(ValueError, match="foreground_priority must be an integer"):
+        CooperativePriorityGate("invalid")  # type: ignore[arg-type]
+    gate = CooperativePriorityGate()
     assert gate.foreground_priority == 3
 
     with pytest.raises(ValueError):
