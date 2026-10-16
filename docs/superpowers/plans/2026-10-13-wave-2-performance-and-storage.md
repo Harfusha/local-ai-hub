@@ -106,8 +106,8 @@ Pass `(offset, max_chars, artifact_id, cutoff)` directly to SQLite.
 - Modify: `src/local_ai_hub/http_server.py:80-120`
 - Test: `tests/unit/test_orjson_serialization.py`
 
-- [ ] **Step 1: Write test verifying `json_dumps` uses `orjson` when available**
-- [ ] **Step 2: Implement fix**
+- [x] **Step 1: Write test verifying `json_dumps` uses `orjson` when available**
+- [x] **Step 2: Implement fix**
 Ensure `orjson.dumps(..., option=orjson.OPT_NON_STR_KEYS)` is used in `json_utils.py` and that `http_server.py` and `mcp_server.py` use it consistently.
 - [ ] **Step 3: Run test and verify pass & Commit**
 `git commit -m "perf(serialization): standardize on orjson across all HTTP and MCP JSON boundaries"`
