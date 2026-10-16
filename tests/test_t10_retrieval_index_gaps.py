@@ -28,14 +28,15 @@ def test_typescript_named_arrow_call_edges_are_indexed(tmp_path: Path) -> None:
 
 def test_parser_analyzer_version_rejects_old_parse_blobs(tmp_path: Path) -> None:
     index = CodeIndex({"server": {"state_dir": str(tmp_path / "state")}}, repo_tools=None)
+    old_version = f"{code_index_module.__version__}:call-edges-v15-native-point-tuples"
     with closing(index._connect()) as con:
         con.execute(
             "INSERT INTO parse_blobs(content_hash,analyzer_version,language,payload_json,updated_at) VALUES(?,?,?,?,?)",
-            ("same-content", code_index_module.__version__, "rust", '{"edges":[]}', 0.0),
+            ("same-content", old_version, "rust", '{"edges":[]}', 0.0),
         )
         con.commit()
 
-    assert code_index_module._PARSER_ANALYZER_VERSION == f"{code_index_module.__version__}:call-edges-v13-scoped-fallback"
+    assert code_index_module._PARSER_ANALYZER_VERSION != old_version
     assert index._parse_blob_get("same-content", "rust") is None
 
 
@@ -54,9 +55,9 @@ def test_same_content_reindexes_after_analyzer_version_bump(tmp_path: Path, monk
     parse_calls: list[tuple[str, str]] = []
     parse_file_content = index._parse_file_content
 
-    def track_parse(text: str, language: str):
+    def track_parse(text: str, language: str, *, source_key: str | None = None):
         parse_calls.append((text, language))
-        return parse_file_content(text, language)
+        return parse_file_content(text, language, source_key=source_key)
 
     monkeypatch.setattr(index, "_parse_file_content", track_parse)
     if mode == "single":
