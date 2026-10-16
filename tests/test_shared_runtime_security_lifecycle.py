@@ -1699,17 +1699,23 @@ def test_unscoped_agent_state_post_routes_deny_before_store_access(monkeypatch, 
 
     responses = _dispatch_post(monkeypatch, path, {"action": action}, app)
 
-    assert responses[0][0] == 403
+    retired_blackboard_actions = {
+        "put", "blackboard_update", "read", "blackboard_get",
+        "blackboard_list", "blackboard_merge", "remove", "blackboard_delete",
+    }
+    expected_status = 400 if path == "/api/agent-state/blackboard" and action in retired_blackboard_actions else 403
+    assert responses[0][0] == expected_status
+    assert responses[0][1]["success"] is False
     assert calls == []
 
 
-@pytest.mark.parametrize("path", [
-    "/api/code/ast_rename",
-    "/api/ast_rename",
-    "/api/code/batch_replace",
-    "/api/repo/batch_replace",
+@pytest.mark.parametrize(("path", "expected_status"), [
+    ("/api/code/ast_rename", 403),
+    ("/api/ast_rename", 404),
+    ("/api/code/batch_replace", 403),
+    ("/api/repo/batch_replace", 404),
 ])
-def test_unscoped_file_mutation_routes_deny_before_service_access(monkeypatch, path):
+def test_unscoped_file_mutation_routes_deny_before_service_access(monkeypatch, path, expected_status):
     calls = []
     services = SimpleNamespace(
         ast_rename=lambda *args, **kwargs: calls.append((args, kwargs)),
@@ -1723,7 +1729,8 @@ def test_unscoped_file_mutation_routes_deny_before_service_access(monkeypatch, p
     )
     responses = _dispatch_post(monkeypatch, path, {"root": ""}, app)
 
-    assert responses[0][0] == 403
+    assert responses[0][0] == expected_status
+    assert responses[0][1]["success"] is False
     assert calls == []
 
 
@@ -1912,14 +1919,14 @@ def test_unscoped_repository_routes_deny_before_service_access(monkeypatch, path
     assert calls == []
 
 
-@pytest.mark.parametrize("path", [
-    "/api/repo/cross_repo_contract",
-    "/api/cross_repo_contract",
-    "/api/cross_project_graph",
-    "/api/cross_project_symbols",
-    "/api/cross_project_impact",
+@pytest.mark.parametrize(("path", "expected_status"), [
+    ("/api/repo/cross_repo_contract", 400),
+    ("/api/cross_repo_contract", 404),
+    ("/api/cross_project_graph", 400),
+    ("/api/cross_project_symbols", 400),
+    ("/api/cross_project_impact", 400),
 ])
-def test_cross_repository_routes_require_explicit_roots(monkeypatch, path):
+def test_cross_repository_routes_require_explicit_roots(monkeypatch, path, expected_status):
     calls = []
     app = SimpleNamespace(
         config={"security": {"api_token": "cross-repo-token-long"}},
@@ -1930,7 +1937,8 @@ def test_cross_repository_routes_require_explicit_roots(monkeypatch, path):
     )
     responses = _dispatch_post(monkeypatch, path, {}, app)
 
-    assert responses[0][0] == 400
+    assert responses[0][0] == expected_status
+    assert responses[0][1]["success"] is False
     assert calls == []
 
 
