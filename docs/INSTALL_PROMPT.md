@@ -184,6 +184,7 @@ When `[ollama].enabled = false`, setup must honor the llama.cpp mode: managed in
 If this checkout includes `docs/PYTHON_SDK.md`, consult it for the Python package's `HubClient`, install extras, and replay/error contracts before writing Python integration code.
 
 Working-checkout release checks ignore disposable Python/pytest caches already covered by `.gitignore`. Use `python tools/release_check.py --allow-installed` in a live installed checkout. Use `--strict-tree` for a clean release tree; never combine it with `--post-test` or `--allow-installed`. Do not delete caches merely to make an ordinary checkout check pass.
+Keep generated `.merge-checks/` fixtures local and untracked. Installed-checkout checks tolerate retained fixtures; ordinary, post-test and strict release-tree checks reject that directory. Exclude it from source distributions. Remove accidentally tracked entries from the Git index while preserving their filesystem data.
 
 ---
 

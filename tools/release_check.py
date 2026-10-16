@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 _TOP_LEVEL_FORBIDDEN_DIRS = {
     ".agents",
+    ".merge-checks",
     "_local_ai_hub_patch",
     ".pytest_cache",
     ".serena",
@@ -118,7 +119,7 @@ def _version_from_init(root: Path) -> str:
     return match.group(1)
 
 
-_INSTALLED_ENV_DIRS = {".venv", "tool-envs", "state", ".serena", ".agents", ".superpowers", ".worktrees"}
+_INSTALLED_ENV_DIRS = {".venv", "tool-envs", "state", ".serena", ".agents", ".superpowers", ".worktrees", ".merge-checks"}
 
 
 def _iter_release_hygiene_violations(

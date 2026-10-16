@@ -25,6 +25,7 @@ prune dist
 prune data
 prune generated
 prune .handoff
+prune .merge-checks
 prune artifacts
 prune T18-review-artifacts-*
 prune .t03-root-current-overlay
