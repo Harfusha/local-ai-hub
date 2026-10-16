@@ -1,24 +1,42 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
+from contextlib import contextmanager
 import gc
+import math
 import threading
 import time
-import weakref
-from contextlib import contextmanager
 from typing import Any, Callable
+import weakref
 
 
 _CUDA_MODEL_LOCK = threading.RLock()
 _CUDA_MODELS: weakref.WeakSet[Any] = weakref.WeakSet()
+_MAX_LOCK_TIMEOUT_SECONDS = 86_400.0
+
+
+def _safe_timeout(timeout_seconds: Any) -> float:
+    if timeout_seconds is None or isinstance(timeout_seconds, bool):
+        return 0.0
+    try:
+        parsed = float(timeout_seconds)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if math.isnan(parsed) or parsed < 0.0:
+        return 0.0
+    if math.isinf(parsed):
+        return _MAX_LOCK_TIMEOUT_SECONDS
+    return min(parsed, _MAX_LOCK_TIMEOUT_SECONDS)
 
 
 @contextmanager
-def acquire_locks(locks: tuple[Any, ...], timeout_seconds: float):
-    deadline = time.monotonic() + max(0.0, timeout_seconds)
+def acquire_locks(locks: Iterable[Any] | None, timeout_seconds: float):
+    safe_timeout = _safe_timeout(timeout_seconds)
+    deadline = time.monotonic() + safe_timeout
     acquired: list[Any] = []
     try:
-        for lock in locks:
-            remaining = max(0.0, deadline - time.monotonic())
+        for lock in locks or ():
+            remaining = min(_MAX_LOCK_TIMEOUT_SECONDS, max(0.0, deadline - time.monotonic()))
             if not lock.acquire(timeout=remaining):
                 yield False
                 return
@@ -30,9 +48,26 @@ def acquire_locks(locks: tuple[Any, ...], timeout_seconds: float):
 
 
 def uses_torch_cuda(backend: str | None, device: str | None) -> bool:
-    normalized_backend = str(backend or "").strip().lower()
-    normalized_device = str(device or "").strip().lower()
+    if isinstance(backend, bool) or isinstance(device, bool):
+        return False
+    normalized_backend = str(backend or "").replace("\x00", "").strip().lower()
+    normalized_device = str(device or "").replace("\x00", "").strip().lower()
     return normalized_backend in {"torch", "sentence-transformers"} and normalized_device.startswith("cuda")
+
+
+def active_cuda_model_count() -> int:
+    with _CUDA_MODEL_LOCK:
+        return len(_CUDA_MODELS)
+
+
+def is_cuda_model_registered(owner: Any) -> bool:
+    if owner is None:
+        return False
+    with _CUDA_MODEL_LOCK:
+        try:
+            return owner in _CUDA_MODELS
+        except TypeError:
+            return False
 
 
 def load_model(owner: Any, *, uses_cuda: bool, factory: Callable[[], Any]) -> Any:
@@ -40,7 +75,10 @@ def load_model(owner: Any, *, uses_cuda: bool, factory: Callable[[], Any]) -> An
         return factory()
     with _CUDA_MODEL_LOCK:
         model = factory()
-        _CUDA_MODELS.add(owner)
+        try:
+            _CUDA_MODELS.add(owner)
+        except TypeError:
+            pass
         return model
 
 
@@ -48,9 +86,12 @@ def release_model(owner: Any, *, used_cuda: bool) -> bool:
     if not used_cuda:
         return False
     with _CUDA_MODEL_LOCK:
-        if owner not in _CUDA_MODELS:
+        try:
+            if owner not in _CUDA_MODELS:
+                return False
+            _CUDA_MODELS.discard(owner)
+        except TypeError:
             return False
-        _CUDA_MODELS.discard(owner)
         if _CUDA_MODELS:
             return False
         gc.collect()
