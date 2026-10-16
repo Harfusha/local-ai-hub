@@ -126,12 +126,7 @@ def test_mcp_telemetry_tools_call_loopback_matches_declared_output_schema(tmp_pa
         assert isinstance(response.root, t.CallToolResult)
         assert response.root.isError is not True
         payload = json.loads(response.root.content[0].text)
-        assert payload["success"] is True, {
-            "payload": payload,
-            "start_count": len(start_events),
-            "received_count": len(received),
-            "owned_children": len(owned_children),
-        }
+        assert payload["success"] is True, payload
         _assert_json_schema(payload, declared_schema)
         assert payload["hotspots"] == []
         assert payload["by_operation"] == []

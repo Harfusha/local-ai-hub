@@ -4,6 +4,8 @@ import threading
 import time
 from pathlib import Path
 
+import pytest
+
 from local_ai_hub.repo_tools import RepositoryTools
 from local_ai_hub.retrieval import fuse_ranked_paths
 from local_ai_hub.evidence import EvidenceStore
