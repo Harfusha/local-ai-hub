@@ -60,7 +60,10 @@ def is_root_archive_path(relative: str | Path) -> bool:
         r"\.(?:py|pyi|js|jsx|ts|tsx|cs|go|rs|java|c|cc|cpp|h|hpp)(?:\.txt)?$", parts[-1]
     ):
         return True
-    if parts[0] in {"handoff", ".handoff", ".merge-checks", ".sync-checks", ".system_generated"}:
+    if parts[0] in {
+        "handoff", ".handoff", ".merge-checks", ".sync-checks",
+        ".system_generated", ".t17-merge-tmp",
+    }:
         return True
     if len(parts) > 1 and parts[:2] == ("artifacts", "handoff"):
         return True
