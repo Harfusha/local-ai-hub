@@ -22,7 +22,7 @@ def test_scoped_delete_purges_fts_and_embedding_artifacts(tmp_path):
             key="delete-search-artifacts",
             value="sensitive searchable memory",
             source="user",
-            provenance={"root": str(root), "tenant": "tenant-a"},
+            provenance={"root": str(root), "tenant": "tenant-a", "repository_id": str(root)},
         ),
         actor="user",
         idempotency_key="delete-search-artifacts",
@@ -47,6 +47,7 @@ def test_scoped_delete_purges_fts_and_embedding_artifacts(tmp_path):
         scope=AgentScope.REPOSITORY,
         scope_id=str(root),
         root=str(root),
+        repository_id=str(root),
         tenant="tenant-a",
     )
     reopened = MemoryStore(AgentStateStore(store.state_store.db_path))
@@ -55,6 +56,7 @@ def test_scoped_delete_purges_fts_and_embedding_artifacts(tmp_path):
         scope=AgentScope.REPOSITORY,
         scope_id=str(root),
         root=str(root),
+        repository_id=str(root),
         tenant="tenant-a",
         include_expired=True,
     ) is None
@@ -81,7 +83,7 @@ def test_replaying_record_after_delete_does_not_restore_memory_or_fts(tmp_path):
         key="delete-replay-does-not-resurrect",
         value="deleted searchable memory",
         source="user",
-        provenance={"root": str(root), "tenant": "tenant-a"},
+        provenance={"root": str(root), "tenant": "tenant-a", "repository_id": str(root)},
     )
     store.record(record, actor="user", idempotency_key="delete-replay-record")
     assert store.set_embedding(record.record_id, [0.25, 0.75])
@@ -95,6 +97,7 @@ def test_replaying_record_after_delete_does_not_restore_memory_or_fts(tmp_path):
         scope=AgentScope.REPOSITORY,
         scope_id=str(root),
         root=str(root),
+        repository_id=str(root),
         tenant="tenant-a",
     )
 
@@ -104,6 +107,7 @@ def test_replaying_record_after_delete_does_not_restore_memory_or_fts(tmp_path):
         record.record_id,
         scope=AgentScope.REPOSITORY,
         root=str(root),
+        repository_id=str(root),
         tenant="tenant-a",
         include_expired=True,
     ) is None
@@ -142,7 +146,7 @@ def test_delete_cleanup_failure_rolls_back_memory_and_search_state(tmp_path, mon
             key="rollback-delete-primary",
             value="retain after failed deletion",
             source="user",
-            provenance={"root": str(root), "tenant": "tenant-a"},
+            provenance={"root": str(root), "tenant": "tenant-a", "repository_id": str(root)},
         ),
         actor="user",
     )
@@ -154,7 +158,7 @@ def test_delete_cleanup_failure_rolls_back_memory_and_search_state(tmp_path, mon
             key="rollback-delete-related",
             value="retain relation",
             source="user",
-            provenance={"root": str(root), "tenant": "tenant-a"},
+            provenance={"root": str(root), "tenant": "tenant-a", "repository_id": str(root)},
         ),
         actor="user",
     )
@@ -195,6 +199,7 @@ def test_delete_cleanup_failure_rolls_back_memory_and_search_state(tmp_path, mon
                 scope=AgentScope.REPOSITORY,
                 scope_id=str(root),
                 root=str(root),
+                repository_id=str(root),
                 tenant="tenant-a",
             )
 
@@ -204,6 +209,7 @@ def test_delete_cleanup_failure_rolls_back_memory_and_search_state(tmp_path, mon
         scope=AgentScope.REPOSITORY,
         scope_id=str(root),
         root=str(root),
+        repository_id=str(root),
         tenant="tenant-a",
     ) == record
     assert store.find_relations(source_entity=record.record_id)
