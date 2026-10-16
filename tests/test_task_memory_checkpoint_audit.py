@@ -11,6 +11,7 @@ from local_ai_hub.agent_events import AgentStateStore
 from local_ai_hub.agent_identity import AgentScope, ScopeContext
 from local_ai_hub.agent_memory import MemoryKind, MemoryRecord, MemoryStatus, MemoryStore
 from local_ai_hub.agent_tasks import CompletionGateError, GoalContract, TaskCheckpoint, TaskStore
+from task_memory_support import repository_memory_id
 
 
 @pytest.fixture
@@ -26,13 +27,14 @@ def make_task(tmp_path):
         state = AgentStateStore(tmp_path / f"state-{count}.sqlite3")
         tasks = TaskStore(state)
         memory = MemoryStore(state)
+        repository_id = repository_memory_id(root, state)
         record = None
         if with_memory:
             record = memory.record(MemoryRecord.create(
-                kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY, scope_id=str(root),
+                kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY, scope_id=repository_id,
                 key="parser identifiers", value="Parser identifier tokenization uses Unicode rules",
                 source="user", status=MemoryStatus.CONFIRMED, confidence=1.0,
-                provenance={"root": str(root), "tenant": "tenant-a", "volatile": volatile},
+                provenance={"root": str(root), "repository_id": repository_id, "tenant": "tenant-a", "volatile": volatile},
             ), actor="user")
         tasks.set_memory_adoption(memory_store=memory, context_compiler=ContextCompiler(state, task_store=tasks, memory_store=memory))
         task_id = f"checkpoint-memory-{count}"
@@ -115,7 +117,7 @@ def test_volatile_usage_requires_same_source_check_policy_as_completion(make_tas
 
 def test_healthy_empty_resume_has_no_irrelevant_memory_audit_friction(make_task):
     tasks, memory, root, task, record = make_task()
-    assert memory.delete(record.record_id, scope=AgentScope.REPOSITORY, scope_id=str(root), root=str(root), tenant="tenant-a")
+    assert memory.delete(record.record_id, scope=AgentScope.REPOSITORY, scope_id=repository_memory_id(root, memory.state_store), repository_id=repository_memory_id(root, memory.state_store), root=str(root), tenant="tenant-a")
     resumed = tasks.resume(task.task_id, actor="user", idempotency_key="empty-memory-attempt")
     bundle = resumed.checkpoint.state_data.get("memory_context")
     assert bundle is None or (bundle["items"] == [] and bundle["warnings"] == [] and not bundle["instruction"])

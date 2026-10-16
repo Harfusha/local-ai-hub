@@ -98,12 +98,12 @@ def test_call_queries_exclude_non_call_graph_edges(tmp_path: Path) -> None:
     resolved = str(root.resolve())
     with closing(index._connect()) as con:
         con.executemany(
-            "INSERT INTO edges(root,src,dst,kind,path,line) VALUES(?,?,?,?,?,?)",
+            "INSERT INTO edges(root,src,dst,src_name,dst_name,kind,path,line) VALUES(?,?,?,?,?,?,?,?)",
             [
-                (resolved, "Pkg/real_caller", "Pkg/target", "calls", "src/caller.py", 1),
-                (resolved, "Pkg/import_source", "Pkg/target", "imports", "src/importer.py", 2),
-                (resolved, "Pkg/owner", "Pkg/real_callee", "calls", "src/callee.py", 3),
-                (resolved, "Pkg/owner", "Pkg/imported_name", "imports", "src/importer.py", 4),
+                (resolved, "Pkg/real_caller", "Pkg/target", "real_caller", "target", "calls", "src/caller.py", 1),
+                (resolved, "Pkg/import_source", "Pkg/target", "import_source", "target", "imports", "src/importer.py", 2),
+                (resolved, "Pkg/owner", "Pkg/real_callee", "owner", "real_callee", "calls", "src/callee.py", 3),
+                (resolved, "Pkg/owner", "Pkg/imported_name", "owner", "imported_name", "imports", "src/importer.py", 4),
             ],
         )
         con.commit()
@@ -242,9 +242,9 @@ def test_impact_chunks_large_changed_path_sets_and_caps_graph_queries(tmp_path: 
             ],
         )
         con.executemany(
-            "INSERT INTO edges(root,src,dst,kind,path,line) VALUES(?,?,?,?,?,?)",
+            "INSERT INTO edges(root,src,dst,src_name,dst_name,kind,path,line) VALUES(?,?,?,?,?,?,?,?)",
             [
-                (resolved, f"dependent_{i}", f"Symbol{i % 12}", "calls", f"src/dependent_{i}.py", i + 1)
+                (resolved, f"dependent_{i}", f"Symbol{i % 12}", f"dependent_{i}", f"Symbol{i % 12}", "calls", f"src/dependent_{i}.py", i + 1)
                 for i in range(40)
             ],
         )

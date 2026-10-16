@@ -11,6 +11,7 @@ from local_ai_hub.agent_tasks import CompletionGateError, GoalContract, TaskChec
 from local_ai_hub.agent_verification import VerificationReceipt
 from local_ai_hub.app import LocalAIApp
 from local_ai_hub.verification_rules import complete_task_with_project_rules
+from task_memory_support import repository_memory_id
 
 
 def test_project_completion_rejects_skipped_memory_without_not_used_reason(
@@ -33,14 +34,16 @@ def test_project_completion_rejects_skipped_memory_without_not_used_reason(
         encoding="utf-8",
     )
     app = LocalAIApp(str(config_path))
+    repository_id = repository_memory_id(project_root, app.agent_state)
     app.agent_memory.record(
         MemoryRecord.create(
             kind=MemoryKind.FACT,
             scope=AgentScope.REPOSITORY,
+            scope_id=repository_id,
             key="stale-project-memory",
             value="stale evidence",
             status=MemoryStatus.STALE,
-            provenance={"root": str(project_root), "tenant": "tenant-a"},
+            provenance={"root": str(project_root), "repository_id": repository_id, "tenant": "tenant-a"},
         )
     )
     task_id = "project-completion-skipped-memory"

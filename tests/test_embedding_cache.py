@@ -29,9 +29,16 @@ class _Cache:
     def get(self, key):
         return self.values.get(key)
 
+    def get_many(self, keys: list[str]) -> dict[str, object]:
+        return {key: self.values[key] for key in keys if key in self.values}
+
     def set(self, key, value):
         self.values[key] = value
         self.writes.append((key, value))
+
+    def set_many(self, values: dict[str, object]) -> None:
+        self.values.update(values)
+        self.writes.extend(values.items())
 
     def stats(self):
         return {"entries": len(self.values)}

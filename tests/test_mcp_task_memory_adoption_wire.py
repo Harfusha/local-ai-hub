@@ -49,13 +49,14 @@ INSTRUCTION = (
 )
 
 
-def _memory(root: Path):
+def _memory(repository_id: str):
+    # This is a wire snapshot: record provenance is sanitized before delivery.
     return {
         "schema_version": 1, "tenant_key": "7" * 64, "instruction": INSTRUCTION,
         "items": [
             {"id": "M00000000000000000000000000000001", "origin": "memory_store",
              "content": "Use the lease owner and preserve dirty source changes.",
-             "source": "human_instruction", "scope": "repository", "scope_id": str(root),
+             "source": "human_instruction", "scope": "repository", "scope_id": repository_id,
              "status": "confirmed", "version": "17",
              "validity": {"created_at": 1791763200.0, "updated_at": 1791849600.0,
                           "expires_at": 4102444800.0},
@@ -76,7 +77,9 @@ def _memory(root: Path):
 def _round_trip(tmp_path, requests, monkeypatch, *, real_store=False, return_store=False):
     repo = tmp_path / "repository"
     repo.mkdir()
-    expected = _memory(repo)
+    from local_ai_hub.project_config import resolve_project_context
+    repository_id = resolve_project_context(repo, tmp_path).coordination_id
+    expected = _memory(repository_id)
     calls = []
     current_audit = None
     tasks = None
@@ -92,11 +95,13 @@ def _round_trip(tmp_path, requests, monkeypatch, *, real_store=False, return_sto
         state_store = AgentStateStore(tmp_path / "real-agent-state.sqlite3")
         tasks = TaskStore(state_store)
         memory_store = MemoryStore(state_store)
+        from task_memory_support import repository_memory_id
+        repository_id = repository_memory_id(repo, state_store)
         memory_store.record(replace(MemoryRecord.create(
-            kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY, scope_id=str(repo),
+            kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY, scope_id=repository_id,
             key="renderer cache", value="Renderer cache uses the current theme revision",
             source="user", status=MemoryStatus.CONFIRMED,
-            provenance={"root": str(repo), "tenant": "memory-wire-test", "version": "v1"},
+            provenance={"root": str(repo), "repository_id": repository_id, "tenant": "memory-wire-test", "version": "v1"},
         ), record_id="mem_store_wire"), actor="user")
         tasks.set_memory_adoption(memory_store=memory_store,
             context_compiler=ContextCompiler(state_store, task_store=tasks, memory_store=memory_store))

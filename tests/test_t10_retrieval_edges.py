@@ -265,11 +265,11 @@ def test_code_index_call_queries_filter_non_call_edges_and_match_rust_paths(tmp_
     resolved = str(root.resolve())
     with closing(index._connect()) as con:
         con.executemany(
-            "INSERT INTO edges(root,src,dst,kind,path,line) VALUES(?,?,?,?,?,?)",
+            "INSERT INTO edges(root,src,dst,src_name,dst_name,kind,path,line) VALUES(?,?,?,?,?,?,?,?)",
             [
-                (resolved, "Thing::caller", "Thing::target", "calls", "src/lib.rs", 2),
-                (resolved, "Thing::caller", "Thing::target", "implements", "src/lib.rs", 1),
-                (resolved, "Thing::target", "Thing::other", "imports", "src/lib.rs", 3),
+                (resolved, "Thing::caller", "Thing::target", "caller", "target", "calls", "src/lib.rs", 2),
+                (resolved, "Thing::caller", "Thing::target", "caller", "target", "implements", "src/lib.rs", 1),
+                (resolved, "Thing::target", "Thing::other", "target", "other", "imports", "src/lib.rs", 3),
             ],
         )
         con.commit()
@@ -292,9 +292,9 @@ def test_call_graph_queries_report_truncation_and_unverified_freshness(tmp_path)
     resolved = str(root.resolve())
     with closing(index._connect()) as con:
         con.executemany(
-            "INSERT INTO edges(root,src,dst,kind,path,line) VALUES(?,?,?,?,?,?)",
+            "INSERT INTO edges(root,src,dst,src_name,dst_name,kind,path,line) VALUES(?,?,?,?,?,?,?,?)",
             [
-                (resolved, f"caller_{number}", "target", "calls", f"src/{number}.py", 1)
+                (resolved, f"caller_{number}", "target", f"caller_{number}", "target", "calls", f"src/{number}.py", 1)
                 for number in range(4)
             ],
         )
@@ -350,13 +350,13 @@ def test_caller_and_callee_queries_are_ordered_and_sql_bounded(tmp_path, monkeyp
     resolved = str(root.resolve())
     with closing(index._connect()) as con:
         con.executemany(
-            "INSERT INTO edges(root,src,dst,kind,path,line) VALUES(?,?,?,?,?,?)",
+            "INSERT INTO edges(root,src,dst,src_name,dst_name,kind,path,line) VALUES(?,?,?,?,?,?,?,?)",
             [
-                (resolved, f"caller_{i}", "target", "calls", path, 1)
+                (resolved, f"caller_{i}", "target", f"caller_{i}", "target", "calls", path, 1)
                 for i, path in [(0, "z.py"), (1, "a.py"), (2, "m.py")]
             ]
             + [
-                (resolved, "Pkg::caller", f"Pkg::target_{i}", "calls", path, 1)
+                (resolved, "Pkg::caller", f"Pkg::target_{i}", "caller", f"target_{i}", "calls", path, 1)
                 for i, path in [(0, "z.py"), (1, "a.py"), (2, "m.py")]
             ],
         )
@@ -379,7 +379,7 @@ def test_caller_and_callee_queries_are_ordered_and_sql_bounded(tmp_path, monkeyp
     assert callers["truncated"] is True and callees["truncated"] is True
     graph_queries = [statement for statement in statements if "FROM edges" in statement]
     assert len(graph_queries) == 2
-    assert all("ORDER BY path, line LIMIT 3" in statement for statement in graph_queries)
+    assert all("ORDER BY path, line, src, dst, kind LIMIT 3" in statement for statement in graph_queries)
 
 
 def test_call_graph_queries_honor_large_explicit_result_limits(tmp_path) -> None:
@@ -390,9 +390,9 @@ def test_call_graph_queries_honor_large_explicit_result_limits(tmp_path) -> None
     result_limit = 5001
     with closing(index._connect()) as con:
         con.executemany(
-            "INSERT INTO edges(root,src,dst,kind,path,line) VALUES(?,?,?,?,?,?)",
+            "INSERT INTO edges(root,src,dst,src_name,dst_name,kind,path,line) VALUES(?,?,?,?,?,?,?,?)",
             [
-                (resolved, f"caller_{number}", "target", "calls", f"src/{number}.py", 1)
+                (resolved, f"caller_{number}", "target", f"caller_{number}", "target", "calls", f"src/{number}.py", 1)
                 for number in range(result_limit)
             ],
         )
@@ -544,10 +544,10 @@ def test_impact_exact_count_normalizes_mixed_path_separators(tmp_path) -> None:
             ],
         )
         con.executemany(
-            "INSERT INTO edges(root,src,dst,kind,path,line) VALUES(?,?,?,?,?,?)",
+            "INSERT INTO edges(root,src,dst,src_name,dst_name,kind,path,line) VALUES(?,?,?,?,?,?,?,?)",
             [
-                (resolved_root, "caller", "SharedNeedle", "calls", "/changed/consumer.py", 3),
-                (resolved_root, "caller", "SharedNeedle", "calls", "duplicate/consumer.py", 4),
+                (resolved_root, "caller", "SharedNeedle", "caller", "SharedNeedle", "calls", "/changed/consumer.py", 3),
+                (resolved_root, "caller", "SharedNeedle", "caller", "SharedNeedle", "calls", "duplicate/consumer.py", 4),
             ],
         )
         con.execute(
@@ -705,12 +705,12 @@ def test_call_queries_treat_like_metacharacters_as_literal_suffixes(tmp_path, wi
     caller = f"caller{wildcard}tail"
     with closing(index._connect()) as con:
         con.executemany(
-            "INSERT INTO edges(root,src,dst,kind,path,line) VALUES(?,?,?,?,?,?)",
+            "INSERT INTO edges(root,src,dst,src_name,dst_name,kind,path,line) VALUES(?,?,?,?,?,?,?,?)",
             [
-                (resolved, "Pkg::caller_exact", f"Pkg::{target}", "calls", "src/lib.rs", 1),
-                (resolved, "Pkg::caller_false", "Pkg::targetXtail", "calls", "src/lib.rs", 2),
-                (resolved, f"Pkg::{caller}", "Pkg::target_exact", "calls", "src/lib.rs", 3),
-                (resolved, "Pkg::callerXtail", "Pkg::target_false", "calls", "src/lib.rs", 4),
+                (resolved, "Pkg::caller_exact", f"Pkg::{target}", "caller_exact", target, "calls", "src/lib.rs", 1),
+                (resolved, "Pkg::caller_false", "Pkg::targetXtail", "caller_false", "targetXtail", "calls", "src/lib.rs", 2),
+                (resolved, f"Pkg::{caller}", "Pkg::target_exact", caller, "target_exact", "calls", "src/lib.rs", 3),
+                (resolved, "Pkg::callerXtail", "Pkg::target_false", "callerXtail", "target_false", "calls", "src/lib.rs", 4),
             ],
         )
         con.commit()

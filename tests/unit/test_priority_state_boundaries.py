@@ -37,10 +37,10 @@ def test_priority_gate_zero_timeout_admits_free_slot_without_waiting():
     gate._cond = condition
 
     with gate.slot(priority=3, timeout=0):
-        assert gate.status() == {"active": True, "foreground_waiters": 0}
+        assert gate.status() == {"active": True, "foreground_waiters": 0, "foreground_priority": 3}
 
     assert condition.wait_calls == []
-    assert gate.status() == {"active": False, "foreground_waiters": 0}
+    assert gate.status() == {"active": False, "foreground_waiters": 0, "foreground_priority": 3}
     assert condition.notify_calls == 1
 
 
@@ -55,7 +55,7 @@ def test_priority_gate_zero_timeout_fails_immediately_when_busy():
             pytest.fail("busy zero-timeout slot must not be entered")
 
     assert condition.wait_calls == []
-    assert gate.status() == {"active": True, "foreground_waiters": 0}
+    assert gate.status() == {"active": True, "foreground_waiters": 0, "foreground_priority": 3}
 
 
 @pytest.mark.parametrize(
@@ -85,7 +85,7 @@ def test_priority_gate_invalid_timeout_does_not_change_state_or_waiters(timeout_
             pytest.fail("invalid timeout must be rejected before slot entry")
 
     assert condition.wait_calls == []
-    assert gate.status() == {"active": True, "foreground_waiters": 2}
+    assert gate.status() == {"active": True, "foreground_waiters": 2, "foreground_priority": 3}
 
 
 def test_priority_gate_caps_condition_waits_to_thirty_seconds():
@@ -95,7 +95,7 @@ def test_priority_gate_caps_condition_waits_to_thirty_seconds():
     gate._cond = condition
 
     with gate.slot(priority=3, timeout=120):
-        assert gate.status() == {"active": True, "foreground_waiters": 0}
+        assert gate.status() == {"active": True, "foreground_waiters": 0, "foreground_priority": 3}
 
     assert condition.wait_calls == [pytest.approx(30.0)]
 
@@ -109,7 +109,7 @@ def test_priority_gate_body_exception_releases_slot():
         with gate.slot(priority=3, timeout=0):
             raise RuntimeError("body failed")
 
-    assert gate.status() == {"active": False, "foreground_waiters": 0}
+    assert gate.status() == {"active": False, "foreground_waiters": 0, "foreground_priority": 3}
     assert condition.notify_calls == 1
 
 

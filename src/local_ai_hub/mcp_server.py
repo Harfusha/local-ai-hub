@@ -397,7 +397,7 @@ def _desc_status() -> str:
     if LEAN_SCHEMAS:
         return (
             "Health, cache, telemetry, and enabled Agent OS state inspector. Aggregate-bounded responses; optional max_response_tokens, response_profile, reuse_key."
-            f" Actions: {details}."
+            f" detail: {details}."
             " Use when: make one bounded health, cache, or telemetry check."
             " Skip when: repository evidence or task work is needed."
         )

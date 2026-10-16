@@ -33,6 +33,8 @@ class _VerificationStore:
 
 
 class _TaskStore:
+    preflight_completion_response_budget = TaskStore.preflight_completion_response_budget
+
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, object]]] = []
         self.task: object | None = None
@@ -158,6 +160,7 @@ def test_completion_handler_does_not_mutate_task_when_receipts_fail(tmp_path: Pa
         )
 
     assert task_store.calls == []
+    assert len(verification.calls) == 1
 
 
 def test_http_task_completion_uses_project_verification_rules(monkeypatch, tmp_path: Path) -> None:
