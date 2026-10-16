@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import os
 import random
 import re
@@ -46,8 +47,17 @@ def connect_sqlite(
     require an exclusive lock, so schemas enable WAL once during initialization and
     hot-path connections only apply non-exclusive pragmas.
     """
+    if isinstance(path, str) and "\0" in path:
+        raise ValueError("database path contains embedded null byte")
     p = Path(path)
-    timeout = max(0.01, float(timeout_seconds))
+    try:
+        val_timeout = float(timeout_seconds)
+        if isinstance(timeout_seconds, bool) or not math.isfinite(val_timeout):
+            timeout = 5.0
+        else:
+            timeout = max(0.01, val_timeout)
+    except (TypeError, ValueError, OverflowError):
+        timeout = 5.0
     con = sqlite3.connect(p, timeout=timeout, isolation_level=isolation_level)
 
     try:
