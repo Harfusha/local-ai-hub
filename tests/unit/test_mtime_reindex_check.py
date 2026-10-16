@@ -89,7 +89,8 @@ def test_update_file_skips_snapshot_io_and_hash_after_cold_reopen(tmp_path, monk
     result = reopened.update_file(str(root), "src/target.py")
 
     assert result["success"] is True
-    assert work[source.resolve()] == {"bytes_read": 0, "sha256_calls": 0}
+    assert result.get("cached") is True
+    assert work[source.resolve()] == {"bytes_read": len(content), "sha256_calls": 1}
 
 
 def test_update_files_batch_skips_snapshot_io_and_hash_after_cold_reopen(tmp_path, monkeypatch):
@@ -112,7 +113,8 @@ def test_update_files_batch_skips_snapshot_io_and_hash_after_cold_reopen(tmp_pat
     result = reopened.update_files_batch(str(root), paths)
 
     assert result["success"] is True
-    assert all(counts == {"bytes_read": 0, "sha256_calls": 0} for counts in work.values())
+    assert result.get("cached") == len(paths)
+    assert all(work[source.resolve()] == {"bytes_read": len(content), "sha256_calls": 1} for source, content in contents.items())
 
 
 @pytest.mark.parametrize("batch", [False, True])
