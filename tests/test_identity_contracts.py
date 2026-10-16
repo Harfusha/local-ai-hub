@@ -293,7 +293,11 @@ def test_memory_delete_requires_matching_scope_identity(tmp_path):
         actor="user",
     )
     assert store.delete(legacy.record_id, scope=AgentScope.SESSION) is False
-    assert store.get(legacy.record_id) is not None
+    with closing(sqlite3.connect(store.state_store.db_path)) as con:
+        assert con.execute(
+            "SELECT 1 FROM agent_memory_records WHERE record_id = ?",
+            (legacy.record_id,),
+        ).fetchone() is not None
 
 
 def test_workspace_memo_version_does_not_reset_after_delete_and_recreate(tmp_path):
@@ -538,7 +542,7 @@ def test_repository_memory_foreign_id_requires_matching_repository(tmp_path):
             value="repo-a value",
             status=MemoryStatus.CONFIRMED,
             source="user",
-            provenance={"root": str(repo_a), "repository_id": "repo-a"},
+            provenance={"root": str(repo_a), "repository_id": "repo-a", "tenant": "default"},
         ),
         actor="user",
         idempotency_key="repo-a-record",
@@ -551,16 +555,16 @@ def test_repository_memory_foreign_id_requires_matching_repository(tmp_path):
             value="repo-b value",
             status=MemoryStatus.CONFIRMED,
             source="user",
-            provenance={"root": str(repo_b), "repository_id": "repo-b"},
+            provenance={"root": str(repo_b), "repository_id": "repo-b", "tenant": "default"},
         ),
         actor="user",
         idempotency_key="repo-b-record",
     )
 
-    assert store.get(record_a.record_id, root=str(repo_a)).value == "repo-a value"
-    assert store.get(record_a.record_id, root=str(repo_b)) is None
-    assert store.get(record_b.record_id, root=str(repo_a)) is None
-    assert store.get(record_b.record_id, root=str(repo_b)).value == "repo-b value"
+    assert store.get(record_a.record_id, root=str(repo_a), repository_id="repo-a", tenant="default").value == "repo-a value"
+    assert store.get(record_a.record_id, root=str(repo_b), repository_id="repo-b", tenant="default") is None
+    assert store.get(record_b.record_id, root=str(repo_a), repository_id="repo-a", tenant="default") is None
+    assert store.get(record_b.record_id, root=str(repo_b), repository_id="repo-b", tenant="default").value == "repo-b value"
 
 
 def test_global_memory_store_requires_approval_marker_and_then_is_shared(tmp_path):
@@ -574,7 +578,7 @@ def test_global_memory_store_requires_approval_marker_and_then_is_shared(tmp_pat
             value="format with tool X",
             status=MemoryStatus.CONFIRMED,
             source="user",
-            provenance={"root": str(tmp_path / "repo-a"), "repository_id": "repo-a"},
+            provenance={"root": str(tmp_path / "repo-a"), "repository_id": "repo-a", "tenant": "default"},
         ),
         actor="user",
         idempotency_key="repository-convention",
@@ -590,8 +594,9 @@ def test_global_memory_store_requires_approval_marker_and_then_is_shared(tmp_pat
         approver="user",
         root=str(tmp_path / "repo-a"),
         repository_id="repo-a",
+        tenant="default",
     )
-    records = store.find_for_context(root=str(tmp_path / "repo-b"))
+    records = store.find_for_context(root=str(tmp_path / "repo-b"), tenant="default")
     assert any(record.record_id == shared.record_id for record in records)
 
 
@@ -712,143 +717,3 @@ def test_tenant_scoped_rag_search_cache_keeps_index_results_isolated(tmp_path):
     assert result_b["results"][0]["text"] == "identity b result"
     assert result_a["search_cache"]["revision"] != result_b["search_cache"]["revision"]
 
-
-def test_worktree_memory_idempotency_isolated_by_scope_id(tmp_path):
-    store = MemoryStore(AgentStateStore(tmp_path / "agent-state.sqlite3"))
-    worktree_a = tmp_path / "worktree-a"
-    worktree_b = tmp_path / "worktree-b"
-    worktree_a.mkdir()
-    worktree_b.mkdir()
-
-    first = MemoryRecord.create(
-        kind=MemoryKind.DECISION,
-        scope=AgentScope.WORKTREE,
-        scope_id="worktree-a",
-        key="decision",
-        value="worktree A decision",
-        status=MemoryStatus.CONFIRMED,
-        source="user",
-        provenance={"root": str(worktree_a), "repository_id": "repo-shared", "worktree_id": "worktree-a"},
-    )
-    second = MemoryRecord.create(
-        kind=MemoryKind.DECISION,
-        scope=AgentScope.WORKTREE,
-        scope_id="worktree-b",
-        key="decision",
-        value="worktree B decision",
-        status=MemoryStatus.CONFIRMED,
-        source="user",
-        provenance={"root": str(worktree_b), "repository_id": "repo-shared", "worktree_id": "worktree-b"},
-    )
-
-    recorded_a = store.record(first, actor="user", idempotency_key="same-request")
-    recorded_b = store.record(second, actor="user", idempotency_key="same-request")
-
-    assert recorded_a.record_id == first.record_id
-    assert recorded_b.record_id == second.record_id
-    assert recorded_b.scope_id == "worktree-b"
-    assert recorded_b.value == "worktree B decision"
-
-
-def test_worktree_memory_idempotency_stream_key_is_unambiguous(tmp_path):
-    store = MemoryStore(AgentStateStore(tmp_path / "agent-state.sqlite3"))
-    first = MemoryRecord.create(
-        kind=MemoryKind.DECISION,
-        scope=AgentScope.WORKTREE,
-        scope_id="a:b",
-        key="c",
-        value="scope delimiter pair",
-        status=MemoryStatus.CONFIRMED,
-        source="user",
-    )
-    second = MemoryRecord.create(
-        kind=MemoryKind.DECISION,
-        scope=AgentScope.WORKTREE,
-        scope_id="a",
-        key="b:c",
-        value="key delimiter pair",
-        status=MemoryStatus.CONFIRMED,
-        source="user",
-    )
-
-    recorded_first = store.record(first, actor="user", idempotency_key="same-request")
-    recorded_second = store.record(second, actor="user", idempotency_key="same-request")
-
-    assert recorded_first.record_id == first.record_id
-    assert recorded_second.record_id == second.record_id
-    assert recorded_second.record_id != recorded_first.record_id
-    assert store.get(first.record_id, scope=AgentScope.WORKTREE, scope_id="a:b").value == "scope delimiter pair"
-    assert store.get(second.record_id, scope=AgentScope.WORKTREE, scope_id="a").value == "key delimiter pair"
-
-
-def test_memory_delete_requires_matching_scope_identity(tmp_path):
-    store = MemoryStore(AgentStateStore(tmp_path / "agent-state.sqlite3"))
-    worktree = tmp_path / "worktree"
-    worktree.mkdir()
-    record = MemoryRecord.create(
-        kind=MemoryKind.DECISION,
-        scope=AgentScope.WORKTREE,
-        scope_id="worktree-delete",
-        key="decision",
-        value="remove exact record",
-        status=MemoryStatus.CONFIRMED,
-        source="user",
-        provenance={"root": str(worktree), "repository_id": "repo-shared", "worktree_id": "worktree-delete"},
-    )
-    store.record(record, actor="user")
-    related = store.record(
-        MemoryRecord.create(
-            kind=MemoryKind.FACT,
-            scope=AgentScope.WORKTREE,
-            scope_id="worktree-delete",
-            key="related",
-            value="retain relation on denied deletion",
-            source="user",
-        ),
-        actor="user",
-    )
-    store.record_relation(record.record_id, "relates_to", related.record_id)
-    relations_before_denied_delete = store.find_relations(source_entity=record.record_id)
-    assert any(relation["relation"] == "relates_to" for relation in relations_before_denied_delete)
-
-    assert store.delete(record.record_id) is False
-    assert store.delete(
-        record.record_id,
-        scope=AgentScope.WORKTREE,
-        scope_id="another-worktree",
-    ) is False
-    assert store.get(
-        record.record_id,
-        scope=AgentScope.WORKTREE,
-        scope_id="worktree-delete",
-    ).value == "remove exact record"
-    assert store.find_relations(source_entity=record.record_id) == relations_before_denied_delete
-
-    assert store.delete(
-        record.record_id,
-        scope=AgentScope.WORKTREE,
-        scope_id="worktree-delete",
-    ) is True
-    assert store.get(
-        record.record_id,
-        scope=AgentScope.WORKTREE,
-        scope_id="worktree-delete",
-    ) is None
-    assert store.find_relations(source_entity=record.record_id) == []
-
-    legacy = store.record(
-        MemoryRecord.create(
-            kind=MemoryKind.FACT,
-            scope=AgentScope.SESSION,
-            key="legacy-unscoped",
-            value="must remain without verified scope id",
-            source="user",
-        ),
-        actor="user",
-    )
-    assert store.delete(legacy.record_id, scope=AgentScope.SESSION) is False
-    with closing(sqlite3.connect(store.state_store.db_path)) as con:
-        assert con.execute(
-            "SELECT 1 FROM agent_memory_records WHERE record_id = ?",
-            (legacy.record_id,),
-        ).fetchone() is not None
