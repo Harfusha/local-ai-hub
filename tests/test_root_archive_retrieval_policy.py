@@ -9,6 +9,9 @@ from local_ai_hub.repo_tools import RepositoryTools, is_root_archive_path
     "relative",
     [
         ".validation/t17-sync-20261006/package-pytest/test_generated_mcp_config/generated/schemas/local_ai_repo.json",
+        ".validation/project-docs/overview.md",
+        ".validation/t17-sync-20261006/notes/overview.md",
+        ".validation/t17-sync-20261006/package-pytest/test_example/output.txt",
         "artifacts/t08-root-current-agent-tasks-preimage.py",
         "artifacts/t08-root-current-agent-tasks-replay.py",
         "artifacts/t08-root-current-agent-tasks-memory-transition.py",
@@ -33,12 +36,11 @@ def test_known_root_validation_and_source_copies_are_archives(relative: str) -> 
         "artifacts/release/src/local_ai_hub/current.py",
         "artifacts/t08-root-current-agent-tasks.md",
         "src/t08-ast-check-example.py",
-        ".validation/project-docs/overview.md",
-        ".validation/t17-sync-20261006/notes/overview.md",
-        ".validation/t17-sync-20261006/package-pytest/test_example/output.txt",
+        "docs/validation/overview.md",
+        "src/.validation/overview.md",
     ],
 )
-def test_regular_resources_and_unrecognized_validation_files_remain_searchable(relative: str) -> None:
+def test_regular_resources_outside_root_archives_remain_searchable(relative: str) -> None:
     assert not is_root_archive_path(Path(relative))
 
 
@@ -49,6 +51,7 @@ def test_repository_inventory_filters_known_copies_and_keeps_regular_artifacts(t
         "artifacts/t08-root-current-agent-tasks-preimage.py",
         "artifacts/release/current.py",
         ".validation/project-docs/overview.md",
+        "docs/validation/overview.md",
     )
     for relative in relative_paths:
         path = root / relative
@@ -58,4 +61,4 @@ def test_repository_inventory_filters_known_copies_and_keeps_regular_artifacts(t
     tools = RepositoryTools({"rag": {"extensions": [".py", ".json", ".md"]}})
     scanned = {path.relative_to(root).as_posix() for path in tools.iter_files(str(root))}
 
-    assert scanned == {"artifacts/release/current.py", ".validation/project-docs/overview.md"}
+    assert scanned == {"artifacts/release/current.py", "docs/validation/overview.md"}
