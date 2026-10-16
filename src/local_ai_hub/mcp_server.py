@@ -4382,7 +4382,6 @@ def local_ai_coord(
             "sync_action": sync_action,
             "stream_id": stream_id,
             "events": events,
-            "limit": limit,
         }.items() if value is not None
     }
     if sync_only_inputs:
