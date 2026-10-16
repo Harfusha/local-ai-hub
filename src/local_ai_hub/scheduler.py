@@ -138,6 +138,38 @@ class SchedulerCancelledError(InterruptedError):
         super().__init__(f"job {job.id} was cancelled by its caller ({state})")
 
 
+def _safe_int(val: Any, default: int, min_val: int | None = None, max_val: int | None = None) -> int:
+    if isinstance(val, bool) or val is None:
+        return default
+    try:
+        if isinstance(val, float) and not math.isfinite(val):
+            return default
+        res = int(val)
+    except (ValueError, TypeError, OverflowError):
+        return default
+    if min_val is not None and res < min_val:
+        return min_val
+    if max_val is not None and res > max_val:
+        return max_val
+    return res
+
+
+def _safe_float(val: Any, default: float, min_val: float | None = None, max_val: float | None = None) -> float:
+    if isinstance(val, bool) or val is None:
+        return default
+    try:
+        res = float(val)
+        if not math.isfinite(res):
+            return default
+    except (ValueError, TypeError, OverflowError):
+        return default
+    if min_val is not None and res < min_val:
+        return min_val
+    if max_val is not None and res > max_val:
+        return max_val
+    return res
+
+
 class AffinityScheduler:
     """Shared multi-tenant, model-affinity scheduler with idle-only background work.
 
@@ -148,29 +180,33 @@ class AffinityScheduler:
     """
 
     def __init__(self, runtime: Any, config: dict[str, Any]):
-        cfg = config["scheduler"]
-        bg_cfg = config.get("preprocessing", {})
+        config = config if isinstance(config, dict) else {}
+        cfg = config.get("scheduler", {}) if isinstance(config.get("scheduler"), dict) else {}
+        bg_cfg = config.get("preprocessing", {}) if isinstance(config.get("preprocessing"), dict) else {}
         self.config = config
         self.runtime = runtime
         self.model_policy = ModelExecutionPolicy(config)
-        self.max_parallel = int(cfg.get("max_parallel", 1))
-        self.max_queue = int(cfg.get("max_queue", 256))
-        self.max_queued_per_tenant = int(cfg.get("max_queued_per_tenant", 64))
-        self.max_inflight_per_tenant = int(cfg.get("max_inflight_per_tenant", self.max_parallel))
-        self.batch_jobs = int(cfg.get("affinity_batch_jobs", 8))
-        self.batch_seconds = float(cfg.get("affinity_batch_seconds", 75))
-        self.max_other_wait = float(cfg.get("max_other_model_wait_seconds", 45))
-        self.switch_cooldown = float(cfg.get("switch_cooldown_seconds", 1))
-        self.switch_failure_cooldown = max(1.0, float(cfg.get("model_switch_failure_cooldown_seconds", 20.0)))
-        resilience_cfg = config.get("resilience", {})
-        configured_default_wait = max(0.05, float(resilience_cfg.get("scheduler_wait_timeout_seconds", config.get("server", {}).get("request_timeout_seconds", 210) + 15)))
-        self.max_caller_wait_timeout = max(0.05, float(cfg.get("max_caller_wait_timeout_seconds", config.get("client", {}).get("max_request_timeout_seconds", 900))))
+        self.max_parallel = _safe_int(cfg.get("max_parallel"), 1, min_val=1)
+        self.max_queue = _safe_int(cfg.get("max_queue"), 256, min_val=1)
+        self.max_queued_per_tenant = _safe_int(cfg.get("max_queued_per_tenant"), 64, min_val=1)
+        self.max_inflight_per_tenant = _safe_int(cfg.get("max_inflight_per_tenant"), self.max_parallel, min_val=1)
+        self.batch_jobs = _safe_int(cfg.get("affinity_batch_jobs"), 8, min_val=1)
+        self.batch_seconds = _safe_float(cfg.get("affinity_batch_seconds"), 75.0, min_val=0.0)
+        self.max_other_wait = _safe_float(cfg.get("max_other_model_wait_seconds"), 45.0, min_val=0.0)
+        self.switch_cooldown = _safe_float(cfg.get("switch_cooldown_seconds"), 1.0, min_val=0.0)
+        self.switch_failure_cooldown = _safe_float(cfg.get("model_switch_failure_cooldown_seconds"), 20.0, min_val=1.0)
+        resilience_cfg = config.get("resilience", {}) if isinstance(config.get("resilience"), dict) else {}
+        server_timeout = _safe_float(config.get("server", {}).get("request_timeout_seconds") if isinstance(config.get("server"), dict) else 210, 210.0, min_val=1.0)
+        configured_default_wait = _safe_float(resilience_cfg.get("scheduler_wait_timeout_seconds"), server_timeout + 15.0, min_val=0.05)
+        client_cfg = config.get("client", {}) if isinstance(config.get("client"), dict) else {}
+        max_client_timeout = _safe_float(client_cfg.get("max_request_timeout_seconds"), 900.0, min_val=1.0)
+        self.max_caller_wait_timeout = _safe_float(cfg.get("max_caller_wait_timeout_seconds"), max_client_timeout, min_val=0.05)
         self.default_caller_wait_timeout = min(configured_default_wait, self.max_caller_wait_timeout)
-        self.unload_others = int(cfg.get("max_loaded_models", 1)) <= 1
-        self.background_idle_grace = max(0.0, float(bg_cfg.get("idle_grace_seconds", 3.0)))
-        self.background_switch_grace = max(self.background_idle_grace, float(bg_cfg.get("model_switch_idle_seconds", 10.0)))
-        self.status_max_items = max(1, min(256, int(cfg.get("status_max_items", 64))))
-        self.cache_stats_max_items = max(1, min(256, int(cfg.get("cache_stats_max_items", 32))))
+        self.unload_others = _safe_int(cfg.get("max_loaded_models"), 1) <= 1
+        self.background_idle_grace = _safe_float(bg_cfg.get("idle_grace_seconds"), 3.0, min_val=0.0)
+        self.background_switch_grace = max(self.background_idle_grace, _safe_float(bg_cfg.get("model_switch_idle_seconds"), 10.0, min_val=0.0))
+        self.status_max_items = _safe_int(cfg.get("status_max_items"), 64, min_val=1, max_val=256)
+        self.cache_stats_max_items = _safe_int(cfg.get("cache_stats_max_items"), 32, min_val=1, max_val=256)
 
         self._cond = threading.Condition()
         self._pending: list[Job] = []
@@ -648,13 +684,23 @@ class AffinityScheduler:
         background: bool = False,
         cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
-        tenant = tenant or "default"
-        priority = max(0, min(int(priority), 9))
+        if not isinstance(model, str) or not model or "\x00" in model:
+            raise ValueError("invalid_model")
+        tenant = str(tenant or "default").strip()
+        if "\x00" in tenant or not tenant:
+            tenant = "default"
+        source = str(source or "unknown").strip()
+        if "\x00" in source or not source:
+            source = "unknown"
+        priority = _safe_int(priority, default=5, min_val=0, max_val=9)
         # Never let an omitted/accidentally huge caller timeout turn a stuck runtime
         # into a permanently occupied HTTP/MCP handler. Explicit shorter deadlines
         # are preserved; longer ones are capped by one configurable hard ceiling.
-        effective_wait_timeout = self.default_caller_wait_timeout if wait_timeout is None else max(0.05, float(wait_timeout))
-        effective_wait_timeout = min(effective_wait_timeout, self.max_caller_wait_timeout)
+        effective_wait_timeout = (
+            self.default_caller_wait_timeout
+            if wait_timeout is None
+            else _safe_float(wait_timeout, default=self.default_caller_wait_timeout, min_val=0.05, max_val=self.max_caller_wait_timeout)
+        )
         request_deadline = time.monotonic() + effective_wait_timeout
         if background:
             # Background work cannot smuggle itself above foreground work through a
@@ -1467,6 +1513,22 @@ class AffinityScheduler:
                 "stats": dict(self._stats),
                 "cache_stats": self._cache_stats(),
             }
+
+    def is_running(self) -> bool:
+        with self._cond:
+            return bool(self._running)
+
+    def active_model(self) -> str | None:
+        with self._cond:
+            return self._active_model
+
+    def pending_count(self) -> int:
+        with self._cond:
+            return len(self._pending)
+
+    def inflight_count(self) -> int:
+        with self._cond:
+            return self._inflight
 
     def close(self) -> None:
         with self._cond:
