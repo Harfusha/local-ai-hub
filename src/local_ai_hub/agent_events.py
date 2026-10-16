@@ -42,6 +42,42 @@ class AgentEvent:
     created_at: float
     seq: int | None = None
 
+    def __post_init__(self) -> None:
+        def _clean_str(val: Any) -> str:
+            return str(val or "").replace("\x00", "").strip()
+
+        object.__setattr__(self, "event_id", _clean_str(self.event_id))
+        object.__setattr__(self, "stream_id", _clean_str(self.stream_id))
+        object.__setattr__(self, "kind", _clean_str(self.kind))
+        payload = dict(self.payload) if isinstance(self.payload, Mapping) else {}
+        object.__setattr__(self, "payload", payload)
+        object.__setattr__(self, "idempotency_key", _clean_str(self.idempotency_key))
+        object.__setattr__(self, "correlation_id", _clean_str(self.correlation_id))
+        object.__setattr__(self, "actor", _clean_str(self.actor) or "agent")
+
+        try:
+            if isinstance(self.created_at, bool):
+                cat = time.time()
+            else:
+                cat = float(self.created_at)
+                cat = cat if math.isfinite(cat) and cat >= 0 else time.time()
+        except (ValueError, TypeError, OverflowError):
+            cat = time.time()
+        object.__setattr__(self, "created_at", cat)
+
+        if self.seq is None:
+            sq = None
+        elif isinstance(self.seq, bool):
+            sq = None
+        else:
+            try:
+                sq = int(self.seq)
+                if sq < 0:
+                    sq = None
+            except (ValueError, TypeError, OverflowError):
+                sq = None
+        object.__setattr__(self, "seq", sq)
+
     @classmethod
     def create(
         cls,
@@ -93,8 +129,19 @@ class AgentEvent:
 
     @classmethod
     def from_row(cls, row: tuple[Any, ...]) -> AgentEvent:
-        stream_id, seq, event_id, kind, payload_raw, idempotency_key, correlation_id, actor, created_at = row
-        payload = json.loads(payload_raw) if isinstance(payload_raw, str) else dict(payload_raw)
+        if not isinstance(row, (tuple, list)) or len(row) < 9:
+            raise ValueError(f"expected row tuple with at least 9 columns, got {row}")
+        stream_id, seq, event_id, kind, payload_raw, idempotency_key, correlation_id, actor, created_at = row[:9]
+        if isinstance(payload_raw, str):
+            try:
+                parsed = json.loads(payload_raw)
+                payload = dict(parsed) if isinstance(parsed, Mapping) else {}
+            except Exception:
+                payload = {}
+        elif isinstance(payload_raw, Mapping):
+            payload = dict(payload_raw)
+        else:
+            payload = {}
         return cls(
             event_id=event_id,
             stream_id=stream_id,
@@ -108,17 +155,21 @@ class AgentEvent:
         )
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> AgentEvent:
+    def from_dict(cls, data: Any) -> AgentEvent:
+        if not isinstance(data, Mapping):
+            return cls.create(stream_id="", kind="")
+        payload_raw = data.get("payload")
+        payload = dict(payload_raw) if isinstance(payload_raw, Mapping) else {}
         return cls(
             event_id=str(data.get("event_id") or f"evt_{uuid.uuid4().hex}"),
             stream_id=str(data.get("stream_id", "")),
             kind=str(data.get("kind", "")),
-            payload=dict(data.get("payload") or {}),
+            payload=payload,
             idempotency_key=str(data.get("idempotency_key") or f"idemp_{uuid.uuid4().hex}"),
             correlation_id=str(data.get("correlation_id", "")),
             actor=str(data.get("actor", "agent")),
-            created_at=float(data.get("created_at") or time.time()),
-            seq=int(data["seq"]) if data.get("seq") is not None else None,
+            created_at=data.get("created_at") if data.get("created_at") is not None else time.time(),
+            seq=data.get("seq"),
         )
 
 
@@ -233,11 +284,6 @@ class AgentStateStore:
                 lock_key, threading.RLock()
             )
         self._lock = threading.RLock()
-        lock_key = os.path.normcase(str(self.db_path.resolve()))
-        with self._append_publish_locks_guard:
-            self._append_publish_lock = self._append_publish_locks.setdefault(
-                lock_key, threading.RLock()
-            )
         self._initialized = False
         self._subscribers: list[queue.Queue[AgentEvent]] = []
         self._subscribers_lock = threading.Lock()
@@ -1074,10 +1120,14 @@ class AgentStateStore:
             if not row:
                 return None
             snap_id, seq, raw_state, created_at = row
+            try:
+                state_data = json.loads(raw_state) if isinstance(raw_state, str) else dict(raw_state)
+            except Exception:
+                state_data = {}
             return {
                 "snapshot_id": snap_id,
                 "seq": seq,
-                "state": json.loads(raw_state),
+                "state": state_data,
                 "created_at": created_at,
             }
         finally:

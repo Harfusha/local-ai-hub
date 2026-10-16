@@ -246,7 +246,7 @@ class TaskCheckpoint:
         object.__setattr__(self, "affected_paths", _clean_tuple(self.affected_paths))
         object.__setattr__(self, "evidence_ids", _clean_tuple(self.evidence_ids))
         object.__setattr__(self, "blockers", _clean_tuple(self.blockers))
-        object.__setattr__(self, "state_data", dict(self.state_data or {}))
+        object.__setattr__(self, "state_data", dict(self.state_data) if isinstance(self.state_data, Mapping) else {})
 
     def has_blockers(self) -> bool:
         return bool(self.blockers)
@@ -268,14 +268,17 @@ class TaskCheckpoint:
         }
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> TaskCheckpoint:
+    def from_dict(cls, data: Any) -> TaskCheckpoint:
+        if not isinstance(data, Mapping):
+            return cls()
+        state_data = dict(data["state_data"]) if isinstance(data.get("state_data"), Mapping) else {}
         return cls(
-            phase=str(data.get("phase", "")),
-            next_action=str(data.get("next_action", "")),
+            phase=str(data.get("phase") or ""),
+            next_action=str(data.get("next_action") or ""),
             affected_paths=tuple(data.get("affected_paths") or ()),
             evidence_ids=tuple(data.get("evidence_ids") or ()),
             blockers=tuple(data.get("blockers") or ()),
-            state_data=dict(data.get("state_data") or {}),
+            state_data=state_data,
         )
 
 
@@ -376,6 +379,58 @@ class TaskState:
             "stale": stale,
             "stale_reason": "heartbeat_expired" if stale else "",
         }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> TaskState:
+        if not isinstance(data, Mapping):
+            raise ValueError("task state data must be a mapping")
+        contract_data = data.get("contract")
+        if isinstance(contract_data, Mapping):
+            contract = GoalContract.from_dict(contract_data)
+        elif isinstance(contract_data, GoalContract):
+            contract = contract_data
+        else:
+            contract = GoalContract(goal=str(data.get("goal") or "unspecified"))
+
+        context_data = data.get("context")
+        if isinstance(context_data, Mapping):
+            context = ScopeContext(
+                repository_id=str(context_data.get("repository_id") or ""),
+                clone_id=str(context_data.get("clone_id") or ""),
+                worktree_id=str(context_data.get("worktree_id") or ""),
+                branch=str(context_data.get("branch") or ""),
+                task_id=str(context_data.get("task_id") or ""),
+                session_id=str(context_data.get("session_id") or ""),
+            )
+        elif isinstance(context_data, ScopeContext):
+            context = context_data
+        else:
+            context = ScopeContext()
+
+        checkpoint_data = data.get("checkpoint")
+        if isinstance(checkpoint_data, Mapping):
+            checkpoint = TaskCheckpoint.from_dict(checkpoint_data)
+        elif isinstance(checkpoint_data, TaskCheckpoint):
+            checkpoint = checkpoint_data
+        else:
+            checkpoint = TaskCheckpoint()
+
+        receipts_raw = data.get("verification_receipts")
+        receipts = dict(receipts_raw) if isinstance(receipts_raw, Mapping) else {}
+
+        return cls(
+            task_id=str(data.get("task_id") or ""),
+            status=data.get("status", TaskStatus.DRAFT),
+            contract=contract,
+            context=context,
+            owner=str(data.get("owner") or ""),
+            lease_id=str(data.get("lease_id") or ""),
+            created_at=data.get("created_at", 0.0),
+            updated_at=data.get("updated_at", 0.0),
+            heartbeat_expires_at=data.get("heartbeat_expires_at", 0.0),
+            checkpoint=checkpoint,
+            verification_receipts=receipts,
+        )
 
 
 class TaskList(list[TaskState]):
@@ -3640,23 +3695,47 @@ class TaskStore:
             heartbeat_expires_at,
             created_at,
             updated_at,
-        ) = row
-        contract_data = json.loads(contract_raw)
+        ) = row[:11]
+        if isinstance(contract_raw, str):
+            try:
+                contract_data = json.loads(contract_raw)
+            except Exception:
+                contract_data = {"goal": "unspecified"}
+        elif isinstance(contract_raw, Mapping):
+            contract_data = dict(contract_raw)
+        else:
+            contract_data = {"goal": "unspecified"}
         contract = GoalContract.from_dict(contract_data)
-        ctx_data = json.loads(context_raw)
-        context = ScopeContext(
-            repository_id=ctx_data.get("repository_id", ""),
-            clone_id=ctx_data.get("clone_id", ""),
-            worktree_id=ctx_data.get("worktree_id", ""),
-            branch=ctx_data.get("branch", ""),
-            task_id=ctx_data.get("task_id", ""),
-            session_id=ctx_data.get("session_id", ""),
-        )
-        checkpoint = TaskCheckpoint.from_dict(json.loads(checkpoint_raw))
-        receipts = json.loads(receipts_raw) if receipts_raw else {}
+        try:
+            ctx_data = json.loads(context_raw) if isinstance(context_raw, str) else dict(context_raw)
+            context = ScopeContext(
+                repository_id=ctx_data.get("repository_id", ""),
+                clone_id=ctx_data.get("clone_id", ""),
+                worktree_id=ctx_data.get("worktree_id", ""),
+                branch=ctx_data.get("branch", ""),
+                task_id=ctx_data.get("task_id", ""),
+                session_id=ctx_data.get("session_id", ""),
+            )
+        except Exception:
+            context = ScopeContext()
+        try:
+            chk_data = json.loads(checkpoint_raw) if isinstance(checkpoint_raw, str) else dict(checkpoint_raw)
+            checkpoint = TaskCheckpoint.from_dict(chk_data)
+        except Exception:
+            checkpoint = TaskCheckpoint()
+        try:
+            receipts = json.loads(receipts_raw) if isinstance(receipts_raw, str) and receipts_raw else (dict(receipts_raw) if isinstance(receipts_raw, Mapping) else {})
+            if not isinstance(receipts, dict):
+                receipts = {}
+        except Exception:
+            receipts = {}
+        try:
+            status = TaskStatus(status_val)
+        except (ValueError, TypeError):
+            status = TaskStatus.DRAFT
         return TaskState(
             task_id=task_id,
-            status=TaskStatus(status_val),
+            status=status,
             contract=contract,
             context=context,
             owner=owner,
