@@ -382,7 +382,9 @@ def test_caller_and_callee_queries_are_ordered_and_sql_bounded(tmp_path, monkeyp
     assert all("ORDER BY path, line, src, dst, kind LIMIT 3" in statement for statement in graph_queries)
 
 
-def test_call_graph_queries_honor_large_explicit_result_limits(tmp_path) -> None:
+def test_call_graph_queries_enforce_page_and_window_bounds(tmp_path) -> None:
+    from local_ai_hub.search_pagination import MAX_PAGE_SIZE, MAX_PAGE_WINDOW
+
     root = tmp_path / "repo"
     root.mkdir()
     index = CodeIndex({"server": {"state_dir": str(tmp_path / "state")}}, repo_tools=None)
@@ -398,11 +400,23 @@ def test_call_graph_queries_honor_large_explicit_result_limits(tmp_path) -> None
         )
         con.commit()
 
-    result = index.find_callers(str(root), "target", limit=result_limit)
+    rejected = index.find_callers(str(root), "target", limit=result_limit)
+    assert rejected["success"] is False
+    assert rejected["status_code"] == 400
+    assert rejected["callers"] == []
 
-    assert result["count"] == result_limit
-    assert result["truncated"] is False
-    assert result["coverage"]["complete"] is True
+    first = index.find_callers(str(root), "target", limit=MAX_PAGE_SIZE)
+    second = index.find_callers(str(root), "target", limit=MAX_PAGE_SIZE, offset=first["next_offset"])
+    for page in (first, second):
+        assert page["success"] is True
+        assert page["count"] == MAX_PAGE_SIZE
+        assert page["truncated"] is True
+        assert page["coverage"]["complete"] is False
+    assert len({item["caller"] for page in (first, second) for item in page["callers"]}) == 2 * MAX_PAGE_SIZE
+    outside = index.find_callers(str(root), "target", limit=1, offset=MAX_PAGE_WINDOW)
+    assert outside["success"] is False
+    assert outside["status_code"] == 400
+    assert outside["callers"] == []
 
 
 def test_impact_reports_dependent_coverage_and_truncation(tmp_path) -> None:
@@ -726,13 +740,17 @@ def test_missing_tree_sitter_language_returns_none(monkeypatch) -> None:
 
     monkeypatch.setattr(parser, "_INIT_ATTEMPTED", True)
     monkeypatch.setattr(parser, "_PARSERS", {})
+    monkeypatch.setattr(parser, "_use_isolated_worker", lambda: False)
+    monkeypatch.setattr(parser, "_worker_disabled_result", lambda: None)
+    monkeypatch.setattr(parser, "_load_lazy_language_pack", lambda _language: None)
 
     assert parse_treesitter("fn caller() { target(); }", "rust") is None
 
 def test_code_index_falls_back_when_tree_sitter_is_unavailable(monkeypatch, tmp_path) -> None:
     import local_ai_hub.treesitter_parser as parser
 
-    index = CodeIndex({"server": {"state_dir": str(tmp_path / "state")}}, repo_tools=None)
+    config = {"server": {"state_dir": str(tmp_path / "state")}}
+    index = CodeIndex(config, repo_tools=RepositoryTools(config))
     source = "def caller():\n    target()\n"
     parser_calls = []
 
@@ -758,12 +776,13 @@ def test_code_index_falls_back_when_tree_sitter_is_unavailable(monkeypatch, tmp_
 
 def test_call_edge_analyzer_version_rejects_stale_parse_blobs(tmp_path) -> None:
     index = CodeIndex({"server": {"state_dir": str(tmp_path / "state")}}, repo_tools=None)
+    old_version = f"{code_index_module.__version__}:call-edges-v13-scoped-fallback"
     with closing(index._connect()) as con:
         con.execute(
             "INSERT INTO parse_blobs(content_hash,analyzer_version,language,payload_json,updated_at) VALUES(?,?,?,?,?)",
-            ("same-content", code_index_module.__version__, "rust", '{"edges":[]}', 0.0),
+            ("same-content", old_version, "rust", '{"edges":[]}', 0.0),
         )
         con.commit()
 
-    assert code_index_module._PARSER_ANALYZER_VERSION == f"{code_index_module.__version__}:call-edges-v13-scoped-fallback"
+    assert code_index_module._PARSER_ANALYZER_VERSION != old_version
     assert index._parse_blob_get("same-content", "rust") is None
