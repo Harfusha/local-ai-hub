@@ -1,13 +1,41 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+from contextlib import closing
+from pathlib import Path
 import sqlite3
 import threading
 import time
-from contextlib import closing
-from pathlib import Path
 from typing import Any
 
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error, quick_sanity_check
+
+
+def _clean_text(value: Any) -> str:
+    if value is None or isinstance(value, bool):
+        return ""
+    raw = str(value).replace("\x00", "")
+    return raw.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
+
+
+def _safe_positive_int(value: Any, default: int, *, minimum: int = 1) -> int:
+    if value is None or isinstance(value, bool):
+        return max(minimum, default)
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return max(minimum, default)
+    return max(minimum, parsed)
+
+
+def _resolve_root(root: Any) -> str:
+    cleaned = _clean_text(root).strip()
+    if not cleaned:
+        return ""
+    try:
+        return str(Path(cleaned).expanduser().resolve())
+    except (OSError, ValueError):
+        return ""
 
 
 class UsageLearner:
@@ -28,10 +56,11 @@ class UsageLearner:
     )
 
     def __init__(self, config: dict[str, Any]):
-        cfg = config.get("learning", {})
+        raw_cfg = config.get("learning") if isinstance(config, Mapping) else {}
+        cfg = raw_cfg if isinstance(raw_cfg, Mapping) else {}
         self.enabled = bool(cfg.get("enabled", True))
-        self.max_queries = max(8, int(cfg.get("max_queries_per_project", 64)))
-        self.max_query_chars = max(64, int(cfg.get("max_query_chars", 240)))
+        self.max_queries = _safe_positive_int(cfg.get("max_queries_per_project", 64), 64, minimum=8)
+        self.max_query_chars = _safe_positive_int(cfg.get("max_query_chars", 240), 240, minimum=64)
         self.db_path = Path(config["server"]["state_dir"]) / "learning.sqlite3"
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
@@ -75,16 +104,18 @@ class UsageLearner:
 
     @classmethod
     def intent(cls, query: str) -> str:
-        lower = query.lower()
+        lower = _clean_text(query).lower()
         return next((name for name, terms in cls.INTENT_TERMS if any(term in lower for term in terms)), "general")
 
     def record(self, root: str, query: str) -> None:
         if not self.enabled:
             return
-        clean = " ".join(query.split())[: self.max_query_chars]
+        resolved = _resolve_root(root)
+        if not resolved:
+            return
+        clean = " ".join(_clean_text(query).split())[: self.max_query_chars]
         if len(clean) < 6:
             return
-        resolved = str(Path(root).expanduser().resolve())
         intent = self.intent(clean)
         try:
             with self._lock, closing(self._connect()) as con:
@@ -106,16 +137,47 @@ class UsageLearner:
             return
 
     def hot_queries(self, root: str, limit: int = 12) -> list[str]:
-        resolved = str(Path(root).expanduser().resolve())
+        resolved = _resolve_root(root)
+        if not resolved:
+            return []
+        safe_limit = min(_safe_positive_int(limit, 12, minimum=1), self.max_queries)
         try:
             with self._lock, closing(self._connect()) as con:
                 rows = con.execute(
                     "SELECT query FROM intents WHERE root=? ORDER BY hits DESC,last_seen DESC LIMIT ?",
-                    (resolved, min(max(1, int(limit)), self.max_queries)),
+                    (resolved, safe_limit),
                 ).fetchall()
             return [str(row["query"]) for row in rows]
         except sqlite3.DatabaseError:
             return []
+
+    def count(self, root: str | None = None) -> int:
+        try:
+            with self._lock, closing(self._connect()) as con:
+                if root is not None:
+                    resolved = _resolve_root(root)
+                    if not resolved:
+                        return 0
+                    row = con.execute("SELECT COUNT(*) FROM intents WHERE root=?", (resolved,)).fetchone()
+                else:
+                    row = con.execute("SELECT COUNT(*) FROM intents").fetchone()
+            return int(row[0]) if row else 0
+        except sqlite3.DatabaseError:
+            return 0
+
+    def clear(self, root: str | None = None) -> None:
+        try:
+            with self._lock, closing(self._connect()) as con:
+                if root is not None:
+                    resolved = _resolve_root(root)
+                    if not resolved:
+                        return
+                    con.execute("DELETE FROM intents WHERE root=?", (resolved,))
+                else:
+                    con.execute("DELETE FROM intents")
+                con.commit()
+        except sqlite3.DatabaseError:
+            pass
 
     def stats(self) -> dict[str, Any]:
         try:
