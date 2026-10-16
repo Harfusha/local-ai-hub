@@ -5,7 +5,9 @@ import json
 import shutil
 import subprocess
 import time
-from typing import Sequence
+from collections.abc import Mapping
+import math
+from typing import Any, Sequence
 
 from .process_utils import hidden_run_kwargs
 
@@ -13,30 +15,67 @@ from .process_utils import hidden_run_kwargs
 SUPPORTED_STAGES = frozenset({"preprocess", "index", "rag", "mcp", "http"})
 
 
+def _safe_float(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    if not math.isfinite(parsed):
+        return None
+    return parsed
+
+
+def is_valid_stage(stage: object) -> bool:
+    if isinstance(stage, bool) or not isinstance(stage, str):
+        return False
+    return stage.replace("\x00", "").strip().lower() in SUPPORTED_STAGES
+
+
 def validate_stage(stage: str) -> str:
-    value = str(stage).strip().lower()
+    if isinstance(stage, bool) or not isinstance(stage, str):
+        raise ValueError(f"unknown performance stage: {stage}")
+    value = stage.replace("\x00", "").strip().lower()
     if value not in SUPPORTED_STAGES:
         raise ValueError(f"unknown performance stage: {stage}")
     return value
 
 
 def percentile(samples: Sequence[float], percentage: float) -> float:
+    if isinstance(percentage, bool) or not isinstance(percentage, (int, float)):
+        raise ValueError("percentage must be a finite number between 0 and 100")
+    p = float(percentage)
+    if not math.isfinite(p) or not 0 <= p <= 100:
+        raise ValueError("percentage must be between 0 and 100")
     if not samples:
         raise ValueError("percentile requires at least one sample")
-    if not 0 <= percentage <= 100:
-        raise ValueError("percentage must be between 0 and 100")
-    ordered = sorted(float(sample) for sample in samples)
-    position = (len(ordered) - 1) * (percentage / 100.0)
+    ordered = sorted(
+        val for s in samples if not isinstance(s, bool) and (val := _safe_float(s)) is not None
+    )
+    if not ordered:
+        raise ValueError("percentile requires at least one valid sample")
+    position = (len(ordered) - 1) * (p / 100.0)
     lower = int(position)
     upper = min(lower + 1, len(ordered) - 1)
     fraction = position - lower
     return ordered[lower] + (ordered[upper] - ordered[lower]) * fraction
 
 
+def format_probe_summary(report: Mapping[str, Any] | object) -> str:
+    if not isinstance(report, Mapping):
+        return ""
+    stage = str(report.get("stage") or "unknown")
+    wall = report.get("wall_ms") if isinstance(report.get("wall_ms"), Mapping) else {}
+    p95 = wall.get("p95", 0.0)
+    throughput = report.get("throughput_per_second", 0.0)
+    return f"stage={stage} p95={p95}ms throughput={throughput}/s"
+
+
 def build_profiler_command(profiler: str, command: Sequence[str]) -> list[str]:
     if not command:
         raise ValueError("a target command is required")
-    name = str(profiler).strip().lower()
+    name = str(profiler).replace("\x00", "").strip().lower()
     target = list(command)
     if name == "py-spy":
         return ["py-spy", "record", "--subprocesses", "--output", "performance.svg", "--", *target]
@@ -46,7 +85,7 @@ def build_profiler_command(profiler: str, command: Sequence[str]) -> list[str]:
 
 
 def profiler_status(profiler: str) -> dict[str, object]:
-    command = str(profiler).strip().lower()
+    command = str(profiler).replace("\x00", "").strip().lower()
     return {"name": command, "available": bool(shutil.which(command))}
 
 
@@ -61,16 +100,20 @@ def run_probe(
     stage = validate_stage(stage)
     if not command:
         raise ValueError("a target command is required")
-    iterations = max(1, min(int(iterations), 100))
-    warmup = max(0, min(int(warmup), 20))
-    timeout_seconds = max(0.1, min(float(timeout_seconds), 3600.0))
+    safe_iter = 3 if isinstance(iterations, bool) else max(1, min(int(_safe_float(iterations) or 3), 100))
+    safe_warmup = 1 if isinstance(warmup, bool) else max(0, min(int(_safe_float(warmup) or 1), 20))
+    safe_timeout = (
+        300.0
+        if isinstance(timeout_seconds, bool)
+        else max(0.1, min(float(_safe_float(timeout_seconds) or 300.0), 3600.0))
+    )
 
-    for _ in range(warmup):
+    for _ in range(safe_warmup):
         result = subprocess.run(
             command,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
-            timeout=timeout_seconds,
+            timeout=safe_timeout,
             check=False,
             **hidden_run_kwargs(),
         )
@@ -78,13 +121,13 @@ def run_probe(
             raise RuntimeError(f"warmup command failed with exit code {result.returncode}")
 
     samples: list[float] = []
-    for _ in range(iterations):
+    for _ in range(safe_iter):
         started = time.perf_counter()
         result = subprocess.run(
             command,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
-            timeout=timeout_seconds,
+            timeout=safe_timeout,
             check=False,
             **hidden_run_kwargs(),
         )
@@ -96,10 +139,10 @@ def run_probe(
     return {
         "success": True,
         "stage": stage,
-        "iterations": iterations,
-        "warmup": warmup,
+        "iterations": safe_iter,
+        "warmup": safe_warmup,
         "command": list(command),
-        "throughput_per_second": round(iterations / (sum(samples) / 1000.0), 4),
+        "throughput_per_second": round(safe_iter / (sum(samples) / 1000.0), 4),
         "wall_ms": {
             "min": round(min(samples), 3),
             "mean": round(sum(samples) / len(samples), 3),

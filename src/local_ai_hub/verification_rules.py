@@ -33,8 +33,10 @@ class CompletionReceiptStore(Protocol):
 
 def project_command_environment_sha256(settings: object, criterion: str) -> str:
     """Hash the effective project command environment without persisting values."""
-    if not str(criterion or "").strip():
-        raise CompletionGateError("criterion must not be empty")
+    if settings is None:
+        raise CompletionGateError("project settings is required")
+    if not isinstance(criterion, str) or not criterion.strip() or "\x00" in criterion:
+        raise CompletionGateError("project command criterion is invalid")
     commands = getattr(settings, "commands", {})
     command = commands.get(criterion) if isinstance(commands, Mapping) else None
     environment = dict(getattr(settings, "env", {}) or {})
@@ -295,7 +297,11 @@ def _task_project_root(
 
 
 def _canonical_project_root(root: str | Path | None) -> str:
-    if not str(root or "").strip():
+    if root is None or root == "":
+        return ""
+    if not isinstance(root, (str, Path)) or "\x00" in str(root):
+        raise CompletionGateError("project root must be a path without null bytes")
+    if not str(root).strip():
         return ""
     return os.path.normcase(str(Path(root).expanduser().resolve(strict=False)))
 

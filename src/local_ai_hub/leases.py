@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import ntpath
 import os
+import posixpath
 import sqlite3
 import threading
 import time
@@ -60,7 +62,11 @@ def _preflight_lease_schema(path: Path) -> None:
 
 
 def _norm_rel(value: str, root: str = "") -> str:
-    raw = str(value or "").strip()
+    if value is None or isinstance(value, bool):
+        raise ValueError(f"lease path must be repository-relative: {value}")
+    raw = str(value).strip()
+    if not raw or "\x00" in raw:
+        raise ValueError(f"lease path must be repository-relative: {value}")
     wp = PureWindowsPath(raw)
     win_rooted = wp.is_absolute() or bool(wp.drive) or raw.startswith("\\")
     if win_rooted:
@@ -88,10 +94,12 @@ def _norm_rel(value: str, root: str = "") -> str:
     elif Path(raw).is_absolute():
         raise ValueError(f"lease path must be repository-relative: {value}")
     normalized = raw.replace("\\", "/").strip("/")
-    path = PurePosixPath(normalized or ".")
-    if path.is_absolute() or ".." in path.parts:
+    norm_path = posixpath.normpath(normalized or ".")
+    if norm_path == ".":
+        return "."
+    if norm_path.startswith("..") or norm_path.startswith("/"):
         raise ValueError(f"lease path must be repository-relative: {value}")
-    return "." if str(path) == "." else str(path)
+    return norm_path
 
 
 def _overlap(a: str, b: str) -> bool:
@@ -197,8 +205,13 @@ class ScopeLeaseStore:
         *,
         coordination_id: str | None | object = _COORDINATION_ID_UNSET,
     ) -> dict[str, Any]:
+        if paths is None or isinstance(paths, (str, bytes)) or not isinstance(paths, (list, tuple, set, frozenset)):
+            return {"success": False, "error": "paths must be a collection of path strings"}
         if not paths:
             return {"success": False, "error": "paths must not be empty"}
+        for p in paths:
+            if not isinstance(p, (str, Path)) or isinstance(p, bool) or not str(p).strip() or "\x00" in str(p):
+                return {"success": False, "error": f"invalid lease path: {p}"}
         if (not root or root == ".") and paths:
             first_abs = next((str(p) for p in paths if PureWindowsPath(str(p)).is_absolute() or Path(str(p)).is_absolute() or bool(PureWindowsPath(str(p)).drive)), None)
             if first_abs:
@@ -222,7 +235,11 @@ class ScopeLeaseStore:
             root_id = f"project:{namespace}"
         rels = sorted({_norm_rel(str(p), root=root_path) for p in paths})
         now = time.time()
-        expires = now + max(30, min(int(ttl_seconds), 7200))
+        if isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, (int, float)) or not math.isfinite(ttl_seconds):
+            ttl = 900
+        else:
+            ttl = max(30, min(int(ttl_seconds), 7200))
+        expires = now + ttl
         lease_id = f"lease_{uuid.uuid4().hex[:20]}"
 
         def write() -> dict[str, Any]:
@@ -341,6 +358,13 @@ class ScopeLeaseStore:
         )
 
     def release(self, tenant: str, lease_id: str = "") -> dict[str, Any]:
+        if not isinstance(tenant, str) or "\x00" in tenant:
+            return {"success": False, "error": "invalid tenant"}
+        if lease_id is not None and not isinstance(lease_id, str):
+            return {"success": False, "error": "lease_id must be a string"}
+        if lease_id and "\x00" in lease_id:
+            return {"success": False, "error": "invalid lease_id"}
+
         def write() -> int:
             with closing(self._connect()) as con:
                 con.execute("BEGIN IMMEDIATE")
@@ -398,10 +422,18 @@ class ScopeLeaseStore:
 
     def renew(self, tenant: str, lease_id: str, ttl_seconds: int = 900) -> dict[str, Any]:
         """Atomically extend the expiration TTL of an existing held lease."""
-        if not lease_id:
-            return {"success": False, "error": "lease_id is required"}
+        if not isinstance(tenant, str) or "\x00" in tenant:
+            return {"success": False, "error": "invalid tenant"}
+        if not isinstance(lease_id, str) or not lease_id:
+            return {"success": False, "error": "lease_id must be a string"}
+        if "\x00" in lease_id:
+            return {"success": False, "error": "invalid lease_id"}
+        if isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, (int, float)) or not math.isfinite(ttl_seconds):
+            ttl = 900
+        else:
+            ttl = max(30, min(int(ttl_seconds), 7200))
         now = time.time()
-        new_expires = now + max(30, min(int(ttl_seconds), 7200))
+        new_expires = now + ttl
 
         def write() -> dict[str, Any]:
             with closing(self._connect()) as con:

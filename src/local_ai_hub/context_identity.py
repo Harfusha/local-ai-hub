@@ -131,10 +131,27 @@ def combine_settings_digests(*values: object) -> str | None:
     return hashlib.sha256(payload.encode("utf-8", "replace")).hexdigest()[:32]
 
 
+def is_valid_settings_digest(value: object) -> bool:
+    """Return True when value normalizes to a valid settings digest."""
+
+    return normalize_settings_digest(value) is not None
+
+
+def has_context_path_hints(value: object) -> bool:
+    """Return True when value normalizes to at least one valid context path hint."""
+
+    try:
+        return bool(normalize_context_path_hints(value))
+    except ValueError:
+        return False
+
+
 def normalize_context_root(value: object) -> str:
     """Normalize root path using the host operating system's path rules."""
 
-    root = str(value or "")
+    if value is None or isinstance(value, bool):
+        return ""
+    root = str(value).replace("\x00", "").strip()
     if not root:
         return ""
     return os.path.normcase(os.path.normpath(root))

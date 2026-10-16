@@ -42,12 +42,36 @@ _EVIDENCE_ACTIONS = frozenset(
 )
 
 
+def is_evidence_action(action: str) -> bool:
+    if not isinstance(action, str) or "\x00" in action:
+        return False
+    return action in _EVIDENCE_ACTIONS
+
+
+def is_semantic_action(action: str) -> bool:
+    if not isinstance(action, str) or "\x00" in action:
+        return False
+    return action in _SEMANTIC_ACTIONS
+
+
+def list_semantic_actions() -> list[str]:
+    return list(_SEMANTIC_ACTIONS)
+
+
+def list_evidence_actions() -> list[str]:
+    return sorted(_EVIDENCE_ACTIONS)
+
+
 def semantic_handoff_hint(
     tool: str,
     action: str,
     local_tasks_enabled: bool,
     status_enabled: bool = True,
 ) -> SemanticHandoffHint | None:
+    if not isinstance(tool, str) or not isinstance(action, str):
+        return None
+    if "\x00" in tool or "\x00" in action:
+        return None
     if (
         not local_tasks_enabled
         or tool != "local_ai_repo"

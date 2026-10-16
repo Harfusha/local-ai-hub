@@ -381,11 +381,47 @@ def _load_lazy_language_pack(language: str) -> bool:
         return True
 
 
+_KNOWN_LANGUAGES = {
+    "csharp": "csharp", "cs": "csharp",
+    "typescript": "typescript", "ts": "typescript",
+    "tsx": "tsx",
+    "javascript": "javascript", "js": "javascript", "jsx": "javascript",
+    "python": "python", "py": "python",
+    "go": "go", "golang": "go",
+    "rust": "rust", "rs": "rust",
+    "java": "java",
+    "cpp": "cpp", "c++": "cpp", "c": "cpp",
+}
+_KNOWN_EXTENSIONS = (
+    ".c", ".cc", ".cpp", ".cs", ".cxx", ".go", ".h", ".hpp",
+    ".java", ".js", ".jsx", ".py", ".rs", ".ts", ".tsx",
+)
+
+
+def supported_languages() -> list[str]:
+    return sorted(set(_KNOWN_LANGUAGES.values()))
+
+
+def is_supported_language(lang: Any) -> bool:
+    if not isinstance(lang, str):
+        return False
+    norm = lang.replace("\x00", "").strip().lower()
+    return norm in _KNOWN_LANGUAGES
+
+
+def supported_extensions() -> list[str]:
+    return sorted(_KNOWN_EXTENSIONS)
+
+
 def is_treesitter_available(lang: str) -> bool:
+    if not isinstance(lang, str):
+        return False
+    norm = lang.replace("\x00", "").strip().lower()
+    if not norm:
+        return False
     if not _INIT_ATTEMPTED:
         _init_treesitter()
-    norm = lang.lower().strip()
-    lazy_language = "cpp" if norm == "c++" else norm
+    lazy_language = "cpp" if norm in ("c++", "c") else norm
     if lazy_language in _LAZY_LANGUAGE_PACKS:
         _load_lazy_language_pack(lazy_language)
     if norm in ("cs", "csharp"):
@@ -404,21 +440,30 @@ def is_treesitter_available(lang: str) -> bool:
         return "rust" in _PARSERS
     if norm == "java":
         return "java" in _PARSERS
-    if norm in ("cpp", "c++"):
+    if norm in ("cpp", "c++", "c"):
         return "cpp" in _PARSERS
     return False
 
 
 def language_for_path(path: str, fallback_language: str, settings: Any | None = None) -> str:
     """Resolve project-configured extensions to parser language names."""
-    suffix = Path(path).suffix.lower()
+    fallback = str(fallback_language or "").strip().lower()
+    if not isinstance(path, (str, Path)):
+        return fallback
+    try:
+        clean_path = str(path).replace("\x00", "").strip()
+        if not clean_path:
+            return fallback
+        suffix = Path(clean_path).suffix.lower()
+    except Exception:
+        return fallback
     overrides = getattr(settings, "language_overrides", {}) if settings is not None else {}
     if isinstance(overrides, dict) or hasattr(overrides, "items"):
         for language, override in overrides.items():
             extensions = override.get("text_extensions", ()) if hasattr(override, "get") else ()
             if suffix in {str(extension).lower() for extension in extensions}:
                 return str(language).strip().lower()
-    return fallback_language
+    return fallback
 
 
 def parse_treesitter(
@@ -549,8 +594,10 @@ def _worker_parse(text: str, language: str, source_key: str | None = None) -> di
 
 def parse_treesitter_with_status(text: str, language: str, *, source_key: str | None = None) -> dict[str, Any]:
     """Return extracted syntax data and an explicit, bounded parser outcome."""
-    if not text or not text.strip():
+    if not isinstance(text, str) or not text.strip():
         return {"result": ([], [], []), "status": "empty", "parser": "tree_sitter", "syntax_error_count": 0}
+    if not isinstance(language, str) or not language.replace("\x00", "").strip():
+        return {"result": None, "status": "unavailable", "parser": "tree_sitter", "fallback_reason": "invalid_language", "syntax_error_count": 0}
 
     disabled = _worker_disabled_result()
     if disabled is not None:

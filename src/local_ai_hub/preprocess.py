@@ -5,6 +5,7 @@ from .json_utils import dumps as json_dumps
 import copy
 import json
 import logging
+import math
 import os
 import shlex
 import sqlite3
@@ -37,6 +38,34 @@ from .process_utils import canonical_root, set_current_thread_priority
 
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_float(val: Any, default: float, min_val: float = 0.0, max_val: float | None = None) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        if not math.isfinite(f):
+            return default
+        if f < min_val:
+            return min_val
+        if max_val is not None and f > max_val:
+            return max_val
+        return f
+    except (ValueError, TypeError):
+        return default
+
+
+def _safe_int(val: Any, default: int, min_val: int = 0) -> int:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        if isinstance(val, float) and not math.isfinite(val):
+            return default
+        i = int(val)
+        return max(min_val, i)
+    except (ValueError, TypeError, OverflowError):
+        return default
 
 
 CARD_SCHEMA = {
@@ -86,6 +115,8 @@ PROJECT_SCHEMA = {
 
 def _project_git_identity(root: str) -> tuple[str, bool]:
     """Return a local Git common-dir identity without guessing from path names."""
+    if not isinstance(root, str) or not root.strip() or "\x00" in root:
+        return "", False
     try:
         resolved_root = Path(root).resolve(strict=False)
         marker = resolved_root / ".git"
@@ -115,7 +146,7 @@ def _project_git_identity(root: str) -> tuple[str, bool]:
         common_dir = common_dir.resolve(strict=False)
         return str(common_dir), common_dir != git_dir
     except (OSError, RuntimeError, ValueError):
-        return str(root), False
+        return "", False
 
 
 class ProjectPreprocessor:
@@ -145,12 +176,15 @@ class ProjectPreprocessor:
         self.telemetry = telemetry
         self.background_gpu = background_gpu
         self.external_tools = external_tools
-        self.cfg = config.get("preprocessing", {})
+        self.cfg = config.get("preprocessing", {}) if isinstance(config, dict) else {}
+        if not isinstance(self.cfg, dict):
+            self.cfg = {}
         self.enabled = bool(self.cfg.get("enabled", True))
         self.cpu_priority = str(self.cfg.get("cpu_priority", "idle"))
         self.cpu_runs_during_foreground = bool(self.cfg.get("cpu_runs_during_foreground", True))
-        self.state_dir = Path(config["server"]["state_dir"])
-        self.state_dir.mkdir(parents=True, exist_ok=True)
+        from .state_paths import configured_state_dir
+
+        self.state_dir = configured_state_dir(config)
         self.db_path = self.state_dir / "preprocess.sqlite3"
         if not ensure_incremental_vacuum(self.db_path).get("success"):
             logger.warning("preprocessing database incremental vacuum setup incomplete")
@@ -163,18 +197,18 @@ class ProjectPreprocessor:
         if self.pause_marker.exists():
             self._paused.set()
         self.install_root = Path(__file__).resolve().parents[2]
-        self.max_preprocessing_projects = max(1, int(self.cfg.get("max_preprocessing_projects", 3)))
+        self.max_preprocessing_projects = max(1, _safe_int(self.cfg.get("max_preprocessing_projects"), 3))
         self.discover_worktrees = bool(self.cfg.get("discover_worktrees", True))
-        self.max_discovered_worktrees = max(1, int(self.cfg.get("max_discovered_worktrees", 32)))
-        self.worktree_discovery_ttl = max(30.0, float(self.cfg.get("worktree_discovery_ttl_seconds", 300.0)))
+        self.max_discovered_worktrees = max(1, _safe_int(self.cfg.get("max_discovered_worktrees"), 32))
+        self.worktree_discovery_ttl = max(30.0, _safe_float(self.cfg.get("worktree_discovery_ttl_seconds"), 300.0))
         self._worktree_lock = threading.Lock()
         self._worktree_cache: dict[str, tuple[float, list[str]]] = {}
-        self.cpu_workers = max(1, int(self.cfg.get("cpu_workers", min(8, os.cpu_count() or 4))))
+        self.cpu_workers = max(1, _safe_int(self.cfg.get("cpu_workers"), min(8, os.cpu_count() or 4)))
         self.reject_temp_projects = bool(self.cfg.get("reject_temp_projects", False))
         self.require_project_markers = bool(self.cfg.get("require_project_markers", False))
         self._touch_lock = threading.Lock()
         self._last_touch: dict[str, float] = {}
-        self._touch_debounce_seconds = max(1.0, float(self.cfg.get("touch_debounce_seconds", 15.0)))
+        self._touch_debounce_seconds = max(1.0, _safe_float(self.cfg.get("touch_debounce_seconds"), 15.0))
         self._watcher_active = False
         # Filesystem events are coalesced in memory. A normal edit should not force a
         # full repository inventory nor one SQLite write per editor event.
@@ -205,11 +239,11 @@ class ProjectPreprocessor:
         # project while still allowing independent projects to progress concurrently.
         self._step_locks_guard = threading.Lock()
         self._step_locks: dict[str, threading.Lock] = {}
-        self._sqlite_busy_seconds = max(0.25, float(self.cfg.get("sqlite_busy_timeout_seconds", 0.5)))
-        self._sqlite_write_retries = max(1, int(self.cfg.get("sqlite_write_retries", 6)))
+        self._sqlite_busy_seconds = max(0.25, _safe_float(self.cfg.get("sqlite_busy_timeout_seconds"), 0.5))
+        self._sqlite_write_retries = max(1, _safe_int(self.cfg.get("sqlite_write_retries"), 6))
         self._lookup_cache_lock = threading.Lock()
         self._lookup_cache: dict[str, tuple[float, str, dict[str, Any]]] = {}
-        self._lookup_cache_ttl = max(1.0, float(self.cfg.get("lookup_l1_ttl_seconds", 30.0)))
+        self._lookup_cache_ttl = max(1.0, _safe_float(self.cfg.get("lookup_l1_ttl_seconds"), 30.0))
         self._stats_lock = threading.Lock()
         self._last_db_maintenance = 0.0
         self._stats = {
@@ -222,6 +256,7 @@ class ProjectPreprocessor:
             "lost_error_count": 0,
         }
         self._speed_tracker: dict[str, list[tuple[float, int]]] = {}
+
         try:
             self._init_db()
         except sqlite3.DatabaseError as exc:
@@ -242,6 +277,20 @@ class ProjectPreprocessor:
             if bool(self.cfg.get("fs_watcher_enabled", True)):
                 self._fs_watcher_thread = threading.Thread(target=self._fs_watcher_loop, name="local-ai-fs-watcher", daemon=True)
                 self._fs_watcher_thread.start()
+
+    def is_enabled(self) -> bool:
+        return self.enabled
+
+    def is_paused(self) -> bool:
+        return self._paused.is_set()
+
+    def stats(self) -> dict[str, Any]:
+        with self._stats_lock:
+            return dict(self._stats)
+
+    @classmethod
+    def phases(cls) -> tuple[str, ...]:
+        return cls.PHASES
 
     def ingestion_reuse_rate(self) -> float:
         lock = getattr(self, "_stats_lock", None)

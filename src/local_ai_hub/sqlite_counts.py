@@ -49,7 +49,7 @@ def global_row_counts(con: sqlite3.Connection, tables: tuple[str, ...] | Sequenc
     table_list = tuple(tables)
     try:
         counts = {str(row[0]): int(row[1]) for row in con.execute("SELECT table_name,row_count FROM hub_row_counts")}
-    except sqlite3.OperationalError:
+    except sqlite3.Error:
         raise sqlite3.DatabaseError("derived row counts are not initialized")
     if any(table not in counts for table in table_list):
         raise sqlite3.DatabaseError("derived row counts are not initialized")
@@ -63,7 +63,7 @@ def get_table_count(con: sqlite3.Connection, table: str) -> int | None:
     try:
         row = con.execute("SELECT row_count FROM hub_row_counts WHERE table_name=?", (table,)).fetchone()
         return int(row[0]) if row is not None else None
-    except sqlite3.DatabaseError:
+    except sqlite3.Error:
         return None
 
 
@@ -77,5 +77,5 @@ def is_row_counts_initialized(con: sqlite3.Connection, tables: tuple[str, ...] |
         table_list = tuple(tables)
         counts = {str(row[0]) for row in con.execute("SELECT table_name FROM hub_row_counts")}
         return all(t in counts for t in table_list)
-    except sqlite3.DatabaseError:
+    except sqlite3.Error:
         return False

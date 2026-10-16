@@ -88,15 +88,19 @@ def capability_for(model: str, *, role: str = "") -> ModelCapability:
 
 
 def _clip(value: str, limit: int) -> str:
-    if limit <= 0:
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
         return ""
     text = str(value or "").replace("\x00", "")
     return text if len(text) <= limit else text[: max(0, limit - 24)] + "\n...[bounded]"
 
 
 def _lines(values: Iterable[str] | None, limit: int = 12) -> str:
-    if values is None or limit <= 0:
+    if values is None:
         return "- none supplied"
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+        return "- none supplied"
+    if isinstance(values, (str, bytes)):
+        values = [values.decode("utf-8", errors="replace") if isinstance(values, bytes) else values]
     try:
         items = [
             str(value).replace("\x00", "").replace("\r", " ").replace("\n", " ").strip()
@@ -194,4 +198,17 @@ def can_model_perform(model: str, action: str) -> bool:
         return False
     cap = capability_for(model)
     return action.strip().lower() in cap.can
+
+
+def cannot_model_perform(model: str, action: str) -> bool:
+    """Return True if the model's capability matrix excludes action."""
+    if not model or not action or not isinstance(action, str):
+        return True
+    cap = capability_for(model)
+    return action.strip().lower() in cap.cannot
+
+
+def list_supported_models() -> tuple[str, ...]:
+    """Return tuple of known static capability models."""
+    return tuple(_CAPABILITIES.keys())
 

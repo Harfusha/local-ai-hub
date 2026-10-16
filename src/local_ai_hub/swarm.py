@@ -246,6 +246,19 @@ class SwarmCoordinator:
             if tenant.startswith("swarm:") and tenant[len("swarm:"):] not in known:
                 self.leases.release(tenant=tenant)
 
+    def is_valid_swarm_id(self, swarm_id: str) -> bool:
+        if not isinstance(swarm_id, str) or not swarm_id.startswith("swarm_") or "\x00" in swarm_id:
+            return False
+        return len(swarm_id) <= 64
+
+    def active_swarms_count(self) -> int:
+        with closing(self._connect()) as con:
+            row = con.execute(
+                "SELECT COUNT(*) FROM agent_swarms WHERE state NOT IN (?, ?)",
+                (SwarmState.COMPLETED.value, SwarmState.FAILED.value),
+            ).fetchone()
+            return int(row[0]) if row else 0
+
     @_serialized_event_writer
     def dispatch(
         self,
@@ -255,7 +268,12 @@ class SwarmCoordinator:
         author: str = "agent",
         root: str = ".",
     ) -> dict[str, Any]:
+        if not isinstance(goal, str) or not goal.strip() or "\x00" in goal:
+            raise ValueError("invalid goal")
         paths = list(target_paths or [])
+        for p in paths:
+            if not isinstance(p, str) or "\x00" in p:
+                raise ValueError("target paths cannot contain null bytes")
         swarm_id = f"swarm_{uuid4().hex[:12]}"
         now = time.time()
         needs_lease = bool(self.leases and paths)

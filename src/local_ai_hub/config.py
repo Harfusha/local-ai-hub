@@ -26,13 +26,30 @@ def _expand(value: Any) -> Any:
 def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(override, dict):
         return copy.deepcopy(override)
-    result = copy.deepcopy(base)
+    result = copy.deepcopy(base) if isinstance(base, dict) else {}
     for key, value in override.items():
         if isinstance(value, dict) and isinstance(result.get(key), dict):
             result[key] = deep_merge(result[key], value)
         else:
             result[key] = copy.deepcopy(value)
     return result
+
+
+def get_table(data: Any, key: str) -> dict[str, Any]:
+    """Safely retrieve a nested dictionary table from a config or section."""
+    if not isinstance(data, dict):
+        return {}
+    val = data.get(key)
+    return val if isinstance(val, dict) else {}
+
+
+def get_feature(data: Any, feature: str, default: bool = True) -> bool:
+    """Safely retrieve a boolean feature flag from configuration."""
+    features = get_table(data, "features")
+    val = features.get(feature)
+    if isinstance(val, bool):
+        return val
+    return default
 
 
 def _read_toml(path: Path, *, required: bool = False) -> dict[str, Any]:
@@ -79,7 +96,10 @@ def validate_config(data: dict[str, Any]) -> None:
     Local AI Hub deliberately leaves most feature-specific keys extensible. Validation
     focuses on transport, resource limits, and code-intelligence lifecycle settings.
     """
-    for name in ("server", "security", "hardware", "openvino", "scheduler", "commands", "client", "mcp", "code_intelligence", "bundles", "resilience", "ollama", "llama_cpp", "ollama_subagents", "agent_state", "work_orchestrator", "browser_bridge", "headless"):
+    if not isinstance(data, dict):
+        raise ConfigError("configuration root must be a TOML table")
+
+    for name in ("server", "security", "hardware", "openvino", "scheduler", "commands", "client", "mcp", "code_intelligence", "bundles", "resilience", "ollama", "llama_cpp", "ollama_subagents", "agent_state", "work_orchestrator", "browser_bridge", "headless", "features"):
         if name in data and not isinstance(data[name], dict):
             raise ConfigError(f"[{name}] must be a TOML table")
 
@@ -334,11 +354,14 @@ def validate_config(data: dict[str, Any]) -> None:
         if (
             not isinstance(allowed_roots, list)
             or len(allowed_roots) > 32
-            or any(not isinstance(root, str) or not root.strip() or len(root.strip()) > 4096 for root in allowed_roots)
+            or any(not isinstance(root, str) or not root.strip() or len(root.strip()) > 4096 or "\0" in root for root in allowed_roots)
         ):
             raise ConfigError("security.allowed_roots must be a list of at most 32 non-empty paths of at most 4096 characters")
-        if any(not Path(root.strip()).expanduser().is_absolute() for root in allowed_roots):
-            raise ConfigError("security.allowed_roots entries must be absolute paths")
+        try:
+            if any(not Path(root.strip()).expanduser().is_absolute() for root in allowed_roots):
+                raise ConfigError("security.allowed_roots entries must be absolute paths")
+        except (ValueError, OSError) as exc:
+            raise ConfigError(f"security.allowed_roots invalid path: {exc}") from exc
         if security.get("allow_anonymous") is True:
             raise ConfigError("Anonymous HTTP API access is not supported; configure [security].api_token")
         if "client_host" in server:
@@ -357,7 +380,13 @@ def _toml_scalar(value: Any) -> str:
     if isinstance(value, float):
         return repr(value)
     if isinstance(value, str):
-        escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+        escaped = (
+            value.replace("\\", "\\\\")
+            .replace('"', '\\"')
+            .replace("\n", "\\n")
+            .replace("\r", "\\r")
+            .replace("\t", "\\t")
+        )
         return f'"{escaped}"'
     if isinstance(value, list):
         return "[" + ", ".join(_toml_scalar(v) for v in value) + "]"
@@ -387,7 +416,12 @@ def _dump_toml_tables(data: dict[str, Any]) -> str:
 
 
 def runtime_override_path(config_path: str | os.PathLike[str]) -> Path:
-    path = Path(config_path).expanduser().resolve(strict=False)
+    if isinstance(config_path, str) and "\0" in config_path:
+        raise ConfigError("invalid configuration path: embedded null byte")
+    try:
+        path = Path(config_path).expanduser().resolve(strict=False)
+    except (ValueError, OSError) as exc:
+        raise ConfigError(f"invalid configuration path: {exc}") from exc
     return path.with_name("config.runtime.toml")
 
 
@@ -412,6 +446,8 @@ def save_runtime_overrides(config_path: str | os.PathLike[str], patch: dict[str,
 def load_config(path: str | os.PathLike[str] | None = None, *, probe_hardware: bool = True) -> dict[str, Any]:
     if path is None:
         path = os.environ.get("LOCAL_AI_CONFIG")
+    if isinstance(path, str) and "\0" in path:
+        raise ConfigError("invalid configuration path: embedded null byte")
     package_dir = Path(__file__).resolve().parent
     source_root = Path(__file__).resolve().parents[2]
     if path is None:
@@ -419,7 +455,10 @@ def load_config(path: str | os.PathLike[str] | None = None, *, probe_hardware: b
         source_config = source_root / "config.toml"
         config_path = home_config if home_config.exists() else source_config if source_config.exists() else home_config
     else:
-        config_path = Path(path).expanduser()
+        try:
+            config_path = Path(path).expanduser()
+        except (ValueError, OSError) as exc:
+            raise ConfigError(f"invalid configuration path: {exc}") from exc
 
     # Prefer defaults next to the selected config (copied install layout), then the
     # source checkout, then package data from a wheel/editable install.

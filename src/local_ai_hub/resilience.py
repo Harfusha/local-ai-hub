@@ -4,6 +4,7 @@ from .json_utils import dumps as json_dumps
 
 import json
 import hashlib
+import math
 import shutil
 import sqlite3
 import sys
@@ -27,6 +28,30 @@ class BreakerState:
     half_open_probe_since: float = 0.0
 
 
+def _safe_float(val: Any, default: float, min_val: float = 0.0) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        f = float(val)
+        if not math.isfinite(f):
+            return default
+        return max(min_val, f)
+    except (ValueError, TypeError):
+        return default
+
+
+def _safe_int(val: Any, default: int, min_val: int = 0) -> int:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        if isinstance(val, float) and not math.isfinite(val):
+            return default
+        i = int(val)
+        return max(min_val, i)
+    except (ValueError, TypeError, OverflowError):
+        return default
+
+
 class CircuitBreakerRegistry:
     """Small per-resource circuit breaker used around fragile local runtimes.
 
@@ -36,6 +61,19 @@ class CircuitBreakerRegistry:
     """
 
     def __init__(self, failure_threshold: int = 3, cooldown_seconds: float = 20.0, probe_timeout_seconds: float = 30.0, max_breakers: int = 256):
+        if isinstance(failure_threshold, bool) or not isinstance(failure_threshold, int) or failure_threshold < 1:
+            raise ValueError("failure_threshold must be a positive integer")
+        if isinstance(max_breakers, bool) or not isinstance(max_breakers, int) or not 1 <= max_breakers <= 4096:
+            raise ValueError("max_breakers must be an integer between 1 and 4096")
+        for name, value in (("cooldown_seconds", cooldown_seconds), ("probe_timeout_seconds", probe_timeout_seconds)):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"{name} must be finite and non-negative")
+            try:
+                finite_value = float(value)
+            except OverflowError as exc:
+                raise ValueError(f"{name} must be finite and non-negative") from exc
+            if not math.isfinite(finite_value) or finite_value < 0:
+                raise ValueError(f"{name} must be finite and non-negative")
         self.failure_threshold = max(1, int(failure_threshold))
         self.cooldown_seconds = max(0.01, float(cooldown_seconds))
         self.probe_timeout_seconds = max(0.01, float(probe_timeout_seconds))

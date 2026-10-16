@@ -18,11 +18,9 @@ class CooperativePriorityGate:
     """
 
     def __init__(self, foreground_priority: int = 3):
-        try:
-            fp = int(foreground_priority)
-        except (TypeError, ValueError, OverflowError):
-            fp = 3
-        self.foreground_priority = fp
+        if isinstance(foreground_priority, bool) or not isinstance(foreground_priority, int):
+            raise ValueError("foreground_priority must be an integer")
+        self.foreground_priority = foreground_priority
         self._cond = threading.Condition()
         self._active = False
         self._foreground_waiters = 0
@@ -34,6 +32,8 @@ class CooperativePriorityGate:
 
     @contextmanager
     def slot(self, priority: int, timeout: float = 120.0) -> Iterator[None]:
+        if isinstance(priority, bool) or not isinstance(priority, int):
+            raise ValueError("priority must be an integer")
         if isinstance(timeout, bool) or not isinstance(timeout, Real):
             raise ValueError("timeout must be a finite non-negative real number")
         try:
@@ -42,7 +42,7 @@ class CooperativePriorityGate:
             raise ValueError("timeout must be a finite non-negative real number") from None
         if not math.isfinite(timeout_seconds) or timeout_seconds < 0:
             raise ValueError("timeout must be a finite non-negative real number")
-        foreground = int(priority or 0) >= self.foreground_priority
+        foreground = priority >= self.foreground_priority
         deadline = time.monotonic() + timeout_seconds
         with self._cond:
             if foreground:
@@ -66,11 +66,9 @@ class CooperativePriorityGate:
 
     def try_acquire(self, priority: int = 0) -> bool:
         """Attempt non-blocking acquire of the gate slot. Return True if acquired."""
-        try:
-            p_val = int(priority)
-        except (TypeError, ValueError, OverflowError):
-            p_val = 0
-        foreground = p_val >= self.foreground_priority
+        if isinstance(priority, bool) or not isinstance(priority, int):
+            raise ValueError("priority must be an integer")
+        foreground = priority >= self.foreground_priority
         with self._cond:
             if self._active or (not foreground and self._foreground_waiters > 0):
                 return False

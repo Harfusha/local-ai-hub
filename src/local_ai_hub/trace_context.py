@@ -15,6 +15,8 @@ _efficiency_metadata: ContextVar[dict[str, Any] | None] = ContextVar("local_ai_t
 def _sanitize_ident(value: Any, limit: int = 256) -> str:
     if value is None:
         return ""
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
+        raise ValueError("metadata limit must be a non-negative integer")
     text = value if isinstance(value, str) else str(value)
     return "".join(char for char in text if char >= " " and char != "\x7f").strip()[:limit]
 
@@ -94,7 +96,7 @@ def set_metadata(metadata: Mapping[str, Any] | None = None, **fields: Any) -> To
     """Set payload-free token metadata for the current request context."""
     from .token_accounting import token_efficiency_metadata
 
-    value = dict(metadata or {})
+    value = dict(metadata) if isinstance(metadata, Mapping) else {}
     value.update(fields)
     return _efficiency_metadata.set(token_efficiency_metadata(value))
 
@@ -120,6 +122,30 @@ def scoped_metadata(metadata: Mapping[str, Any] | None = None, **fields: Any) ->
 def efficiency_metadata() -> dict[str, Any]:
     metadata = _efficiency_metadata.get()
     return dict(metadata) if metadata is not None else {}
+
+
+def has_context() -> bool:
+    return bool(_request_id.get() or _trace_id.get())
+
+
+def is_trace_active() -> bool:
+    return bool(_trace_id.get())
+
+
+def current_request_id() -> str:
+    return _request_id.get()
+
+
+def current_trace_id() -> str:
+    return _trace_id.get()
+
+
+def current_agent() -> str:
+    return _agent.get()
+
+
+def current_tenant() -> str:
+    return _tenant.get()
 
 
 def current() -> dict[str, Any]:

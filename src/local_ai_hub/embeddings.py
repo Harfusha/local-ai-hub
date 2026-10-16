@@ -17,42 +17,59 @@ from .json_utils import dumps as json_dumps
 from .model_lifecycle import acquire_locks, load_model, release_model, uses_torch_cuda
 
 
+def _safe_int(val: Any, default: int, min_val: int = 0) -> int:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        if isinstance(val, float) and not math.isfinite(val):
+            return default
+        i = int(val)
+        return max(min_val, i)
+    except (ValueError, TypeError, OverflowError):
+        return default
+
+
 class EmbeddingModel:
     """Lazy local embeddings with GPU acceleration, CPU fallback and cross-workspace persistent cache."""
 
     def __init__(self, config: dict[str, Any]):
-        self.config = config
-        models = config.get("models", {})
-        self.model_name = models.get("embedding", "qwen3-embedding:0.6b")
-        self.device = str(models.get("embedding_device", "cpu")).strip() or "cpu"
-        self.backend = str(models.get("embedding_backend", "auto")).strip().lower()
+        cfg = config if isinstance(config, dict) else {}
+        self.config = cfg
+        models = cfg.get("models") if isinstance(cfg.get("models"), dict) else {}
+        server_cfg = cfg.get("server") if isinstance(cfg.get("server"), dict) else {}
+        features_cfg = cfg.get("features") if isinstance(cfg.get("features"), dict) else {}
+        cpu_cfg = cfg.get("cpu_retrieval") if isinstance(cfg.get("cpu_retrieval"), dict) else {}
+        cache_cfg = cfg.get("cache") if isinstance(cfg.get("cache"), dict) else {}
+
+        raw_model = models.get("embedding", "qwen3-embedding:0.6b")
+        self.model_name = str(raw_model or "qwen3-embedding:0.6b").replace("\x00", "").strip() or "qwen3-embedding:0.6b"
+        self.device = str(models.get("embedding_device", "cpu")).replace("\x00", "").strip() or "cpu"
+        self.backend = str(models.get("embedding_backend", "auto")).replace("\x00", "").strip().lower() or "auto"
         self.active_backend: str | None = None
         self.active_device: str | None = None
         self._st_candidates: list[tuple[str, str]] | None = None
         self._st_candidate_index = -1
-        self.ollama_url = str(config.get("server", {}).get("ollama_url", "http://127.0.0.1:11434")).rstrip("/")
-        self.enabled = bool(config.get("features", {}).get("rag", True))
-        cpu_cfg = config.get("cpu_retrieval", {})
+        self.ollama_url = str(server_cfg.get("ollama_url", "http://127.0.0.1:11434")).replace("\x00", "").rstrip("/")
+        self.enabled = bool(features_cfg.get("rag", True))
         self.trust_remote_code = bool(cpu_cfg.get("embedding_trust_remote_code", False))
-        self.max_seq_length = max(128, int(cpu_cfg.get("embedding_max_seq_length", 8192)))
-        self.batch_size = max(1, int(cpu_cfg.get("embedding_batch_size", 32)))
+        self.max_seq_length = _safe_int(cpu_cfg.get("embedding_max_seq_length"), 8192, 128)
+        self.batch_size = _safe_int(cpu_cfg.get("embedding_batch_size"), 32, 1)
         self._model = None
         self._load_lock = threading.Lock()
-        self._cpu_gate = CooperativePriorityGate(int(cpu_cfg.get("foreground_priority", 3)))
+        self._cpu_gate = CooperativePriorityGate(_safe_int(cpu_cfg.get("foreground_priority"), 3))
         self._load_error: str | None = None
         self._load_error_time: float = 0.0
         self.flight_group = SingleFlightGroup(shards=16, default_timeout_seconds=90.0)
-        cache_cfg = config.get("cache", {})
-        state_dir = configured_state_dir(config)
+        state_dir = configured_state_dir(cfg)
         self.cache = TieredCache(
             SQLiteCache(
                 state_dir / "cache.sqlite",
                 namespace="embeddings",
-                ttl_seconds=int(cache_cfg.get("embedding_ttl_seconds", 30 * 86400)),
-                max_entries=int(cache_cfg.get("embedding_max_entries", 100_000)),
+                ttl_seconds=_safe_int(cache_cfg.get("embedding_ttl_seconds"), 30 * 86400),
+                max_entries=_safe_int(cache_cfg.get("embedding_max_entries"), 100_000),
             ),
-            l1_entries=int(cache_cfg.get("l1_embedding_entries", 4096)),
-            l1_ttl_seconds=int(cache_cfg.get("l1_embedding_ttl_seconds", 3600)),
+            l1_entries=_safe_int(cache_cfg.get("l1_embedding_entries"), 4096),
+            l1_ttl_seconds=_safe_int(cache_cfg.get("l1_embedding_ttl_seconds"), 3600),
         )
         self.cache_enabled = bool(cache_cfg.get("embeddings", True))
         self._memory_hits = 0
@@ -313,7 +330,9 @@ class EmbeddingModel:
             return [("sentence-transformers", "cpu")]
         if self.backend == "openvino":
             candidates = [("openvino", device) for device in openvino_device_candidates(self.config, self.device)]
-            if bool(self.config.get("openvino", {}).get("cpu_fallback", True)):
+            openvino_cfg = self.config.get("openvino") if isinstance(self.config, dict) else None
+            cpu_fallback = bool(openvino_cfg.get("cpu_fallback", True)) if isinstance(openvino_cfg, dict) else True
+            if cpu_fallback:
                 candidates.append(("sentence-transformers", "cpu"))
             # Keep order stable while removing duplicate logical devices.
             deduped: list[tuple[str, str]] = []
