@@ -223,29 +223,6 @@ def test_post_caps_path_hints_and_drops_unlisted_fields(tmp_path, monkeypatch):
     assert all("private" not in record for record in records)
 
 
-def test_post_forwards_path_hints_to_search_only(tmp_path, monkeypatch):
-    client = _client(tmp_path)
-    calls = []
-
-    def capture_request(path, payload, **_kwargs):
-        calls.append((path, payload))
-        return {"success": True}
-
-    monkeypatch.setattr(client, "request", capture_request)
-    hints = ({"path": "src/app.py", "purpose": "implementation", "scope": "repository"},)
-
-    client.post("/api/search", {"query": "needle"}, path_hints=hints)
-    client.post("/api/command", {"command": "pytest"}, path_hints=hints)
-
-    assert calls == [
-        (
-            "/api/search",
-            {"query": "needle", "path_hints": list(hints)},
-        ),
-        ("/api/command", {"command": "pytest"}),
-    ]
-
-
 def test_post_sanitizes_embedded_path_hints_and_drops_unsupported_routes(
     tmp_path, monkeypatch
 ):
