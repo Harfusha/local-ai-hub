@@ -563,6 +563,7 @@ def _budget_rejection(
     for key in (
         "status", "status_code", "terminal", "retryable", "outcome_unknown",
         "request_not_sent", "in_progress", "timed_out", "exit_code",
+        "mutation_applied", "operation_not_started",
         "request_id", "execution_id",
     ):
         if key not in preserved:
@@ -592,7 +593,7 @@ def _budget_rejection(
 
     decision_keys = (
         "terminal", "retryable", "outcome_unknown", "request_not_sent",
-        "in_progress", "timed_out",
+        "in_progress", "timed_out", "mutation_applied", "operation_not_started",
     )
     protocol_variants = [protocol]
     without_evidence = {key: item for key, item in protocol.items() if key not in {"evidence_ids", "evidence_id"}}

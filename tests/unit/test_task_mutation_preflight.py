@@ -453,7 +453,7 @@ def test_prepared_worktree_plan_is_read_only_and_bound_to_create_request(tmp_pat
     )
 
     assert len(git_reads) == 1
-    assert "worktree" not in " ".join(git_reads[0][0])
+    assert "worktree" not in git_reads[0][0]
     rejected = process_utils.create_git_worktree(
         repo, branch_name="hub/task-prepared", task_id="prepared", owner="other-agent",
         created_at=1000.0, ttl_seconds=3600.0, expires_at=4600.0, prepared_plan=plan,
