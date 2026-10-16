@@ -326,6 +326,7 @@ class RepositoryTools:
                     except (OSError, ValueError):
                         pass
 
+            inventory_deadline = time.monotonic() + self.git_files_timeout
             timer = threading.Timer(self.git_files_timeout, kill_on_timeout)
             timer.daemon = True
             timer.start()
@@ -384,7 +385,7 @@ class RepositoryTools:
                 consider(bytes(pending))
             if truncated:
                 terminate_tree(process.pid, grace_seconds=0.1, process_handle=process)
-            return_code = process.wait()
+            return_code = process.wait(timeout=max(0.001, inventory_deadline - time.monotonic()))
             if timed_out.is_set() or (return_code != 0 and not truncated):
                 if timed_out.is_set():
                     with self._git_files_lock:
@@ -403,8 +404,10 @@ class RepositoryTools:
                             self._git_files_cache.pop(cache_key, None)
                 self._git_files_slow_until.pop(key, None)
             return inventory
-        except OSError:
+        except (OSError, subprocess.TimeoutExpired) as exc:
             with self._git_files_lock:
+                if isinstance(exc, subprocess.TimeoutExpired):
+                    self._git_stats["file_list_timeouts"] += 1
                 self._git_files_slow_until[key] = time.monotonic() + self.git_files_slow_cooldown
             return None
         finally:
@@ -1612,6 +1615,7 @@ class RepositoryTools:
                         except (OSError, ValueError):
                             pass
 
+                inventory_deadline = time.monotonic() + self.git_files_timeout
                 timer = threading.Timer(self.git_files_timeout, stop_git)
                 timer.daemon = True
                 timer.start()
@@ -1649,7 +1653,10 @@ class RepositoryTools:
                             remember_path(raw)
                     if pending:
                         remember_path(bytes(pending))
-                    return_code = process.wait()
+                    try:
+                        return_code = process.wait(timeout=max(0.001, inventory_deadline - time.monotonic()))
+                    except subprocess.TimeoutExpired as exc:
+                        raise TimeoutError("exact Git inventory exceeded its configured time bound") from exc
                     if timed_out.is_set():
                         raise TimeoutError("exact Git inventory exceeded its configured time bound")
                     if return_code != 0:
@@ -1663,9 +1670,16 @@ class RepositoryTools:
                         yield base / relative
                 finally:
                     timer.cancel()
-                    if process.poll() is None:
-                        terminate_tree(process.pid, grace_seconds=0.1, process_handle=process)
-                        process.wait()
+                    try:
+                        if process.poll() is None:
+                            terminate_tree(process.pid, grace_seconds=0.1, process_handle=process)
+                            try:
+                                process.wait(timeout=1.0)
+                            except subprocess.TimeoutExpired as exc:
+                                raise TimeoutError("exact Git inventory process cleanup did not finish") from exc
+                    finally:
+                        if process.stdout is not None:
+                            process.stdout.close()
                 return
 
             # Exact mode does not consume an unchecked cached inventory. The Git

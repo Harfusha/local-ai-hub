@@ -9,6 +9,7 @@ import pytest
 
 from local_ai_hub import process_utils
 from local_ai_hub.services import LocalAIServices
+from whisper_fixture_support import _verified_whisper_cache
 
 
 class _FakeProcess:
@@ -16,17 +17,10 @@ class _FakeProcess:
     returncode = None
 
     def __init__(self, cancel_event: threading.Event) -> None:
-        self.stdout = io.BytesIO()
-        self.stderr = io.BytesIO()
+        self.stdout = io.BytesIO(b"partial")
+        self.stderr = io.BytesIO(b"err")
         self.cancel_event = cancel_event
         self.first = True
-
-    def communicate(self, input=None, timeout=None):
-        if self.first:
-            self.first = False
-            self.cancel_event.set()
-            raise subprocess.TimeoutExpired(["whisper"], timeout, output=b"partial", stderr=b"err")
-        return b"partial", b"err"
 
     def kill(self) -> None:
         self.returncode = -9
@@ -35,6 +29,10 @@ class _FakeProcess:
         return self.returncode
 
     def wait(self, timeout=None):
+        if self.first:
+            self.first = False
+            self.cancel_event.set()
+            raise subprocess.TimeoutExpired(["whisper"], timeout)
         return self.returncode
 
 
@@ -70,6 +68,7 @@ def test_run_hidden_cancellation_terminates_tree_and_drains_output(monkeypatch):
     assert process.returncode == -9
     assert raised.value.output == b"partial"
     assert raised.value.stderr == b"err"
+    assert process.stdout.closed and process.stderr.closed
 
 
 def test_transcribe_reports_cancellation_after_owned_output_cleanup(
@@ -79,7 +78,6 @@ def test_transcribe_reports_cancellation_after_owned_output_cleanup(
     audio.write_bytes(b"test audio")
     output_directories: list[Path] = []
     cancel_event = threading.Event()
-    cancel_event.set()
 
     def cancelled_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         output_dir = Path(args[args.index("--output_dir") + 1])
@@ -88,16 +86,20 @@ def test_transcribe_reports_cancellation_after_owned_output_cleanup(
         partial_output = output_dir / "sample.json"
         partial_output.write_text('{"text": "partial"}', encoding="utf-8")
         assert kwargs["cancel_event"] is cancel_event
+        cancel_event.set()
         raise process_utils.ProcessCancelledError(args)
 
     monkeypatch.setattr("local_ai_hub.services.shutil.which", lambda _name: "whisper-cli")
     monkeypatch.setattr(process_utils, "run_hidden", cancelled_run)
-    result = object.__new__(LocalAIServices).transcribe(
+    service = object.__new__(LocalAIServices)
+    service.config = {"transcription": {"allow_model_downloads": False, "device": "cpu"}}
+    result = service.transcribe(
         {"audio": str(audio)}, "task-17", cancel_event=cancel_event
     )
 
     assert result["success"] is False
     assert result["reason"] == "cancelled"
     assert result["cancelled"] is True
+    assert cancel_event.is_set()
     assert output_directories
     assert not output_directories[0].exists()
