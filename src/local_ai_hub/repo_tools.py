@@ -68,6 +68,8 @@ def is_root_archive_path(relative: str | Path) -> bool:
         return True
     if len(parts) > 1 and parts[0] == "artifacts":
         artifact_name = parts[1]
+        if artifact_name == "generated.py" or artifact_name.startswith("generated"):
+            return True
         if re.fullmatch(r"t\d+-.+", artifact_name) and (
             parts[2:4] == ("src", "local_ai_hub")
             or parts[2:3] in {("tests",), ("tools",)}
@@ -206,7 +208,7 @@ class RepositoryTools:
             "vendor", "dist", "build", "bin", "obj", "coverage", ".next", ".cache",
             "library", "temp", "logs", "usersettings", "packagestore", "memorycaptures", "builds",
             ".serena", ".local-ai-hub", ".codegraphcontext", ".handoff",
-            ".t03-main-preflight-overlay", ".system_generated", ".validation",
+            ".t03-main-preflight-overlay", ".system_generated",
             ".pytest_cache", ".mypy_cache", ".ruff_cache",
         }
         self.ignore_dirs = {str(name).lower() for name in rag.get("ignore_dirs", [])} | default_ignore_dirs
