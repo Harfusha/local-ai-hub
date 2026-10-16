@@ -1,10 +1,52 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+import math
 from typing import Any
 
 
 _MODES = {"sync", "async", "auto"}
 _MIN_AUTO_SAMPLES = 10
+
+
+def _safe_nonnegative_float(value: Any) -> float:
+    if value is None or isinstance(value, bool):
+        return 0.0
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    if not math.isfinite(parsed) or parsed < 0.0:
+        return 0.0
+    return parsed
+
+
+def _safe_nonnegative_int(value: Any) -> int:
+    if value is None or isinstance(value, bool):
+        return 0
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def is_valid_delivery_mode(value: object) -> bool:
+    if isinstance(value, bool) or not isinstance(value, str):
+        return False
+    mode = value.replace("\x00", "").strip().lower()
+    return mode in _MODES
+
+
+def is_async_delivery(decision: Mapping[str, Any] | object) -> bool:
+    if not isinstance(decision, Mapping):
+        return False
+    return str(decision.get("mode") or "").strip().lower() == "async"
+
+
+def is_bypass_delivery(decision: Mapping[str, Any] | object) -> bool:
+    if not isinstance(decision, Mapping):
+        return False
+    return str(decision.get("mode") or "").strip().lower() == "bypass"
 
 
 def decide_delivery(
@@ -17,13 +59,15 @@ def decide_delivery(
     max_queue_age_ms: float = 0.0,
 ) -> dict[str, Any]:
     """Choose foreground or durable delivery without guessing on sparse history."""
-    mode = str(delivery or "sync").strip().lower()
+    if isinstance(delivery, bool):
+        raise ValueError("delivery must be sync, async, or auto")
+    mode = str(delivery or "sync").replace("\x00", "").strip().lower() or "sync"
     if mode not in _MODES:
         raise ValueError("delivery must be sync, async, or auto")
-    p95 = max(0.0, float(observed_p95_ms or 0.0))
-    count = max(0, int(samples or 0))
-    queue_age = max(0.0, float(queue_age_ms or 0.0))
-    queue_limit = max(0.0, float(max_queue_age_ms or 0.0))
+    p95 = _safe_nonnegative_float(observed_p95_ms)
+    count = _safe_nonnegative_int(samples)
+    queue_age = _safe_nonnegative_float(queue_age_ms)
+    queue_limit = _safe_nonnegative_float(max_queue_age_ms)
 
     def finish(result: dict[str, Any]) -> dict[str, Any]:
         if queue_age or queue_limit:
@@ -43,7 +87,7 @@ def decide_delivery(
             "queue_age_ms": queue_age,
             "max_queue_age_ms": queue_limit,
         })
-    budget = max(0.0, float(latency_budget_ms or 0.0))
+    budget = _safe_nonnegative_float(latency_budget_ms)
     if budget <= 0:
         return finish({"mode": "sync", "reason": "latency_budget_not_provided", "observed_p95_ms": p95, "samples": count})
     if count < _MIN_AUTO_SAMPLES:
