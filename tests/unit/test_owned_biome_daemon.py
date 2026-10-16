@@ -312,7 +312,7 @@ def test_verified_client_session_reuses_pipe_and_versions_documents(tmp_path, mo
         return pipe
 
     monkeypatch.setattr(biome, "_windows_pipe", connect)
-    monkeypatch.setattr(biome, "_read", lambda pipe: pipe.incoming.get(timeout=2))
+    monkeypatch.setattr(biome, "_read", lambda pipe, **_kwargs: pipe.incoming.get(timeout=2))
     monkeypatch.setattr(biome, "terminate_tree", lambda *args, **kwargs: True)
     path = tmp_path / "app.ts"
     path.write_text("const answer = 42;\n", encoding="utf-8")

@@ -118,22 +118,29 @@ def _read_source_snapshot(candidate: Path, root: Path) -> tuple[Path, str]:
     target.relative_to(root)
     if not target.is_file():
         raise ValueError("Biome source path must name a regular file")
+    path_before = target.stat()
     flags = (os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NONBLOCK", 0)
              | getattr(os, "O_NOFOLLOW", 0))
     descriptor = os.open(target, flags)
     with os.fdopen(descriptor, "rb") as source:
         before = os.fstat(source.fileno())
         if not stat.S_ISREG(before.st_mode) or before.st_size > 2_000_000:
-            raise ValueError("Biome source must be a regular file within the 2 MB bound")
+            raise ValueError("Biome source must be a regular file within the 2 MB source budget bound")
         data = source.read(2_000_001)
         after = os.fstat(source.fileno())
     if len(data) > 2_000_000 or b"\x00" in data:
-        raise ValueError("Biome source is binary or exceeds the 2 MB bound")
+        raise ValueError("Biome source is binary or exceeds the 2 MB source budget bound")
     current_target = candidate.resolve(strict=True)
     current_target.relative_to(root)
     current = current_target.stat()
     identity = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
-    if current_target != target or identity(before) != identity(after) or identity(after) != identity(current):
+    same_file_identity = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns)
+    if (
+        current_target != target
+        or identity(path_before) != identity(current)
+        or identity(before) != identity(after)
+        or same_file_identity(path_before) != same_file_identity(before)
+    ):
         raise ValueError("Biome source changed while reading")
     return target, data.decode("utf-8", errors="strict")
 
