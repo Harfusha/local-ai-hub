@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from local_ai_hub.agent_tasks import CompletionGateError, GoalContract, TaskCheckpoint, TaskStore
-from local_ai_hub.agent_verification import CompletionResult
+from local_ai_hub.agent_verification import CompletionResult, VerificationReceipt
 from local_ai_hub.verification_rules import complete_task_with_project_rules
 
 
@@ -55,7 +55,13 @@ def test_completion_rejects_invalid_checkpoint_after_receipt_verification(tmp_pa
             # projection changes before the real completion fence rereads it.
             tasks.receipts_checked = True
             tasks.task = current
-            return CompletionResult(key, True, (), (), (), ())
+            receipt = VerificationReceipt(
+                receipt_id="checkpoint-tests", task_id=key, criterion="tests",
+                owner="owner", evidence_id="checkpoint-test-evidence",
+                repository_revision="rev-1", mutation_generation=1,
+                passed=True,
+            )
+            return CompletionResult(key, True, ("tests",), (), (), (receipt,))
 
     with pytest.raises(CompletionGateError):
         complete_task_with_project_rules(

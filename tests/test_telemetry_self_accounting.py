@@ -48,13 +48,20 @@ def test_queue_full_does_not_publish_rejected_event_to_live_feed():
     store._queue = queue.Queue(maxsize=1)
     store._queue.put_nowait(("occupied", {}))
     store._stats_lock = threading.Lock()
-    store._stats = {"queued": 0, "processed": 0, "written": 0, "dropped": 0, "writer_errors": 0, "batches": 0}
+    store._stats = {
+        "queued": 0, "processed": 0, "written": 0, "dropped": 0,
+        "writer_errors": 0, "batches": 0, "attempted": 0, "accepted": 0,
+        "rejected_overflow": 0, "lost_after_acceptance": 0,
+    }
     store._live_lock = threading.Lock()
     store._live_events = []
     store._live_seq = 0
 
     assert store._enqueue("http", {"action": "/api/test", "success": True}) is False
     assert store.live()["events"] == []
+    assert store._stats["attempted"] == 1
+    assert store._stats["accepted"] == 0
+    assert store._stats["rejected_overflow"] == 1
 
 
 def test_concurrent_queue_acceptance_keeps_live_feed_in_queue_order():
@@ -62,7 +69,11 @@ def test_concurrent_queue_acceptance_keeps_live_feed_in_queue_order():
     store.enabled = True
     store._queue = queue.Queue()
     store._stats_lock = threading.Lock()
-    store._stats = {"queued": 0, "processed": 0, "written": 0, "dropped": 0, "writer_errors": 0, "batches": 0}
+    store._stats = {
+        "queued": 0, "processed": 0, "written": 0, "dropped": 0,
+        "writer_errors": 0, "batches": 0, "attempted": 0, "accepted": 0,
+        "rejected_overflow": 0, "lost_after_acceptance": 0,
+    }
     store._live_lock = threading.Lock()
     store._live_events = []
     store._live_seq = 0
@@ -75,29 +86,45 @@ def test_concurrent_queue_acceptance_keeps_live_feed_in_queue_order():
     def delayed_publish(kind, payload):
         if payload["action"] == "event-1":
             first_publish_entered.set()
-            assert release_first.wait(1.0)
+            assert release_first.wait(5.0)
         publish(kind, payload)
         if payload["action"] == "event-2":
             second_publish_entered.set()
 
     store._publish_live = delayed_publish
     outcomes = []
-    first = threading.Thread(target=lambda: outcomes.append(store._enqueue("http", {"action": "event-1"})))
-    second = threading.Thread(target=lambda: (second_started.set(), outcomes.append(store._enqueue("http", {"action": "event-2"}))))
+    errors = []
 
-    first.start()
-    assert first_publish_entered.wait(1.0)
-    second.start()
-    assert second_started.wait(1.0)
-    second_published_early = second_publish_entered.wait(0.05)
-    release_first.set()
-    first.join(1.0)
-    second.join(1.0)
+    def enqueue(action):
+        try:
+            if action == "event-2":
+                second_started.set()
+            outcomes.append(store._enqueue("http", {"action": action}))
+        except Exception as exc:
+            errors.append(exc)
+
+    first = threading.Thread(target=enqueue, args=("event-1",))
+    second = threading.Thread(target=enqueue, args=("event-2",))
+    try:
+        first.start()
+        assert first_publish_entered.wait(1.0), errors
+        second.start()
+        assert second_started.wait(1.0), errors
+        second_published_early = second_publish_entered.wait(0.05)
+    finally:
+        release_first.set()
+        for worker in (first, second):
+            if worker.ident is not None:
+                worker.join(2.0)
+
+    assert not errors
 
     queued_actions = [store._queue.get_nowait()[1]["action"] for _ in range(store._queue.qsize())]
     live_actions = [event["action"] for event in store.live()["events"]]
     assert not first.is_alive() and not second.is_alive()
     assert second_published_early is False
     assert outcomes == [True, True]
+    assert store._stats["attempted"] == store._stats["accepted"] == 2
+    assert store._stats["rejected_overflow"] == 0
     assert queued_actions == ["event-1", "event-2"]
     assert live_actions == queued_actions

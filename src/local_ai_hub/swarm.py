@@ -896,7 +896,6 @@ class SwarmCoordinator:
             steps,
             worktree_path=worktree_path,
             max_workers=max_workers,
-            coordinator=self,
             command_broker=command_broker,
             command_timeout=command_timeout,
             task_id=task_id,
@@ -914,7 +913,6 @@ def execute_swarm_dag(
     *,
     worktree_path: str | Path | None = None,
     max_workers: int = 4,
-    coordinator: Any | None = None,
     command_broker: Any | None = None,
     command_timeout: int = 120,
     task_id: str | None = None,
@@ -928,8 +926,6 @@ def execute_swarm_dag(
     Brokered commands share the optional overall deadline and have bounded
     process timeouts. In-process callbacks cannot be safely preempted or timed
     out and may overrun the deadline; callbacks must cooperate with cancellation.
-    The ``coordinator`` parameter is retained for API compatibility and does
-    not establish command ownership.
     Failure never triggers global filesystem or Git rollback, so completed work
     remains available for inspection and recovery by its owner.
     """
