@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
 import subprocess
@@ -10,6 +11,32 @@ from local_ai_hub.cache import stable_hash
 from local_ai_hub.project_config import PathHint, resolve_project_context
 from local_ai_hub.repo_tools import RepositoryTools
 from local_ai_hub.services import LocalAIServices
+
+
+def _exact_search_page(
+    root: Path,
+    hits: list[dict[str, object]],
+    *,
+    limit: int,
+    offset: int,
+    path_priority: Callable[[str], tuple[int, int, int]] | None = None,
+) -> dict[str, object]:
+    ordered = list(hits)
+    if path_priority is not None:
+        ordered.sort(key=lambda hit: path_priority(str(hit["path"])))
+    page = ordered[offset : offset + limit]
+    return {
+        "success": True,
+        "root": str(root),
+        "results": page,
+        "total_matches": len(ordered),
+        "matches_count": len(ordered),
+        "count_exact": True,
+        "limit": limit,
+        "offset": offset,
+        "has_more": offset + len(page) < len(ordered),
+        "truncated": False,
+    }
 
 
 def test_run_affected_applies_project_mapping_and_path_hints_safely(
@@ -319,7 +346,7 @@ def test_run_affected_compares_selected_tests_with_complete_dependency_graph(
     assert result["dependency_graph_missing_candidates"] == 1
 
 
-def test_repo_search_fallback_filters_unsearchable_extensions(
+def test_repo_search_fails_closed_when_exact_page_includes_unsearchable_extension(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: None)
@@ -335,14 +362,15 @@ def test_repo_search_fallback_filters_unsearchable_extensions(
     monkeypatch.setattr(
         tools,
         "search",
-        lambda *_args, **_kwargs: {
-            "success": True,
-            "root": str(tmp_path),
-            "results": [
+        lambda _root, _query, *, limit, offset, **_kwargs: _exact_search_page(
+            tmp_path,
+            [
                 {"path": "src/main.py", "start_line": 1, "text": "needle"},
                 {"path": "src/preview.png", "start_line": 1, "text": "needle"},
             ],
-        },
+            limit=limit,
+            offset=offset,
+        ),
     )
 
     services = LocalAIServices.__new__(LocalAIServices)
@@ -371,7 +399,10 @@ def test_repo_search_fallback_filters_unsearchable_extensions(
         ],
     )
 
-    assert [hit["path"] for hit in result["results"]] == ["src/main.py"]
+    assert result["success"] is False
+    assert result["status_code"] == 503
+    assert result["error"] == "repository search filters disagreed while materializing the exact page"
+    assert result.get("results", []) == []
 
 
 def test_repo_search_prioritizes_verified_project_path_hint_without_narrowing(
@@ -403,22 +434,21 @@ def test_repo_search_prioritizes_verified_project_path_hint_without_narrowing(
             return compute(), False, False
 
     class Tools:
-        observed_paths: list[str] = []
         ignore_dirs: set[str] = set()
         ignore_extensions: set[str] = set()
         extensions: set[str] = set()
         special_filenames: set[str] = set()
         max_file_bytes = 2_000_000
 
-        def _git_files(self, _root):
-            return [tmp_path / "templates" / "element" / "button.php"]
-
-        def search(self, *_args, **_kwargs):
-            return {"success": True, "results": []}
-
-        def search_paths(self, _root, query, paths, top_k, context_lines=None, **_kwargs):
-            self.observed_paths = list(paths)
-            return {"success": True, "results": [{"path": path} for path in paths[:top_k]]}
+        def search(self, root, _query, *, limit, offset, path_priority=None, **_kwargs):
+            hits = [
+                {"path": "templates/element/button.php", "start_line": 1},
+                {"path": "src/button.py", "start_line": 1},
+            ]
+            return _exact_search_page(
+                Path(root), hits, limit=limit, offset=offset,
+                path_priority=path_priority,
+            )
 
     services = LocalAIServices.__new__(LocalAIServices)
     services.config = {"server": {"state_dir": str(state_dir)}, "features": {}}
@@ -436,7 +466,7 @@ def test_repo_search_prioritizes_verified_project_path_hint_without_narrowing(
 
     result = services.repo_search(str(tmp_path), "button", top_k=10)
 
-    assert services.repo_tools.observed_paths == [
+    assert [item["path"] for item in result["results"]] == [
         "templates/element/button.php", "src/button.py"
     ]
     assert {item["path"] for item in result["results"]} == {
@@ -528,24 +558,26 @@ def test_repo_search_keeps_full_original_candidate_window_when_adding_hints(
             return compute(), False, False
 
     class Tools:
-        observed_paths: list[str] = []
         ignore_dirs: set[str] = set()
         ignore_extensions: set[str] = set()
         extensions: set[str] = set()
         special_filenames: set[str] = set()
         max_file_bytes = 2_000_000
 
-        def _git_files(self, _root):
-            return [hinted_dir / "button.php"]
-
-        def search(self, *_args, **_kwargs):
-            return {"success": True, "results": []}
-
-        def search_paths(self, _root, _query, paths, _top_k, context_lines=None, **_kwargs):
-            self.observed_paths = list(paths)
-            return {"success": True, "results": []}
+        def search(self, root, _query, *, limit, offset, path_priority=None, **_kwargs):
+            hits = [
+                {"path": "templates/button.php", "start_line": 1},
+                *({"path": path, "start_line": 1} for path in original_paths),
+            ]
+            return _exact_search_page(
+                Path(root), hits, limit=limit, offset=offset,
+                path_priority=path_priority,
+            )
 
     original_paths = [f"src/file_{index:02}.py" for index in range(64)]
+    (tmp_path / "src").mkdir()
+    for relative in original_paths:
+        (tmp_path / relative).write_text("button", encoding="utf-8")
     services = LocalAIServices.__new__(LocalAIServices)
     services.config = {"server": {"state_dir": str(state_dir)}, "features": {}}
     services.repo_flight = Flight()
@@ -560,10 +592,13 @@ def test_repo_search_keeps_full_original_candidate_window_when_adding_hints(
     )
     services.code_index = services.preprocessor = services.evidence_store = None
 
-    services.repo_search(str(tmp_path), "button", top_k=200)
+    result = services.repo_search(str(tmp_path), "button", top_k=200)
 
-    assert services.repo_tools.observed_paths[0] == "templates/button.php"
-    assert set(services.repo_tools.observed_paths[1:]) == set(original_paths)
+    assert [item["path"] for item in result["results"][:2]] == [
+        "templates/button.php", original_paths[0],
+    ]
+    assert {item["path"] for item in result["results"][1:]} == set(original_paths)
+    assert len(result["results"]) == len(original_paths) + 1
 
 
 def test_repo_search_hint_hit_does_not_skip_broader_results(
@@ -605,34 +640,26 @@ def test_repo_search_hint_hit_does_not_skip_broader_results(
         max_file_bytes = 2_000_000
         broad_search_calls = 0
 
-        def _git_files(self, _root):
-            return [hinted_file, original_file, broader_file]
-
-        def search(self, *_args, **_kwargs):
+        def search(self, root, _query, *, limit, offset, path_priority=None, **_kwargs):
             self.broad_search_calls += 1
-            return {
-                "success": True,
-                "results": [
+            return _exact_search_page(
+                Path(root),
+                [
+                    {
+                        "path": "templates/element/button.php",
+                        "start_line": 1,
+                        "score": 5.0,
+                    },
                     {
                         "path": "src/discovered.py",
                         "start_line": 1,
                         "score": 8.0,
                     }
                 ],
-            }
-
-        def search_paths(self, _root, _query, paths, _top_k, context_lines=None, **_kwargs):
-            self.targeted_paths = list(paths)
-            return {
-                "success": True,
-                "results": [
-                    {
-                        "path": "templates/element/button.php",
-                        "start_line": 1,
-                        "score": 5.0,
-                    }
-                ],
-            }
+                limit=limit,
+                offset=offset,
+                path_priority=path_priority,
+            )
 
     services = LocalAIServices.__new__(LocalAIServices)
     services.config = {"server": {"state_dir": str(state_dir)}, "features": {}}
@@ -650,11 +677,9 @@ def test_repo_search_hint_hit_does_not_skip_broader_results(
 
     result = services.repo_search(str(tmp_path), "button", top_k=10)
 
-    assert services.repo_tools.targeted_paths[:2] == [
-        "templates/element/button.php",
-        "src/indexed.py",
+    assert [item["path"] for item in result["results"]] == [
+        "templates/element/button.php", "src/discovered.py",
     ]
-    assert "src/discovered.py" not in services.repo_tools.targeted_paths
     assert services.repo_tools.broad_search_calls == 1
     assert {item["path"] for item in result["results"]} == {
         "templates/element/button.php",
@@ -808,7 +833,7 @@ def test_search_paths_declines_git_repo_when_ignore_inventory_unavailable(
     assert result["results"] == []
 
 
-def test_repo_search_propagates_unavailable_git_inventory(
+def test_repo_search_propagates_exact_search_inventory_failure(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: None)
@@ -823,13 +848,13 @@ def test_repo_search_propagates_unavailable_git_inventory(
     tools = RepositoryTools(
         {"server": {"state_dir": str(tmp_path / "runtime")}, "rag": {}, "search": {}}
     )
-    monkeypatch.setattr(tools, "_git_files", lambda _root: None)
     full_search_calls = 0
+    exact_search = tools.search
 
-    def full_search(*_args, **_kwargs):
+    def full_search(*args, **kwargs):
         nonlocal full_search_calls
         full_search_calls += 1
-        return {"success": True, "results": [{"path": "src/match.py"}]}
+        return exact_search(*args, **kwargs)
 
     monkeypatch.setattr(tools, "search", full_search)
     services = LocalAIServices.__new__(LocalAIServices)
@@ -847,9 +872,10 @@ def test_repo_search_propagates_unavailable_git_inventory(
     result = services.repo_search(str(tmp_path), "needle")
 
     assert result["success"] is False
-    assert result["error"] == "git_inventory_unavailable"
+    assert result["status_code"] == 503
+    assert result["error"] == "exact repository search could not enumerate files (OSError)"
     assert result["results"] == []
-    assert full_search_calls == 0
+    assert full_search_calls == 1
 
 
 def test_repo_search_fails_closed_when_project_policy_cannot_load(
@@ -896,7 +922,7 @@ def test_repo_search_fails_closed_when_project_policy_cannot_load(
     assert full_search_calls == 0
 
 
-def test_repo_search_filters_project_excludes_from_full_fallback(
+def test_repo_search_fails_closed_when_exact_page_contains_project_exclude(
     tmp_path: Path, monkeypatch
 ) -> None:
     monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: None)
@@ -918,14 +944,15 @@ def test_repo_search_filters_project_excludes_from_full_fallback(
     monkeypatch.setattr(
         tools,
         "search",
-        lambda *_args, **_kwargs: {
-            "success": True,
-            "root": str(tmp_path),
-            "results": [
+        lambda _root, _query, *, limit, offset, **_kwargs: _exact_search_page(
+            tmp_path,
+            [
                 {"path": "private/match.py", "start_line": 1, "text": "needle"},
                 {"path": "public/match.py", "start_line": 1, "text": "needle"},
             ],
-        },
+            limit=limit,
+            offset=offset,
+        ),
     )
     services = LocalAIServices.__new__(LocalAIServices)
     services.config = {"server": {"state_dir": str(tmp_path / "runtime")}, "features": {}}
@@ -939,7 +966,10 @@ def test_repo_search_filters_project_excludes_from_full_fallback(
 
     result = services.repo_search(str(tmp_path), "needle")
 
-    assert [item["path"] for item in result["results"]] == ["public/match.py"]
+    assert result["success"] is False
+    assert result["status_code"] == 503
+    assert result["error"] == "repository search filters disagreed while materializing the exact page"
+    assert result.get("results", []) == []
 
 
 def test_repo_search_fails_closed_for_invalid_policy_without_index_candidates(
