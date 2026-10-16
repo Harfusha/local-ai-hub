@@ -126,7 +126,7 @@ def _actual_positive(output: Mapping[str, Any]) -> bool:
 
 def evaluate_case(
     task: str,
-    evidence_paths: Iterable[str],
+    evidence_paths: Iterable[str] | None,
     output: Any,
     expected: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -134,7 +134,15 @@ def evaluate_case(
     del task  # Task identity is caller metadata; scoring uses structured values only.
     expected_map = expected if isinstance(expected, Mapping) else {}
     output_map = output if isinstance(output, Mapping) else {}
-    evidence = {_normalise_path(path) for path in evidence_paths}
+    if evidence_paths is None or isinstance(evidence_paths, bool):
+        clean_paths: list[str] = []
+    elif isinstance(evidence_paths, (str, bytes)):
+        clean_paths = [evidence_paths.decode("utf-8", errors="replace") if isinstance(evidence_paths, bytes) else evidence_paths]
+    elif hasattr(evidence_paths, "__iter__"):
+        clean_paths = [str(p) for p in evidence_paths if p and not isinstance(p, bool)]
+    else:
+        clean_paths = []
+    evidence = {_normalise_path(path) for path in clean_paths}
     hallucinated = sorted(
         {_normalise_path(path) for path in _extract_paths(output) if _normalise_path(path) not in evidence}
     )
@@ -201,7 +209,9 @@ def aggregate_metrics(results: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
 def quality_floor_failures(
     metrics: Mapping[str, Any], quality_floor: Mapping[str, float] | None = None
 ) -> list[str]:
-    floor = quality_floor or DEFAULT_QUALITY_FLOOR
+    floor = quality_floor if isinstance(quality_floor, Mapping) else DEFAULT_QUALITY_FLOOR
+    if not isinstance(metrics, Mapping):
+        return list(floor.keys())
     failures: list[str] = []
     for key, threshold in floor.items():
         value = metrics.get(key)
@@ -237,6 +247,8 @@ def promote_candidate(
     quality_floor: Mapping[str, float] | None = None,
 ) -> dict[str, Any]:
     """Return a promotion decision; quality floor is checked before receipt gate."""
+    if not isinstance(candidate, Mapping):
+        return {"status": REJECTED, "reason": "invalid_candidate"}
     payload = dict(candidate)
     metrics = payload.get("metrics", payload)
     failures = quality_floor_failures(metrics, quality_floor)
@@ -245,16 +257,16 @@ def promote_candidate(
             "status": REJECTED,
             "reason": "quality_floor_not_met",
             "failed_metrics": failures,
-            "metrics": dict(metrics),
+            "metrics": dict(metrics) if isinstance(metrics, Mapping) else {},
         }
     receipt = receipt or payload.get("receipt")
     if not _reproducible_receipt(receipt):
         return {
             "status": REJECTED,
             "reason": "evaluation_receipt_required",
-            "metrics": dict(metrics),
+            "metrics": dict(metrics) if isinstance(metrics, Mapping) else {},
         }
-    result = {"status": CHAMPION, "metrics": dict(metrics), "receipt_id": _receipt_id(receipt)}
+    result = {"status": CHAMPION, "metrics": dict(metrics) if isinstance(metrics, Mapping) else {}, "receipt_id": _receipt_id(receipt)}
     if payload.get("candidate_id", payload.get("id")) is not None:
         result["candidate_id"] = payload.get("candidate_id", payload.get("id"))
     return result
@@ -264,7 +276,7 @@ class CandidateRegistry:
     """Small process-local registry for candidate lifecycle decisions."""
 
     def __init__(self, quality_floor: Mapping[str, float] | None = None) -> None:
-        self.quality_floor = dict(quality_floor or DEFAULT_QUALITY_FLOOR)
+        self.quality_floor = dict(quality_floor) if isinstance(quality_floor, Mapping) else dict(DEFAULT_QUALITY_FLOOR)
         self._candidates: dict[str, dict[str, Any]] = {}
 
     def register_candidate(
