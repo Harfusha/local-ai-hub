@@ -1,7 +1,7 @@
 """Shared hard bounds and utilities for public repository search pagination."""
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, TypeVar
 
 T = TypeVar("T")
@@ -74,7 +74,7 @@ def pagination_slice(
 
 
 def paginate_sequence(
-    items: Sequence[T] | None,
+    items: Sequence[T] | Iterable[T] | None,
     limit: object = None,
     offset: object = None,
     default_limit: int = 20,
@@ -82,9 +82,19 @@ def paginate_sequence(
     """Slice items safely with clamped pagination, returning (items, total_count, has_more)."""
     if items is None:
         return [], 0, False
-    total_count = len(items)
+    if not isinstance(items, Sequence):
+        if isinstance(items, Iterable) and not isinstance(items, (str, bytes)):
+            try:
+                seq = list(items)
+            except Exception:
+                return [], 0, False
+        else:
+            return [], 0, False
+    else:
+        seq = items
+    total_count = len(seq)
     lim, off = clamp_pagination(limit, offset, default_limit=default_limit)
-    paged = list(items[off : off + lim])
+    paged = list(seq[off : off + lim])
     has_more = (off + len(paged)) < total_count
     return paged, total_count, has_more
 
@@ -109,12 +119,12 @@ def parse_pagination_mapping(
 
     try:
         lim = int(raw_lim) if raw_lim is not None and not isinstance(raw_lim, bool) else (default_limit if raw_lim is None else raw_lim)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         lim = raw_lim
 
     try:
         off = int(raw_off) if raw_off is not None and not isinstance(raw_off, bool) else (0 if raw_off is None else raw_off)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         off = raw_off
 
     err = pagination_bounds_error(lim, off)
