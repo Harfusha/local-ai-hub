@@ -387,7 +387,10 @@ class RepositoryTools:
                 consider(bytes(pending))
             if truncated:
                 terminate_tree(process.pid, grace_seconds=0.1, process_handle=process)
-            return_code = process.wait(timeout=max(0.001, inventory_deadline - time.monotonic()))
+            try:
+                return_code = process.wait(timeout=max(0.001, inventory_deadline - time.monotonic()))
+            except TypeError:
+                return_code = process.wait()
             if timed_out.is_set() or (return_code != 0 and not truncated):
                 if timed_out.is_set():
                     with self._git_files_lock:

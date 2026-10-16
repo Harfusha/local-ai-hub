@@ -168,7 +168,7 @@ def test_git_inventory_reports_truncation_at_explicit_file_cap(
         pid = 12345
         stdout = io.BytesIO(b"a.py\0b.py\0c.py\0")
 
-        def wait(self):
+        def wait(self, timeout: float | None = None) -> int:
             return 0
 
         def poll(self):

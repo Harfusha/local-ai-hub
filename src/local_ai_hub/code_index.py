@@ -2444,12 +2444,9 @@ class CodeIndex:
 
         def score_match(name: Any, name_path: Any, container: Any, path: Any) -> float:
             name_l = str(name or "").lower()
-            haystack = " ".join((
-                name_l,
-                str(name_path or "").lower(),
-                str(container or "").lower(),
-                str(path or "").lower(),
-            ))
+            name_path_l = str(name_path or "").lower()
+            container_l = str(container or "").lower()
+            path_l = str(path or "").lower()
             score = 0.0
             for term in terms:
                 if name_l == term:
@@ -2458,7 +2455,9 @@ class CodeIndex:
                     score += 5.0
                 elif term in name_l:
                     score += 3.0
-                elif term in haystack:
+                elif term in name_path_l or term in container_l:
+                    score += 2.0
+                elif exact_identifier is None and term in path_l:
                     score += 1.0
             return score
 
@@ -2485,29 +2484,9 @@ class CodeIndex:
             + " ORDER BY _score DESC,path ASC,line ASC,name_path ASC LIMIT ? OFFSET ?"
         )
         with self._lock, closing(self._connect()) as con:
-            exact_name = exact_identifier
-            exact_total = 0
-            if exact_name is not None:
-                exact_filters = (
-                    "root=? AND lower(name)=? AND " + root_archive_sql
-                    + (" AND " + ignored_path_sql if ignored_path_sql else "")
-                )
-                exact_args = [resolved_root, exact_name.lower(), *(f"/{name}/" for name in ignored_paths)]
-                exact_total = int(con.execute(
-                    "SELECT COUNT(*) FROM symbols WHERE " + exact_filters, exact_args
-                ).fetchone()[0])
-            if exact_total:
-                total_matches = exact_total
-                rows = con.execute(
-                    "SELECT path,name,kind,line,end_line,container,name_path,signature,access,docstring "
-                    "FROM symbols WHERE " + exact_filters
-                    + " ORDER BY path ASC,line ASC,name_path ASC LIMIT ? OFFSET ?",
-                    [*exact_args, limit, offset],
-                ).fetchall()
-            else:
-                con.create_function("hub_code_index_score", 4, score_match, deterministic=True)
-                total_matches = int(con.execute(count_sql, args).fetchone()[0])
-                rows = con.execute(sql, [*args, limit, offset]).fetchall()
+            con.create_function("hub_code_index_score", 4, score_match, deterministic=True)
+            total_matches = int(con.execute(count_sql, args).fetchone()[0])
+            rows = con.execute(sql, [*args, limit, offset]).fetchall()
         candidate_truncated = False
         candidate_limit = None
 
