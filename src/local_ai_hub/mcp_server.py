@@ -695,7 +695,7 @@ def _desc_artifact() -> str:
     )
 
 
-TaskAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_task"))
+TaskAction: TypeAlias = Literal.__getitem__(operation_actions("local_ai_task", FEATURES))
 
 
 _REPO_ACTIONS = (
