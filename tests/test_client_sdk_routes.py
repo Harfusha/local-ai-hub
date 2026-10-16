@@ -35,6 +35,7 @@ def live_client(tmp_path, monkeypatch):
         f'state_dir = "{state_dir.as_posix()}"\n'
         '[agent_state]\nenabled = true\n'
         '[security]\n'
+        'api_token = "sdk-isolated-http-token-long"\n'
         'api_token_tenant = "sdk-test"\n'
         'tenant_derivation_key = "sdk-test-root-key-0123456789-abcdef"\n'
         f'allowed_roots = ["{tmp_path.as_posix()}"]\n',
@@ -71,6 +72,7 @@ def root_scoped_live_client(tmp_path, monkeypatch):
         f'state_dir = "{state_dir.as_posix()}"\n'
         '[agent_state]\nenabled = true\n'
         '[security]\n'
+        'api_token = "sdk-root-isolated-http-token-long"\n'
         'api_token_tenant = "sdk-root-test"\n'
         'tenant_derivation_key = "t04-test-root-key-0123456789-abcdef"\n'
         f'allowed_roots = ["{workspace.as_posix()}"]\n',
