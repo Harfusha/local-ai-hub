@@ -5095,11 +5095,20 @@ class CommandBroker:
 
                     safe_value_names = (literal_bound_names - unsafe_bound_names) | safe_module_names | defined_function_names | func_param_names
 
+                    safe_builtin_exceptions = {
+                        "BaseException", "Exception", "ValueError", "TypeError", "KeyError",
+                        "IndexError", "RuntimeError", "AssertionError", "AttributeError",
+                        "FileNotFoundError", "OSError", "ZeroDivisionError", "NotImplementedError",
+                        "StopIteration", "LookupError", "ArithmeticError", "NameError",
+                        "PermissionError", "TimeoutError", "UnicodeDecodeError", "UnicodeEncodeError",
+                    }
                     safe_builtin_calls = {
                         "abs", "all", "any", "bool", "dict", "enumerate", "float", "int",
                         "len", "list", "max", "min", "print", "range", "repr", "round",
                         "set", "sorted", "str", "sum", "tuple", "zip",
+                        *safe_builtin_exceptions,
                     }
+
                     safe_method_names = {
                         "get", "strip", "lstrip", "rstrip", "lower", "upper", "split",
                         "rsplit", "replace", "startswith", "endswith", "join", "encode",
@@ -5247,8 +5256,9 @@ class CommandBroker:
                             mod = (node.module or "").split(".", 1)[0]
                             if mod not in safe_std_modules:
                                 return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "python -c inline code imports module with unknown side effects"}
-                        elif isinstance(node, ast.Assert):
+                        elif isinstance(node, (ast.Assert, ast.Raise)):
                             is_validation = True
+
                 except SyntaxError:
                     return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "python -c inline code contains invalid syntax"}
 
