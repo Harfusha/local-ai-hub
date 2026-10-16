@@ -30,6 +30,12 @@ def test_quality_floor_failures_hardening():
     failures_bool = quality_floor_failures(True, quality_floor=True)
     assert len(failures_bool) > 0
 
+    # An empty explicit floor must not disable the default quality gate.
+    assert quality_floor_failures({}, quality_floor={}) == quality_floor_failures({}, None)
+    receipt = {"receipt_id": "receipt-1", "reproducible": True}
+    promoted = promote_candidate({"metrics": {}, "receipt": receipt}, quality_floor={})
+    assert promoted["status"] == REJECTED
+
 
 def test_candidate_promotion_and_registry_hardening():
     # Non-mapping candidate
@@ -40,3 +46,6 @@ def test_candidate_promotion_and_registry_hardening():
     reg = CandidateRegistry(quality_floor=True)
     assert reg.quality_floor
     assert reg.get("nonexistent") is None
+
+    empty_floor_registry = CandidateRegistry(quality_floor={})
+    assert empty_floor_registry.quality_floor

@@ -238,7 +238,11 @@ def aggregate_metrics(results: Iterable[Mapping[str, Any]] | None) -> dict[str, 
 def quality_floor_failures(
     metrics: Mapping[str, Any], quality_floor: Mapping[str, float] | None = None
 ) -> list[str]:
-    floor = quality_floor if isinstance(quality_floor, Mapping) else DEFAULT_QUALITY_FLOOR
+    floor = (
+        quality_floor
+        if isinstance(quality_floor, Mapping) and quality_floor
+        else DEFAULT_QUALITY_FLOOR
+    )
     if not isinstance(metrics, Mapping):
         return list(floor.keys())
     failures: list[str] = []
@@ -306,7 +310,11 @@ class CandidateRegistry:
     """Small process-local registry for candidate lifecycle decisions."""
 
     def __init__(self, quality_floor: Mapping[str, float] | None = None) -> None:
-        self.quality_floor = dict(quality_floor) if isinstance(quality_floor, Mapping) else dict(DEFAULT_QUALITY_FLOOR)
+        self.quality_floor = (
+            dict(quality_floor)
+            if isinstance(quality_floor, Mapping) and quality_floor
+            else dict(DEFAULT_QUALITY_FLOOR)
+        )
         self._candidates: dict[str, dict[str, Any]] = {}
 
     def count(self) -> int:
