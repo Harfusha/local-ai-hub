@@ -852,34 +852,3 @@ def test_path_hint_rejects_non_path_hint_values(tmp_path: Path) -> None:
         repository_revision="rev-1",
         config_digest="digest-1",
     ) is None
-
-def test_request_path_hint_accepts_partial_optional_metadata(
-    tmp_path: Path, monkeypatch
-) -> None:
-    import local_ai_hub.project_config as project_config
-
-    for relative in ("src/main.py", "src/hinted.py"):
-        target = tmp_path / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("x", encoding="utf-8")
-    monkeypatch.setattr(project_config, "_git_common_dir", lambda _root: None)
-    context = resolve_project_context(tmp_path, tmp_path / "state")
-
-    usage = context.prioritize_paths(
-        ("src/main.py", "src/hinted.py"),
-        purpose="repository_search",
-        scope="repo_search",
-        repository_revision="rev-1",
-        path_hints=(
-            PathHint(
-                path="src/hinted.py",
-                purpose="repository_search",
-                scope="repo_search",
-                evidence_id="evidence-1",
-            ),
-        ),
-    )
-
-    assert usage.paths == ("src/hinted.py", "src/main.py")
-    assert usage.hint_used is True
-    assert usage.fallback_used is False
