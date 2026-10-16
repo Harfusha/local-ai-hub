@@ -88,8 +88,8 @@ Pass `(offset, max_chars, artifact_id, cutoff)` directly to SQLite.
 - Modify: `src/local_ai_hub/code_index.py:2830-2880`
 - Test: `tests/unit/test_mtime_reindex_check.py`
 
-- [ ] **Step 1: Write test verifying files with unchanged mtime and size bypass SHA-256 hashing**
-- [ ] **Step 2: Implement fix in `code_index.py`**
+- [x] **Step 1: Write test verifying files with unchanged mtime and size bypass SHA-256 hashing**
+- [x] **Step 2: Implement fix in `code_index.py`**
 1. Store `mtime_ns` and `size_bytes` in `files` table during reindex.
 2. In directory scan, check `stat()`. If `(mtime_ns, size_bytes)` match stored values, skip computing SHA-256.
 
