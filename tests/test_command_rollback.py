@@ -139,63 +139,9 @@ def test_untrusted_python_scripts_require_mutation_policy(tmp_path: Path) -> Non
         assert result["cacheable"] is False
 
 
-class _FakeTaskStore:
-    def __init__(
-        self,
-        worktree_path: str,
-        *,
-        repo_root: str | None = None,
-        branch: str | None = None,
-    ) -> None:
-        self.worktree_path = worktree_path
-        path = Path(worktree_path).resolve()
-        path.mkdir(parents=True, exist_ok=True)
-        probe = subprocess.run(
-            ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, check=False, timeout=10, **hidden_run_kwargs()
-        )
-        if probe.returncode != 0:
-            subprocess.run(
-                ["git", "init"], cwd=str(path), capture_output=True, check=True,
-                timeout=10, **hidden_run_kwargs()
-            )
-        top = subprocess.run(
-            ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, check=True, timeout=10, **hidden_run_kwargs()
-        ).stdout.strip()
-        current_branch = subprocess.run(
-            ["git", "-C", str(path), "symbolic-ref", "--quiet", "--short", "HEAD"],
-            capture_output=True, text=True, check=True, timeout=10, **hidden_run_kwargs()
-        ).stdout.strip()
-        self.worktree_identity = {
-            "repo_root": repo_root or top,
-            "branch": branch or current_branch,
-        }
-
-    def get(self, task_id: str):
-        if task_id != "task-owned":
-            return None
-        return SimpleNamespace(
-            checkpoint=SimpleNamespace(
-                state_data={"worktree": {
-                    "success": True, "worktree_path": self.worktree_path,
-                    **self.worktree_identity,
-                }}
-            )
-        )
-
-
 def _write_concurrent_rollback_edit(path: str, complete) -> None:
     Path(path).write_text("concurrent edit", encoding="utf-8")
     complete.set()
-
-
-def _commit_task_worktree(root: Path, *paths: str) -> None:
-    subprocess.run(["git", "init"], cwd=root, capture_output=True, check=True, **hidden_run_kwargs())
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=root, capture_output=True, check=True, **hidden_run_kwargs())
-    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=root, capture_output=True, check=True, **hidden_run_kwargs())
-    subprocess.run(["git", "add", *paths], cwd=root, capture_output=True, check=True, **hidden_run_kwargs())
-    subprocess.run(["git", "commit", "-m", "initial"], cwd=root, capture_output=True, check=True, **hidden_run_kwargs())
 
 
 def test_command_rollback_on_failure_preserves_unowned_changes(tmp_path: Path, monkeypatch) -> None:
