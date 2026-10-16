@@ -277,11 +277,6 @@ class AgentStateStore:
                 lock_key, threading.RLock()
             )
         self._lock = threading.RLock()
-        lock_key = os.path.normcase(str(self.db_path.resolve()))
-        with self._append_publish_locks_guard:
-            self._append_publish_lock = self._append_publish_locks.setdefault(
-                lock_key, threading.RLock()
-            )
         self._initialized = False
         self._subscribers: list[queue.Queue[AgentEvent]] = []
         self._subscribers_lock = threading.Lock()
@@ -1118,10 +1113,14 @@ class AgentStateStore:
             if not row:
                 return None
             snap_id, seq, raw_state, created_at = row
+            try:
+                state_data = json.loads(raw_state) if isinstance(raw_state, str) else dict(raw_state)
+            except Exception:
+                state_data = {}
             return {
                 "snapshot_id": snap_id,
                 "seq": seq,
-                "state": json.loads(raw_state),
+                "state": state_data,
                 "created_at": created_at,
             }
         finally:

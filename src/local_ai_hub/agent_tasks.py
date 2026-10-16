@@ -246,7 +246,7 @@ class TaskCheckpoint:
         object.__setattr__(self, "affected_paths", _clean_tuple(self.affected_paths))
         object.__setattr__(self, "evidence_ids", _clean_tuple(self.evidence_ids))
         object.__setattr__(self, "blockers", _clean_tuple(self.blockers))
-        object.__setattr__(self, "state_data", dict(self.state_data or {}))
+        object.__setattr__(self, "state_data", dict(self.state_data) if isinstance(self.state_data, Mapping) else {})
 
     def has_blockers(self) -> bool:
         return bool(self.blockers)
@@ -268,14 +268,17 @@ class TaskCheckpoint:
         }
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> TaskCheckpoint:
+    def from_dict(cls, data: Any) -> TaskCheckpoint:
+        if not isinstance(data, Mapping):
+            return cls()
+        state_data = dict(data["state_data"]) if isinstance(data.get("state_data"), Mapping) else {}
         return cls(
-            phase=str(data.get("phase", "")),
-            next_action=str(data.get("next_action", "")),
+            phase=str(data.get("phase") or ""),
+            next_action=str(data.get("next_action") or ""),
             affected_paths=tuple(data.get("affected_paths") or ()),
             evidence_ids=tuple(data.get("evidence_ids") or ()),
             blockers=tuple(data.get("blockers") or ()),
-            state_data=dict(data.get("state_data") or {}),
+            state_data=state_data,
         )
 
 
@@ -294,33 +297,36 @@ class TaskState:
     verification_receipts: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        tid = str(self.task_id or "").replace("\x00", "").strip()
-        st = self.status
-        if isinstance(st, str):
+        for name in ("task_id", "owner", "lease_id"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or "\x00" in value or value != value.strip():
+                raise ValueError(f"{name} must be a canonical string")
+        if not self.task_id:
+            raise ValueError("task_id must not be empty")
+        if not isinstance(self.status, (str, TaskStatus)):
+            raise ValueError("status must be a canonical task status")
+        object.__setattr__(self, "status", TaskStatus(self.status))
+        if not isinstance(self.contract, GoalContract) or not isinstance(self.context, ScopeContext):
+            raise TypeError("contract and context must be typed task values")
+        if not isinstance(self.checkpoint, TaskCheckpoint):
+            raise TypeError("checkpoint must be a TaskCheckpoint")
+        for name in ("created_at", "updated_at", "heartbeat_expires_at"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+                raise ValueError(f"{name} must be a finite nonnegative number")
             try:
-                st = TaskStatus(st)
-            except ValueError:
-                st = TaskStatus.DRAFT
-        elif not isinstance(st, TaskStatus):
-            st = TaskStatus.DRAFT
-        own = str(self.owner or "").replace("\x00", "").strip()
-        lid = str(self.lease_id or "").replace("\x00", "").strip()
-
-        def _clean_float(val: Any) -> float:
-            try:
-                f = float(val or 0.0)
-                return max(0.0, f) if math.isfinite(f) else 0.0
-            except (ValueError, TypeError):
-                return 0.0
-
-        object.__setattr__(self, "task_id", tid)
-        object.__setattr__(self, "status", st)
-        object.__setattr__(self, "owner", own)
-        object.__setattr__(self, "lease_id", lid)
-        object.__setattr__(self, "created_at", _clean_float(self.created_at))
-        object.__setattr__(self, "updated_at", _clean_float(self.updated_at))
-        object.__setattr__(self, "heartbeat_expires_at", _clean_float(self.heartbeat_expires_at))
-        object.__setattr__(self, "verification_receipts", dict(self.verification_receipts or {}))
+                finite = math.isfinite(value)
+            except OverflowError:
+                finite = False
+            if not finite:
+                raise ValueError(f"{name} must be a finite nonnegative number")
+        if not isinstance(self.verification_receipts, Mapping) or any(
+            not isinstance(key, str) or not key or "\x00" in key
+            or not isinstance(value, str) or not value or "\x00" in value
+            for key, value in self.verification_receipts.items()
+        ):
+            raise ValueError("verification_receipts must map criterion strings to receipt IDs")
+        object.__setattr__(self, "verification_receipts", dict(self.verification_receipts))
 
     @property
     def is_stale(self) -> bool:
@@ -376,6 +382,52 @@ class TaskState:
             "stale": stale,
             "stale_reason": "heartbeat_expired" if stale else "",
         }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> TaskState:
+        if not isinstance(data, Mapping):
+            raise ValueError("task state data must be a mapping")
+        contract_data = data["contract"]
+        if isinstance(contract_data, Mapping):
+            contract = GoalContract.from_dict(contract_data)
+        elif isinstance(contract_data, GoalContract):
+            contract = contract_data
+        else:
+            raise ValueError("contract must be a GoalContract or mapping")
+
+        context_data = data["context"]
+        if isinstance(context_data, Mapping):
+            context = ScopeContext(
+                **dict(context_data),
+            )
+        elif isinstance(context_data, ScopeContext):
+            context = context_data
+        else:
+            raise ValueError("context must be a ScopeContext or mapping")
+
+        checkpoint_data = data["checkpoint"]
+        if isinstance(checkpoint_data, Mapping):
+            checkpoint = TaskCheckpoint.from_dict(checkpoint_data)
+        elif isinstance(checkpoint_data, TaskCheckpoint):
+            checkpoint = checkpoint_data
+        else:
+            raise ValueError("checkpoint must be a TaskCheckpoint or mapping")
+
+        receipts = data["verification_receipts"]
+
+        return cls(
+            task_id=data["task_id"],
+            status=data["status"],
+            contract=contract,
+            context=context,
+            owner=data["owner"],
+            lease_id=data["lease_id"],
+            created_at=data["created_at"],
+            updated_at=data["updated_at"],
+            heartbeat_expires_at=data["heartbeat_expires_at"],
+            checkpoint=checkpoint,
+            verification_receipts=receipts,
+        )
 
 
 class TaskList(list[TaskState]):
@@ -3641,32 +3693,20 @@ class TaskStore:
             created_at,
             updated_at,
         ) = row
-        contract_data = json.loads(contract_raw)
-        contract = GoalContract.from_dict(contract_data)
-        ctx_data = json.loads(context_raw)
-        context = ScopeContext(
-            repository_id=ctx_data.get("repository_id", ""),
-            clone_id=ctx_data.get("clone_id", ""),
-            worktree_id=ctx_data.get("worktree_id", ""),
-            branch=ctx_data.get("branch", ""),
-            task_id=ctx_data.get("task_id", ""),
-            session_id=ctx_data.get("session_id", ""),
-        )
-        checkpoint = TaskCheckpoint.from_dict(json.loads(checkpoint_raw))
-        receipts = json.loads(receipts_raw) if receipts_raw else {}
-        return TaskState(
-            task_id=task_id,
-            status=TaskStatus(status_val),
-            contract=contract,
-            context=context,
-            owner=owner,
-            lease_id=lease_id,
-            created_at=created_at,
-            updated_at=updated_at,
-            heartbeat_expires_at=heartbeat_expires_at,
-            checkpoint=checkpoint,
-            verification_receipts=receipts,
-        )
+        # Persisted corruption is explicit; never manufacture task provenance.
+        return TaskState.from_dict({
+            "task_id": task_id,
+            "status": status_val,
+            "owner": owner,
+            "lease_id": lease_id,
+            "contract": json.loads(contract_raw),
+            "context": json.loads(context_raw),
+            "checkpoint": json.loads(checkpoint_raw),
+            "verification_receipts": json.loads(receipts_raw),
+            "heartbeat_expires_at": heartbeat_expires_at,
+            "created_at": created_at,
+            "updated_at": updated_at,
+        })
 
     def curate_training_dataset(
         self,

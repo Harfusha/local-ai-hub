@@ -33,7 +33,7 @@ from collections.abc import Mapping, Sequence
 from functools import wraps
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from .cache import SQLiteCache, TieredCache, stable_hash
@@ -2422,6 +2422,143 @@ def _restore_rollback_scope(
             "rollback skipped changed postimages or paths with external aliases for: "
             f"{names}"
         )
+
+
+@dataclass(frozen=True)
+class MultiplexEvent:
+    source_id: str
+    stream_name: str
+    text: str
+    timestamp: float
+    sequence: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "source_id": self.source_id,
+            "stream_name": self.stream_name,
+            "text": self.text,
+            "timestamp": self.timestamp,
+            "sequence": self.sequence,
+        }
+
+
+class StreamMultiplexer:
+    """Thread-safe stream multiplexer that coordinates concurrent output streams
+
+    from parallel workers/tests, preventing line-tearing, interleaving lines,
+    and tagging each line with its source and stream identity.
+    """
+
+    def __init__(self, *, clock_fn: Callable[[], float] | None = None) -> None:
+        self._lock = threading.Lock()
+        self._events: list[MultiplexEvent] = []
+        self._buffers: dict[tuple[str, str], list[str]] = {}
+        self._outputs: dict[str, dict[str, list[str]]] = {}
+        self._sequence = 0
+        self._clock_fn = clock_fn or time.monotonic
+        self._subscribers: list[Callable[[MultiplexEvent], None]] = []
+
+    def write(self, source_id: str, stream_name: str, chunk: str) -> list[MultiplexEvent]:
+        """Atomically buffer and emit complete lines for a source stream."""
+        if not chunk:
+            return []
+        emitted: list[MultiplexEvent] = []
+        key = (source_id, stream_name)
+        with self._lock:
+            buf = self._buffers.setdefault(key, [])
+            buf.append(chunk)
+            full_text = "".join(buf)
+            lines = full_text.splitlines(keepends=True)
+            if not lines:
+                return []
+            if not lines[-1].endswith(("\n", "\r")):
+                self._buffers[key] = [lines.pop()]
+            else:
+                self._buffers[key] = []
+
+            for line in lines:
+                stripped_line = line.rstrip("\r\n")
+                self._sequence += 1
+                ev = MultiplexEvent(
+                    source_id=source_id,
+                    stream_name=stream_name,
+                    text=stripped_line,
+                    timestamp=self._clock_fn(),
+                    sequence=self._sequence,
+                )
+                self._events.append(ev)
+                source_streams = self._outputs.setdefault(source_id, {})
+                source_streams.setdefault(stream_name, []).append(stripped_line)
+                emitted.append(ev)
+
+        for ev in emitted:
+            for sub in self._subscribers:
+                try:
+                    sub(ev)
+                except Exception:
+                    pass
+        return emitted
+
+    def flush(self, source_id: str | None = None) -> list[MultiplexEvent]:
+        """Flush any pending partial lines for a specific source or all sources."""
+        emitted: list[MultiplexEvent] = []
+        with self._lock:
+            keys = [k for k in list(self._buffers.keys()) if source_id is None or k[0] == source_id]
+            for key in keys:
+                pending = "".join(self._buffers.get(key, []))
+                self._buffers[key] = []
+                if pending:
+                    for line in pending.splitlines():
+                        if not line:
+                            continue
+                        self._sequence += 1
+                        ev = MultiplexEvent(
+                            source_id=key[0],
+                            stream_name=key[1],
+                            text=line,
+                            timestamp=self._clock_fn(),
+                            sequence=self._sequence,
+                        )
+                        self._events.append(ev)
+                        source_streams = self._outputs.setdefault(key[0], {})
+                        source_streams.setdefault(key[1], []).append(line)
+                        emitted.append(ev)
+
+        for ev in emitted:
+            for sub in self._subscribers:
+                try:
+                    sub(ev)
+                except Exception:
+                    pass
+        return emitted
+
+    def get_source_output(self, source_id: str, stream_name: str | None = None) -> str:
+        with self._lock:
+            streams = self._outputs.get(source_id, {})
+            if stream_name is not None:
+                return "\n".join(streams.get(stream_name, []))
+            lines: list[str] = []
+            for ev in self._events:
+                if ev.source_id == source_id:
+                    lines.append(ev.text)
+            return "\n".join(lines)
+
+    def get_events(self, source_id: str | None = None) -> list[MultiplexEvent]:
+        with self._lock:
+            if source_id is None:
+                return list(self._events)
+            return [ev for ev in self._events if ev.source_id == source_id]
+
+    def format_unified(self, *, tag_prefix: bool = True) -> str:
+        with self._lock:
+            events = list(self._events)
+        if not tag_prefix:
+            return "\n".join(ev.text for ev in events)
+        return "\n".join(f"[{ev.source_id}:{ev.stream_name}] {ev.text}" for ev in events)
+
+    def subscribe(self, callback: Callable[[MultiplexEvent], None]) -> None:
+        with self._lock:
+            self._subscribers.append(callback)
 
 
 @dataclass(frozen=True)
@@ -7781,6 +7918,63 @@ class CommandBroker:
             repaired["execution_id"] = execution_id
             return repaired
         return compacted
+
+    def run_parallel(
+        self,
+        commands: list[dict[str, Any] | str],
+        cwd: str | None = None,
+        *,
+        max_concurrency: int = 4,
+        timeout: int | None = None,
+        multiplexer: StreamMultiplexer | None = None,
+    ) -> dict[str, Any]:
+        """Run multiple commands concurrently, multiplexing their stdout/stderr output streams."""
+        import concurrent.futures
+
+        mux = multiplexer or StreamMultiplexer()
+        normalized_commands: list[tuple[str, str, dict[str, Any]]] = []
+        for idx, item in enumerate(commands):
+            if isinstance(item, str):
+                cmd_id = f"cmd-{idx + 1}"
+                cmd_str = item
+                extra_kwargs = {}
+            elif isinstance(item, dict):
+                cmd_id = str(item.get("id", f"cmd-{idx + 1}"))
+                cmd_str = str(item.get("cmd") or item.get("command") or "")
+                extra_kwargs = {k: v for k, v in item.items() if k not in {"id", "cmd", "command"}}
+            else:
+                continue
+            normalized_commands.append((cmd_id, cmd_str, extra_kwargs))
+
+        results: dict[str, dict[str, Any]] = {}
+
+        def _execute_single(cmd_id: str, cmd_str: str, extra: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+            def _log_cb(stream_name: str, chunk: str) -> None:
+                mux.write(cmd_id, stream_name, chunk)
+
+            cmd_cwd = str(extra.get("cwd", cwd or "."))
+            cmd_timeout = extra.get("timeout", timeout)
+            res = self.run(cmd_str, cwd=cmd_cwd, timeout=cmd_timeout, log_callback=_log_cb)
+            return cmd_id, res
+
+        concurrency = min(max(1, max_concurrency), len(normalized_commands) or 1)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=concurrency) as executor:
+            futures = [
+                executor.submit(_execute_single, cmd_id, cmd_str, extra)
+                for cmd_id, cmd_str, extra in normalized_commands
+            ]
+            for future in concurrent.futures.as_completed(futures):
+                cmd_id, res = future.result()
+                results[cmd_id] = res
+
+        mux.flush()
+        all_success = bool(results) and all(bool(r.get("success", False)) for r in results.values())
+        return {
+            "success": all_success,
+            "results": results,
+            "multiplexed_output": mux.format_unified(tag_prefix=True),
+            "events": [ev.to_dict() for ev in mux.get_events()],
+        }
 
     @_stable_rollback_status
     def run(
