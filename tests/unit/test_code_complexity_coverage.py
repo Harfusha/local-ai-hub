@@ -92,3 +92,26 @@ def test_reparse_point_attribute_is_rejected_without_native_junction(tmp_path: P
     )
 
     assert deterministic._is_symlink_or_reparse_point(candidate) is True
+
+
+def test_complexity_uses_shared_root_archive_filters(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "current.py").write_text(
+        "def current():\n    return 1\n", encoding="utf-8"
+    )
+    archived_paths = (
+        "handoff/task-copy.py",
+        ".sync-checks/task-copy.py",
+        ".t17-merge-tmp/task-copy.py",
+        "artifacts/handoff/task-copy.py",
+    )
+    for relative in archived_paths:
+        archived = root / relative
+        archived.parent.mkdir(parents=True, exist_ok=True)
+        archived.write_text("def archived():\n    return 0\n", encoding="utf-8")
+
+    result = DeterministicEngine().code_complexity(str(root))
+
+    assert {item["file"] for item in result["functions"]} == {"src/current.py"}
+    assert result["files_analyzed"] == 1

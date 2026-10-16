@@ -7773,6 +7773,13 @@ def test_{sym}_regression_edge_cases():
                                     skipped_files += 1
                                 _incomplete("linked_path_omitted")
                                 continue
+                            rel = candidate.relative_to(p_root).as_posix()
+                            if is_root_archive_path(rel):
+                                if entry.is_dir(follow_symlinks=False):
+                                    skipped_directories += 1
+                                elif entry.name.lower().endswith(".py"):
+                                    skipped_files += 1
+                                continue
                             if entry.name.lower() in excluded_dirs:
                                 if entry.is_dir(follow_symlinks=False):
                                     skipped_directories += 1
@@ -7784,7 +7791,6 @@ def test_{sym}_regression_edge_cases():
                                 continue
                             if not entry.name.lower().endswith(".py"):
                                 continue
-                            rel = candidate.relative_to(p_root).as_posix()
                             if not include_tests and _is_test_file(rel):
                                 skipped_files += 1
                                 continue
