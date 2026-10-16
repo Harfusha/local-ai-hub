@@ -86,13 +86,6 @@ class LosslessTokenRouter:
     def is_enabled(self) -> bool:
         return bool(self.enabled)
 
-    def stats(self) -> dict[str, Any]:
-        return {
-            "hits": self.hits,
-            "misses": self.misses,
-            "fallbacks": self.fallbacks,
-        }
-
     def cache_clear(self) -> None:
         self.cache.clear()
 

@@ -3681,7 +3681,9 @@ class Handler(BaseHTTPRequestHandler):
         except (TypeError, ValueError):
             raise
         except Exception as exc:
-            APP.logger.warning("telemetry timeline page failed error_type=%s", type(exc).__name__)
+            logger = getattr(APP, "logger", None)
+            if logger is not None:
+                logger.warning("telemetry timeline page failed error_type=%s", type(exc).__name__)
             self._send(503, {
                 "success": False,
                 "error": {"code": "telemetry_page_unavailable", "message": "telemetry timeline is temporarily unavailable"},
@@ -4032,11 +4034,9 @@ class Handler(BaseHTTPRequestHandler):
                     try:
                         APP.agent_state.unsubscribe(q)
                     except Exception as exc:
-                        APP.logger.warning("event stream unsubscribe failed error_type=%s", type(exc).__name__)
-                try:
-                    next_seq = max(0, int(after_seq))
-                except (TypeError, ValueError, OverflowError):
-                    next_seq = 0
+                        logger = getattr(APP, "logger", None)
+                        if logger is not None:
+                            logger.warning("event stream unsubscribe failed error_type=%s", type(exc).__name__)
                 payload = dict(_payload)
                 self.send_response(_status)
                 self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -4052,7 +4052,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             q = APP.agent_state.subscribe(maxsize=200)
         except Exception as exc:
-            APP.logger.warning("event stream subscribe failed error_type=%s", type(exc).__name__)
+            logger = getattr(APP, "logger", None)
+            if logger is not None:
+                logger.warning("event stream subscribe failed error_type=%s", type(exc).__name__)
             send_initial_error(503, {
                 "success": False,
                 "error": {"code": "event_replay_unavailable", "message": "Event replay is temporarily unavailable."},
@@ -4214,7 +4216,9 @@ class Handler(BaseHTTPRequestHandler):
                         except Exception as exc:
                             stream_success = False
                             stream_error = "event replay unavailable"
-                            APP.logger.warning("event replay page failed error_type=%s", type(exc).__name__)
+                            logger = getattr(APP, "logger", None)
+                            if logger is not None:
+                                logger.warning("event replay page failed error_type=%s", type(exc).__name__)
                             write_sse("replay_error", {
                                 "success": False,
                                 "next_seq": max(0, int(replay_cursor)),
@@ -4553,7 +4557,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/git/status", "/api/git/diff", "/api/git/history_search", "/api/git/synthesize_commit",
             "/api/repo_state", "/api/hotspots", "/api/topology", "/api/dead_code",
             "/api/symbol_callgraph", "/api/audit_dependencies", "/api/refactor_impact", "/api/test_matrix",
-            "/api/resolve_imports", "/api/security_audit", "/api/search", "/api/leases",
+            "/api/resolve_imports", "/api/security_audit", "/api/search",
             "/api/preprocess", "/api/preprocess/status", "/api/coord/worktrees", "/api/worktrees",
         }
         if (
@@ -4910,7 +4914,9 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     page = agent_state.event_page(**page_kwargs)
                 except Exception as exc:
-                    APP.logger.warning("agent event page failed error_type=%s", type(exc).__name__)
+                    logger = getattr(APP, "logger", None)
+                    if logger is not None:
+                        logger.warning("agent event page failed error_type=%s", type(exc).__name__)
                     try:
                         error_cursor = max(0, int(after_seq))
                     except (TypeError, ValueError, OverflowError):
@@ -5044,7 +5050,9 @@ class Handler(BaseHTTPRequestHandler):
                 except (TypeError, ValueError):
                     raise
                 except Exception as exc:
-                    APP.logger.warning("telemetry timeline page failed error_type=%s", type(exc).__name__)
+                    logger = getattr(APP, "logger", None)
+                    if logger is not None:
+                        logger.warning("telemetry timeline page failed error_type=%s", type(exc).__name__)
                     self._send(503, {
                         "success": False,
                         "error": {"code": "telemetry_page_unavailable", "message": "telemetry timeline is temporarily unavailable"},
@@ -5468,8 +5476,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_database_locked()
                 return
             try:
-                if APP is not None:
-                    APP.logger.error("GET request failed error_type=%s", type(exc).__name__)
+                logger = getattr(APP, "logger", None)
+                if logger is not None:
+                    logger.error("GET request failed error_type=%s", type(exc).__name__)
                 self._send(500, {
                     "success": False,
                     "error": "internal server error",
@@ -5728,7 +5737,6 @@ class Handler(BaseHTTPRequestHandler):
             api = _operational_mode_api()
             load_fn = getattr(api, "load_operational_mode", load_operational_mode)
             set_fn = getattr(api, "set_operational_mode", set_operational_mode)
-            changed_info = None
             mode_changed_value = False
             try:
                 with guard:
@@ -5776,7 +5784,7 @@ class Handler(BaseHTTPRequestHandler):
                         _ACTIVE_CONVERSATIONS.enter_active()
                     if callable(mode_changed):
                         try:
-                            changed_info = mode_changed(snapshot)
+                            mode_changed(snapshot)
                         except Exception as exc:
                             cancellation_error = type(exc).__name__
                     if snapshot.mode == "gaming" and async_jobs is not None:
@@ -5793,7 +5801,6 @@ class Handler(BaseHTTPRequestHandler):
                     "success": False, "error": "operational mode could not be persisted",
                     "error_code": "mode_persistence_failed", "terminal": True, "retryable": True,
                 }); return
-            unload_gaming_fn = getattr(api, "unload_ollama_models_for_gaming", None)
             self._telemetry_finished = True
             snap_dict = snapshot.to_dict() if hasattr(snapshot, "to_dict") else dict(snapshot.__dict__)
             response = {"success": True, **snap_dict, "mode_changed": mode_changed_value}
@@ -5837,10 +5844,12 @@ class Handler(BaseHTTPRequestHandler):
                             "inference_active": not drained,
                         }
                     except Exception as exc:
-                        APP.logger.warning(
-                            "gaming inference admission drain failed error_type=%s",
-                            type(exc).__name__,
-                        )
+                        logger = getattr(APP, "logger", None)
+                        if logger is not None:
+                            logger.warning(
+                                "gaming inference admission drain failed error_type=%s",
+                                type(exc).__name__,
+                            )
                         admission_release = {"state": "unavailable", "inference_active": True}
                 else:
                     admission_release = {
@@ -5857,10 +5866,12 @@ class Handler(BaseHTTPRequestHandler):
                         if admission_active:
                             admission_release["state"] = "active"
                     except Exception as exc:
-                        APP.logger.warning(
-                            "gaming inference admission status failed error_type=%s",
-                            type(exc).__name__,
-                        )
+                        logger = getattr(APP, "logger", None)
+                        if logger is not None:
+                            logger.warning(
+                                "gaming inference admission status failed error_type=%s",
+                                type(exc).__name__,
+                            )
                         admission_release = {"state": "unavailable", "inference_active": True}
                 else:
                     admission_release = {
@@ -8394,11 +8405,14 @@ class Handler(BaseHTTPRequestHandler):
                 paths = payload.get("paths", [])
                 root = str(payload.get("root", "."))
                 coordination_id = _lease_coordination_id(root)
-                self._send(200, APP.leases.claim_batch(tenant, root, [str(x) for x in paths] if isinstance(paths, list) else [], int(payload.get("ttl_seconds", 900)), str(payload.get("purpose", "agent edit")), coordination_id=coordination_id)); return
+                lease_tenant = str(self.headers.get("X-LocalAI-Tenant") or payload.get("tenant") or tenant).strip()
+                self._send(200, APP.leases.claim_batch(lease_tenant, root, [str(x) for x in paths] if isinstance(paths, list) else [], int(payload.get("ttl_seconds", 900)), str(payload.get("purpose", "agent edit")), coordination_id=coordination_id)); return
             if path == "/api/leases/release":
-                self._send(200, APP.leases.release(tenant, str(payload.get("lease_id", "")))); return
+                lease_tenant = str(self.headers.get("X-LocalAI-Tenant") or payload.get("tenant") or tenant).strip()
+                self._send(200, APP.leases.release(lease_tenant, str(payload.get("lease_id", "")))); return
             if 'post_leases_renew_1' in post_route_ids:
-                self._send(200, APP.leases.renew(tenant, str(payload.get("lease_id", "")), int(payload.get("ttl_seconds", 900)))); return
+                lease_tenant = str(self.headers.get("X-LocalAI-Tenant") or payload.get("tenant") or tenant).strip()
+                self._send(200, APP.leases.renew(lease_tenant, str(payload.get("lease_id", "")), int(payload.get("ttl_seconds", 900)))); return
             if 'post_memory_put_1' in post_route_ids:
                 self._send(200, APP.memory.put(
                     str(payload.get("root", ".")), str(payload.get("key", "")), str(payload.get("value", "")), tenant,
@@ -8681,18 +8695,24 @@ class Handler(BaseHTTPRequestHandler):
 
             self._send(404, {"error": "not found"})
         except QueueFullError as exc:
-            APP.logger.warning("queue full path=%s tenant=%s", path, tenant)
+            logger = getattr(APP, "logger", None)
+            if logger is not None:
+                logger.warning("queue full path=%s tenant=%s", path, tenant)
             self._send(429, {"success": False, "error": str(exc), "status_code": 429, "retryable": True})
         except ModelUnavailableError as exc:
-            APP.logger.warning("model unavailable path=%s tenant=%s error=%s", path, tenant, exc)
+            logger = getattr(APP, "logger", None)
+            if logger is not None:
+                logger.warning("model unavailable path=%s tenant=%s error=%s", path, tenant, exc)
             self._send(503, {"success": False, "error": str(exc), "status_code": 503, "retryable": True})
         except (ValueError, TypeError, RequestBodyError) as exc:
-            if APP is not None:
-                APP.logger.warning("invalid request payload path=%s tenant=%s error=%s", path, tenant, exc)
+            logger = getattr(APP, "logger", None)
+            if logger is not None:
+                logger.warning("invalid request payload path=%s tenant=%s error=%s", path, tenant, exc)
             self._send(400, {"success": False, "error": str(exc), "status_code": 400, "terminal": True, "retryable": False})
         except KeyError as exc:
-            if APP is not None:
-                APP.logger.warning("resource not found path=%s tenant=%s key=%s", path, tenant, exc)
+            logger = getattr(APP, "logger", None)
+            if logger is not None:
+                logger.warning("resource not found path=%s tenant=%s key=%s", path, tenant, exc)
             self._send(404, {"success": False, "error": str(exc), "status_code": 404, "terminal": True, "retryable": False})
         except Exception as exc:
             if _is_client_disconnect(exc):

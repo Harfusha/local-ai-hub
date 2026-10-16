@@ -2939,7 +2939,6 @@ def simulate_patch(
             "whitespace_fallback_used": False,
         }
 
-    whitespace_used = False
     err_msg = check_proc.stderr.decode("utf-8", errors="replace").strip()
     if allow_whitespace_fallback:
         ws_proc = subprocess.run(

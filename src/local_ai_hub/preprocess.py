@@ -284,10 +284,6 @@ class ProjectPreprocessor:
     def is_paused(self) -> bool:
         return self._paused.is_set()
 
-    def stats(self) -> dict[str, Any]:
-        with self._stats_lock:
-            return dict(self._stats)
-
     @classmethod
     def phases(cls) -> tuple[str, ...]:
         return cls.PHASES

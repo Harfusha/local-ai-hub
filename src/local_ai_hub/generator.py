@@ -648,7 +648,6 @@ Preprocessing scans, indexes, and builds AST and code maps in the background whi
 def generate_global_policy(cfg: dict[str, Any]) -> str:
     """Build a config-aware LOCAL AI HUB TOOL POLICY markdown block."""
     fs = FeatureSet.from_config(cfg)
-    reasoning_tier = _reasoning_tier_label(cfg, fs)
 
     trigger_map = _trigger_map_lines(fs)
     trigger_lines = "\n".join(trigger_map) if trigger_map else "- (all Hub tools currently disabled)"

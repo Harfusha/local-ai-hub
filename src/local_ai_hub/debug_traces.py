@@ -827,7 +827,6 @@ class DebugTraceStore:
                     "response": "response_json",
                 }
                 for field in ("request", "effective_payload", "output", "response", "thinking"):
-                    value = session.get(field)
                     if field in preview_columns:
                         raw_preview = str(row[preview_columns[field]] or "")
                         meta = session_content_meta.get(field)

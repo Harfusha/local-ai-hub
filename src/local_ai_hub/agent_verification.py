@@ -10,13 +10,11 @@ import re
 import shlex
 from pathlib import Path
 import json
-import sqlite3
 import threading
 import time
 import uuid
 from contextlib import closing
 from dataclasses import dataclass, field, replace
-from pathlib import Path
 from typing import Any, Mapping
 
 from .agent_events import AgentEvent, AgentStateStore

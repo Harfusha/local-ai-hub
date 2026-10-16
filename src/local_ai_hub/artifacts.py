@@ -1080,7 +1080,7 @@ class ArtifactStore:
             return retry_busy(_do_get, retries=3)
         except ArtifactTextReadError as exc:
             return {"success": False, "error": str(exc), "error_code": exc.code, "artifact_id": artifact_id}
-        except sqlite3.Error as exc:
+        except sqlite3.Error:
             if time.monotonic() >= deadline:
                 error = ArtifactTextReadError("artifact_text_read_timeout", "artifact text read exceeded its time limit")
                 return {"success": False, "error": str(error), "error_code": error.code, "artifact_id": artifact_id}
@@ -1175,7 +1175,7 @@ class ArtifactStore:
             return retry_busy(_do_get_slices, retries=3)
         except ArtifactTextReadError as exc:
             return {"success": False, "error": str(exc), "error_code": exc.code, "artifact_id": artifact_id}
-        except sqlite3.Error as exc:
+        except sqlite3.Error:
             if time.monotonic() >= deadline:
                 error = ArtifactTextReadError("artifact_text_read_timeout", "artifact text read exceeded its time limit")
                 return {"success": False, "error": str(error), "error_code": error.code, "artifact_id": artifact_id}

@@ -796,7 +796,6 @@ class LocalAIApp:
             cached = self._live_status_cache.get(cache_key)
             if cached and now - cached[0] < cache_ttl:
                 return cached_snapshot(cached, now)
-            deadline = time.monotonic() + max(0.0, float(_STATUS_DEPENDENCY_TIMEOUT_SECONDS))
             dependency_status: dict[str, dict[str, Any]] = {}
 
             def read(key: str, callback, fallback):
@@ -1528,7 +1527,6 @@ class LocalAIApp:
         import hmac
         import os
         import tempfile
-        import uuid
         from contextlib import closing, contextmanager
 
         max_bundle, max_json, max_rows = self._bundle_limits()

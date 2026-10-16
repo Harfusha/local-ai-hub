@@ -2422,7 +2422,6 @@ def create_git_worktree(
             "worktree_id": worktree_id,
             "worktree_path": str(target_dir),
             "branch": branch,
-            "base_commit": base_commit,
             "repo_root": str(repo),
             "task_id": task_id_value,
             "owner": owner_value,

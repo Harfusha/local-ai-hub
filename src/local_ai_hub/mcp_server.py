@@ -4443,7 +4443,7 @@ def local_ai_coord(
             if action != "blackboard_update" and (
                 content is not None or author != "agent" or expected_version is not None
             ):
-                return contract_error(f"content, author, and expected_version are only valid for action='blackboard_update'", status_code=400)
+                return contract_error("content, author, and expected_version are only valid for action='blackboard_update'", status_code=400)
             if action != "blackboard_merge" and remote_sections is not None:
                 return contract_error("remote_sections is only valid for action='blackboard_merge'", status_code=400)
             if action in {"blackboard_list", "blackboard_merge"} and section:

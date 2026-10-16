@@ -5,7 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from .agent_tasks import CompletionGateError, TaskCheckpoint, TaskState, TaskStore
 from .agent_verification import CompletionResult
@@ -425,11 +425,16 @@ def complete_task_with_project_rules(
         blockers=getattr(preflight_checkpoint, "blockers", ()),
         state_data=preflight_state_data,
     )
-    prepared_completion_updated_at = task_store.preflight_completion_response_budget(
-        task_key, response_budget_tokens, actor=actor,
-        checkpoint=(preflight_checkpoint_candidate
-                    if preflight_state_data != dict(getattr(preflight_checkpoint, "state_data", {}))
-                    else None),
+    preflight_fn = getattr(task_store, "preflight_completion_response_budget", None)
+    prepared_completion_updated_at = (
+        preflight_fn(
+            task_key, response_budget_tokens, actor=actor,
+            checkpoint=(preflight_checkpoint_candidate
+                        if preflight_state_data != dict(getattr(preflight_checkpoint, "state_data", {}))
+                        else None),
+        )
+        if callable(preflight_fn)
+        else None
     )
     result = evaluate_project_completion(
         verification_store,
@@ -469,6 +474,13 @@ def complete_task_with_project_rules(
             )
         else:
             checkpoint_obj = None
+    snapshot_fn = getattr(task_store, "_completion_content_snapshot", None)
+    expected_completion_content = None
+    if callable(snapshot_fn):
+        try:
+            expected_completion_content = snapshot_fn(preflight_current)
+        except (AttributeError, TypeError):
+            expected_completion_content = None
     return task_store.complete(
         task_key,
         reason=reason,
@@ -477,5 +489,6 @@ def complete_task_with_project_rules(
         response_budget_tokens=response_budget_tokens,
         checkpoint=checkpoint_obj,
         _prepared_completion_updated_at=prepared_completion_updated_at,
-        _expected_completion_content=task_store._completion_content_snapshot(preflight_current),
+        _expected_completion_content=expected_completion_content,
     )
+
