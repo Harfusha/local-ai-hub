@@ -26,8 +26,20 @@ TOKEN_ECONOMY_POLICY_BEGIN = "<!-- BEGIN TOKEN ECONOMY POLICY -->"
 TOKEN_ECONOMY_POLICY_END = "<!-- END TOKEN ECONOMY POLICY -->"
 
 
+def is_managed_mcp_server(name: Any) -> bool:
+    """Return True if server name is a Local AI Hub managed MCP server."""
+    if not isinstance(name, str):
+        return False
+    return name in MCP_NAMES
+
+
 def expand(value: str) -> Path:
-    return Path(os.path.expandvars(os.path.expanduser(value))).resolve()
+    if not isinstance(value, str) or "\x00" in value:
+        return Path.home() / ".local-ai-hub"
+    try:
+        return Path(os.path.expandvars(os.path.expanduser(value))).resolve()
+    except (ValueError, OSError):
+        return Path.home() / ".local-ai-hub"
 
 
 def configured_install_dir() -> Path:
@@ -43,12 +55,14 @@ def configured_install_dir() -> Path:
 
 
 def clean_json(path: Path) -> None:
-    if not path.exists():
+    if not path.is_file():
         return
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         print(f"skip unparsable JSON: {path}")
+        return
+    if not isinstance(data, dict):
         return
     servers = data.get("mcpServers")
     if isinstance(servers, dict):
@@ -59,19 +73,24 @@ def clean_json(path: Path) -> None:
 
 
 def clean_codex(path: Path) -> None:
-    if not path.exists():
+    if not path.is_file():
         return
-    text = path.read_text(encoding="utf-8")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return
     text = re.sub(rf"\n?{re.escape(MARKER_BEGIN)}.*?{re.escape(MARKER_END)}\n?", "\n", text, flags=re.DOTALL)
     path.write_text(text.rstrip() + "\n", encoding="utf-8")
     print(f"cleaned {path}")
 
 
-
 def clean_policy(path: Path) -> None:
-    if not path.exists():
+    if not path.is_file():
         return
-    text = path.read_text(encoding="utf-8")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return
     cleaned = re.sub(re.escape(POLICY_BEGIN) + r".*?" + re.escape(POLICY_END), "", text, flags=re.DOTALL)
     cleaned = re.sub(re.escape(TOKEN_ECONOMY_POLICY_BEGIN) + r".*?" + re.escape(TOKEN_ECONOMY_POLICY_END), "", cleaned, flags=re.DOTALL).strip() + "\n"
     if cleaned != text:
