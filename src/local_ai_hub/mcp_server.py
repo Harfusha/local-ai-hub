@@ -5132,8 +5132,8 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
             # the compact command envelope below must not consume their fields.
             error = str(value.get("error") or "tool failed")
             for structured in (True, False):
-                for error_chars in (512, 256, 128, 64, 48, 40, 32, 24, 16, 8, 1):
-                    for compact_text in (False, True):
+                for compact_text in (False, True):
+                    for error_chars in (512, 256, 128, 64, 48, 40, 32, 24, 16, 8, 1):
                         candidate = {
                             "success": False,
                             "error": error[:error_chars],
@@ -5168,6 +5168,7 @@ if hasattr(mcp, "_tool_manager") and hasattr(mcp, "_mcp_server") and mcp_types i
                                             )
                                             if key in trial
                                         },
+                                        "response_budget": trial["response_budget"],
                                     })
                                 return wire
 
