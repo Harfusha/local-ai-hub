@@ -40,6 +40,8 @@ from collections import OrderedDict
 
 _MAX_RERANK_CANDIDATES = 512
 _INDEX_EMBED_BATCH_SIZE = 64
+# Approximate pruning stays opt-in until representative recall is validated.
+_CENTROID_FILTER_ENABLED = False
 _CENTROID_FILTER_MIN_CHUNKS = 10_000
 _CENTROID_COUNT = 64
 _CENTROID_SAMPLE_SIZE = 512
@@ -2876,7 +2878,13 @@ class RAGStore:
         # Workspace-wide centroids cannot guarantee coverage after a path
         # scope or read-uncertainty exclusion is applied. Keep those queries
         # exact so the prefilter cannot hide their only matching chunks.
-        if np is not None and embedding_space_resolved and not scope_path and not uncertain_paths:
+        if (
+            _CENTROID_FILTER_ENABLED
+            and np is not None
+            and embedding_space_resolved
+            and not scope_path
+            and not uncertain_paths
+        ):
             try:
                 centroid_index = self._centroid_index_for_search(
                     scope_key, workspace, embedding_space, query_vec
