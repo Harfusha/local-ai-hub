@@ -133,9 +133,13 @@ class LosslessTokenRouter:
         for item in items:
             if not isinstance(item, dict):
                 continue
+            start_raw = item.get("start")
+            end_raw = item.get("end")
+            if isinstance(start_raw, bool) or isinstance(end_raw, bool):
+                continue
             try:
-                start = max(1, min(max_line, int(item["start"])))
-                end = max(start, min(max_line, int(item["end"])))
+                start = max(1, min(max_line, int(start_raw)))
+                end = max(start, min(max_line, int(end_raw)))
             except Exception:
                 continue
             start = max(1, start - context_lines)
@@ -149,17 +153,31 @@ class LosslessTokenRouter:
     def _render(lines: list[str], ranges: list[tuple[int, int, float]], path: str | None = None) -> tuple[str, list[dict[str, Any]]]:
         pieces: list[str] = []
         evidence: list[dict[str, Any]] = []
+        total_lines = len(lines)
+        if total_lines == 0:
+            return "", []
         for start, end, score in ranges:
-            raw = "\n".join(f"{i}: {lines[i - 1]}" for i in range(start, end + 1))
-            header = f"--- {path or 'input'}:{start}-{end} ---"
+            safe_start = max(1, min(total_lines, start))
+            safe_end = max(safe_start, min(total_lines, end))
+            raw = "\n".join(f"{i}: {lines[i - 1]}" for i in range(safe_start, safe_end + 1))
+            header = f"--- {path or 'input'}:{safe_start}-{safe_end} ---"
             pieces.append(header + "\n" + raw)
-            evidence.append({"path": path or "input", "start_line": start, "end_line": end, "score": round(score, 3), "raw": raw})
+            evidence.append({"path": path or "input", "start_line": safe_start, "end_line": safe_end, "score": round(score, 3), "raw": raw})
         return "\n\n".join(pieces), evidence
 
     def route_text(self, text: str, query: str, tenant: str, *, path: str | None = None, force_local: bool = False) -> dict[str, Any]:
-        lines = text.splitlines()
+        if not isinstance(text, str):
+            return {"success": False, "context": "", "evidence": [], "routed": False, "estimated_tokens": 0, "error": "text must be a string"}
+        if isinstance(query, bool) or not isinstance(query, str):
+            query = ""
+        if isinstance(tenant, bool) or not isinstance(tenant, str):
+            tenant = ""
+        if path is not None and (isinstance(path, bool) or not isinstance(path, str) or "\x00" in path):
+            path = None
+        clean_text = text.replace("\x00", "")
+        lines = clean_text.splitlines()
         if not self.enabled or not lines:
-            return {"success": True, "context": text, "evidence": [], "routed": False, "estimated_tokens": estimate_tokens(text)}
+            return {"success": True, "context": clean_text, "evidence": [], "routed": False, "estimated_tokens": estimate_tokens(clean_text)}
         mode = self._infer_mode(text, path)
         scope = stable_hash({"text": stable_hash(text), "query": query, "path": path, "mode": mode, "app_version": __version__})
         cached = self.cache.get(scope)
