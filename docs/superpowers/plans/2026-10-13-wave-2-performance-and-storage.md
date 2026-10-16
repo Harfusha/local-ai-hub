@@ -157,8 +157,10 @@ Use a bounded `ThreadPoolExecutor` to read lexical candidate files concurrently 
 
 ### Task 27: Asynchronous Write-Behind in Recovery Journal (#68)
 
+Current candidate already routes HTTP completion through `RecoveryJournal.finish`, which queues bounded 100 ms write-behind batches. Request claims remain synchronously committed by `begin`; pending completions remain visible for replay, and `LocalAIApp.close` flushes the worker during HTTP shutdown. Regression source already covers nonblocking responses, batching, queue/byte limits, pending replay, close flush, and fail-closed behavior. Keep steps unchecked until the full source bundle is ready for validation.
+
 **Files:**
-- Modify: `src/local_ai_hub/http_server.py:450-490`
+- Modify: `src/local_ai_hub/http_server.py` (journal completion call sites)
 - Test: `tests/unit/test_recovery_journal_write_behind.py`
 
 - [x] **Step 1: Write test verifying recovery journal writes do not block HTTP request latency**
