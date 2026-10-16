@@ -3,13 +3,14 @@ from __future__ import annotations
 from .json_utils import dumps as json_dumps
 
 import json
-import math
 import sqlite3
 import threading
 import time
 from contextlib import closing
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 from .cache import MemoryLRUCache, stable_hash
 from .normalizer import normalize_query
@@ -49,13 +50,20 @@ class SemanticGenerationCache:
     def _init_db(self) -> None:
         with closing(self._connect()) as con:
             initialize_wal(con)
+            columns = {
+                row[1]
+                for row in con.execute("PRAGMA table_info(semantic_entries)").fetchall()
+            }
+            if columns and "vector_blob" not in columns:
+                # Semantic cache is disposable derived state; discard stale encodings.
+                con.execute("DROP TABLE semantic_entries")
             con.execute(
                 """CREATE TABLE IF NOT EXISTS semantic_entries (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     scope_key TEXT NOT NULL,
                     query_hash TEXT NOT NULL,
                     query_text TEXT NOT NULL,
-                    vector_json TEXT NOT NULL,
+                    vector_blob BLOB NOT NULL,
                     value_json TEXT NOT NULL,
                     created_at REAL NOT NULL,
                     accessed_at REAL NOT NULL,
@@ -65,35 +73,6 @@ class SemanticGenerationCache:
             con.execute("CREATE INDEX IF NOT EXISTS idx_sem_scope_access ON semantic_entries(scope_key, accessed_at DESC)")
             con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_sem_scope_query ON semantic_entries(scope_key, query_hash)")
             con.commit()
-
-    @staticmethod
-    def _cos(a: list[float], b: list[float]) -> float:
-        if not a or len(a) != len(b):
-            return -1.0
-        dot = sum(x * y for x, y in zip(a, b))
-        na = math.sqrt(sum(x * x for x in a))
-        nb = math.sqrt(sum(y * y for y in b))
-        denom = na * nb
-        return dot / denom if denom > 1e-12 else -1.0
-
-    @staticmethod
-    def _decode_vector(raw: Any) -> list[float]:
-        if isinstance(raw, memoryview):
-            raw = raw.tobytes()
-        if isinstance(raw, (bytes, bytearray)):
-            import struct
-            data = bytes(raw)
-            if len(data) % 4:
-                raise ValueError("invalid float32 vector blob length")
-            return list(struct.unpack(f"<{len(data) // 4}f", data))
-        if isinstance(raw, str):
-            value = json.loads(raw)
-            if not isinstance(value, list):
-                raise ValueError("vector JSON must be an array")
-            return [float(v) for v in value]
-        if isinstance(raw, list):
-            return [float(v) for v in raw]
-        raise ValueError("unsupported vector encoding")
 
     def _vector(self, text: str) -> list[float] | None:
         result = self.embeddings.encode([text], query=True)
@@ -119,7 +98,7 @@ class SemanticGenerationCache:
         cutoff = time.time() - self.ttl_seconds if self.ttl_seconds else 0
         with self._lock, closing(self._connect()) as con:
             rows = con.execute(
-                "SELECT id,vector_json,value_json,created_at FROM semantic_entries WHERE scope_key=? AND created_at>=? ORDER BY accessed_at DESC LIMIT ?",
+                "SELECT id,vector_blob,value_json,created_at FROM semantic_entries WHERE scope_key=? AND created_at>=? ORDER BY accessed_at DESC LIMIT ?",
                 (scope, cutoff, self.max_candidates),
             ).fetchall()
             if not rows:
@@ -127,54 +106,39 @@ class SemanticGenerationCache:
                 return None, 0.0
 
             best: tuple[int, dict[str, Any], float] | None = None
-            try:
-                import numpy as np
-                q = np.array(vector, dtype=np.float32)
-                q_norm = float(np.linalg.norm(q))
-                if q_norm > 1e-9:
-                    q = q / q_norm
-                
-                vec_list = []
-                for r in rows:
-                    try:
-                        raw_vec = r[1]
-                        if isinstance(raw_vec, memoryview):
-                            raw_vec = raw_vec.tobytes()
-                        if isinstance(raw_vec, (bytes, bytearray)):
-                            arr = np.frombuffer(raw_vec, dtype=np.float32)
-                            vec_list.append(arr if arr.shape[0] == len(vector) else np.zeros(len(vector), dtype=np.float32))
-                        else:
-                            candidate = self._decode_vector(raw_vec)
-                            vec_list.append(np.array(candidate, dtype=np.float32) if len(candidate) == len(vector) else np.zeros(len(vector), dtype=np.float32))
-                    except Exception:
-                        vec_list.append(np.zeros(len(vector), dtype=np.float32))
+            q = np.asarray(vector, dtype=np.float32)
+            q_norm = float(np.linalg.norm(q))
+            if q_norm > 1e-9:
+                q = q / q_norm
 
-                mat = np.vstack(vec_list)
-                norms = np.linalg.norm(mat, axis=1, keepdims=True)
-                norms[norms < 1e-9] = 1.0
-                normed_mat = mat / norms
-                scores = np.dot(normed_mat, q)
-                self.comparisons += len(rows)
+            vec_list = []
+            for row in rows:
+                try:
+                    raw_vector = row[1]
+                    if isinstance(raw_vector, memoryview):
+                        raw_vector = raw_vector.tobytes()
+                    candidate = np.frombuffer(raw_vector, dtype=np.float32)
+                    vec_list.append(
+                        candidate
+                        if candidate.shape[0] == len(vector)
+                        else np.zeros(len(vector), dtype=np.float32)
+                    )
+                except (TypeError, ValueError):
+                    vec_list.append(np.zeros(len(vector), dtype=np.float32))
 
-                max_idx = int(np.argmax(scores))
-                max_score = float(scores[max_idx])
-                if max_score >= self.threshold:
-                    val = rows[max_idx][2]
-                    value_dict = json.loads(val) if isinstance(val, str) else val
-                    if isinstance(value_dict, dict):
-                        best = (int(rows[max_idx][0]), value_dict, max_score)
-            except Exception:
-                for row in rows:
-                    try:
-                        candidate = self._decode_vector(row[1])
-                        score = self._cos(vector, candidate)
-                        self.comparisons += 1
-                        if score >= self.threshold and (best is None or score > best[2]):
-                            value = json.loads(row[2])
-                            if isinstance(value, dict):
-                                best = (int(row[0]), value, score)
-                    except Exception:
-                        continue
+            matrix = np.vstack(vec_list)
+            norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+            norms[norms < 1e-9] = 1.0
+            scores = np.dot(matrix / norms, q)
+            self.comparisons += len(rows)
+
+            max_idx = int(np.argmax(scores))
+            max_score = float(scores[max_idx])
+            if max_score >= self.threshold:
+                value = rows[max_idx][2]
+                value_dict = json.loads(value) if isinstance(value, str) else value
+                if isinstance(value_dict, dict):
+                    best = (int(rows[max_idx][0]), value_dict, max_score)
 
             if best is None:
                 self.misses += 1
@@ -211,18 +175,14 @@ class SemanticGenerationCache:
             return
         now = time.time()
         qhash = stable_hash(query_text)
-        try:
-            import numpy as np
-            vec_blob = sqlite3.Binary(np.array(vector, dtype=np.float32).tobytes())
-        except Exception:
-            vec_blob = json_dumps(vector, separators=(",", ":"))
+        vec_blob = sqlite3.Binary(bytes(np.asarray(vector, dtype=np.float32)))
         with self._lock, closing(self._connect()) as con:
             def write() -> None:
                 con.execute(
-                    """INSERT INTO semantic_entries(scope_key,query_hash,query_text,vector_json,value_json,created_at,accessed_at,hits)
+                    """INSERT INTO semantic_entries(scope_key,query_hash,query_text,vector_blob,value_json,created_at,accessed_at,hits)
                        VALUES(?,?,?,?,?,?,?,0)
                        ON CONFLICT(scope_key,query_hash) DO UPDATE SET
-                         vector_json=excluded.vector_json,value_json=excluded.value_json,created_at=excluded.created_at,accessed_at=excluded.accessed_at""",
+                         vector_blob=excluded.vector_blob,value_json=excluded.value_json,created_at=excluded.created_at,accessed_at=excluded.accessed_at""",
                     (scope, qhash, query_text, vec_blob, json_dumps(value, ensure_ascii=False, separators=(",", ":"), default=str), now, now),
                 )
                 count = int(con.execute("SELECT COUNT(*) FROM semantic_entries WHERE scope_key=?", (scope,)).fetchone()[0])
