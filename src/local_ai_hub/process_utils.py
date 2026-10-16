@@ -835,19 +835,22 @@ def clean_git_env(
 ) -> dict[str, str]:
     """Return environment dictionary cleansed of GIT_* metadata to avoid subshell contamination."""
     source = os.environ if base_env is None else base_env
-    preserve_set = {k.upper() for k in (preserve or ())}
-    cleaned = {
-        key: value
-        for key, value in source.items()
-        if not key.upper().startswith("GIT_") or key.upper() in preserve_set
-    }
+    preserve_set = {str(k).upper() for k in (preserve or ()) if isinstance(k, str) and "\x00" not in k}
+    cleaned: dict[str, str] = {}
+    for key, value in source.items():
+        if not isinstance(key, str) or not isinstance(value, str) or "\x00" in key or "\x00" in value:
+            continue
+        if not key.upper().startswith("GIT_") or key.upper() in preserve_set:
+            cleaned[key] = value
     if extra_env:
-        cleaned.update(extra_env)
+        for key, value in extra_env.items():
+            if isinstance(key, str) and isinstance(value, str) and "\x00" not in key and "\x00" not in value:
+                cleaned[key] = value
     return cleaned
 
 
 def pid_alive(pid: int) -> bool:
-    if pid <= 0:
+    if not is_valid_pid(pid):
         return False
     if os.name == "nt":
         try:
