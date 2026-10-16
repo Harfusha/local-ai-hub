@@ -102,7 +102,7 @@ def test_command_broker_lint_fix_and_rejects_unsafe_daemon_command(tmp_path: Pat
 
     # 2. Deny opaque inline code at the daemon policy boundary.
     daemon_res = broker.spawn_daemon(
-        f'"{sys.executable}" -c "import time; time.sleep(5)"',
+        f'"{sys.executable}" -c "import decimal; x = decimal.Decimal(1)"',
         str(tmp_path),
         name="pytest_daemon",
         task_id=task_id,
