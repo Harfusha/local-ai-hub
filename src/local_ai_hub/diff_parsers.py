@@ -19,7 +19,9 @@ def _clean_line(raw: Any) -> str:
     """Accept source lines or unified diff content without parsing headers."""
     if not isinstance(raw, str) or isinstance(raw, bool):
         return ""
-    line = raw.replace("\x00", "").strip()
+    if "\x00" in raw:
+        return ""
+    line = raw.strip()
     if line.startswith(("+++", "---", "@@", "diff --git ")):
         return ""
     if line.startswith(("+", "-")):

@@ -24,6 +24,7 @@ def test_validate_root_hardening():
         service._validate_root("foo\x00bar")
 
     assert service._validate_root("valid/path") == "valid/path"
+    assert service._validate_root(" valid/path ") == " valid/path "
     assert service._validate_root(Path("valid/path")) == str(Path("valid/path"))
 
 
@@ -36,15 +37,23 @@ def test_affected_tests_hardening():
     with pytest.raises(TypeError):
         service.affected_tests("valid/root", changed_paths=True)
 
-    # Filter out boolean and None items, clean null bytes
-    service.affected_tests(
-        "valid/root",
-        changed_paths=[True, None, 123, "valid\x00/test.py", "  ", ""],
-        base="feat\x00branch",
-        params=True,  # Non-dict params should not crash dict(params)
-    )
+    for invalid_path in (True, None, 123):
+        with pytest.raises(TypeError):
+            service.affected_tests("valid/root", changed_paths=[invalid_path])
+    with pytest.raises(ValueError, match="NUL"):
+        service.affected_tests("valid/root", changed_paths=["valid\x00/test.py"])
+    with pytest.raises(TypeError):
+        service.affected_tests("valid/root", changed_paths=["valid/test.py"], base=True)
+    with pytest.raises(ValueError, match="NUL"):
+        service.affected_tests("valid/root", changed_paths=["valid/test.py"], base="feat\x00branch")
+    with pytest.raises(ValueError, match="nonempty"):
+        service.affected_tests("valid/root", changed_paths=["valid/test.py"], base="   ")
+    with pytest.raises(TypeError):
+        service.affected_tests("valid/root", changed_paths=["valid/test.py"], params=True)
+
+    service.affected_tests("valid/root", changed_paths=["valid/test.py"], base="feature", params=None)
     engine.affected_tests.assert_called_once_with(
         "valid/root",
         ["valid/test.py"],
-        "featbranch",
+        "feature",
     )

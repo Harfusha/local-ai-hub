@@ -32,8 +32,8 @@ def test_diff_parsers_boolean_and_non_sequence_inputs():
 def test_diff_parsers_null_bytes_in_lines():
     py_lines = ["+def foo\x00_bar():", "+    pass"]
     defs = extract_py_diff_defs(py_lines)
-    assert isinstance(defs, dict)
+    assert defs == {}
 
     ts_lines = ["+export function foo\x00_ts(a: number) {}"]
     ts_defs = extract_ts_diff_defs(ts_lines)
-    assert isinstance(ts_defs, dict)
+    assert ts_defs == {}

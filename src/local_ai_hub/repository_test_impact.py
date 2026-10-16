@@ -24,8 +24,8 @@ class RepositoryTestImpactService:
     def _validate_root(root: str | Path | None) -> str:
         if root is None or isinstance(root, bool) or not isinstance(root, (str, Path)):
             raise ValueError("root must be a valid path string or Path")
-        root_str = str(root).strip()
-        if not root_str:
+        root_str = str(root)
+        if not root_str.strip():
             raise ValueError("root must be non-empty")
         if "\x00" in root_str:
             raise ValueError("root cannot contain null byte")
@@ -54,19 +54,23 @@ class RepositoryTestImpactService:
             normalized_paths = []
             for p in changed_paths:
                 if p is None or isinstance(p, bool) or not isinstance(p, (str, Path)):
-                    continue
-                p_str = str(p).replace("\x00", "").strip()
-                if p_str:
-                    normalized_paths.append(p_str)
+                    raise TypeError("changed_paths entries must be path strings or Path values")
+                p_str = str(p)
+                if not p_str or "\x00" in p_str:
+                    raise ValueError("changed_paths entries must be nonempty and contain no NUL")
+                normalized_paths.append(p_str)
         else:
             normalized_paths = None
 
         if isinstance(base, bool) or not isinstance(base, (str, Path)):
-            clean_base = "HEAD"
-        else:
-            clean_base = str(base).replace("\x00", "").strip() or "HEAD"
+            raise TypeError("base must be a revision string or Path")
+        clean_base = str(base)
+        if not clean_base.strip() or "\x00" in clean_base:
+            raise ValueError("base must be nonempty and contain no NUL")
 
-        clean_params = dict(params) if isinstance(params, dict) else {}
+        if params is not None and not isinstance(params, dict):
+            raise TypeError("params must be a mapping or None")
+        clean_params = dict(params) if params is not None else {}
         return self.operation_runner(
             "affected-tests",
             canonical_root,
