@@ -55,3 +55,6 @@ def test_unreadable_source_prevents_clean_verdict(tmp_path):
     assert result["is_clean"] is False
     assert result["skipped_files"] == 1
     assert result["scan_errors"][0]["error_type"] == "FileNotFoundError"
+    assert "error" in result["scan_errors"][0]
+    assert len(result["scan_errors"][0]["error"]) > 0
+
