@@ -47,7 +47,7 @@ def run(cmd: list[object], timeout: float = 12.0) -> subprocess.CompletedProcess
     except subprocess.TimeoutExpired:
         # Service management is best-effort; never leave installer/control commands hung.
         return subprocess.CompletedProcess(argv, 124)
-    except OSError:
+    except (OSError, ValueError):
         return subprocess.CompletedProcess(argv, 127)
 
 def mark_disabled(disabled: bool) -> None:
@@ -102,7 +102,19 @@ def supervisor_pid() -> int:
     return 0
 
 
+VALID_SERVICE_ROLES = {"supervisor", "hub", "ollama"}
+
+
+def is_valid_service_role(role: Any) -> bool:
+    """Return True if role is a supported managed service role."""
+    if not isinstance(role, str):
+        return False
+    return role.strip().lower() in VALID_SERVICE_ROLES
+
+
 def _read_owner(role: str) -> dict | None:
+    if not isinstance(role, str) or "\x00" in role or "/" in role or "\\" in role:
+        return None
     try:
         value = json.loads((STATE / f"{role}.owner.json").read_text(encoding="utf-8"))
         return value if isinstance(value, dict) else None
@@ -112,6 +124,8 @@ def _read_owner(role: str) -> dict | None:
 
 def _role_stopped(role: str) -> bool:
     """Return true only when role PID metadata proves no live process remains."""
+    if not isinstance(role, str) or "\x00" in role or "/" in role or "\\" in role:
+        return False
     pid_path = STATE / f"{role}.pid"
     try:
         pid_text = pid_path.read_text(encoding="utf-8").strip()
