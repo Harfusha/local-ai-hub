@@ -5837,7 +5837,12 @@ def test_{sym}_regression_edge_cases():
                 scan_complete = False
                 skipped_files += 1
                 if len(scan_errors) < 20:
-                    scan_errors.append({"path": rel, "error_type": type(exc).__name__})
+                    scan_errors.append({
+                        "path": rel,
+                        "error_type": type(exc).__name__,
+                        "error": str(exc)[:200],
+                    })
+
 
         high_count = sum(1 for f in findings if f.get("severity") == "HIGH")
         med_count = sum(1 for f in findings if f.get("severity") == "MEDIUM")
