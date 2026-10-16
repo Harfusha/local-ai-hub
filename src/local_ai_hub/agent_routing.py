@@ -26,7 +26,7 @@ class RouteRequest:
         q = str(self.query or "").replace("\x00", "").strip()
         tt = str(self.task_type or "").replace("\x00", "").strip()
         if isinstance(self.cost_limit, bool) or self.cost_limit is None:
-            cl = 1.0
+            cl = 0.0
         else:
             try:
                 cl = float(self.cost_limit)
