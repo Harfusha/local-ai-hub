@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextlib import closing
 import hashlib
+import math
 import stat
 import subprocess
 import tempfile
@@ -99,6 +100,52 @@ class AgentEvent:
     created_at: float
     seq: int | None = None
 
+    def __post_init__(self) -> None:
+        def _clean(val: Any) -> str:
+            return str(val or "").replace("\x00", "").strip()
+
+        eid = _clean(self.event_id) or f"evt_{uuid.uuid4().hex}"
+        sid = _clean(self.stream_id)
+        k = _clean(self.kind)
+        pl = dict(self.payload) if isinstance(self.payload, Mapping) else {}
+        ikey = _clean(self.idempotency_key) or f"idemp_{uuid.uuid4().hex}"
+        cid = _clean(self.correlation_id)
+        act = _clean(self.actor) or "agent"
+
+        if isinstance(self.created_at, bool):
+            ca = 0.0
+        else:
+            try:
+                ca_f = float(self.created_at)
+                ca = max(0.0, ca_f) if math.isfinite(ca_f) else 0.0
+            except (TypeError, ValueError, OverflowError):
+                ca = 0.0
+
+        sq: int | None = None
+        if self.seq is not None and not isinstance(self.seq, bool):
+            try:
+                s_val = int(self.seq)
+                if s_val >= 0:
+                    sq = s_val
+            except (TypeError, ValueError, OverflowError):
+                sq = None
+
+        object.__setattr__(self, "event_id", eid)
+        object.__setattr__(self, "stream_id", sid)
+        object.__setattr__(self, "kind", k)
+        object.__setattr__(self, "payload", pl)
+        object.__setattr__(self, "idempotency_key", ikey)
+        object.__setattr__(self, "correlation_id", cid)
+        object.__setattr__(self, "actor", act)
+        object.__setattr__(self, "created_at", ca)
+        object.__setattr__(self, "seq", sq)
+
+    def is_persisted(self) -> bool:
+        return self.seq is not None and self.seq > 0
+
+    def has_correlation(self) -> bool:
+        return bool(self.correlation_id)
+
     @classmethod
     def create(
         cls,
@@ -114,11 +161,11 @@ class AgentEvent:
             event_id=f"evt_{uuid.uuid4().hex}",
             stream_id=stream_id,
             kind=kind,
-            payload=dict(payload or {}),
+            payload=dict(payload) if isinstance(payload, Mapping) else {},
             idempotency_key=idempotency_key or f"idemp_{uuid.uuid4().hex}",
             correlation_id=correlation_id,
             actor=actor,
-            created_at=time.time() if created_at is None else float(created_at),
+            created_at=time.time() if created_at is None else created_at,
             seq=None,
         )
 
@@ -151,7 +198,16 @@ class AgentEvent:
     @classmethod
     def from_row(cls, row: tuple[Any, ...]) -> AgentEvent:
         stream_id, seq, event_id, kind, payload_raw, idempotency_key, correlation_id, actor, created_at = row
-        payload = json.loads(payload_raw) if isinstance(payload_raw, str) else dict(payload_raw)
+        if isinstance(payload_raw, str):
+            try:
+                parsed = json.loads(payload_raw)
+                payload = dict(parsed) if isinstance(parsed, Mapping) else {}
+            except Exception:
+                payload = {}
+        elif isinstance(payload_raw, Mapping):
+            payload = dict(payload_raw)
+        else:
+            payload = {}
         return cls(
             event_id=event_id,
             stream_id=stream_id,
@@ -166,16 +222,38 @@ class AgentEvent:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> AgentEvent:
+        if not isinstance(data, Mapping):
+            raise TypeError("AgentEvent data must be a mapping")
+        raw_payload = data.get("payload")
+        payload = dict(raw_payload) if isinstance(raw_payload, Mapping) else {}
+        raw_seq = data.get("seq")
+        seq_val: int | None = None
+        if raw_seq is not None and not isinstance(raw_seq, bool):
+            try:
+                seq_val = int(raw_seq)
+            except (TypeError, ValueError, OverflowError):
+                seq_val = None
+        raw_created = data.get("created_at")
+        if raw_created is None:
+            created_val = time.time()
+        elif isinstance(raw_created, bool):
+            created_val = 0.0
+        else:
+            try:
+                cf = float(raw_created)
+                created_val = max(0.0, cf) if math.isfinite(cf) else 0.0
+            except (TypeError, ValueError, OverflowError):
+                created_val = 0.0
         return cls(
             event_id=str(data.get("event_id") or f"evt_{uuid.uuid4().hex}"),
             stream_id=str(data.get("stream_id", "")),
             kind=str(data.get("kind", "")),
-            payload=dict(data.get("payload") or {}),
+            payload=payload,
             idempotency_key=str(data.get("idempotency_key") or f"idemp_{uuid.uuid4().hex}"),
             correlation_id=str(data.get("correlation_id", "")),
             actor=str(data.get("actor", "agent")),
-            created_at=float(data.get("created_at") or time.time()),
-            seq=int(data["seq"]) if data.get("seq") is not None else None,
+            created_at=created_val,
+            seq=seq_val,
         )
 
 
@@ -186,6 +264,21 @@ class AppendResult:
     event: AgentEvent | None = None
     retryable: bool = False
     error: str | None = None
+
+    def succeeded(self) -> bool:
+        return self.error is None and not self.retryable and self.seq > 0
+
+    def is_error(self) -> bool:
+        return bool(self.error) or self.retryable
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "seq": self.seq,
+            "duplicate": self.duplicate,
+            "event": self.event.to_dict() if self.event is not None else None,
+            "retryable": self.retryable,
+            "error": self.error,
+        }
 
 
 
@@ -1881,10 +1974,22 @@ class SwarmPubSub:
 
     def __init__(self, state_store: AgentStateStore | None = None, max_age_seconds: float = 3600.0):
         self.state_store = state_store
-        self.max_age_seconds = float(max_age_seconds)
+        if isinstance(max_age_seconds, bool):
+            age = 3600.0
+        else:
+            try:
+                age_f = float(max_age_seconds)
+                age = age_f if (math.isfinite(age_f) and age_f > 0.0) else 3600.0
+            except (TypeError, ValueError, OverflowError):
+                age = 3600.0
+        self.max_age_seconds = age
         self._topics: dict[str, list[dict[str, Any]]] = {}
         self._subscribers: dict[str, dict[str, queue.Queue[dict[str, Any]]]] = {}
         self._mu = threading.Lock()
+
+    @staticmethod
+    def _clean_topic(topic: Any) -> str:
+        return str(topic or "").replace("\x00", "").strip().lower()
 
     @classmethod
     def get_default(cls, state_store: AgentStateStore | None = None) -> SwarmPubSub:
@@ -1896,21 +2001,45 @@ class SwarmPubSub:
             return cls._instance
 
     def subscribe(self, topic: str, maxsize: int = 100) -> tuple[str, queue.Queue[dict[str, Any]]]:
-        clean_topic = topic.strip().lower()
+        clean_topic = self._clean_topic(topic)
         sub_id = f"sub_{uuid.uuid4().hex[:10]}"
-        q: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=max(10, min(int(maxsize), 1000)))
+        try:
+            q_max = 100 if isinstance(maxsize, bool) else max(10, min(int(maxsize), 1000))
+        except (TypeError, ValueError, OverflowError):
+            q_max = 100
+        q: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=q_max)
         with self._mu:
             self._subscribers.setdefault(clean_topic, {})[sub_id] = q
         return sub_id, q
 
     def unsubscribe(self, topic: str, sub_id: str) -> bool:
-        clean_topic = topic.strip().lower()
+        clean_topic = self._clean_topic(topic)
         with self._mu:
             subs = self._subscribers.get(clean_topic, {})
             if sub_id in subs:
                 del subs[sub_id]
                 return True
         return False
+
+    def subscriber_count(self, topic: str | None = None) -> int:
+        with self._mu:
+            if topic is not None:
+                clean_topic = self._clean_topic(topic)
+                return len(self._subscribers.get(clean_topic, {}))
+            return sum(len(subs) for subs in self._subscribers.values())
+
+    def topic_count(self) -> int:
+        with self._mu:
+            active_topics = {k for k, v in self._topics.items() if v} | {
+                k for k, v in self._subscribers.items() if v
+            }
+            return len(active_topics)
+
+    def clear_topic(self, topic: str) -> int:
+        clean_topic = self._clean_topic(topic)
+        with self._mu:
+            existing = self._topics.pop(clean_topic, [])
+            return len(existing)
 
     def _prune_expired_locked(self, clean_topic: str, now: float) -> None:
         cutoff = now - self.max_age_seconds
@@ -1985,9 +2114,9 @@ class SwarmPubSub:
         sender: str = "agent",
         idempotency_key: str = "",
     ) -> dict[str, Any]:
-        clean_topic = topic.strip().lower()
+        clean_topic = self._clean_topic(topic)
         now = time.time()
-        msg_payload = message if isinstance(message, dict) else {"text": str(message)}
+        msg_payload = dict(message) if isinstance(message, Mapping) else {"text": str(message)}
         event_id = f"pub_{uuid.uuid4().hex[:12]}"
         sequence: int | None = None
         durable = bool(self.state_store is not None and self.state_store.enabled)
@@ -2073,8 +2202,17 @@ class SwarmPubSub:
         limit: int = 50,
         after_seq: int = 0,
     ) -> dict[str, Any]:
-        clean_topic = topic.strip().lower()
-        page_limit = max(1, min(int(limit), 1000))
+        clean_topic = self._clean_topic(topic)
+        try:
+            page_limit = 50 if isinstance(limit, bool) else max(1, min(int(limit), 1000))
+        except (TypeError, ValueError, OverflowError):
+            page_limit = 50
+        try:
+            since_ts = 0.0 if isinstance(since_timestamp, bool) else float(since_timestamp)
+            if not math.isfinite(since_ts) or since_ts < 0.0:
+                since_ts = 0.0
+        except (TypeError, ValueError, OverflowError):
+            since_ts = 0.0
         durable = bool(self.state_store is not None and self.state_store.enabled)
         if durable:
             page = self.state_store.event_page(
@@ -2168,11 +2306,11 @@ class SwarmPubSub:
             bucket = self._topics.get(clean_topic, [])
             messages = [
                 item for item in bucket
-                if item["timestamp"] > since_timestamp
+                if item["timestamp"] > since_ts
                 and (after_seq <= 0 or (item.get("sequence") or 0) > after_seq)
             ][:page_limit]
             first_timestamp = bucket[0]["timestamp"] if bucket else None
-            retention_gap = bool(first_timestamp is not None and since_timestamp < first_timestamp and since_timestamp > 0)
+            retention_gap = bool(first_timestamp is not None and since_ts < first_timestamp and since_ts > 0)
         return {
             "success": True,
             "topic": clean_topic,
