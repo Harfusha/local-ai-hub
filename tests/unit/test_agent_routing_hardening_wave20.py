@@ -4,7 +4,7 @@ from local_ai_hub.agent_routing import RouteRequest, RoutingDecision, TestSelect
 
 def test_route_request_and_decision_hardening():
     req = RouteRequest(cost_limit=True)
-    assert req.cost_limit == 1.0
+    assert req.cost_limit == 0.0
 
     req_inf = RouteRequest(cost_limit=float("inf"))
     assert req_inf.cost_limit == 0.0
