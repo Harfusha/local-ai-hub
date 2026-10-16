@@ -1,5 +1,7 @@
 # Generic Agent Update & Upgrade Prompt for Local AI Hub
 
+The optional model-free claim validator requires explicit inputs: `python tools/validate_t02_acceptance_claims.py <manifest.json> <receipt.json>`. Evidence counts require JSON integers; booleans and floats reject. It does not load historical handoff files or establish current release acceptance; synthetic unit fixtures verify only claim-validation behavior.
+
 Both compact and full `local_ai_status` descriptions advertise the `detail` selector. Use `detail="brief"`, `"cache"`, `"telemetry"`, `"full"`, or an enabled advertised detail; never substitute `action`.
 
 Task memory adoption passes the same resolved repository coordination ID into compilation, record materialization and excluded-memory diagnostics; expiry checks retain the current repository and tenant identity.
