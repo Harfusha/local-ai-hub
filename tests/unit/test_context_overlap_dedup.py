@@ -1,156 +1,78 @@
+from __future__ import annotations
+
+import hashlib
 from pathlib import Path
-import pytest
 
-from local_ai_hub.services import (
-    merge_overlapping_line_ranges,
-    merge_overlapping_evidence,
-    LocalAIServices,
-)
+from local_ai_hub.deterministic import DeterministicEngine
 
 
-def test_merge_overlapping_line_ranges():
-    # Empty
-    assert merge_overlapping_line_ranges([]) == []
-
-    # Single
-    assert merge_overlapping_line_ranges([(10, 20)]) == [(10, 20)]
-
-    # Disjoint
-    assert merge_overlapping_line_ranges([(1, 5), (10, 15)]) == [(1, 5), (10, 15)]
-
-    # Overlapping
-    assert merge_overlapping_line_ranges([(1, 10), (5, 15)]) == [(1, 15)]
-
-    # Fully contained
-    assert merge_overlapping_line_ranges([(1, 20), (5, 12)]) == [(1, 20)]
-
-    # Adjacent (within gap <= 1)
-    assert merge_overlapping_line_ranges([(1, 10), (11, 20)]) == [(1, 20)]
-
-    # Out of order
-    assert merge_overlapping_line_ranges([(20, 30), (1, 10), (8, 15)]) == [(1, 15), (20, 30)]
+class _SnapshotRepo:
+    def _read_snapshot(self, path: Path) -> tuple[str, list[str]]:
+        content = path.read_bytes()
+        return hashlib.sha256(content).hexdigest(), content.decode("utf-8").splitlines()
 
 
-def test_merge_overlapping_evidence_in_memory():
-    evidence = [
-        {
-            "path": "src/module.py",
-            "start_line": 10,
-            "end_line": 20,
-            "text": "line10\nline11\nline12\nline13\nline14\nline15\nline16\nline17\nline18\nline19\nline20",
-            "score": 0.8,
-            "symbol": "func_a",
-        },
-        {
-            "path": "src/module.py",
-            "start_line": 18,
-            "end_line": 25,
-            "text": "line18\nline19\nline20\nline21\nline22\nline23\nline24\nline25",
-            "score": 0.95,
-            "symbol": "func_b",
-        },
-        {
-            "path": "src/other.py",
-            "start_line": 1,
-            "end_line": 5,
-            "text": "l1\nl2\nl3\nl4\nl5",
-            "score": 0.7,
-        },
+class _Evidence:
+    def __init__(self) -> None:
+        self.items: list[dict] = []
+
+    def put(self, _root: str, item: dict) -> str:
+        self.items.append(dict(item))
+        return f"evidence-{len(self.items)}"
+
+
+def _engine(root: Path) -> DeterministicEngine:
+    engine = DeterministicEngine.__new__(DeterministicEngine)
+    engine.repo_tools = _SnapshotRepo()
+    engine.code_index = None
+    engine.evidence = _Evidence()
+    engine.max_evidence = 12
+    return engine
+
+
+def test_merge_overlapping_slices_rereads_exact_source(tmp_path: Path) -> None:
+    source = tmp_path / "foo.py"
+    source.write_text("".join(f"line-{number}\n" for number in range(1, 41)), encoding="utf-8")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    slices = [
+        {"path": "foo.py", "start_line": 10, "end_line": 25, "file_sha256": digest},
+        {"path": "foo.py", "start_line": 20, "end_line": 35, "file_sha256": digest},
+        {"path": "foo.py", "start_line": 37, "end_line": 40, "file_sha256": digest},
     ]
 
-    merged = merge_overlapping_evidence(evidence)
-    assert len(merged) == 2
+    merged = _engine(tmp_path).merge_overlapping_slices(str(tmp_path), slices)
 
-    mod_item = next(item for item in merged if item["path"] == "src/module.py")
-    assert mod_item["start_line"] == 10
-    assert mod_item["end_line"] == 25
-    assert mod_item["score"] == 0.95
-    # Ensure lines are not duplicated in merged text
-    lines = mod_item["text"].splitlines()
-    assert len(lines) == 16
-    assert lines[0] == "line10"
-    assert lines[-1] == "line25"
-    assert lines.count("line18") == 1
-    assert lines.count("line19") == 1
-    assert lines.count("line20") == 1
-
-
-def test_merge_overlapping_evidence_with_disk_file(tmp_path: Path):
-    src_dir = tmp_path / "src"
-    src_dir.mkdir()
-    sample_file = src_dir / "app.py"
-    file_lines = [f"# Line {i}" for i in range(1, 41)]
-    sample_file.write_text("\n".join(file_lines) + "\n", encoding="utf-8")
-
-    evidence = [
-        {
-            "path": "src/app.py",
-            "start_line": 5,
-            "end_line": 15,
-            "text": "old snippet 1",
-            "score": 0.5,
-        },
-        {
-            "path": "src/app.py",
-            "start_line": 12,
-            "end_line": 22,
-            "text": "old snippet 2",
-            "score": 0.85,
-        },
-    ]
-
-    merged = merge_overlapping_evidence(evidence, root=tmp_path)
     assert len(merged) == 1
-    item = merged[0]
-    assert item["start_line"] == 5
-    assert item["end_line"] == 22
-    assert item["score"] == 0.85
-    lines = item["text"].splitlines()
-    assert lines[0] == "# Line 5"
-    assert lines[-1] == "# Line 22"
-    assert len(lines) == 18
+    assert (merged[0]["start_line"], merged[0]["end_line"]) == (10, 40)
+    assert merged[0]["text"].splitlines() == [f"{line}: line-{line}" for line in range(10, 41)]
 
 
-def test_services_method_integration():
-    evidence = [
-        {"path": "foo.py", "start_line": 1, "end_line": 10, "text": "a\nb\nc", "score": 0.6},
-        {"path": "foo.py", "start_line": 5, "end_line": 15, "text": "c\nd\ne", "score": 0.9},
+def test_exact_evidence_stores_merged_overlapping_slices(tmp_path: Path) -> None:
+    source = tmp_path / "foo.py"
+    source.write_text("".join(f"line-{number}\n" for number in range(1, 21)), encoding="utf-8")
+    engine = _engine(tmp_path)
+
+    evidence = engine._exact_evidence(
+        str(tmp_path),
+        [{"path": "foo.py", "line": 10}, {"path": "foo.py", "line": 14}],
+    )
+
+    assert len(evidence) == 1
+    assert (evidence[0]["start_line"], evidence[0]["end_line"]) == (8, 16)
+    assert engine.evidence.items[0]["text"].splitlines() == [
+        f"{line}: line-{line}" for line in range(8, 17)
     ]
-    res = LocalAIServices.merge_overlapping_evidence(evidence)
-    assert len(res) == 1
-    assert res[0]["start_line"] == 1
-    assert res[0]["end_line"] == 15
-    assert res[0]["score"] == 0.9
 
 
-def test_merge_overlapping_evidence_edge_cases():
-    # Empty
-    assert merge_overlapping_evidence([]) == []
+def test_merge_overlapping_slices_discards_changed_source(tmp_path: Path) -> None:
+    source = tmp_path / "foo.py"
+    source.write_text("before\n", encoding="utf-8")
+    stale_digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    source.write_text("after\n", encoding="utf-8")
 
-    # Non-dict items or missing paths
-    assert merge_overlapping_evidence(["not-a-dict", {}, {"path": ""}]) == []
+    merged = _engine(tmp_path).merge_overlapping_slices(
+        str(tmp_path),
+        [{"path": "foo.py", "start_line": 1, "end_line": 1, "file_sha256": stale_digest}],
+    )
 
-    # Same file, two separate disjoint clusters
-    evidence = [
-        {"path": "bar.py", "start_line": 1, "end_line": 5, "text": "l1\nl2\nl3\nl4\nl5"},
-        {"path": "bar.py", "start_line": 3, "end_line": 7, "text": "l3\nl4\nl5\nl6\nl7"},
-        {"path": "bar.py", "start_line": 50, "end_line": 60, "text": "l50\n...\nl60"},
-    ]
-    merged = merge_overlapping_evidence(evidence)
-    assert len(merged) == 2
-    c1 = next(x for x in merged if x["start_line"] == 1)
-    c2 = next(x for x in merged if x["start_line"] == 50)
-    assert c1["end_line"] == 7
-    assert c2["end_line"] == 60
-
-    # Inverted start and end lines
-    inverted = [
-        {"path": "inv.py", "start_line": 20, "end_line": 10, "text": "content"},
-        {"path": "inv.py", "start_line": 15, "end_line": 25, "text": "content"},
-    ]
-    res_inv = merge_overlapping_evidence(inverted)
-    assert len(res_inv) == 1
-    assert res_inv[0]["start_line"] == 10
-    assert res_inv[0]["end_line"] == 25
-
-
+    assert merged == []

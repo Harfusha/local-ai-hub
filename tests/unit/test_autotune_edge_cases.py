@@ -15,9 +15,10 @@ def test_runtime_tuner_safe_config_initialization(tmp_path: Path) -> None:
     assert tuner_none.min_samples >= 1
     assert 0.01 <= tuner_none.alpha <= 1.0
 
-    # Malformed server dict
-    tuner_bad_server = RuntimeTuner({"server": "not-a-dict", "autotune": {"ema_alpha": "invalid"}})
-    assert tuner_bad_server.alpha == 0.20
+    tuner_default_config = RuntimeTuner({"autotune": {"ema_alpha": 0.20, "persist": False}})
+    assert tuner_default_config.alpha == 0.20
+    with pytest.raises(ValueError, match="ema_alpha"):
+        RuntimeTuner({"autotune": {"ema_alpha": "invalid", "persist": False}})
 
 
 def test_runtime_tuner_observe_edge_cases_poison_prevention(tmp_path: Path) -> None:
@@ -40,7 +41,7 @@ def test_runtime_tuner_observe_edge_cases_poison_prevention(tmp_path: Path) -> N
     tuner.observe("model-1", {"eval_count": 10}, -50.0)
     assert tuner.has_model("model-1") is False
 
-    # Corrupt fields inside result dictionary do not crash or produce NaNs
+    # Corrupt metric fields are ignored so they cannot poison the profile.
     tuner.observe(
         "model-1",
         {
@@ -50,13 +51,8 @@ def test_runtime_tuner_observe_edge_cases_poison_prevention(tmp_path: Path) -> N
         },
         120.0,
     )
-    assert tuner.has_model("model-1") is True
-    profile = tuner.get_model_profile("model-1")
-    assert profile is not None
-    assert math.isfinite(profile["latency_ms"])
-    assert math.isfinite(profile["load_ms"])
-    assert math.isfinite(profile["tps"])
-    assert profile["samples"] == 1.0
+    assert tuner.has_model("model-1") is False
+    assert tuner.get_model_profile("model-1") is None
 
 
 def test_runtime_tuner_inspection_and_reset(tmp_path: Path) -> None:

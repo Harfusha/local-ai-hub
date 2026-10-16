@@ -4,6 +4,7 @@ import pytest
 from pathlib import Path
 
 from local_ai_hub import mcp_server
+from local_ai_hub.operation_contracts import validate_operation_arguments
 from local_ai_hub.mcp_server import mcp
 
 
@@ -57,7 +58,7 @@ def test_repo_accepts_canonical_root_and_query_keywords(monkeypatch, tmp_path):
     assert captured == {"action": "search", "root": str(tmp_path), "query": "needle"}
 
 
-def test_repo_accepts_canonical_positional_diff(monkeypatch, tmp_path):
+def test_repo_accepts_canonical_diagnose_query(monkeypatch, tmp_path):
     captured = {}
 
     class DummyClient:
@@ -69,7 +70,7 @@ def test_repo_accepts_canonical_positional_diff(monkeypatch, tmp_path):
     monkeypatch.setattr(mcp_server, "CLIENT", DummyClient())
 
     mcp_server.local_ai_repo(
-        action="diagnose", root=str(tmp_path), diff="inspect this diff",
+        action="diagnose", root=str(tmp_path), query="inspect this diff",
     )
 
     assert captured["url"] == "/api/repo/diagnose"

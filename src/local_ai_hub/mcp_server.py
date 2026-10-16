@@ -172,9 +172,16 @@ class _MCPHubClientAdapter:
             pass
         return self._client.get(path, **kwargs)
 
-    def status(self, detail: str = "brief", scope: str = "process") -> Any:
+    def status(
+        self, detail: str = "brief", scope: str = "process", *,
+        min_duration_ms: int = 0, trace_action: str = "",
+    ) -> Any:
         if detail == "agent_state":
             return self.get("/api/status?detail=agent_state")
+        if detail == "traces":
+            return self._client.status(
+                detail, scope, min_duration_ms=min_duration_ms, trace_action=trace_action,
+            )
         return self.get(f"/api/live/status?light=1&scope={scope}&detail={detail}")
 
     def close(self) -> None:
@@ -3206,7 +3213,7 @@ def _local_ai_repo_impl(
         if action == "ast_refactor" and diff:
             operation_inputs["diff"] = diff
         if action == "generate_types" and diff:
-            operation_inputs["diff"] = diff
+            return contract_error("generate_types is read-only; diff is not allowed")
         validation_error = validate_operation_arguments(
             "local_ai_repo", action, operation_inputs, features=FEATURES,
         )
@@ -4625,7 +4632,7 @@ def local_ai_coord(
             question_payload.update(session_id=session_id, question=question)
         else:
             question_payload["answer"] = answer
-        return _compact(CLIENT.coord(**question_payload), "status")
+        return _compact(CLIENT.coord(**question_payload), "status", extra_fields=["question"])
     if action.startswith("task_"):
         task_kwargs: dict[str, Any] = {
             "action": action, "task_id": task_id, "contract": contract,
@@ -4796,9 +4803,9 @@ def local_ai_coord(
     if action == "swarm_cancel":
         return _compact(CLIENT.post("/api/agent-state/swarm/cancel", {"swarm_id": swarm_id, "reason": reason, "root": root or "."}, timeout=_timeout("quick")), "status")
     if action == "worktree_lease":
-        return _compact(CLIENT.coord(action="worktree_lease", root=root, branch=branch), "status")
+        return _compact(CLIENT.coord(action="worktree_lease", root=root, branch=branch or None), "status")
     if action == "worktree_release":
-        return _compact(CLIENT.coord(action="worktree_release", root=root, worktree_path=worktree_path, worktree_id=worktree_id, delete_branch=delete_branch, branch=branch), "status")
+        return _compact(CLIENT.coord(action="worktree_release", root=root, worktree_path=worktree_path, worktree_id=worktree_id, delete_branch=delete_branch, branch=branch or None), "status")
     if action == "pubsub_publish":
         return _compact(CLIENT.coord(
             action="pubsub_publish", topic=topic, message=message,

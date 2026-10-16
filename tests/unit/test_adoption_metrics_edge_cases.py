@@ -62,23 +62,25 @@ def test_report_resilient_to_unexpected_day_and_outcome(tmp_path: Path) -> None:
 
 
 def test_state_dir_validation() -> None:
-    with pytest.raises(ValueError, match="state_dir cannot be empty"):
+    with pytest.raises(ValueError, match="state_dir cannot be blank"):
         AdoptionMetricsStore("")
 
-    with pytest.raises(ValueError, match="state_dir cannot be empty"):
+    with pytest.raises(ValueError, match="state_dir cannot be blank"):
         AdoptionMetricsStore("   ")
 
-    with pytest.raises(ValueError, match="null bytes"):
+    with pytest.raises(ValueError, match="NUL character"):
         AdoptionMetricsStore("/tmp\x00/state")
 
 
-def test_report_invalid_days_handling(tmp_path: Path) -> None:
+def test_report_rejects_invalid_days_and_clamps_negative_days(tmp_path: Path) -> None:
     store = AdoptionMetricsStore(tmp_path)
     now = datetime(2026, 9, 20, 12, tzinfo=timezone.utc)
 
-    # Invalid days gracefully defaults/clamps
-    r1 = store.report(days="invalid", now=now)  # type: ignore[arg-type]
-    assert r1["days"] == 7
+    with pytest.raises(ValueError, match="days must be an integer"):
+        store.report(days="invalid", now=now)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="days must be an integer"):
+        store.report(days=True, now=now)  # type: ignore[arg-type]
 
     r2 = store.report(days=-10, now=now)
     assert r2["days"] == 1

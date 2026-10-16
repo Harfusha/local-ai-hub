@@ -256,7 +256,7 @@ Catch `CUDA out of memory` / `model load failed`. Automatically reduce `num_ctx`
 
 **2026-10-15 service integration checkpoint — source only, tests deferred until the whole bundle.** Added lazy Ruff session pool keyed by tenant/canonical root (default four sessions), idle retirement on admission with cleanup-confirmation capacity retention, existing broker read-only classification before daemon dispatch, explicit one-shot transport for custom/other-language commands, app-close ownership and async attempt/tenant/lease-bound cancellation. Unknown daemon cleanup propagates to durable `outcome_unknown`, preceding ordinary cancellation or result acceptance. Debounce ownership now includes tenant; its metadata is bounded to 512 entries. Deferred regression source covers session reuse/isolation, capacity retained during unconfirmed retirement, unknown cleanup, admission cancellation ownership and cross-tenant debounce. No tests, imports, Ruff processes, service restarts or benchmarks were executed. Remaining acceptance: real Ruff same-process/crash/cancellation behavior, Biome/other-language daemon disposition, all integrated gates. Concurrent dashboard/docs/telemetry edits remain outside this change.
 
-**2026-10-15 transport implementation checkpoint — not yet integrated or executed.** Existing speculative lint still spawns a command per request. Added the first persistent Ruff LSP transport slice in `lint_daemon.py`: owned hidden process helpers, binary Content-Length frames capped at 4 MB, bounded generation-owned response/write queues, continuously drained stderr, bounded lock/write/read waits with cancellation, initialize/pull diagnostics and versioned didOpen/didChange documents capped at 64. Workspace edit requests are refused; no code-action/format/fix request is sent. On failure the generation is detached and its held process handle is reaped; a new process is blocked while cleanup is pending or unconfirmed. Close prevents respawn. Source snapshots cap at 2 MB per file/8 MB per request and diagnostics at 512. Protocol background I/O is a transport helper, not an extra Hub service.
+**2026-10-15 transport implementation checkpoint — integrated source; runtime acceptance open.** Speculative lint routes through a tenant/root session pool and persistent Ruff LSP transport: owned hidden process helpers, binary Content-Length frames capped at 4 MB, bounded generation-owned response/write queues, continuously drained stderr, bounded lock/write/read waits with cancellation, initialize/pull diagnostics and versioned didOpen/didChange documents capped at 64. Workspace edit requests are refused; no code-action/format/fix request is sent. On failure the generation is detached and its held process handle is reaped; a new process is blocked while cleanup is pending or unconfirmed. Close prevents respawn. Source snapshots cap at 2 MB per file/8 MB per request and diagnostics at 512. Protocol background I/O is a transport helper, not an extra Hub service.
 
 Deferred framing cases cover multiple Unicode messages, short reads and invalid/oversized headers/frames, with no child process. Ruff server/pull-diagnostics capability is documented by https://docs.astral.sh/ruff/editors/features/ and its native server implementation. The transport has not been imported or started. Remaining required work: tenant/root session pool, broker policy and feature routing, cancellation hookup, bounded pool lifecycle, same-process reuse and crash/timeout receipts, real installed Ruff capability acceptance, and Biome/other-language disposition. T91 remains open; a protocol helper alone does not satisfy daemon-mode execution. Concurrent dirty edits to `telemetry.py` and `tests/test_telemetry_contract.py` were observed during this slice and preserved outside its commit.
 
@@ -264,9 +264,9 @@ Deferred framing cases cover multiple Unicode messages, short reads and invalid/
 - Modify: `src/local_ai_hub/speculative_lint.py:40-90`
 - Test: `tests/unit/test_speculative_lint_daemon.py`
 
-- [ ] **Step 1: Write test verifying `speculative_lint` executes in daemon mode**
-- [ ] **Step 2: Implement fix**
-Run Ruff / Biome via long-running daemon with persistent IPC pipe rather than spawning a fresh process for each line change.
+- [x] **Step 1: Write tests for framing, session reuse/isolation, cleanup, cancellation ownership, and Biome routing**
+- [x] **Step 2: Implement daemon integration**
+Ruff uses persistent LSP sessions. Biome uses the owned foreground provider contract when daemon mode is enabled; disabled mode uses explicit read-only one-shot `ci`. Custom commands and other-language tools remain one-shot after broker policy checks. Source and fake-provider regressions are present; real installed-tool acceptance remains open.
 - [ ] **Step 3: Run test and verify pass & Commit**
 `git commit -m "perf(lint): run speculative linting via persistent background daemon"`
 
@@ -281,8 +281,8 @@ Run Ruff / Biome via long-running daemon with persistent IPC pipe rather than sp
 - Modify: `src/local_ai_hub/mcp_server.py:1680-1700`
 - Test: `tests/unit/test_debug_traces_search.py`
 
-- [ ] **Step 1: Write test querying slow traces (`duration_ms > 1000`) via MCP**
-- [ ] **Step 2: Implement action**
+- [x] **Step 1: Write tests for duration/action filtering through store, SDK, and MCP**
+- [x] **Step 2: Implement action**
 Add `action="traces"` to `local_ai_status`. Queries `debug_traces.sqlite3` with filters for `min_duration_ms` and `action`.
 - [ ] **Step 3: Run test and verify pass & Commit**
 `git commit -m "feat(telemetry): expose trace search in local_ai_status for agent self-debugging"`
@@ -297,8 +297,8 @@ Add `action="traces"` to `local_ai_status`. Queries `debug_traces.sqlite3` with 
 - Modify: `src/local_ai_hub/deterministic.py:6380-6430`
 - Test: `tests/unit/test_migration_drift_detection.py`
 
-- [ ] **Step 1: Write test detecting schema discrepancy between SQLite dump and model definitions**
-- [ ] **Step 2: Implement drift detector**
+- [x] **Step 1: Write temporary-DB drift tests including generated columns and migration ordering**
+- [x] **Step 2: Implement bounded drift detector**
 Compare table columns in live SQLite vs SQL migration files, reporting added or missing columns.
 - [ ] **Step 3: Run test and verify pass & Commit**
 `git commit -m "feat(deterministic): detect database migration drift between live DB and migration files"`

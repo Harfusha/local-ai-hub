@@ -62,8 +62,8 @@ def test_swarm_actions_forward_canonical_values_and_empty_payload(monkeypatch, t
     assert step["role"] == "Reviewer"
     assert step["action"] == "submit_patch"
     assert step["payload"] == {}
-    assert "swarm-1" in fake.calls[2][2]
-    assert "state=active" in fake.calls[3][2]
+    assert "swarm-1" in fake.calls[2][1]
+    assert "state=active" in fake.calls[3][1]
     assert fake.calls[4][2]["reason"] == ""
 
 

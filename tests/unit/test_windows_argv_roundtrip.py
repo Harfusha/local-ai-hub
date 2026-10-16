@@ -28,7 +28,11 @@ def test_inline_option_quotes_do_not_become_filename_characters():
     ]
 
 
-@pytest.mark.parametrize("command", ["python\x00ignored", "x" * 32768, None])
+@pytest.mark.parametrize(
+    "command",
+    ["python\x00ignored", "x" * 32768, None],
+    ids=["nul-byte", "oversize-command", "non-string"],
+)
 def test_invalid_windows_command_lines_are_rejected_before_allocation(command):
     with pytest.raises(ValueError):
         parse_windows_command_line(command)

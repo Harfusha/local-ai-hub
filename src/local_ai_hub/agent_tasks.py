@@ -127,6 +127,8 @@ class GoalContract:
     def __post_init__(self) -> None:
         if type(self.goal) is not str:
             raise ValueError("task contract requires goal to be a string")
+        if "\x00" in self.goal:
+            raise ValueError("goal must be a string without null bytes")
         goal = self.goal.strip()
         if not goal:
             raise ValueError("task contract requires goal")

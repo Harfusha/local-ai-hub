@@ -133,7 +133,10 @@ def test_registered_task_and_verification_payloads_are_canonical(monkeypatch, ac
 
     asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {"action": action, **arguments}))
 
-    assert client.calls == [("post", expected[0], expected[1])]
+    expected_payload = dict(expected[1])
+    if expected_payload.get("root") == ".":
+        expected_payload["root"] = mcp_server._client_root(".")
+    assert client.calls == [("post", expected[0], expected_payload)]
 
 
 @pytest.mark.parametrize(("action", "canonical", "alias"), [

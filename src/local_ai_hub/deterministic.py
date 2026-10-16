@@ -62,6 +62,7 @@ _MAX_SCHEMA_SCAN_ENTRIES = 50_000
 _MAX_SCHEMA_DB_TABLES = 4_096
 _MAX_SCHEMA_DB_COLUMNS = 65_536
 _MAX_SCHEMA_DB_BYTES = 268_435_456
+_MAX_SCHEMA_MIGRATION_DB_BYTES = 8_388_608
 _MAX_SCHEMA_FILE_BYTES = 1_048_576
 _MAX_SCHEMA_TOTAL_BYTES = 16_777_216
 _MAX_SCHEMA_SCAN_SECONDS = 3.0
@@ -2230,32 +2231,118 @@ class DeterministicEngine:
         scored.sort(key=lambda item: (-item[0], item[1]["path"], int(item[1]["line"])))
         return [row for _, row in scored[:limit]]
 
+    def merge_overlapping_slices(
+        self, root: str, slices: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Merge nearby source ranges and re-read exact text from the current snapshot."""
+        base = Path(root).resolve()
+        validated: list[dict[str, Any]] = []
+        for item in slices:
+            if not isinstance(item, dict):
+                continue
+            path = item.get("path")
+            start = item.get("start_line")
+            end = item.get("end_line")
+            digest = item.get("file_sha256")
+            if (not isinstance(path, str) or not path
+                    or not isinstance(start, int) or isinstance(start, bool) or start < 1
+                    or not isinstance(end, int) or isinstance(end, bool) or end < start
+                    or not isinstance(digest, str) or not digest):
+                continue
+            target = (base / path).resolve(strict=False)
+            try:
+                relative_path = target.relative_to(base).as_posix()
+            except ValueError:
+                continue
+            validated.append({
+                "path": relative_path,
+                "start_line": start,
+                "end_line": end,
+                "file_sha256": digest,
+                "symbol_complete": bool(item.get("symbol_complete", False)),
+            })
+
+        ordered = sorted(
+            validated,
+            key=lambda item: (
+                item["path"], item["file_sha256"], item["start_line"], item["end_line"]
+            ),
+        )
+        merged: list[dict[str, Any]] = []
+        for current in ordered:
+            previous = merged[-1] if merged else None
+            if (previous is not None
+                    and previous["path"] == current["path"]
+                    and previous["file_sha256"] == current["file_sha256"]
+                    and current["start_line"] <= previous["end_line"] + 2):
+                previous["end_line"] = max(previous["end_line"], current["end_line"])
+                previous["symbol_complete"] = (
+                    previous["symbol_complete"] and current["symbol_complete"]
+                )
+            else:
+                merged.append(dict(current))
+
+        snapshots: dict[str, tuple[str, list[str]] | None] = {}
+        result: list[dict[str, Any]] = []
+        for item in merged:
+            path = item["path"]
+            if path not in snapshots:
+                try:
+                    snapshots[path] = self.repo_tools._read_snapshot(base / path)
+                except OSError as read_exc:
+                    logger.debug("Merged evidence source skipped (%s)", type(read_exc).__name__)
+                    snapshots[path] = None
+            snapshot = snapshots[path]
+            if snapshot is None:
+                continue
+            digest, lines = snapshot
+            start = item["start_line"]
+            end = item["end_line"]
+            if digest != item["file_sha256"] or not lines or end > len(lines):
+                continue
+            result.append({
+                **item,
+                "text": "\n".join(f"{line}: {lines[line - 1]}" for line in range(start, end + 1)),
+                "deterministic": True,
+            })
+        return result
+
     def _exact_evidence(self, root: str, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        if self.evidence is None:
+        if self.evidence is None or self.max_evidence <= 0:
             return []
         base = Path(root).resolve()
-        items: list[dict[str, Any]] = []
+        candidates: list[dict[str, Any]] = []
         seen: set[tuple[str, int]] = set()
         seen_ranges: set[tuple[str, int, int]] = set()
+        snapshots: dict[str, tuple[str, list[str]] | None] = {}
         for row in rows:
-            path = str(row.get("path", "")); line = max(1, int(row.get("line", 1) or 1))
+            path = str(row.get("path", ""))
+            if not path:
+                continue
+            line = max(1, int(row.get("line", 1) or 1))
+            target = (base / path).resolve(strict=False)
+            try:
+                path = target.relative_to(base).as_posix()
+            except ValueError:
+                continue
             key = (path, line)
             if not path or key in seen:
                 continue
             seen.add(key)
-            target = (base / path).resolve(strict=False)
-            try:
-                target.relative_to(base)
-            except ValueError:
+            if path not in snapshots:
+                try:
+                    snapshots[path] = self.repo_tools._read_snapshot(target)
+                except OSError as read_exc:
+                    logger.debug("Exact evidence source skipped (%s)", type(read_exc).__name__)
+                    snapshots[path] = None
+            snapshot = snapshots[path]
+            if snapshot is None:
                 continue
-            try:
-                digest, lines = self.repo_tools._read_snapshot(target)
-            except OSError as read_exc:
-                logger.debug("Exact evidence source skipped (%s)", type(read_exc).__name__)
-                continue
+            digest, lines = snapshot
             if not lines or line > len(lines):
                 continue
-            start = max(1, line - 2); end = min(len(lines), line + 2)
+            start = max(1, line - 2)
+            end = min(len(lines), line + 2)
             bounds = None
             bounds_reader = getattr(self.code_index, "symbol_bounds_at", None)
             if callable(bounds_reader):
@@ -2275,16 +2362,23 @@ class DeterministicEngine:
             if range_key in seen_ranges:
                 continue
             seen_ranges.add(range_key)
-            text = "\n".join(f"{i}: {lines[i-1]}" for i in range(start, end + 1))
-            item = {"path": path, "start_line": start, "end_line": end, "text": text, "file_sha256": digest, "deterministic": True,
-                    "symbol_complete": bounds is not None}
+            candidates.append({
+                "path": path,
+                "start_line": start,
+                "end_line": end,
+                "file_sha256": digest,
+                "symbol_complete": bounds is not None,
+            })
+            if len(candidates) >= self.max_evidence:
+                break
+
+        items: list[dict[str, Any]] = []
+        for item in self.merge_overlapping_slices(str(base), candidates):
             eid = self.evidence.put(str(base), item)
             if eid:
                 item["evidence_id"] = eid
             item.pop("text", None)  # progressive disclosure at the API boundary
             items.append(item)
-            if len(items) >= self.max_evidence:
-                break
         return items
 
     def query(self, root: str, query: str, limit: int | None = None) -> dict[str, Any]:
@@ -7831,7 +7925,7 @@ def test_{sym}_regression_edge_cases():
                     risk = "high" if (cyclomatic >= 10 or cognitive >= 15) else "medium" if (cyclomatic >= 6 or cognitive >= 8) else "low"
                     results.append({
                         "name": fn_name,
-                        "file": str(p.relative_to(p_root) if p.is_relative_to(p_root) else p),
+                        "file": p.relative_to(p_root).as_posix() if p.is_relative_to(p_root) else str(p),
                         "line": lineno,
                         "cyclomatic_complexity": cyclomatic,
                         "cognitive_complexity": cognitive,
@@ -8418,7 +8512,12 @@ def test_{sym}_regression_edge_cases():
                     yield "".join(pending)
 
             try:
-                migration_db.execute("PRAGMA max_page_count=4096")
+                migration_db.setlimit(
+                    sqlite3.SQLITE_LIMIT_LENGTH, _MAX_SCHEMA_MIGRATION_DB_BYTES
+                )
+                page_size = int(migration_db.execute("PRAGMA page_size").fetchone()[0])
+                max_pages = max(1, _MAX_SCHEMA_MIGRATION_DB_BYTES // page_size)
+                migration_db.execute(f"PRAGMA max_page_count={max_pages}")
                 migration_deadline = time.monotonic() + _MAX_SCHEMA_SCAN_SECONDS
                 migration_db.set_progress_handler(
                     lambda: int(time.monotonic() >= migration_deadline), 1000

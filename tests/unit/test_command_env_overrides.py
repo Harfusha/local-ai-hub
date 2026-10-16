@@ -19,13 +19,13 @@ def test_command_run_with_custom_env(tmp_path, monkeypatch):
     cmd = f'"{sys.executable}" -c "import os; print(os.environ.get(\'TEST_HUB_ENV_VAR\', \'\'))"'
 
     monkeypatch.setenv("TEST_HUB_ENV_VAR", "parent_value")
-    res = broker.run(
+    res = broker._execute(
         cmd,
         cwd=str(tmp_path),
-        env={"TEST_HUB_ENV_VAR": "hello_env_world"},
         timeout=10,
+        env_overrides={"TEST_HUB_ENV_VAR": "hello_env_world"},
     )
-    assert res.get("success") is True
+    assert res.get("success") is True, res
     assert "hello_env_world" in res.get("stdout", "").strip()
     assert os.environ.get("TEST_HUB_ENV_VAR") == "parent_value"
 

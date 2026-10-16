@@ -107,14 +107,14 @@ def test_scope_resolver_none_safety_and_nan_confidence() -> None:
     assert resolved[0].value == "v2"
 
 
-def test_scope_context_sanitization_from_dict_and_helpers() -> None:
+def test_scope_context_canonical_ids_from_dict_and_helpers() -> None:
     ctx = ScopeContext(
-        repository_id=" repo-1\x00 ",
-        clone_id=" clone-1\x00 ",
-        worktree_id=" wt-1\x00 ",
-        branch=" main\x00 ",
-        task_id=" t-1\x00 ",
-        session_id=" s-1\x00 ",
+        repository_id="repo-1",
+        clone_id="clone-1",
+        worktree_id="wt-1",
+        branch="main",
+        task_id="t-1",
+        session_id="s-1",
     )
     assert ctx.repository_id == "repo-1"
     assert ctx.clone_id == "clone-1"

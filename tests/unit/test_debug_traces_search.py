@@ -102,13 +102,14 @@ def test_local_ai_status_traces_queries_filtered_debug_traces(isolated_mcp_serve
             "offset": 0,
         }
 
-    monkeypatch.setattr(server.CLIENT, "get", get)
+    monkeypatch.setattr(server.CLIENT._client, "get", get)
     contents, structured = asyncio.run(server.mcp.call_tool(
         "local_ai_status",
         {
-            "action": "traces",
+            "detail": "traces",
             "min_duration_ms": 1000,
             "trace_action": "search",
+            "extra_fields": ["duration_ms"],
             "response_profile": "compact",
             "max_response_tokens": 1200,
         },

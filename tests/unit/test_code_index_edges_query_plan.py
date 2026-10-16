@@ -3,6 +3,7 @@ import hashlib
 from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
+import pytest
 
 from local_ai_hub.code_index import CodeIndex
 
@@ -32,6 +33,9 @@ def _record_query(monkeypatch, index: CodeIndex, call):
 
         def close(self) -> None:
             self.connection.close()
+
+        def __getattr__(self, item):
+            return getattr(self.connection, item)
 
     monkeypatch.setattr(
         index, "_connect", lambda **kwargs: RecordingConnection(original_connect(**kwargs))
@@ -160,7 +164,7 @@ def test_qualified_unqualified_and_literal_wildcard_names_keep_semantics(tmp_pat
     ]
 
 
-def test_existing_edges_with_missing_endpoint_names_are_backfilled(tmp_path):
+def test_stale_edges_schema_is_rejected_for_rebuild(tmp_path):
     index = _index(tmp_path)
     root = str((tmp_path / "repo").resolve())
     _insert_edge(index, root, "pkg::owner", "target")
@@ -170,18 +174,8 @@ def test_existing_edges_with_missing_endpoint_names_are_backfilled(tmp_path):
         con.execute("ALTER TABLE edges DROP COLUMN src_name")
         con.execute("ALTER TABLE edges DROP COLUMN dst_name")
         con.commit()
-        index._schema(con)
-        con.execute("UPDATE edges SET src_name=NULL, dst_name=NULL")
-        index._schema(con)
-        row = con.execute("SELECT src_name, dst_name FROM edges").fetchone()
-        index_names = {
-            str(item[1]) for item in con.execute("PRAGMA index_list(edges)").fetchall()
-        }
-        con.commit()
-
-    assert tuple(row) == ("owner", "target")
-    assert "idx_edges_root_kind_dst_name" in index_names
-    assert "idx_edges_root_kind_src_name" in index_names
+        with pytest.raises(sqlite3.DatabaseError, match="stale derived code-index schema"):
+            index._schema(con)
 
 
 def test_caller_order_and_limit_metadata_are_preserved(tmp_path):

@@ -228,8 +228,8 @@ def test_migration_drift_rejects_oversized_database_before_open(
     tmp_path: Path, monkeypatch
 ) -> None:
     db_file = tmp_path / "app.db"
-    with sqlite3.connect(db_file):
-        pass
+    with sqlite3.connect(db_file) as con:
+        con.execute("CREATE TABLE measured (id INTEGER)")
     monkeypatch.setattr(deterministic, "_MAX_SCHEMA_DB_BYTES", 0)
 
     engine = DeterministicEngine({"server": {"state_dir": str(tmp_path / "state")}})

@@ -357,6 +357,12 @@ class ConsistencyRequest:
     approval: str | bool = ""
 
     def __post_init__(self) -> None:
+        if (
+            type(self.tenant) is not str
+            or len(self.tenant) > 160
+            or self.tenant != self.tenant.strip()
+        ):
+            raise ValueError("tenant must be a canonical string of at most 160 characters")
         object.__setattr__(self, "root", _text(self.root, 400))
         object.__setattr__(self, "task_id", _text(self.task_id, 160))
         object.__setattr__(self, "query", _text(self.query, 800))
@@ -372,7 +378,6 @@ class ConsistencyRequest:
         object.__setattr__(self, "force_include_paths", _repository_relative_paths(self.root, self.force_include_paths, "force_include_paths"))
         object.__setattr__(self, "base", _text(self.base, 160) or "HEAD")
         object.__setattr__(self, "staged", _safe_bool(self.staged))
-        object.__setattr__(self, "tenant", _text(self.tenant, 160))
         object.__setattr__(self, "memory_revision", _text(self.memory_revision, 200))
         object.__setattr__(self, "session_id", _text(self.session_id, 160))
         digest = self.project_config_digest if isinstance(self.project_config_digest, str) else ""
@@ -649,7 +654,14 @@ class AgentConsistencyGuard:
             bounded_symbols = tuple(dict.fromkeys(_text(item, 200) for item in symbol_refs if item))[:24]
             task = _text(related_task or (request_obj.task_id if request_obj else ""), 160)
             repository_root = canonical_root(request_obj.root if request_obj else root) if (request_obj and request_obj.root) or root else ""
-            tenant = _text(request_obj.tenant if request_obj else "", 160).strip()
+            tenant_value = request_obj.tenant if request_obj else ""
+            if (
+                type(tenant_value) is not str
+                or len(tenant_value) > 160
+                or tenant_value != tenant_value.strip()
+            ):
+                return None
+            tenant = tenant_value
             if not repository_root or not tenant:
                 return None
             project = resolve_project_context(

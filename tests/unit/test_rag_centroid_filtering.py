@@ -57,7 +57,7 @@ def _seed_direction_clusters(store, cluster_count=200, rows_per_cluster=60, embe
         con.commit()
 
 
-def test_large_workspace_filters_fine_scores_and_returns_nearest_chunk(tmp_path, monkeypatch):
+def test_centroid_filter_is_opt_in_and_preserves_fine_scoring(tmp_path, monkeypatch):
     store = _store(tmp_path)
     _seed_direction_clusters(store)
     total_chunks = 200 * 60
@@ -78,11 +78,19 @@ def test_large_workspace_filters_fine_scores_and_returns_nearest_chunk(tmp_path,
 
     monkeypatch.setattr(rag_module, "_fine_cosine_scores", count_fine_scores)
     monkeypatch.setattr(store, "_build_centroid_index", count_build)
+    exact_result = store.search("nearest vector exact", "tenant-a", "workspace-a", top_k=1, use_reranker=False)
+    exact_scored = sum(fine_scored_rows)
+    fine_scored_rows.clear()
+
+    monkeypatch.setattr(rag_module, "_CENTROID_FILTER_ENABLED", True)
     result = store.search("nearest vector", "tenant-a", "workspace-a", top_k=1, use_reranker=False)
     first_scored = sum(fine_scored_rows)
     fine_scored_rows.clear()
     warm_result = store.search("nearest vector warm", "tenant-a", "workspace-a", top_k=1, use_reranker=False)
 
+    assert exact_result["success"] is True
+    assert exact_result["results"][0]["path"] == "cluster/cluster-000/chunk-000.txt"
+    assert exact_scored == total_chunks
     assert result["success"] is True
     assert result["results"][0]["path"] == "cluster/cluster-000/chunk-000.txt"
     assert warm_result["success"] is True

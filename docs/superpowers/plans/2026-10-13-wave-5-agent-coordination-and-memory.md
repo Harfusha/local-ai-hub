@@ -17,7 +17,7 @@
 - Modify: `src/local_ai_hub/agent_memory.py:200-240`
 - Test: `tests/unit/test_cas_blackboard_and_memory.py`
 
-- [ ] **Step 1: Write test verifying update fails with conflict if version doesn't match**
+- [x] **Step 1: Write tests for stale-version conflict, current CAS contract, and invalid inputs**
 
 ```python
 # tests/unit/test_cas_blackboard_and_memory.py
@@ -34,9 +34,10 @@ def test_blackboard_cas_conflict(tmp_path):
     assert res.get("conflict") is True
 ```
 
-- [ ] **Step 2: Implement CAS logic**
-In `agent_blackboard.py` and `agent_memory.py`, add `expected_etag` or `expected_version` parameter to updates:
+- [x] **Step 2: Implement CAS logic**
+In `agent_blackboard.py` and `agent_memory.py`, use the canonical `expected_version` parameter:
 `UPDATE ... WHERE id=? AND version=?`. Return `conflict: True` when 0 rows updated.
+The retired `expected_etag` keyword rejects; no compatibility alias.
 
 - [ ] **Step 3: Run test and verify pass & Commit**
 `git commit -m "feat(coord): implement atomic Compare-And-Swap (CAS) on blackboard and agent memory"`
@@ -49,8 +50,8 @@ In `agent_blackboard.py` and `agent_memory.py`, add `expected_etag` or `expected
 - Modify: `src/local_ai_hub/leases.py:150-190`
 - Test: `tests/unit/test_zombie_lease_reaper.py`
 
-- [ ] **Step 1: Write test verifying expired leases are automatically freed**
-- [ ] **Step 2: Implement fix**
+- [x] **Step 1: Write tests verifying expired lease and wait-dependency reaping**
+- [x] **Step 2: Implement fix**
 Add automated background prune or lazy reaping during `acquire_lease()`:
 `DELETE FROM leases WHERE expires_at < ?`. Return cleared lease metrics in status.
 
@@ -66,8 +67,8 @@ Add automated background prune or lazy reaping during `acquire_lease()`:
 - Modify: `src/local_ai_hub/process_utils.py:1750-1790`
 - Test: `tests/unit/test_worktree_uncommitted_guard.py`
 
-- [ ] **Step 1: Write test verifying switching or removing a dirty worktree errors out before data loss**
-- [ ] **Step 2: Implement fix**
+- [x] **Step 1: Write tests verifying switching or removing a dirty worktree errors out before data loss**
+- [x] **Step 2: Implement fix**
 1. Run `git status --porcelain` before worktree removal or branch switch.
 2. If modified files exist, return `error: "uncommitted_changes_in_worktree"` and abort unless `force=True`.
 
@@ -82,9 +83,9 @@ Add automated background prune or lazy reaping during `acquire_lease()`:
 - Modify: `src/local_ai_hub/swarm.py:200-260`
 - Test: `tests/unit/test_swarm_dag_and_rollback.py`
 
-- [ ] **Step 1: Write test verifying dependent swarm steps execute in parallel and rollback working tree if a step fails**
-- [ ] **Step 2: Implement DAG runner & rollback**
-Allow steps to declare `depends_on: ["step_id"]`. Execute independent steps in parallel. On failure of any required step, trigger `git checkout -f` rollback of the worktree to the pre-swarm snapshot.
+- [x] **Step 1: Write tests verifying parallel DAG scheduling, dependency validation, failure handling, and preservation of owner work**
+- [x] **Step 2: Implement DAG runner with failure-safe work preservation**
+Steps declare `depends_on: ["step_id"]`; independent steps run concurrently. A required failure aborts dependent work and reports completed work. Automatic `git checkout -f` rollback is intentionally not implemented: it could destroy pre-existing or concurrently created user changes. Work remains available for owner-led recovery.
 
 - [ ] **Step 3: Run test and verify pass & Commit**
 `git commit -m "feat(swarm): add DAG dependency execution and automated rollback on failure"`
@@ -98,8 +99,8 @@ Allow steps to declare `depends_on: ["step_id"]`. Execute independent steps in p
 - Modify: `src/local_ai_hub/mcp_server.py:3740-3760`
 - Test: `tests/unit/test_verification_export.py`
 
-- [ ] **Step 1: Write test exporting task receipts to human-readable markdown format**
-- [ ] **Step 2: Implement export action**
+- [x] **Step 1: Write tests for Markdown, JSON, commit trailers, and MCP export**
+- [x] **Step 2: Implement export action**
 Add `action="verify_export"` to `local_ai_coord`. Formats all verified criteria for a task as a Markdown audit table or Git commit trailers (`Verified-by: ...`).
 
 - [ ] **Step 3: Run test and verify pass & Commit**

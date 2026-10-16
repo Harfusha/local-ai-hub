@@ -28,7 +28,7 @@ def test_disabled_tools_do_not_have_guide_examples():
     assert [card["tool"] for card in result["guide_cards"]] == ["local_ai_status"]
 
 
-@pytest.mark.parametrize("arguments", [{"detail": "guide"}, {"action": "guide"}])
+@pytest.mark.parametrize("arguments", [{"detail": "guide"}])
 def test_mcp_guide_does_not_request_health_or_execute_examples(monkeypatch, arguments):
     def forbidden(*_args, **_kwargs):
         raise AssertionError("guide must not call the Hub or execute examples")

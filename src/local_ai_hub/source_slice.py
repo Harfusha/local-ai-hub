@@ -44,7 +44,10 @@ def read_source_slice(
         if not candidate.is_absolute():
             candidate = root / candidate
         target = candidate.resolve(strict=True)
-        relative = target.relative_to(root)
+        try:
+            relative = target.relative_to(root)
+        except ValueError:
+            return failure("source path must be within the workspace")
         if not target.is_file():
             return failure("source path must name a regular file")
         path_before = target.stat()
@@ -63,7 +66,10 @@ def read_source_slice(
         if len(data) > MAX_SOURCE_BYTES:
             return failure("source file exceeds the 4 MiB read bound")
         current_target = candidate.resolve(strict=True)
-        current_target.relative_to(root)
+        try:
+            current_target.relative_to(root)
+        except ValueError:
+            return failure("source path must remain within the workspace")
         current = current_target.stat()
         identity = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns, value.st_ctime_ns)
         same_file_identity = lambda value: (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns)
@@ -77,6 +83,8 @@ def read_source_slice(
         if b"\x00" in data:
             return failure("source is binary or uses an unsupported encoding")
         content = data.decode("utf-8", errors="strict")
+    except FileNotFoundError:
+        return failure("source file not found")
     except (OSError, ValueError, RuntimeError) as exc:
         return failure(f"source read rejected: {type(exc).__name__}")
 

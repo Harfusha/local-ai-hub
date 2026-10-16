@@ -17,7 +17,7 @@
 - Modify: `mcp/local-ai/local_ai_repo.json`
 - Test: `tests/unit/test_mcp_symbol_graph_actions.py`
 
-- [ ] **Step 1: Write failing test**
+- [x] **Step 1: Write failing test**
 
 ```python
 # tests/unit/test_mcp_symbol_graph_actions.py
@@ -34,7 +34,7 @@ def test_mcp_callees_action_dispatches_correctly(monkeypatch):
     assert captured["payload"]["symbol"] == "foo"
 ```
 
-- [ ] **Step 2: Implement fix in `mcp_server.py` and schema**
+- [x] **Step 2: Implement fix in `mcp_server.py` and schema**
 1. Add `callees`, `implementations`, `declaration` to `RepoAction` enum in `mcp_server.py` and `local_ai_repo.json`.
 2. Map them to `/api/code/callees`, `/api/code/implementations`, and `/api/code/declaration` endpoints.
 3. In `http_server.py`, wire these endpoints to `APP.code_index.find_callees`, `find_implementations`, and `find_declaration`.
@@ -51,10 +51,10 @@ def test_mcp_callees_action_dispatches_correctly(monkeypatch):
 - Modify: `src/local_ai_hub/treesitter_parser.py:40-70`
 - Test: `tests/unit/test_regex_ast_chunker.py`
 
-- [ ] **Step 1: Write failing test with TypeScript and C# source files**
+- [x] **Step 1: Write failing test with TypeScript and C# source files**
 Verify that chunking a TypeScript file (`.ts`) or C# file (`.cs`) does not split in the middle of a function body when tree-sitter is unavailable.
 
-- [ ] **Step 2: Implement fix in `rag.py`**
+- [x] **Step 2: Implement fix in `rag.py`**
 Implement `_regex_ast_chunks(text: str, language: str) -> list[str]` with regexes matching function/class block declarations (`export class ... {`, `public async Task ... {`, `func ... {`). Split code cleanly at outermost closing braces (`}`) rather than arbitrary character/line counts.
 
 - [ ] **Step 3: Run test and verify pass & Commit**
@@ -65,29 +65,12 @@ Implement `_regex_ast_chunks(text: str, language: str) -> list[str]` with regexe
 ### Task 40: Context Line Overlap Deduplication & Merge (#65)
 
 **Files:**
-- Modify: `src/local_ai_hub/deterministic.py:2800-2850`
-- Modify: `src/local_ai_hub/services.py:5120-5160`
+- Modify: `src/local_ai_hub/deterministic.py` (`_exact_evidence`, context slice assembly)
 - Test: `tests/unit/test_context_overlap_dedup.py`
 
-- [ ] **Step 1: Write test verifying overlapping line slices merge into a single slice**
-
-```python
-# tests/unit/test_context_overlap_dedup.py
-from local_ai_hub.deterministic import DeterministicEngine
-
-def test_merge_overlapping_slices():
-    slices = [
-        {"path": "foo.py", "start_line": 10, "end_line": 25, "text": "line10\nline25"},
-        {"path": "foo.py", "start_line": 20, "end_line": 35, "text": "line20\nline35"},
-    ]
-    merged = DeterministicEngine.merge_overlapping_slices(slices)
-    assert len(merged) == 1
-    assert merged[0]["start_line"] == 10
-    assert merged[0]["end_line"] == 35
-```
-
-- [ ] **Step 2: Implement `merge_overlapping_slices`**
-Sort slices by `(path, start_line)`. If `current.start_line <= previous.end_line + 2`, merge the ranges into `[previous.start_line, max(previous.end_line, current.end_line)]` and re-read the unified slice from source.
+- [x] **Step 1: Write source-backed regression tests** for overlapping/nearby ranges, exact line-numbered re-read, consumer integration, and stale-source rejection.
+- [x] **Step 2: Implement `merge_overlapping_slices`**
+Merge ranges only when path and source SHA-256 match and the next start is at most two lines past the previous end. Confine paths to the requested root, re-read each merged source snapshot, and reject slices whose current hash no longer matches. `_exact_evidence` stores only the merged exact snippet; existing service callers receive the improved context pack through this path, so no service adapter change is needed.
 
 - [ ] **Step 3: Run test and verify pass & Commit**
 `git commit -m "feat(context): merge overlapping code slices to save 15-30% token budget"`
@@ -100,8 +83,8 @@ Sort slices by `(path, start_line)`. If `current.start_line <= previous.end_line
 - Modify: `src/local_ai_hub/code_index.py:850-900`
 - Test: `tests/unit/test_symbol_signatures.py`
 
-- [ ] **Step 1: Write test verifying `find_symbol` includes `signature` for TypeScript and Python methods**
-- [ ] **Step 2: Implement fix**
+- [x] **Step 1: Write test verifying `find_symbol` includes `signature` for TypeScript and Python methods**
+- [x] **Step 2: Implement fix**
 When indexing symbols in `code_index.py`, extract the full method signature (parameter names, types, return type) using regex or AST, and populate the `signature` column in table `symbols`.
 
 - [ ] **Step 3: Run test and verify pass & Commit**
@@ -115,8 +98,8 @@ When indexing symbols in `code_index.py`, extract the full method signature (par
 - Modify: `src/local_ai_hub/agent_memory.py:450-490`
 - Test: `tests/unit/test_memory_graph_cte.py`
 
-- [ ] **Step 1: Write test verifying `traverse_graph` executes single SQL query**
-- [ ] **Step 2: Implement fix**
+- [x] **Step 1: Write test verifying `traverse_graph` executes single SQL query**
+- [x] **Step 2: Implement fix**
 Replace Python BFS while-loop with SQLite recursive CTE:
 ```sql
 WITH RECURSIVE graph_cte(entity, depth) AS (
@@ -141,8 +124,8 @@ SELECT DISTINCT * FROM graph_cte LIMIT ?;
 - Modify: `src/local_ai_hub/treesitter_parser.py:30-80`
 - Test: `tests/unit/test_treesitter_isolated_worker.py`
 
-- [ ] **Step 1: Write test verifying tree-sitter runs in worker process without crashing main process on access violation**
-- [ ] **Step 2: Implement fix**
+- [x] **Step 1: Write test verifying tree-sitter runs in worker process without crashing main process on access violation**
+- [x] **Step 2: Implement fix**
 On Windows Python 3.13, run tree-sitter parsing in a separate pool worker subprocess via IPC. If the worker crashes with an OS access violation, return graceful fallback and keep the main process alive.
 
 - [ ] **Step 3: Run test and verify pass & Commit**

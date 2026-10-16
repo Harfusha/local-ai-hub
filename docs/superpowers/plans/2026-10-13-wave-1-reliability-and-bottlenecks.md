@@ -16,7 +16,7 @@
 - Modify: `src/local_ai_hub/code_index.py:3030-3050`
 - Test: `tests/unit/test_code_index_dead_code.py`
 
-- [ ] **Step 1: Write failing test verifying SQL query does not register Python callbacks in JOIN**
+ - [x] **Step 1: Write failing test verifying SQL query does not register Python callbacks in JOIN**
 
 ```python
 # tests/unit/test_code_index_dead_code.py
@@ -33,7 +33,7 @@ def test_find_dead_code_sql_avoids_python_callback(tmp_path):
 - [ ] **Step 2: Run test to verify baseline**
 Run: `python -m pytest tests/unit/test_code_index_dead_code.py -v`
 
-- [ ] **Step 3: Implement fix in `code_index.py`**
+ - [x] **Step 3: Implement fix in `code_index.py`**
 In `src/local_ai_hub/code_index.py:3035`, replace the custom function call `hub_root_archive_path(r.path)` in the SQL query with native SQL filtering `AND (r.path NOT LIKE '%archive%' AND r.path NOT LIKE '%.trash%')` or pre-filter paths before the JOIN to avoid evaluating Python GIL callbacks across 11.6M rows.
 
 - [ ] **Step 4: Verify test passes**
@@ -51,7 +51,7 @@ Run: `python -m pytest tests/unit/test_code_index_dead_code.py -v`
 - Modify: `src/local_ai_hub/projection.py:390-410`
 - Test: `tests/unit/test_mcp_negative_knowledge_projection.py`
 
-- [ ] **Step 1: Write failing test verifying incident matches are preserved**
+ - [x] **Step 1: Write failing test verifying incident matches are preserved**
 
 ```python
 # tests/unit/test_mcp_negative_knowledge_projection.py
@@ -73,8 +73,8 @@ def test_negative_knowledge_find_preserves_incidents():
 - [ ] **Step 2: Run test to verify failure**
 Run: `python -m pytest tests/unit/test_mcp_negative_knowledge_projection.py -v`
 
-- [ ] **Step 3: Implement fix**
-In `src/local_ai_hub/mcp_server.py:3773`, change projection task kind from `"status"` to `"task_memory"`. In `projection.py`, ensure `matches` and `incidents` are preserved keys under `task_memory`.
+- [x] **Step 3: Implement fix**
+Current `negative_knowledge_find` dispatch in `src/local_ai_hub/mcp_server.py` uses `"task_memory"`; `projection.py` preserves `matches` and `incidents` for that task kind. Exact source review confirmed this existing implementation on 2026-10-16; execution remains deferred to the complete-package gate.
 
 - [ ] **Step 4: Run test to verify it passes**
 Run: `python -m pytest tests/unit/test_mcp_negative_knowledge_projection.py -v`
@@ -109,7 +109,7 @@ def test_skeletonize_mcp_payload_includes_root(monkeypatch):
 - [ ] **Step 2: Run test to verify failure**
 Run: `python -m pytest tests/unit/test_mcp_skeletonize.py -v`
 
-- [ ] **Step 3: Implement fix**
+- [x] **Step 3: Implement fix**
 In `src/local_ai_hub/mcp_server.py:3296`, update payload to include `"root": root`:
 ```python
 if action == "skeletonize":
@@ -256,7 +256,7 @@ Run telemetry regression coverage only after all six waves' source changes are c
 
 **Contract:** Exclude generated artifact snapshots and `.validation/` contents from indexing, while preserving legitimate project content under `artifacts/` (including `artifacts/release/`) and similarly named source paths. Do not blanket-ignore the entire `artifacts/` directory.
 
-- [ ] **Step 1: Write test verifying generated artifact snapshots and `.validation/` are excluded while legitimate `artifacts/release/` content remains indexable**
+- [x] **Step 1: Write test verifying generated artifact snapshots and `.validation/` are excluded while legitimate `artifacts/release/` content remains indexable**
 
 ```python
 # tests/unit/test_repo_tools_ignore_dirs.py
@@ -274,7 +274,7 @@ def test_repo_tools_ignores_artifacts_and_validation(tmp_path):
     assert "test.md" not in file_names
 ```
 
-- [ ] **Step 2: Implement scoped exclusions in `repo_tools.py`**
+- [x] **Step 2: Implement scoped exclusions in `repo_tools.py`**
 Exclude known generated snapshot paths and `.validation/` without excluding legitimate project content beneath `artifacts/`.
 
 - [ ] **Step 3: Run test and verify pass & Commit**
