@@ -16,7 +16,8 @@ class _Process:
     def poll(self):
         return 0
 
-    def wait(self, timeout=None):
+    def wait(self, *, timeout):
+        assert 0 < timeout <= 60
         return 0
 
 
@@ -47,3 +48,23 @@ def test_inventory_bounds_fail_without_partial_success(tmp_path, monkeypatch, bo
     assert result["terminal"] is True
     assert result["retryable"] is False
     assert result["results"] == []
+
+
+def test_invalid_wait_protocol_does_not_retry_without_timeout(tmp_path, monkeypatch):
+    (tmp_path / ".git").mkdir()
+    process = _Process(b"one.py\0")
+    calls = []
+
+    def invalid_wait(**kwargs):
+        calls.append(kwargs)
+        raise TypeError("invalid wait protocol")
+
+    process.wait = invalid_wait
+    monkeypatch.setattr(repo_tools, "popen_managed", lambda *args, **kwargs: process)
+    tools = RepositoryTools({"rag": {"extensions": [".py"]}, "search": {"use_ripgrep_if_available": False}})
+    with pytest.raises(TypeError, match="invalid wait protocol"):
+        tools.search(str(tmp_path), "audit_needle", exact_count=True, limit=10)
+    assert len(calls) == 1
+    assert set(calls[0]) == {"timeout"}
+    assert 0 < calls[0]["timeout"] <= 60
+    assert process.stdout.closed
