@@ -16,6 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 SAFE_DIR_NAMES_TO_REMOVE = {
     "__pycache__",
     ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
     ".coverage",
     "htmlcov",
     "build",
@@ -30,21 +32,54 @@ SAFE_FILE_PATTERNS_TO_REMOVE = {
 }
 
 
-def clean(root: Path, *, all_clean: bool = False, dry_run: bool = False) -> tuple[int, int]:
+def is_safe_clean_target(path: Path | str, root: Path | str) -> bool:
+    """Return True if path is a safe relative target within root to clean."""
+    if not isinstance(path, (str, Path)) or not isinstance(root, (str, Path)):
+        return False
+    if "\x00" in str(path) or "\x00" in str(root):
+        return False
+    try:
+        r = Path(root).resolve()
+        p = Path(path).resolve()
+        rel = p.relative_to(r)
+        return ".git" not in rel.parts
+    except (ValueError, OSError):
+        return False
+
+
+def clean(root: Path | str, *, all_clean: bool = False, dry_run: bool = False) -> tuple[int, int]:
     """Remove cache files and build artifacts."""
+    if not isinstance(root, (str, Path)) or "\x00" in str(root):
+        raise ValueError("invalid root path")
+    try:
+        root_path = Path(root).resolve()
+    except (OSError, ValueError):
+        raise ValueError("invalid root path")
+    if not root_path.is_dir():
+        return 0, 0
+
     files_removed = 0
     dirs_removed = 0
 
     # 1. Remove directories
-    for path in sorted(root.rglob("*"), reverse=True):
-        rel = path.relative_to(root).as_posix()
-        parts = path.relative_to(root).parts
+    for path in sorted(root_path.rglob("*"), reverse=True):
+        try:
+            rel_path = path.relative_to(root_path)
+            rel = rel_path.as_posix()
+            parts = rel_path.parts
+        except (ValueError, OSError):
+            continue
         if ".git" in parts:
             continue
         if not all_clean and (".venv" in parts or "tool-envs" in parts):
             continue
 
-        if path.is_dir():
+        try:
+            is_d = path.is_dir()
+        except OSError:
+            continue
+
+        if is_d:
             if path.name in SAFE_DIR_NAMES_TO_REMOVE or path.name.endswith(".egg-info"):
                 dirs_removed += 1
                 if dry_run:
@@ -61,16 +96,20 @@ def clean(root: Path, *, all_clean: bool = False, dry_run: bool = False) -> tupl
                     shutil.rmtree(path, ignore_errors=True)
 
     # 2. Remove files
-    for path in sorted(root.rglob("*")):
-        if not path.is_file():
+    for path in sorted(root_path.rglob("*")):
+        try:
+            if not path.is_file():
+                continue
+            rel_path = path.relative_to(root_path)
+            rel = rel_path.as_posix()
+            parts = rel_path.parts
+        except (ValueError, OSError):
             continue
-        parts = path.relative_to(root).parts
         if ".git" in parts:
             continue
         if not all_clean and (".venv" in parts or "tool-envs" in parts):
             continue
 
-        rel = path.relative_to(root).as_posix()
         should_remove = False
 
         if path.suffix in {".pyc", ".pyo"}:
