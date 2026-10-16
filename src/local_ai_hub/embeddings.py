@@ -906,26 +906,21 @@ class EmbeddingModel:
         if len(vector_dimensions) != 1:
             return {"success": False, "error": "embedding backend returned inconsistent vector dimensions", "model": self.model_name}
         result_dimension = vector_dimensions.pop()
+        if pending_cache_writes:
+            batch_writer = getattr(self.cache, "set_many", None)
+            if not callable(batch_writer):
+                return {
+                    "success": False,
+                    "error": "embedding cache does not support batch writes",
+                    "model": self.model_name,
+                }
+            batch_writer(pending_cache_writes)
         if response_cache_identity:
             self._remember_dimension(
                 response_cache_identity,
                 result_dimension,
                 persist=self.cache_enabled and self._identity_cacheable(response_cache_identity),
             )
-        if pending_cache_writes:
-            batch_writer = getattr(self.cache, "set_many", None)
-            if callable(batch_writer):
-                batch_writer(pending_cache_writes)
-            else:
-                single_writer = getattr(self.cache, "set", None)
-                if not callable(single_writer):
-                    return {
-                        "success": False,
-                        "error": "embedding cache does not support writes",
-                        "model": self.model_name,
-                    }
-                for key, val in pending_cache_writes.items():
-                    single_writer(key, val)
 
         execution_snapshot = getattr(self._execution_local, "snapshot", None)
         provenance = self._model_provenance(response_cache_identity)
