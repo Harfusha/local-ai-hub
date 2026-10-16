@@ -56,7 +56,7 @@ def assess_semantic_result(
     it; deterministic repository evidence still wins.
     """
 
-    if not isinstance(task, str) or not task.strip():
+    if not isinstance(task, str) or not task.strip() or "\x00" in task:
         return _reject("malformed_task")
     if len(task) > MAX_TASK_CHARS:
         return _reject("task_too_large")
@@ -159,6 +159,8 @@ def _model_text(value: Any) -> tuple[str | None, str | None]:
 
 
 def _normalize_path(value: str) -> str | None:
+    if not isinstance(value, str) or "\x00" in value:
+        return None
     path = _LINE_SUFFIX.sub("", value.strip().strip("`'\"()[]{}<>,.;"))
     path = path.replace("\\", "/")
     if not path or path.startswith("/") or re.match(r"^[A-Za-z]:/", path) or path.startswith("//"):
@@ -211,3 +213,22 @@ def _accept() -> dict[str, Any]:
         "advisory_only": True,
         "bypass_reason": None,
     }
+
+
+def is_usable(result: Mapping[str, Any]) -> bool:
+    if not isinstance(result, Mapping):
+        return False
+    return bool(result.get("usable", False))
+
+
+def is_valid_task(task: Any) -> bool:
+    if not isinstance(task, str) or not task.strip() or "\x00" in task:
+        return False
+    return len(task) <= MAX_TASK_CHARS
+
+
+def normalize_evidence_paths(paths: Iterable[str]) -> tuple[str, ...] | None:
+    bounded, error = _bounded_paths(paths)
+    if error:
+        return None
+    return bounded
