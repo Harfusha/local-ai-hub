@@ -8563,9 +8563,19 @@ def test_{sym}_regression_edge_cases():
                             migration_ddl_count += 1
                         except sqlite3.Error as exc:
                             rel_path = migration_path.relative_to(p_root).as_posix()
-                            return {"success": False, "error": f"failed to apply schema DDL in {rel_path}: {exc}"}
+                            return {
+                                "success": False,
+                                "drift_detected": None,
+                                "in_sync": None,
+                                "error": f"failed to apply schema DDL in {rel_path}: {exc}",
+                            }
                 if migration_ddl_count == 0:
-                    return {"success": False, "error": "no supported table schema DDL found in SQL migrations"}
+                    return {
+                        "success": False,
+                        "drift_detected": None,
+                        "in_sync": None,
+                        "error": "no supported table schema DDL found in SQL migrations",
+                    }
                 tables = migration_db.execute(
                     "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
                 )

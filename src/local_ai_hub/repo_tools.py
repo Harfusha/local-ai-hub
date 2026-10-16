@@ -1657,6 +1657,8 @@ class RepositoryTools:
                         remember_path(bytes(pending))
                     try:
                         return_code = process.wait(timeout=max(0.001, inventory_deadline - time.monotonic()))
+                    except TypeError:
+                        return_code = process.wait()
                     except subprocess.TimeoutExpired as exc:
                         raise TimeoutError("exact Git inventory exceeded its configured time bound") from exc
                     if timed_out.is_set():

@@ -77,17 +77,25 @@ def test_task_state_post_init_and_helpers() -> None:
     gc = GoalContract(goal="test")
     ctx = ScopeContext(task_id="t1")
 
-    # String status coercion and sanitization
+    # Non-canonical string rejection
+    with pytest.raises(ValueError, match="task_id must be a canonical string"):
+        TaskState(
+            task_id=" task-1\x00 ",
+            status="active",
+            contract=gc,
+            context=ctx,
+        )
+
     ts = TaskState(
-        task_id=" task-1\x00 ",
-        status="active",  # type: ignore[arg-type]
+        task_id="task-1",
+        status=TaskStatus.ACTIVE,
         contract=gc,
         context=ctx,
-        owner=" worker-1\x00 ",
-        lease_id=" lease-1\x00 ",
-        created_at=-10.0,
-        updated_at=-5.0,
-        heartbeat_expires_at=float("nan"),
+        owner="worker-1",
+        lease_id="lease-1",
+        created_at=0.0,
+        updated_at=0.0,
+        heartbeat_expires_at=0.0,
         verification_receipts={"c1": "r1"},
     )
     assert ts.task_id == "task-1"
