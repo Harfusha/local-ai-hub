@@ -31,7 +31,7 @@ class Memory:
             scope=AgentScope.REPOSITORY, scope_id=str(root), expires_at=None,
             sensitivity="normal", source="user", confidence=1.0,
             created_at=1.0, updated_at=2.0, evidence_ids=(),
-            provenance={"root": str(root), "tenant": "tenant-a", "version": "v1"},
+            provenance={"root": str(root), "tenant": "tenant-a", "version": "v1", "repository_id": "snapshot-repository"},
         )]
         self.observed = []
 
@@ -86,7 +86,7 @@ def setup(tmp_path, monkeypatch):
     compiler = Compiler(memory)
     incidents = SimpleNamespace(find_negative_knowledge=lambda *args, **kwargs: [])
     tasks.set_memory_adoption(memory_store=memory, context_compiler=compiler, incident_store=incidents)
-    monkeypatch.setattr(project_config, "resolve_project_context", lambda *args: SimpleNamespace(coordination_id=""))
+    monkeypatch.setattr(project_config, "resolve_project_context", lambda *args: SimpleNamespace(coordination_id="snapshot-repository"))
     context = ScopeContext(repository_id=str(root), task_id="snapshot-task", session_id="session-a", branch="main")
     return tasks, memory, compiler, incidents, root, context
 
@@ -346,17 +346,19 @@ def test_real_create_and_resume_keep_older_goal_fact_ahead_of_general_convention
     memory = MemoryStore(state)
     compiler = ContextCompiler(state, task_store=tasks, memory_store=memory)
     tasks.set_memory_adoption(memory_store=memory, context_compiler=compiler)
+    repository_id = project_config.resolve_project_context(root, tmp_path).coordination_id
+    assert repository_id
     wanted = memory.record(MemoryRecord.create(
         kind=MemoryKind.FACT, scope=AgentScope.REPOSITORY, scope_id=str(root),
         key="renderer theme cache invalidation", value="Renderer theme cache invalidation uses the theme revision",
         status=MemoryStatus.CONFIRMED, confidence=1.0, source="user",
-        provenance={"root": str(root), "tenant": "tenant-a"},
+        provenance={"root": str(root), "tenant": "tenant-a", "repository_id": repository_id},
     ), actor="user")
     for index in range(25):
         memory.record(MemoryRecord.create(
             kind=MemoryKind.CONVENTION, scope=AgentScope.REPOSITORY, scope_id=str(root),
             key=f"rule{index}", value="Keep files immutable", status=MemoryStatus.CONFIRMED,
-            confidence=1.0, source="user", provenance={"root": str(root), "tenant": "tenant-a"},
+            confidence=1.0, source="user", provenance={"root": str(root), "tenant": "tenant-a", "repository_id": repository_id},
         ), actor="user")
     compiled_ids = []
     compile_context = compiler.compile
