@@ -97,10 +97,7 @@ def install_persistent_service(python: Path, install_dir: Path) -> bool:
         log(f"ERROR: service registration failed: {exc}")
         return False
     mode = (result.stdout or "").strip().splitlines()[-1].strip() if (result.stdout or "").strip() else ""
-    persistent_modes = {
-        "windows-logon-task", "windows-user-startup", "existing-service", "launchd", "systemd-user",
-    }
-    if result.returncode != 0 or mode not in persistent_modes:
+    if result.returncode != 0 or not is_valid_persistent_mode(mode):
         detail = f" (mode={mode or 'unknown'}, exit={result.returncode})"
         if result.stderr:
             detail += f": {result.stderr.strip()}"
@@ -110,8 +107,25 @@ def install_persistent_service(python: Path, install_dir: Path) -> bool:
     return True
 
 
+PERSISTENT_MODES = {
+    "windows-logon-task", "windows-user-startup", "existing-service", "launchd", "systemd-user",
+}
+
+
+def is_valid_persistent_mode(mode: Any) -> bool:
+    """Return True if mode is a recognized persistent service installation mode."""
+    if not isinstance(mode, str):
+        return False
+    return mode.strip().lower() in PERSISTENT_MODES
+
+
 def expand(value: str) -> Path:
-    return Path(os.path.expandvars(os.path.expanduser(value))).resolve()
+    if not isinstance(value, str) or "\x00" in value:
+        return SOURCE_ROOT
+    try:
+        return Path(os.path.expandvars(os.path.expanduser(value))).resolve()
+    except (ValueError, OSError):
+        return SOURCE_ROOT
 
 
 def venv_python(venv: Path) -> Path:
