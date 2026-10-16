@@ -54,6 +54,20 @@ class ContextRequest:
     path_hints: tuple[ContextPathHint, ...] = ()
     identity: str = ""
 
+    def __post_init__(self) -> None:
+        tid = str(self.task_id).replace("\x00", "").strip() if self.task_id is not None else ""
+        try:
+            if isinstance(self.token_budget, float) and (math.isnan(self.token_budget) or math.isinf(self.token_budget)):
+                budget = 4000
+            else:
+                budget = int(self.token_budget)
+                if budget <= 0:
+                    budget = 4000
+        except (ValueError, TypeError):
+            budget = 4000
+        object.__setattr__(self, "task_id", tid)
+        object.__setattr__(self, "token_budget", budget)
+
 
 @dataclass(frozen=True)
 class ContextElement:
@@ -65,6 +79,55 @@ class ContextElement:
     confidence: float = 1.0
     freshness: float = 0.0
     provenance: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        eid = str(self.element_id).replace("\x00", "").strip() if self.element_id is not None else ""
+        if not eid:
+            eid = f"el_{uuid.uuid4().hex[:8]}"
+        sk = str(self.source_kind).replace("\x00", "").strip() if self.source_kind is not None else ""
+        if not sk:
+            sk = "unknown"
+        cnt = str(self.content).replace("\x00", "") if self.content is not None else ""
+
+        try:
+            if not isinstance(self.estimated_tokens, int) or isinstance(self.estimated_tokens, bool):
+                tokens = int(self.estimated_tokens)
+            else:
+                tokens = self.estimated_tokens
+        except (ValueError, TypeError):
+            tokens = _estimate_tokens(cnt)
+        tokens = max(1, tokens)
+
+        rsn = str(self.reason).replace("\x00", "") if self.reason is not None else ""
+
+        try:
+            conf = float(self.confidence)
+            if not math.isfinite(conf):
+                conf = 1.0
+            else:
+                conf = max(0.0, min(1.0, conf))
+        except (ValueError, TypeError):
+            conf = 1.0
+
+        try:
+            frsh = float(self.freshness)
+            if not math.isfinite(frsh):
+                frsh = 0.0
+            else:
+                frsh = max(0.0, frsh)
+        except (ValueError, TypeError):
+            frsh = 0.0
+
+        prov = dict(self.provenance) if isinstance(self.provenance, Mapping) else {}
+
+        object.__setattr__(self, "element_id", eid)
+        object.__setattr__(self, "source_kind", sk)
+        object.__setattr__(self, "content", cnt)
+        object.__setattr__(self, "estimated_tokens", tokens)
+        object.__setattr__(self, "reason", rsn)
+        object.__setattr__(self, "confidence", conf)
+        object.__setattr__(self, "freshness", frsh)
+        object.__setattr__(self, "provenance", prov)
 
     def to_dict(self, compact: bool = False) -> dict[str, Any]:
         if compact:
@@ -201,6 +264,28 @@ class CompiledContext:
         })
         return d
 
+    def has_elements(self) -> bool:
+        return bool(self.elements)
+
+    def element_count(self) -> int:
+        return len(self.elements)
+
+    def element_ids(self) -> tuple[str, ...]:
+        return tuple(el.element_id for el in self.elements)
+
+    def element_kinds(self) -> tuple[str, ...]:
+        return tuple(el.source_kind for el in self.elements)
+
+    def get_elements_by_kind(self, source_kind: str) -> list[ContextElement]:
+        target = str(source_kind).replace("\x00", "").strip().lower()
+        return [el for el in self.elements if el.source_kind.lower() == target]
+
+    def is_truncated(self) -> bool:
+        return self.truncated
+
+    def is_stale(self) -> bool:
+        return self.stale
+
 
 @dataclass(frozen=True)
 class KnowledgeLink:
@@ -212,6 +297,22 @@ class KnowledgeLink:
     revision: str = ""
     valid: bool = True
     created_at: float = 0.0
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "link_id", str(self.link_id).replace("\x00", "").strip() if self.link_id is not None else "")
+        object.__setattr__(self, "source_id", str(self.source_id).replace("\x00", "").strip() if self.source_id is not None else "")
+        object.__setattr__(self, "target_id", str(self.target_id).replace("\x00", "").strip() if self.target_id is not None else "")
+        object.__setattr__(self, "relationship", str(self.relationship).replace("\x00", "").strip() if self.relationship is not None else "")
+        object.__setattr__(self, "path", str(self.path).replace("\x00", "").strip() if self.path is not None else "")
+        object.__setattr__(self, "revision", str(self.revision).replace("\x00", "").strip() if self.revision is not None else "")
+        object.__setattr__(self, "valid", bool(self.valid))
+        try:
+            ca = float(self.created_at)
+            if not math.isfinite(ca):
+                ca = 0.0
+        except (ValueError, TypeError):
+            ca = 0.0
+        object.__setattr__(self, "created_at", max(0.0, ca))
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -227,7 +328,9 @@ class KnowledgeLink:
 
 
 def _estimate_tokens(text: str) -> int:
-    return max(1, len(text.strip()) // 4)
+    if not isinstance(text, str):
+        text = str(text) if text is not None else ""
+    return max(1, len(text.replace("\x00", "").strip()) // 4)
 
 
 def _memory_record_matches_tenant(record: Any, tenant: str) -> bool:

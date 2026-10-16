@@ -18,7 +18,7 @@ class VRAMBalancer:
     """
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
-        self.config = config or {}
+        self.config = dict(config) if isinstance(config, dict) else {}
         self._lock = threading.RLock()
         self._condition = threading.Condition(self._lock)
         self._sampling = False
@@ -167,6 +167,14 @@ class VRAMBalancer:
         else:
             result["pinned_model"] = None
         return result
+
+    @staticmethod
+    def _safe_float(val: Any, default: float = 0.0) -> float:
+        try:
+            res = float(val or 0)
+            return res if math.isfinite(res) else default
+        except (TypeError, ValueError, OverflowError):
+            return default
 
     def _status_from_telemetry(self, gpu: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
@@ -434,6 +442,28 @@ class VRAMBalancer:
             if self._pinned_model is not None:
                 self._invalidate_status_locked()
             self._pinned_model = None
+            return None
+
+    def is_model_pinned(self, model_name: str) -> bool:
+        """Return True if model is currently warm-pinned and not expired."""
+        target = str(model_name).strip() if model_name is not None else ""
+        if not target:
+            return False
+        pinned = self.get_pinned_model()
+        return pinned == target
+
+    def pinned_model_info(self) -> dict[str, Any] | None:
+        """Return active pin metadata if model is currently pinned."""
+        with self._lock:
+            now = time.monotonic()
+            if self._pinned_model and now < self._pin_expires:
+                return {
+                    "model": self._pinned_model,
+                    "ttl_remaining_seconds": round(max(0.0, self._pin_expires - now), 1),
+                }
+            if self._pinned_model is not None:
+                self._invalidate_status_locked()
+                self._pinned_model = None
             return None
 
     def unpin_model(self) -> None:

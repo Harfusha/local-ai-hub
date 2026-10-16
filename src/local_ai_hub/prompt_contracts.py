@@ -76,7 +76,7 @@ def capability_for(model: str, *, role: str = "") -> ModelCapability:
         return known
     if "vl" in normalized or str(role).lower() == "vision":
         return ModelCapability(model, "vision", ("visual_review", "visual_issue_list", "extract"), ("source_only_reasoning", "apply_changes"))
-    if any(size in normalized for size in ("9b", "13b", "14b", "32b")):
+    if any(size in normalized for size in ("9b", "13b", "14b", "32b", "70b", "72b")):
         return ModelCapability(model, "heavy", ("bounded_review", "root_cause", "cross_file_reasoning", "patch_plan", "compare"), ("apply_changes", "final_verification"))
     if "7b" in normalized:
         return _CAPABILITIES["qwen2.5-coder:7b"]
@@ -88,12 +88,23 @@ def capability_for(model: str, *, role: str = "") -> ModelCapability:
 
 
 def _clip(value: str, limit: int) -> str:
-    text = str(value or "")
+    if limit <= 0:
+        return ""
+    text = str(value or "").replace("\x00", "")
     return text if len(text) <= limit else text[: max(0, limit - 24)] + "\n...[bounded]"
 
 
-def _lines(values: Iterable[str], limit: int = 12) -> str:
-    items = [str(value).strip() for value in values if str(value).strip()]
+def _lines(values: Iterable[str] | None, limit: int = 12) -> str:
+    if values is None or limit <= 0:
+        return "- none supplied"
+    try:
+        items = [
+            str(value).replace("\x00", "").replace("\r", " ").replace("\n", " ").strip()
+            for value in values
+            if value is not None and str(value).strip()
+        ]
+    except TypeError:
+        return "- none supplied"
     return "\n".join(f"- {item}" for item in items[:limit]) or "- none supplied"
 
 
@@ -158,3 +169,29 @@ def build_prompt(
         "holé 'line N' nepoužívej. Obecné rady bez vazby na dodaný context označ jako nedostatečné."
     )
     return PromptPackage(system=system, user=user, capability=capability, operation=operation_name)
+
+
+def supported_operations() -> tuple[str, ...]:
+    """Return tuple of all recognized operations with explicit prompt guidance."""
+    return tuple(_OPERATION_GUIDANCE.keys())
+
+
+def is_operation_supported(operation: str) -> bool:
+    """Return True if operation is explicitly recognized in prompt guidance."""
+    if not operation or not isinstance(operation, str):
+        return False
+    return operation.strip().lower() in _OPERATION_GUIDANCE
+
+
+def get_model_tier(model: str) -> str:
+    """Return the capability tier for the given model name."""
+    return capability_for(model).tier
+
+
+def can_model_perform(model: str, action: str) -> bool:
+    """Return True if the model's conservative capability matrix includes action."""
+    if not model or not action or not isinstance(action, str):
+        return False
+    cap = capability_for(model)
+    return action.strip().lower() in cap.can
+

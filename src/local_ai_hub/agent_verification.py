@@ -5,16 +5,18 @@ from .json_utils import dumps as json_dumps
 import hashlib
 import math
 import os
+import numbers
+import re
 import shlex
 from pathlib import Path
 import json
 import sqlite3
-import re
 import threading
 import time
 import uuid
 from contextlib import closing
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any, Mapping
 
 from .agent_events import AgentEvent, AgentStateStore
@@ -29,7 +31,7 @@ VERIFICATION_RECEIPT_METADATA_SCHEMA = "verification_receipt_metadata.v1"
 
 
 def criterion_evidence_type(criterion: str) -> str:
-    text = str(criterion or "").lower()
+    text = str(criterion or "").replace("\x00", "").lower()
     if "benchmark" in text:
         return "benchmark"
     if any(
@@ -42,7 +44,7 @@ def criterion_evidence_type(criterion: str) -> str:
 
 def classify_verification_command(command: str) -> str:
     """Return the evidence kind a command can support, defaulting conservatively."""
-    text = str(command or "").lower()
+    text = str(command or "").replace("\x00", "").lower()
     try:
         tokens = shlex.split(text, posix=False)
     except ValueError:
@@ -92,12 +94,30 @@ class VerificationReceipt:
     def __post_init__(self) -> None:
         if type(self.passed) is not bool:
             raise ValueError("verification receipt passed must be a boolean")
-        if isinstance(self.mutation_generation, bool) or not isinstance(self.mutation_generation, int) or self.mutation_generation < 0:
+        if type(self.mutation_generation) is not int or self.mutation_generation < 0:
             raise ValueError("verification receipt mutation_generation must be a non-negative integer")
+        for name, value in (
+            ("receipt_id", self.receipt_id),
+            ("task_id", self.task_id),
+            ("criterion", self.criterion),
+            ("owner", self.owner),
+            ("change_intent_id", self.change_intent_id),
+            ("evidence_id", self.evidence_id),
+            ("command_id", self.command_id),
+            ("repository_revision", self.repository_revision),
+            ("evidence_type", self.evidence_type),
+        ):
+            if type(value) is not str or "\x00" in value or value.strip() != value:
+                raise ValueError(f"verification receipt {name} must be a canonical string")
+        for name in ("receipt_id", "task_id", "criterion"):
+            if not getattr(self, name):
+                raise ValueError(f"verification receipt {name} must be nonempty")
+        if type(self.details) is not dict:
+            raise ValueError("verification receipt details must be a mapping")
         for name, value in (("observed_at", self.observed_at), ("expires_at", self.expires_at)):
             if name == "expires_at" and value is None:
                 continue
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
+            if isinstance(value, bool) or not isinstance(value, numbers.Real):
                 raise ValueError(f"verification receipt {name} must be a finite number")
             try:
                 finite = math.isfinite(value)
@@ -105,12 +125,22 @@ class VerificationReceipt:
                 finite = False
             if not finite:
                 raise ValueError(f"verification receipt {name} must be a finite number")
-        object.__setattr__(self, "owner", str(self.owner or "").strip())
-        object.__setattr__(self, "repository_revision", str(self.repository_revision or "").strip())
-        evidence_type = str(self.evidence_type or "").strip().lower()
+        evidence_type = self.evidence_type
         if evidence_type not in {"test", "benchmark", "source_review"}:
             raise ValueError("verification receipt has unsupported evidence_type")
         object.__setattr__(self, "evidence_type", evidence_type)
+
+    def is_expired(self, now: float) -> bool:
+        return not self.is_fresh(now)
+
+    def is_test(self) -> bool:
+        return self.evidence_type == "test"
+
+    def is_benchmark(self) -> bool:
+        return self.evidence_type == "benchmark"
+
+    def is_source_review(self) -> bool:
+        return self.evidence_type == "source_review"
 
     @classmethod
     def create(
@@ -128,23 +158,32 @@ class VerificationReceipt:
         expires_at: float | None = None,
         details: dict[str, Any] | None = None,
     ) -> VerificationReceipt:
-        task_key = str(task_id or "").strip()
-        criterion_text = str(criterion or "").strip()
+        def canonical_text(value: Any, name: str, *, required: bool = False) -> str:
+            if type(value) is not str or "\x00" in value or value.strip() != value:
+                raise ValueError(f"verification receipt {name} must be a canonical string")
+            if required and not value:
+                raise ValueError(f"verification receipt requires {name}")
+            return value
+
+        task_key = canonical_text(task_id, "task_id", required=True)
+        criterion_text = canonical_text(criterion, "criterion", required=True)
+        owner_text = canonical_text(owner, "owner")
+        change_intent_key = canonical_text(change_intent_id, "change_intent_id")
+        evidence_key = canonical_text(evidence_id, "evidence_id")
+        command_key = canonical_text(command_id, "command_id")
+        revision_key = canonical_text(repository_revision, "repository_revision")
         if not task_key:
             raise ValueError("verification receipt requires task_id")
         if not criterion_text:
             raise ValueError("verification receipt requires criterion")
-        owner_text = str(owner or "").strip()
         if type(passed) is not bool:
             raise ValueError("verification receipt passed must be a boolean")
         passed_value = passed
-        evidence_key = str(evidence_id or "").strip()
-        command_key = str(command_id or "").strip()
         inferred_kind = criterion_evidence_type(criterion_text)
-        evidence_kind = str(evidence_type or inferred_kind).strip().lower()
+        evidence_kind = inferred_kind if evidence_type is None else canonical_text(evidence_type, "evidence_type", required=True)
         if evidence_kind not in {"test", "benchmark", "source_review"}:
             raise ValueError("verification receipt has unsupported evidence_type")
-        if isinstance(mutation_generation, bool) or not isinstance(mutation_generation, int):
+        if type(mutation_generation) is not int:
             raise ValueError("verification receipt mutation_generation must be a non-negative integer")
         generation = mutation_generation
         if generation < 0:
@@ -153,22 +192,24 @@ class VerificationReceipt:
             raise ValueError("passed verification receipt requires evidence_id")
         if passed_value and evidence_kind in {"test", "benchmark"} and not command_key:
             raise ValueError(f"passed {evidence_kind} verification receipt requires command_id")
+        if details is not None and type(details) is not dict:
+            raise ValueError("verification receipt details must be a mapping")
         now = time.time()
         return cls(
             receipt_id=f"rcpt_{uuid.uuid4().hex[:12]}",
             task_id=task_key,
             criterion=criterion_text,
             owner=owner_text,
-            change_intent_id=change_intent_id,
+            change_intent_id=change_intent_key,
             evidence_id=evidence_key,
             command_id=command_key,
-            repository_revision=repository_revision,
+            repository_revision=revision_key,
             mutation_generation=generation,
             evidence_type=evidence_kind,
             observed_at=now,
             expires_at=expires_at,
             passed=passed_value,
-            details=dict(details or {}),
+            details={} if details is None else details,
         )
 
     def is_fresh(self, now: float) -> bool:
@@ -204,26 +245,26 @@ class VerificationReceipt:
         if type(passed) is not bool:
             raise ValueError("verification receipt passed must be a boolean")
         mutation_generation = data.get("mutation_generation", 0)
-        if isinstance(mutation_generation, bool) or not isinstance(mutation_generation, int) or mutation_generation < 0:
+        if type(mutation_generation) is not int or mutation_generation < 0:
             raise ValueError("verification receipt mutation_generation must be a non-negative integer")
         details = data.get("details", {})
-        if not isinstance(details, Mapping):
+        if type(details) is not dict:
             raise ValueError("verification receipt details must be a mapping")
         return cls(
-            receipt_id=str(data["receipt_id"]),
-            task_id=str(data["task_id"]),
-            criterion=str(data["criterion"]),
-            owner=str(data.get("owner", "")),
-            change_intent_id=str(data.get("change_intent_id", "")),
-            evidence_id=str(data.get("evidence_id", "")),
-            command_id=str(data.get("command_id", "")),
-            repository_revision=str(data.get("repository_revision", "")),
+            receipt_id=data["receipt_id"],
+            task_id=data["task_id"],
+            criterion=data["criterion"],
+            owner=data.get("owner", ""),
+            change_intent_id=data.get("change_intent_id", ""),
+            evidence_id=data.get("evidence_id", ""),
+            command_id=data.get("command_id", ""),
+            repository_revision=data.get("repository_revision", ""),
             mutation_generation=mutation_generation,
-            evidence_type=str(data.get("evidence_type", "source_review")),
+            evidence_type=data.get("evidence_type", "source_review"),
             observed_at=data.get("observed_at", 0.0),
             expires_at=data.get("expires_at"),
             passed=passed,
-            details=dict(details),
+            details=details,
         )
 
 
@@ -267,6 +308,26 @@ class ChangeIntent:
     rollback_description: str = ""
     created_at: float = 0.0
 
+    def __post_init__(self) -> None:
+        cid = str(self.change_id or "").replace("\x00", "").strip()
+        tid = str(self.task_id or "").replace("\x00", "").strip()
+        ap = tuple(str(x).replace("\x00", "").strip() for x in (self.affected_paths or ()) if str(x).replace("\x00", "").strip())
+        asym = tuple(str(x).replace("\x00", "").strip() for x in (self.affected_symbols or ()) if str(x).replace("\x00", "").strip())
+        imp = str(self.expected_impact or "").replace("\x00", "").strip()
+        rb = str(self.rollback_description or "").replace("\x00", "").strip()
+        try:
+            ca = float(self.created_at)
+            ca = max(0.0, ca) if math.isfinite(ca) else 0.0
+        except (ValueError, TypeError):
+            ca = 0.0
+        object.__setattr__(self, "change_id", cid)
+        object.__setattr__(self, "task_id", tid)
+        object.__setattr__(self, "affected_paths", ap)
+        object.__setattr__(self, "affected_symbols", asym)
+        object.__setattr__(self, "expected_impact", imp)
+        object.__setattr__(self, "rollback_description", rb)
+        object.__setattr__(self, "created_at", ca)
+
     @classmethod
     def create(
         cls,
@@ -299,6 +360,8 @@ class ChangeIntent:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> ChangeIntent:
+        if not isinstance(data, Mapping):
+            raise TypeError("change intent data must be a mapping")
         return cls(
             change_id=str(data["change_id"]),
             task_id=str(data["task_id"]),
@@ -319,6 +382,41 @@ class OutcomeRecord:
     actor: str = "user"
     details: dict[str, Any] = field(default_factory=dict)
     created_at: float = 0.0
+
+    def __post_init__(self) -> None:
+        oid = str(self.outcome_id or "").replace("\x00", "").strip()
+        cid = str(self.change_id or "").replace("\x00", "").strip()
+        tid = str(self.task_id or "").replace("\x00", "").strip()
+        knd = str(self.kind or "accepted").replace("\x00", "").strip().lower()
+        act = str(self.actor or "user").replace("\x00", "").strip()
+        det = dict(self.details) if isinstance(self.details, Mapping) else {}
+        try:
+            ca = float(self.created_at)
+            ca = max(0.0, ca) if math.isfinite(ca) else 0.0
+        except (ValueError, TypeError):
+            ca = 0.0
+        object.__setattr__(self, "outcome_id", oid)
+        object.__setattr__(self, "change_id", cid)
+        object.__setattr__(self, "task_id", tid)
+        object.__setattr__(self, "kind", knd)
+        object.__setattr__(self, "actor", act)
+        object.__setattr__(self, "details", det)
+        object.__setattr__(self, "created_at", ca)
+
+    def is_accepted(self) -> bool:
+        return self.kind == "accepted"
+
+    def is_reverted(self) -> bool:
+        return self.kind == "reverted"
+
+    def is_corrected(self) -> bool:
+        return self.kind == "corrected"
+
+    def is_regressed(self) -> bool:
+        return self.kind == "regressed"
+
+    def is_rejected(self) -> bool:
+        return self.kind == "rejected"
 
     @classmethod
     def reverted(
@@ -428,6 +526,8 @@ class OutcomeRecord:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> OutcomeRecord:
+        if not isinstance(data, Mapping):
+            raise TypeError("outcome record data must be a mapping")
         return cls(
             outcome_id=str(data["outcome_id"]),
             change_id=str(data.get("change_id", "")),
@@ -448,6 +548,42 @@ class CompletionResult:
     stale_criteria: tuple[str, ...]
     receipts: tuple[VerificationReceipt, ...]
     consistency: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        tid = str(self.task_id or "").replace("\x00", "").strip()
+        sat = tuple(str(x).replace("\x00", "").strip() for x in (self.satisfied_criteria or ()) if str(x).replace("\x00", "").strip())
+        unsat = tuple(str(x).replace("\x00", "").strip() for x in (self.unsatisfied_criteria or ()) if str(x).replace("\x00", "").strip())
+        stale = tuple(str(x).replace("\x00", "").strip() for x in (self.stale_criteria or ()) if str(x).replace("\x00", "").strip())
+        rcpts = tuple(self.receipts or ())
+        cons = dict(self.consistency) if isinstance(self.consistency, Mapping) else {}
+        object.__setattr__(self, "task_id", tid)
+        object.__setattr__(self, "complete", self.complete is True)
+        object.__setattr__(self, "satisfied_criteria", sat)
+        object.__setattr__(self, "unsatisfied_criteria", unsat)
+        object.__setattr__(self, "stale_criteria", stale)
+        object.__setattr__(self, "receipts", rcpts)
+        object.__setattr__(self, "consistency", cons)
+
+    def is_complete(self) -> bool:
+        return self.complete
+
+    def has_receipts(self) -> bool:
+        return bool(self.receipts)
+
+    def receipt_count(self) -> int:
+        return len(self.receipts)
+
+    def satisfied_count(self) -> int:
+        return len(self.satisfied_criteria)
+
+    def unsatisfied_count(self) -> int:
+        return len(self.unsatisfied_criteria)
+
+    def stale_count(self) -> int:
+        return len(self.stale_criteria)
+
+    def all_criteria(self) -> tuple[str, ...]:
+        return self.satisfied_criteria + self.unsatisfied_criteria + self.stale_criteria
 
     def to_dict(self) -> dict[str, Any]:
         payload = {
