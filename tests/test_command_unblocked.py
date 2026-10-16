@@ -338,7 +338,7 @@ def test_docker_sandbox_mutation_is_not_suppressed(tmp_path, monkeypatch):
     assert broker.stats()["blocked"] == 2
 
 
-def test_non_mutating_policy_block_remains_suppressed(tmp_path):
+def test_unknown_command_policy_block_is_not_suppressed(tmp_path):
     broker = CommandBroker(
         {
             "server": {"state_dir": str(tmp_path / "state")},
@@ -352,17 +352,18 @@ def test_non_mutating_policy_block_remains_suppressed(tmp_path):
     second = broker.run("unknown-tool", str(tmp_path), "tenant")
 
     assert first["policy_blocked"] is True
-    assert second["suppression_cache_hit"] is True
-    assert broker.stats()["blocked"] == 1
+    assert second["policy_blocked"] is True
+    assert second.get("suppression_cache_hit") is not True
+    assert broker.stats()["blocked"] == 2
 
 
 def test_error_distillation_on_command_failure(tmp_path):
     broker = _default_broker(tmp_path)
-    res = broker.run(f'{sys.executable} -c "raise ValueError(\'custom_failure_test\')"', str(tmp_path), "tenant")
+    res = broker.run("git status --not-a-real-option", str(tmp_path), "tenant")
     assert res.get("success") is False
     assert res.get("policy_blocked") is not True
     assert "error_distillation" in res
-    assert "custom_failure_test" in res["error_distillation"]
+    assert "option" in res["error_distillation"].lower()
     assert res["artifact_id"] == "artifact"
 
 
@@ -371,7 +372,9 @@ def test_model_error_distiller_only_runs_when_parser_has_no_diagnostic(tmp_path)
     calls = []
     broker.set_error_distiller(lambda payload: calls.append(payload) or "local model summary")
 
-    res = broker.run(f'{sys.executable} -c "print(\'opaque signal\'); raise SystemExit(7)"', str(tmp_path), "tenant")
+    # An empty pytest target is a classified validation that fails without a
+    # structured diagnostic, so the model distiller is eligible to run.
+    res = broker.run(f'"{sys.executable}" -m pytest -q', str(tmp_path), "tenant")
 
     assert res["success"] is False
     assert res["error_distillation"] == "local model summary"
@@ -383,7 +386,12 @@ def test_model_error_distiller_skips_structured_parser_result(tmp_path):
     broker = _default_broker(tmp_path)
     broker.set_error_distiller(lambda _payload: (_ for _ in ()).throw(AssertionError("must not run")))
 
-    res = broker.run(f'{sys.executable} -c "raise ValueError(\'parsed failure\')"', str(tmp_path), "tenant")
+    failing_test = tmp_path / "test_parsed_failure.py"
+    failing_test.write_text(
+        "def test_parsed_failure():\n    assert False, 'parsed failure'\n",
+        encoding="utf-8",
+    )
+    res = broker.run(f'"{sys.executable}" -m pytest -q "{failing_test}"', str(tmp_path), "tenant")
 
     assert res["success"] is False
     assert "parsed failure" in res["error_distillation"]
@@ -393,8 +401,8 @@ def test_model_error_distiller_skips_structured_parser_result(tmp_path):
 def test_failed_command_without_artifact_service_still_returns_diagnostics(tmp_path):
     broker = CommandBroker({"server": {"state_dir": str(tmp_path / "state")}, "commands": {"enabled": True}})
 
-    res = broker.run(f'{sys.executable} -c "raise ValueError(\'no artifact service\')"', str(tmp_path), "tenant")
+    res = broker.run("git status --not-a-real-option", str(tmp_path), "tenant")
 
     assert res["success"] is False
-    assert "no artifact service" in res["error_distillation"]
+    assert "option" in res["error_distillation"].lower()
     assert "artifact_id" not in res
