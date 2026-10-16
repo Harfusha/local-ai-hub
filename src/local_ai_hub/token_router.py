@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,38 @@ from . import __version__
 from .budget import estimate_tokens
 from .cache import SQLiteCache, TieredCache, stable_hash
 from .normalizer import tokenize_query_terms
+
+
+def _safe_int(val: Any, default: int, min_val: int | None = None, max_val: int | None = None) -> int:
+    if isinstance(val, bool) or val is None:
+        return default
+    try:
+        if isinstance(val, float) and not math.isfinite(val):
+            return default
+        res = int(val)
+    except (ValueError, TypeError, OverflowError):
+        return default
+    if min_val is not None and res < min_val:
+        return min_val
+    if max_val is not None and res > max_val:
+        return max_val
+    return res
+
+
+def _safe_float(val: Any, default: float, min_val: float | None = None, max_val: float | None = None) -> float:
+    if isinstance(val, bool) or val is None:
+        return default
+    try:
+        res = float(val)
+        if not math.isfinite(res):
+            return default
+    except (ValueError, TypeError, OverflowError):
+        return default
+    if min_val is not None and res < min_val:
+        return min_val
+    if max_val is not None and res > max_val:
+        return max_val
+    return res
 
 
 class LosslessTokenRouter:
@@ -21,39 +54,70 @@ class LosslessTokenRouter:
     """
 
     def __init__(self, config: dict[str, Any], services: Any):
+        config = config if isinstance(config, dict) else {}
         self.config = config
         self.services = services
-        cfg = config.get("lossless_router", {})
+        cfg = config.get("lossless_router", {}) if isinstance(config.get("lossless_router"), dict) else {}
         self.enabled = bool(cfg.get("enabled", True))
-        self.max_ranges = max(1, int(cfg.get("max_ranges", 8)))
-        self.context_lines = max(0, int(cfg.get("context_lines", 4)))
-        self.max_output_tokens = max(128, int(cfg.get("selector_output_tokens", 450)))
-        self.local_threshold_tokens = max(256, int(cfg.get("threshold_tokens", 1400)))
-        self.deterministic_skip_score = float(cfg.get("deterministic_skip_score", 4.5))
-        self.deterministic_skip_min_terms = int(cfg.get("deterministic_skip_min_terms", 1))
-        self.max_scan_lines = max(200, int(cfg.get("max_scan_lines", 12000)))
-        self.max_selector_chars = max(8000, int(cfg.get("max_selector_chars", 100000)))
-        self.max_output_lines = max(20, int(cfg.get("max_output_lines", 140)))
-        state_dir = Path(config["server"]["state_dir"])
+        self.max_ranges = _safe_int(cfg.get("max_ranges"), 8, min_val=1)
+        self.context_lines = _safe_int(cfg.get("context_lines"), 4, min_val=0)
+        self.max_output_tokens = _safe_int(cfg.get("selector_output_tokens"), 450, min_val=128)
+        self.local_threshold_tokens = _safe_int(cfg.get("threshold_tokens"), 1400, min_val=256)
+        self.deterministic_skip_score = _safe_float(cfg.get("deterministic_skip_score"), 4.5, min_val=0.0)
+        self.deterministic_skip_min_terms = _safe_int(cfg.get("deterministic_skip_min_terms"), 1, min_val=1)
+        self.max_scan_lines = _safe_int(cfg.get("max_scan_lines"), 12000, min_val=200)
+        self.max_selector_chars = _safe_int(cfg.get("max_selector_chars"), 100000, min_val=8000)
+        self.max_output_lines = _safe_int(cfg.get("max_output_lines"), 140, min_val=20)
+        server_cfg = config.get("server", {}) if isinstance(config.get("server"), dict) else {}
+        state_dir_str = str(server_cfg.get("state_dir", "."))
+        if "\x00" in state_dir_str:
+            state_dir_str = "."
+        state_dir = Path(state_dir_str)
+        ttl = _safe_int(cfg.get("ttl_seconds"), 604800, min_val=0)
+        max_entries = _safe_int(cfg.get("max_entries"), 10000, min_val=1)
+        l1_entries = _safe_int(cfg.get("l1_entries"), 256, min_val=1)
+        l1_ttl = _safe_int(cfg.get("l1_ttl_seconds"), 1800, min_val=0)
         self.cache = TieredCache(
-            SQLiteCache(state_dir / "cache.sqlite", "lossless-router", int(cfg.get("ttl_seconds", 604800)), int(cfg.get("max_entries", 10000))),
-            int(cfg.get("l1_entries", 256)), int(cfg.get("l1_ttl_seconds", 1800)),
+            SQLiteCache(state_dir / "cache.sqlite", "lossless-router", ttl, max_entries),
+            l1_entries, l1_ttl,
         )
         self.hits = 0
         self.misses = 0
         self.fallbacks = 0
 
+    def is_enabled(self) -> bool:
+        return bool(self.enabled)
+
+    def stats(self) -> dict[str, Any]:
+        return {
+            "hits": self.hits,
+            "misses": self.misses,
+            "fallbacks": self.fallbacks,
+        }
+
+    def cache_clear(self) -> None:
+        self.cache.clear()
+
     @staticmethod
     def _terms(query: str) -> list[str]:
+        if not isinstance(query, str) or not query.strip():
+            return []
         return [t.lower() for t in tokenize_query_terms(query, min_len=2, max_terms=24)]
 
     @staticmethod
     def _infer_mode(text: str, path: str | None) -> str:
-        suffix = Path(path).suffix.lower() if path else ""
+        if not isinstance(text, str):
+            text = ""
+        suffix = ""
+        if path and isinstance(path, str) and "\x00" not in path:
+            try:
+                suffix = Path(path).suffix.lower()
+            except Exception:
+                suffix = ""
         lower = text[:12000].lower()
         if suffix in {".log", ".out"} or any(x in lower for x in ("traceback", "stack trace", "fatal:", "exception:", "error:")):
             return "error_log"
-        if path and Path(path).name.lower() in {"agents.md", "claude.md", "gemini.md", "instructions.md"}:
+        if path and isinstance(path, str) and Path(path).name.lower() in {"agents.md", "claude.md", "gemini.md", "instructions.md"}:
             return "agent_context"
         return "heavy_code"
 
