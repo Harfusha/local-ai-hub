@@ -584,11 +584,10 @@ def test_repeated_complete_revalidates_completed_task_with_trusted_project_evalu
         actor="agent",
         idempotency_key="verify-revision",
     )
-    VerificationStore(store.state_store, task_store=store).record(
-        VerificationReceipt.create(
-            task.task_id, "tests", evidence_id="ev-tests", evidence_type="source_review"
-        )
+    receipt = VerificationReceipt.create(
+        task.task_id, "tests", evidence_id="ev-tests", evidence_type="source_review"
     )
+    VerificationStore(store.state_store, task_store=store).record(receipt)
     project_config = ModuleType("local_ai_hub.project_config")
     project_config.ProjectSettings = SimpleNamespace
     project_config.resolve_project_context = lambda root, state_dir: SimpleNamespace(
@@ -623,7 +622,7 @@ def test_repeated_complete_revalidates_completed_task_with_trusted_project_evalu
             assert configured_commands == {"test": "pytest"}
             assert project_root == repo_root
             if self.calls == 1:
-                return CompletionResult(task_id, True, ("tests",), (), (), ())
+                return CompletionResult(task_id, True, ("tests",), (), (), (receipt,))
             return CompletionResult(task_id, False, (), ("tests",), (), ())
 
     verifier = ChangingVerifier()
@@ -749,11 +748,10 @@ def test_completed_forwards_project_rules_to_verification_completion(
         actor="agent",
         idempotency_key="project-root",
     )
-    VerificationStore(store.state_store, task_store=store).record(
-            VerificationReceipt.create(
-                task.task_id, "tests", evidence_id="ev-tests", command_id="cmd-tests"
-            )
+    receipt = VerificationReceipt.create(
+        task.task_id, "tests", evidence_id="ev-tests", command_id="cmd-tests"
     )
+    VerificationStore(store.state_store, task_store=store).record(receipt)
 
     resolved = {}
 
@@ -801,7 +799,7 @@ def test_completed_forwards_project_rules_to_verification_completion(
                 configured_environment_sha256,
                 project_root,
             ))
-            return CompletionResult(task_id, True, ("tests",), (), (), ())
+            return CompletionResult(task_id, True, ("tests",), (), (), (receipt,))
 
     verifier = RecordingVerifier()
     store.set_verification_store(verifier)
@@ -935,7 +933,7 @@ def test_completed_rejects_non_boolean_verifier_result(
             configured_environment_sha256,
             project_root,
         ):
-            return CompletionResult(task_id, complete, (), ("tests",), (), ())
+            return {"complete": complete}
 
     store.set_verification_store(MalformedResultVerifier())
 
@@ -1149,11 +1147,10 @@ def test_completed_forwards_project_rules_to_supported_verification_store(
         actor="agent",
         idempotency_key="project-rules",
     )
-    VerificationStore(store.state_store, task_store=store).record(
-        VerificationReceipt.create(
-            task.task_id, "tests", evidence_id="ev-tests", evidence_type="source_review"
-        )
+    receipt = VerificationReceipt.create(
+        task.task_id, "tests", evidence_id="ev-tests", evidence_type="source_review"
     )
+    VerificationStore(store.state_store, task_store=store).record(receipt)
     project_config = ModuleType("local_ai_hub.project_config")
     project_config.ProjectSettings = SimpleNamespace
     project_config.resolve_project_context = lambda root, state_dir: SimpleNamespace(
@@ -1185,7 +1182,7 @@ def test_completed_forwards_project_rules_to_supported_verification_store(
             self.calls.append(
                 (task_id, current_revision, current_mutation_generation, verification_rules, configured_criteria)
             )
-            return CompletionResult(task_id, True, ("tests",), (), (), ())
+            return CompletionResult(task_id, True, ("tests",), (), (), (receipt,))
 
     verifier = RecordingVerifier()
     store.verification_store = verifier
