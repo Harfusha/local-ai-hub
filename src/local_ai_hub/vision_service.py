@@ -24,19 +24,39 @@ class VisionService:
     def __init__(
         self,
         *,
-        config: dict[str, Any],
+        config: dict[str, Any] | None,
         runtime: Any,
         artifacts: Any,
         model_policy: Any,
         repo_tools: Any,
         max_output_tokens: int,
     ) -> None:
-        self.config = config
+        self.config = config if isinstance(config, dict) else {}
         self.runtime = runtime
         self.artifacts = artifacts
         self.model_policy = model_policy
         self.repo_tools = repo_tools
-        self.max_output_tokens = max_output_tokens
+        if isinstance(max_output_tokens, bool) or not isinstance(max_output_tokens, (int, float)):
+            tokens = 1200
+        else:
+            try:
+                import math
+                tokens = int(max_output_tokens) if math.isfinite(max_output_tokens) else 1200
+            except Exception:
+                tokens = 1200
+        self.max_output_tokens = max(64, tokens)
+
+    def is_vision_enabled(self) -> bool:
+        features = self.config.get("features", {})
+        if isinstance(features, dict):
+            return bool(features.get("vision", True))
+        return True
+
+    def configured_vision_model(self) -> str:
+        models = self.config.get("models", {})
+        if isinstance(models, dict):
+            return str(models.get("vision", "qwen3-vl:4b") or "qwen3-vl:4b").strip()
+        return "qwen3-vl:4b"
 
     @staticmethod
     def cancelled_result(model_name: str = "") -> dict[str, Any]:
@@ -49,8 +69,9 @@ class VisionService:
             "error_code": "cancelled",
             "error": "Vision request was cancelled.",
         }
-        if model_name:
-            result["model"] = model_name
+        clean_model = str(model_name or "").replace("\x00", "").strip()
+        if clean_model:
+            result["model"] = clean_model
         return result
 
     @staticmethod
