@@ -89,13 +89,16 @@ def test_missing_config_uses_isolated_process_state_directory(tmp_path, monkeypa
 def test_finite_numeric_config_keeps_existing_clamps(tmp_path, monkeypatch):
     monkeypatch.setattr(autotune, "configured_state_dir", lambda config, *, create: tmp_path)
 
+    with pytest.raises(ValueError, match="autotune.min_samples must be a positive integer"):
+        autotune.RuntimeTuner({"autotune": {"min_samples": 0}})
+
     tuner = autotune.RuntimeTuner(
         {
             "autotune": {
                 "ema_alpha": -1.0,
                 "resident_latency_ratio": -1.0,
                 "persist_interval_seconds": -1.0,
-                "min_samples": 0,
+                "min_samples": 1,
                 "persist": False,
             }
         }
