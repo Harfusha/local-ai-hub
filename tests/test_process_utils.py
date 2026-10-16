@@ -243,14 +243,13 @@ def test_run_hidden_cancellation_terminates_tree_and_drains_output(monkeypatch):
     calls = []
     monkeypatch.setattr(process_utils.os, "name", "posix")
     monkeypatch.setattr(process_utils.subprocess, "Popen", lambda *a, **k: process)
-    monkeypatch.setattr(
-        process_utils,
-        "terminate_tree",
-        lambda pid, *, process_group=None, grace_seconds=5.0, process_handle=None: calls.append(
-            (pid, process_group, grace_seconds)
-        )
-        or True,
-    )
+
+    def terminate_tree(pid, *, process_group=None, grace_seconds=5.0, process_handle=None):
+        calls.append((pid, process_group, grace_seconds))
+        process.returncode = -9
+        return True
+
+    monkeypatch.setattr(process_utils, "terminate_tree", terminate_tree)
 
     with pytest.raises(process_utils.ProcessCancelledError) as raised:
         process_utils.run_hidden(
@@ -543,37 +542,6 @@ def test_run_hidden_cancellation_terminates_process_tree(monkeypatch):
 
     assert calls == [4321]
     assert process.wait_timeouts
-
-
-def test_run_hidden_cancellation_terminates_tree_and_drains_output(monkeypatch):
-    cancel_event = threading.Event()
-    process = _FakeProcess(
-        [
-            subprocess.TimeoutExpired(["tool"], 0.1, output=b"partial", stderr=b"err"),
-            (b"partial", b"err"),
-        ]
-    )
-    process.returncode = None
-    threading.Timer(0.02, cancel_event.set).start()
-    calls = []
-    monkeypatch.setattr(process_utils.os, "name", "posix")
-    monkeypatch.setattr(process_utils.subprocess, "Popen", lambda *a, **k: process)
-    def terminate_tree(pid, *, process_group=None, grace_seconds=5.0, process_handle=None):
-        calls.append((pid, process_group, grace_seconds))
-        process.returncode = -9
-        return True
-
-    monkeypatch.setattr(process_utils, "terminate_tree", terminate_tree)
-
-    with pytest.raises(process_utils.ProcessCancelledError) as raised:
-        process_utils.run_hidden(
-            ["tool"], capture_output=True, timeout=60, cancel_event=cancel_event
-        )
-
-    assert calls == [(4321, 4321, 1.0)]
-    assert process.returncode == -9
-    assert raised.value.output == b"partial"
-    assert raised.value.stderr == b"err"
 
 
 def test_run_hidden_uses_hidden_windows_process_group(monkeypatch):
