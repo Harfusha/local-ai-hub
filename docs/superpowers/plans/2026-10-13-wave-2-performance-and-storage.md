@@ -171,15 +171,16 @@ Queue recovery journal inserts to a background thread worker with an in-memory q
 
 ---
 
-### Task 28: Centroid Filtering for Workspaces with >100k Chunks (#87)
+### Task 28: Centroid Filtering for Workspaces with >10k Chunks (#87)
 
 **Files:**
 - Modify: `src/local_ai_hub/rag.py:1220-1290`
 - Test: `tests/unit/test_rag_centroid_filtering.py`
 
-- [ ] **Step 1: Write test verifying centroid filtering skips scanning 90% of chunks in large workspace**
-- [ ] **Step 2: Implement fix**
+- [x] **Step 1: Write test verifying centroid filtering skips scanning 90% of chunks in large workspace**
+- [x] **Step 2: Implement fix**
 For workspaces exceeding 10,000 chunks, compute k-means cluster centroids. Pre-filter candidate chunks based on closest centroids before running fine-grained scoring.
+Centroid pruning remains disabled by default until representative recall validation supports enabling it.
 - [ ] **Step 3: Run test and verify pass & Commit**
 `git commit -m "perf(rag): implement centroid-based candidate filtering for workspaces over 10k chunks"`
 
