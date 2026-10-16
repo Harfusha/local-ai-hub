@@ -5646,6 +5646,55 @@ class CommandBroker:
             result["incident_recording_failed"] = True
             result["incident_recording_error_type"] = type(exc).__name__
 
+    def _expected_search_no_match(
+        self,
+        command: str,
+        classification: Mapping[str, Any],
+        result: Mapping[str, Any],
+        argv_override: Sequence[str] | None = None,
+    ) -> bool:
+        """Recognize empty direct-search results without turning them into passes."""
+        if classification.get("class") != "read" or result.get("success") is not False:
+            return False
+        if type(result.get("exit_code")) is not int or result["exit_code"] != 1:
+            return False
+        if result.get("stdout") != "" or result.get("stderr") != "" or result.get("error"):
+            return False
+        if any(result.get(flag) for flag in (
+            "timed_out", "cancelled", "outcome_unknown", "cleanup_unconfirmed",
+            "output_capture_unconfirmed", "output_truncated", "discarded_output_chars",
+            "log_chunks_dropped", "log_callback_delivery_unconfirmed",
+            "log_callback_dropped_chars", "incident_required",
+        )):
+            return False
+        try:
+            if argv_override is None:
+                if self._needs_shell(command):
+                    return False
+                argv = self._tokens(command)
+            else:
+                if isinstance(argv_override, (str, bytes)):
+                    return False
+                argv = list(argv_override)
+        except (TypeError, ValueError):
+            return False
+        if not argv or any(type(part) is not str or "\x00" in part for part in argv):
+            return False
+        executable = ntpath.basename(argv[0].strip('"')).lower()
+        if executable in {"rg", "rg.exe", "ripgrep", "ripgrep.exe"}:
+            return len(argv) > 1 and not any(part == "--pre" or part.startswith("--pre=") for part in argv[1:])
+        if executable not in {"git", "git.exe"}:
+            return False
+        index = 1
+        while index < len(argv):
+            if argv[index] == "--no-pager":
+                index += 1
+            elif argv[index] == "-C" and index + 1 < len(argv):
+                index += 2
+            else:
+                break
+        return index + 1 < len(argv) and argv[index] == "grep"
+
     def _unavailable_executable(
         self,
         command: str,
@@ -8594,7 +8643,8 @@ class CommandBroker:
             elif snapshot and git_snapshot:
                 result["snapshot_taken"] = True
             result["diagnostics"] = self._extract_diagnostics(result)
-            if not result.get("success") and not result.get("cancelled"):
+            expected_no_match = self._expected_search_no_match(command, classification, result, argv_override)
+            if not expected_no_match and not result.get("success") and not result.get("cancelled"):
                 result["failed_tests"] = self._extract_failed_tests(result)
                 result["error_distillation"] = self._distill_error(result)
                 result["error_distillation_source"] = "deterministic"
@@ -8606,6 +8656,7 @@ class CommandBroker:
             diag_paths = [d["path"] for d in result.get("diagnostics", []) if d.get("path")]
             if (
                 not result.get("success")
+                and not expected_no_match
                 and (not result.get("cancelled") or result.get("outcome_unknown"))
                 and self.incident_store is not None
                 and not result.get("incident_recorded")
@@ -8645,7 +8696,7 @@ class CommandBroker:
                 except Exception:
                     pass
 
-            if self.incident_store is not None:
+            if self.incident_store is not None and not expected_no_match:
                 try:
                     target_paths = set(diag_paths)
                     for cp in state.get("changed_paths", []):
