@@ -650,7 +650,7 @@ def test_local_ai_task_vision_forwards_frontend_review_context(monkeypatch) -> N
     monkeypatch.setattr(local_ai_mcp.CLIENT, "post", fake_post)
     result = local_ai_mcp.local_ai_task(
         action="vision",
-        task="Review CTA",
+        prompt="Review CTA",
         candidate="legacy-image",
         model="qwen3-vl:4b",
         bundle_artifact_id="bundle-1",
@@ -664,6 +664,7 @@ def test_local_ai_task_vision_forwards_frontend_review_context(monkeypatch) -> N
 
     assert result["success"] is True
     assert captured["path"] == "/api/task/vision"
+    assert captured["prompt"] == "Review CTA"
     assert captured["image"] == "legacy-image"
     assert captured["bundle_artifact_id"] == "bundle-1"
     assert captured["image_artifact_id"] == "image-1"
