@@ -68,6 +68,7 @@ def test_repository_memory_shares_only_for_same_tenant_and_coordination_id(tmp_p
         root=worktree_b,
         tenant="tenant-a",
         key="physical-worktree-local-memory",
+        coordination_id=shared_coordination_id,
     )
     legacy_root_only = add_scoped_memory(
         store,
@@ -121,12 +122,12 @@ def test_repository_memory_shares_only_for_same_tenant_and_coordination_id(tmp_p
     invalid_project_context = store.find_for_context(
         root=str(worktree_b), tenant="tenant-a", coordination_id=None, limit=20
     )
-    assert {record.record_id for record in invalid_project_context} == {local.record_id}
+    assert invalid_project_context == []
 
     same_physical_root = store.find_for_context(
         root=str(worktree_a), tenant="tenant-a", coordination_id=None, limit=20
     )
-    assert legacy_root_only.record_id in {record.record_id for record in same_physical_root}
+    assert legacy_root_only.record_id not in {record.record_id for record in same_physical_root}
 
 
 def test_task_worktree_and_branch_memory_remain_physical_scope_local(tmp_path: Path):
@@ -214,8 +215,14 @@ def test_stale_source_invalidation_uses_physical_worktree_root(tmp_path: Path):
     assert store.mark_stale_for_revision(
         str(worktree_b), "rev-b-next", ["src/parser.py"]
     ) == 1
-    assert store.get(memory_a.record_id, scope=AgentScope.REPOSITORY, root=str(worktree_a), tenant="tenant-a").status is MemoryStatus.CONFIRMED
-    assert store.get(memory_b.record_id, scope=AgentScope.REPOSITORY, root=str(worktree_b), tenant="tenant-a").status is MemoryStatus.STALE
+    assert store.get(
+        memory_a.record_id, scope=AgentScope.REPOSITORY, root=str(worktree_a),
+        tenant="tenant-a", repository_id=coordination_id,
+    ).status is MemoryStatus.CONFIRMED
+    assert store.get(
+        memory_b.record_id, scope=AgentScope.REPOSITORY, root=str(worktree_b),
+        tenant="tenant-a", repository_id=coordination_id,
+    ).status is MemoryStatus.STALE
 
 
 def test_client_supplied_coordination_id_is_ignored_without_project_context():
@@ -281,29 +288,48 @@ def test_http_context_ignores_client_coordination_identity(tmp_path: Path, monke
 
     from local_ai_hub import http_server
     from local_ai_hub.app import LocalAIApp
+    from local_ai_hub.agent_identity import ScopeContext
+    from local_ai_hub.agent_tasks import GoalContract
 
-    root_a = tmp_path / "worktree-a"
     root_b = tmp_path / "worktree-b"
-    root_a.mkdir()
     root_b.mkdir()
     config_path = tmp_path / "config.toml"
     config_path.write_text(
         f'[server]\nstate_dir = "{(tmp_path / "state").as_posix()}"\n'
+        "\n[security]\n"
+        'api_token = "coordination-identity-test-token"\n'
+        'api_token_tenant = "http-default"\n'
+        f'allowed_roots = ["{tmp_path.as_posix()}"]\n'
         "\n[agent_state]\nenabled = true\n",
         encoding="utf-8",
     )
     app = LocalAIApp(str(config_path))
+    api_token = "coordination-identity-test-token"
+    effective_tenant = http_server._derive_root_tenant(
+        "http-default", str(root_b.resolve()), api_token,
+    )
+    app.agent_tasks.create(
+        GoalContract(goal="Compile trusted repository context"),
+        ScopeContext(
+            repository_id=str(root_b.resolve()), task_id="coordination-http-task",
+            session_id=effective_tenant,
+        ),
+        task_id="coordination-http-task",
+        actor="agent",
+        idempotency_key="coordination-http-task-create",
+        repo_root=str(root_b.resolve()),
+    )
     trusted = add_scoped_memory(
         app.agent_memory,
-        root=root_a,
-        tenant="http-default",
+        root=root_b,
+        tenant=effective_tenant,
         key="trusted-shared-memory",
         coordination_id="server-coordination-id",
     )
     attacker = add_scoped_memory(
         app.agent_memory,
-        root=root_a,
-        tenant="http-default",
+        root=root_b,
+        tenant=effective_tenant,
         key="attacker-chosen-memory",
         coordination_id="client-coordination-id",
     )
@@ -343,7 +369,7 @@ def test_http_context_ignores_client_coordination_identity(tmp_path: Path, monke
         request = urllib.request.Request(
             f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/context",
             data=payload,
-            headers={"Content-Type": "application/json", "Connection": "close", "X-LocalAI-Tenant": "http-default"},
+            headers={"Content-Type": "application/json", "Connection": "close", "X-LocalAI-Tenant": "http-default", "X-LocalAI-Token": api_token},
             method="POST",
         )
         with urllib.request.urlopen(request) as response:
@@ -352,11 +378,11 @@ def test_http_context_ignores_client_coordination_identity(tmp_path: Path, monke
             f"http://127.0.0.1:{server.server_address[1]}/api/agent-state/memory",
             data=json.dumps({
                 "action": "find",
-            "root": str(root_a),
+                "root": str(root_b),
                 "repository_id": "client-coordination-id",
                 "query": "memory",
             }).encode("utf-8"),
-            headers={"Content-Type": "application/json", "Connection": "close", "X-LocalAI-Tenant": "http-default"},
+            headers={"Content-Type": "application/json", "Connection": "close", "X-LocalAI-Tenant": "http-default", "X-LocalAI-Token": api_token},
             method="POST",
         )
         with urllib.request.urlopen(forged_find) as response:
@@ -366,8 +392,11 @@ def test_http_context_ignores_client_coordination_identity(tmp_path: Path, monke
             data=json.dumps({
                 "action": "delete",
                 "record_id": attacker.record_id,
+                "root": str(root_b),
+                "repository_id": "client-coordination-id",
+                "tenant": effective_tenant,
             }).encode("utf-8"),
-            headers={"Content-Type": "application/json", "Connection": "close", "X-LocalAI-Tenant": "http-default"},
+            headers={"Content-Type": "application/json", "Connection": "close", "X-LocalAI-Tenant": "http-default", "X-LocalAI-Token": api_token},
             method="POST",
         )
         try:
@@ -378,8 +407,8 @@ def test_http_context_ignores_client_coordination_identity(tmp_path: Path, monke
         delete_survived = app.agent_memory.get(
             attacker.record_id,
             scope=AgentScope.REPOSITORY,
-            root=str(root_a),
-            tenant="http-default",
+            root=str(root_b),
+            tenant=effective_tenant,
             repository_id="client-coordination-id",
         ) is not None
     finally:
