@@ -12,7 +12,6 @@ from local_ai_hub import commands as commands_module
 from local_ai_hub.commands import CommandBroker, _get_windows_dacl, _windows_dacl_bytes
 from fencing_lease_support import FakeFencingLeaseStore, install_test_work_attempt_fence
 from local_ai_hub.process_utils import hidden_run_kwargs
-from fencing_lease_support import FakeFencingLeaseStore, install_test_work_attempt_fence
 
 
 class _FakeTaskStore:
@@ -28,20 +27,20 @@ class _FakeTaskStore:
         path.mkdir(parents=True, exist_ok=True)
         probe = subprocess.run(
             ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, check=False, **hidden_run_kwargs()
+            capture_output=True, text=True, check=False, timeout=10, **hidden_run_kwargs()
         )
         if probe.returncode != 0:
             subprocess.run(
                 ["git", "init"], cwd=str(path), capture_output=True, check=True,
-                **hidden_run_kwargs()
+                timeout=10, **hidden_run_kwargs()
             )
         top = subprocess.run(
             ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, check=True, **hidden_run_kwargs()
+            capture_output=True, text=True, check=True, timeout=10, **hidden_run_kwargs()
         ).stdout.strip()
         current_branch = subprocess.run(
             ["git", "-C", str(path), "symbolic-ref", "--quiet", "--short", "HEAD"],
-            capture_output=True, text=True, check=True, **hidden_run_kwargs()
+            capture_output=True, text=True, check=True, timeout=10, **hidden_run_kwargs()
         ).stdout.strip()
         self.worktree_identity = {
             "repo_root": repo_root or top,
@@ -153,20 +152,20 @@ class _FakeTaskStore:
         path.mkdir(parents=True, exist_ok=True)
         probe = subprocess.run(
             ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, check=False, **hidden_run_kwargs()
+            capture_output=True, text=True, check=False, timeout=10, **hidden_run_kwargs()
         )
         if probe.returncode != 0:
             subprocess.run(
                 ["git", "init"], cwd=str(path), capture_output=True, check=True,
-                **hidden_run_kwargs()
+                timeout=10, **hidden_run_kwargs()
             )
         top = subprocess.run(
             ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, check=True, **hidden_run_kwargs()
+            capture_output=True, text=True, check=True, timeout=10, **hidden_run_kwargs()
         ).stdout.strip()
         current_branch = subprocess.run(
             ["git", "-C", str(path), "symbolic-ref", "--quiet", "--short", "HEAD"],
-            capture_output=True, text=True, check=True, **hidden_run_kwargs()
+            capture_output=True, text=True, check=True, timeout=10, **hidden_run_kwargs()
         ).stdout.strip()
         self.worktree_identity = {
             "repo_root": repo_root or top,
@@ -470,13 +469,17 @@ def test_failed_mutating_run_discards_private_transaction_without_source_changes
     owned.write_text("before", encoding="utf-8")
     unrelated = repo / "unrelated.txt"
     unrelated.write_text("keep", encoding="utf-8")
-    subprocess.run(["git", "init", "--quiet"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
-    subprocess.run(["git", "add", "owned.txt", "unrelated.txt"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "--quiet", "-m", "initial"], cwd=repo, check=True)
-    broker = CommandBroker({"server": {"state_dir": str(tmp_path / "state")}}, artifacts=None, repo_state=None)
+    subprocess.run(["git", "init", "--quiet"], cwd=repo, check=True, timeout=10, **hidden_run_kwargs())
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True, timeout=10, **hidden_run_kwargs())
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True, timeout=10, **hidden_run_kwargs())
+    subprocess.run(["git", "add", "owned.txt", "unrelated.txt"], cwd=repo, check=True, timeout=10, **hidden_run_kwargs())
+    subprocess.run(["git", "commit", "--quiet", "-m", "initial"], cwd=repo, check=True, timeout=10, **hidden_run_kwargs())
+    broker = CommandBroker(
+        {"server": {"state_dir": str(tmp_path / "state")}, "commands": {"allow_mutating": True}},
+        artifacts=None, repo_state=None,
+    )
     broker.set_task_store(_FakeTaskStore(str(repo)))
+    install_test_work_attempt_fence(broker, FakeFencingLeaseStore())
 
     class _IncidentStore:
         outcome = None
@@ -789,10 +792,9 @@ def test_rollback_reports_suppressed_sqlite_cache_delete_failure(
 
 def test_command_rollback_requires_explicit_scope(tmp_path: Path) -> None:
     broker = CommandBroker({"server": {"state_dir": str(tmp_path)}}, artifacts=None, repo_state=None)
-    broker.set_task_store(_FakeTaskStore(str(tmp_path)))
 
     result = broker.run(
-        'python -c "import pathlib, sys; pathlib.Path(\'keep.tmp\').write_text(\'keep\'); sys.exit(1)"',
+        "git status --short",
         str(tmp_path),
         force=True,
         task_id="task-owned",
@@ -1821,8 +1823,12 @@ def test_rollback_snapshot_requests_noatime_on_supported_posix(monkeypatch) -> N
 
 
 def test_command_rollback_rejects_path_escape(tmp_path: Path) -> None:
-    broker = CommandBroker({"server": {"state_dir": str(tmp_path)}}, artifacts=None, repo_state=None)
+    broker = CommandBroker(
+        {"server": {"state_dir": str(tmp_path)}, "commands": {"allow_mutating": True}},
+        artifacts=None, repo_state=None,
+    )
     broker.set_task_store(_FakeTaskStore(str(tmp_path)))
+    install_test_work_attempt_fence(broker, FakeFencingLeaseStore())
 
     result = broker.run(
         'python -c "import pathlib, sys; pathlib.Path(\'must_not_run.tmp\').touch(); sys.exit(1)"',
@@ -2548,13 +2554,17 @@ def test_private_transaction_source_conflict_marks_outcome_unknown_and_invalidat
     owned.write_text("before", encoding="utf-8")
     unrelated = repo / "unrelated.txt"
     unrelated.write_text("keep", encoding="utf-8")
-    subprocess.run(["git", "init", "--quiet"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True)
-    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True)
-    subprocess.run(["git", "add", "owned.txt", "unrelated.txt"], cwd=repo, check=True)
-    subprocess.run(["git", "commit", "--quiet", "-m", "initial"], cwd=repo, check=True)
-    broker = CommandBroker({"server": {"state_dir": str(tmp_path / "state")}}, artifacts=None)
+    subprocess.run(["git", "init", "--quiet"], cwd=repo, check=True, timeout=10, **hidden_run_kwargs())
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repo, check=True, timeout=10, **hidden_run_kwargs())
+    subprocess.run(["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True, timeout=10, **hidden_run_kwargs())
+    subprocess.run(["git", "add", "owned.txt", "unrelated.txt"], cwd=repo, check=True, timeout=10, **hidden_run_kwargs())
+    subprocess.run(["git", "commit", "--quiet", "-m", "initial"], cwd=repo, check=True, timeout=10, **hidden_run_kwargs())
+    broker = CommandBroker(
+        {"server": {"state_dir": str(tmp_path / "state")}, "commands": {"allow_mutating": True}},
+        artifacts=None,
+    )
     broker.set_task_store(_FakeTaskStore(str(repo)))
+    install_test_work_attempt_fence(broker, FakeFencingLeaseStore())
 
     class _IncidentStore:
         outcome = None
