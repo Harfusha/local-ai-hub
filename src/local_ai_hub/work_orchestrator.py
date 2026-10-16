@@ -5,6 +5,7 @@ from .json_utils import dumps as json_dumps
 import base64
 import hashlib
 import json
+import math
 import os
 import re
 import sqlite3
@@ -37,6 +38,23 @@ from .work_fencing import (
 _TERMINAL = {"complete", "failed", "cancelled", "needs_agent", "partial"}
 
 
+def is_terminal_work_status(status: Any) -> bool:
+    """Return True if work status represents a terminal state."""
+    if not isinstance(status, str):
+        return False
+    return status.strip().lower() in _TERMINAL
+
+
+def is_valid_work_order_id(work_id: Any) -> bool:
+    """Return True if work order ID is a valid alphanumeric identifier."""
+    if not isinstance(work_id, str):
+        return False
+    clean = work_id.strip()
+    if not clean or "\x00" in clean or len(clean) > 128:
+        return False
+    return bool(re.fullmatch(r"[A-Za-z0-9_-]+", clean))
+
+
 def _string_list(value: Any, *, limit: int = 24, item_chars: int = 2000) -> list[str]:
     if not isinstance(value, (list, tuple)):
         return []
@@ -52,10 +70,15 @@ def _string_list(value: Any, *, limit: int = 24, item_chars: int = 2000) -> list
 
 
 def _bounded_int(value: Any, default: int, minimum: int, maximum: int) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
+    if isinstance(value, bool):
         parsed = int(default)
+    else:
+        try:
+            parsed = int(value)
+            if not math.isfinite(parsed):
+                parsed = int(default)
+        except (TypeError, ValueError, OverflowError):
+            parsed = int(default)
     return max(minimum, min(parsed, maximum))
 
 
@@ -301,6 +324,8 @@ class _JournalEntry:
 
 
 def _safe_work_target(root: Path, relative: str) -> Path:
+    if not isinstance(relative, str) or "\x00" in relative:
+        raise ValueError("unsafe work journal path")
     root = root.resolve()
     rel = Path(relative)
     if rel.is_absolute() or any(part in {"..", ""} for part in rel.parts):
@@ -332,12 +357,12 @@ class WorkOrchestrator:
     """
 
     def __init__(
-        self, config: dict[str, Any], state_dir: Path, services: Any, commands: Any,
+        self, config: dict[str, Any] | None, state_dir: Path, services: Any, commands: Any,
         leases: Any, artifacts: Any, telemetry: Any | None = None,
         verification_store: Any | None = None,
         fencing_store: FencingLeaseStore | None = None,
     ):
-        cfg = config.get("work_orchestrator", {})
+        cfg = config.get("work_orchestrator", {}) if isinstance(config, dict) else {}
         self.enabled = bool(cfg.get("enabled", True))
         self.max_active = max(1, int(cfg.get("max_active_work_orders", 1)))
         self.max_pending = max(1, min(int(cfg.get("max_pending_work_orders", 32)), 256))
@@ -385,6 +410,18 @@ class WorkOrchestrator:
         # caused avoidable background load in embedded/test workloads.
         if self._has_queued_work():
             self._ensure_workers()
+
+    def is_enabled(self) -> bool:
+        """Return True if whole-task orchestrator is enabled."""
+        return bool(self.enabled)
+
+    def max_active_orders(self) -> int:
+        """Return maximum number of concurrently active work orders."""
+        return int(self.max_active)
+
+    def default_timeout_seconds(self) -> int:
+        """Return default maximum run duration for work orders in seconds."""
+        return int(self.default_seconds)
 
     def _connect(self) -> sqlite3.Connection:
         return connect_sqlite(self.path, timeout_seconds=2.0, isolation_level=None, row_factory=sqlite3.Row)

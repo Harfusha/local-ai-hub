@@ -12,9 +12,9 @@ from .process_utils import hidden_run_kwargs, pid_alive
 def parse_worktree_porcelain(payload: str) -> list[str]:
     """Return worktree roots from ``git worktree list --porcelain`` output."""
     roots: list[str] = []
-    for line in str(payload).splitlines():
+    for line in str(payload or "").splitlines():
         if line.startswith("worktree "):
-            root = line.removeprefix("worktree ").strip()
+            root = line.removeprefix("worktree ").replace("\x00", "").strip()
             if root:
                 roots.append(root)
     return roots
@@ -57,10 +57,15 @@ def is_hub_temporary_worktree(path: str | Path) -> bool:
     """Accept only a direct, non-symlink lah_wt_* child of the system temp root."""
     import tempfile
 
-    candidate = Path(path).expanduser()
-    if candidate.is_symlink() or not candidate.name.startswith("lah_wt_"):
+    if not isinstance(path, (str, Path)):
+        return False
+    clean_path = str(path).replace("\x00", "").strip()
+    if not clean_path or "\x00" in str(path):
         return False
     try:
+        candidate = Path(clean_path).expanduser()
+        if candidate.is_symlink() or not candidate.name.startswith("lah_wt_"):
+            return False
         resolved = candidate.resolve(strict=True)
         temp_root = Path(tempfile.gettempdir()).resolve(strict=True)
         is_same_temp = False
@@ -69,7 +74,7 @@ def is_hub_temporary_worktree(path: str | Path) -> bool:
         except OSError:
             is_same_temp = resolved.parent == temp_root
         return is_same_temp and resolved.is_dir()
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):
         return False
 
 
@@ -409,6 +414,8 @@ def remove_worktree_safe(
 
 def is_git_worktree(path: str | Path) -> bool:
     """Check if the directory is a git worktree or git repository."""
+    if not isinstance(path, (str, Path)) or "\x00" in str(path):
+        return False
     try:
         target = Path(path).resolve(strict=False)
         if not target.is_dir():
@@ -420,7 +427,7 @@ def is_git_worktree(path: str | Path) -> bool:
         if git_entry.is_dir():
             return True
         return False
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):
         return False
 
 
@@ -429,7 +436,26 @@ def get_worktree_status(
     timeout_seconds: float = 5.0,
 ) -> dict[str, Any]:
     """Inspect status of a worktree (exists, branch, dirty files, locked)."""
-    target = Path(worktree_path).resolve(strict=False)
+    if not isinstance(worktree_path, (str, Path)) or "\x00" in str(worktree_path):
+        return {
+            "exists": False,
+            "clean": False,
+            "uncommitted_files": [],
+            "branch": None,
+            "locked": False,
+            "lock_reason": "",
+        }
+    try:
+        target = Path(worktree_path).resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        return {
+            "exists": False,
+            "clean": False,
+            "uncommitted_files": [],
+            "branch": None,
+            "locked": False,
+            "lock_reason": "",
+        }
     if not target.is_dir():
         return {
             "exists": False,
@@ -492,5 +518,28 @@ def get_worktree_status(
         "locked": locked,
         "lock_reason": lock_reason,
     }
+
+
+def is_valid_worktree_name(name: Any) -> bool:
+    """Return True if worktree name or branch identifier is safe and valid."""
+    if not isinstance(name, str):
+        return False
+    clean = name.strip()
+    if not clean or "\x00" in clean or len(clean) > 200:
+        return False
+    if clean.startswith("-") or clean.startswith("/") or clean.startswith("\\"):
+        return False
+    if ".." in clean or clean.endswith("/"):
+        return False
+    return bool(re.fullmatch(r"[A-Za-z0-9_./-]+", clean))
+
+
+def active_worktree_count(repo_root: str | Path, timeout_seconds: float = 5.0) -> int:
+    """Return count of active sibling worktrees for repository."""
+    try:
+        roots = discover_worktree_roots(repo_root, timeout_seconds=timeout_seconds)
+        return len(roots)
+    except Exception:
+        return 0
 
 
