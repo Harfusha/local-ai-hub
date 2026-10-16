@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 import math
@@ -64,7 +65,9 @@ def fuse_ranked_paths(
         weight = backend_weights.get(str(source), 0.75)
         seen: set[str] = set()
         for rank, raw_path in enumerate(paths):
-            path = str(raw_path or "").replace("\x00", "").replace("\\", "/").strip()
+            if raw_path is None or isinstance(raw_path, bool) or not isinstance(raw_path, (str, os.PathLike)):
+                continue
+            path = str(raw_path).replace("\x00", "").replace("\\", "/").strip()
             if not path or path in seen:
                 continue
             seen.add(path)
