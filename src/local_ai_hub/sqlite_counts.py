@@ -6,6 +6,17 @@ import re
 import sqlite3
 
 
+def _validated_table_names(tables: Sequence[str] | None) -> tuple[str, ...]:
+    if tables is None:
+        raise ValueError("tables cannot be None")
+    if isinstance(tables, (str, bytes, bytearray)) or not isinstance(tables, Sequence):
+        raise ValueError("tables must be a sequence of table names")
+    table_list = tuple(tables)
+    if any(not isinstance(table, str) or not re.fullmatch(r"[a-z][a-z0-9_]*", table) for table in table_list):
+        raise ValueError("invalid count table name")
+    return table_list
+
+
 def initialize_row_counts(con: sqlite3.Connection, tables: tuple[str, ...] | Sequence[str]) -> None:
     """Backfill once; INSERT/DELETE triggers also cover REPLACE with recursive triggers.
 
@@ -15,11 +26,7 @@ def initialize_row_counts(con: sqlite3.Connection, tables: tuple[str, ...] | Seq
     """
     if con is None:
         raise ValueError("con cannot be None")
-    if tables is None:
-        raise ValueError("tables cannot be None")
-    table_list = tuple(tables)
-    if any(not isinstance(table, str) or not re.fullmatch(r"[a-z][a-z0-9_]*", table) for table in table_list):
-        raise ValueError("invalid count table name")
+    table_list = _validated_table_names(tables)
     con.execute("PRAGMA recursive_triggers=ON")
     con.execute("SAVEPOINT hub_row_counts")
     try:
@@ -44,9 +51,7 @@ def initialize_row_counts(con: sqlite3.Connection, tables: tuple[str, ...] | Seq
 def global_row_counts(con: sqlite3.Connection, tables: tuple[str, ...] | Sequence[str]) -> dict[str, int]:
     if con is None:
         raise ValueError("con cannot be None")
-    if tables is None:
-        raise ValueError("tables cannot be None")
-    table_list = tuple(tables)
+    table_list = _validated_table_names(tables)
     try:
         counts = {str(row[0]): int(row[1]) for row in con.execute("SELECT table_name,row_count FROM hub_row_counts")}
     except sqlite3.Error:
@@ -74,8 +79,8 @@ def is_row_counts_initialized(con: sqlite3.Connection, tables: tuple[str, ...] |
     try:
         if tables is None:
             return con.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='hub_row_counts'").fetchone() is not None
-        table_list = tuple(tables)
+        table_list = _validated_table_names(tables)
         counts = {str(row[0]) for row in con.execute("SELECT table_name FROM hub_row_counts")}
         return all(t in counts for t in table_list)
-    except sqlite3.Error:
+    except (sqlite3.Error, ValueError):
         return False
