@@ -21,7 +21,7 @@ _ORIGINAL_URLOPEN = urlopen
 
 from . import model_quality
 from .llama_cpp import LlamaCppRouter, _cancel_response_on_stop, _open_interruptible_response, _read_response_body, _set_response_timeout, _stop_requested
-from .llama_cpp_runtime import LlamaCppManagedRuntime, llama_cpp_backend_selection, llama_cpp_managed_selected
+from .llama_cpp_runtime import LlamaCppManagedRuntime, llama_cpp_managed_selected
 from .llm_context_recovery import fit_recovered_context
 from .json_utils import dumps as json_dumps
 

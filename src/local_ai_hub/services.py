@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from .json_utils import dumps as json_dumps
 
-import base64
 import copy
 import fnmatch
 import hashlib

@@ -9,7 +9,6 @@ import threading
 import time
 from collections.abc import Mapping
 from numbers import Real
-from pathlib import Path
 from typing import Any
 
 from .state_paths import configured_state_dir

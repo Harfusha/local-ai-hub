@@ -20,7 +20,7 @@ from collections import OrderedDict
 from collections.abc import Mapping
 from pathlib import Path, PureWindowsPath
 from typing import Any, Literal, TypeAlias
-from urllib.parse import quote, urlencode
+from urllib.parse import quote
 
 from local_ai_hub.client import CURRENT_REQUEST_CANCEL_EVENT, HubClient
 try:
@@ -62,7 +62,6 @@ from local_ai_hub.adoption_metrics import AdoptionMetricsStore
 from local_ai_hub.task_memory_wire import (
     mcp_wire_tokens as _task_memory_mcp_wire_tokens,
     normalize_task_memory_response as _normalize_task_memory_response,
-    task_memory_audit_projection as _task_memory_audit_projection,
     task_memory_essential_response as _task_memory_essential_response,
     task_memory_original_tokens as _task_memory_original_tokens,
     task_memory_projection as _task_memory_projection,

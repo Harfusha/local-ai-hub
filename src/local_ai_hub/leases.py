@@ -10,11 +10,10 @@ import threading
 import time
 import uuid
 from contextlib import closing
-from pathlib import Path, PurePosixPath, PureWindowsPath
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from .sqlite_support import (
-    backup_durable_database,
     connect_sqlite,
     initialize_wal,
     require_canonical_agent_state_database,
