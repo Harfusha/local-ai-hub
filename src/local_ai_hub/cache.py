@@ -4,6 +4,7 @@ from .json_utils import dumps as json_dumps, loads as json_loads
 
 import hashlib
 import json
+import math
 import os
 import sqlite3
 import stat
@@ -34,8 +35,12 @@ def stable_hash(value: Any) -> str:
 class _CommandCacheCoordinator:
     """Cross-process generation and quarantine state outside the disposable DB."""
 
-    def __init__(self, path: Path, namespace: str):
-        resolved = path.expanduser().resolve(strict=False)
+    def __init__(self, path: Path | str, namespace: str):
+        if not isinstance(path, (str, Path)) or not str(path).strip() or "\x00" in str(path):
+            raise ValueError("invalid cache path")
+        if not isinstance(namespace, str) or not namespace.strip() or "\x00" in namespace:
+            raise ValueError("invalid cache namespace")
+        resolved = Path(path).expanduser().resolve(strict=False)
         identity = stable_hash({"path": str(resolved), "namespace": namespace})
         self.directory = resolved.parent / f".{resolved.name}.command-cache-coordination"
         self.state_path = self.directory / f"{identity}.json"
@@ -194,9 +199,12 @@ class MemoryLRUCache:
     """Bounded in-process L1 cache with per-entry expiry and lock striping."""
 
     def __init__(self, max_entries: int = 256, ttl_seconds: float = 600, shards: int = 16):
-        self.max_entries = max(1, int(max_entries))
-        self.ttl_seconds = max(0.0, float(ttl_seconds))
-        self.num_shards = max(1, int(shards))
+        max_ent = 256 if isinstance(max_entries, bool) or not isinstance(max_entries, int) or max_entries <= 0 else max_entries
+        ttl = 600.0 if isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, (int, float)) or not math.isfinite(ttl_seconds) else ttl_seconds
+        num_shards = 16 if isinstance(shards, bool) or not isinstance(shards, int) or shards <= 0 else shards
+        self.max_entries = max(1, int(max_ent))
+        self.ttl_seconds = max(0.0, float(ttl))
+        self.num_shards = max(1, int(num_shards))
         self._shard_max = max(1, self.max_entries // self.num_shards)
         self._locks = [threading.RLock() for _ in range(self.num_shards)]
         self._shards: list[OrderedDict[str, tuple[float, Any]]] = [OrderedDict() for _ in range(self.num_shards)]
@@ -403,17 +411,23 @@ class SQLiteCache:
     recreated rather than taking foreground requests down with it.
     """
 
-    def __init__(self, path: Path, namespace: str, ttl_seconds: int = 86400, max_entries: int = 5000, *, busy_timeout_seconds: float = 0.75, busy_retries: int = 3):
-        self.path = path
+    def __init__(self, path: Path | str, namespace: str, ttl_seconds: int = 86400, max_entries: int = 5000, *, busy_timeout_seconds: float = 0.75, busy_retries: int = 3):
+        if not isinstance(path, (str, Path)) or not str(path).strip() or "\x00" in str(path):
+            raise ValueError("invalid cache path")
+        if not isinstance(namespace, str) or not namespace.strip() or "\x00" in namespace:
+            raise ValueError("invalid cache namespace")
+        self.path = Path(path)
         self.namespace = f"{__version__}:{namespace}"
         # Every namespace sharing this SQLite file must serialize schema recovery
         # before opening a corrupt file (Windows forbids renaming open handles).
-        self._schema_coordinator = _CommandCacheCoordinator(path, "sqlite-derived-schema")
+        self._schema_coordinator = _CommandCacheCoordinator(self.path, "sqlite-derived-schema")
         self._command_cache_coordinator = (
-            _CommandCacheCoordinator(path, self.namespace) if namespace.startswith("command:") else None
+            _CommandCacheCoordinator(self.path, self.namespace) if namespace.startswith("command:") else None
         )
-        self.ttl_seconds = max(0, int(ttl_seconds))
-        self.max_entries = max(1, int(max_entries))
+        ttl = 86400 if isinstance(ttl_seconds, bool) or not isinstance(ttl_seconds, (int, float)) or not math.isfinite(ttl_seconds) else ttl_seconds
+        self.ttl_seconds = max(0, int(ttl))
+        max_ent = 5000 if isinstance(max_entries, bool) or not isinstance(max_entries, int) or max_entries <= 0 else max_entries
+        self.max_entries = max(1, int(max_ent))
         self._lock = threading.RLock()
         self.busy_timeout_seconds = max(0.01, float(busy_timeout_seconds))
         self.busy_retries = max(1, int(busy_retries))
@@ -426,7 +440,7 @@ class SQLiteCache:
         # without turning cache warming into a read-amplified workload.
         self._writes_since_prune = 0
         self._prune_every_writes = max(16, min(128, self.max_entries // 32 or 16))
-        path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
@@ -526,6 +540,9 @@ class SQLiteCache:
             return fallback
 
     def get(self, key: str) -> Any | None:
+        if not isinstance(key, str) or not key or "\x00" in key:
+            return None
+
         def op() -> Any | None:
             now = time.time()
             with self._lock, closing(self._connect()) as con:
@@ -619,6 +636,8 @@ class SQLiteCache:
         return self._safe(op, {})
 
     def set(self, key: str, value: Any) -> None:
+        if not isinstance(key, str) or not key or "\x00" in key:
+            return
         payload = json_dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
 
         def op() -> None:
@@ -717,7 +736,9 @@ class TieredCache:
 
     def __init__(self, l2: SQLiteCache, l1_entries: int = 256, l1_ttl_seconds: int = 900):
         self.l2 = l2
-        self.l1 = MemoryLRUCache(l1_entries, l1_ttl_seconds)
+        l1_ent = 256 if isinstance(l1_entries, bool) or not isinstance(l1_entries, int) or l1_entries <= 0 else l1_entries
+        l1_ttl = 900 if isinstance(l1_ttl_seconds, bool) or not isinstance(l1_ttl_seconds, (int, float)) or not math.isfinite(l1_ttl_seconds) else l1_ttl_seconds
+        self.l1 = MemoryLRUCache(l1_ent, l1_ttl)
         self._coordinator = getattr(l2, "_command_cache_coordinator", None)
         self._l1_generation: int | None = None
         self.l1_hits = 0
