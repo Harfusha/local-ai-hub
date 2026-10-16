@@ -59,9 +59,12 @@ jobs:
         shell: bash
         run: |
           python -m venv "$RUNNER_TEMP/local-ai-hub-wheel-smoke"
-          "$RUNNER_TEMP/local-ai-hub-wheel-smoke/bin/python" -m pip install --no-deps dist/local_ai_hub-*.whl
+          "$RUNNER_TEMP/local-ai-hub-wheel-smoke/bin/python" -m pip install dist/local_ai_hub-*.whl
+          "$RUNNER_TEMP/local-ai-hub-wheel-smoke/bin/python" -m pip check
           EXPECTED_VERSION="${GITHUB_REF_NAME#v}"
-          "$RUNNER_TEMP/local-ai-hub-wheel-smoke/bin/python" -c "import local_ai_hub; assert local_ai_hub.__version__ == '$EXPECTED_VERSION'; print(local_ai_hub.__version__)"
+          ACTUAL_VERSION=$("$RUNNER_TEMP/local-ai-hub-wheel-smoke/bin/local-ai-hub" --version)
+          test "$ACTUAL_VERSION" = "Local AI Hub $EXPECTED_VERSION"
+          "$RUNNER_TEMP/local-ai-hub-wheel-smoke/bin/python" -c "import mcp, watchdog, local_ai_hub.mcp_server; print('wheel CLI and MCP imports OK')"
 
       - name: Create SHA-256 manifest
         shell: bash
