@@ -443,6 +443,26 @@ def test_graph_edge_found_requires_true_positive_edges() -> None:
         ) is False
 
 
+def test_synthetic_repository_declares_pytest_for_affected_test_selection(tmp_path: Path) -> None:
+    from local_ai_hub.deterministic import DeterministicEngine
+    from local_ai_hub.repo_tools import RepositoryTools
+
+    files, test_path, _corpus, _fingerprint = surface_benchmarks._build_synthetic_repo(
+        tmp_path, file_count=1, rag_chunks=1,
+    )
+    config = {"server": {"state_dir": str(tmp_path / "state")}}
+    engine = DeterministicEngine(config, RepositoryTools(config))
+    root = tmp_path / "repo"
+    result = engine.affected_tests(
+        str(root), changed_paths=[files[0].relative_to(root).as_posix()],
+    )
+
+    assert result["success"] is True
+    assert result["framework"] == "pytest"
+    assert result["test_files"] == [test_path.relative_to(root).as_posix()]
+    assert result["confidence"] >= 0.95
+
+
 def test_graph_unpaired_fallback_does_not_claim_paired_cases(tmp_path: Path) -> None:
     result = run_benchmark(
         state_dir=tmp_path / "results",
