@@ -5,6 +5,7 @@ import pytest
 from local_ai_hub.agent_learning import (
     CandidateStatus,
     ImprovementCandidate,
+    LearningStore,
     PromotionDecision,
     RollbackTrigger,
     SLOObservation,
@@ -52,21 +53,77 @@ def test_improvement_candidate_post_init_and_from_dict_hardening() -> None:
     assert cand.created_at == 0.0
     assert cand.updated_at == 0.0
 
-    # from_dict with boolean or invalid slo_thresholds/metrics must not crash
+    # Persisted records are canonical inputs. Invalid fields must be rejected
+    # instead of being silently converted into plausible candidate state.
     data = {
         "candidate_id": "cand_2",
         "name": "cand_two",
         "baseline_version": "1.0",
         "candidate_version": "1.1",
-        "slo_thresholds": True,
-        "metrics": None,
-        "created_at": True,
+        "status": "candidate",
+        "slo_thresholds": {},
+        "metrics": {},
+        "approver": "",
+        "created_at": 1.0,
+        "updated_at": 1.0,
     }
-    c2 = ImprovementCandidate.from_dict(data)
-    assert c2.candidate_id == "cand_2"
-    assert c2.slo_thresholds == {}
-    assert c2.metrics == {}
-    assert c2.created_at == 0.0
+    assert ImprovementCandidate.from_dict(data).candidate_id == "cand_2"
+
+    invalid_records = (
+        ({**data, "status": "unknown"}, ValueError),
+        ({**data, "status": True}, TypeError),
+        ({**data, "slo_thresholds": True}, TypeError),
+        ({**data, "metrics": None}, TypeError),
+        ({**data, "metrics": {"score": True}}, TypeError),
+        ({**data, "metrics": {"score": float("inf")}}, ValueError),
+        ({**data, "created_at": True}, TypeError),
+        ({**data, "updated_at": float("nan")}, ValueError),
+        ({key: value for key, value in data.items() if key != "status"}, ValueError),
+        ({**data, "created_at": 10**10000}, ValueError),
+    )
+    for invalid_data, error in invalid_records:
+        with pytest.raises(error):
+            ImprovementCandidate.from_dict(invalid_data)
+
+
+def test_learning_store_rejects_corrupt_rows_and_round_trips_valid_rows() -> None:
+    store = object.__new__(LearningStore)
+    valid_row = (
+        "cand_3",
+        "candidate_three",
+        "1.0",
+        "1.1",
+        "candidate",
+        '{"max_latency": 20.0}',
+        '{"score": 0.95}',
+        "",
+        1.0,
+        2.0,
+    )
+    restored = store._row_to_candidate(valid_row)
+    assert restored.to_dict() == {
+        "candidate_id": "cand_3",
+        "name": "candidate_three",
+        "baseline_version": "1.0",
+        "candidate_version": "1.1",
+        "status": CandidateStatus.CANDIDATE.value,
+        "slo_thresholds": {"max_latency": 20.0},
+        "metrics": {"score": 0.95},
+        "approver": "",
+        "created_at": 1.0,
+        "updated_at": 2.0,
+    }
+
+    invalid_rows = (
+        (*valid_row[:4], "unknown", *valid_row[5:]),
+        (*valid_row[:5], "{", *valid_row[6:]),
+        (*valid_row[:5], "[]", *valid_row[6:]),
+        (*valid_row[:6], '{"score": true}', *valid_row[7:]),
+        (*valid_row[:8], True, valid_row[9]),
+    )
+    for invalid_row in invalid_rows:
+        with pytest.raises((TypeError, ValueError)):
+            store._row_to_candidate(invalid_row)
 
     with pytest.raises(TypeError):
         ImprovementCandidate.from_dict(True)  # type: ignore[arg-type]

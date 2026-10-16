@@ -232,26 +232,84 @@ class ImprovementCandidate:
     def from_dict(cls, data: Mapping[str, Any]) -> ImprovementCandidate:
         if not isinstance(data, Mapping) or isinstance(data, bool):
             raise TypeError("improvement candidate data must be a mapping")
-        status_raw = data.get("status")
+        required = (
+            "candidate_id",
+            "name",
+            "baseline_version",
+            "candidate_version",
+            "status",
+            "slo_thresholds",
+            "metrics",
+            "approver",
+            "created_at",
+            "updated_at",
+        )
+        missing = [field_name for field_name in required if field_name not in data]
+        if missing:
+            raise ValueError(f"improvement candidate is missing required fields: {', '.join(missing)}")
+
+        def _text(field_name: str, *, allow_empty: bool = False) -> str:
+            value = data[field_name]
+            if not isinstance(value, str):
+                raise TypeError(f"{field_name} must be a string")
+            if "\x00" in value or value != value.strip():
+                raise ValueError(f"{field_name} must be canonical text")
+            if not allow_empty and not value:
+                raise ValueError(f"{field_name} cannot be empty")
+            return value
+
+        def _finite_number(value: Any, field_name: str) -> float:
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise TypeError(f"{field_name} must be a finite number")
+            try:
+                number = float(value)
+            except (OverflowError, ValueError) as exc:
+                raise ValueError(f"{field_name} must be a finite number") from exc
+            if not math.isfinite(number):
+                raise ValueError(f"{field_name} must be a finite number")
+            return number
+
+        status_raw = data["status"]
+        if not isinstance(status_raw, str):
+            raise TypeError("status must be a canonical CandidateStatus string")
         try:
             status = CandidateStatus(status_raw)
-        except (ValueError, TypeError):
-            status = CandidateStatus.CANDIDATE
-        slo_raw = data.get("slo_thresholds")
-        slo_dict = dict(slo_raw) if isinstance(slo_raw, Mapping) and not isinstance(slo_raw, bool) else {}
-        mets_raw = data.get("metrics")
-        mets_dict = dict(mets_raw) if isinstance(mets_raw, Mapping) and not isinstance(mets_raw, bool) else {}
+        except ValueError as exc:
+            raise ValueError("status must be a canonical CandidateStatus value") from exc
+
+        def _numeric_mapping(field_name: str) -> dict[str, float]:
+            raw = data[field_name]
+            if not isinstance(raw, Mapping) or isinstance(raw, bool):
+                raise TypeError(f"{field_name} must be a mapping of strings to finite numbers")
+            result: dict[str, float] = {}
+            for key, value in raw.items():
+                if not isinstance(key, str) or not key or "\x00" in key or key != key.strip():
+                    raise ValueError(f"{field_name} keys must be nonempty canonical strings")
+                result[key] = _finite_number(value, f"{field_name}.{key}")
+            return result
+
+        candidate_id = _text("candidate_id")
+        name = _text("name")
+        baseline_version = _text("baseline_version")
+        candidate_version = _text("candidate_version")
+        approver = _text("approver", allow_empty=True)
+        slo_dict = _numeric_mapping("slo_thresholds")
+        mets_dict = _numeric_mapping("metrics")
+        created_at = _finite_number(data["created_at"], "created_at")
+        updated_at = _finite_number(data["updated_at"], "updated_at")
+        if created_at < 0 or updated_at < 0:
+            raise ValueError("candidate timestamps cannot be negative")
         return cls(
-            candidate_id=str(data.get("candidate_id", "")),
-            name=str(data.get("name", "")),
-            baseline_version=str(data.get("baseline_version", "")),
-            candidate_version=str(data.get("candidate_version", "")),
+            candidate_id=candidate_id,
+            name=name,
+            baseline_version=baseline_version,
+            candidate_version=candidate_version,
             status=status,
             slo_thresholds=slo_dict,
             metrics=mets_dict,
-            approver=str(data.get("approver", "")),
-            created_at=_safe_float(data.get("created_at"), 0.0),
-            updated_at=_safe_float(data.get("updated_at"), 0.0),
+            approver=approver,
+            created_at=created_at,
+            updated_at=updated_at,
         )
 
 
@@ -573,31 +631,24 @@ class LearningStore:
             created_at,
             updated_at,
         ) = row
+        if not isinstance(thresholds_raw, str) or not isinstance(metrics_raw, str):
+            raise TypeError("stored candidate thresholds and metrics must be JSON strings")
         try:
-            status = CandidateStatus(status_val)
-        except (ValueError, TypeError):
-            status = CandidateStatus.CANDIDATE
-        try:
-            thresholds = json.loads(thresholds_raw) if thresholds_raw else {}
-            if not isinstance(thresholds, Mapping):
-                thresholds = {}
-        except Exception:
-            thresholds = {}
-        try:
-            metrics = json.loads(metrics_raw) if metrics_raw else {}
-            if not isinstance(metrics, Mapping):
-                metrics = {}
-        except Exception:
-            metrics = {}
-        return ImprovementCandidate(
-            candidate_id=str(candidate_id or ""),
-            name=str(name or ""),
-            baseline_version=str(baseline_version or ""),
-            candidate_version=str(candidate_version or ""),
-            status=status,
-            slo_thresholds=thresholds,
-            metrics=metrics,
-            approver=str(approver or ""),
-            created_at=_safe_float(created_at, 0.0),
-            updated_at=_safe_float(updated_at, 0.0),
+            thresholds = json.loads(thresholds_raw)
+            metrics = json.loads(metrics_raw)
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise ValueError("stored candidate thresholds and metrics contain invalid JSON") from exc
+        return ImprovementCandidate.from_dict(
+            {
+                "candidate_id": candidate_id,
+                "name": name,
+                "baseline_version": baseline_version,
+                "candidate_version": candidate_version,
+                "status": status_val,
+                "slo_thresholds": thresholds,
+                "metrics": metrics,
+                "approver": approver,
+                "created_at": created_at,
+                "updated_at": updated_at,
+            }
         )
