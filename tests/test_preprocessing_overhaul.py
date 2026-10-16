@@ -89,6 +89,8 @@ def test_treesitter_extraction(tmp_path: Path):
 
 
 def test_precompute_test_mappings_and_affected_tests(mock_repo: Path, tmp_path: Path):
+    # The current matrix detector recognizes pytest from a root pyproject.toml.
+    (mock_repo / "pyproject.toml").write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
     config = {
         "server": {"state_dir": str(tmp_path / "state")},
         "deterministic": {},
@@ -110,7 +112,24 @@ def test_precompute_test_mappings_and_affected_tests(mock_repo: Path, tmp_path: 
     assert "tests/test_player.py" in affected["test_files"]
 
 
-def test_hotspots_cache(mock_repo: Path, tmp_path: Path):
+def test_affected_tests_fails_closed_without_detected_framework(tmp_path: Path):
+    root = tmp_path / "repo"
+    (root / "src").mkdir(parents=True)
+    (root / "tests").mkdir()
+    (root / "src" / "player.py").write_text("class Player: pass\n", encoding="utf-8")
+    (root / "tests" / "test_player.py").write_text("def test_player(): pass\n", encoding="utf-8")
+    config = {"server": {"state_dir": str(tmp_path / "state")}, "deterministic": {}}
+    repo_tools = RepositoryTools(config)
+    det = DeterministicEngine(config, repo_tools=repo_tools)
+
+    affected = det.affected_tests(str(root), changed_paths=["src/player.py"])
+
+    assert affected["success"] is True
+    assert affected["framework"] == "unknown"
+    assert affected["test_files"] == []
+
+
+def test_hotspots_analysis_requires_git_history(mock_repo: Path, tmp_path: Path):
     config = {
         "server": {"state_dir": str(tmp_path / "state")},
         "deterministic": {},
@@ -118,13 +137,9 @@ def test_hotspots_cache(mock_repo: Path, tmp_path: Path):
     repo_tools = RepositoryTools(config)
     det = DeterministicEngine(config, repo_tools=repo_tools)
 
-    res1 = det.find_hotspots(str(mock_repo), days=30, limit=10)
-    assert res1["success"] is True
-
-    # Second call should be served from cache
-    res2 = det.find_hotspots(str(mock_repo), days=30, limit=10)
-    assert res2["success"] is True
-    assert res2.get("cached") is True
+    result = det.find_hotspots(str(mock_repo), days=30, limit=10)
+    assert result["success"] is False
+    assert "git_history_failed" in result["incomplete_reasons"]
 
 
 def test_stale_codegraph_config_does_not_add_preprocess_phase(mock_repo: Path, tmp_path: Path):
@@ -393,10 +408,6 @@ def test_worktree_cache_inheritance(mock_repo: Path, tmp_path: Path):
             "INSERT INTO test_source_links(root, source_path, test_path, confidence, updated_at) VALUES(?, ?, ?, ?, ?)",
             (p_root, "foo.py", "test_foo.py", 1.0, 10.0),
         )
-        con.execute(
-            "INSERT INTO hotspots_cache(root, days, cached_at, data_json) VALUES(?, ?, ?, ?)",
-            (p_root, 30, 10.0, "{\"hotspots\": [\"foo.py\"]}"),
-        )
         con.commit()
 
     # Register worktree with parent_root inheritance
@@ -415,9 +426,6 @@ def test_worktree_cache_inheritance(mock_repo: Path, tmp_path: Path):
         assert link is not None
         assert link["test_path"] == "test_foo.py"
 
-        hs = con.execute("SELECT data_json FROM hotspots_cache WHERE root=?", (w_root,)).fetchone()
-        assert hs is not None
-        assert "foo.py" in hs["data_json"]
 
 
 def test_worktree_cache_seed_logs_expected_sqlite_failures_without_paths(tmp_path: Path, monkeypatch, caplog):
@@ -526,7 +534,7 @@ def test_unregister_logs_derived_cache_purge_failure_without_project_path(tmp_pa
     }
 
     class BrokenCodeIndex:
-        def _connect(self):
+        def prune(self, root, paths):
             raise sqlite3.OperationalError("database is locked")
 
     root = tmp_path / "repository"
@@ -545,8 +553,9 @@ def test_unregister_logs_derived_cache_purge_failure_without_project_path(tmp_pa
         with caplog.at_level("WARNING", logger="local_ai_hub.preprocess"):
             result = pre.unregister(str(root), purge_data=True)
 
-        assert result["success"] is True
-        assert result["purged"] is True
+        assert result["success"] is False
+        assert result["purged"] is False
+        assert result["removed"] == 0
         messages = [record.getMessage() for record in caplog.records]
         assert len(messages) == 1
         assert "OperationalError" in messages[0]
@@ -588,8 +597,10 @@ def test_unregister_rolls_back_when_required_source_fts_table_is_missing(tmp_pat
             con.execute("DROP TABLE source_fts")
             con.commit()
 
-        with pytest.raises(sqlite3.OperationalError, match="no such table: source_fts"):
-            pre.unregister(str(root), purge_data=True)
+        result = pre.unregister(str(root), purge_data=True)
+        assert result["success"] is False
+        assert result["purged"] is False
+        assert result["removed"] == 0
 
         with closing(pre._connect()) as con:
             row = con.execute("SELECT root FROM projects WHERE root=?", (pre._root(str(root)),)).fetchone()
