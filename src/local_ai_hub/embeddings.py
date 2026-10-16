@@ -680,7 +680,11 @@ class EmbeddingModel:
             for text in texts:
                 clean_text = str(text).replace("\r\n", "\n")
                 batch_keys.append(self._embedding_cache_key(cache_identity, query, clean_text))
-            cached_map = self.cache.get_many(batch_keys)
+            get_many = getattr(self.cache, "get_many", None)
+            if callable(get_many):
+                cached_map = get_many(batch_keys)
+            else:
+                cached_map = {k: v for k in batch_keys if (v := self.cache.get(k)) is not None}
         else:
             cached_map = {}
 
