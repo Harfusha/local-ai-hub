@@ -151,8 +151,8 @@ def test_sdk_convenience_methods_map_to_production_http_handlers(live_client, tm
     routes = []
     root = str(tmp_path)
 
-    def callers(actual_root, symbol, limit):
-        routes.append(("callers", actual_root, symbol, limit))
+    def callers(actual_root, symbol, limit, offset=0):
+        routes.append(("callers", actual_root, symbol, limit, offset))
         return {"success": True, "callers": ["Example.call"]}
 
     def fast_context(actual_root, query, max_tokens):
@@ -197,7 +197,7 @@ def test_sdk_convenience_methods_map_to_production_http_handlers(live_client, tm
     assert cancel_result["cancelled"] is True
     assert evidence_result["verified"] is False
     assert routes == [
-        ("callers", root, "Example", 7),
+        ("callers", root, "Example", 7, 0),
         ("context", root, "find Example callers", 512),
         ("cancel", "sdk-test", "job-123"),
         ("evidence", "E123", False),
@@ -221,8 +221,8 @@ def test_sdk_coord_pubsub_poll_maps_payload_to_production_handler(
 
     monkeypatch.setattr(http_server.Handler, "_read_json", capture_payload)
 
-    def poll(topic, since_timestamp=0.0, limit=50):
-        received.append((topic, since_timestamp, limit))
+    def poll(topic, since_timestamp=0.0, limit=50, after_seq=0):
+        received.append((topic, since_timestamp, limit, after_seq))
         return {"success": True, "messages": [{"topic": topic, "message": "ready"}]}
 
     app.services.pubsub_poll = poll
@@ -241,10 +241,11 @@ def test_sdk_coord_pubsub_poll_maps_payload_to_production_handler(
     assert payloads == [{
         "root": str(tmp_path),
         "topic": "release",
+        "after_seq": 0,
         "after_ts": 123.5,
         "limit": 3,
     }]
-    assert received == [("release", 123.5, 3)]
+    assert received == [("release", 123.5, 3, 0)]
 
     retired_alias = client.post(
         "/api/coord/pubsub_poll",
@@ -252,7 +253,7 @@ def test_sdk_coord_pubsub_poll_maps_payload_to_production_handler(
     )
     assert retired_alias["success"] is False
     assert retired_alias["status_code"] == 400
-    assert received == [("release", 123.5, 3)]
+    assert received == [("release", 123.5, 3, 0)]
 
 
 def test_sdk_coord_pubsub_poll_none_timestamp_keeps_sequence_cursor(
@@ -319,7 +320,7 @@ def test_callers_finds_real_python_call_through_sdk_handler(live_client, tmp_pat
 
     assert http_post_paths == ["/api/repo/callers"]
     assert result["success"] is True
-    assert result["caller_count"] == 1
+    assert result["count"] == 1
     assert result["callers"][0]["caller"] == "caller"
     assert result["callers"][0]["file"] == "module.py"
     assert result["callers"][0]["line"] == 5
@@ -342,7 +343,7 @@ def test_sdk_resume_and_verification_use_real_agent_state_handlers(live_client, 
     from local_ai_hub.agent_tasks import TaskCheckpoint, TaskStatus
 
     app, client = live_client
-    root = str(Path(__file__).resolve().parents[1])
+    root = str(tmp_path)
     created = client.create_task(
         "SDK route flow",
         acceptance_criteria=["change_verified"],
@@ -390,11 +391,11 @@ def test_sdk_resume_and_verification_use_real_agent_state_handlers(live_client, 
             "passed": True,
             "criteria": ["change_verified"],
         },
-        tenant="generic",
+        tenant="sdk-test",
         kind="source_review",
     )
     assert evidence_id
-    assert app.artifacts.get(evidence_id, tenant="generic")["success"] is True
+    assert app.artifacts.get(evidence_id, tenant="sdk-test")["success"] is True
     receipt = client.verify_receipt(
         "sdk-route-task",
         "change_verified",
