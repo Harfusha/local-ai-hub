@@ -53,6 +53,32 @@ def test_git_inventory_sorts_tracked_and_untracked_paths_with_bounded_result(tmp
     assert inventory.complete is False
 
 
+def test_git_inventory_sorts_unicode_paths(tmp_path):
+    if shutil.which("git") is None:
+        pytest.skip("Git is required for the Git inventory integration test")
+
+    root = tmp_path / "repository"
+    root.mkdir()
+    subprocess.run(["git", "init", "--quiet", str(root)], check=True, timeout=10)
+    for name in ("z-tracked.txt", "a-untracked.txt", "é-untracked.txt"):
+        (root / name).write_text(name, encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(root), "add", "--", "z-tracked.txt"],
+        check=True,
+        timeout=10,
+    )
+
+    inventory = RepositoryTools({})._git_files(root, max_files=5)
+
+    assert inventory is not None
+    assert [path.name for path in inventory] == [
+        "a-untracked.txt",
+        "z-tracked.txt",
+        "é-untracked.txt",
+    ]
+    assert inventory.complete is True
+
+
 @pytest.mark.parametrize(
     ("cap_name", "cap_value"),
     [("MAX_EXACT_GIT_PATHS", 1), ("MAX_EXACT_GIT_PATH_BYTES", 1)],
