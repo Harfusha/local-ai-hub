@@ -51,18 +51,38 @@ def compact_result(
 
     The full hub HTTP API remains unchanged. This is an agent-facing projection only.
     """
-    try:
-        max_text_chars = max(64, int(max_text_chars))
-    except (ValueError, TypeError):
+    if isinstance(max_text_chars, bool) or max_text_chars is None:
         max_text_chars = 1800
-    try:
-        max_evidence = max(0, int(max_evidence))
-    except (ValueError, TypeError):
+    else:
+        try:
+            if isinstance(max_text_chars, float) and (math.isnan(max_text_chars) or math.isinf(max_text_chars)):
+                max_text_chars = 1800
+            else:
+                max_text_chars = max(64, int(max_text_chars))
+        except (ValueError, TypeError, OverflowError):
+            max_text_chars = 1800
+
+    if isinstance(max_evidence, bool) or max_evidence is None:
         max_evidence = 10
-    try:
-        max_items = max(0, int(max_items))
-    except (ValueError, TypeError):
+    else:
+        try:
+            if isinstance(max_evidence, float) and (math.isnan(max_evidence) or math.isinf(max_evidence)):
+                max_evidence = 10
+            else:
+                max_evidence = max(0, int(max_evidence))
+        except (ValueError, TypeError, OverflowError):
+            max_evidence = 10
+
+    if isinstance(max_items, bool) or max_items is None:
         max_items = 50
+    else:
+        try:
+            if isinstance(max_items, float) and (math.isnan(max_items) or math.isinf(max_items)):
+                max_items = 50
+            else:
+                max_items = max(0, int(max_items))
+        except (ValueError, TypeError, OverflowError):
+            max_items = 50
 
     if _seen is None:
         _seen = set()
@@ -78,6 +98,8 @@ def compact_result(
 
     if isinstance(extra_fields, str):
         extra_fields = [extra_fields]
+    elif isinstance(extra_fields, bool) or not isinstance(extra_fields, Iterable):
+        extra_fields = None
     extra = {str(x).strip().replace("\x00", "") for x in (extra_fields or ())} if extra_fields else set()
     extra.discard("")
 
@@ -218,11 +240,16 @@ def omitted_counts(data: Any) -> dict[str, int]:
     counts: dict[str, int] = {}
     if not isinstance(data, dict):
         return counts
-    if "evidence_omitted" in data and isinstance(data["evidence_omitted"], int):
+    if "evidence_omitted" in data and isinstance(data["evidence_omitted"], int) and not isinstance(data["evidence_omitted"], bool):
         counts["evidence"] = data["evidence_omitted"]
-    if "results_omitted" in data and isinstance(data["results_omitted"], int):
+    if "results_omitted" in data and isinstance(data["results_omitted"], int) and not isinstance(data["results_omitted"], bool):
         counts["results"] = data["results_omitted"]
     repo_context = data.get("repo_context")
-    if isinstance(repo_context, dict) and "evidence_omitted" in repo_context and isinstance(repo_context["evidence_omitted"], int):
+    if (
+        isinstance(repo_context, dict)
+        and "evidence_omitted" in repo_context
+        and isinstance(repo_context["evidence_omitted"], int)
+        and not isinstance(repo_context["evidence_omitted"], bool)
+    ):
         counts["repo_evidence"] = repo_context["evidence_omitted"]
     return counts

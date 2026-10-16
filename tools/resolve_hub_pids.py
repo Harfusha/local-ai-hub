@@ -16,17 +16,32 @@ from local_ai_hub.process_utils import process_owner_state
 
 
 def _owned_hub_pid(config_path: str) -> int | None:
-    config = load_config(config_path)
-    state_dir = Path(config["server"]["state_dir"]).expanduser().resolve()
-    owner_path = state_dir / "hub.owner.json"
-    pid_path = state_dir / "hub.pid"
-
+    if not isinstance(config_path, str) or "\0" in config_path:
+        return None
     try:
+        config = load_config(config_path)
+    except Exception:
+        return None
+    if not isinstance(config, dict):
+        return None
+    server = config.get("server")
+    if not isinstance(server, dict):
+        return None
+    raw_state_dir = server.get("state_dir")
+    if not isinstance(raw_state_dir, str) or "\0" in raw_state_dir:
+        return None
+    try:
+        state_dir = Path(raw_state_dir).expanduser().resolve()
+        owner_path = state_dir / "hub.owner.json"
+        pid_path = state_dir / "hub.pid"
         owner_bytes = owner_path.read_bytes()
         pid_text = pid_path.read_text(encoding="utf-8").strip()
-    except FileNotFoundError:
+    except (FileNotFoundError, OSError):
         return None
-    owner: Any = json.loads(owner_bytes)
+    try:
+        owner: Any = json.loads(owner_bytes)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
     if not isinstance(owner, dict) or not pid_text:
         return None
     try:
@@ -40,7 +55,10 @@ def _owned_hub_pid(config_path: str) -> int | None:
         return None
 
     # Ignore a PID if either owner metadata file changed during identity probing.
-    if owner_path.read_bytes() != owner_bytes or pid_path.read_text(encoding="utf-8").strip() != pid_text:
+    try:
+        if owner_path.read_bytes() != owner_bytes or pid_path.read_text(encoding="utf-8").strip() != pid_text:
+            return None
+    except OSError:
         return None
     return pid
 

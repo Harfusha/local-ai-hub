@@ -5,6 +5,7 @@ from .json_utils import dumps as json_dumps
 from . import __version__
 import copy
 import json
+import math
 import time
 from typing import Any
 
@@ -13,6 +14,43 @@ from .model_policy import ModelExecutionPolicy
 from .ollama_subagents import OllamaSubagentCatalog, OllamaSubagentProfile
 from .prompt_contracts import build_prompt
 from .trace_context import observer
+
+
+def _safe_int(val: Any, default: int = 0, min_val: int | None = None, max_val: int | None = None) -> int:
+    if isinstance(val, bool):
+        res = default
+    elif isinstance(val, (int, float)):
+        res = int(val) if math.isfinite(val) else default
+    else:
+        try:
+            res = int(val)
+        except (ValueError, TypeError):
+            res = default
+    if min_val is not None and res < min_val:
+        res = min_val
+    if max_val is not None and res > max_val:
+        res = max_val
+    return res
+
+
+def _safe_float(val: Any, default: float = 0.0, min_val: float | None = None, max_val: float | None = None) -> float:
+    if isinstance(val, bool):
+        res = default
+    elif isinstance(val, (int, float)):
+        res = float(val) if math.isfinite(val) else default
+    else:
+        try:
+            res = float(val)
+            if not math.isfinite(res):
+                res = default
+        except (ValueError, TypeError):
+            res = default
+    if min_val is not None and res < min_val:
+        res = min_val
+    if max_val is not None and res > max_val:
+        res = max_val
+    return res
+
 
 
 TOOLS = [
@@ -125,25 +163,40 @@ class ToolAwareLocalAgent:
     """Bounded read-only Ollama agent loop over Local AI Hub's own cached tooling."""
 
     def __init__(self, config: dict[str, Any], services: Any, preprocessor: Any, rag: Any, code_index: Any | None = None, evidence: Any | None = None, deterministic: Any | None = None, external_tools: Any | None = None):
-        self.config = config
+        self.config = config if isinstance(config, dict) else {}
         self.services = services
-        self.model_policy = getattr(services, "model_policy", ModelExecutionPolicy(config))
-        self.profile_catalog = OllamaSubagentCatalog(config)
+        self.model_policy = getattr(services, "model_policy", ModelExecutionPolicy(self.config))
+        self.profile_catalog = OllamaSubagentCatalog(self.config)
         self.preprocessor = preprocessor
         self.rag = rag
         self.code_index = code_index
         self.evidence = evidence
         self.deterministic = deterministic
         self.external_tools = external_tools
-        cfg = config.get("local_tools", {})
+        cfg = self.config.get("local_tools", {}) if isinstance(self.config, dict) else {}
+        if not isinstance(cfg, dict):
+            cfg = {}
         self.enabled = bool(cfg.get("enabled", True))
-        self.max_steps = max(1, int(cfg.get("max_steps", 4)))
-        self.max_calls = max(1, int(cfg.get("max_tool_calls", 8)))
-        self.max_tool_chars = max(800, int(cfg.get("max_tool_result_chars", 6500)))
-        self.pre_context_chars = max(0, int(cfg.get("preprocessed_context_chars", 2800)))
-        self.semantic_bypass_confidence = float(cfg.get("semantic_bypass_confidence", 0.94))
+        self.max_steps = _safe_int(cfg.get("max_steps", 4), default=4, min_val=1)
+        self.max_calls = _safe_int(cfg.get("max_tool_calls", 8), default=8, min_val=1)
+        self.max_tool_chars = _safe_int(cfg.get("max_tool_result_chars", 6500), default=6500, min_val=800)
+        self.pre_context_chars = _safe_int(cfg.get("preprocessed_context_chars", 2800), default=2800, min_val=0)
+        self.semantic_bypass_confidence = _safe_float(cfg.get("semantic_bypass_confidence", 0.94), default=0.94, min_val=0.0, max_val=1.0)
         self.bootstrap_deterministic_tools = bool(cfg.get("bootstrap_deterministic_tools", True))
         self.auto_register_project = bool(cfg.get("auto_register_project", False))
+        self.runs = 0
+        self.cache_hits = 0
+        self.tool_calls = 0
+        self.failures = 0
+        self.semantic_bypasses = 0
+
+    def is_enabled(self) -> bool:
+        return self.enabled
+
+    def total_runs(self) -> int:
+        return self.runs
+
+    def clear_stats(self) -> None:
         self.runs = 0
         self.cache_hits = 0
         self.tool_calls = 0
@@ -174,11 +227,13 @@ class ToolAwareLocalAgent:
 
     @staticmethod
     def _arguments(call: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(call, dict):
+            return {}
         fn = call.get("function", {}) if isinstance(call, dict) else {}
         args = fn.get("arguments", {}) if isinstance(fn, dict) else {}
         if isinstance(args, str):
             try:
-                parsed = json.loads(args)
+                parsed = json.loads(args.replace("\x00", ""))
                 return parsed if isinstance(parsed, dict) else {}
             except Exception:
                 return {}
@@ -191,15 +246,21 @@ class ToolAwareLocalAgent:
         return text
 
     def _execute_tool(self, name: str, args: dict[str, Any], root: str, tenant: str, workspace: str) -> dict[str, Any]:
+        name = str(name or "").replace("\x00", "").strip()
         if not isinstance(args, dict):
             args = {}
+        root = str(root or "").replace("\x00", "")
+        tenant = str(tenant or "").replace("\x00", "")
+        workspace = str(workspace or "").replace("\x00", "")
         if name == "preprocessed_context":
-            return self.preprocessor.lookup(root, str(args.get("query", "")), limit=5)
+            query = str(args.get("query", "")).replace("\x00", "")
+            return self.preprocessor.lookup(root, query, limit=5)
         if name == "deterministic_facts":
             if self.deterministic is None:
                 return {"success": False, "error": "deterministic engine unavailable"}
-            limit_val = max(1, min(int(args.get("limit") or 20), 30))
-            result = self.services.deterministic_query(root, str(args.get("query", "")), limit_val) if hasattr(self.services, "deterministic_query") else self.deterministic.query(root, str(args.get("query", "")), limit_val)
+            limit_val = _safe_int(args.get("limit", 20), default=20, min_val=1, max_val=30)
+            query = str(args.get("query", "")).replace("\x00", "")
+            result = self.services.deterministic_query(root, query, limit_val) if hasattr(self.services, "deterministic_query") else self.deterministic.query(root, query, limit_val)
             if isinstance(result, dict):
                 result = copy.deepcopy(result)
                 # Progressive disclosure for local models too: facts/coordinates first,
@@ -211,12 +272,15 @@ class ToolAwareLocalAgent:
                 if isinstance(result.get("scripts"), list): result["scripts"] = result["scripts"][:16]
             return result
         if name == "repo_search":
-            query = str(args.get("query", ""))
-            top_k = max(1, min(int(args.get("top_k") or 6), 10))
+            query = str(args.get("query", "")).replace("\x00", "")
+            top_k = _safe_int(args.get("top_k", 6), default=6, min_val=1, max_val=10)
             raw_hints = args.get("path_hints")
-            path_hints = raw_hints if isinstance(raw_hints, (list, tuple)) else None
+            path_hints = [
+                str(p).replace("\x00", "") if isinstance(p, str) else p
+                for p in raw_hints
+            ] if isinstance(raw_hints, (list, tuple)) else None
             raw_scope = args.get("scope", "repository_search")
-            search_scope = raw_scope if isinstance(raw_scope, str) else "repository_search"
+            search_scope = str(raw_scope).replace("\x00", "") if isinstance(raw_scope, str) else "repository_search"
             result = self.services.repo_search(
                 root,
                 query,
@@ -244,13 +308,14 @@ class ToolAwareLocalAgent:
                 result["progressive_disclosure"] = receipts_complete
             return result
         if name == "rag_search":
-            query = str(args.get("query", ""))
+            query = str(args.get("query", "")).replace("\x00", "")
+            top_k = _safe_int(args.get("top_k", 6), default=6, min_val=1, max_val=8)
             # Enforce deterministic-first below the prompt layer too. Even if a local
             # model asks for RAG prematurely, strong exact facts/graph evidence can
             # satisfy the request without query embeddings, vector scan or reranker.
             if self.deterministic is not None:
                 try:
-                    det = self.services.deterministic_query(root, query, max(12, min(int(args.get("top_k") or 6) * 3, 24))) if hasattr(self.services, "deterministic_query") else self.deterministic.query(root, query, max(12, min(int(args.get("top_k") or 6) * 3, 24)))
+                    det = self.services.deterministic_query(root, query, max(12, min(top_k * 3, 24))) if hasattr(self.services, "deterministic_query") else self.deterministic.query(root, query, max(12, min(top_k * 3, 24)))
                     if (det.get("direct_answer") and float(det.get("confidence", 0.0)) >= self.semantic_bypass_confidence):
                         self.semantic_bypasses += 1
                         return {
@@ -261,7 +326,7 @@ class ToolAwareLocalAgent:
                         }
                 except Exception:
                     pass
-            result = self.rag.search(query, tenant, workspace, max(1, min(int(args.get("top_k") or 6), 8)), True)
+            result = self.rag.search(query, tenant, workspace, top_k, True)
             if isinstance(result.get("results"), list):
                 # RAG chunks are hints; send coordinates/score first and let the agent request exact source via search/file slice.
                 result = dict(result)
@@ -275,25 +340,32 @@ class ToolAwareLocalAgent:
         if name == "code_index":
             if self.code_index is None:
                 return {"success": False, "error": "code index unavailable"}
-            return self.services.code_query(root, str(args.get("query", "")), max(1, min(int(args.get("limit") or 20), 30))) if hasattr(self.services, "code_query") else self.code_index.query(root, str(args.get("query", "")), max(1, min(int(args.get("limit") or 20), 30)))
+            query = str(args.get("query", "")).replace("\x00", "")
+            limit_val = _safe_int(args.get("limit", 20), default=20, min_val=1, max_val=30)
+            return self.services.code_query(root, query, limit_val) if hasattr(self.services, "code_query") else self.code_index.query(root, query, limit_val)
         if name == "semantic_symbols":
             if self.external_tools is None:
                 return {"success": False, "error": "external code intelligence unavailable"}
             backend = "serena"
+            query = str(args.get("query", "")).replace("\x00", "")
+            action = str(args.get("action", "search")).replace("\x00", "")
+            path = str(args.get("path", "")).replace("\x00", "")
             return self.external_tools.query(
-                root, str(args.get("query", "")), backend=backend,
-                action=str(args.get("action", "search")), path=str(args.get("path", "")), limit=20,
+                root, query, backend=backend,
+                action=action, path=path, limit=20,
             )
         if name == "evidence_get":
             if self.evidence is None:
                 return {"success": False, "error": "evidence store unavailable"}
-            return self.evidence.get(str(args.get("evidence_id", "")), verify=True)
+            evidence_id = str(args.get("evidence_id", "")).replace("\x00", "")
+            return self.evidence.get(evidence_id, verify=True)
         if name == "file_slice":
-            start = max(1, int(args.get("start_line") or 1))
-            end = max(start, int(args.get("end_line") or (start + 120)))
+            path = str(args.get("path", "")).replace("\x00", "")
+            start = _safe_int(args.get("start_line", 1), default=1, min_val=1)
+            end = _safe_int(args.get("end_line", start + 120), default=start + 120, min_val=start)
             if end - start > 220:
                 end = start + 220
-            return self.services.repo_tools.file_slice(root, str(args.get("path", "")), start, end, self.max_tool_chars)
+            return self.services.repo_tools.file_slice(root, path, start, end, self.max_tool_chars)
         return {"success": False, "error": f"unknown local tool: {name}"}
 
     @staticmethod

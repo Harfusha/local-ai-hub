@@ -6,6 +6,7 @@ import base64
 import codecs
 import hashlib
 import json
+import math
 import re
 import sqlite3
 import threading
@@ -207,14 +208,18 @@ class ArtifactStore:
 
     def __init__(
         self,
-        state_dir: Path,
+        state_dir: Path | str,
         ttl_hours: int = 72,
         max_inline_chars: int = 6000,
         max_binary_bytes: int = DEFAULT_MAX_BINARY_BYTES,
         max_json_bytes: int = DEFAULT_MAX_JSON_BYTES,
     ):
-        self.path = state_dir / "artifacts.sqlite3"
-        self.ttl_seconds = max(3600, int(ttl_hours) * 3600)
+        if not isinstance(state_dir, (str, Path)) or not str(state_dir).strip() or "\x00" in str(state_dir):
+            raise ValueError("invalid state_dir")
+        self.state_dir = Path(state_dir)
+        self.path = self.state_dir / "artifacts.sqlite3"
+        ttl = 72 if isinstance(ttl_hours, bool) or not isinstance(ttl_hours, (int, float)) or not math.isfinite(ttl_hours) else int(ttl_hours)
+        self.ttl_seconds = max(3600, ttl * 3600)
         self.max_inline_chars = max(1000, int(max_inline_chars))
         self.max_binary_bytes = max(1, int(max_binary_bytes))
         self.max_json_bytes = max(1, int(max_json_bytes))
@@ -578,8 +583,8 @@ class ArtifactStore:
     @staticmethod
     def _tenant_identity(tenant: str) -> str:
         """Hash a trusted-local namespace label without retaining its caller-controlled text."""
-        if not isinstance(tenant, str):
-            raise ValueError("tenant label must be a string")
+        if not isinstance(tenant, str) or "\x00" in tenant:
+            raise ValueError("tenant label must be a string without null bytes")
         return hashlib.sha256(tenant.encode("utf-8")).hexdigest()
 
     @staticmethod
@@ -787,6 +792,8 @@ class ArtifactStore:
 
     def get_binary(self, artifact_id: str, tenant: str | None = None) -> dict[str, Any]:
         """Return one complete, integrity-checked binary artifact or a safe failure."""
+        if not isinstance(artifact_id, str) or not artifact_id or "\x00" in artifact_id:
+            return self._binary_failure("invalid artifact_id")
         cutoff = time.time() - self.ttl_seconds
 
         def _do_get() -> tuple[Any, ...] | None:
@@ -953,6 +960,8 @@ class ArtifactStore:
         return result
 
     def get(self, artifact_id: str, offset: int = 0, max_chars: int = 6000, section: str = "", tenant: str | None = None) -> dict[str, Any]:
+        if not isinstance(artifact_id, str) or not artifact_id or "\x00" in artifact_id:
+            return {"success": False, "error": "invalid artifact_id", "error_code": "artifact_read_invalid"}
         if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
             return {"success": False, "error": "artifact offset must be a non-negative integer",
                     "error_code": "artifact_read_invalid", "artifact_id": artifact_id}

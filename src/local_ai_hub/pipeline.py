@@ -3,12 +3,46 @@ from __future__ import annotations
 from .json_utils import dumps as json_dumps
 
 import copy
+import math
 from pathlib import Path
 from typing import Any
 
 from . import __version__
 from .cache import SQLiteCache, SingleFlightCache, TieredCache, stable_hash
 from .planner import AdaptivePlanner
+from .state_paths import configured_state_dir
+
+
+def _safe_int(val: Any, default: int, min_val: int | None = None, max_val: int | None = None) -> int:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        if isinstance(val, float) and not math.isfinite(val):
+            return default
+        res = int(val)
+    except (ValueError, TypeError, OverflowError):
+        return default
+    if min_val is not None and res < min_val:
+        return min_val
+    if max_val is not None and res > max_val:
+        return max_val
+    return res
+
+
+def _safe_float(val: Any, default: float, min_val: float | None = None, max_val: float | None = None) -> float:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        res = float(val)
+        if not math.isfinite(res):
+            return default
+    except (ValueError, TypeError, OverflowError):
+        return default
+    if min_val is not None and res < min_val:
+        return min_val
+    if max_val is not None and res > max_val:
+        return max_val
+    return res
 
 
 def _is_repetition_loop(response: Any) -> bool:
@@ -38,34 +72,37 @@ class LocalAgentPipeline:
     """
 
     def __init__(self, config: dict[str, Any], services: Any, token_router: Any, tool_agent: Any | None = None):
-        self.config = config
+        self.config = config if isinstance(config, dict) else {}
         self.services = services
         self.token_router = token_router
         self.tool_agent = tool_agent
-        self.planner = AdaptivePlanner(config)
-        cfg = config.get("local_pipeline", {})
+        self.planner = AdaptivePlanner(self.config)
+        cfg = self.config.get("local_pipeline", {}) if isinstance(self.config.get("local_pipeline"), dict) else {}
         self.enabled = bool(cfg.get("enabled", True))
         self.default_mode = str(cfg.get("default_mode", "adaptive"))
-        self.critic_risk_score = int(cfg.get("critic_min_risk_score", 4))
-        self.critic_min_complexity_score = int(cfg.get("critic_min_complexity_score", 3))
-        self.worker_complexity_score = int(cfg.get("worker_min_complexity_score", 2))
-        self.max_explorer_tokens = int(cfg.get("explorer_max_tokens", 650))
-        self.max_worker_tokens = int(cfg.get("worker_max_tokens", 1300))
-        self.max_critic_tokens = int(cfg.get("critic_max_tokens", 750))
-        hw_prof = str(config.get("_hardware", {}).get("profile") or config.get("hardware", {}).get("profile") or "").lower()
+        self.critic_risk_score = _safe_int(cfg.get("critic_min_risk_score"), 4)
+        self.critic_min_complexity_score = _safe_int(cfg.get("critic_min_complexity_score"), 3)
+        self.worker_complexity_score = _safe_int(cfg.get("worker_min_complexity_score"), 2)
+        self.max_explorer_tokens = _safe_int(cfg.get("explorer_max_tokens"), 650, min_val=1)
+        self.max_worker_tokens = _safe_int(cfg.get("worker_max_tokens"), 1300, min_val=1)
+        self.max_critic_tokens = _safe_int(cfg.get("critic_max_tokens"), 750, min_val=1)
+        hw_prof = str(self.config.get("_hardware", {}).get("profile") if isinstance(self.config.get("_hardware"), dict) else (self.config.get("hardware", {}).get("profile") if isinstance(self.config.get("hardware"), dict) else "")).lower()
         default_passes = 1 if hw_prof in {"cpu", "integrated", "low"} else 2
-        self.same_model_worker_passes = max(1, int(cfg.get("same_model_worker_passes", default_passes)))
-        self.second_pass_min_complexity_score = int(cfg.get("second_pass_min_complexity_score", 2))
-        self.explorer_skip_worker_confidence = float(cfg.get("explorer_skip_worker_confidence", 0.90))
+        self.same_model_worker_passes = max(1, _safe_int(cfg.get("same_model_worker_passes"), default_passes))
+        self.second_pass_min_complexity_score = _safe_int(cfg.get("second_pass_min_complexity_score"), 2)
+        self.explorer_skip_worker_confidence = _safe_float(cfg.get("explorer_skip_worker_confidence"), 0.90, min_val=0.0, max_val=1.0)
         self.direct_smart_enabled = bool(cfg.get("direct_smart_enabled", "direct_smart_complexity_score" in cfg or "direct_smart_risk_score" in cfg))
-        self.direct_smart_complexity_score = int(cfg.get("direct_smart_complexity_score", 99))
-        self.direct_smart_risk_score = int(cfg.get("direct_smart_risk_score", 99))
-        self.max_final_chars = int(cfg.get("max_final_chars", config.get("token_saving", {}).get("max_inline_chars", 3600)))
+        self.direct_smart_complexity_score = _safe_int(cfg.get("direct_smart_complexity_score"), 99)
+        self.direct_smart_risk_score = _safe_int(cfg.get("direct_smart_risk_score"), 99)
+        default_max_chars = self.config.get("token_saving", {}).get("max_inline_chars", 3600) if isinstance(self.config.get("token_saving"), dict) else 3600
+        self.max_final_chars = _safe_int(cfg.get("max_final_chars"), _safe_int(default_max_chars, 3600))
         self.refine_runs = 0
-        self.execution_policy_fp = stable_hash(config.get("model_execution", {}))
-        state_dir = Path(config["server"]["state_dir"])
-        l2 = SQLiteCache(state_dir / "cache.sqlite", "pipeline-stage", int(cfg.get("ttl_seconds", 604800)), int(cfg.get("max_entries", 12000)))
-        self.cache = SingleFlightCache(TieredCache(l2, int(cfg.get("l1_entries", 256)), int(cfg.get("l1_ttl_seconds", 1800))), wait_timeout_seconds=float(config.get("resilience", {}).get("singleflight_wait_timeout_seconds", 45)))
+        self.execution_policy_fp = stable_hash(self.config.get("model_execution", {}) if isinstance(self.config.get("model_execution"), dict) else {})
+        state_dir = configured_state_dir(self.config)
+        l2 = SQLiteCache(state_dir / "cache.sqlite", "pipeline-stage", _safe_int(cfg.get("ttl_seconds"), 604800), _safe_int(cfg.get("max_entries"), 12000))
+        resilience_cfg = self.config.get("resilience", {}) if isinstance(self.config.get("resilience"), dict) else {}
+        wait_timeout = _safe_float(resilience_cfg.get("singleflight_wait_timeout_seconds"), 45.0)
+        self.cache = SingleFlightCache(TieredCache(l2, _safe_int(cfg.get("l1_entries"), 256), _safe_int(cfg.get("l1_ttl_seconds"), 1800)), wait_timeout_seconds=wait_timeout)
         self.runs = 0
         self.critic_runs = 0
         self.worker_runs = 0
@@ -98,14 +135,15 @@ class LocalAgentPipeline:
 
     @staticmethod
     def _select_worker_model(
-        route: dict[str, Any], mode: str, risk_score: int,
+        route: dict[str, Any] | None, mode: str, risk_score: int,
         direct_smart_risk_score: int, fast_model: str, heavy_model: str,
     ) -> str:
         """Keep ordinary repository workers on Qwen 2.5; escalate intentionally."""
-        complexity_score = int(route.get("complexity_score", 0) or 0)
+        route_dict = route if isinstance(route, dict) else {}
+        complexity_score = _safe_int(route_dict.get("complexity_score"), 0)
         smart_required = (
             mode == "quality"
-            or route.get("complexity") == "heavy"
+            or route_dict.get("complexity") == "heavy"
             or complexity_score >= 3
             or risk_score >= direct_smart_risk_score
         )
@@ -115,13 +153,17 @@ class LocalAgentPipeline:
         if not self.enabled:
             return self.services.delegate_repo(args, tenant)
         self.runs += 1
-        root = str(args.get("root", "."))
-        task = str(args.get("task", args.get("query", ""))).strip()
-        mode = str(args.get("mode", self.default_mode)).lower()
+        raw_root = args.get("root", ".") if isinstance(args, dict) else "."
+        if raw_root is None or isinstance(raw_root, bool) or not isinstance(raw_root, (str, Path)):
+            root = "."
+        else:
+            root = str(raw_root).replace("\x00", "").strip() or "."
+        task = str(args.get("task", args.get("query", "")) if isinstance(args, dict) else "").strip()
+        mode = str(args.get("mode", self.default_mode) if isinstance(args, dict) else self.default_mode).lower()
         if mode not in {"fast", "adaptive", "quality"}:
             mode = self.default_mode
 
-        route = self.services.router.classify(task, "", str(args.get("task_type", "auto")), str(args.get("complexity", "auto")))
+        route = self.services.router.classify(task, "", str(args.get("task_type", "auto") if isinstance(args, dict) else "auto"), str(args.get("complexity", "auto") if isinstance(args, dict) else "auto"))
         deterministic = self.services.deterministic_query(root, task, 30) if getattr(self.services, "deterministic", None) is not None else {"success": False, "confidence": 0.0}
         # Local AI fast path: pure lookup/discovery questions can be answered from parsed facts
         # and exact evidence without any RAG, reranker, embeddings or Ollama inference.
@@ -139,15 +181,17 @@ class LocalAgentPipeline:
         ]))
         needs_impact = route.get("task_type") in {"review", "patch"} or deterministic.get("intent") == "implementation" or any(
             token in low_task for token in mutation_terms
-        ) or bool(args.get("staged", False))
-        impact = self.services.repo_impact(root, str(args.get("base", "HEAD")), bool(args.get("staged", False))) if needs_impact else {
+        ) or bool(args.get("staged", False) if isinstance(args, dict) else False)
+        impact = self.services.repo_impact(root, str(args.get("base", "HEAD") if isinstance(args, dict) else "HEAD"), bool(args.get("staged", False) if isinstance(args, dict) else False)) if needs_impact else {
             "success": True, "changed_files": [], "suggested_tests": [], "risk": {"score": 0, "level": "low", "reasons": ["impact scan skipped for non-change task"]}
         }
         risk_score = self._risk_score(impact)
         graph = self.services.code_query(root, task, 24) if getattr(self.services, "code_index", None) is not None else {"success": False, "confidence": 0.0}
         graph_for_plan = dict(graph) if isinstance(graph, dict) else {}
         graph_for_plan["confidence"] = max(float(graph_for_plan.get("confidence", 0.0) or 0.0), float(deterministic.get("confidence", 0.0) or 0.0) * 0.92)
-        preliminary = self.planner.plan(route, risk_score, graph_for_plan, len(deterministic.get("evidence", [])), mode)
+        det_ev = deterministic.get("evidence") if isinstance(deterministic, dict) else None
+        det_ev_count = len(det_ev) if isinstance(det_ev, (list, tuple)) else 0
+        preliminary = self.planner.plan(route, risk_score, graph_for_plan, det_ev_count, mode)
         workflow = self.config.get("workflow", {})
         high_conf_threshold = float(workflow.get("high_confidence_threshold", 0.90))
         budget = int(args.get("context_tokens", 0) or 0)
@@ -179,7 +223,9 @@ class LocalAgentPipeline:
             if isinstance(packed, dict): packed["context_source"] = "hybrid"
         if not packed.get("success"):
             return packed
-        plan = self.planner.plan(route, risk_score, graph_for_plan, len(packed.get("evidence", [])) + len(deterministic.get("evidence", [])), mode)
+        packed_ev = packed.get("evidence") if isinstance(packed, dict) else None
+        packed_ev_count = len(packed_ev) if isinstance(packed_ev, (list, tuple)) else 0
+        plan = self.planner.plan(route, risk_score, graph_for_plan, packed_ev_count + det_ev_count, mode)
         # Local AI: if smart execution is inevitable, do not pay a fast-tier scout + model swap first.
         # Deterministic facts/search still run, so the smart worker receives scoped evidence.
         direct_smart = self.direct_smart_enabled and bool(plan.get("worker")) and self.config.get("models", {}).get("heavy_code") != self.config.get("models", {}).get("fast_code") and (
@@ -241,9 +287,11 @@ class LocalAgentPipeline:
                 ),
             )
         else:
+            ev_list = packed.get("evidence") if isinstance(packed, dict) else None
+            ev_items = ev_list if isinstance(ev_list, (list, tuple)) else []
             explorer = {
                 "success": True, "model": "deterministic", "text": "", "stage_cache_hit": True,
-                "structured": {"role": "explorer", "summary": "deterministic evidence/graph sufficient for exploration", "confidence": plan.get("confidence"), "evidence_ids": [str(x.get("evidence_id")) for x in packed.get("evidence", []) if x.get("evidence_id")][:10], "candidate_files": [str(x.get("path")) for x in packed.get("evidence", []) if x.get("path")][:12], "missing_evidence": []},
+                "structured": {"role": "explorer", "summary": "deterministic evidence/graph sufficient for exploration", "confidence": plan.get("confidence"), "evidence_ids": [str(x.get("evidence_id")) for x in ev_items if isinstance(x, dict) and x.get("evidence_id")][:10], "candidate_files": [str(x.get("path")) for x in ev_items if isinstance(x, dict) and x.get("path")][:12], "missing_evidence": []},
             }
         if bool(plan.get("explorer")) and not explorer.get("success") and self.tool_agent is not None and not _is_repetition_loop(explorer):
             # Tool-calling support varies by local model/template. Retry the exact same

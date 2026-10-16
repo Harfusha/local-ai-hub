@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import json
+import math
 import os
 import platform
 import re
@@ -255,13 +256,31 @@ def _generic_windows() -> list[dict[str, Any]]:
     return out
 
 
+def _safe_vram(val: Any) -> int:
+    if isinstance(val, bool) or val is None:
+        return 0
+    if isinstance(val, (int, float)):
+        return max(0, int(val))
+    if isinstance(val, str):
+        digits = "".join(c for c in val if c.isdigit())
+        return int(digits) if digits else 0
+    return 0
+
+
 def choose_profile(gpus: list[dict[str, Any]], ram_gb: float, requested: str = "auto") -> str:
     requested = str(requested or "auto").strip().lower()
     if requested in {"cpu", "integrated", "low", "balanced", "high", "max"}:
         return requested
-    apple = next((g for g in gpus if g.get("vendor") == "apple"), None)
+    clean_gpus = [g for g in gpus if isinstance(g, dict)] if isinstance(gpus, list) else []
+    try:
+        ram = float(ram_gb)
+        if not math.isfinite(ram):
+            ram = 0.0
+    except (TypeError, ValueError):
+        ram = 0.0
+    apple = next((g for g in clean_gpus if g.get("vendor") == "apple"), None)
     if apple:
-        unified = float(apple.get("unified_memory_mb", 0)) / 1024.0
+        unified = float(_safe_vram(apple.get("unified_memory_mb", 0))) / 1024.0
         if unified >= 64:
             return "max"
         if unified >= 32:
@@ -269,8 +288,8 @@ def choose_profile(gpus: list[dict[str, Any]], ram_gb: float, requested: str = "
         if unified >= 16:
             return "balanced"
         return "low"
-    integrated = [g for g in gpus if bool(g.get("integrated"))]
-    dedicated = max((int(g.get("vram_mb", 0) or 0) for g in gpus if not bool(g.get("integrated"))), default=0)
+    integrated = [g for g in clean_gpus if bool(g.get("integrated"))]
+    dedicated = max((_safe_vram(g.get("vram_mb", 0)) for g in clean_gpus if not bool(g.get("integrated"))), default=0)
     if dedicated >= 20 * 1024:
         return "max"
     if dedicated >= 12 * 1024:
@@ -283,8 +302,8 @@ def choose_profile(gpus: list[dict[str, Any]], ram_gb: float, requested: str = "
     # Core Ultra notebook is useful, but running 7B models plus a second local
     # worker is too aggressive for an iGPU that competes with system memory.
     if integrated:
-        return "integrated" if ram_gb >= 16 else "cpu"
-    return "low" if ram_gb >= 16 else "cpu"
+        return "integrated" if ram >= 16 else "cpu"
+    return "low" if ram >= 16 else "cpu"
 
 
 @lru_cache(maxsize=4)
@@ -508,15 +527,24 @@ PROFILE_OVERRIDES: dict[str, dict[str, Any]] = {
 def profile_overrides(profile_name: str, detected: dict[str, Any] | None = None) -> dict[str, Any]:
     import copy
     result = copy.deepcopy(PROFILE_OVERRIDES.get(profile_name, PROFILE_OVERRIDES["balanced"]))
-    detected = detected or {}
-    ram_gb = float(detected.get("ram", {}).get("total_gb", 0) or 0)
+    detected = detected if isinstance(detected, dict) else {}
+    ram_dict = detected.get("ram")
+    ram_dict = ram_dict if isinstance(ram_dict, dict) else {}
+    try:
+        raw_ram = ram_dict.get("total_gb", 0)
+        ram_gb = float(raw_ram) if (raw_ram is not None and not isinstance(raw_ram, bool)) else 0.0
+        if not math.isfinite(ram_gb):
+            ram_gb = 0.0
+    except (TypeError, ValueError):
+        ram_gb = 0.0
+    gpus_list = detected.get("gpus")
+    gpus = [g for g in gpus_list if isinstance(g, dict)] if isinstance(gpus_list, list) else []
     if profile_name == "integrated":
-        gpus = detected.get("gpus", [])
         has_intel_gpu = any(
             str(gpu.get("vendor", "")).lower() == "intel"
             or "intel" in str(gpu.get("name", "")).lower()
-            for gpu in gpus if isinstance(gpu, dict)
-        ) if isinstance(gpus, list) else False
+            for gpu in gpus
+        )
         if has_intel_gpu:
             result = _deep_merge_dict(result, {"ollama": {"allow_integrated_gpu": False, "enable_vulkan": False}})
         if ram_gb >= 24:
@@ -539,7 +567,7 @@ def profile_overrides(profile_name: str, detected: dict[str, Any] | None = None)
             })
     intel_integrated = any(
         str(gpu.get("vendor", "")).lower() == "intel" and bool(gpu.get("integrated"))
-        for gpu in detected.get("gpus", []) if isinstance(gpu, dict)
+        for gpu in gpus
     )
     has_npu = bool(detected.get("npus"))
     if (profile_name in ("integrated", "cpu") and has_npu) or (profile_name == "integrated" and intel_integrated):
@@ -560,7 +588,9 @@ def profile_overrides(profile_name: str, detected: dict[str, Any] | None = None)
 
 def _deep_merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     import copy
-    result = copy.deepcopy(base)
+    if not isinstance(override, dict):
+        return copy.deepcopy(override)
+    result = copy.deepcopy(base) if isinstance(base, dict) else {}
     for key, value in override.items():
         if isinstance(value, dict) and isinstance(result.get(key), dict):
             result[key] = _deep_merge_dict(result[key], value)

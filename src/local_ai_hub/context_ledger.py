@@ -22,7 +22,7 @@ class ContextLedger:
     """Track token pressure without retaining prompts, source, or command text."""
 
     def __init__(self, *, max_entries: int = 512, pointer_ttl_seconds: int = 300) -> None:
-        self._max_entries = max(1, int(max_entries))
+        self._max_entries = _safe_positive_int(max_entries, 512)
         self._entries: deque[dict[str, Any]] = deque(maxlen=self._max_entries)
         self._totals: Counter[str] = Counter()
         self._outcomes: Counter[str] = Counter()
@@ -30,8 +30,31 @@ class ContextLedger:
         # same task do not invalidate still-fresh reuse keys.
         self._compiled: dict[str, dict[str, Any]] = {}
         self._compiled_by_scope: dict[str, str] = {}
-        self._pointer_ttl_seconds = max(1, int(pointer_ttl_seconds))
+        self._pointer_ttl_seconds = _safe_positive_int(pointer_ttl_seconds, 300)
         self._lock = Lock()
+
+    def entry_count(self) -> int:
+        with self._lock:
+            return len(self._entries)
+
+    def compiled_count(self) -> int:
+        with self._lock:
+            return len(self._compiled)
+
+    def has_pointer(self, reuse_key: str) -> bool:
+        key = _clean_str(reuse_key)
+        if not key:
+            return False
+        with self._lock:
+            return key in self._compiled
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+            self._totals.clear()
+            self._outcomes.clear()
+            self._compiled.clear()
+            self._compiled_by_scope.clear()
 
     def record(
         self,
@@ -51,7 +74,7 @@ class ContextLedger:
         result_id: str = "",
         session_id: str = "",
     ) -> None:
-        evidence_id = str(baseline_evidence_id or "").strip()
+        evidence_id = _clean_str(baseline_evidence_id).strip()
         response_count = _safe_nonnegative_int(response_tokens)
         baseline_count = _optional_nonnegative_int(baseline_tokens_est)
         has_baseline = baseline_count is not None and is_current_evidence_id(evidence_id, evidence_store)
@@ -59,8 +82,8 @@ class ContextLedger:
         if has_baseline:
             baseline_delta = baseline_count - response_count
         entry = {
-            "tool": str(tool or "")[:64],
-            "operation": str(operation or "default")[:64],
+            "tool": _clean_str(tool)[:64],
+            "operation": (_clean_str(operation) or "default")[:64],
             "request_tokens": _safe_nonnegative_int(request_tokens),
             "response_tokens": response_count,
             "saved_tokens": baseline_delta,
@@ -69,8 +92,8 @@ class ContextLedger:
             "protocol_tokens_est": _safe_nonnegative_int(protocol_tokens_est),
             "schema_tokens_est": _safe_nonnegative_int(schema_tokens_est),
             "local_compute_reused_tokens_est": _safe_nonnegative_int(local_compute_reused_tokens_est),
-            "cache_outcome": str(cache_outcome or "none")[:24],
-            "result_id": str(result_id or "")[:32],
+            "cache_outcome": (_clean_str(cache_outcome) or "none")[:24],
+            "result_id": _clean_str(result_id)[:32],
         }
         with self._lock:
             if len(self._entries) == self._entries.maxlen:
@@ -106,8 +129,9 @@ class ContextLedger:
                 self._outcomes[entry["cache_outcome"]] += 1
 
     def snapshot(self, *, limit: int = 8) -> dict[str, Any]:
+        safe_limit = _safe_positive_int(limit, 8)
         with self._lock:
-            entries = list(self._entries)[-max(1, min(int(limit), len(self._entries))):]
+            entries = list(self._entries)[-max(1, min(safe_limit, len(self._entries))):]
             return {
                 "entries": len(self._entries),
                 "totals": dict(self._totals),
@@ -117,7 +141,7 @@ class ContextLedger:
             }
 
     def adaptive_profile(self, requested: str = "compact") -> str:
-        profile = str(requested or "compact").strip().lower()
+        profile = _clean_str(requested or "compact").strip().lower()
         if profile in {"minimal", "standard", "debug", "delta"}:
             return profile
         with self._lock:
@@ -149,12 +173,27 @@ class ContextLedger:
         tenant: str = "local",
     ) -> dict[str, Any]:
         """Return bounded context plus a freshness-bounded, scope-safe reuse key."""
-        task = str(task_id or "")
-        rev = str(revision or "")
+        task = _clean_str(task_id)
+        rev = _clean_str(revision)
         raw_context = str(context or "")
-        full_ids = list(dict.fromkeys(str(item) for item in evidence_ids if str(item)))
+        if evidence_ids is None or isinstance(evidence_ids, bool):
+            raw_evidence_ids: list[Any] = []
+        elif isinstance(evidence_ids, (str, bytes)):
+            raw_evidence_ids = [evidence_ids]
+        else:
+            try:
+                raw_evidence_ids = list(evidence_ids)
+            except TypeError:
+                raw_evidence_ids = [evidence_ids]
+        full_ids = list(dict.fromkeys(cleaned for item in raw_evidence_ids if (cleaned := _clean_str(item))))
         ids = full_ids[:64]
-        focus_values = list(focus) if isinstance(focus, (list, tuple)) else [str(focus)] if focus else []
+        focus_values = (
+            [_clean_str(item) for item in focus if _clean_str(item)]
+            if isinstance(focus, (list, tuple))
+            else [_clean_str(focus)]
+            if _clean_str(focus)
+            else []
+        )
         normalized_root = normalize_context_root(root)
         path_hint_values = list(context_path_hints_identity(path_hints))
         normalized_settings_digest = normalize_settings_digest(settings_digest) or ""
@@ -164,26 +203,26 @@ class ContextLedger:
         semantic_inputs = {
             "root": normalized_root,
             "revision": rev,
-            "identity": str(identity or ""),
+            "identity": _clean_str(identity),
             "task_id": task,
-            "phase": str(phase or ""),
+            "phase": _clean_str(phase),
             "focus": focus_values,
             "path_hints": path_hint_values,
             "settings_digest": normalized_settings_digest,
-            "preload_profile": str(preload_profile or ""),
+            "preload_profile": _clean_str(preload_profile),
             "configuration": configuration,
-            "model": str(model or ""),
-            "memory_revision": str(memory_revision or ""),
-            "tenant": str(tenant or ""),
+            "model": _clean_str(model),
+            "memory_revision": _clean_str(memory_revision),
+            "tenant": _clean_str(tenant),
             "evidence_ids": full_ids,
             "context_sha256": context_hash.hexdigest(),
         }
         canonical = json.dumps(semantic_inputs, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
         digest = hashlib.sha256(canonical.encode("utf-8", "replace")).hexdigest()[:32]
         scope_inputs = {
-            "tenant": str(tenant or ""),
+            "tenant": _clean_str(tenant),
             "root": normalized_root,
-            "identity": str(identity or ""),
+            "identity": _clean_str(identity),
             "task_id": task,
         }
         scope_canonical = json.dumps(scope_inputs, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -199,15 +238,15 @@ class ContextLedger:
         fresh_until = 0.0
         if artifact_store is not None:
             artifact_id = str(artifact_store.put(raw_context, tenant, "agent-context"))
-            artifact_ttl = max(1, int(getattr(artifact_store, "ttl_seconds", self._pointer_ttl_seconds)))
+            artifact_ttl = _safe_positive_int(getattr(artifact_store, "ttl_seconds", self._pointer_ttl_seconds), self._pointer_ttl_seconds)
             fresh_until = time.time() + min(self._pointer_ttl_seconds, artifact_ttl)
         current = {
-            "tenant": str(tenant or ""),
+            "tenant": _clean_str(tenant),
             "root": normalized_root,
-            "identity": str(identity or ""),
+            "identity": _clean_str(identity),
             "task_id": task,
             "revision": rev[:200],
-            "phase": str(phase or "")[:64],
+            "phase": _clean_str(phase)[:64],
             "evidence_ids": ids,
             "digest": digest,
             "reuse_key": reuse_key,
@@ -275,21 +314,22 @@ class ContextLedger:
         max_chars: int = 6000,
     ) -> dict[str, Any]:
         """Fetch a fresh context slice through its tenant, root, task, and identity-scoped pointer."""
+        key = _clean_str(reuse_key)
         with self._lock:
-            stored = self._compiled.get(str(reuse_key))
+            stored = self._compiled.get(key)
             entry = dict(stored) if stored is not None else None
         if not entry or not entry.get("artifact_id"):
             return {"success": False, "status": "unavailable", "freshness": "unknown", "error": "context pointer cannot be materialized"}
         if (
-            entry.get("tenant") != str(tenant or "")
+            entry.get("tenant") != _clean_str(tenant)
             or entry.get("root") != normalize_context_root(root)
-            or entry.get("identity") != str(identity or "")
-            or entry.get("task_id") != str(task_id or "")
+            or entry.get("identity") != _clean_str(identity)
+            or entry.get("task_id") != _clean_str(task_id)
         ):
             return {"success": False, "status": "unavailable", "freshness": "unknown", "error": "context pointer cannot be materialized"}
         with self._lock:
             current_key = self._compiled_by_scope.get(str(entry.get("scope_key") or ""))
-        if current_key != str(reuse_key):
+        if current_key != key:
             return {"success": False, "status": "stale", "freshness": "stale", "error": "context pointer cannot be materialized", "reuse_key": reuse_key}
         if float(entry.get("fresh_until") or 0.0) <= time.time():
             return {"success": False, "status": "stale", "freshness": "stale", "error": "context pointer expired", "reuse_key": reuse_key}
@@ -305,6 +345,21 @@ class ContextLedger:
             "fresh_until": entry["fresh_until"],
             "reuse_key": reuse_key,
         }
+
+
+def _clean_str(value: Any) -> str:
+    if value is None or isinstance(value, bool):
+        return ""
+    return str(value).replace("\x00", "")
+
+
+def _safe_positive_int(value: Any, default: int) -> int:
+    if value is None or isinstance(value, bool):
+        return default
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError, OverflowError):
+        return default
 
 
 def _safe_nonnegative_int(value: Any) -> int:

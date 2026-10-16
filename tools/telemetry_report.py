@@ -68,7 +68,9 @@ def _gpu_info() -> list[dict[str, str]]:
         return []
 
 
-def _safe_tuning(cfg: dict) -> dict:
+def _safe_tuning(cfg: dict | None) -> dict:
+    if not isinstance(cfg, dict):
+        return {}
     allowed = (
         "routing", "scheduler", "ollama", "token_saving", "cache", "semantic_cache",
         "workspace_cache", "commands", "prewarm", "search", "rag", "workflow",
@@ -78,8 +80,14 @@ def _safe_tuning(cfg: dict) -> dict:
     return {name: cfg.get(name, {}) for name in allowed if isinstance(cfg.get(name), dict)}
 
 
-def _default_output_path(state_dir: str | Path) -> Path:
-    diagnostics_dir = Path(state_dir).expanduser().resolve() / "diagnostics"
+def _default_output_path(state_dir: str | Path | None) -> Path:
+    if not isinstance(state_dir, (str, Path)) or "\x00" in str(state_dir) or not str(state_dir).strip():
+        diagnostics_dir = Path.home() / ".local-ai-hub" / "diagnostics"
+    else:
+        try:
+            diagnostics_dir = Path(state_dir).expanduser().resolve() / "diagnostics"
+        except (ValueError, OSError):
+            diagnostics_dir = Path.home() / ".local-ai-hub" / "diagnostics"
     return diagnostics_dir / f"local-ai-diagnostics-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
 
 

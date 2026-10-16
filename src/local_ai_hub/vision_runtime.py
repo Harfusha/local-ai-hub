@@ -12,40 +12,53 @@ _TRANSIENT_MARKERS = (
 
 
 def _transient(error_text: str) -> bool:
-    return any(marker in error_text for marker in _TRANSIENT_MARKERS)
+    if not isinstance(error_text, str):
+        return False
+    text = error_text.lower()
+    return any(marker in text for marker in _TRANSIENT_MARKERS)
+
+
+def is_transient_vision_error(error: Any) -> bool:
+    if not isinstance(error, str):
+        return False
+    return _transient(error)
+
+
+def is_vision_model_missing_error(error: Any) -> bool:
+    if not isinstance(error, str):
+        return False
+    err = error.lower()
+    return "model not found" in err or "no such model" in err or ("not found" in err and "model" in err)
 
 
 def vision_capability_error(response: Any, model: str) -> dict[str, Any] | None:
+    model_name = str(model or "").replace("\x00", "").strip()
     if not isinstance(response, dict):
         return {
             "success": False,
-            "model": model,
+            "model": model_name,
             "terminal": True,
             "retryable": False,
             "error": "Vision model capability preflight returned an invalid response.",
         }
     if response.get("error"):
         capability_error = str(response.get("error", "")).lower()
-        missing_model = (
-            "model not found" in capability_error
-            or "no such model" in capability_error
-            or ("not found" in capability_error and "model" in capability_error)
-        )
+        missing_model = is_vision_model_missing_error(capability_error)
         transient = _transient(capability_error)
         if missing_model:
             return {
                 "success": False,
-                "model": model,
+                "model": model_name,
                 "unsupported": True,
                 "degraded": True,
                 "terminal": True,
                 "retryable": False,
-                "error": f"Vision model '{model}' is unavailable. Configure an existing vision-capable local backend and models.vision; no runtime is installed automatically.",
+                "error": f"Vision model '{model_name}' is unavailable. Configure an existing vision-capable local backend and models.vision; no runtime is installed automatically.",
                 "error_code": "vision_model_missing",
             }
         return {
             "success": False,
-            "model": model,
+            "model": model_name,
             "terminal": not transient,
             "retryable": transient,
             "error": "Vision service temporarily unavailable; retry the request." if transient else "Vision model capability preflight failed; inspect the configured local backend and vision model.",
@@ -70,47 +83,44 @@ def vision_capability_error(response: Any, model: str) -> dict[str, Any] | None:
     if not supports_vision:
         return {
             "success": False,
-            "model": model,
+            "model": model_name,
             "unsupported": True,
             "degraded": True,
             "terminal": True,
             "retryable": False,
-            "error": f"Vision model '{model}' does not advertise image or multimodal capability; choose a configured vision-capable local model.",
+            "error": f"Vision model '{model_name}' does not advertise image or multimodal capability; choose a configured vision-capable local model.",
             "error_code": "vision_model_unsupported",
         }
     return None
 
 
 def vision_generation_error(response: Any, model: str) -> dict[str, Any] | None:
+    model_name = str(model or "").replace("\x00", "").strip()
     if not isinstance(response, dict):
         return {
             "success": False,
-            "model": model,
+            "model": model_name,
             "terminal": True,
             "retryable": False,
             "error": "Vision runtime returned an invalid response.",
         }
     if response.get("error"):
         error_text = str(response.get("error", "")).lower()
-        missing_model = (
-            "model not found" in error_text
-            or "no such model" in error_text
-            or ("not found" in error_text and "model" in error_text)
-        )
+        missing_model = is_vision_model_missing_error(error_text)
         if missing_model:
             return {
                 "success": False,
-                "model": model,
+                "model": model_name,
                 "unsupported": True,
                 "degraded": True,
                 "terminal": True,
                 "retryable": False,
-                "error": f"Vision model '{model}' is unavailable. Configure an existing vision-capable local backend and models.vision; no runtime is installed automatically.",
+                "error": f"Vision model '{model_name}' is unavailable. Configure an existing vision-capable local backend and models.vision; no runtime is installed automatically.",
             }
         transient = _transient(error_text)
         return {
             "success": False,
-            "model": model,
+            "model": model_name,
             "terminal": not transient,
             "retryable": transient,
             "error": "Vision service temporarily unavailable; retry the request." if transient else "Vision runtime returned an error; inspect the configured local backend and vision model.",
@@ -118,7 +128,7 @@ def vision_generation_error(response: Any, model: str) -> dict[str, Any] | None:
     if not isinstance(response.get("response", ""), str):
         return {
             "success": False,
-            "model": model,
+            "model": model_name,
             "terminal": True,
             "retryable": False,
             "error": "Vision runtime returned an invalid response.",

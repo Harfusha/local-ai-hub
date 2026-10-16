@@ -170,6 +170,8 @@ class VRAMBalancer:
 
     @staticmethod
     def _safe_float(val: Any, default: float = 0.0) -> float:
+        if isinstance(val, bool):
+            return default
         try:
             res = float(val or 0)
             return res if math.isfinite(res) else default
@@ -416,7 +418,7 @@ class VRAMBalancer:
 
     def pin_model(self, model_name: str, ttl_seconds: float = 300.0) -> dict[str, Any]:
         """Pin a warm model in VRAM to prevent cache thrashing."""
-        if not isinstance(model_name, str) or not model_name.strip():
+        if not isinstance(model_name, str) or not model_name.strip() or "\x00" in model_name:
             raise ValueError("model_name must be a non-empty string")
         try:
             ttl = float(ttl_seconds)
@@ -446,7 +448,7 @@ class VRAMBalancer:
 
     def is_model_pinned(self, model_name: str) -> bool:
         """Return True if model is currently warm-pinned and not expired."""
-        target = str(model_name).strip() if model_name is not None else ""
+        target = model_name.strip() if isinstance(model_name, str) and "\x00" not in model_name else ""
         if not target:
             return False
         pinned = self.get_pinned_model()
@@ -490,7 +492,8 @@ class VRAMBalancer:
         if not math.isfinite(factor):
             factor = 0.125
         factor = min(1.0, max(0.0, factor))
-        return max(min(4096, base_tokens), int(base_tokens * factor))
+        numerator, denominator = factor.as_integer_ratio()
+        return max(min(4096, base_tokens), base_tokens * numerator // denominator)
 
     def get_speculative_pairing(self) -> dict[str, str]:
         """Return target and draft models for speculative decoding."""
@@ -501,3 +504,17 @@ class VRAMBalancer:
             "draft_model": spec.get("draft_model", "qwen2.5-coder:7b"),
             "strategy": spec.get("strategy", "full_capacity"),
         }
+
+    def is_sampling(self) -> bool:
+        """Return True if GPU telemetry sampling thread is currently active."""
+        with self._lock:
+            return bool(self._sampling)
+
+    def active_pinned_model(self) -> str | None:
+        """Return name of currently pinned model if any."""
+        return self.get_pinned_model()
+
+    def current_pressure_level(self) -> str:
+        """Return current pressure level string."""
+        st = self.status()
+        return str(st.get("pressure_level", "unknown"))

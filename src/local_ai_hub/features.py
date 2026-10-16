@@ -14,7 +14,9 @@ from local_ai_hub.operation_contracts import OPERATION_CONTRACTS, operation_acti
 
 def rollout_feature_enabled(config: dict[str, Any], name: str) -> bool:
     """Enable a rollout capability only for an explicit TOML boolean true."""
-    features = config.get("features", {})
+    if not isinstance(config, dict):
+        return False
+    features = config.get("features")
     return isinstance(features, dict) and features.get(name) is True
 
 
@@ -27,18 +29,25 @@ class FeatureSet:
     """
 
     def __init__(self, cfg: dict[str, Any]) -> None:
-        ci = cfg.get("code_intelligence", {})
-        srv = cfg.get("server", {})
-        feat = cfg.get("features", {})
-        mdl = cfg.get("models", {})
-        sub = cfg.get("ollama_subagents", {})
-        cmd = cfg.get("commands", {})
-        coord_cfg = cfg.get("coord", cfg.get("coordination", {}))
-        tok = cfg.get("token_saving", {})
-        art = cfg.get("artifacts", {})
-        prep = cfg.get("preprocessing", {})
-        work = cfg.get("work_orchestrator", {})
-        speculative = cfg.get("speculative_lint", {})
+        clean_cfg = cfg if isinstance(cfg, dict) else {}
+        def _tbl(k: str) -> dict[str, Any]:
+            v = clean_cfg.get(k)
+            return v if isinstance(v, dict) else {}
+
+        ci = _tbl("code_intelligence")
+        srv = _tbl("server")
+        feat = _tbl("features")
+        mdl = _tbl("models")
+        sub = _tbl("ollama_subagents")
+        cmd = _tbl("commands")
+        coord_raw = clean_cfg.get("coord")
+        coord_cfg = coord_raw if isinstance(coord_raw, dict) else _tbl("coordination")
+        tok = _tbl("token_saving")
+        art = _tbl("artifacts")
+        prep = _tbl("preprocessing")
+        work = _tbl("work_orchestrator")
+        speculative = _tbl("speculative_lint")
+        mon = _tbl("monitoring")
 
         # Primary tool toggles
         self.status: bool = bool(feat.get("status", True))
@@ -52,11 +61,11 @@ class FeatureSet:
         )
         self.rag: bool = bool(feat.get("rag", True))
         self.ollama: bool = bool(srv.get("auto_start_ollama", True))
-        llama = cfg.get("llama_cpp", {}) if isinstance(cfg.get("llama_cpp", {}), dict) else {}
+        llama = _tbl("llama_cpp")
         llama_mode = str(llama.get("mode", "off")).strip().lower()
-        llama_models = llama.get("models", {}) if isinstance(llama.get("models", {}), dict) else {}
-        hardware = cfg.get("_hardware", {}) if isinstance(cfg.get("_hardware", {}), dict) else {}
-        gpus = hardware.get("gpus", []) if isinstance(hardware.get("gpus", []), list) else []
+        llama_models = llama.get("models") if isinstance(llama.get("models"), dict) else {}
+        hardware = _tbl("_hardware")
+        gpus = hardware.get("gpus") if isinstance(hardware.get("gpus"), list) else []
         intel_gpu = any(
             str(gpu.get("vendor", "")).lower() == "intel" or "intel" in str(gpu.get("name", "")).lower()
             for gpu in gpus if isinstance(gpu, dict)
@@ -82,7 +91,7 @@ class FeatureSet:
         self.preprocessing: bool = self.repo and bool(feat.get("preprocessing", True)) and bool(prep.get("enabled", True))
         self.subagents: bool = self.tasks and bool(feat.get("subagents", True)) and bool(sub.get("enabled", True))
         self.agent_os: bool = self.coord and bool(feat.get("agent_os", True))
-        self.dashboard: bool = bool(feat.get("dashboard", True)) and bool(cfg.get("monitoring", {}).get("dashboard_enabled", True))
+        self.dashboard: bool = bool(feat.get("dashboard", True)) and bool(mon.get("dashboard_enabled", True))
         self.work_orchestrator: bool = self.tasks and self.commands and self.coord and bool(feat.get("work_orchestrator", True)) and bool(work.get("enabled", True))
 
         # Cost-bearing rollout capabilities start disabled. Use strict identity so

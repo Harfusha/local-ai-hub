@@ -111,7 +111,12 @@ def _text(value: Any, limit: int = _MAX_TEXT) -> str:
             rendered = str(value)
         except Exception:
             rendered = "<unserializable>"
-    return rendered[:limit]
+    rendered = rendered.replace("\x00", "")
+    try:
+        cap = max(0, int(limit))
+    except Exception:
+        cap = _MAX_TEXT
+    return rendered[:cap]
 
 
 def _tuple(value: Any, limit: int = _MAX_ITEMS) -> tuple[str, ...]:
@@ -202,8 +207,11 @@ def _repository_relative_hints(root: str, value: Any) -> tuple[dict[str, str], .
 
 
 def _bounded_sequence(value: Any, limit: int = _MAX_ITEMS) -> tuple[Any, ...]:
+    if value is None or isinstance(value, (str, bytes, Mapping)):
+        return ()
     try:
-        return tuple(itertools.islice(iter(value), limit))
+        cap = max(0, int(limit))
+        return tuple(itertools.islice(iter(value), cap))
     except Exception:
         return ()
 
@@ -224,6 +232,8 @@ def _safe_bool(value: Any, default: bool = False) -> bool:
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return default
     try:
         return int(value)
     except Exception:
@@ -231,6 +241,8 @@ def _safe_int(value: Any, default: int = 0) -> int:
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
+    if isinstance(value, bool):
+        return default
     try:
         result = float(value)
         return result if math.isfinite(result) else default
@@ -282,7 +294,7 @@ def _redact_memory_text(value: Any, limit: int = 240) -> str:
     text = _text(value, limit)
     text = _MEMORY_PROMPT_RE.sub(r"prompt\1[redacted]", text)
     text = _MEMORY_SECRET_RE.sub(r"\1\2[redacted]", text)
-    return text[:limit]
+    return text[: max(0, int(limit))]
 
 
 def _is_local_model_evidence(item: Mapping[str, Any]) -> bool:
@@ -304,31 +316,45 @@ def _is_local_model_evidence(item: Mapping[str, Any]) -> bool:
     return False
 
 
-def _memory_value(value: Any, depth: int = 0) -> Any:
+def _memory_value(value: Any, depth: int = 0, seen: set[int] | None = None) -> Any:
     """Keep evidence memory compact and exclude source/prompt-shaped fields."""
+    seen = seen if seen is not None else set()
     if depth > 2:
         return _text(value, 240)
-    if value is None or isinstance(value, (bool, int, float)):
+    if value is None or isinstance(value, (bool, int)):
         return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else 0.0
     if isinstance(value, str):
         return _text(value, 240)
+    identity = id(value)
+    if identity in seen:
+        return "<cycle>"
     if isinstance(value, Mapping):
+        seen.add(identity)
         output: dict[str, Any] = {}
-        for key, item in itertools.islice(value.items(), _MAX_MEMORY_VALUE_ITEMS):
-            name = _text(key, 80)
-            lowered = name.casefold()
-            if any(token in lowered for token in (
-                "raw", "source", "prompt", "output", "content", "text",
-                "chat", "transcript", "message", "conversation",
-            )):
-                continue
-            if any(token in lowered for token in ("reason", "claim", "stable_key")):
-                output[name] = _redact_memory_text(item)
-            else:
-                output[name] = _memory_value(item, depth + 1)
+        try:
+            for key, item in itertools.islice(value.items(), _MAX_MEMORY_VALUE_ITEMS):
+                name = _text(key, 80)
+                lowered = name.casefold()
+                if any(token in lowered for token in (
+                    "raw", "source", "prompt", "output", "content", "text",
+                    "chat", "transcript", "message", "conversation",
+                )):
+                    continue
+                if any(token in lowered for token in ("reason", "claim", "stable_key")):
+                    output[name] = _redact_memory_text(item)
+                else:
+                    output[name] = _memory_value(item, depth + 1, seen)
+        finally:
+            seen.discard(identity)
         return output
     if isinstance(value, (tuple, list, set, frozenset)):
-        return [_memory_value(item, depth + 1) for item in itertools.islice(iter(value), _MAX_MEMORY_VALUE_ITEMS)]
+        seen.add(identity)
+        try:
+            return [_memory_value(item, depth + 1, seen) for item in itertools.islice(iter(value), _MAX_MEMORY_VALUE_ITEMS)]
+        finally:
+            seen.discard(identity)
     return _text(value, 240)
 
 
@@ -392,6 +418,15 @@ class ConsistencyRequest:
         if not isinstance(self.approval, bool):
             object.__setattr__(self, "approval", _text(self.approval, 240))
 
+    def has_changed_paths(self) -> bool:
+        return bool(self.changed_paths)
+
+    def has_override(self) -> bool:
+        return bool(self.override_reason.strip())
+
+    def is_approved(self) -> bool:
+        return self.approval is True or (isinstance(self.approval, str) and bool(self.approval.strip()))
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "root": self.root, "task_id": self.task_id, "query": self.query,
@@ -430,6 +465,9 @@ class ReuseCandidate:
         object.__setattr__(self, "evidence_ids", _tuple(self.evidence_ids))
         object.__setattr__(self, "suitable", _safe_bool(self.suitable, True))
 
+    def has_evidence(self) -> bool:
+        return bool(self.evidence_ids)
+
     def to_dict(self) -> dict[str, Any]:
         return _json_value({
             "candidate_id": self.candidate_id, "kind": self.kind, "path": self.path,
@@ -464,6 +502,12 @@ class ContractMapping:
         for name in ("backend_fields", "frontend_fields", "backend_error_identifiers", "frontend_error_identifiers", "test_paths", "evidence_ids", "mismatches"):
             object.__setattr__(self, name, _tuple(getattr(self, name)))
 
+    def is_matched(self) -> bool:
+        return self.status == "matched" and not self.mismatches
+
+    def has_mismatches(self) -> bool:
+        return self.status == "mismatch" or bool(self.mismatches)
+
     def to_dict(self) -> dict[str, Any]:
         return _json_value({name: value for name, value in {
             "kind": self.kind, "endpoint": self.endpoint, "backend_path": self.backend_path,
@@ -497,6 +541,12 @@ class GuardWarning:
         object.__setattr__(self, "affected_paths", _tuple(self.affected_paths))
         object.__setattr__(self, "recommended_action", _text(self.recommended_action, 500))
         object.__setattr__(self, "requires_approval", _safe_bool(self.requires_approval))
+
+    def is_blocking(self) -> bool:
+        return self.requires_approval or self.severity in {"boundary", "high", "critical"}
+
+    def has_evidence(self) -> bool:
+        return bool(self.evidence_ids)
 
     def to_dict(self) -> dict[str, Any]:
         return _json_value({
@@ -538,6 +588,15 @@ class AdaptiveContextPack:
         object.__setattr__(self, "memory_revision", _text(self.memory_revision, 200))
         object.__setattr__(self, "model_warnings", _bounded_sequence(self.model_warnings))
 
+    def has_warnings(self) -> bool:
+        return bool(self.warnings or self.model_warnings)
+
+    def has_reuse_candidates(self) -> bool:
+        return bool(self.reuse_candidates)
+
+    def warning_count(self) -> int:
+        return len(self.warnings) + len(self.model_warnings)
+
     def to_dict(self) -> dict[str, Any]:
         try:
             contract = self.contract.to_dict() if self.contract else None
@@ -575,7 +634,7 @@ class AgentConsistencyGuard:
         self.task_store = task_store
         self.memory_store = memory_store
         self.verification_store = verification_store
-        self.max_candidates = max(1, min(int(max_candidates), 64))
+        self.max_candidates = max(1, min(_safe_int(max_candidates, 24), 64))
         self._metrics_lock = threading.RLock()
         self._metrics = {key: 0 for key in _METRIC_KEYS}
 
@@ -595,8 +654,9 @@ class AgentConsistencyGuard:
                 return ConsistencyRequest(**dict(request))
             except Exception:
                 return None
-        if root or task_id or phase or tuple(_bounded_sequence(changed_paths, 1)):
-            return ConsistencyRequest(root=root, task_id=task_id, phase=phase, changed_paths=tuple(changed_paths))
+        normalized_paths = _tuple(changed_paths, 64)
+        if root or task_id or phase or normalized_paths:
+            return ConsistencyRequest(root=root, task_id=task_id, phase=phase, changed_paths=normalized_paths)
         return None
 
     def _revision(self, request: ConsistencyRequest | None, explicit: str = "") -> str:
@@ -649,9 +709,9 @@ class AgentConsistencyGuard:
             from .state_paths import configured_state_dir
 
             memory_kind = kind if isinstance(kind, MemoryKind) else MemoryKind(str(kind).lower())
-            bounded_evidence = tuple(dict.fromkeys(_text(item, 200) for item in evidence_ids if item))[:24]
-            bounded_paths = tuple(dict.fromkeys(_text(item, 240) for item in path_refs if item))[:24]
-            bounded_symbols = tuple(dict.fromkeys(_text(item, 200) for item in symbol_refs if item))[:24]
+            bounded_evidence = tuple(dict.fromkeys(_text(item, 200) for item in _tuple(evidence_ids, 24) if _text(item, 200)))[:24]
+            bounded_paths = tuple(dict.fromkeys(_text(item, 240) for item in _tuple(path_refs, 24) if _text(item, 240)))[:24]
+            bounded_symbols = tuple(dict.fromkeys(_text(item, 200) for item in _tuple(symbol_refs, 24) if _text(item, 200)))[:24]
             task = _text(related_task or (request_obj.task_id if request_obj else ""), 160)
             repository_root = canonical_root(request_obj.root if request_obj else root) if (request_obj and request_obj.root) or root else ""
             tenant_value = request_obj.tenant if request_obj else ""
@@ -679,7 +739,7 @@ class AgentConsistencyGuard:
             revision_token = revision or "unrevisioned"
             record_key = f"consistency:{memory_kind.value}:{root_token}:{tenant_token}:{stable}:{revision_token}"
             now = time.time()
-            retention = _MEMORY_RETENTION_SECONDS if retention_seconds is None else max(1.0, float(retention_seconds))
+            retention = float(_MEMORY_RETENTION_SECONDS) if retention_seconds is None else max(1.0, _safe_float(retention_seconds, float(_MEMORY_RETENTION_SECONDS)))
             expires_at = now + min(retention, float(_MEMORY_RETENTION_SECONDS))
             provenance = {
                 "root": repository_root[:400],
@@ -700,7 +760,7 @@ class AgentConsistencyGuard:
                 scope_id=repository_id,
                 key=record_key,
                 value=_memory_value(value),
-                confidence=max(0.0, min(1.0, float(confidence))),
+                confidence=max(0.0, min(1.0, _safe_float(confidence, 1.0))),
                 status=MemoryStatus.CONFIRMED if approved_decision else MemoryStatus.CANDIDATE,
                 source="consistency_guard",
                 evidence_ids=bounded_evidence,
@@ -735,9 +795,9 @@ class AgentConsistencyGuard:
     ) -> Any:
         if not isinstance(request, (ConsistencyRequest, Mapping)) and finding is None:
             finding, request = request, None
-        evidence_ids = tuple(_bounded_sequence(evidence_ids, 24))
-        path_refs = tuple(_bounded_sequence(path_refs, 24))
-        symbol_refs = tuple(_bounded_sequence(symbol_refs, 24))
+        evidence_ids = _tuple(evidence_ids, 24)
+        path_refs = _tuple(path_refs, 24)
+        symbol_refs = _tuple(symbol_refs, 24)
         evidence_token = ":".join(_text(item, 120) for item in evidence_ids if item)
         refs_token = ":".join((*(_text(item, 160) for item in path_refs if item), *(_text(item, 160) for item in symbol_refs if item)))
         stable = stable_key or _text((finding.get("stable_key") or finding.get("code") or finding.get("kind")) if isinstance(finding, Mapping) else "", 160)
@@ -865,7 +925,7 @@ class AgentConsistencyGuard:
         phase: str = "",
         details: Mapping[str, Any] | None = None,
     ) -> Any:
-        evidence_ids = tuple(_bounded_sequence(evidence_ids, 24))
+        evidence_ids = _tuple(evidence_ids, 24)
         if verifier is not None:
             try:
                 passed = bool(verifier())
@@ -874,7 +934,7 @@ class AgentConsistencyGuard:
                     "validation verifier failed (%s)", type(exc).__name__
                 )
                 passed = False
-        path_refs = tuple(_bounded_sequence(path_refs, 24))
+        path_refs = _tuple(path_refs, 24)
         request_obj = self._request_from_metadata(request, root=root, task_id=task_id, phase=phase, changed_paths=path_refs)
         should_record_receipt = (
             request_obj is not None
@@ -912,13 +972,15 @@ class AgentConsistencyGuard:
         key = aliases.get(key, key)
         if key not in _METRIC_KEYS:
             return 0
-        try:
-            increment = max(0, min(int(amount), 100000))
-        except (TypeError, ValueError):
-            increment = 0
+        increment = max(0, min(_safe_int(amount, 0), 100000))
         with self._metrics_lock:
             self._metrics[key] += increment
             return self._metrics[key]
+
+    def reset_metrics(self) -> None:
+        with self._metrics_lock:
+            for key in _METRIC_KEYS:
+                self._metrics[key] = 0
 
     def metrics_snapshot(self) -> dict[str, int]:
         with self._metrics_lock:

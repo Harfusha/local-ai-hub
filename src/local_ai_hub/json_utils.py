@@ -23,6 +23,11 @@ def backend_name() -> str:
     return "stdlib"
 
 
+def is_fast_backend() -> bool:
+    """Return True when an optional fast JSON backend is active."""
+    return backend_name() != "stdlib"
+
+
 def loads(value: str | bytes | bytearray) -> Any:
     """Decode JSON through an optional fast backend, preserving stdlib fallback."""
     if _orjson is not None:
@@ -30,6 +35,16 @@ def loads(value: str | bytes | bytearray) -> Any:
     if _msgspec is not None:
         return _msgspec.json.decode(value)
     return json.loads(value)
+
+
+def safe_loads(value: Any, default: Any = None) -> Any:
+    """Decode JSON or return default when input is not valid JSON text/bytes."""
+    if not isinstance(value, (str, bytes, bytearray)):
+        return default
+    try:
+        return loads(value)
+    except Exception:
+        return default
 
 
 def _has_non_string_mapping_key(value: Any) -> bool:
@@ -97,9 +112,9 @@ def dumps_bytes(value: Any, **kwargs: Any) -> bytes:
     compact = kwargs.get("separators") == (",", ":") and not kwargs.get("ensure_ascii", False)
     if compact and not (set(kwargs) - supported):
         if kwargs.get("sort_keys") and kwargs.get("default") is not None:
-            return json.dumps(value, **kwargs).encode("utf-8")
+            return json.dumps(value, **kwargs).encode("utf-8", errors="replace")
         if kwargs.get("sort_keys") and _has_non_string_mapping_key(value):
-            return json.dumps(value, **kwargs).encode("utf-8")
+            return json.dumps(value, **kwargs).encode("utf-8", errors="replace")
         if _orjson is not None:
             options = _orjson.OPT_NON_STR_KEYS
             if kwargs.get("sort_keys"):
@@ -110,4 +125,4 @@ def dumps_bytes(value: Any, **kwargs: Any) -> bytes:
             return _orjson.dumps(value, option=options, default=default)
         if _msgspec is not None and not kwargs.get("sort_keys") and kwargs.get("default") is None:
             return _msgspec.json.encode(value)
-    return json.dumps(value, **kwargs).encode("utf-8")
+    return json.dumps(value, **kwargs).encode("utf-8", errors="replace")

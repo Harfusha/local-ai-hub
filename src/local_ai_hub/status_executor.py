@@ -1,9 +1,27 @@
 """Bounded status probes without worker creation on the HTTP request thread."""
 from concurrent.futures import Executor, Future, InvalidStateError, ThreadPoolExecutor
 from functools import partial
+import math
 import queue
 import threading
+from typing import Any
 import weakref
+
+
+def _safe_int(val: Any, default: int, min_val: int | None = None, max_val: int | None = None) -> int:
+    if isinstance(val, bool) or val is None:
+        return default
+    try:
+        if isinstance(val, float) and not math.isfinite(val):
+            return default
+        res = int(val)
+    except (ValueError, TypeError, OverflowError):
+        return default
+    if min_val is not None and res < min_val:
+        return min_val
+    if max_val is not None and res > max_val:
+        return max_val
+    return res
 
 
 def _release(future, pending, lock, slots):
@@ -77,9 +95,9 @@ class StatusDependencyExecutor(Executor):
     """At most capacity accepted probes; submission never starts pool workers."""
 
     def __init__(self, *, max_workers: int, capacity: int):
-        if max_workers < 1:
+        if isinstance(max_workers, bool) or not isinstance(max_workers, int) or max_workers < 1:
             raise ValueError("status executor max_workers must be positive")
-        if capacity < 1:
+        if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity < 1:
             raise ValueError("status executor capacity must be positive")
         self._max_workers = int(max_workers)
         self._capacity = int(capacity)

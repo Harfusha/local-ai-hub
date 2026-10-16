@@ -5,6 +5,7 @@ from .json_utils import dumps as json_dumps
 import base64
 import hashlib
 import json
+import math
 import os
 import re
 import sqlite3
@@ -37,12 +38,31 @@ from .work_fencing import (
 _TERMINAL = {"complete", "failed", "cancelled", "needs_agent", "partial"}
 
 
+def is_terminal_work_status(status: Any) -> bool:
+    """Return True if work status represents a terminal state."""
+    if not isinstance(status, str):
+        return False
+    return status.strip().lower() in _TERMINAL
+
+
+def is_valid_work_order_id(work_id: Any) -> bool:
+    """Return True if work order ID is a valid alphanumeric identifier."""
+    if not isinstance(work_id, str):
+        return False
+    clean = work_id.strip()
+    if not clean or "\x00" in clean or len(clean) > 128:
+        return False
+    return bool(re.fullmatch(r"[A-Za-z0-9_-]+", clean))
+
+
 def _string_list(value: Any, *, limit: int = 24, item_chars: int = 2000) -> list[str]:
     if not isinstance(value, (list, tuple)):
         return []
     out: list[str] = []
     for item in value:
-        text = str(item).strip()
+        if item is None or isinstance(item, bool):
+            continue
+        text = str(item).replace("\x00", "").strip()
         if not text:
             continue
         out.append(text[:item_chars])
@@ -52,11 +72,33 @@ def _string_list(value: Any, *, limit: int = 24, item_chars: int = 2000) -> list
 
 
 def _bounded_int(value: Any, default: int, minimum: int, maximum: int) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
+    if isinstance(value, bool):
         parsed = int(default)
+    else:
+        try:
+            parsed = int(value)
+            if not math.isfinite(parsed):
+                parsed = int(default)
+        except (TypeError, ValueError, OverflowError):
+            parsed = int(default)
     return max(minimum, min(parsed, maximum))
+
+
+def _safe_float(value: Any, default: float, minimum: float | None = None, maximum: float | None = None) -> float:
+    if isinstance(value, bool) or value is None:
+        parsed = float(default)
+    else:
+        try:
+            parsed = float(value)
+            if not math.isfinite(parsed):
+                parsed = float(default)
+        except (TypeError, ValueError, OverflowError):
+            parsed = float(default)
+    if minimum is not None:
+        parsed = max(minimum, parsed)
+    if maximum is not None:
+        parsed = min(maximum, parsed)
+    return parsed
 
 
 def _budget_int(value: Any, name: str) -> int:
@@ -300,12 +342,16 @@ class _JournalEntry:
     attempt_token: int = 0
 
 
-def _safe_work_target(root: Path, relative: str) -> Path:
-    root = root.resolve()
+def _safe_work_target(root: Path | str, relative: str) -> Path:
+    if not isinstance(relative, str) or not relative.strip() or "\x00" in relative:
+        raise ValueError("unsafe work journal path")
+    if not isinstance(root, (str, Path)) or "\x00" in str(root):
+        raise ValueError("unsafe work journal root")
+    resolved_root = Path(root).resolve()
     rel = Path(relative)
     if rel.is_absolute() or any(part in {"..", ""} for part in rel.parts):
         raise ValueError("unsafe work journal path")
-    target = root
+    target = resolved_root
     for part in rel.parts:
         target = target / part
         try:
@@ -332,33 +378,35 @@ class WorkOrchestrator:
     """
 
     def __init__(
-        self, config: dict[str, Any], state_dir: Path, services: Any, commands: Any,
+        self, config: dict[str, Any] | None, state_dir: Path, services: Any, commands: Any,
         leases: Any, artifacts: Any, telemetry: Any | None = None,
         verification_store: Any | None = None,
         fencing_store: FencingLeaseStore | None = None,
     ):
-        cfg = config.get("work_orchestrator", {})
+        raw_cfg = config.get("work_orchestrator") if isinstance(config, dict) else {}
+        cfg = raw_cfg if isinstance(raw_cfg, dict) else {}
         self.enabled = bool(cfg.get("enabled", True))
-        self.max_active = max(1, int(cfg.get("max_active_work_orders", 1)))
-        self.max_pending = max(1, min(int(cfg.get("max_pending_work_orders", 32)), 256))
-        self.worker_idle_seconds = max(5.0, min(float(cfg.get("worker_idle_seconds", 120.0)), 3600.0))
-        self.max_steps = max(1, min(int(cfg.get("max_steps", 32)), 64))
-        self.max_llm_calls = max(1, min(int(cfg.get("max_llm_steps", 16)), 32))
-        self.max_replans = max(0, min(int(cfg.get("max_replans", 2)), 4))
-        self.parallel_deterministic = max(1, min(int(cfg.get("parallel_deterministic_steps", 2)), 4))
-        self.default_seconds = max(30, min(int(cfg.get("max_seconds", 900)), 7200))
-        self.max_patch_files = max(1, min(int(cfg.get("max_patch_files", 24)), 128))
-        self.max_patch_bytes = max(4096, min(int(cfg.get("max_patch_bytes", 524288)), 4 * 1024 * 1024))
-        self.step_retry_limit = max(0, min(int(cfg.get("step_retry_limit", 2)), 4))
+        self.max_active = _bounded_int(cfg.get("max_active_work_orders"), 1, 1, 32)
+        self.max_pending = _bounded_int(cfg.get("max_pending_work_orders"), 32, 1, 256)
+        self.worker_idle_seconds = _safe_float(cfg.get("worker_idle_seconds"), 120.0, 5.0, 3600.0)
+        self.max_steps = _bounded_int(cfg.get("max_steps"), 32, 1, 64)
+        self.max_llm_calls = _bounded_int(cfg.get("max_llm_steps"), 16, 1, 32)
+        self.max_replans = _bounded_int(cfg.get("max_replans"), 2, 0, 4)
+        self.parallel_deterministic = _bounded_int(cfg.get("parallel_deterministic_steps"), 2, 1, 4)
+        self.default_seconds = _bounded_int(cfg.get("max_seconds"), 900, 30, 7200)
+        self.max_patch_files = _bounded_int(cfg.get("max_patch_files"), 24, 1, 128)
+        self.max_patch_bytes = _bounded_int(cfg.get("max_patch_bytes"), 524288, 4096, 4 * 1024 * 1024)
+        self.step_retry_limit = _bounded_int(cfg.get("step_retry_limit"), 2, 0, 4)
         self.rollback_on_failure = bool(cfg.get("rollback_on_failure", True))
         self.allow_edits = bool(cfg.get("allow_edits", True))
         self.allow_create = bool(cfg.get("allow_create", True))
         self.allow_delete = bool(cfg.get("allow_delete", True))
-        self.validation_limit = max(1, min(int(cfg.get("validation_commands", 3)), 8))
+        self.validation_limit = _bounded_int(cfg.get("validation_commands"), 3, 1, 8)
         self.default_response_profile = str(cfg.get("default_response_profile", "compact") or "compact")
-        self.default_max_output_tokens = max(0, int(cfg.get("default_max_output_tokens", 350) or 0))
+        self.default_max_output_tokens = max(0, _bounded_int(cfg.get("default_max_output_tokens"), 350, 0, 100000))
         self.services, self.commands, self.leases, self.artifacts = services, commands, leases, artifacts
-        self.fencing_store = fencing_store or FencingLeaseStore(Path(state_dir) / "work_fencing.sqlite3")
+        clean_state_dir = str(state_dir).replace("\x00", "")
+        self.fencing_store = fencing_store or FencingLeaseStore(Path(clean_state_dir) / "work_fencing.sqlite3")
         set_fencing_store = getattr(self.commands, "set_fencing_lease_store", None)
         if callable(set_fencing_store):
             set_fencing_store(self.fencing_store)
@@ -385,6 +433,18 @@ class WorkOrchestrator:
         # caused avoidable background load in embedded/test workloads.
         if self._has_queued_work():
             self._ensure_workers()
+
+    def is_enabled(self) -> bool:
+        """Return True if whole-task orchestrator is enabled."""
+        return bool(self.enabled)
+
+    def max_active_orders(self) -> int:
+        """Return maximum number of concurrently active work orders."""
+        return int(self.max_active)
+
+    def default_timeout_seconds(self) -> int:
+        """Return default maximum run duration for work orders in seconds."""
+        return int(self.default_seconds)
 
     def _connect(self) -> sqlite3.Connection:
         return connect_sqlite(self.path, timeout_seconds=2.0, isolation_level=None, row_factory=sqlite3.Row)

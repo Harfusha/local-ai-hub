@@ -58,7 +58,8 @@ def openvino_device_candidates(config: dict[str, Any], requested: str = "auto") 
     its default priority list. Local AI Hub therefore probes NPU first when the
     user/profile asks for automatic Intel acceleration, then Intel GPU, then CPU.
     """
-    cfg = config.get("openvino", {}) if isinstance(config, dict) else {}
+    cfg_raw = config.get("openvino") if isinstance(config, dict) else None
+    cfg = cfg_raw if isinstance(cfg_raw, dict) else {}
     if cfg.get("enabled", True) is False:
         return []
     runtime = openvino_runtime()
@@ -90,21 +91,24 @@ def openvino_device_candidates(config: dict[str, Any], requested: str = "auto") 
 
 
 def openvino_cache_dir(config: dict[str, Any]) -> Path | None:
-    cfg = config.get("openvino", {}) if isinstance(config, dict) else {}
+    cfg = config.get("openvino") if isinstance(config, dict) else None
+    if not isinstance(cfg, dict):
+        return None
     raw = str(cfg.get("cache_dir", "") or "").strip()
-    if not raw:
+    if not raw or "\0" in raw:
         return None
-    path = Path(os.path.expandvars(os.path.expanduser(raw)))
     try:
+        path = Path(os.path.expandvars(os.path.expanduser(raw)))
         path.mkdir(parents=True, exist_ok=True)
-    except OSError:
+        return path
+    except (ValueError, OSError):
         return None
-    return path
 
 
 def accelerator_status(config: dict[str, Any]) -> dict[str, Any]:
     runtime = openvino_runtime()
-    models = config.get("models", {}) if isinstance(config, dict) else {}
+    models_raw = config.get("models") if isinstance(config, dict) else None
+    models = models_raw if isinstance(models_raw, dict) else {}
     return {
         "openvino": runtime,
         "embedding": {

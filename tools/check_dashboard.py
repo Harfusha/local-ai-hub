@@ -27,16 +27,35 @@ class IdParser(HTMLParser):
                 self.ids.append(value)
 
 
-def main() -> int:
+def validate_dashboard_html(html: str) -> tuple[bool, list[str]]:
+    """Validate dashboard HTML structure: check unique IDs and script presence."""
+    if not isinstance(html, str) or not html.strip():
+        return False, ["Dashboard HTML is empty or invalid"]
+    errors: list[str] = []
     parser = IdParser()
-    parser.feed(DASHBOARD_HTML)
+    try:
+        parser.feed(html)
+    except Exception as exc:
+        return False, [f"Failed to parse dashboard HTML: {exc}"]
+
     duplicates = sorted({value for value in parser.ids if parser.ids.count(value) > 1})
     if duplicates:
-        print(f"duplicate dashboard ids: {duplicates}", file=sys.stderr)
+        errors.append(f"duplicate dashboard ids: {duplicates}")
+
+    if "<script>" not in html or "</script>" not in html:
+        errors.append("dashboard script block missing")
+
+    return (len(errors) == 0, errors)
+
+
+def main() -> int:
+    valid, errors = validate_dashboard_html(DASHBOARD_HTML)
+    if not valid:
+        for err in errors:
+            print(err, file=sys.stderr)
         return 1
-    if "<script>" not in DASHBOARD_HTML or "</script>" not in DASHBOARD_HTML:
-        print("dashboard script block missing", file=sys.stderr)
-        return 1
+    parser = IdParser()
+    parser.feed(DASHBOARD_HTML)
     node = shutil.which("node")
     if node:
         js = DASHBOARD_HTML.split("<script>", 1)[1].split("</script>", 1)[0]

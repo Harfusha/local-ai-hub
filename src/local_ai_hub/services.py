@@ -71,6 +71,38 @@ _CONTEXT_BACKEND_POOLS = {
 }
 
 
+def _safe_int(val: Any, default: int, min_val: int | None = None, max_val: int | None = None) -> int:
+    if isinstance(val, bool) or val is None:
+        return default
+    try:
+        if isinstance(val, float) and not math.isfinite(val):
+            return default
+        res = int(val)
+    except (ValueError, TypeError, OverflowError):
+        return default
+    if min_val is not None and res < min_val:
+        return min_val
+    if max_val is not None and res > max_val:
+        return max_val
+    return res
+
+
+def _safe_float(val: Any, default: float, min_val: float | None = None, max_val: float | None = None) -> float:
+    if isinstance(val, bool) or val is None:
+        return default
+    try:
+        res = float(val)
+        if not math.isfinite(res):
+            return default
+    except (ValueError, TypeError, OverflowError):
+        return default
+    if min_val is not None and res < min_val:
+        return min_val
+    if max_val is not None and res > max_val:
+        return max_val
+    return res
+
+
 def is_retryable_local_backend_error(value: Any) -> bool:
     """Recognize transport/runtime failures that must keep async work retryable."""
     text = str(value or "").lower()
@@ -87,29 +119,39 @@ def normalize_generation_cache_prompt(prompt: str) -> str:
 
 
 def cache_decision_reason(cache_layer: str, *, semantic_query: str) -> str:
-    if cache_layer == "semantic":
+    layer = str(cache_layer or "").strip().lower()
+    query = str(semantic_query or "").strip()
+    if layer == "semantic":
         return "semantic_reuse"
-    if cache_layer == "single-flight":
+    if layer == "single-flight":
         return "singleflight_reuse"
-    if cache_layer == "stale-on-error":
+    if layer == "stale-on-error":
         return "stale_on_error"
-    if cache_layer == "ollama" and semantic_query:
+    if layer == "ollama" and query:
         return "semantic_not_reused"
-    if cache_layer == "ollama":
+    if layer == "ollama":
         return "new_exact_key"
     return "exact_reuse"
 
 
 def enclosing_symbol_at_line(source: str, path: str, line: int) -> dict[str, Any] | None:
     """Return the smallest existing Tree-sitter symbol spanning one source line."""
-    language = Path(path).suffix.lower().lstrip(".")
+    if not isinstance(source, str) or not isinstance(path, str) or "\x00" in path:
+        return None
+    line_num = _safe_int(line, default=-1)
+    if line_num <= 0:
+        return None
+    try:
+        language = Path(path).suffix.lower().lstrip(".")
+    except Exception:
+        return None
     parsed = parse_treesitter(source, language)
     if not parsed:
         return None
     symbols, _, _ = parsed
     matches = [
         symbol for symbol in symbols
-        if int(symbol.get("line", 0) or 0) <= line <= int(symbol.get("end_line", 0) or 0)
+        if int(symbol.get("line", 0) or 0) <= line_num <= int(symbol.get("end_line", 0) or 0)
     ]
     if not matches:
         return None
@@ -133,7 +175,7 @@ _GUARD_REASON_PROMPT_RE = re.compile(r"(?is)\b(?:system\s+|user\s+)?(?:prompt|in
 
 def _redact_guard_reason(reason: Any) -> str:
     """Keep a short operator reason without persisting secret or prompt content."""
-    text = str(reason or "").strip()
+    text = str(reason or "").replace("\x00", "").strip()
     if not text:
         return ""
     text = re.sub(r"(?i)\bBearer\s+\S+", "Bearer [REDACTED]", text)
@@ -226,7 +268,9 @@ def _merge_review_segment_results(
 
 def _split_review_diff(diff_text: str, max_tokens: int) -> list[str]:
     """Split a unified diff into bounded, file/hunk-aligned review inputs."""
-    budget = max(_REVIEW_DIFF_MIN_CHUNK_TOKENS, int(max_tokens))
+    if not isinstance(diff_text, str) or not diff_text.strip():
+        return []
+    budget = _safe_int(max_tokens, default=_REVIEW_DIFF_MIN_CHUNK_TOKENS, min_val=_REVIEW_DIFF_MIN_CHUNK_TOKENS)
     sections = [part for part in re.split(r"(?=^diff --git )", diff_text, flags=re.MULTILINE) if part]
     if not sections:
         return [diff_text] if diff_text else []

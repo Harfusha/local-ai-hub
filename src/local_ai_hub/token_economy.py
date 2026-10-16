@@ -18,6 +18,7 @@ except ImportError:  # pragma: no cover - exercised when launched as a script
         return _stdlib_dumps(value, **kwargs)
 
 import argparse
+import math
 import os
 import re
 import shutil
@@ -50,10 +51,14 @@ _IGNORE_DIRS_CASEFOLDED = {name.casefold() for name in IGNORE_DIRS}
 
 def strip_ansi(text: str) -> str:
     """Remove ANSI color and control codes from output text."""
+    if not isinstance(text, str):
+        return ""
     return ANSI_REGEX.sub("", text)
 
 
 def count_tokens_with_provenance(text: str) -> tuple[tuple[int, int, int, int, int], dict[str, Any]]:
+    if not isinstance(text, str):
+        raise TypeError("token text must be a string")
     from local_ai_hub.code_tokens import count_code_tokens
     o200k = count_code_tokens(text, encoding="o200k_base")
     cl100k = count_code_tokens(text, encoding="cl100k_base")
@@ -165,7 +170,9 @@ def tokcount_main(argv: list[str] | None = None) -> int:
 
 def filter_and_print_trimmed(lines: Iterable[str], max_lines: int) -> None:
     """Consume once, retaining at most the requested head/tail line count."""
-    limit = max(0, int(max_lines))
+    if isinstance(max_lines, bool) or not isinstance(max_lines, int) or max_lines < 0:
+        raise ValueError("max_lines must be a non-negative integer")
+    limit = max_lines
     head_limit, tail_limit = (limit + 1) // 2, limit // 2
     head: list[str] = []
     tail: deque[str] = deque(maxlen=tail_limit)
@@ -188,6 +195,13 @@ def filter_and_print_trimmed(lines: Iterable[str], max_lines: int) -> None:
 
 _TRIM_RUN_ALLOWED_COMMANDS = {"rg", "fd", "grep-ast"}
 _TRIM_RUN_BUNDLED_COMMANDS = {"tokcount": "tokcount", "repo-map": "repo_map"}
+
+
+def is_allowed_trim_command(command: str) -> bool:
+    if not isinstance(command, str) or not command or "\x00" in command:
+        return False
+    cmd = os.path.basename(command).lower()
+    return cmd in _TRIM_RUN_ALLOWED_COMMANDS or cmd in _TRIM_RUN_BUNDLED_COMMANDS
 
 
 def trim_run_main(argv: list[str] | None = None) -> int:

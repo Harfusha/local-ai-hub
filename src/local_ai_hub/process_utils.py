@@ -39,14 +39,15 @@ def ensure_extended_path(p: Path | str, threshold: int = 240) -> Path:
     """Prepend Windows extended-length path prefix (\\\\?\\) if path length exceeds threshold."""
     if os.name != "nt":
         return Path(p)
-    raw = str(p)
+    raw = str(p or "").replace("\x00", "")
     if raw.startswith(("\\\\?\\", "\\\\.\\")):
         return Path(raw)
+    thresh = threshold if isinstance(threshold, int) and not isinstance(threshold, bool) and threshold >= 0 else 240
     try:
         resolved = os.path.abspath(raw)
     except Exception:
         resolved = raw
-    if len(resolved) > threshold:
+    if len(resolved) > thresh:
         if resolved.startswith("\\\\"):
             return Path("\\\\?\\UNC\\" + resolved.lstrip("\\"))
         return Path("\\\\?\\" + resolved)
@@ -835,19 +836,22 @@ def clean_git_env(
 ) -> dict[str, str]:
     """Return environment dictionary cleansed of GIT_* metadata to avoid subshell contamination."""
     source = os.environ if base_env is None else base_env
-    preserve_set = {k.upper() for k in (preserve or ())}
-    cleaned = {
-        key: value
-        for key, value in source.items()
-        if not key.upper().startswith("GIT_") or key.upper() in preserve_set
-    }
+    preserve_set = {str(k).upper() for k in (preserve or ()) if isinstance(k, str) and "\x00" not in k}
+    cleaned: dict[str, str] = {}
+    for key, value in source.items():
+        if not isinstance(key, str) or not isinstance(value, str) or "\x00" in key or "\x00" in value:
+            continue
+        if not key.upper().startswith("GIT_") or key.upper() in preserve_set:
+            cleaned[key] = value
     if extra_env:
-        cleaned.update(extra_env)
+        for key, value in extra_env.items():
+            if isinstance(key, str) and isinstance(value, str) and "\x00" not in key and "\x00" not in value:
+                cleaned[key] = value
     return cleaned
 
 
 def pid_alive(pid: int) -> bool:
-    if pid <= 0:
+    if not is_valid_pid(pid):
         return False
     if os.name == "nt":
         try:
@@ -1855,10 +1859,12 @@ def canonical_root(path: str | Path) -> str:
     Resolves symlinks, relative segments, and user home directory.
     On Windows, Path.resolve() normalizes drive letter casing to the disk filesystem.
     """
-    try:
-        resolved = Path(path).expanduser().resolve()
-    except Exception:
-        resolved = Path(path).expanduser().absolute()
+    if not isinstance(path, (str, Path)):
+        raise TypeError("root must be a path string or Path")
+    raw = str(path)
+    if not raw.strip() or "\x00" in raw:
+        raise ValueError("root must be nonempty and contain no NUL")
+    resolved = Path(raw).expanduser().resolve()
     return str(resolved)
 
 
@@ -1894,15 +1900,37 @@ def is_rooted_path(path: str | Path) -> bool:
     recognize both forms so cross-platform client payloads are never joined onto
     the current workspace by accident.
     """
-    raw = str(path or "").strip()
+    raw = str(path or "").replace("\x00", "").strip()
     if not raw:
         return False
     if raw.startswith(("/", "\\")):
         return True
-    if Path(raw).is_absolute():
-        return True
-    win = PureWindowsPath(raw)
-    return bool(win.drive) or win.is_absolute()
+    try:
+        if Path(raw).is_absolute():
+            return True
+    except Exception:
+        pass
+    try:
+        win = PureWindowsPath(raw)
+        return bool(win.drive) or win.is_absolute()
+    except Exception:
+        return False
+
+
+def is_valid_pid(pid: Any) -> bool:
+    """Return True if pid is a valid positive non-boolean integer."""
+    return pid is not None and not isinstance(pid, bool) and isinstance(pid, int) and pid > 0
+
+
+def is_safe_path(path: Any) -> bool:
+    """Return True if path is a non-empty string or Path without null bytes."""
+    if path is None or isinstance(path, bool):
+        return False
+    try:
+        s = str(path)
+        return bool(s.strip()) and "\x00" not in s
+    except Exception:
+        return False
 
 
 def _job_kernel32() -> Any:
