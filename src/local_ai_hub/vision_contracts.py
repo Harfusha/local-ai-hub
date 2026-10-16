@@ -76,8 +76,19 @@ def validate_bounded_context(
     allow_html_paths: set[str] | None = None,
 ) -> None:
     """Reject oversized model context; never project or truncate it."""
-    if max_chars <= 0 or max_field_chars <= 0 or max_depth < 0 or max_items < 0:
-        raise VisionContextBoundsError("frontend_context_invalid", f"{name} bounds are invalid")
+    for param_name, param_val, min_val in (
+        ("max_chars", max_chars, 1),
+        ("max_field_chars", max_field_chars, 1),
+        ("max_depth", max_depth, 0),
+        ("max_items", max_items, 0),
+    ):
+        if (
+            isinstance(param_val, bool)
+            or not isinstance(param_val, (int, float))
+            or not math.isfinite(param_val)
+            or param_val < min_val
+        ):
+            raise VisionContextBoundsError("frontend_context_invalid", f"{name} bounds are invalid")
     allowed_html = allow_html_paths or set()
     total = 0
 
@@ -245,9 +256,34 @@ class FrontendReviewBundle:
 
 
 def _json_text(raw: str) -> str:
+    if not isinstance(raw, str):
+        return ""
     text = raw.strip()
     match = re.fullmatch(r"```(?:json)?\s*([\s\S]*?)\s*```", text, re.IGNORECASE)
     return match.group(1).strip() if match else text
+
+
+def is_valid_severity(severity: Any) -> bool:
+    if not isinstance(severity, str):
+        return False
+    return severity.strip().lower() in SEVERITIES
+
+
+def is_valid_category(category: Any) -> bool:
+    if not isinstance(category, str):
+        return False
+    return category.strip().lower() in CATEGORIES
+
+
+def is_valid_bbox(bbox: Any) -> bool:
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        return False
+    for coord in bbox:
+        if isinstance(coord, bool) or not isinstance(coord, (int, float)) or not math.isfinite(coord):
+            return False
+    left, top, right, bottom = bbox
+    return left <= right and top <= bottom
+
 
 
 def image_dimensions(image_data: bytes) -> tuple[int, int] | None:
@@ -336,6 +372,8 @@ def parse_vision_result(
     observation_sources: dict[str, dict[str, dict[str, Any]]] | None = None,
     image_size: tuple[int, int] | None = None,
 ) -> VisionParseResult:
+    if not isinstance(raw, str):
+        return _terminal_error("vision output must be a string")
     if observation_sources is not None and not isinstance(observation_sources, dict):
         return _terminal_error("observation_sources must be an object")
     try:
