@@ -239,6 +239,7 @@ _REPO_CONDITIONS = {
 _ACTION_SCOPED_FIELDS = {
     "local_ai_task": {
         "url": frozenset({"browser"}),
+        "request_id": frozenset({"submit"}),
         **{
             name: frozenset({"delegate", "explore", "reason", "review", "second_opinion", "compress"})
             for name in ("phase", "focus", "preload_profile", "repository_revision", "changed_paths")
@@ -613,7 +614,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
                 "image_artifact_id", "screenshot_artifact_id", "baseline_screenshot_artifact_id", "bundle_artifact_id", "dom_artifact_id",
                 "accessibility_artifact_id", "computed_styles_artifact_id", "runtime_artifact_id",
                 "network_artifact_id", "source", "job_id", "evaluation_task_id", "evaluation_cohort",
-                "workspace", "approver", "task_id", "language",
+                "workspace", "approver", "task_id", "language", "request_id",
             )},
             "complexity": {"type": "string", "default": "auto"},
             "job_action": {"type": "string", "default": "reason"},
