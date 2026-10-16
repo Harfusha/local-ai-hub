@@ -14,13 +14,18 @@ def test_strip_ansi_extended_sequences():
 
 
 @pytest.mark.parametrize("limit, expected", [
-    (0, []), (-1, []), (1, [0]), (5, [0, 1, 2, 18, 19]), (20, list(range(20))),
+    (0, []), (1, [0]), (5, [0, 1, 2, 18, 19]), (20, list(range(20))),
 ])
 def test_trim_preserves_exact_head_tail_count(capsys, limit, expected):
     token_economy.filter_and_print_trimmed((f"line {number}\n" for number in range(20)), limit)
     output = capsys.readouterr().out
     assert [line for line in output.splitlines() if line.startswith("line ")] == [f"line {number}" for number in expected]
     assert ("truncated by trim-run" in output) == (limit < 20)
+
+
+def test_trim_rejects_negative_limit():
+    with pytest.raises(ValueError, match="max_lines must be a non-negative integer"):
+        token_economy.filter_and_print_trimmed((f"line {number}\n" for number in range(20)), -1)
 
 
 def test_trim_consumes_large_stream_without_retaining_all_lines(capsys):

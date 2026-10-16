@@ -13,7 +13,7 @@ from local_ai_hub.process_utils import canonical_path, canonical_root, canonical
     ("path", "expected"),
     [
         (r"c:\Users\Adam\.\repo\..\Repo", "C:/Users/Adam/Repo"),
-        ("c:/Users/Adam/repo/./src/../Repo", "C:/Users/Adam/Repo"),
+        ("c:/Users/Adam/./repo/../Repo", "C:/Users/Adam/Repo"),
         (r"\\Server\Share\folder\..\Repo", "//Server/Share/Repo"),
         ("//Server/Share/folder/../Repo", "//Server/Share/Repo"),
     ],
