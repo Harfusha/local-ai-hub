@@ -105,10 +105,10 @@ def _text(value: Any, limit: int = _MAX_TEXT) -> str:
     if value is None:
         return ""
     if isinstance(value, str):
-        rendered = value
+        rendered = value.replace("\x00", "")
     else:
         try:
-            rendered = str(value)
+            rendered = str(value).replace("\x00", "")
         except Exception:
             rendered = "<unserializable>"
     return rendered[:limit]
@@ -116,7 +116,8 @@ def _text(value: Any, limit: int = _MAX_TEXT) -> str:
 
 def _tuple(value: Any, limit: int = _MAX_ITEMS) -> tuple[str, ...]:
     if isinstance(value, str):
-        values = (value,)
+        cleaned = _text(value, 240).strip()
+        return (cleaned,) if cleaned else ()
     else:
         try:
             values = itertools.islice(iter(value), limit)
@@ -125,7 +126,9 @@ def _tuple(value: Any, limit: int = _MAX_ITEMS) -> tuple[str, ...]:
     output: list[str] = []
     for item in values:
         if item is not None:
-            output.append(_text(item, 240))
+            cleaned = _text(item, 240).strip()
+            if cleaned:
+                output.append(cleaned)
     return tuple(output[:limit])
 
 
@@ -224,6 +227,8 @@ def _safe_bool(value: Any, default: bool = False) -> bool:
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return default
     try:
         return int(value)
     except Exception:
@@ -231,6 +236,8 @@ def _safe_int(value: Any, default: int = 0) -> int:
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
+    if isinstance(value, bool):
+        return default
     try:
         result = float(value)
         return result if math.isfinite(result) else default
@@ -406,6 +413,34 @@ class ConsistencyRequest:
             "override_reason": self.override_reason, "approval": self.approval,
         }
 
+    @classmethod
+    def from_dict(cls, data: Any) -> ConsistencyRequest:
+        if not isinstance(data, Mapping):
+            return cls(root="")
+        return cls(
+            root=data.get("root", ""),
+            task_id=data.get("task_id", ""),
+            query=data.get("query", ""),
+            phase=data.get("phase", ""),
+            focus=data.get("focus", ()),
+            workspace=data.get("workspace", ""),
+            preload_profile=data.get("preload_profile", ""),
+            token_budget=data.get("token_budget", 2400),
+            changed_paths=data.get("changed_paths", ()),
+            path_hints=data.get("path_hints", ()),
+            directory_hints=data.get("directory_hints", ()),
+            exclude_paths=data.get("exclude_paths", ()),
+            force_include_paths=data.get("force_include_paths", ()),
+            base=data.get("base", "HEAD"),
+            staged=data.get("staged", False),
+            tenant=data.get("tenant", ""),
+            memory_revision=data.get("memory_revision", ""),
+            session_id=data.get("session_id", ""),
+            project_config_digest=data.get("project_config_digest", ""),
+            override_reason=data.get("override_reason", ""),
+            approval=data.get("approval", ""),
+        )
+
 
 @dataclass(frozen=True)
 class ReuseCandidate:
@@ -436,6 +471,22 @@ class ReuseCandidate:
             "symbol": self.symbol, "line": self.line, "score": self.score,
             "reason": self.reason, "evidence_ids": list(self.evidence_ids), "suitable": self.suitable,
         })
+
+    @classmethod
+    def from_dict(cls, data: Any) -> ReuseCandidate:
+        if not isinstance(data, Mapping):
+            return cls(candidate_id="", kind="", path="")
+        return cls(
+            candidate_id=data.get("candidate_id", ""),
+            kind=data.get("kind", ""),
+            path=data.get("path", ""),
+            symbol=data.get("symbol", ""),
+            line=data.get("line", 0),
+            score=data.get("score", 0.0),
+            reason=data.get("reason", ""),
+            evidence_ids=data.get("evidence_ids", ()),
+            suitable=data.get("suitable", True),
+        )
 
 
 @dataclass(frozen=True)
@@ -475,6 +526,30 @@ class ContractMapping:
             "status": self.status, "evidence_ids": self.evidence_ids, "mismatches": self.mismatches,
         }.items()})
 
+    @classmethod
+    def from_dict(cls, data: Any) -> ContractMapping:
+        if not isinstance(data, Mapping):
+            return cls(kind="")
+        return cls(
+            kind=data.get("kind", ""),
+            endpoint=data.get("endpoint", ""),
+            backend_path=data.get("backend_path", ""),
+            frontend_path=data.get("frontend_path", ""),
+            backend_symbol=data.get("backend_symbol", ""),
+            frontend_symbol=data.get("frontend_symbol", ""),
+            backend_fields=data.get("backend_fields", ()),
+            frontend_fields=data.get("frontend_fields", ()),
+            backend_error_identifiers=data.get("backend_error_identifiers", ()),
+            frontend_error_identifiers=data.get("frontend_error_identifiers", ()),
+            loading_state=data.get("loading_state", ""),
+            empty_state=data.get("empty_state", ""),
+            error_state=data.get("error_state", ""),
+            test_paths=data.get("test_paths", ()),
+            status=data.get("status", "matched"),
+            evidence_ids=data.get("evidence_ids", ()),
+            mismatches=data.get("mismatches", ()),
+        )
+
 
 @dataclass(frozen=True)
 class GuardWarning:
@@ -504,6 +579,21 @@ class GuardWarning:
             "evidence_ids": list(self.evidence_ids), "affected_paths": list(self.affected_paths),
             "recommended_action": self.recommended_action, "requires_approval": self.requires_approval,
         })
+
+    @classmethod
+    def from_dict(cls, data: Any) -> GuardWarning:
+        if not isinstance(data, Mapping):
+            return cls(severity="")
+        return cls(
+            severity=data.get("severity", ""),
+            code=data.get("code", ""),
+            message=data.get("message", ""),
+            evidence_ids=data.get("evidence_ids", ()),
+            affected_paths=data.get("affected_paths", ()),
+            recommended_action=data.get("recommended_action", ""),
+            requires_approval=data.get("requires_approval", False),
+            kind=data.get("kind", ""),
+        )
 
 
 @dataclass(frozen=True)
@@ -563,6 +653,70 @@ class AdaptiveContextPack:
             "memory_revision": _text(self.memory_revision, 200),
             "model_warnings": [nested(item) for item in self.model_warnings[:_MAX_ITEMS]],
         })
+
+    @classmethod
+    def from_dict(cls, data: Any) -> AdaptiveContextPack:
+        if not isinstance(data, Mapping):
+            return cls()
+        contract_data = data.get("contract")
+        contract = None
+        if isinstance(contract_data, Mapping):
+            try:
+                contract = GoalContract.from_dict(contract_data)
+            except Exception:
+                contract = None
+        elif isinstance(contract_data, GoalContract):
+            contract = contract_data
+
+        def _make_candidates(items: Any) -> tuple[ReuseCandidate, ...]:
+            if not isinstance(items, (list, tuple)):
+                return ()
+            res = []
+            for item in items:
+                if isinstance(item, ReuseCandidate):
+                    res.append(item)
+                elif isinstance(item, Mapping):
+                    res.append(ReuseCandidate.from_dict(item))
+            return tuple(res)
+
+        def _make_mappings(items: Any) -> tuple[ContractMapping, ...]:
+            if not isinstance(items, (list, tuple)):
+                return ()
+            res = []
+            for item in items:
+                if isinstance(item, ContractMapping):
+                    res.append(item)
+                elif isinstance(item, Mapping):
+                    res.append(ContractMapping.from_dict(item))
+            return tuple(res)
+
+        def _make_warnings(items: Any) -> tuple[GuardWarning, ...]:
+            if not isinstance(items, (list, tuple)):
+                return ()
+            res = []
+            for item in items:
+                if isinstance(item, GuardWarning):
+                    res.append(item)
+                elif isinstance(item, Mapping):
+                    res.append(GuardWarning.from_dict(item))
+            return tuple(res)
+
+        return cls(
+            contract=contract,
+            reuse_candidates=_make_candidates(data.get("reuse_candidates")),
+            mappings=_make_mappings(data.get("mappings")),
+            warnings=_make_warnings(data.get("warnings")),
+            evidence=_bounded_sequence(data.get("evidence", ())),
+            repo_revision=data.get("repo_revision", ""),
+            changed_paths=_tuple(data.get("changed_paths", ())),
+            stale=data.get("stale", False),
+            context_id=data.get("context_id", ""),
+            phase=data.get("phase", ""),
+            focus=_tuple(data.get("focus", ())),
+            preload_profile=data.get("preload_profile", ""),
+            memory_revision=data.get("memory_revision", ""),
+            model_warnings=_make_warnings(data.get("model_warnings")),
+        )
 
 
 class AgentConsistencyGuard:

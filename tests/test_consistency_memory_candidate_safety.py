@@ -26,12 +26,15 @@ def _safety_fixture(tmp_path: Path):
     guard = AgentConsistencyGuard(
         RepositoryTools(load_config(str(config_path))), memory_store=memory
     )
+    from local_ai_hub.project_config import resolve_project_context
+
+    coordination_id = resolve_project_context(str(root), str(tmp_path / "state")).coordination_id
     compiler = ContextCompiler(state_store=state, memory_store=memory)
     consistency_request = ConsistencyRequest(
         root=str(root), task_id="task-memory-safety", tenant="tenant-a", query="reuse service"
     )
     context_request = ContextRequest(
-        task_id="task-memory-safety", root=str(root), tenant="tenant-a", token_budget=1200
+        task_id="task-memory-safety", root=str(root), tenant="tenant-a", token_budget=1200, coordination_id=coordination_id
     )
     return root, memory, guard, compiler, consistency_request, context_request
 
@@ -95,7 +98,7 @@ def test_manual_active_memory_stays_eligible_for_context(tmp_path: Path):
         key="operator-fact",
         value="Keep the established API contract",
         status=MemoryStatus.ACTIVE,
-        provenance={"root": str(root), "tenant": "tenant-a"},
+        provenance={"root": str(root), "tenant": "tenant-a", "repository_id": context_request.coordination_id},
     )
 
     saved = memory.record(record)
