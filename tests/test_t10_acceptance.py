@@ -20,7 +20,7 @@ from local_ai_hub.code_index import CodeIndex
 from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.preprocess import ProjectPreprocessor
 from local_ai_hub.process_utils import canonical_root
-from local_ai_hub.repo_tools import RepositoryTools
+from local_ai_hub.repo_tools import FileTooLargeError, RepositoryTools
 from local_ai_hub.services import LocalAIServices
 from local_ai_hub.treesitter_parser import is_treesitter_available, parse_treesitter
 
@@ -34,8 +34,12 @@ class _SnapshotReader:
         *,
         stat: os.stat_result | None = None,
         force: bool = False,
+        max_bytes: int | None = None,
     ) -> tuple[str, list[str]]:
-        source = Path(path).read_bytes()
+        with Path(path).open("rb") as stream:
+            source = stream.read() if max_bytes is None else stream.read(max_bytes + 1)
+        if max_bytes is not None and len(source) > max_bytes:
+            raise FileTooLargeError(f"{path} exceeds {max_bytes} bytes")
         return hashlib.sha256(source).hexdigest(), source.decode("utf-8", errors="replace").splitlines()
 
 def _new_index(tmp_path: Path) -> tuple[CodeIndex, Path]:

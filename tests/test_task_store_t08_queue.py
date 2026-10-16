@@ -30,10 +30,22 @@ def tasks(tmp_path):
 def test_worktree_ttl_clamp_preserves_owned_metadata(tasks, tmp_path, monkeypatch, requested, expected):
     calls = []
 
+    def prepare_owned(root, *, branch_name, task_id, owner, created_at, ttl_seconds, expires_at):
+        return process_utils.PreparedGitWorktree(
+            repo_root=str(root), base_commit_ref="HEAD", base_commit_sha="a" * 40,
+            branch=branch_name, worktree_path=str(tmp_path / "owned-worktree"),
+            lease_id="owned-lease", worktree_id="owned-id", task_id=task_id,
+            owner=owner, created_at=created_at, ttl_seconds=ttl_seconds,
+            expires_at=expires_at, creator_pid=123,
+            creator_creation_identity="test-creator", creator_creation_identity_type="test",
+            creator_executable="test-python",
+        )
+
     def create_owned(root, **metadata):
         calls.append((root, metadata))
-        return {"success": True, "repo_root": str(root), "worktree_id": "owned-id", **metadata}
+        return metadata["prepared_plan"].response_metadata()
 
+    monkeypatch.setattr(process_utils, "prepare_git_worktree", prepare_owned)
     monkeypatch.setattr(process_utils, "create_git_worktree", create_owned)
     task = tasks.create(
         GoalContract(goal="bounded owned worktree"), ScopeContext(repository_id=str(tmp_path)),
@@ -41,6 +53,7 @@ def test_worktree_ttl_clamp_preserves_owned_metadata(tasks, tmp_path, monkeypatc
         worktree_ttl_seconds=requested,
     )
     assert len(calls) == 1
+    assert calls[0][1]["prepared_plan"].ttl_seconds == expected
     metadata = task.checkpoint.state_data["worktree"]
     assert metadata["ttl_seconds"] == expected
     assert metadata["expires_at"] == task.created_at + expected

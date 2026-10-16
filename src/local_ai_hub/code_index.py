@@ -1924,30 +1924,8 @@ class CodeIndex:
             self._mark_file_unindexable(str(base), path, lang)
             return {"success": True, "skipped": True, "path": path, "reason": "file exceeds max indexable size"}
 
-        with self._lock, closing(self._connect()) as con:
-            row = con.execute(
-                "SELECT content_hash,analyzer_version,language,mtime_ns,size_bytes "
-                "FROM files WHERE root=? AND path=?",
-                (str(base), path),
-            ).fetchone()
-            if (
-                row
-                and row[0]
-                and (content_hash is None or content_hash == row[0])
-                and str(row[1] or "") == _PARSER_ANALYZER_VERSION
-                and str(row[2] or "") == lang
-                and row[3] == target_stat.st_mtime_ns
-                and row[4] == target_stat.st_size
-                and self._file_stat_is_current(target, target_stat)
-            ):
-                cached = self._parse_blob_get_with_report(str(row[0]), lang)
-                return {
-                    "success": True,
-                    "cached": True,
-                    "path": path,
-                    "parse_outcome": dict(cached[1]) if cached is not None else {"status": "unknown", "parser": "unknown"},
-                }
-
+        # Unchanged size/mtime does not establish unchanged content. Reuse the
+        # existing content-addressed parse only after the bounded snapshot read.
         try:
             digest, lines = self.repo_tools._read_snapshot(
                 target, stat=target_stat, force=True, max_bytes=self.repo_tools.max_file_bytes,
@@ -1955,7 +1933,7 @@ class CodeIndex:
         except FileTooLargeError:
             self._mark_file_unindexable(str(base), path, lang)
             return {"success": True, "skipped": True, "path": path, "reason": "file exceeds max indexable size"}
-        content_hash = content_hash or digest
+        content_hash = digest
         stat_is_current = self._file_stat_is_current(target, target_stat)
         with self._lock, closing(self._connect()) as con:
             row = con.execute("SELECT content_hash,analyzer_version,language FROM files WHERE root=? AND path=?", (str(base), path)).fetchone()
@@ -2050,7 +2028,7 @@ class CodeIndex:
                 ).fetchall()
             }
 
-        candidates: list[tuple[str, str, str, list[str] | None]] = []
+        candidates: list[tuple[str, str, str, list[str]]] = []
         file_stats: dict[str, Any] = {}
         cached = 0
         denied_paths: list[str] = []
@@ -2081,27 +2059,7 @@ class CodeIndex:
             if file_stat.st_size > self.repo_tools.max_file_bytes:
                 self._mark_file_unindexable(c_root, path, lang)
                 continue
-            old = existing.get(path)
-            if (
-                not supplied_hash
-                and old
-                and old[0]
-                and old[1] == _PARSER_ANALYZER_VERSION
-                and old[2] == lang
-                and old[3] == file_stat.st_mtime_ns
-                and old[4] == file_stat.st_size
-                and self._file_stat_is_current(file_path, file_stat)
-            ):
-                cached += 1
-                continue
             file_stats[path] = file_stat
-            if supplied_hash:
-                if existing.get(path, ())[:3] == (supplied_hash, _PARSER_ANALYZER_VERSION, lang):
-                    cached += 1
-                    continue
-                # Resolve content-addressed hits with one later bulk query.
-                candidates.append((path, supplied_hash, lang, None))
-                continue
             try:
                 digest, lines = self.repo_tools._read_snapshot(
                     file_path, stat=file_stat, force=True, max_bytes=self.repo_tools.max_file_bytes,
@@ -2111,7 +2069,7 @@ class CodeIndex:
                 continue
             except OSError:
                 continue
-            content_hash = supplied_hash or digest
+            content_hash = digest
             if existing.get(path, ())[:3] == (content_hash, _PARSER_ANALYZER_VERSION, lang):
                 cached += 1
                 continue
@@ -2152,24 +2110,6 @@ class CodeIndex:
                             blob_map[(str(row[0]), str(row[1]))] = (list(data.get("symbols", [])), list(data.get("refs", [])), list(data.get("edges", [])), diagnostic)
             except Exception:
                 pass
-
-        hydrated_candidates: list[tuple[str, str, str, list[str]]] = []
-        for path, content_hash, lang, lines in candidates:
-            if lines is None:
-                if (content_hash, lang) in blob_map:
-                    lines = []
-                else:
-                    try:
-                        _digest, lines = self.repo_tools._read_snapshot(
-                            (base / path).resolve(strict=False), max_bytes=self.repo_tools.max_file_bytes,
-                        )
-                    except FileTooLargeError:
-                        self._mark_file_unindexable(c_root, path, lang)
-                        continue
-                    except OSError:
-                        continue
-            hydrated_candidates.append((path, content_hash, lang, lines))
-        candidates = hydrated_candidates
 
         files_to_insert: list[tuple[Any, ...]] = []
         syms_to_insert: list[tuple[Any, ...]] = []
