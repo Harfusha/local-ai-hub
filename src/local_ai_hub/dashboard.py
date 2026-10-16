@@ -706,6 +706,8 @@ function dashboardTelemetryState(observability={}){
   const writer=observability.writer||{};
   const dropped=Math.max(0,Number(writer.dropped)||0),errors=Math.max(0,Number(writer.writer_errors)||0);
   const pending=Math.max(0,Number(writer.pending)||0);
+  const accepted=Number.isSafeInteger(writer.accepted)&&writer.accepted>=0?writer.accepted:null;
+  const written=Number.isSafeInteger(writer.written)&&writer.written>=0?writer.written:null;
   const activityObserved=writer.activity_observed===true;
   const accountingBalanced=writer.accounting_balanced===true;
   const summaryCacheStale=observability.summary_cache_stale===true;
@@ -713,7 +715,7 @@ function dashboardTelemetryState(observability={}){
   const available=observability.enabled!==false&&observability.data_available!==false&&observability.stale!==true&&
     (observability.data_available===true||Object.hasOwn(observability,'net_cloud_token_delta_est'));
   const complete=available&&activityObserved&&accountingBalanced&&!pending&&!dropped&&!errors&&!summaryCacheStale&&!detailIncomplete&&!observability.accounting_boundary_incomplete;
-  return {available,complete,dropped,errors,pending,activityObserved,accountingBalanced,summaryCacheStale,detailIncomplete};
+  return {available,complete,dropped,errors,pending,accepted,written,activityObserved,accountingBalanced,summaryCacheStale,detailIncomplete};
 }
 
 function formatEstimatedUsd(value){
@@ -738,7 +740,7 @@ function renderTelemetryMetrics(observability={}){
   }
   if(breakdown){
     const sources=Object.entries(observability.token_savings_breakdown||{}).map(([name,value])=>name+': '+n(value)).join('\n');
-    breakdown.textContent='Period: '+period+'\nAccounted calls: '+n(calls)+'\nBaseline: '+n(observability.gross_cloud_tokens_avoided_est)+' tokens\nProtocol: '+n(observability.agent_protocol_tokens_est)+' tokens (call '+n(observability.agent_tool_request_tokens_est)+' + read '+n(observability.agent_tool_response_tokens_est)+')\nSchema-adjusted delta: '+n(observability.net_after_schema_token_delta_est)+' tokens\nSchema catalog exposure: '+n(observability.tool_schema_tokens_exposure_est)+' tokens\nLocal compute reuse: '+n(observability.local_compute_tokens_avoided_est)+' tokens\nWriter: '+n(state.dropped)+' records dropped; '+n(state.errors)+' caught error attempts; '+n(state.pending)+' pending; activity '+(state.activityObserved?'observed':'unobserved')+'; accounting '+(state.accountingBalanced?'balanced':'unknown/unbalanced')+(sources?'\nBaseline sources:\n'+sources:'\nNo baseline source recorded.');
+    breakdown.textContent='Period: '+period+'\nAccounted calls: '+n(calls)+'\nBaseline: '+n(observability.gross_cloud_tokens_avoided_est)+' tokens\nProtocol: '+n(observability.agent_protocol_tokens_est)+' tokens (call '+n(observability.agent_tool_request_tokens_est)+' + read '+n(observability.agent_tool_response_tokens_est)+')\nSchema-adjusted delta: '+n(observability.net_after_schema_token_delta_est)+' tokens\nSchema catalog exposure: '+n(observability.tool_schema_tokens_exposure_est)+' tokens\nLocal compute reuse: '+n(observability.local_compute_tokens_avoided_est)+' tokens\nWriter: '+(state.accepted==null?'unknown':n(state.accepted))+' accepted; '+(state.written==null?'unknown':n(state.written))+' written; '+n(state.dropped)+' records dropped; '+n(state.errors)+' caught error attempts; '+n(state.pending)+' pending; activity '+(state.activityObserved?'observed':'unobserved')+'; accounting '+(state.accountingBalanced?'balanced':'unknown/unbalanced')+(sources?'\nBaseline sources:\n'+sources:'\nNo baseline source recorded.');
   }
   if(breakdown){
     breakdown.textContent=breakdown.textContent.replace('Baseline sources:','Baseline sources (retained detail only):');

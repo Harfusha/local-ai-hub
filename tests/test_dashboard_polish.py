@@ -266,6 +266,28 @@ assert.equal(dashboardHealth({...base,degraded:true,dependency_status:{'preproce
 """)
 
 
+def test_telemetry_breakdown_shows_writer_acceptance_and_loss_counters():
+    source = extract("function dashboardTelemetryState", "function preprocessingSummary(")
+    run_javascript(source, """
+const nodes={
+  efficiencyStatus:{textContent:'',classList:{toggle(){}}},
+  efficiencyBreakdown:{textContent:''},
+};
+globalThis.$=id=>nodes[id]||null;
+globalThis.sloScope='process';
+globalThis.n=value=>String(value??'unknown');
+renderTelemetryMetrics({
+  data_available:true,
+  net_cloud_token_delta_est:0,
+  tool_accounting_events:0,
+  detail:{incomplete:true},
+  writer:{accepted:9,written:7,dropped:1,writer_errors:2,activity_observed:true,accounting_balanced:true},
+});
+assert.match(nodes.efficiencyStatus.textContent,/Since restart · Incomplete telemetry/);
+assert.match(nodes.efficiencyBreakdown.textContent,/Writer: 9 accepted; 7 written; 1 records dropped; 2 caught error attempts/);
+""")
+
+
 def test_failed_project_action_is_visible_and_does_not_refresh_as_success():
     source = extract("async function projectAction(root, action)", "$('regProjectBtn').onclick")
     run_javascript(source, """
