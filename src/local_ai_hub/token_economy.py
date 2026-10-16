@@ -18,6 +18,7 @@ except ImportError:  # pragma: no cover - exercised when launched as a script
         return _stdlib_dumps(value, **kwargs)
 
 import argparse
+import math
 import os
 import re
 import shutil

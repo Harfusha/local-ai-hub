@@ -4891,6 +4891,10 @@ class CommandBroker:
                     def _literal_only(node: ast.AST) -> bool:
                         if isinstance(node, ast.Constant):
                             return True
+                        if isinstance(node, ast.UnaryOp):
+                            return _literal_only(node.operand)
+                        if isinstance(node, ast.BinOp):
+                            return _literal_only(node.left) and _literal_only(node.right)
                         if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
                             return all(_literal_only(item) for item in node.elts)
                         if isinstance(node, ast.Dict):
@@ -4900,20 +4904,35 @@ class CommandBroker:
                             )
                         return False
 
+                    safe_std_modules = {"sys", "os", "time", "json", "math", "re", "pathlib", "hashlib", "threading"}
                     safe_module_names: set[str] = set()
                     literal_bound_names: set[str] = set()
                     unsafe_bound_names: set[str] = set()
                     shadowed_names: set[str] = set()
+                    defined_function_names: set[str] = set()
+                    func_param_names: set[str] = set()
                     for candidate in ast.walk(tree):
                         if isinstance(candidate, ast.Import):
                             safe_module_names.update(
                                 alias.asname or alias.name.split(".", 1)[0]
                                 for alias in candidate.names
-                                if alias.name == "sys"
+                                if alias.name.split(".", 1)[0] in safe_std_modules
                             )
+                        elif isinstance(candidate, ast.ImportFrom):
+                            mod = (candidate.module or "").split(".", 1)[0]
+                            if mod in safe_std_modules:
+                                safe_module_names.update(
+                                    alias.asname or alias.name
+                                    for alias in candidate.names
+                                )
                         elif isinstance(candidate, ast.Name) and isinstance(candidate.ctx, ast.Store):
                             shadowed_names.add(candidate.id)
-                        elif isinstance(candidate, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                        elif isinstance(candidate, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            shadowed_names.add(candidate.name)
+                            defined_function_names.add(candidate.name)
+                            for a in candidate.args.args:
+                                func_param_names.add(a.arg)
+                        elif isinstance(candidate, ast.ClassDef):
                             shadowed_names.add(candidate.name)
 
                         targets: list[ast.AST] = []
@@ -4938,21 +4957,127 @@ class CommandBroker:
                         elif target_names:
                             unsafe_bound_names.update(target_names)
 
-                    safe_value_names = (literal_bound_names - unsafe_bound_names) | safe_module_names
+                    safe_value_names = (literal_bound_names - unsafe_bound_names) | safe_module_names | defined_function_names | func_param_names
+
+                    safe_builtin_calls = {
+                        "abs", "all", "any", "bool", "dict", "enumerate", "float", "int",
+                        "len", "list", "max", "min", "print", "range", "repr", "round",
+                        "set", "sorted", "str", "sum", "tuple", "zip",
+                    }
+                    safe_method_names = {
+                        "get", "strip", "lstrip", "rstrip", "lower", "upper", "split",
+                        "rsplit", "replace", "startswith", "endswith", "join", "encode",
+                        "decode", "count", "find", "index", "format",
+                        "start", "join", "is_alive", "wait", "set", "clear", "is_set",
+                        "write", "flush", "read",
+                    }
+                    safe_module_calls = {
+                        ("sys", "stdout", "write"),
+                        ("sys", "stdout", "flush"),
+                        ("sys", "stderr", "write"),
+                        ("sys", "stderr", "flush"),
+                        ("sys", "exit"),
+                        ("os", "getenv"),
+                        ("os", "getcwd"),
+                        ("os", "environ", "get"),
+                        ("time", "sleep"),
+                        ("time", "time"),
+                        ("time", "monotonic"),
+                        ("time", "perf_counter"),
+                        ("json", "dumps"),
+                        ("json", "loads"),
+                        ("threading", "Thread"),
+                        ("threading", "Lock"),
+                        ("threading", "RLock"),
+                        ("threading", "Event"),
+                        ("threading", "Semaphore"),
+                        ("threading", "current_thread"),
+                    }
+
+                    def _get_call_chain(func_node: ast.AST) -> tuple[str, ...] | None:
+                        parts = []
+                        curr = func_node
+                        while isinstance(curr, ast.Attribute):
+                            if curr.attr.startswith("_"):
+                                return None
+                            parts.append(curr.attr)
+                            curr = curr.value
+                        if isinstance(curr, ast.Name):
+                            parts.append(curr.id)
+                            return tuple(reversed(parts))
+                        return None
+
+                    def _is_safe_call(call_node: ast.Call) -> bool:
+                        if isinstance(call_node.func, ast.Name):
+                            func_name_id = call_node.func.id
+                            if func_name_id in safe_builtin_calls and func_name_id not in shadowed_names:
+                                return True
+                            if func_name_id in defined_function_names:
+                                return True
+                        elif isinstance(call_node.func, ast.Attribute):
+                            chain = _get_call_chain(call_node.func)
+                            if chain and chain in safe_module_calls:
+                                return True
+                            if call_node.func.attr in safe_method_names and not call_node.func.attr.startswith("_"):
+                                if _safe_inline_value(call_node.func.value):
+                                    return True
+                        return False
 
                     def _safe_inline_value(node: ast.AST) -> bool:
                         if _literal_only(node):
                             return True
                         if isinstance(node, ast.Name):
                             return node.id in safe_value_names
+                        if isinstance(node, ast.UnaryOp):
+                            return _safe_inline_value(node.operand)
+                        if isinstance(node, ast.BinOp):
+                            return _safe_inline_value(node.left) and _safe_inline_value(node.right)
+                        if isinstance(node, ast.BoolOp):
+                            return all(_safe_inline_value(val) for val in node.values)
+                        if isinstance(node, ast.Compare):
+                            return _safe_inline_value(node.left) and all(_safe_inline_value(comp) for comp in node.comparators)
+                        if isinstance(node, ast.IfExp):
+                            return _safe_inline_value(node.test) and _safe_inline_value(node.body) and _safe_inline_value(node.orelse)
+                        if isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+                            return all(_safe_inline_value(item) for item in node.elts)
+                        if isinstance(node, ast.Dict):
+                            return all(
+                                key is not None and _safe_inline_value(key) and _safe_inline_value(val)
+                                for key, val in zip(node.keys, node.values)
+                            )
+                        if isinstance(node, ast.Subscript):
+                            return _safe_inline_value(node.value) and _safe_inline_value(node.slice)
+                        if isinstance(node, ast.Call):
+                            return _is_safe_call(node) and all(_safe_inline_value(a) for a in node.args) and all(_safe_inline_value(k.value) for k in node.keywords)
                         if isinstance(node, ast.Attribute):
-                            current: ast.AST = node
-                            while isinstance(current, ast.Attribute):
-                                if current.attr.startswith("_"):
-                                    return False
-                                current = current.value
-                            return isinstance(current, ast.Name) and current.id in safe_module_names
+                            chain = _get_call_chain(node)
+                            if chain and chain[0] in safe_module_names:
+                                return True
+                            if _safe_inline_value(node.value) and not node.attr.startswith("_"):
+                                return True
                         return False
+
+                    for _ in range(5):
+                        added = 0
+                        for candidate in ast.walk(tree):
+                            targets: list[ast.AST] = []
+                            value: ast.AST | None = None
+                            if isinstance(candidate, ast.Assign):
+                                targets, value = candidate.targets, candidate.value
+                            elif isinstance(candidate, ast.AnnAssign):
+                                targets, value = [candidate.target], candidate.value
+                            elif isinstance(candidate, ast.NamedExpr):
+                                targets, value = [candidate.target], candidate.value
+                            elif isinstance(candidate, (ast.For, ast.AsyncFor)):
+                                targets = [candidate.target]
+                                value = candidate.iter
+                            if value is not None and _safe_inline_value(value):
+                                for target in targets:
+                                    if isinstance(target, ast.Name) and target.id not in safe_value_names:
+                                        safe_value_names.add(target.id)
+                                        added += 1
+                        if not added:
+                            break
 
                     for node in ast.walk(tree):
                         if isinstance(node, ast.Call):
@@ -4963,28 +5088,23 @@ class CommandBroker:
                                 func_name = node.func.attr
                             if func_name in {"exec", "eval", "compile"}:
                                 return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": f"python -c inline code contains dangerous call: {func_name}"}
-                            if func_name == "open":
-                                return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "python -c inline code accesses files with unknown side effects"}
-                            if func_name in {"write_text", "write_bytes", "touch", "unlink", "mkdir", "rmdir", "rename", "replace"}:
+                            if func_name in {"open", "remove", "unlink", "rmdir", "mkdir", "makedirs", "rename", "replace", "system", "popen", "spawn", "kill"}:
+                                return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": f"python -c inline code may mutate: {func_name}"}
+                            if func_name in {"write_text", "write_bytes", "touch"}:
                                 return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": f"python -c inline code may mutate files: {func_name}"}
-                            safe_builtin_calls = {
-                                "abs", "all", "any", "bool", "dict", "enumerate", "float", "int",
-                                "len", "list", "max", "min", "print", "range", "repr", "round",
-                                "set", "sorted", "str", "sum", "tuple", "zip",
-                            }
                             if (
-                                not isinstance(node.func, ast.Name)
-                                or func_name not in safe_builtin_calls
-                                or func_name in shadowed_names
+                                not _is_safe_call(node)
                                 or not all(_safe_inline_value(arg) for arg in node.args)
                                 or not all(_safe_inline_value(keyword.value) for keyword in node.keywords)
                             ):
                                 return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": f"python -c inline code has unverified call: {func_name or 'dynamic'}"}
                         elif isinstance(node, ast.Import):
-                            if any(alias.name != "sys" for alias in node.names):
+                            if any(alias.name.split(".", 1)[0] not in safe_std_modules for alias in node.names):
                                 return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "python -c inline code imports module with unknown side effects"}
                         elif isinstance(node, ast.ImportFrom):
-                            return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "python -c inline code imports module with unknown side effects"}
+                            mod = (node.module or "").split(".", 1)[0]
+                            if mod not in safe_std_modules:
+                                return {"class": "unknown", "cacheable": False, "allowed": bool(cfg.get("allow_unknown", False)), "reason": "python -c inline code imports module with unknown side effects"}
                         elif isinstance(node, ast.Assert):
                             is_validation = True
                 except SyntaxError:
@@ -7704,7 +7824,7 @@ class CommandBroker:
         if not self.enabled:
             return {"success": False, "error": "command broker disabled"}
         auto_bound_task = False
-        if not task_id and self.task_store is not None:
+        if not task_id and getattr(self, "task_store", None) is not None:
             try:
                 active_task = self.task_store.get_active_task(repo_root=cwd, tenant=tenant)
                 if active_task is not None:

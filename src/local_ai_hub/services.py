@@ -73,11 +73,13 @@ _CONTEXT_BACKEND_POOLS = {
 
 def is_retryable_local_backend_error(value: Any) -> bool:
     """Recognize transport/runtime failures that must keep async work retryable."""
+    if getattr(value, "retryable", None) is True:
+        return True
     text = str(value or "").lower()
     return any(marker in text for marker in (
         "winerror 10054", "winerror 10061", "connection reset", "connection refused",
         "connection aborted", "broken pipe", "temporarily unavailable", "ollama unavailable",
-        "timed out", "timeout", "eof",
+        "timed out", "timeout", "eof", "queue limit reached", "queue full", "resource pressure",
     ))
 
 
@@ -1389,12 +1391,19 @@ class LocalAIServices:
                         scheduler_state = str(state)
                     cancel_requested = True
                 except Exception as exc:
-                    retryable = is_retryable_local_backend_error(exc)
+                    retryable = getattr(exc, "retryable", None)
+                    if retryable is None:
+                        retryable = is_retryable_local_backend_error(exc)
+                    error_code = getattr(exc, "error_code", None)
+                    if not error_code:
+                        error_code = "local_backend_transport" if retryable else "local_model_error"
                     result = {
                         "success": False, "error": str(exc), "error_type": type(exc).__name__, "model": candidate,
-                        "retryable": retryable, "terminal": not retryable,
-                        "error_code": "local_backend_transport" if retryable else "local_model_error",
+                        "retryable": bool(retryable), "terminal": not bool(retryable),
+                        "error_code": str(error_code),
                     }
+                    if getattr(exc, "admission", None):
+                        result["admission"] = exc.admission
                 if mode_pause_result is not None:
                     return mode_pause_result
                 retryable_error = retryable_error or bool(result.get("retryable", False))
@@ -6947,7 +6956,7 @@ class LocalAIServices:
                 if rejection is not None:
                     return rejection
         if self.preprocessor is None:
-            return {"success": False, "error": "project preprocessor unavailable"}
+            return {"success": False, "error": "project preprocessor unavailable", "terminal": True, "retryable": False}
         if action in {"start", "register", "preprocess"}:
             return self.preprocessor.register(
                 root, source="agent",
@@ -6972,7 +6981,7 @@ class LocalAIServices:
             return self.preprocessor.status(root if args.get("root") else None)
         if action in {"lookup", "context"}:
             return self.preprocessor.lookup(root, str(args.get("query", "")), int(args.get("limit", 5)))
-        return {"success": False, "error": f"unknown preprocess action: {action}"}
+        return {"success": False, "error": f"unknown preprocess action: {action}", "terminal": True, "retryable": False}
 
     def _authorize_command_action(
         self, action: str, *, endpoint: str, task_id: str = ""
