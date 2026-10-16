@@ -490,6 +490,13 @@ def test_context_http_rejects_malformed_max_tokens_and_guard_fields(tmp_path, mo
         encoding="utf-8",
     )
     app = LocalAIApp(str(cfg_path))
+    # This test exercises HTTP validation and request shaping, not external
+    # repository backends.
+    app.services._hybrid_context = lambda *_args, **_kwargs: {
+        "success": True,
+        "context": "bounded test context",
+        "evidence": [],
+    }
     resolved_project = {"digest": "a" * 64}
     original_project_resolver = project_config.resolve_project_context
 

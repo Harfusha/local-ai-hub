@@ -85,7 +85,7 @@ def test_runtime_has_no_managed_codegraph_or_kuzu_references():
 
     assert "graph" not in mcp_server._REPO_ACTIONS
     assert "cross_project_graph" in mcp_server._REPO_ACTIONS
-    assert "cross_repo_graph" in mcp_server._REPO_ACTIONS
+    assert "cross_repo_graph" not in mcp_server._REPO_ACTIONS
     assert ".codegraphcontext/" in (ROOT / ".gitignore").read_text(encoding="utf-8")
 
 
@@ -101,13 +101,11 @@ def test_native_graph_mcp_actions_still_reach_cross_project_route(monkeypatch, t
     monkeypatch.setattr(mcp_server.FEATURES, "repo", True)
     monkeypatch.setattr(mcp_server.CLIENT, "post", fake_post)
 
-    for action in ("cross_project_graph", "cross_repo_graph"):
-        result = mcp_server._local_ai_repo_impl(action=action, root=str(tmp_path))
-        assert result["success"] is True
+    result = mcp_server._local_ai_repo_impl(action="cross_project_graph", root=str(tmp_path))
+    assert result["success"] is True
 
     expected_payload = {"roots": [str(tmp_path)]}
     assert calls == [
-        ("/api/cross_project_graph", expected_payload),
         ("/api/cross_project_graph", expected_payload),
     ]
 

@@ -3595,12 +3595,17 @@ class Handler(BaseHTTPRequestHandler):
             if "prompt" in payload:
                 text(payload["prompt"], "prompt", 20000)
         elif path == "/api/coord/pubsub_poll":
+            unsupported = set(payload) - {"root", "topic", "after_seq", "limit", "after_ts"}
+            if unsupported:
+                raise RequestBodyError(
+                    "pubsub_poll accepts only root, topic, after_seq, limit, and after_ts"
+                )
             if "after_seq" in payload:
                 bounded_integer(payload["after_seq"], "after_seq", 0, (1 << 63) - 1)
             if "limit" in payload:
                 bounded_integer(payload["limit"], "limit", 1, 1000)
-            if "since_timestamp" in payload:
-                bounded_number(payload["since_timestamp"], "since_timestamp", 0.0, 1e12)
+            if "after_ts" in payload:
+                bounded_number(payload["after_ts"], "after_ts", 0.0, 1e12)
         evaluation = payload.get("evaluation")
         if evaluation is not None:
             if not isinstance(evaluation, dict):
@@ -8552,8 +8557,8 @@ class Handler(BaseHTTPRequestHandler):
                 poll_kwargs: dict[str, Any] = {}
                 if "after_seq" in payload:
                     poll_kwargs["after_seq"] = int(payload["after_seq"])
-                if "since_timestamp" in payload:
-                    poll_kwargs["since_timestamp"] = float(payload["since_timestamp"])
+                if "after_ts" in payload:
+                    poll_kwargs["since_timestamp"] = float(payload["after_ts"])
                 if "limit" in payload:
                     poll_kwargs["limit"] = int(payload["limit"])
                 self._send(200, APP.services.pubsub_poll(str(payload.get("topic", "default")), **poll_kwargs)); return

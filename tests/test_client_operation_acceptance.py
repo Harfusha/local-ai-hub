@@ -9,7 +9,14 @@ from local_ai_hub.client import HubClient
 
 @pytest.fixture
 def fake_http_transport(tmp_path):
-    (tmp_path / "missing-hub.toml").write_text("", encoding="utf-8")
+    config_path = tmp_path / "missing-hub.toml"
+    config_path.write_text(
+        "[security]\n"
+        'api_token_tenant = "acceptance-test"\n'
+        'tenant_derivation_key = "acceptance-root-key-0123456789-abcdef"\n'
+        f'allowed_roots = ["{tmp_path.as_posix()}"]\n',
+        encoding="utf-8",
+    )
     captured = []
     state = {"response": {"success": True, "operation": "accepted"}}
 
@@ -41,6 +48,7 @@ def test_client_create_task_targets_agent_state_tasks(tmp_path, monkeypatch, fak
         acceptance_criteria=["route and payload match"],
         task_id="task-17",
         scope="task",
+        root=str(tmp_path),
     )
 
     assert result == reply
@@ -54,6 +62,7 @@ def test_client_create_task_targets_agent_state_tasks(tmp_path, monkeypatch, fak
                 "acceptance_criteria": ["route and payload match"],
                 "task_id": "task-17",
                 "scope": "task",
+                "root": str(tmp_path),
             },
         }
     ]
@@ -146,7 +155,8 @@ def test_client_record_memory_targets_agent_state_memory(
     fake_http_transport["state"]["response"] = reply
 
     result = client.record_memory(
-        "decision-17", {"choice": "bounded"}, scope="task", kind="fact", task_id="task-17"
+        "decision-17", {"choice": "bounded"}, scope="task", kind="fact",
+        task_id="task-17", root=str(tmp_path)
     )
 
     assert result == reply
@@ -161,6 +171,7 @@ def test_client_record_memory_targets_agent_state_memory(
                 "scope": "task",
                 "kind": "fact",
                 "task_id": "task-17",
+                "root": str(tmp_path),
             },
         }
     ]
@@ -180,7 +191,7 @@ def test_client_incident_decision_targets_agent_state_incidents(
 
     result = client.coord(
         "incident_decision",
-        fingerprint={"kind": "test", "value": "case-17"},
+        fingerprint={"kind": "test", "value": "case-17", "error_class": "AssertionError"},
         state_revision="rev-17",
     )
 
@@ -191,7 +202,9 @@ def test_client_incident_decision_targets_agent_state_incidents(
             "path": "/api/agent-state/incidents",
             "payload": {
                 "action": "decision",
-                "fingerprint": {"kind": "test", "value": "case-17"},
+                "fingerprint": {
+                    "kind": "test", "value": "case-17", "error_class": "AssertionError"
+                },
                 "state_revision": "rev-17",
             },
         }

@@ -944,13 +944,33 @@ def test_coord_pubsub_adapters_send_canonical_fields_without_numeric_coercion(tm
         message={"state": "ready"},
         publisher="worker-1",
     )
+    invalid = client.coord(
+        "pubsub_poll",
+        root="repo",
+        topic="updates",
+        after_ts="12.5",
+        after_seq="17",
+        limit="7",
+    )
+    assert invalid["success"] is False
+    assert invalid["terminal"] is True
+    assert invalid["retryable"] is False
+    assert "after_ts" in invalid["error"]
+    assert len(captured) == 1
+    retired_alias = client.coord(
+        "pubsub_poll", root="repo", topic="updates", since_timestamp=12.5
+    )
+    assert retired_alias["success"] is False
+    assert retired_alias["terminal"] is True
+    assert "after_ts" in retired_alias["error"]
+
     client.coord(
         "pubsub_poll",
         root="repo",
         topic="updates",
-        since_timestamp="12.5",
-        after_seq="17",
-        limit="7",
+        after_ts=12.5,
+        after_seq=17,
+        limit=7,
     )
 
     assert captured == [
@@ -970,9 +990,9 @@ def test_coord_pubsub_adapters_send_canonical_fields_without_numeric_coercion(tm
             "body": {
                 "root": "repo",
                 "topic": "updates",
-                "limit": "7",
-                "after_seq": "17",
-                "since_timestamp": "12.5",
+                "limit": 7,
+                "after_seq": 17,
+                "after_ts": 12.5,
             },
         },
     ]

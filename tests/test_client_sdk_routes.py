@@ -33,7 +33,11 @@ def live_client(tmp_path, monkeypatch):
     config.write_text(
         f'[server]\nbind = "127.0.0.1"\nport = {server.server_address[1]}\n'
         f'state_dir = "{state_dir.as_posix()}"\n'
-        '[agent_state]\nenabled = true\n',
+        '[agent_state]\nenabled = true\n'
+        '[security]\n'
+        'api_token_tenant = "sdk-test"\n'
+        'tenant_derivation_key = "sdk-test-root-key-0123456789-abcdef"\n'
+        f'allowed_roots = ["{tmp_path.as_posix()}"]\n',
         encoding="utf-8",
     )
     app = LocalAIApp(str(config))
@@ -198,7 +202,9 @@ def test_sdk_convenience_methods_map_to_production_http_handlers(live_client, tm
     ]
 
 
-def test_sdk_coord_pubsub_poll_maps_payload_to_production_handler(live_client, http_post_paths, monkeypatch):
+def test_sdk_coord_pubsub_poll_maps_payload_to_production_handler(
+    live_client, http_post_paths, monkeypatch, tmp_path
+):
     from local_ai_hub import http_server
 
     app, client = live_client
@@ -221,9 +227,9 @@ def test_sdk_coord_pubsub_poll_maps_payload_to_production_handler(live_client, h
     before = len(http_post_paths)
     result = client.coord(
         "pubsub_poll",
-        root="C:/sdk-fixture",
+        root=str(tmp_path),
         topic="release",
-        since_timestamp=123.5,
+        after_ts=123.5,
         limit=3,
     )
 
@@ -231,15 +237,25 @@ def test_sdk_coord_pubsub_poll_maps_payload_to_production_handler(live_client, h
     assert result["messages"] == [{"topic": "release", "message": "ready"}]
     assert http_post_paths[before:] == ["/api/coord/pubsub_poll"]
     assert payloads == [{
-        "root": "C:/sdk-fixture",
+        "root": str(tmp_path),
         "topic": "release",
-        "since_timestamp": 123.5,
+        "after_ts": 123.5,
         "limit": 3,
     }]
     assert received == [("release", 123.5, 3)]
 
+    retired_alias = client.post(
+        "/api/coord/pubsub_poll",
+        {"root": str(tmp_path), "topic": "release", "since_timestamp": 123.5},
+    )
+    assert retired_alias["success"] is False
+    assert retired_alias["status_code"] == 400
+    assert received == [("release", 123.5, 3)]
 
-def test_sdk_coord_pubsub_poll_none_timestamp_keeps_sequence_cursor(live_client, http_post_paths, monkeypatch):
+
+def test_sdk_coord_pubsub_poll_none_timestamp_keeps_sequence_cursor(
+    live_client, http_post_paths, monkeypatch, tmp_path
+):
     _app, client = live_client
     from local_ai_hub import http_server
 
@@ -255,9 +271,9 @@ def test_sdk_coord_pubsub_poll_none_timestamp_keeps_sequence_cursor(live_client,
     before = len(http_post_paths)
     result = client.coord(
         "pubsub_poll",
-        root="C:/sdk-fixture",
+        root=str(tmp_path),
         topic="release",
-        since_timestamp=None,
+        after_ts=None,
         after_seq=7,
         limit=2,
     )
@@ -265,20 +281,22 @@ def test_sdk_coord_pubsub_poll_none_timestamp_keeps_sequence_cursor(live_client,
     assert result["success"] is True
     assert http_post_paths[before:] == ["/api/coord/pubsub_poll"]
     assert payloads == [{
-        "root": "C:/sdk-fixture",
+        "root": str(tmp_path),
         "topic": "release",
         "after_seq": 7,
         "limit": 2,
     }]
 
 
-def test_sdk_coord_pubsub_poll_null_numeric_options_use_defaults(live_client, http_post_paths, monkeypatch):
+def test_sdk_coord_pubsub_poll_null_numeric_options_use_defaults(
+    live_client, http_post_paths, monkeypatch, tmp_path
+):
     _app, client = live_client
     before = len(http_post_paths)
 
     result = client.coord(
-        "pubsub_poll", root="C:/sdk-fixture", topic="release",
-        since_timestamp=None, after_seq=None, limit=None,
+        "pubsub_poll", root=str(tmp_path), topic="release",
+        after_ts=None, after_seq=None, limit=None,
     )
 
     assert result["success"] is True
@@ -305,13 +323,14 @@ def test_callers_finds_real_python_call_through_sdk_handler(live_client, tmp_pat
     assert result["callers"][0]["line"] == 5
 
 
-def test_context_pack_exposes_terminal_mode_errors_from_production_handler(live_client, tmp_path, http_post_paths):
+def test_context_pack_rejects_invalid_mode_before_http(live_client, tmp_path, http_post_paths):
     _, client = live_client
 
     result = client.context_pack(str(tmp_path), "query", mode="invalid")
 
-    assert http_post_paths == ["/api/context/pack"]
+    assert http_post_paths == []
     assert result["success"] is False
+    assert result["status_code"] == 400
     assert result["error"] == "context mode must be adaptive, full or fast"
     assert result["terminal"] is True
     assert result["retryable"] is False

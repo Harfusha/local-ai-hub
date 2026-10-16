@@ -42,9 +42,39 @@ def test_shutdown_detaches_and_closes_logging_handlers(tmp_path):
     file_handler = listener.handlers[0]
 
     shutdown_logging()
-
     assert logger.handlers == []
     assert file_handler.stream is None
+
+
+def test_rotating_handler_reopens_stream_after_locked_rollover(tmp_path, monkeypatch):
+    handler = logging_setup.SafeWindowsRotatingFileHandler(
+        tmp_path / "hub.log", maxBytes=1, backupCount=1, delay=True
+    )
+
+    def fail_after_closing_stream(instance):
+        assert instance.stream is not None
+        instance.stream.close()
+        instance.stream = None
+        raise PermissionError("log file is locked")
+
+    monkeypatch.setattr(
+        logging.handlers.RotatingFileHandler,
+        "doRollover",
+        fail_after_closing_stream,
+    )
+    record = logging.LogRecord(
+        "test", logging.INFO, __file__, 1, "survives rollover", (), None
+    )
+    try:
+        handler.emit(record)
+        assert handler.stream is not None
+        handler.flush()
+    finally:
+        handler.close()
+    assert (
+        (tmp_path / "hub.log").read_text(encoding="utf-8")
+        == "survives rollover\n"
+    )
 
 
 def test_shutdown_restores_logger_propagation(tmp_path):

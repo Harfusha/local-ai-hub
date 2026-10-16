@@ -4121,6 +4121,7 @@ def local_ai_rag(
 @_instrumented_tool()
 def local_ai_command(
     action: CommandAction,
+    *,
     command: str = "",
     cwd: str | None = None,
     timeout: int = 0,
@@ -4144,16 +4145,12 @@ def local_ai_command(
     response_profile: str = "",
     reuse_key: str = "",
     root: str | None = None,
-    changed_paths: list[str] | None = None,
-    files: list[str] | None = None,
     runs: int = 5,
     env: dict[str, str] | None = None,
     stdin: str = "",
-    input: str = "",
 ) -> dict[str, Any]:
     """Bounded command broker. Set snapshot=true to record a best-effort Git snapshot. For action=run only, rollback_on_failure=true requires paths to list the flat, relative files directly under cwd that may be restored or removed; missing/unsafe paths reject execution. It cannot be combined with auto_fix. Rollback preserves all files outside that explicit scope. Other command and streaming behavior remains bounded and tenant-scoped. Use when: a repeatable test, lint, typecheck, build, analysis, or safe read-only command is needed. Skip when: no command is needed or a fresh cached result already answers it."""
-    cwd = cwd if cwd is not None else root if root is not None else "."
-    paths = paths if paths is not None else changed_paths if changed_paths is not None else files
+    cwd = cwd if cwd is not None else "."
     if not isinstance(action, str) or action not in operation_actions("local_ai_command", FEATURES):
         return _invalid_action(
             "local_ai_command", action, operation_actions("local_ai_command", FEATURES),
@@ -4170,6 +4167,7 @@ def local_ai_command(
     if not FEATURES.commands:
         return {"success": False, "unsupported": True, "error": "local_ai_command is disabled in configuration"}
     eff_cwd = _client_root(cwd)
+    eff_root = _client_root(root) if root is not None else _client_root(".")
     host_timeout = _timeout("long")
     configured_command_timeout = int(CFG.get("commands", {}).get("timeout_seconds", 1800))
     requested_timeout = int(timeout or configured_command_timeout)
@@ -4200,16 +4198,11 @@ def local_ai_command(
         sub_act = "start" if action in {"mock_server", "mock_server_start"} else "stop" if action == "mock_server_stop" else "status"
         port_val = int(command) if (command and command.isdigit()) else (0 if sub_act == "start" else 11440)
         return _compact(CLIENT.post("/api/command/mock_server", {
-            "action": sub_act, "root": eff_cwd, "port": port_val, "spec_path": criterion or None,
+            "action": sub_act, "root": eff_root, "port": port_val, "spec_path": criterion or None,
         }, timeout=host_timeout), "command")
-    paths_payload = (
-        paths if rollback_on_failure else
-        paths if paths is not None and action == "format" else
-        ([command] if (action == "format" and command and not command.startswith("-")) else None)
-    )
-    input_text = stdin or input or ""
+    paths_payload = paths
     payload = {
-        "action": action, "command": command, "cwd": eff_cwd, "root": eff_cwd,
+        "action": action, "command": command, "cwd": eff_cwd, "root": eff_root,
         "timeout": effective_command_timeout, "force": force,
         "task_id": task_id, "criterion": criterion,
         "auto_fix": auto_fix, "max_attempts": max_attempts,
@@ -4221,8 +4214,8 @@ def local_ai_command(
         "runs": runs,
         "env": env or {},
     }
-    if input_text:
-        payload["stdin"] = input_text
+    if stdin:
+        payload["stdin"] = stdin
     return _compact(CLIENT.post("/api/command", payload, timeout=host_timeout), "command")
 
 
@@ -4814,7 +4807,7 @@ def local_ai_coord(
     if action == "pubsub_poll":
         return _compact(CLIENT.coord(
             action="pubsub_poll", topic=topic, after_seq=after_seq,
-            limit=limit, since_timestamp=after_ts, root=root,
+            limit=limit, after_ts=after_ts, root=root,
         ), "status")
     if action == "simulate_merge":
         return _compact(

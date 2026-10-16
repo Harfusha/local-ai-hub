@@ -23,6 +23,11 @@ class CooperativePriorityGate:
         self._active = False
         self._foreground_waiters = 0
 
+    @property
+    def is_active(self) -> bool:
+        with self._cond:
+            return self._active
+
     @contextmanager
     def slot(self, priority: int, timeout: float = 120.0) -> Iterator[None]:
         if isinstance(timeout, bool) or not isinstance(timeout, Real):
@@ -57,4 +62,8 @@ class CooperativePriorityGate:
 
     def status(self) -> dict[str, int | bool]:
         with self._cond:
-            return {"active": self._active, "foreground_waiters": self._foreground_waiters}
+            return {
+                "active": self._active,
+                "foreground_waiters": self._foreground_waiters,
+                "foreground_priority": self.foreground_priority,
+            }

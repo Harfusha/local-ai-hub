@@ -23,7 +23,7 @@ def test_mcp_module_comes_from_current_checkout():
     assert Path(mcp_server.__file__).resolve() == expected.resolve()
 
 
-def test_command_root_alias_maps_to_cwd(monkeypatch, tmp_path):
+def test_command_root_does_not_replace_cwd(monkeypatch, tmp_path):
     captured = {}
 
     class DummyClient:
@@ -39,11 +39,11 @@ def test_command_root_alias_maps_to_cwd(monkeypatch, tmp_path):
     })
 
     assert captured.get("url") == "/api/command", repr(result)
-    assert captured["payload"]["cwd"] == str(tmp_path)
+    assert captured["payload"]["cwd"] == mcp_server._workspace
     assert captured["payload"]["root"] == str(tmp_path)
 
 
-def test_repo_accepts_canonical_positional_root_and_query(monkeypatch, tmp_path):
+def test_repo_accepts_canonical_root_and_query_keywords(monkeypatch, tmp_path):
     captured = {}
 
     def capture(action, root, query, *args, **kwargs):
@@ -52,7 +52,7 @@ def test_repo_accepts_canonical_positional_root_and_query(monkeypatch, tmp_path)
 
     monkeypatch.setattr(mcp_server, "_local_ai_repo_impl", capture)
 
-    mcp_server.local_ai_repo("search", str(tmp_path), "needle")
+    mcp_server.local_ai_repo(action="search", root=str(tmp_path), query="needle")
 
     assert captured == {"action": "search", "root": str(tmp_path), "query": "needle"}
 
@@ -68,13 +68,15 @@ def test_repo_accepts_canonical_positional_diff(monkeypatch, tmp_path):
 
     monkeypatch.setattr(mcp_server, "CLIENT", DummyClient())
 
-    mcp_server.local_ai_repo("diagnose", str(tmp_path), "", "inspect this diff")
+    mcp_server.local_ai_repo(
+        action="diagnose", root=str(tmp_path), diff="inspect this diff",
+    )
 
     assert captured["url"] == "/api/repo/diagnose"
     assert captured["payload"]["text"] == "inspect this diff"
 
 
-def test_repo_preserves_late_positional_changed_paths_and_phase(monkeypatch, tmp_path):
+def test_repo_forwards_canonical_changed_paths_and_phase(monkeypatch, tmp_path):
     captured = {}
 
     class DummyClient:
@@ -86,10 +88,13 @@ def test_repo_preserves_late_positional_changed_paths_and_phase(monkeypatch, tmp
     monkeypatch.setattr(mcp_server, "CLIENT", DummyClient())
 
     result = mcp_server.local_ai_repo(
-        "context", str(tmp_path), "find changes", "", "", "", "", "HEAD",
-        False, False, 0, None, "adaptive", "", "auto", "", None, "",
-        False, False, None, None, 0, "", "", False, "", "", "", "", "", "",
-        ["src/changed.py"], "review", ["src/focus.py"], "", guarded=True,
+        action="context",
+        root=str(tmp_path),
+        query="find changes",
+        changed_paths=["src/changed.py"],
+        phase="review",
+        focus=["src/focus.py"],
+        guarded=True,
     )
 
     assert captured.get("url") == "/api/context/pack", repr(result)
@@ -97,7 +102,7 @@ def test_repo_preserves_late_positional_changed_paths_and_phase(monkeypatch, tmp
     assert captured["payload"]["phase"] == "review"
 
 
-def test_command_preserves_legacy_positional_timeout(monkeypatch, tmp_path):
+def test_command_accepts_canonical_timeout_keyword(monkeypatch, tmp_path):
     captured = {}
 
     class DummyClient:
@@ -110,11 +115,16 @@ def test_command_preserves_legacy_positional_timeout(monkeypatch, tmp_path):
     monkeypatch.setattr(mcp_server, "_client_root", lambda value: value)
     monkeypatch.setattr(mcp_server, "_timeout", lambda _name: 300)
 
-    mcp_server.local_ai_command("run", "pytest -q", str(tmp_path), 27)
+    mcp_server.local_ai_command("run", command="pytest -q", cwd=str(tmp_path), timeout=27)
 
     assert captured["url"] == "/api/command"
     assert captured["payload"]["cwd"] == str(tmp_path)
     assert captured["payload"]["timeout"] == 27
+
+
+def test_command_rejects_legacy_positional_parameters():
+    with pytest.raises(TypeError):
+        mcp_server.local_ai_command("run", "pytest -q", ".", 27)
 
 
 @pytest.mark.parametrize("alias,value", [
@@ -166,42 +176,20 @@ def test_repo_schema_excludes_aliases_and_allows_relation_pagination():
         ) is not None
 
 
-def test_command_changed_paths_alias_maps_to_format_paths(monkeypatch, tmp_path):
-    captured = {}
+@pytest.mark.parametrize("alias,value", [
+    ("changed_paths", ["selected.py"]), ("files", ["selected.py"]), ("input", "legacy stdin"),
+])
+def test_command_contract_rejects_retired_aliases(alias, value):
+    assert validate_operation_arguments("local_ai_command", "format", {alias: value}) is not None
 
-    class DummyClient:
-        def post(self, url, payload, **kwargs):
-            if url == "/api/command":
-                captured.update(payload=payload)
-            return {"success": True}
 
-    monkeypatch.setattr("local_ai_hub.mcp_server.CLIENT", DummyClient())
-
-    _call_tool("local_ai_command", {
-        "action": "format", "cwd": str(tmp_path),
-        "command": "fallback.py", "changed_paths": ["selected.py"],
-    })
-
-    assert captured["payload"]["paths"] == ["selected.py"]
-
-@pytest.mark.parametrize("alias", ["changed_paths", "files"])
-def test_command_canonical_empty_paths_excludes_alias_files(monkeypatch, tmp_path, alias):
-    captured = {}
-
-    class DummyClient:
-        def post(self, url, payload, **kwargs):
-            if url == "/api/command":
-                captured.update(url=url, payload=payload)
-            return {"success": True}
-
-    monkeypatch.setattr(mcp_server, "CLIENT", DummyClient())
-    assert Path(mcp_server.__file__).resolve().is_relative_to(
-        Path(__file__).resolve().parents[2] / "src"
-    )
-    result = _call_tool("local_ai_command", {
-        "action": "format", "cwd": str(tmp_path), "paths": [],
-        alias: ["excluded.py"],
-    })
-
-    assert captured.get("url") == "/api/command", repr(result)
-    assert captured["payload"]["paths"] == []
+def test_command_format_requires_nonempty_canonical_paths():
+    assert validate_operation_arguments(
+        "local_ai_command", "format", {"command": "legacy.py"},
+    ) is not None
+    assert validate_operation_arguments(
+        "local_ai_command", "format", {"paths": []},
+    ) is not None
+    assert validate_operation_arguments(
+        "local_ai_command", "format", {"paths": ["selected.py"]},
+    ) is None
