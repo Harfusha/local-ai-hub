@@ -50,7 +50,7 @@ def test_public_action_parameters_are_explicit_literals() -> None:
     expected = {
         "local_ai_task": {"delegate", "explore", "reason", "continue", "review", "second_opinion", "compress", "route", "batch", "benchmark", "hardware_benchmark", "evaluation_record", "evaluation_report", "submit", "status", "wait", "result", "cancel", "candidate_create", "candidate_promote", "speculative_draft", "vision", "transcribe", "eval_suite", "prompt_eval", "eval_drift", "complete_code", "scaffold"},
         "local_ai_rag": {"index", "search", "list", "docset_index", "docset_search", "ingest_document", "ingest_diagram"},
-        "local_ai_coord": {"claim", "renew", "release", "leases", "memo_put", "memo_get", "memo_search", "memo_delete", "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_complete", "task_fail", "task_heartbeat", "memory_record", "memory_get", "memory_find", "memory_promote", "context_compile", "verify_receipt", "verify_completion", "verify_export", "negative_knowledge_record", "negative_knowledge_find", "incident_decision", "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_delete", "blackboard_merge", "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel", "worktree_lease", "worktree_release", "pubsub_publish", "pubsub_poll", "simulate_merge", "curate_dataset", "task_sync", "task_zombie_reap", "task_cleanup_worktree"},
+        "local_ai_coord": {"claim", "renew", "release", "leases", "memo_put", "memo_get", "memo_search", "memo_delete", "task_create", "task_get", "task_checkpoint", "task_rollback", "task_transition", "task_resume", "task_list", "task_complete", "task_fail", "task_heartbeat", "ask", "answer", "memory_record", "memory_get", "memory_find", "memory_promote", "context_compile", "verify_receipt", "verify_completion", "verify_export", "negative_knowledge_record", "negative_knowledge_find", "incident_decision", "blackboard_update", "blackboard_get", "blackboard_list", "blackboard_delete", "blackboard_merge", "swarm_dispatch", "swarm_step", "swarm_status", "swarm_list", "swarm_cancel", "worktree_lease", "worktree_release", "pubsub_publish", "pubsub_poll", "simulate_merge", "curate_dataset", "task_sync", "task_zombie_reap", "task_cleanup_worktree"},
         "local_ai_command": {"run", "cancel", "classify", "discover", "stats", "repair_loop", "auto_fix", "run_affected", "format", "lint_fix", "spawn_daemon", "daemon_status", "stop_daemon", "http_probe", "stash_save", "stash_restore", "record_mock", "replay_mock", "diff_hunk_stage", "flaky_detect", "webhook_replay", "mock_server", "mock_server_start", "mock_server_stop", "mock_server_status", "patch_and_verify", "preflight", "speculative_lint"},
     }
     expected["local_ai_task"].add("browser")
@@ -628,6 +628,20 @@ def test_local_ai_task_exposes_named_profile_fields() -> None:
 
 def test_local_ai_task_vision_forwards_frontend_review_context(monkeypatch) -> None:
     captured = {}
+    original_features = local_ai_mcp.FEATURES
+
+    class VisionFeatures:
+        vision = True
+        tasks = True
+
+        def __getattr__(self, name):
+            return getattr(original_features, name)
+
+        @staticmethod
+        def has_any_model():
+            return True
+
+    monkeypatch.setattr(local_ai_mcp, "FEATURES", VisionFeatures())
 
     def fake_post(path, payload, **kwargs):
         captured.update({"path": path, **payload})
@@ -832,7 +846,7 @@ def test_async_job_controls_bypass_model_execution_gate(monkeypatch):
     monkeypatch.setattr(
         local_ai_mcp, "FEATURES", SimpleNamespace(tasks=False, status=True, async_jobs=True, has_any_model=lambda: False)
     )
-    monkeypatch.setattr(local_ai_mcp, "_compact", lambda value, _kind: value)
+    monkeypatch.setattr(local_ai_mcp, "_compact", lambda value, _kind, **_kwargs: value)
 
     result = local_ai_mcp.local_ai_task(action="status", job_id="job-123")
 
@@ -889,7 +903,7 @@ def test_async_job_wait_transport_deadline_covers_capped_wait(monkeypatch):
     monkeypatch.setattr(local_ai_mcp, "FEATURES", SimpleNamespace(tasks=False, status=True, async_jobs=True, has_any_model=lambda: False))
     monkeypatch.setattr(local_ai_mcp, "CFG", {"async_jobs": {"wait_max_seconds": 300}})
     monkeypatch.setattr(local_ai_mcp, "_timeout", lambda _kind: 20)
-    monkeypatch.setattr(local_ai_mcp, "_compact", lambda value, _kind: value)
+    monkeypatch.setattr(local_ai_mcp, "_compact", lambda value, _kind, **_kwargs: value)
 
     result = local_ai_mcp.local_ai_task(action="wait", job_id="job-123", timeout_seconds=420)
 
