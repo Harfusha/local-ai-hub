@@ -7633,6 +7633,10 @@ class CommandBroker:
 
         compacted = self._compact(result, tenant, command)
         compacted["execution_id"] = execution_id
+        if task_id:
+            compacted["task_id"] = task_id
+            if criterion:
+                compacted["criterion"] = criterion
         if auto_fix and not compacted.get("success") and not compacted.get("cancelled"):
             repaired = self.repair_loop(
                 command,
@@ -7699,6 +7703,31 @@ class CommandBroker:
         ) = self._project_command_fingerprints(command, _project_command_context)
         if not self.enabled:
             return {"success": False, "error": "command broker disabled"}
+        auto_bound_task = False
+        if not task_id and self.task_store is not None:
+            try:
+                active_task = self.task_store.get_active_task(repo_root=cwd, tenant=tenant)
+                if active_task is not None:
+                    can_bind = True
+                    cmd_str = command if isinstance(command, str) else " ".join(command.argv if hasattr(command, "argv") else [])
+                    cmd_cls = self.classify(cmd_str).get("class")
+                    if cmd_cls in {"mutating", "unknown"}:
+                        wt_err = self._require_task_worktree(active_task.task_id, cwd, command)
+                        if wt_err:
+                            can_bind = False
+                    if can_bind:
+                        task_id = active_task.task_id
+                        auto_bound_task = True
+                        if not criterion and active_task.contract.acceptance_criteria:
+                            from .agent_verification import classify_verification_command, criterion_evidence_type
+                            evidence_type = classify_verification_command(cmd_str)
+                            matching = [c for c in active_task.contract.acceptance_criteria if criterion_evidence_type(c) == evidence_type]
+                            if len(matching) == 1:
+                                criterion = matching[0]
+                            elif len(active_task.contract.acceptance_criteria) == 1:
+                                criterion = active_task.contract.acceptance_criteria[0]
+            except Exception:
+                pass
         project_alias_required = False
         if record_verification and task_id and criterion and _project_command_context is None:
             try:
@@ -8282,7 +8311,7 @@ class CommandBroker:
                             scope_paths or result.get("rollback_paths") or set(diag_paths)
                         ),
                     ))
-                    if inc and result.get("outcome_unknown"):
+                    if inc:
                         result["incident_id"] = inc.incident_id
                         result["incident_recorded"] = True
                     if inc and (inc.root_cause or inc.verified_fix):
