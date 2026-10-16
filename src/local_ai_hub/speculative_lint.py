@@ -1,13 +1,48 @@
 from __future__ import annotations
 
+import math
 import os
 import threading
 from pathlib import Path
 from typing import Any
 
 
+def _safe_int(val: Any, default: int, min_val: int | None = None, max_val: int | None = None) -> int:
+    if isinstance(val, bool) or val is None:
+        return default
+    try:
+        if isinstance(val, float) and not math.isfinite(val):
+            return default
+        res = int(val)
+    except (ValueError, TypeError, OverflowError):
+        return default
+    if min_val is not None and res < min_val:
+        return min_val
+    if max_val is not None and res > max_val:
+        return max_val
+    return res
+
+
+def _safe_float(val: Any, default: float, min_val: float | None = None, max_val: float | None = None) -> float:
+    if isinstance(val, bool) or val is None:
+        return default
+    try:
+        res = float(val)
+        if not math.isfinite(res):
+            return default
+    except (ValueError, TypeError, OverflowError):
+        return default
+    if min_val is not None and res < min_val:
+        return min_val
+    if max_val is not None and res > max_val:
+        return max_val
+    return res
+
+
 def normalize_changed_paths(root: str | os.PathLike[str], paths: list[str] | tuple[str, ...]) -> list[str]:
     """Return unique project-relative paths, rejecting root escapes."""
+    if not isinstance(root, (str, os.PathLike)) or "\x00" in str(root):
+        raise ValueError("root directory cannot contain null bytes")
     root_path = Path(root).expanduser().resolve(strict=False)
     if not root_path.is_dir():
         raise ValueError(f"root directory does not exist: {root}")
@@ -18,6 +53,8 @@ def normalize_changed_paths(root: str | os.PathLike[str], paths: list[str] | tup
         value = str(raw or "").strip()
         if not value:
             continue
+        if "\x00" in value:
+            raise ValueError("changed path cannot contain null bytes")
         candidate = (root_path / value).resolve(strict=False) if not Path(value).is_absolute() else Path(value).expanduser().resolve(strict=False)
         try:
             relative = candidate.relative_to(root_path)
@@ -38,8 +75,8 @@ class SpeculativeLintQueue:
         self.async_jobs = async_jobs
         cfg = config.get("speculative_lint", {}) if isinstance(config, dict) else {}
         self.enabled = bool(cfg.get("enabled", False))
-        self.debounce_seconds = max(0.0, min(30.0, float(cfg.get("debounce_seconds", 1.0))))
-        self.max_paths = max(1, min(256, int(cfg.get("max_paths", 64))))
+        self.debounce_seconds = _safe_float(cfg.get("debounce_seconds"), 1.0, min_val=0.0, max_val=30.0)
+        self.max_paths = _safe_int(cfg.get("max_paths"), 64, min_val=1, max_val=256)
         self._lock = threading.RLock()
         self._root_jobs: dict[str, str] = {}
 
@@ -75,3 +112,14 @@ class SpeculativeLintQueue:
 
     def cancel(self, tenant: str, job_id: str) -> dict[str, Any]:
         return self.async_jobs.cancel(tenant, str(job_id or ""))
+
+    def is_enabled(self) -> bool:
+        return bool(self.enabled)
+
+    def active_roots(self) -> list[str]:
+        with self._lock:
+            return sorted(self._root_jobs.keys())
+
+    def clear(self) -> None:
+        with self._lock:
+            self._root_jobs.clear()
