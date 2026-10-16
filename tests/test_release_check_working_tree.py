@@ -48,6 +48,26 @@ def test_allow_installed_allows_local_config_backup(tmp_path):
     assert list(_iter_release_hygiene_violations(tmp_path, allow_installed=True)) == []
 
 
+@pytest.mark.parametrize("options", [{}, {"strict_tree": True}, {"post_test": True}])
+def test_generated_merge_checks_are_rejected_from_release_tree(tmp_path, options):
+    scratch = tmp_path / ".merge-checks" / "pytest-final" / "repo"
+    scratch.mkdir(parents=True)
+    (scratch / "owned.txt").write_text("generated fixture", encoding="utf-8")
+
+    assert list(_iter_release_hygiene_violations(tmp_path, **options)) == [
+        "forbidden directory: .merge-checks/"
+    ]
+
+
+def test_allow_installed_preserves_local_merge_check_fixtures(tmp_path):
+    fixture = tmp_path / ".merge-checks" / "pytest-final" / "repo" / "owned.txt"
+    fixture.parent.mkdir(parents=True)
+    fixture.write_text("preserved fixture", encoding="utf-8")
+
+    assert list(_iter_release_hygiene_violations(tmp_path, allow_installed=True)) == []
+    assert fixture.read_text(encoding="utf-8") == "preserved fixture"
+
+
 @pytest.mark.parametrize("options", [{"post_test": True}, {"allow_installed": True}])
 def test_strict_release_tree_cannot_allow_workspace_payloads(tmp_path, options):
     with pytest.raises(ValueError, match="strict_tree cannot allow"):

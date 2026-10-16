@@ -59,6 +59,7 @@ config.runtime.toml
 
 # Agent workspace state (internal, not for distribution)
 # Historical scratch/receipt payloads are archived outside the source tree.
+/.merge-checks/
 /handoff/
 /artifacts/
 /.t17-merge-tmp/
