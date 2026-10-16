@@ -5,7 +5,6 @@ import json
 import threading
 from pathlib import Path
 import socket
-import threading
 import pytest
 
 from local_ai_hub import mcp_server as local_ai_mcp

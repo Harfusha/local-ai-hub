@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import subprocess
 import sys
-import subprocess
 import threading
 import time
 from pathlib import Path
@@ -358,6 +357,7 @@ def test_unknown_command_policy_block_is_not_suppressed(tmp_path):
 
 
 def test_error_distillation_on_command_failure(tmp_path):
+    subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True, check=True)
     broker = _default_broker(tmp_path)
     res = broker.run("git status --not-a-real-option", str(tmp_path), "tenant")
     assert res.get("success") is False
@@ -399,6 +399,7 @@ def test_model_error_distiller_skips_structured_parser_result(tmp_path):
 
 
 def test_failed_command_without_artifact_service_still_returns_diagnostics(tmp_path):
+    subprocess.run(["git", "init"], cwd=str(tmp_path), capture_output=True, check=True)
     broker = CommandBroker({"server": {"state_dir": str(tmp_path / "state")}, "commands": {"enabled": True}})
 
     res = broker.run("git status --not-a-real-option", str(tmp_path), "tenant")

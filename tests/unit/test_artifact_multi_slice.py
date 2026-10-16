@@ -7,7 +7,6 @@ import pytest
 from local_ai_hub import mcp_server
 from local_ai_hub.artifacts import ArtifactStore
 from local_ai_hub.operation_contracts import validate_operation_output
-from local_ai_hub.artifacts import ArtifactStore
 
 
 def test_mcp_get_returns_disjoint_slices_in_one_post(tmp_path, monkeypatch) -> None:

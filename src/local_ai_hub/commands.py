@@ -6346,7 +6346,7 @@ class CommandBroker:
         for text in streams:
             for raw in text.splitlines():
                 line = raw.strip()
-                if not line:
+                if not line or line.startswith(("===", "___")):
                     continue
                 matched = None
                 matched_failure = False

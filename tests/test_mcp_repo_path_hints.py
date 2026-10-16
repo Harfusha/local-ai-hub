@@ -80,14 +80,9 @@ def test_repo_search_forwards_legacy_path_before_typed_path_hints(
 def test_api_search_route_consumes_t03_hint_and_returns_repository_hit(
     monkeypatch, tmp_path: Path
 ) -> None:
-    import threading
     from http.server import ThreadingHTTPServer
+    import threading
 
-    import subprocess
-    from pathlib import Path
-    from local_ai_hub import http_server, project_config
-    from local_ai_hub.repo_tools import RepositoryTools
-    from local_ai_hub.services import LocalAIServices
     from local_ai_hub.client import HubClient
     from local_ai_hub.resilience import RecoveryJournal
 
@@ -104,15 +99,6 @@ def test_api_search_route_consumes_t03_hint_and_returns_repository_hit(
     state_dir = tmp_path / "runtime"
     repo_tools = RepositoryTools(
         {"server": {"state_dir": str(state_dir)}, "rag": {}, "search": {}}
-    )
-    monkeypatch.setattr(
-        repo_tools,
-        "search",
-        lambda *_args, **_kwargs: {
-            "success": True,
-            "root": str(tmp_path),
-            "results": [],
-        },
     )
     services = LocalAIServices.__new__(LocalAIServices)
     services.config = {"server": {"state_dir": str(state_dir)}, "features": {}}

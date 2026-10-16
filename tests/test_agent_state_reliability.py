@@ -25,8 +25,6 @@ from local_ai_hub.rag import RAGStore
 from local_ai_hub.scheduler import QueueFullError
 
 
-from local_ai_hub import trace_context
-
 def test_memory_expiration_and_reap(tmp_path: Path) -> None:
     db = tmp_path / "state.sqlite3"
     state_store = AgentStateStore(db)

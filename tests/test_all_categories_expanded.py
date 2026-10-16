@@ -25,7 +25,6 @@ def _init_git_repo(repo_dir: Path) -> None:
     subprocess.run(["git", "config", "user.email", "test@agent.local"], cwd=repo_dir, capture_output=True, check=True)
 
 
-from local_ai_hub import trace_context
 
 def test_git_diff_and_history_search(tmp_path: Path):
     repo = tmp_path / "repo"

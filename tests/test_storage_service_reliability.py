@@ -3,9 +3,12 @@ from __future__ import annotations
 import inspect
 import json
 import sqlite3
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 import pytest
 
 from local_ai_hub.agent_events import AgentStateStore
@@ -39,7 +42,6 @@ from local_ai_hub.code_index import CodeIndex
 from local_ai_hub.process_utils import canonical_root
 
 
-from local_ai_hub import trace_context
 
 def test_service_hubctl_timeout_alignment():
     """Verify service.py run() timeout is 12s and hubctl _service timeout is 35s."""
@@ -289,26 +291,72 @@ def test_blackboard_store_retry(tmp_path: Path):
 
 def test_repair_loop_drive_letter_casing(tmp_path: Path, monkeypatch):
     """Verify repair_loop handles path normalization without raising relative_to ValueError."""
-    broker = CommandBroker(config={"server": {"state_dir": str(tmp_path / "broker_state")}, "commands": {"enabled": True}})
+    class _RepoState:
+        def fingerprint(self, _cwd):
+            return {"fingerprint": "test-fingerprint"}
+
+    broker = CommandBroker(
+        config={"server": {"state_dir": str(tmp_path / "broker_state")}, "commands": {"enabled": True}},
+        repo_state=_RepoState(),
+    )
     docker_ready, docker_error = broker._transaction_docker_ready()
     if not docker_ready:
         pytest.skip(f"private mutation transaction unavailable: {docker_error}")
-    monkeypatch.setattr(broker, "_require_task_worktree", lambda *_args, **_kwargs: None)
+    from fencing_lease_support import FakeFencingLeaseStore, install_test_work_attempt_fence
 
     project_dir = tmp_path / "project"
     project_dir.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-b", "master"], cwd=str(project_dir), check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=str(project_dir), check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@test.local"], cwd=str(project_dir), check=True, capture_output=True)
+
+    task = SimpleNamespace(
+        checkpoint=SimpleNamespace(
+            state_data={"worktree": {
+                "success": True,
+                "worktree_path": str(project_dir),
+                "repo_root": str(project_dir),
+                "branch": "master",
+            }}
+        )
+    )
+    broker.set_task_store(SimpleNamespace(get=lambda candidate: task if candidate == "task-1" else None))
+    broker._require_task_worktree = lambda *_args, **_kwargs: None
+    broker._transaction_root_for_context = lambda _transaction_id: project_dir
+    broker._transaction_source_for_context = lambda _transaction_id: project_dir
+    broker._transaction_docker_argv = lambda _ctx, _cwd, cmd, _img, **_kw: cmd
+    install_test_work_attempt_fence(broker, FakeFencingLeaseStore(), work_id="task-1", owner_id="test")
+
+    def mock_run_private_transaction(command: str = "", source_root: str | Path = "", tenant: str = "agent", *args, **kwargs):
+        op = kwargs.get("operation")
+        if callable(op):
+            return op(project_dir, "a" * 32)
+        exec_res = broker._execute(
+            command,
+            str(project_dir),
+            int(kwargs.get("timeout") or broker.timeout),
+            kwargs.get("cancel_event"),
+            log_callback=kwargs.get("log_callback"),
+        )
+        return {"transaction_id": "a" * 32, "success": exec_res.get("success", False), **exec_res}
+
+    broker._run_private_transaction = mock_run_private_transaction
     bad_file = project_dir / "target.py"
-    bad_file.write_text("def run():\n    raise ValueError('broken')\n", encoding="utf-8")
+    bad_file.write_text("import unittest\n\nclass T(unittest.TestCase):\n    def test_run(self):\n        self.assertEqual(42, 0)\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=str(project_dir), check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=str(project_dir), check=True, capture_output=True)
 
     # Deliberately pass cwd using canonical_root
     canon_cwd = canonical_root(project_dir)
 
+    repaired_code = "import unittest\n\nclass T(unittest.TestCase):\n    def test_run(self):\n        self.assertEqual(42, 42)\n"
+
     def mock_generator(cmd, cwd, result):
-        return {"target.py": "def run():\n    return 42\n"}
+        return {"target.py": repaired_code}
 
     # Run repair_loop with a command that passes once repaired
     res = broker.repair_loop(
-        command='python -c "import target; assert target.run() == 42"',
+        command=f'"{sys.executable}" -B -m unittest target',
         cwd=canon_cwd,
         tenant="test",
         fix_generator=mock_generator,
@@ -318,7 +366,7 @@ def test_repair_loop_drive_letter_casing(tmp_path: Path, monkeypatch):
     )
     assert res["success"] is True
     assert res["repaired"] is True
-    assert bad_file.read_text(encoding="utf-8") == "def run():\n    return 42\n"
+    assert bad_file.read_text(encoding="utf-8") == repaired_code
 
 
 def test_code_index_wal_sidecar_cleanup(tmp_path: Path):
