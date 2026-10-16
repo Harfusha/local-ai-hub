@@ -1,6 +1,7 @@
 """Deferred bundle regressions; all state is temporary or in memory."""
 from __future__ import annotations
 
+from contextlib import closing
 import sqlite3
 
 import pytest
@@ -56,7 +57,7 @@ def test_native_tree_reused_only_for_same_source_identity(monkeypatch):
 
 
 def test_metadata_delta_retains_rowids_and_duplicate_occurrences():
-    with sqlite3.connect(":memory:") as con:
+    with closing(sqlite3.connect(":memory:")) as con:
         con.execute("CREATE TABLE refs(root,path,name,line,kind)")
         con.executemany("INSERT INTO refs VALUES(?,?,?,?,?)", [
             ("root", "a.py", "keep", 1, "call"),
