@@ -1162,18 +1162,13 @@ class ProjectPreprocessor:
         except (OSError, sqlite3.Error) as exc:
             logger.warning("worktree file cache seed skipped (%s)", type(exc).__name__)
 
-        # 2. Seed deterministic.sqlite3 (test_source_links, hotspots_cache)
+        # 2. Seed deterministic.sqlite3 (test_source_links)
         if self.deterministic is not None:
             try:
                 with closing(self.deterministic._connect()) as det_con:
                     det_con.execute(
                         """INSERT OR IGNORE INTO test_source_links(root, source_path, test_path, confidence, updated_at)
                            SELECT ?, source_path, test_path, confidence, ? FROM test_source_links WHERE root=?""",
-                        (resolved, now, parent_resolved),
-                    )
-                    det_con.execute(
-                        """INSERT OR REPLACE INTO hotspots_cache(root, days, cached_at, data_json)
-                           SELECT ?, days, ?, data_json FROM hotspots_cache WHERE root=?""",
                         (resolved, now, parent_resolved),
                     )
                     det_con.commit()

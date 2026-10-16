@@ -18,8 +18,7 @@ from local_ai_hub.deterministic import DeterministicEngine
 
 
 # ── Area 1: Agent OS & Swarm Coordination Tests ──────────────────────────────
-
-from local_ai_hub import trace_context
+
 
 def test_event_delta_sync_export_import(tmp_path: Path) -> None:
     source_db = tmp_path / "source_state.sqlite3"

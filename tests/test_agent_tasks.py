@@ -6,7 +6,6 @@ from dataclasses import replace
 from pathlib import Path
 import subprocess
 import sys
-import threading
 from types import ModuleType, SimpleNamespace
 import pytest
 
@@ -26,7 +25,6 @@ from local_ai_hub.agent_tasks import (
 )
 from local_ai_hub.agent_verification import CompletionResult, VerificationReceipt, VerificationStore
 from local_ai_hub.sqlite_support import connect_sqlite
-import local_ai_hub.agent_tasks as agent_tasks_module
 from local_ai_hub import trace_context
 
 
@@ -242,7 +240,6 @@ def prepare_project_rule_completion(
     monkeypatch.setitem(sys.modules, "local_ai_hub.project_config", project_config)
     return task
 
-from local_ai_hub import trace_context
 
 def test_goal_contract_requires_nonempty_goal():
     with pytest.raises(ValueError, match="requires goal"):

@@ -1547,8 +1547,6 @@ def test_wal_canonical_probe_rejects_incomplete_sidecars_without_creating_files(
 
 
 def test_legacy_lease_wait_schema_is_rejected_before_schema_changes(tmp_path):
-    from local_ai_hub.leases import ScopeLeaseStore
-
     canonical = tmp_path / "agent_state.sqlite"
     with closing(sqlite3.connect(canonical)) as con, con:
         con.execute("""CREATE TABLE lease_waits (
@@ -1570,8 +1568,6 @@ def test_legacy_lease_wait_schema_is_rejected_before_schema_changes(tmp_path):
 
 
 def test_lease_view_name_is_rejected_before_writes(tmp_path):
-    from local_ai_hub.leases import ScopeLeaseStore
-
     canonical = tmp_path / "agent_state.sqlite"
     with closing(sqlite3.connect(canonical)) as con, con:
         con.execute("CREATE VIEW leases AS SELECT 'lease' AS lease_id")
@@ -1585,8 +1581,6 @@ def test_lease_view_name_is_rejected_before_writes(tmp_path):
 
 
 def test_partial_lease_table_group_is_rejected_before_writes(tmp_path):
-    from local_ai_hub.leases import ScopeLeaseStore
-
     canonical = tmp_path / "agent_state.sqlite"
     with closing(sqlite3.connect(canonical)) as con, con:
         con.execute("""CREATE TABLE leases (

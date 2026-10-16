@@ -406,10 +406,6 @@ def test_namespace_writer_token_starts_above_legacy_physical_token(tmp_path: Pat
 def test_subprocess_attempt_supersession_rejects_stale_commit_with_monotonic_tokens(
     tmp_path: Path,
 ) -> None:
-    import json
-    import subprocess
-    import sys
-
     root = tmp_path / "repo"
     root.mkdir()
     state_dir = tmp_path / "state"

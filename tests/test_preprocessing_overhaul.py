@@ -12,7 +12,6 @@ import pytest
 from local_ai_hub.code_index import CodeIndex
 from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.preprocess import ProjectPreprocessor
-from local_ai_hub.deterministic import DeterministicEngine
 from local_ai_hub.repo_tools import RepositoryTools
 
 
