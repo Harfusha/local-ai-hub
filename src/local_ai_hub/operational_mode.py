@@ -115,9 +115,9 @@ def _replace_state_file(source: str, destination: Path) -> None:
 
 
 def is_valid_operational_mode(value: object) -> bool:
-    if isinstance(value, bool) or not isinstance(value, str):
+    if type(value) is not str:
         return False
-    return value.replace("\x00", "").strip().lower() in _ALLOWED_MODES
+    return value in _ALLOWED_MODES
 
 
 @dataclass(frozen=True)
@@ -162,7 +162,7 @@ def _degraded_snapshot(error: str) -> OperationalModeSnapshot:
 
 def load_operational_mode(state_dir: str | Path) -> OperationalModeSnapshot:
     """Read the current snapshot; missing state defaults to active, bad state fails closed."""
-    if not isinstance(state_dir, (str, Path)) or not str(state_dir).strip():
+    if not isinstance(state_dir, (str, Path)) or not str(state_dir).strip() or "\x00" in str(state_dir):
         return _degraded_snapshot("state_dir must be a nonempty path")
     path = _state_path(state_dir)
     with _LOCK:
@@ -186,7 +186,7 @@ def load_operational_mode(state_dir: str | Path) -> OperationalModeSnapshot:
         revision = value.get("revision")
         updated_at = value.get("updated_at")
         if (
-            not isinstance(mode, str)
+            type(mode) is not str
             or mode not in _ALLOWED_MODES
             or isinstance(revision, bool)
             or not isinstance(revision, int)
@@ -200,9 +200,9 @@ def load_operational_mode(state_dir: str | Path) -> OperationalModeSnapshot:
 
 def set_operational_mode(state_dir: str | Path, mode: str) -> OperationalModeSnapshot:
     """Persist a new mode by replacing a fully flushed file in the same directory."""
-    if not isinstance(state_dir, (str, Path)) or not str(state_dir).strip():
+    if not isinstance(state_dir, (str, Path)) or not str(state_dir).strip() or "\x00" in str(state_dir):
         raise ValueError("state_dir must be a nonempty path")
-    if not isinstance(mode, str) or mode not in _ALLOWED_MODES:
+    if type(mode) is not str or mode not in _ALLOWED_MODES:
         raise ValueError("mode must be active, gaming, or maintenance")
 
     path = _state_path(state_dir)
@@ -238,15 +238,13 @@ def operational_mode_gate_error(
     requires_heavy_work: bool = True,
 ) -> dict[str, object] | None:
     """Return a bounded, retryable pause response when work is temporarily gated."""
+    if not isinstance(requires_heavy_work, bool):
+        raise ValueError("requires_heavy_work must be a boolean")
     if snapshot is not None and snapshot.mode == "active" and not snapshot.degraded:
         return None
     mode = snapshot.mode if snapshot is not None else "maintenance"
     degraded = snapshot is None or snapshot.degraded
-    clean_action = (
-        ""
-        if action is None or isinstance(action, bool)
-        else str(action).replace("\x00", "").strip().lower().replace("-", "_")
-    )
+    clean_action = action if type(action) is str else ""
     safe_job_actions = {"status", "wait", "result", "cancel", "evaluation_report"}
     if not degraded and mode == "gaming" and clean_action in safe_job_actions:
         return None
