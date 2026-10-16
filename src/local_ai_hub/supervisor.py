@@ -33,13 +33,18 @@ from .process_utils import (
 )
 
 
-def atomic_json(path: Path, data: dict[str, Any]) -> bool:
-    tmp = path.with_suffix(path.suffix + ".tmp")
+def atomic_json(path: Path | str, data: dict[str, Any]) -> bool:
+    if not isinstance(data, dict):
+        return False
+    if not isinstance(path, (Path, str)) or "\x00" in str(path):
+        return False
     try:
+        p = Path(path)
+        tmp = p.with_suffix(p.suffix + ".tmp")
         tmp.write_text(json_dumps(data, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
         for attempt in range(4):
             try:
-                os.replace(tmp, path)
+                os.replace(tmp, p)
                 return True
             except OSError:
                 if attempt < 3:
@@ -77,6 +82,12 @@ class Supervisor:
         self.crashes: list[float] = []
         self._lock_fd: int | None = None
         self._log_lock = threading.RLock()
+
+    def is_supervisor_stopping(self) -> bool:
+        return bool(self.stopping)
+
+    def supervisor_uptime(self) -> float:
+        return max(0.0, time.time() - self.started_at)
 
     def log(self, message: str) -> None:
         try:
