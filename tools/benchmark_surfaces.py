@@ -2458,7 +2458,7 @@ def _synthetic_source(index: int) -> str:
     return source
 
 
-_SYNTHETIC_INPUT_GENERATOR_VERSION = 1
+_SYNTHETIC_INPUT_GENERATOR_VERSION = 2
 
 
 def _synthetic_input_provenance(input_seed: int, fingerprint: str) -> dict[str, int | str]:
@@ -2505,6 +2505,13 @@ def _build_synthetic_repo(
     fingerprint.update(test_path.relative_to(root).as_posix().encode("utf-8"))
     fingerprint.update(b"\0")
     fingerprint.update(test_source.encode("utf-8"))
+    fingerprint.update(b"\0")
+    pytest_path = root / "repo" / "pytest.ini"
+    pytest_config = "[pytest]\ntestpaths = tests\n"
+    pytest_path.write_text(pytest_config, encoding="utf-8")
+    fingerprint.update(pytest_path.relative_to(root).as_posix().encode("utf-8"))
+    fingerprint.update(b"\0")
+    fingerprint.update(pytest_config.encode("utf-8"))
     fingerprint.update(b"\0")
     corpus_path = root / "synthetic-rag.jsonl"
     with corpus_path.open("w", encoding="utf-8", newline="\n") as stream:
@@ -4093,6 +4100,7 @@ def run_benchmark(
 
         def verify_context_pack_case(regime: str, index: int) -> dict[str, Any]:
             from local_ai_hub.cache import stable_hash as cache_stable_hash
+            from local_ai_hub.process_utils import canonical_root
 
             case = context_pack_cases[index]
             query = f"{case['query']} t02_{regime}_sample_{index}"
@@ -4111,7 +4119,8 @@ def run_benchmark(
                 if not isinstance(state_fingerprint, str) or not state_fingerprint:
                     return {"success": False}
                 cache_key = cache_stable_hash({
-                    "op": "fast-context", "state": state_fingerprint, "params": params,
+                    "op": "fast-context", "root": canonical_root(repo_root),
+                    "state": state_fingerprint, "params": params,
                 })
                 cached = app.services.repo_cache.get(cache_key)
             except Exception:
