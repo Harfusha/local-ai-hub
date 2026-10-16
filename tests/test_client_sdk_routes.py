@@ -339,7 +339,7 @@ def test_context_pack_rejects_invalid_mode_before_http(live_client, tmp_path, ht
     assert result["retryable"] is False
 
 
-def test_sdk_resume_and_verification_use_real_agent_state_handlers(live_client, http_post_paths):
+def test_sdk_resume_and_verification_use_real_agent_state_handlers(live_client, http_post_paths, tmp_path):
     from local_ai_hub.agent_tasks import TaskCheckpoint, TaskStatus
 
     app, client = live_client
@@ -391,11 +391,11 @@ def test_sdk_resume_and_verification_use_real_agent_state_handlers(live_client, 
             "passed": True,
             "criteria": ["change_verified"],
         },
-        tenant="sdk-test",
+        tenant="generic",
         kind="source_review",
     )
     assert evidence_id
-    assert app.artifacts.get(evidence_id, tenant="sdk-test")["success"] is True
+    assert app.artifacts.get(evidence_id, tenant="generic")["success"] is True
     receipt = client.verify_receipt(
         "sdk-route-task",
         "change_verified",
