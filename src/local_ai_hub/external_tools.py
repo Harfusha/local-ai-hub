@@ -3,6 +3,7 @@ from __future__ import annotations
 from .json_utils import dumps as json_dumps
 
 import json
+import math
 import os
 import queue
 import shlex
@@ -29,6 +30,20 @@ class MCPSoftTimeoutError(TimeoutError):
     pass
 
 
+def _safe_float(val: Any, default: float, min_val: float | None = None) -> float:
+    if isinstance(val, bool) or val is None:
+        val = default
+    try:
+        f = float(val)
+        if not math.isfinite(f):
+            f = default
+    except (TypeError, ValueError):
+        f = default
+    if min_val is not None:
+        f = max(min_val, f)
+    return f
+
+
 class MCPStdioClient:
     """Small bounded stdio MCP client used only for managed local code-intelligence tools.
 
@@ -41,10 +56,17 @@ class MCPStdioClient:
         if not command:
             raise ValueError("empty MCP command")
         self.command = [str(x) for x in command]
-        self.cwd = cwd
+        if any("\x00" in part for part in self.command):
+            raise ValueError("embedded null byte in MCP command")
+        if cwd is not None:
+            if not isinstance(cwd, (str, Path)) or "\x00" in str(cwd):
+                raise ValueError("embedded null byte in MCP cwd")
+            self.cwd = str(cwd)
+        else:
+            self.cwd = None
         self.env = env
-        self.startup_timeout = max(2.0, float(startup_timeout))
-        self.call_timeout = max(1.0, float(call_timeout))
+        self.startup_timeout = _safe_float(startup_timeout, 30.0, min_val=2.0)
+        self.call_timeout = _safe_float(call_timeout, 30.0, min_val=1.0)
         self._proc: subprocess.Popen[str] | None = None
         # Queues/buffers are process-generation scoped. Reader threads capture these
         # exact objects so a late reader from an old process can never consume from or
@@ -379,30 +401,35 @@ class ExternalCodeIntelligence:
     """Manage Serena integration for preprocessing and local agents."""
 
     def __init__(self, config: dict[str, Any], telemetry: Any | None = None, code_index: Any | None = None):
-        self.config = config
+        self.config = config if isinstance(config, dict) else {}
         self.telemetry = telemetry
         self.code_index = code_index
-        self.cfg = config.get("code_intelligence", {})
+        raw_ci = self.config.get("code_intelligence")
+        self.cfg = raw_ci if isinstance(raw_ci, dict) else {}
         self.enabled = bool(self.cfg.get("enabled", True))
         self.serena_enabled = self.enabled and bool(self.cfg.get("serena_enabled", True))
-        configured_install_root = config.get("setup", {}).get("install_dir")
-        self.install_root = (
-            Path(configured_install_root).expanduser().resolve()
-            if configured_install_root
-            else Path(__file__).resolve().parents[2]
-        )
-        self.call_timeout = float(self.cfg.get("query_timeout_seconds", 60.0))
-        self.soft_timeout = float(self.cfg.get("soft_timeout_seconds", 4.0))
-        self.startup_timeout = float(self.cfg.get("startup_timeout_seconds", 60.0))
-        self.index_timeout = float(self.cfg.get("index_timeout_seconds", 1200.0))
-        self.max_output_chars = max(1000, int(self.cfg.get("max_output_chars", 9000)))
+        raw_setup = self.config.get("setup")
+        setup_tbl = raw_setup if isinstance(raw_setup, dict) else {}
+        configured_install_root = setup_tbl.get("install_dir")
+        if configured_install_root and isinstance(configured_install_root, (str, Path)) and "\x00" not in str(configured_install_root):
+            try:
+                self.install_root = Path(configured_install_root).expanduser().resolve()
+            except (OSError, ValueError):
+                self.install_root = Path(__file__).resolve().parents[2]
+        else:
+            self.install_root = Path(__file__).resolve().parents[2]
+        self.call_timeout = _safe_float(self.cfg.get("query_timeout_seconds"), 60.0, min_val=1.0)
+        self.soft_timeout = _safe_float(self.cfg.get("soft_timeout_seconds"), 4.0, min_val=0.1)
+        self.startup_timeout = _safe_float(self.cfg.get("startup_timeout_seconds"), 60.0, min_val=1.0)
+        self.index_timeout = _safe_float(self.cfg.get("index_timeout_seconds"), 1200.0, min_val=1.0)
+        self.max_output_chars = max(1000, int(self.cfg.get("max_output_chars") or 9000))
         self._lock = threading.RLock()
         self._operation_lock_guard = threading.Lock()
         self._operation_locks: dict[tuple[str, str], threading.Lock] = {}
         self._operation_lock_users: dict[tuple[str, str], int] = {}
         self._serena_sessions: dict[str, MCPStdioClient] = {}
-        self.max_sessions = max(1, int(self.cfg.get("max_sessions_per_backend", 16)))
-        self.session_idle_ttl = max(1.0, float(self.cfg.get("session_idle_ttl_seconds", 3600.0)))
+        self.max_sessions = max(1, int(self.cfg.get("max_sessions_per_backend") or 16))
+        self.session_idle_ttl = _safe_float(self.cfg.get("session_idle_ttl_seconds"), 3600.0, min_val=1.0)
         self._session_access: dict[str, dict[str, float]] = {"serena": {}}
         self._failures: dict[str, int] = {"serena": 0}
         self._cooldown_until: dict[str, float] = {"serena": 0.0}
@@ -421,10 +448,10 @@ class ExternalCodeIntelligence:
             }
             for name in ("serena",)
         }
-        self.repair_timeout = min(300.0, max(10.0, float(self.cfg.get("repair_timeout_seconds", 120.0))))
-        self.repair_cooldown = min(3600.0, max(30.0, float(self.cfg.get("repair_cooldown_seconds", 300.0))))
-        self.failure_threshold = max(1, int(self.cfg.get("failure_threshold", 2)))
-        self.cooldown_seconds = max(1.0, float(self.cfg.get("cooldown_seconds", 60.0)))
+        self.repair_timeout = min(300.0, max(10.0, _safe_float(self.cfg.get("repair_timeout_seconds"), 120.0)))
+        self.repair_cooldown = min(3600.0, max(30.0, _safe_float(self.cfg.get("repair_cooldown_seconds"), 300.0)))
+        self.failure_threshold = max(1, int(self.cfg.get("failure_threshold") or 2))
+        self.cooldown_seconds = _safe_float(self.cfg.get("cooldown_seconds"), 60.0, min_val=1.0)
         self._serena = self._resolve_command("serena") if self.serena_enabled else None
         self.index_runs = 0
         self.index_failures = 0
@@ -464,9 +491,11 @@ class ExternalCodeIntelligence:
     @staticmethod
     def _git_ignored_directory_names(root: str) -> set[str]:
         """Return literal directory names Git already excludes from this worktree."""
+        if not isinstance(root, (str, Path)) or not str(root).strip() or "\x00" in str(root):
+            return set()
         try:
             probe = subprocess.run(
-                ["git", "-C", root, "rev-parse", "--show-toplevel"],
+                ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
