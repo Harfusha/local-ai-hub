@@ -7,13 +7,14 @@ import json
 from html.parser import HTMLParser
 
 from local_ai_hub.dashboard import DASHBOARD_HTML
+from local_ai_hub.process_utils import hidden_run_kwargs
 
 
 def run_javascript(source: str, scenario: str) -> None:
     node = shutil.which("node")
     assert node, "Node.js required for dashboard behavior checks"
     script = "const assert=require('node:assert/strict');\n" + source + "\n" + scenario
-    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=5)
+    result = subprocess.run([node, "-e", script], capture_output=True, text=True, timeout=5, **hidden_run_kwargs())
     assert result.returncode == 0, result.stderr or result.stdout
 
 
@@ -67,7 +68,7 @@ def test_complete_dashboard_script_parses_after_dead_code_removal():
     assert node
     source = DASHBOARD_HTML.split("<script>", 1)[1].rsplit("</script>", 1)[0]
     script = "new (require('node:vm').Script)(" + json.dumps(source) + ");"
-    result = subprocess.run([node], input=script, capture_output=True, text=True, timeout=10)
+    result = subprocess.run([node], input=script, capture_output=True, text=True, timeout=10, **hidden_run_kwargs())
     assert result.returncode == 0, result.stderr
 
 
@@ -235,12 +236,12 @@ const empty=dashboardTelemetryState({});
 assert.equal(empty.available,false);
 assert.equal(dashboardTelemetryState({enabled:false}).available,false);
 assert.equal(dashboardTelemetryState({data_available:false,net_cloud_token_delta_est:0}).available,false);
-const zero=dashboardTelemetryState({data_available:true,net_cloud_token_delta_est:0,writer:{}});
+const zero=dashboardTelemetryState({data_available:true,net_cloud_token_delta_est:0,writer:{activity_observed:true,accounting_balanced:true}});
 assert.equal(zero.available,true);
 assert.equal(zero.complete,true);
-assert.equal(dashboardTelemetryState({data_available:true,writer:{dropped:4}}).complete,false);
-assert.equal(dashboardTelemetryState({data_available:true,writer:{writer_errors:2}}).complete,false);
-assert.equal(dashboardTelemetryState({data_available:true,accounting_boundary_incomplete:true}).complete,false);
+assert.equal(dashboardTelemetryState({data_available:true,writer:{activity_observed:true,accounting_balanced:true,dropped:4}}).complete,false);
+assert.equal(dashboardTelemetryState({data_available:true,writer:{activity_observed:true,accounting_balanced:true,writer_errors:2}}).complete,false);
+assert.equal(dashboardTelemetryState({data_available:true,writer:{activity_observed:true,accounting_balanced:true},accounting_boundary_incomplete:true}).complete,false);
 assert.equal(dashboardTelemetryState({data_available:true,stale:true}).available,false);
 assert.equal(formatEstimatedUsd(0.0008),'≈ $0.0008');
 assert.equal(formatEstimatedUsd(0),'≈ $0.00');
@@ -249,13 +250,18 @@ assert.equal(formatEstimatedUsd(1.234),'≈ $1.23');
 """)
 
 
-def test_telemetry_completeness_does_not_override_runtime_health():
-    source = extract("function dashboardHealth(", "function dashboardFreshness(")
+def test_aggregate_health_exposes_telemetry_faults_without_runtime_offline():
+    source = extract("function dashboardPreprocessingHealth(", "function dashboardFreshness(")
     run_javascript(source, """
 const base={hub_online:true,ollama_online:true,headless:{state:'running'}};
-assert.equal(dashboardHealth({...base,observability:{writer:{dropped:12}}}).level,'healthy');
-assert.equal(dashboardHealth({...base,observability:{data_available:false}}).level,'healthy');
-assert.equal(dashboardHealth({...base,observability:{data_available:true,writer:{dropped:0,writer_errors:0}}}).level,'healthy');
+assert.equal(dashboardHealth(base).level,'healthy');
+const incomplete=dashboardHealth({...base,observability:{data_available:true,writer:{activity_observed:true,accounting_balanced:true,dropped:12}}});
+assert.equal(incomplete.level,'attention');
+assert.match(incomplete.reason,/telemetry coverage is incomplete/i);
+const unavailable=dashboardHealth({...base,observability:{data_available:false}});
+assert.equal(unavailable.level,'attention');
+assert.match(unavailable.reason,/telemetry data is unavailable or stale/i);
+assert.equal(dashboardHealth({...base,observability:{data_available:true,writer:{activity_observed:true,accounting_balanced:true,dropped:0,writer_errors:0}}}).level,'healthy');
 assert.equal(dashboardHealth({...base,degraded:true,dependency_status:{'preprocessing.status':{degraded:true}}}).level,'attention');
 """)
 
@@ -282,9 +288,11 @@ def test_preprocessing_summary_separates_project_count_from_capacity():
     assert "function preprocessingSummary" in DASHBOARD_HTML
     source = extract("function preprocessingSummary", "function dashboardHealth(")
     run_javascript(source, """
-const running=preprocessingSummary({active_projects:58,processing_projects:4,max_preprocessing_projects:3});
+const projects=Array.from({length:58},(_,index)=>({status:index<4?'running':'idle'}));
+const running=preprocessingSummary({projects,max_preprocessing_projects:3});
 assert.equal(running.available,true);
-assert.match(running.text,/4 processing projects/);
+assert.match(running.text,/58 registered/);
+assert.match(running.text,/4 currently running/);
 assert.match(running.text,/3 concurrent slots/);
 assert(!running.text.includes('4/3'));
 assert.equal(preprocessingSummary({success:false}).available,false);
@@ -304,10 +312,10 @@ renderTelemetryMetrics({data_available:false});
 assert.equal(nodes.tokensSaved.textContent,'Unavailable');
 assert.equal(nodes.dollarsSaved.textContent,'Unavailable');
 assert.match(nodes.efficiencyStatus.textContent,/unavailable/i);
-renderTelemetryMetrics({data_available:true,net_cloud_token_delta_est:0,tool_accounting_events:0});
+renderTelemetryMetrics({data_available:true,net_cloud_token_delta_est:0,tool_accounting_events:0,writer:{activity_observed:true,accounting_balanced:true}});
 assert.equal(nodes.tokensSaved.textContent,'0');
 assert.match(nodes.tokensSavedSub.textContent,/No accounted calls/);
-renderTelemetryMetrics({data_available:true,net_cloud_token_delta_est:-42,estimated_savings_usd:-0.0008,tool_accounting_events:2,writer:{dropped:4}});
+renderTelemetryMetrics({data_available:true,net_cloud_token_delta_est:-42,estimated_savings_usd:-0.0008,tool_accounting_events:2,writer:{activity_observed:true,accounting_balanced:true,dropped:4}});
 assert.equal(nodes.dollarsSaved.textContent,'≈ −$0.0008');
 assert.match(nodes.efficiencyStatus.textContent,/Incomplete/);
 assert.match(nodes.tokensSavedSub.textContent,/Since restart/);
