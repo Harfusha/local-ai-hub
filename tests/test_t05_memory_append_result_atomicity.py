@@ -24,9 +24,12 @@ def test_memory_append_result_error_rolls_back_projection(
         key="append-error",
         value="verified evidence",
         evidence_ids=("evidence-1",),
-        provenance={"root": str(root), "tenant": "tenant-a"},
+        provenance={"root": str(root), "repository_id": "repo-atomicity", "tenant": "tenant-a"},
     )
-    identity = {"scope": AgentScope.REPOSITORY, "root": str(root), "tenant": "tenant-a"}
+    identity = {
+        "scope": AgentScope.REPOSITORY, "root": str(root),
+        "repository_id": "repo-atomicity", "tenant": "tenant-a",
+    }
     if replay:
         memory.record(record, idempotency_key="append-error-operation")
         # Exercise recovery from an event whose projection needs rebuilding.
@@ -70,6 +73,8 @@ def test_memory_append_result_error_rolls_back_projection(
     monkeypatch.setattr(state, "append_in_transaction", original_append)
     saved = memory.record(record, idempotency_key="append-error-operation")
     assert memory.get(saved.record_id, **identity) == saved
+    assert memory.get(saved.record_id, **{**identity, "repository_id": "foreign-repo"}) is None
+    assert memory.get(saved.record_id, **{**identity, "tenant": "tenant-b"}) is None
     duplicate = memory.record(record, idempotency_key="append-error-operation")
     assert duplicate.record_id == saved.record_id
     with closing(sqlite3.connect(state.db_path)) as con:
