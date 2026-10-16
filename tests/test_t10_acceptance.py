@@ -1908,7 +1908,29 @@ def test_code_invariants_rejects_missing_repository_root(tmp_path: Path) -> None
     assert result["files_checked"] == 0
 
 
+def test_code_invariants_ignores_archive_and_hidden_dirs(tmp_path: Path) -> None:
+    engine = DeterministicEngine({"server": {"state_dir": str(tmp_path / "state")}})
+    root = tmp_path / "repo"
+    root.mkdir()
+    (root / "src").mkdir()
+    (root / "src" / "valid.py").write_text("a = 1\n", encoding="utf-8")
+    handoff = root / ".handoff" / "overlay"
+    handoff.mkdir(parents=True)
+    (handoff / "archived.py").write_text("import subprocess\nsubprocess.run(['cmd'])\n", encoding="utf-8")
+    cache_dir = root / ".cache"
+    cache_dir.mkdir()
+    (cache_dir / "cached.py").write_text("invalid syntax :::\n", encoding="utf-8")
+
+    result = engine.code_invariants(str(root))
+
+    assert result["success"] is True
+    assert result["complete"] is True
+    assert result["files_checked"] == 1
+    assert result["violation_count"] == 0
+
+
 def test_cross_repo_impact_uses_native_parsers_for_python_and_typescript(
+
     tmp_path: Path,
 ) -> None:
     if not is_treesitter_available("python") or not is_treesitter_available("typescript"):
