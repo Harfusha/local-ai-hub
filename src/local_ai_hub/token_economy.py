@@ -18,6 +18,7 @@ except ImportError:  # pragma: no cover - exercised when launched as a script
         return _stdlib_dumps(value, **kwargs)
 
 import argparse
+import math
 import os
 import re
 import shutil
@@ -49,11 +50,15 @@ IGNORE_DIRS = {".git", "node_modules", "vendor", "Library", "Temp", "obj", "bin"
 
 def strip_ansi(text: str) -> str:
     """Remove ANSI color and control codes from output text."""
+    if not isinstance(text, str):
+        return ""
     return ANSI_REGEX.sub("", text)
 
 
 def count_tokens(text: str) -> tuple[int, int, int, int, int]:
     """Count (lines, words, chars, o200k_tokens, cl100k_tokens) for a string."""
+    if not isinstance(text, str):
+        return (0, 0, 0, 0, 0)
     chars = len(text)
     words = len(text.split())
     lines = text.count("\n") + (1 if text else 0)
@@ -162,16 +167,26 @@ def tokcount_main(argv: list[str] | None = None) -> int:
 
 def filter_and_print_trimmed(lines: Iterable[str], max_lines: int) -> None:
     """Print trimmed lines preserving head and tail."""
+    if isinstance(max_lines, bool) or not isinstance(max_lines, (int, float)):
+        safe_max_lines = 50
+    else:
+        try:
+            if not math.isfinite(max_lines) or max_lines < 0:
+                safe_max_lines = 50
+            else:
+                safe_max_lines = int(max_lines)
+        except (TypeError, ValueError, OverflowError):
+            safe_max_lines = 50
     clean_lines = [strip_ansi(l.rstrip("\r\n")) for l in lines]
     total = len(clean_lines)
-    if total <= max_lines:
+    if total <= safe_max_lines:
         for l in clean_lines:
             print(l)
     else:
-        half = max_lines // 2
+        half = safe_max_lines // 2
         for l in clean_lines[:half]:
             print(l)
-        skipped = total - max_lines
+        skipped = total - safe_max_lines
         print(f"\n[... {skipped:,} lines truncated by trim-run to save tokens (total: {total:,} lines) ...]\n")
         for l in clean_lines[-half:]:
             print(l)
@@ -179,6 +194,13 @@ def filter_and_print_trimmed(lines: Iterable[str], max_lines: int) -> None:
 
 _TRIM_RUN_ALLOWED_COMMANDS = {"rg", "fd", "grep-ast"}
 _TRIM_RUN_BUNDLED_COMMANDS = {"tokcount": "tokcount", "repo-map": "repo_map"}
+
+
+def is_allowed_trim_command(command: str) -> bool:
+    if not isinstance(command, str) or not command or "\x00" in command:
+        return False
+    cmd = os.path.basename(command).lower()
+    return cmd in _TRIM_RUN_ALLOWED_COMMANDS or cmd in _TRIM_RUN_BUNDLED_COMMANDS
 
 
 def trim_run_main(argv: list[str] | None = None) -> int:
