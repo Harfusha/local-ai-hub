@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
+import math
 import re
 import unicodedata
 
@@ -73,10 +75,12 @@ def normalize_query(
     3. Trims boundary punctuation across all human alphabets and scripts.
     4. Collapses multiple whitespace characters (including non-breaking and CJK spaces).
     """
-    if not query:
+    if query is None or isinstance(query, bool):
         return ""
 
-    text = str(query).strip()
+    text = str(query).replace("\x00", "").strip()
+    if not text:
+        return ""
 
     if normalize_unicode:
         # NFKC canonicalizes equivalent Unicode forms universally
@@ -97,7 +101,7 @@ def tokenize_query_terms(
     query: str,
     min_len: int = 2,
     max_terms: int = 24,
-    custom_stop_words: set[str] | None = None,
+    custom_stop_words: set[str] | Iterable[str] | None = None,
 ) -> list[str]:
     """Language-agnostic, code-aware token extractor.
     
@@ -106,16 +110,42 @@ def tokenize_query_terms(
     - Preserves the full identifier alongside its component words.
     - Works identically across all programming languages and natural languages.
     """
+    if isinstance(min_len, bool) or min_len is None:
+        clean_min_len = 2
+    else:
+        try:
+            if isinstance(min_len, float) and (math.isnan(min_len) or math.isinf(min_len)):
+                clean_min_len = 2
+            else:
+                clean_min_len = max(1, int(min_len))
+        except (ValueError, TypeError, OverflowError):
+            clean_min_len = 2
+
+    if isinstance(max_terms, bool) or max_terms is None:
+        clean_max_terms = 24
+    else:
+        try:
+            if isinstance(max_terms, float) and (math.isnan(max_terms) or math.isinf(max_terms)):
+                clean_max_terms = 24
+            else:
+                clean_max_terms = max(1, min(1000, int(max_terms)))
+        except (ValueError, TypeError, OverflowError):
+            clean_max_terms = 24
+
     clean = normalize_query(query, strip_punctuation=True, normalize_paths=False)
     raw_tokens = re.findall(r"[\w$@.:/-]{2,}", clean, re.UNICODE)
     
-    stop = custom_stop_words if custom_stop_words is not None else set()
+    if custom_stop_words is None or isinstance(custom_stop_words, bool) or not isinstance(custom_stop_words, Iterable):
+        stop: set[str] = set()
+    else:
+        stop = {str(w).strip().lower() for w in custom_stop_words}
+
     terms: list[str] = []
     seen: set[str] = set()
 
     def add(t: str) -> None:
         t_clean = t.strip("._-:/@$")
-        if len(t_clean) >= min_len:
+        if len(t_clean) >= clean_min_len:
             low = t_clean.lower()
             if low not in stop and low not in seen:
                 seen.add(low)
@@ -133,10 +163,10 @@ def tokenize_query_terms(
         if len(sub_tokens) > 1:
             for st in sub_tokens:
                 add(st)
-        if len(terms) >= max_terms:
+        if len(terms) >= clean_max_terms:
             break
 
-    return terms[:max_terms]
+    return terms[:clean_max_terms]
 
 
 def postprocess_model_output(
@@ -216,9 +246,9 @@ def postprocess_model_output(
 
 def postprocess_patch(diff_text: str) -> str:
     """Ensure clean unified diff headers and valid line endings."""
-    if not diff_text:
+    if not diff_text or isinstance(diff_text, bool) or not isinstance(diff_text, str):
         return ""
-    lines = str(diff_text).replace("\r\n", "\n").replace("\r", "\n").splitlines()
+    lines = str(diff_text).replace("\r\n", "\n").replace("\r", "\n").replace("\x00", "").splitlines()
     start_idx = -1
     for i, line in enumerate(lines):
         if line.startswith(("diff --git", "--- ", "+++ ", "@@ ")):
