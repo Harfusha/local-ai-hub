@@ -12,7 +12,7 @@ _FALLBACK_BY_PID: dict[int, Path] = {}
 
 
 def _clean_dir_candidate(raw: Any) -> Path | None:
-    if raw is None:
+    if raw is None or isinstance(raw, bool) or not isinstance(raw, (str, Path)):
         return None
     val = str(raw).strip()
     if not val or "\x00" in val:
@@ -77,6 +77,8 @@ def configured_cache_dir(config: dict[str, Any] | None, *, create: bool = True) 
 
 def get_fallback_state_dir(pid: int | None = None) -> Path | None:
     """Return the cached fallback state directory for pid, if one exists."""
+    if pid is not None and (isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0):
+        return None
     target_pid = os.getpid() if pid is None else int(pid)
     with _FALLBACK_LOCK:
         return _FALLBACK_BY_PID.get(target_pid)
@@ -84,6 +86,8 @@ def get_fallback_state_dir(pid: int | None = None) -> Path | None:
 
 def cleanup_fallback_state_dir(pid: int | None = None) -> bool:
     """Clean up and remove the process fallback state directory for pid."""
+    if pid is not None and (isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0):
+        return False
     target_pid = os.getpid() if pid is None else int(pid)
     with _FALLBACK_LOCK:
         path = _FALLBACK_BY_PID.pop(target_pid, None)
