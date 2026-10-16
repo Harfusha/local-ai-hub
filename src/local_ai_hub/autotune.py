@@ -46,9 +46,11 @@ class RuntimeTuner:
     explicitly quality-equivalent resident candidates, preserving requested quality gates.
     """
 
-    def __init__(self, config: Mapping[str, Any]):
+    def __init__(self, config: Mapping[str, Any] | None = None):
+        if config is None:
+            config = {}
         if not isinstance(config, Mapping):
-            raise TypeError("config must be a mapping")
+            raise TypeError("config must be a mapping or None")
         cfg = config.get("autotune", {})
         if not isinstance(cfg, Mapping):
             raise TypeError("config.autotune must be a mapping")
@@ -60,7 +62,13 @@ class RuntimeTuner:
         persist_interval = _finite_config_number(
             cfg.get("persist_interval_seconds", 15.0), "persist_interval_seconds"
         )
-        min_samples = max(1, int(cfg.get("min_samples", 2)))
+        min_samples = cfg.get("min_samples", 2)
+        if (
+            isinstance(min_samples, bool)
+            or not isinstance(min_samples, int)
+            or min_samples < 1
+        ):
+            raise ValueError("autotune.min_samples must be a positive integer")
         self.alpha = min(1.0, max(0.01, alpha))
         self.min_samples = min_samples
         self.resident_latency_ratio = max(0.5, resident_ratio)
@@ -209,3 +217,27 @@ class RuntimeTuner:
             "persistence_enabled": self._persist_enabled,
             "models": models,
         }
+
+    def has_model(self, model: str) -> bool:
+        if not model or not isinstance(model, str):
+            return False
+        with self._lock:
+            return model in self._models
+
+    def get_model_profile(self, model: str) -> dict[str, float] | None:
+        with self._lock:
+            profile = self._models.get(model)
+            return dict(profile) if profile is not None else None
+
+    def model_names(self) -> list[str]:
+        with self._lock:
+            return list(self._models.keys())
+
+    def reset(self, model: str | None = None) -> None:
+        with self._lock:
+            if model is None:
+                self._models.clear()
+            else:
+                self._models.pop(model, None)
+            self._persist_locked(force=True)
+

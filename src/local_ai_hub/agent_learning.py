@@ -4,6 +4,7 @@ from .json_utils import dumps as json_dumps
 
 import json
 import logging
+import math
 import sqlite3
 import threading
 import time
@@ -38,6 +39,29 @@ class SLOObservation:
     cost: float = 0.0
     error_count: int = 0
 
+    def __post_init__(self) -> None:
+        try:
+            lat = float(self.latency_ms)
+            lat = max(0.0, lat) if math.isfinite(lat) else 0.0
+        except (ValueError, TypeError):
+            lat = 0.0
+        try:
+            c = float(self.cost)
+            c = max(0.0, c) if math.isfinite(c) else 0.0
+        except (ValueError, TypeError):
+            c = 0.0
+        try:
+            ec = max(0, int(self.error_count))
+        except (ValueError, TypeError):
+            ec = 0
+        object.__setattr__(self, "latency_ms", lat)
+        object.__setattr__(self, "success", self.success is True)
+        object.__setattr__(self, "cost", c)
+        object.__setattr__(self, "error_count", ec)
+
+    def is_successful(self) -> bool:
+        return self.success and self.error_count == 0
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "latency_ms": self.latency_ms,
@@ -54,6 +78,16 @@ class RollbackTrigger:
     reason: str = ""
     restored_version: str = ""
 
+    def __post_init__(self) -> None:
+        cid = str(self.candidate_id or "").replace("\x00", "").strip()
+        act = str(self.action or "rollback").replace("\x00", "").strip()
+        rsn = str(self.reason or "").replace("\x00", "").strip()
+        rv = str(self.restored_version or "").replace("\x00", "").strip()
+        object.__setattr__(self, "candidate_id", cid)
+        object.__setattr__(self, "action", act)
+        object.__setattr__(self, "reason", rsn)
+        object.__setattr__(self, "restored_version", rv)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "candidate_id": self.candidate_id,
@@ -69,6 +103,15 @@ class PromotionDecision:
     promoted: bool
     approver: str
     version: str
+
+    def __post_init__(self) -> None:
+        cid = str(self.candidate_id or "").replace("\x00", "").strip()
+        app = str(self.approver or "").replace("\x00", "").strip()
+        ver = str(self.version or "").replace("\x00", "").strip()
+        object.__setattr__(self, "candidate_id", cid)
+        object.__setattr__(self, "promoted", self.promoted is True)
+        object.__setattr__(self, "approver", app)
+        object.__setattr__(self, "version", ver)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -91,6 +134,70 @@ class ImprovementCandidate:
     approver: str = ""
     created_at: float = 0.0
     updated_at: float = 0.0
+
+    def __post_init__(self) -> None:
+        cid = str(self.candidate_id or "").replace("\x00", "").strip()
+        nm = str(self.name or "").replace("\x00", "").strip()
+        bv = str(self.baseline_version or "").replace("\x00", "").strip()
+        cv = str(self.candidate_version or "").replace("\x00", "").strip()
+        st = self.status
+        if isinstance(st, str):
+            try:
+                st = CandidateStatus(st)
+            except ValueError:
+                st = CandidateStatus.CANDIDATE
+        elif not isinstance(st, CandidateStatus):
+            st = CandidateStatus.CANDIDATE
+
+        thresh: dict[str, float] = {}
+        if isinstance(self.slo_thresholds, Mapping):
+            for k, v in self.slo_thresholds.items():
+                try:
+                    val = float(v)
+                    thresh[str(k).replace("\x00", "").strip()] = val if math.isfinite(val) else 0.0
+                except (ValueError, TypeError):
+                    thresh[str(k).replace("\x00", "").strip()] = 0.0
+
+        mets: dict[str, float] = {}
+        if isinstance(self.metrics, Mapping):
+            for k, v in self.metrics.items():
+                try:
+                    val = float(v)
+                    mets[str(k).replace("\x00", "").strip()] = val if math.isfinite(val) else 0.0
+                except (ValueError, TypeError):
+                    mets[str(k).replace("\x00", "").strip()] = 0.0
+
+        app = str(self.approver or "").replace("\x00", "").strip()
+        try:
+            ca = float(self.created_at)
+            ca = max(0.0, ca) if math.isfinite(ca) else 0.0
+        except (ValueError, TypeError):
+            ca = 0.0
+        try:
+            ua = float(self.updated_at)
+            ua = max(0.0, ua) if math.isfinite(ua) else 0.0
+        except (ValueError, TypeError):
+            ua = 0.0
+
+        object.__setattr__(self, "candidate_id", cid)
+        object.__setattr__(self, "name", nm)
+        object.__setattr__(self, "baseline_version", bv)
+        object.__setattr__(self, "candidate_version", cv)
+        object.__setattr__(self, "status", st)
+        object.__setattr__(self, "slo_thresholds", thresh)
+        object.__setattr__(self, "metrics", mets)
+        object.__setattr__(self, "approver", app)
+        object.__setattr__(self, "created_at", ca)
+        object.__setattr__(self, "updated_at", ua)
+
+    def is_promoted(self) -> bool:
+        return self.status == CandidateStatus.PROMOTED
+
+    def is_terminal(self) -> bool:
+        return self.status in (CandidateStatus.ROLLED_BACK, CandidateStatus.REJECTED)
+
+    def can_advance(self) -> bool:
+        return not self.is_terminal()
 
     @classmethod
     def create(
@@ -131,14 +238,21 @@ class ImprovementCandidate:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> ImprovementCandidate:
+        if not isinstance(data, Mapping):
+            raise TypeError("improvement candidate data must be a mapping")
+        status_raw = data.get("status")
+        try:
+            status = CandidateStatus(status_raw)
+        except (ValueError, TypeError):
+            status = CandidateStatus.CANDIDATE
         return cls(
             candidate_id=str(data["candidate_id"]),
             name=str(data["name"]),
             baseline_version=str(data["baseline_version"]),
             candidate_version=str(data["candidate_version"]),
-            status=CandidateStatus(data["status"]),
-            slo_thresholds={k: float(v) for k, v in (data.get("slo_thresholds") or {}).items()},
-            metrics={k: float(v) for k, v in (data.get("metrics") or {}).items()},
+            status=status,
+            slo_thresholds=dict(data.get("slo_thresholds") or {}),
+            metrics=dict(data.get("metrics") or {}),
             approver=str(data.get("approver", "")),
             created_at=float(data.get("created_at", 0.0)),
             updated_at=float(data.get("updated_at", 0.0)),
@@ -368,6 +482,37 @@ class LearningStore:
                 return cur.fetchall()
         rows = retry_busy(_do_list, retries=5, base_delay_seconds=0.02)
         return [self._row_to_candidate(r) for r in rows]
+
+    def has_candidates(self) -> bool:
+        if not self.state_store.enabled or not self.state_store.db_path.exists():
+            return False
+        self._init_table()
+
+        def _do_check() -> bool:
+            with closing(connect_sqlite(self.state_store.db_path)) as con:
+                row = con.execute("SELECT 1 FROM agent_learning_candidates LIMIT 1").fetchone()
+                return bool(row)
+
+        return bool(retry_busy(_do_check, retries=5, base_delay_seconds=0.02))
+
+    def candidate_count(self, status: CandidateStatus | None = None) -> int:
+        if not self.state_store.enabled or not self.state_store.db_path.exists():
+            return 0
+        self._init_table()
+
+        def _do_count() -> int:
+            with closing(connect_sqlite(self.state_store.db_path)) as con:
+                if status is not None:
+                    st_val = status.value if isinstance(status, CandidateStatus) else str(status)
+                    row = con.execute(
+                        "SELECT COUNT(*) FROM agent_learning_candidates WHERE status = ?",
+                        (st_val,),
+                    ).fetchone()
+                else:
+                    row = con.execute("SELECT COUNT(*) FROM agent_learning_candidates").fetchone()
+                return int(row[0]) if row else 0
+
+        return int(retry_busy(_do_count, retries=5, base_delay_seconds=0.02))
 
     def _save(self, candidate: ImprovementCandidate) -> None:
         if not self.state_store.enabled:

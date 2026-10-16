@@ -7383,7 +7383,7 @@ class Handler(BaseHTTPRequestHandler):
                             "retryable": False,
                         }); return
                     compiled = APP.agent_context.compile(req)
-                    since_hash = str(payload.get("since_hash") or payload.get("etag") or "").strip()
+                    since_hash = str(payload.get("since_hash") or "").strip()
                     compact_mode = bool(payload.get("compact", False))
                     root = req.root.strip()
                     if root:

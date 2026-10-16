@@ -1,15 +1,19 @@
 from __future__ import annotations
 
+from contextlib import closing
+from dataclasses import dataclass, field
+from enum import Enum
 import logging
 import math
 import numbers
 import sqlite3
-import uuid
-from dataclasses import dataclass, field
-from enum import Enum
+import threading
+import time
 from typing import Any, Mapping
+import uuid
 
 from .agent_tasks import TaskState
+from .sqlite_support import connect_sqlite, retry_busy
 
 
 class RiskClass(str, Enum):
@@ -74,6 +78,23 @@ class CapabilityDescriptor:
     requires_approval: bool = False
     default_allowed: bool = True
 
+    def __post_init__(self) -> None:
+        nm = str(self.name or "").replace("\x00", "").strip()
+        desc = str(self.description or "").replace("\x00", "").strip()
+        rc = self.risk_class
+        if isinstance(rc, str):
+            try:
+                rc = RiskClass(rc)
+            except ValueError:
+                raise ValueError("risk_class must be a canonical RiskClass") from None
+        elif not isinstance(rc, RiskClass):
+            raise ValueError("risk_class must be a canonical RiskClass")
+        object.__setattr__(self, "name", nm)
+        object.__setattr__(self, "risk_class", rc)
+        object.__setattr__(self, "description", desc)
+        object.__setattr__(self, "requires_approval", self.requires_approval is True)
+        object.__setattr__(self, "default_allowed", self.default_allowed is True)
+
 
 @dataclass(frozen=True)
 class CapabilityGrant:
@@ -116,6 +137,31 @@ class CapabilityGrant:
                 finite_expiry = False
             if not finite_expiry:
                 raise ValueError("expires_at must be a finite numeric value or None")
+    def is_expired(self, now: float | None = None) -> bool:
+        if self.expires_at is None:
+            return False
+        current = time.time() if now is None else now
+        if isinstance(current, bool) or not isinstance(current, numbers.Real):
+            raise ValueError("now must be a finite numeric value")
+        try:
+            if not math.isfinite(current):
+                raise ValueError("now must be a finite numeric value")
+        except (OverflowError, TypeError, ValueError) as exc:
+            raise ValueError("now must be a finite numeric value") from exc
+        return current > self.expires_at
+
+    def allows(self, action: str) -> bool:
+        if type(action) is not str or not action or action.strip() != action or "\x00" in action:
+            raise ValueError("action must be a canonical string")
+        return action in self.allowed and action not in self.denied
+
+    def denies(self, action: str) -> bool:
+        if type(action) is not str or not action or action.strip() != action or "\x00" in action:
+            raise ValueError("action must be a canonical string")
+        return action in self.denied
+
+    def can_delegate(self) -> bool:
+        return self.max_delegation_depth > 0 and not self.is_expired()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -157,6 +203,27 @@ class BudgetCost:
     compute_seconds: float = 0.0
     external_calls: int = 0
 
+    def __post_init__(self) -> None:
+        try:
+            tok = max(0, int(self.tokens))
+        except (ValueError, TypeError):
+            tok = 0
+        try:
+            cs = float(self.compute_seconds)
+            cs = max(0.0, cs) if math.isfinite(cs) else 0.0
+        except (ValueError, TypeError):
+            cs = 0.0
+        try:
+            ec = max(0, int(self.external_calls))
+        except (ValueError, TypeError):
+            ec = 0
+        object.__setattr__(self, "tokens", tok)
+        object.__setattr__(self, "compute_seconds", cs)
+        object.__setattr__(self, "external_calls", ec)
+
+    def is_zero(self) -> bool:
+        return self.tokens == 0 and self.compute_seconds == 0.0 and self.external_calls == 0
+
 
 @dataclass(frozen=True)
 class Budget:
@@ -167,6 +234,56 @@ class Budget:
     used_compute_seconds: float = 0.0
     max_external_calls: int = 50
     used_external_calls: int = 0
+
+    def __post_init__(self) -> None:
+        tid = str(self.task_id or "").replace("\x00", "").strip()
+        try:
+            mt = max(0, int(self.max_tokens))
+        except (ValueError, TypeError):
+            mt = 100_000
+        try:
+            ut = max(0, int(self.used_tokens))
+        except (ValueError, TypeError):
+            ut = 0
+        try:
+            mcs = float(self.max_compute_seconds)
+            mcs = max(0.0, mcs) if math.isfinite(mcs) else 600.0
+        except (ValueError, TypeError):
+            mcs = 600.0
+        try:
+            ucs = float(self.used_compute_seconds)
+            ucs = max(0.0, ucs) if math.isfinite(ucs) else 0.0
+        except (ValueError, TypeError):
+            ucs = 0.0
+        try:
+            mec = max(0, int(self.max_external_calls))
+        except (ValueError, TypeError):
+            mec = 50
+        try:
+            uec = max(0, int(self.used_external_calls))
+        except (ValueError, TypeError):
+            uec = 0
+        object.__setattr__(self, "task_id", tid)
+        object.__setattr__(self, "max_tokens", mt)
+        object.__setattr__(self, "used_tokens", ut)
+        object.__setattr__(self, "max_compute_seconds", mcs)
+        object.__setattr__(self, "used_compute_seconds", ucs)
+        object.__setattr__(self, "max_external_calls", mec)
+        object.__setattr__(self, "used_external_calls", uec)
+
+    def remaining_tokens(self) -> int:
+        return max(0, self.max_tokens - self.used_tokens)
+
+    def remaining_compute_seconds(self) -> float:
+        return max(0.0, self.max_compute_seconds - self.used_compute_seconds)
+
+    def remaining_external_calls(self) -> int:
+        return max(0, self.max_external_calls - self.used_external_calls)
+
+    def token_utilization(self) -> float:
+        if self.max_tokens <= 0:
+            return 1.0
+        return min(1.0, self.used_tokens / self.max_tokens)
 
     def is_exhausted(self) -> bool:
         return (
@@ -195,6 +312,32 @@ class ActionRequest:
     risk_class: RiskClass = RiskClass.READ
     details: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        act = str(self.action or "").replace("\x00", "").strip()
+        tgt = str(self.target or "").replace("\x00", "").strip()
+        rc = self.risk_class
+        if isinstance(rc, str):
+            try:
+                rc = RiskClass(rc)
+            except ValueError:
+                raise ValueError("risk_class must be a canonical RiskClass") from None
+        elif not isinstance(rc, RiskClass):
+            raise ValueError("risk_class must be a canonical RiskClass")
+        det = dict(self.details) if isinstance(self.details, Mapping) else {}
+        object.__setattr__(self, "action", act)
+        object.__setattr__(self, "target", tgt)
+        object.__setattr__(self, "risk_class", rc)
+        object.__setattr__(self, "details", det)
+
+    def is_read(self) -> bool:
+        return self.risk_class == RiskClass.READ
+
+    def is_write(self) -> bool:
+        return self.risk_class == RiskClass.WRITE
+
+    def is_network(self) -> bool:
+        return self.risk_class == RiskClass.NETWORK
+
 
 @dataclass(frozen=True)
 class PolicyDecision:
@@ -205,6 +348,27 @@ class PolicyDecision:
     owner: str = POLICY_OWNER
     side_effect_class: str = "read"
 
+    def __post_init__(self) -> None:
+        rsn = str(self.reason or "").replace("\x00", "").strip()
+        rid = str(self.receipt_id or "").replace("\x00", "").strip()
+        own = str(self.owner or POLICY_OWNER).replace("\x00", "").strip()
+        sec = str(self.side_effect_class or "read").replace("\x00", "").strip()
+        object.__setattr__(self, "allowed", self.allowed is True)
+        object.__setattr__(self, "requires_approval", self.requires_approval is True)
+        object.__setattr__(self, "reason", rsn)
+        object.__setattr__(self, "receipt_id", rid)
+        object.__setattr__(self, "owner", own)
+        object.__setattr__(self, "side_effect_class", sec)
+
+    def is_allowed(self) -> bool:
+        return self.allowed
+
+    def is_denied(self) -> bool:
+        return not self.allowed and not self.requires_approval
+
+    def needs_approval(self) -> bool:
+        return self.requires_approval
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "allowed": self.allowed,
@@ -214,12 +378,6 @@ class PolicyDecision:
             "owner": self.owner,
             "side_effect_class": self.side_effect_class,
         }
-
-
-import threading
-import time
-from contextlib import closing
-from .sqlite_support import connect_sqlite, retry_busy
 
 
 class PolicyEngine:
@@ -319,6 +477,14 @@ class PolicyEngine:
                 )
 
         if grant is not None:
+            if grant.is_expired():
+                return PolicyDecision(
+                    allowed=False,
+                    requires_approval=True,
+                    reason=f"capability grant '{grant.grant_id}' has expired",
+                    owner=POLICY_OWNER,
+                    side_effect_class=side_effect_class,
+                )
             if request.action in grant.denied or risk_class.value in grant.denied:
                 return PolicyDecision(
                     allowed=False,
@@ -393,6 +559,22 @@ class PolicyEngine:
         parent_grant: CapabilityGrant,
         requested: set[str] | frozenset[str],
     ) -> CapabilityGrant:
+        if not isinstance(parent_grant, CapabilityGrant):
+            raise ValueError("parent_grant must be a CapabilityGrant")
+        if type(requested) not in (set, frozenset):
+            raise ValueError("requested actions must be a set of canonical strings")
+        for action in requested:
+            if type(action) is not str or not action or action.strip() != action or "\x00" in action:
+                raise ValueError("requested actions must be canonical strings")
+        if parent_grant.max_delegation_depth <= 0 or parent_grant.is_expired():
+            return CapabilityGrant(
+                grant_id=f"grant_{uuid.uuid4().hex[:12]}",
+                task_id=parent_grant.task_id,
+                allowed=frozenset(),
+                denied=parent_grant.denied | frozenset(requested),
+                expires_at=parent_grant.expires_at,
+                max_delegation_depth=0,
+            )
         req = frozenset(requested)
         expiry = parent_grant.expires_at
         expiry_valid = expiry is None
@@ -535,3 +717,58 @@ class PolicyEngine:
             retry_busy(_save, retries=5, base_delay_seconds=0.01)
         except sqlite3.Error as exc:
             LOGGER.warning("budget state persistence failed (%s)", type(exc).__name__)
+
+    def has_budget(self, task_id: str) -> bool:
+        clean_id = str(task_id or "").replace("\x00", "").strip()
+        if not clean_id:
+            return False
+        with self._lock:
+            if clean_id in self._budgets:
+                return True
+        if self.state_store and getattr(self.state_store, "enabled", False) and getattr(self.state_store, "db_path", None):
+            self._init_table()
+            def _check():
+                with closing(connect_sqlite(self.state_store.db_path)) as con:
+                    row = con.execute("SELECT 1 FROM agent_budgets WHERE task_id = ?", (clean_id,)).fetchone()
+                    return bool(row)
+            try:
+                return bool(retry_busy(_check, retries=3, base_delay_seconds=0.01))
+            except sqlite3.Error:
+                return False
+        return False
+
+    def reset_budget(self, task_id: str) -> Budget:
+        clean_id = str(task_id or "").replace("\x00", "").strip()
+        curr = self.get_budget(clean_id)
+        updated = Budget(
+            task_id=clean_id,
+            max_tokens=curr.max_tokens,
+            used_tokens=0,
+            max_compute_seconds=curr.max_compute_seconds,
+            used_compute_seconds=0.0,
+            max_external_calls=curr.max_external_calls,
+            used_external_calls=0,
+        )
+        self._persist_budget(updated)
+        with self._lock:
+            self._budgets[clean_id] = updated
+        return updated
+
+    def delete_budget(self, task_id: str) -> bool:
+        clean_id = str(task_id or "").replace("\x00", "").strip()
+        with self._lock:
+            existed = clean_id in self._budgets
+            self._budgets.pop(clean_id, None)
+        if self.state_store and getattr(self.state_store, "enabled", False) and getattr(self.state_store, "db_path", None):
+            self._init_table()
+            def _del():
+                with closing(connect_sqlite(self.state_store.db_path)) as con:
+                    with con:
+                        cur = con.execute("DELETE FROM agent_budgets WHERE task_id = ?", (clean_id,))
+                        return cur.rowcount > 0
+            try:
+                db_deleted = bool(retry_busy(_del, retries=5, base_delay_seconds=0.01))
+                return existed or db_deleted
+            except sqlite3.Error:
+                return existed
+        return existed

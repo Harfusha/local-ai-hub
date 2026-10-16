@@ -18,7 +18,11 @@ class CooperativePriorityGate:
     """
 
     def __init__(self, foreground_priority: int = 3):
-        self.foreground_priority = int(foreground_priority)
+        try:
+            fp = int(foreground_priority)
+        except (TypeError, ValueError, OverflowError):
+            fp = 3
+        self.foreground_priority = fp
         self._cond = threading.Condition()
         self._active = False
         self._foreground_waiters = 0
@@ -59,6 +63,37 @@ class CooperativePriorityGate:
             with self._cond:
                 self._active = False
                 self._cond.notify_all()
+
+    def try_acquire(self, priority: int = 0) -> bool:
+        """Attempt non-blocking acquire of the gate slot. Return True if acquired."""
+        try:
+            p_val = int(priority)
+        except (TypeError, ValueError, OverflowError):
+            p_val = 0
+        foreground = p_val >= self.foreground_priority
+        with self._cond:
+            if self._active or (not foreground and self._foreground_waiters > 0):
+                return False
+            self._active = True
+            return True
+
+    def release(self) -> None:
+        """Release the acquired gate slot and notify waiting threads."""
+        with self._cond:
+            self._active = False
+            self._cond.notify_all()
+
+    def foreground_waiters_count(self) -> int:
+        """Return the number of foreground threads currently waiting for a slot."""
+        with self._cond:
+            return self._foreground_waiters
+
+    def reset(self) -> None:
+        """Reset the gate state and unblock any waiting threads."""
+        with self._cond:
+            self._active = False
+            self._foreground_waiters = 0
+            self._cond.notify_all()
 
     def status(self) -> dict[str, int | bool]:
         with self._cond:

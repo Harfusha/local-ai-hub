@@ -4,6 +4,7 @@ from .json_utils import dumps as json_dumps
 
 import hashlib
 import json
+import math
 import os
 import re
 import threading
@@ -37,6 +38,14 @@ class IncidentFingerprint:
     operation_class: str
     signature_hash: str
 
+    def __post_init__(self) -> None:
+        ec = str(self.error_class).replace("\x00", "").strip() if self.error_class is not None else ""
+        oc = str(self.operation_class).replace("\x00", "").strip() if self.operation_class is not None else ""
+        sh = str(self.signature_hash).replace("\x00", "").strip() if self.signature_hash is not None else ""
+        object.__setattr__(self, "error_class", ec or "unknown")
+        object.__setattr__(self, "operation_class", oc or "command")
+        object.__setattr__(self, "signature_hash", sh)
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "error_class": self.error_class,
@@ -46,6 +55,8 @@ class IncidentFingerprint:
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> IncidentFingerprint:
+        if not isinstance(data, Mapping):
+            return cls(error_class="unknown", operation_class="command", signature_hash="")
         return cls(
             error_class=str(data.get("error_class", "")),
             operation_class=str(data.get("operation_class", "")),
@@ -69,6 +80,36 @@ class ToolOutcome:
     repository_root: str = ""
     tenant: str = ""
 
+    def __post_init__(self) -> None:
+        tn = str(self.tool_name).replace("\x00", "").strip() if self.tool_name is not None else ""
+        cmd = str(self.command).replace("\x00", "").strip() if self.command is not None else ""
+        err = str(self.error).replace("\x00", "").strip() if self.error is not None else ""
+        ec = self.exit_code
+        if type(ec) is not int or not -(2**31) <= ec <= (2**32 - 1):
+            raise ValueError("exit_code must be a signed or unsigned 32-bit integer")
+        s_rev = str(self.state_revision).replace("\x00", "").strip() if self.state_revision is not None else ""
+
+        ev_raw = (self.evidence_ids,) if isinstance(self.evidence_ids, str) else (self.evidence_ids or ())
+        ev_ids = tuple(str(x).replace("\x00", "").strip() for x in ev_raw if str(x).replace("\x00", "").strip())
+
+        ap_raw = (self.affected_paths,) if isinstance(self.affected_paths, str) else (self.affected_paths or ())
+        ap_paths = tuple(str(x).replace("\x00", "").strip() for x in ap_raw if str(x).replace("\x00", "").strip())
+
+        meta = dict(self.metadata) if isinstance(self.metadata, Mapping) else {}
+        rr = str(self.repository_root).replace("\x00", "").strip() if self.repository_root is not None else ""
+        tnt = str(self.tenant).replace("\x00", "").strip() if self.tenant is not None else ""
+
+        object.__setattr__(self, "tool_name", tn or "command")
+        object.__setattr__(self, "command", cmd)
+        object.__setattr__(self, "error", err)
+        object.__setattr__(self, "exit_code", ec)
+        object.__setattr__(self, "state_revision", s_rev)
+        object.__setattr__(self, "evidence_ids", ev_ids)
+        object.__setattr__(self, "affected_paths", ap_paths)
+        object.__setattr__(self, "metadata", meta)
+        object.__setattr__(self, "repository_root", rr)
+        object.__setattr__(self, "tenant", tnt)
+
 
 @dataclass(frozen=True)
 class IncidentRecord:
@@ -91,6 +132,81 @@ class IncidentRecord:
     affected_paths: tuple[str, ...] = ()
     repository_key: str = ""
     tenant_key: str = ""
+
+    def __post_init__(self) -> None:
+        iid = str(self.incident_id).replace("\x00", "").strip() if self.incident_id is not None else ""
+        if not iid:
+            iid = f"inc_{uuid.uuid4().hex[:8]}"
+        op = str(self.operation_class).replace("\x00", "").strip() if self.operation_class is not None else ""
+        ec = str(self.error_class).replace("\x00", "").strip() if self.error_class is not None else ""
+        rm = str(self.redacted_message).replace("\x00", "").strip() if self.redacted_message is not None else ""
+        sr = str(self.state_revision).replace("\x00", "").strip() if self.state_revision is not None else ""
+        try:
+            att = max(1, int(self.attempts))
+        except (ValueError, TypeError):
+            att = 1
+        try:
+            conf = float(self.confidence)
+            if not math.isfinite(conf):
+                conf = 0.0
+            else:
+                conf = max(0.0, min(1.0, conf))
+        except (ValueError, TypeError):
+            conf = 0.0
+        try:
+            ca = float(self.created_at)
+            if not math.isfinite(ca):
+                ca = 0.0
+            else:
+                ca = max(0.0, ca)
+        except (ValueError, TypeError):
+            ca = 0.0
+        try:
+            ua = float(self.updated_at)
+            if not math.isfinite(ua):
+                ua = 0.0
+            else:
+                ua = max(0.0, ua)
+        except (ValueError, TypeError):
+            ua = 0.0
+
+        ea = self.expires_at
+        if ea is not None:
+            try:
+                ea_val = float(ea)
+                ea = max(0.0, ea_val) if math.isfinite(ea_val) else None
+            except (ValueError, TypeError):
+                ea = None
+
+        ev_raw = (self.evidence_ids,) if isinstance(self.evidence_ids, str) else (self.evidence_ids or ())
+        ev_ids = tuple(str(x).replace("\x00", "").strip() for x in ev_raw if str(x).replace("\x00", "").strip())
+        ap_raw = (self.affected_paths,) if isinstance(self.affected_paths, str) else (self.affected_paths or ())
+        ap_paths = tuple(str(x).replace("\x00", "").strip() for x in ap_raw if str(x).replace("\x00", "").strip())
+
+        object.__setattr__(self, "incident_id", iid)
+        object.__setattr__(self, "operation_class", op or "command")
+        object.__setattr__(self, "error_class", ec or "unknown")
+        object.__setattr__(self, "redacted_message", rm)
+        object.__setattr__(self, "state_revision", sr)
+        object.__setattr__(self, "attempts", att)
+        object.__setattr__(self, "confidence", conf)
+        object.__setattr__(self, "created_at", ca)
+        object.__setattr__(self, "updated_at", ua)
+        object.__setattr__(self, "expires_at", ea)
+        object.__setattr__(self, "evidence_ids", ev_ids)
+        object.__setattr__(self, "affected_paths", ap_paths)
+
+    def is_resolved(self) -> bool:
+        return self.resolved
+
+    def is_ignored(self) -> bool:
+        return self.ignored
+
+    def is_active(self) -> bool:
+        return not self.resolved and not self.ignored
+
+    def has_verified_fix(self) -> bool:
+        return bool(self.verified_fix)
 
     @property
     def status(self) -> str:
@@ -132,6 +248,27 @@ class RetryDecision:
     verified_fix: str | None = None
     confidence: float = 0.0
 
+    def __post_init__(self) -> None:
+        act = str(self.action).replace("\x00", "").strip() if self.action is not None else ""
+        rsn = str(self.reason).replace("\x00", "").strip() if self.reason is not None else ""
+        try:
+            conf = float(self.confidence)
+            if not math.isfinite(conf):
+                conf = 0.0
+            else:
+                conf = max(0.0, min(1.0, conf))
+        except (ValueError, TypeError):
+            conf = 0.0
+        object.__setattr__(self, "action", act or "stop")
+        object.__setattr__(self, "reason", rsn)
+        object.__setattr__(self, "confidence", conf)
+
+    def can_retry(self) -> bool:
+        return self.action in {"apply_verified_fix", "retry", "proceed"}
+
+    def should_stop(self) -> bool:
+        return self.action == "stop"
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "action": self.action,
@@ -142,6 +279,10 @@ class RetryDecision:
 
 
 def _redact_message(msg: str) -> str:
+    if not isinstance(msg, str):
+        msg = str(msg).replace("\x00", "") if msg is not None else ""
+    else:
+        msg = msg.replace("\x00", "")
     cleaned = re.sub(r"[a-zA-Z]:\\[^\s:\"']+", "[PATH]", msg)
     cleaned = re.sub(r"/[a-zA-Z0-9_\.-]+/[^\s:\"']+", "[PATH]", cleaned)
     cleaned = re.sub(r"(token|secret|key|password)[=:]\s*\S+", r"\1=[REDACTED]", cleaned, flags=re.IGNORECASE)
@@ -149,18 +290,27 @@ def _redact_message(msg: str) -> str:
 
 
 def _normalize_signature(msg: str) -> str:
-    # Lowercase, remove numbers, file extensions, extra spaces
+    if not isinstance(msg, str):
+        msg = str(msg).replace("\x00", "") if msg is not None else ""
+    else:
+        msg = msg.replace("\x00", "")
     norm = msg.lower()
     norm = re.sub(r"0x[0-9a-f]+", "", norm)
     norm = re.sub(r"\d+", "", norm)
     norm = re.sub(r"[^\w\s]", " ", norm)
     norm = " ".join(norm.split())
+    if not norm:
+        norm = "empty"
     return hashlib.sha256(norm.encode("utf-8")).hexdigest()[:16]
 
 
 def _classify_error(error_msg: str, timed_out: bool) -> str:
     if timed_out:
         return "TimeoutError"
+    if not isinstance(error_msg, str):
+        error_msg = str(error_msg).replace("\x00", "") if error_msg is not None else ""
+    else:
+        error_msg = error_msg.replace("\x00", "")
     low = error_msg.lower()
     if "lock" in low or "busy" in low:
         return "BusyLockError"
@@ -359,14 +509,19 @@ class IncidentStore:
             signature_hash=sig_hash,
         )
 
-        meta_rc = str(outcome.metadata.get("root_cause") or "")
-        meta_fix = str(outcome.metadata.get("verified_fix") or "")
-        meta_conf = float(outcome.metadata.get("confidence") or 0.0)
+        meta = outcome.metadata if isinstance(outcome.metadata, Mapping) else {}
+        meta_rc = str(meta.get("root_cause") or "")
+        meta_fix = str(meta.get("verified_fix") or "")
+        try:
+            meta_conf_val = float(meta.get("confidence") or 0.0)
+            meta_conf = meta_conf_val if math.isfinite(meta_conf_val) else 0.0
+        except (ValueError, TypeError):
+            meta_conf = 0.0
         repository_key = _incident_scope_key(
-            "repository", outcome.repository_root or outcome.metadata.get("repository_root")
+            "repository", outcome.repository_root or meta.get("repository_root")
         )
         tenant_key = _incident_scope_key(
-            "tenant", outcome.tenant or outcome.metadata.get("tenant")
+            "tenant", outcome.tenant or meta.get("tenant")
         )
         auto_rc, auto_fix, auto_conf = _extract_root_cause_and_fix(outcome.error, outcome.tool_name, outcome.timed_out)
         eff_rc = meta_rc or auto_rc or None
@@ -775,6 +930,34 @@ class IncidentStore:
 
         rows = retry_busy(_fetch_list, retries=5, base_delay_seconds=0.02)
         return [self._row_to_record(r) for r in rows]
+
+    def has_incidents(self) -> bool:
+        if not self.state_store.enabled or not self.state_store.db_path.exists():
+            return False
+        self._init_table()
+
+        def _check() -> bool:
+            with closing(connect_sqlite(self.state_store.db_path)) as con:
+                row = con.execute("SELECT 1 FROM agent_incidents LIMIT 1").fetchone()
+                return row is not None
+
+        return retry_busy(_check, retries=5, base_delay_seconds=0.02)
+
+    def incident_count(self, resolved: bool | None = None) -> int:
+        if not self.state_store.enabled or not self.state_store.db_path.exists():
+            return 0
+        self._init_table()
+
+        def _count() -> int:
+            with closing(connect_sqlite(self.state_store.db_path)) as con:
+                if resolved is None:
+                    row = con.execute("SELECT COUNT(*) FROM agent_incidents").fetchone()
+                else:
+                    val = 1 if resolved else 0
+                    row = con.execute("SELECT COUNT(*) FROM agent_incidents WHERE resolved = ?", (val,)).fetchone()
+                return int(row[0]) if row else 0
+
+        return retry_busy(_count, retries=5, base_delay_seconds=0.02)
 
     def _save_record(self, record: IncidentRecord) -> None:
         if not self.state_store.enabled:

@@ -97,7 +97,11 @@ def _coordination_scope(
 def normalize_paths(
     paths: Sequence[str], *, root: str | Path | None = None
 ) -> tuple[str, ...]:
-    if not isinstance(paths, Sequence) or isinstance(paths, (str, bytes, bytearray)):
+    if (
+        not isinstance(paths, Sequence)
+        or isinstance(paths, (str, bytes, bytearray))
+        or not paths
+    ):
         raise ValueError("writer lease paths must be a sequence of exact paths")
     normalized: set[str] = set()
     resolved_root = Path(root).resolve(strict=False) if root is not None else None
@@ -751,3 +755,119 @@ class FencingLeaseStore:
                     raise
 
         return retry_busy(write, retries=5, base_delay_seconds=0.02)
+
+    def get_active_attempt(
+        self,
+        resource: str | Path,
+        work_id: str,
+        *,
+        coordination_id: str | None | object = _COORDINATION_ID_UNSET,
+    ) -> WorkAttemptFence | None:
+        """Return the active unexpired WorkAttemptFence for work_id, or None."""
+        if type(work_id) is not str or not work_id.strip() or "\x00" in work_id:
+            raise ValueError("work_id must be a non-empty string")
+        clean_work_id = work_id.strip()
+        root_id, scope_id = _coordination_scope(resource, coordination_id)
+        now = float(self._clock())
+        with closing(self._connect()) as con:
+            row = con.execute(
+                """SELECT resource,scope_id,work_id,owner_id,fencing_token,expires_at,attempt_id
+                   FROM writer_fence_attempts
+                   WHERE (scope_id=? OR (resource=? AND scope_id=resource))
+                   AND work_id=? AND active=1 AND expires_at>?""",
+                (scope_id, root_id, clean_work_id, now),
+            ).fetchone()
+            if row is None:
+                return None
+            res, sc_id, wk, own, tok, exp, att_id = row
+            return WorkAttemptFence(
+                resource=str(res),
+                work_id=str(wk),
+                attempt_id=str(att_id),
+                owner_id=str(own),
+                fencing_token=int(tok),
+                expires_at=float(exp),
+                scope_id=str(sc_id),
+            )
+
+    def get_active_leases(
+        self,
+        resource: str | Path,
+        *,
+        coordination_id: str | None | object = _COORDINATION_ID_UNSET,
+    ) -> list[FencingLease]:
+        """Return all active, unexpired FencingLease records for this resource scope."""
+        root_id, scope_id = _coordination_scope(resource, coordination_id)
+        now = float(self._clock())
+        with closing(self._connect()) as con:
+            rows = con.execute(
+                """SELECT resource,lease_id,owner_id,fencing_token,expires_at,paths_json,
+                          attempt_id,attempt_token,scope_id
+                   FROM writer_fence_leases
+                   WHERE (scope_id=? OR (resource=? AND scope_id=resource))
+                   AND active=1 AND expires_at>?""",
+                (scope_id, root_id, now),
+            ).fetchall()
+            leases: list[FencingLease] = []
+            for r in rows:
+                try:
+                    decoded_paths = json.loads(str(r[5]))
+                    if not isinstance(decoded_paths, list):
+                        raise ValueError("live lease paths are not a list")
+                    paths = tuple(normalize_paths(decoded_paths))
+                except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                    raise LeaseUnavailableError(
+                        "an active writer has a corrupt path scope"
+                    ) from exc
+                leases.append(
+                    FencingLease(
+                        resource=str(r[0]),
+                        lease_id=str(r[1]),
+                        owner_id=str(r[2]),
+                        fencing_token=int(r[3]),
+                        expires_at=float(r[4]),
+                        paths=paths,
+                        attempt_id=str(r[6]),
+                        attempt_token=int(r[7]),
+                        scope_id=str(r[8]),
+                    )
+                )
+            return leases
+
+    def is_path_locked(
+        self,
+        resource: str | Path,
+        path: str,
+        *,
+        coordination_id: str | None | object = _COORDINATION_ID_UNSET,
+    ) -> bool:
+        """Return True if path overlaps with any active live lease."""
+        active_leases = self.get_active_leases(resource, coordination_id=coordination_id)
+        norm = normalize_paths([path])
+        return any(_overlaps(norm, lease.paths) for lease in active_leases)
+
+    def prune_expired(self) -> int:
+        """Deactivate expired attempts and leases across all resources, returning count."""
+        now = float(self._clock())
+
+        def write() -> int:
+            with closing(self._connect()) as con:
+                con.execute("BEGIN IMMEDIATE")
+                try:
+                    cur1 = con.execute(
+                        "UPDATE writer_fence_attempts SET active=0 WHERE active=1 AND expires_at<=?",
+                        (now,),
+                    )
+                    cur2 = con.execute(
+                        "UPDATE writer_fence_leases SET active=0 WHERE active=1 AND expires_at<=?",
+                        (now,),
+                    )
+                    con.execute("COMMIT")
+                    return int(cur1.rowcount or 0) + int(cur2.rowcount or 0)
+                except BaseException:
+                    if con.in_transaction:
+                        con.execute("ROLLBACK")
+                    raise
+
+        return retry_busy(write, retries=5, base_delay_seconds=0.02)
+

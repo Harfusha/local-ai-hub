@@ -12,17 +12,24 @@ _observer: ContextVar[Any | None] = ContextVar("local_ai_debug_observer", defaul
 _efficiency_metadata: ContextVar[dict[str, Any] | None] = ContextVar("local_ai_token_efficiency", default=None)
 
 
+def _sanitize_ident(value: Any, limit: int = 256) -> str:
+    if value is None:
+        return ""
+    text = value if isinstance(value, str) else str(value)
+    return "".join(char for char in text if char >= " " and char != "\x7f").strip()[:limit]
+
+
 def set_context(
     *,
-    request_id: str | None = "",
-    trace_id: str | None = "",
-    agent: str | None = "",
-    tenant: str | None = "",
+    request_id: Any = "",
+    trace_id: Any = "",
+    agent: Any = "",
+    tenant: Any = "",
 ) -> tuple[Token, Token, Token, Token]:
-    request = str(request_id or "") if request_id is not None else ""
-    trace = (str(trace_id or "") if trace_id is not None else "") or request
-    agent_id = str(agent or "") if agent is not None else ""
-    tenant_id = str(tenant or "") if tenant is not None else ""
+    request = _sanitize_ident(request_id)
+    trace = _sanitize_ident(trace_id or request)
+    agent_id = _sanitize_ident(agent)
+    tenant_id = _sanitize_ident(tenant)
     return (_request_id.set(request), _trace_id.set(trace), _agent.set(agent_id), _tenant.set(tenant_id))
 
 
@@ -35,14 +42,14 @@ def reset_context(tokens: tuple[Token, Token, Token, Token] | Sequence[Token] | 
             try:
                 variable.reset(tokens)
                 return
-            except ValueError:
+            except (ValueError, RuntimeError):
                 continue
         return
     for variable, token in zip(variables, tokens):
         if isinstance(token, Token):
             try:
                 variable.reset(token)
-            except ValueError:
+            except (ValueError, RuntimeError):
                 pass
 
 
@@ -66,7 +73,7 @@ def reset_observer(token: Token) -> None:
         return
     try:
         _observer.reset(token)
-    except ValueError:
+    except (ValueError, RuntimeError):
         pass
 
 
@@ -97,7 +104,7 @@ def reset_metadata(token: Token) -> None:
         return
     try:
         _efficiency_metadata.reset(token)
-    except ValueError:
+    except (ValueError, RuntimeError):
         pass
 
 
@@ -121,3 +128,13 @@ def current() -> dict[str, Any]:
     if metadata:
         value["token_efficiency"] = metadata
     return value
+
+
+def clear_context() -> None:
+    """Clear trace, observer, and token-efficiency metadata in this context."""
+    _request_id.set("")
+    _trace_id.set("")
+    _agent.set("")
+    _tenant.set("")
+    _observer.set(None)
+    _efficiency_metadata.set(None)

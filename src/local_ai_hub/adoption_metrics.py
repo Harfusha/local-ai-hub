@@ -23,7 +23,9 @@ _FORBIDDEN = {"prompt", "source", "content", "path", "secret", "token", "passwor
 
 
 def _identifier(value: str, field: str) -> str:
-    normalized = str(value or "").strip().lower()
+    if type(value) is not str:
+        raise ValueError(f"{field} must be a string")
+    normalized = value.strip().lower()
     if not _IDENTIFIER.fullmatch(normalized) or normalized in _FORBIDDEN:
         raise ValueError(f"{field} must be a safe normalized identifier")
     return normalized
@@ -76,8 +78,10 @@ class AdoptionMetricsStore:
             raise ValueError("state_dir cannot contain a NUL character")
         if not state_path.strip():
             raise ValueError("state_dir cannot be blank")
-        validated_retention_days = max(2, min(int(retention_days), 365))
-        validated_max_actions = max(16, min(int(max_actions), 1024))
+        if type(retention_days) is not int or type(max_actions) is not int:
+            raise TypeError("retention_days and max_actions must be integers")
+        validated_retention_days = max(2, min(retention_days, 365))
+        validated_max_actions = max(16, min(max_actions, 1024))
         self.path = Path(state_path) / "adoption_metrics.sqlite3"
         self.retention_days = validated_retention_days
         self.max_actions = validated_max_actions
@@ -113,11 +117,15 @@ class AdoptionMetricsStore:
             raise ValueError("outcome must be a supported aggregate")
         reason = ""
         if fallback_reason is not None:
-            reason = str(fallback_reason or "").strip().lower()
+            if type(fallback_reason) is not str:
+                raise ValueError("fallback reason must be a string")
+            reason = fallback_reason.strip().lower()
             if reason not in _REASONS:
                 raise ValueError("fallback reason must be safe fallback category")
         if outcome in {"blocked", "failed", "bypassed"} and not reason:
             reason = "other"
+        if now is not None and not isinstance(now, datetime):
+            raise ValueError("now must be a datetime")
         current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         day = current.date().isoformat()
         latency = _duration_bucket(duration_ms)
@@ -134,7 +142,11 @@ class AdoptionMetricsStore:
         self.record(tool, action, intent, "bypassed", fallback_reason=reason, now=now)
 
     def report(self, *, days: int = 7, now: datetime | None = None) -> dict[str, Any]:
-        days = max(1, min(int(days), self.retention_days))
+        if isinstance(days, bool) or not isinstance(days, int):
+            raise ValueError("days must be an integer")
+        days = max(1, min(days, self.retention_days))
+        if now is not None and not isinstance(now, datetime):
+            raise ValueError("now must be a datetime")
         current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
         end = current.date()
         start = end - timedelta(days=days - 1)
@@ -148,7 +160,14 @@ class AdoptionMetricsStore:
         totals = {outcome: 0 for outcome in _OUTCOMES}
         reasons: dict[str, int] = {}; failures: dict[str, int] = {}; latency: dict[str, int] = {}; output: dict[str, int] = {}; actions: dict[tuple[str, str, str], int] = {}
         for day, tool, action, outcome, reason, latency_bucket, output_bucket, count in rows:
-            count = int(count); daily[day][outcome] += count; totals[outcome] += count
+            count = int(count)
+            if day not in daily:
+                daily[day] = {"day": day, **{o: 0 for o in _OUTCOMES}}
+            if outcome in daily[day]:
+                daily[day][outcome] += count
+            else:
+                daily[day][outcome] = count
+            totals[outcome] = totals.get(outcome, 0) + count
             key = (tool, action, outcome); actions[key] = actions.get(key, 0) + count
             if outcome == "blocked" and reason: reasons[reason] = reasons.get(reason, 0) + count
             if outcome == "failed" and reason: failures[reason] = failures.get(reason, 0) + count
@@ -158,4 +177,20 @@ class AdoptionMetricsStore:
             count for (tool, _action, outcome), count in actions.items()
             if tool == "local_ai_task" and outcome == "used"
         )
-        return {"days": days, "daily": list(daily.values()), "totals": totals, "routing_adoption": {"local_recommended": totals["recommended"], "local_used": local_used, "bypassed": totals["bypassed"], "fallback_used": totals["fallback_used"]}, "action_adoption": [{"tool": tool, "action": action, "outcome": outcome, "count": count} for (tool, action, outcome), count in sorted(actions.items())], "blocked_reasons": [{"reason": key, "count": value} for key, value in sorted(reasons.items())], "terminal_failures": [{"reason": key, "count": value} for key, value in sorted(failures.items())], "dormant_actions": [f"{tool}:{action}" for tool, action in dormant], "latency_buckets": [{"bucket": key, "count": value} for key, value in sorted(latency.items())], "output_size_buckets": [{"bucket": key, "count": value} for key, value in sorted(output.items())]}
+        return {
+            "days": days,
+            "daily": list(daily.values()),
+            "totals": totals,
+            "routing_adoption": {
+                "local_recommended": totals.get("recommended", 0),
+                "local_used": local_used,
+                "bypassed": totals.get("bypassed", 0),
+                "fallback_used": totals.get("fallback_used", 0),
+            },
+            "action_adoption": [{"tool": tool, "action": action, "outcome": outcome, "count": count} for (tool, action, outcome), count in sorted(actions.items())],
+            "blocked_reasons": [{"reason": key, "count": value} for key, value in sorted(reasons.items())],
+            "terminal_failures": [{"reason": key, "count": value} for key, value in sorted(failures.items())],
+            "dormant_actions": [f"{tool}:{action}" for tool, action in dormant],
+            "latency_buckets": [{"bucket": key, "count": value} for key, value in sorted(latency.items())],
+            "output_size_buckets": [{"bucket": key, "count": value} for key, value in sorted(output.items())],
+        }
