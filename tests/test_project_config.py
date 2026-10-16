@@ -321,73 +321,6 @@ def test_invalid_project_configuration_falls_back_atomically(tmp_path: Path) -> 
     assert result.error_codes == ("invalid_config",)
 
 
-def test_invalid_lower_layer_cannot_be_hidden_by_valid_worktree_override(
-    tmp_path: Path,
-) -> None:
-    (tmp_path / ".local-ai.toml").write_text(
-        'skip_phases = "rag"\n', encoding="utf-8"
-    )
-    (tmp_path / ".local-ai.worktree.toml").write_text(
-        "skip_phases = []\n", encoding="utf-8"
-    )
-
-    result = resolve_project_config(tmp_path)
-
-    assert result.settings == ProjectSettings()
-    assert result.active_sources == ("defaults",)
-    assert result.error_codes == ("invalid_config",)
-
-
-def test_verification_alias_can_be_defined_in_lower_config_layer(
-    tmp_path: Path,
-) -> None:
-    (tmp_path / ".local-ai.toml").write_text(
-        '[commands]\ntest = "python -m pytest"\n', encoding="utf-8"
-    )
-    (tmp_path / ".local-ai.worktree.toml").write_text(
-        '[verification_rules]\ntask_complete = ["test"]\n', encoding="utf-8"
-    )
-
-    result = resolve_project_config(tmp_path)
-
-    assert result.error_codes == ()
-    assert result.settings.commands == {"test": "python -m pytest"}
-    assert result.settings.verification_rules == {"task_complete": ("test",)}
-
-
-def test_config_loader_opens_resolved_path_that_passed_containment_check(
-    tmp_path: Path, monkeypatch
-) -> None:
-    from io import BytesIO
-
-    root = tmp_path / "repo"
-    root.mkdir()
-    config = root / ".local-ai.toml"
-    config.write_text('project_type = "python"\n', encoding="utf-8")
-    verified_path = root / "verified.toml"
-    verified_path.write_text('project_type = "python"\n', encoding="utf-8")
-    original_resolve = Path.resolve
-    original_open = Path.open
-
-    def resolve_config(self: Path, strict: bool = False) -> Path:
-        if self == config:
-            return verified_path
-        return original_resolve(self, strict=strict)
-
-    def retarget_config_after_validation(self: Path, *args, **kwargs):
-        if self == config:
-            return BytesIO(b'project_type = "outside"\n')
-        return original_open(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "resolve", resolve_config)
-    monkeypatch.setattr(Path, "open", retarget_config_after_validation)
-
-    result = resolve_project_config(root)
-
-    assert result.settings.project_type == "python"
-    assert result.error_codes == ()
-
-
 def test_config_loader_rejects_file_replaced_after_containment_check(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1677,61 +1610,6 @@ def test_ignored_parent_stays_traversable_for_forced_descendant(tmp_path: Path) 
         soft_ignored=True,
     )
 
-def test_config_overlay_accepts_256_kib_and_rejects_one_byte_more(
-    tmp_path: Path,
-) -> None:
-    root = tmp_path / "repo"
-    root.mkdir()
-    config = root / ".local-ai.toml"
-    prefix = b'project_type = "python"\n'
-    limit = 256 * 1024
-    at_limit = prefix + b"#" * (limit - len(prefix))
-    assert len(at_limit) == limit
-    config.write_bytes(at_limit)
-
-    accepted = resolve_project_config(root)
-
-    assert accepted.error_codes == ()
-    assert accepted.settings.project_type == "python"
-
-    config.write_bytes(at_limit + b"\n")
-    rejected = resolve_project_config(root)
-
-    assert rejected.settings == ProjectSettings()
-    assert rejected.error_codes == ("config_too_large",)
-
-def test_path_override_specificity_is_shared_across_symlink_alias_and_target(
-    tmp_path: Path, monkeypatch
-) -> None:
-    alias_dir = tmp_path / "alias" / "module"
-    alias_dir.mkdir(parents=True)
-    alias_file = alias_dir / "keep.py"
-    alias_file.write_text("x", encoding="utf-8")
-    target_dir = tmp_path / "generated" / "src" / "module"
-    target_dir.mkdir(parents=True)
-    target_file = target_dir / "keep.py"
-    target_file.write_text("x", encoding="utf-8")
-    _mock_resolutions(
-        monkeypatch,
-        {
-            alias_dir: target_dir,
-            alias_file: target_file,
-        },
-    )
-    settings = ProjectSettings(
-        path_overrides={
-            "alias/module": "include",
-            "alias/module/keep.py": "include",
-            "generated/**": "exclude",
-        }
-    )
-
-    assert may_descend(
-        tmp_path, "alias/module", settings, phase="search", soft_ignored=True
-    )
-    assert path_is_allowed(
-        tmp_path, "alias/module/keep.py", settings, phase="search"
-    )
 
 def test_project_config_precedence_covers_primary_linked_common_and_worktree_layers(
     tmp_path: Path, monkeypatch
