@@ -18,7 +18,7 @@ def test_mcp_dispatch_rejects_unknown_arguments_before_http_tool_call(monkeypatc
     _content, payload = asyncio.run(
         mcp_server._compact_mcp_call_tool(
             "local_ai_status",
-            {"action": "brief", "unknown_argument": True},
+            {"detail": "brief", "unknown_argument": True},
         )
     )
 
@@ -56,8 +56,8 @@ def test_mcp_dispatch_rejects_artifact_list_get_fields_before_tool_call(monkeypa
     "arguments",
     [
         {"action": "slice", "artifact_id": "artifact-1", "offset": -1},
-        {"action": "slice", "artifact_id": "artifact-1", "max_chars": 511},
-        {"action": "slice", "artifact_id": "artifact-1", "max_chars": 12001},
+        {"action": "slice", "artifact_id": "artifact-1", "max_chars": 0},
+        {"action": "slice", "artifact_id": "artifact-1", "max_chars": 50001},
     ],
 )
 def test_mcp_dispatch_rejects_out_of_range_artifact_slice_before_tool_call(
@@ -93,7 +93,7 @@ def test_mcp_dispatch_rejects_invalid_output_envelope(monkeypatch) -> None:
     _content, payload = asyncio.run(
         mcp_server._compact_mcp_call_tool(
             "local_ai_status",
-            {"action": "brief"},
+            {"detail": "brief"},
         )
     )
 
@@ -580,6 +580,8 @@ def test_mcp_repo_search_passes_path_hints_to_client_keyword(monkeypatch) -> Non
                 "query": "auth",
                 "top_k": 12,
                 "enrich": False,
+                "limit": None,
+                "offset": 0,
             },
             expected_hints,
         )
