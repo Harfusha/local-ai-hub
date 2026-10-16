@@ -10,6 +10,14 @@ from local_ai_hub.http_route_registry import select_http_routes
 from local_ai_hub.operation_contracts import operation_parameters_schema, validate_operation_arguments
 
 
+def _non_accounting_posts(posts):
+    artifact_fields = {"artifact_id", "offset", "max_chars", "section", "binary", "slices"}
+    for path, payload in posts:
+        if path == "/api/telemetry/tool-accounting":
+            assert artifact_fields.isdisjoint(payload)
+    return [post for post in posts if post[0] != "/api/telemetry/tool-accounting"]
+
+
 @pytest.mark.parametrize(
     "payload",
     [
@@ -79,7 +87,7 @@ def test_mcp_get_rejects_noncanonical_arguments_before_post(monkeypatch, argumen
     result = mcp_server.local_ai_artifact(action="get", artifact_id="artifact-1", **arguments)
 
     assert result["success"] is False
-    assert posts == []
+    assert _non_accounting_posts(posts) == []
 
 
 def test_mcp_get_forwards_small_page_exactly_and_schema_keeps_source_bounds(tmp_path, monkeypatch) -> None:
@@ -90,6 +98,8 @@ def test_mcp_get_forwards_small_page_exactly_and_schema_keeps_source_bounds(tmp_
 
     def post(path, payload, **_kwargs):
         posts.append((path, payload))
+        if path == "/api/telemetry/tool-accounting":
+            return {"success": True}
         return store.get(
             payload["artifact_id"], payload["offset"], payload["max_chars"],
             payload["section"], tenant="owner",
@@ -101,7 +111,7 @@ def test_mcp_get_forwards_small_page_exactly_and_schema_keeps_source_bounds(tmp_
     )
     assert result["success"] is True
     assert result["text"] == "a"
-    assert posts == [(
+    assert _non_accounting_posts(posts) == [(
         "/api/artifact/get",
         {"artifact_id": artifact_id, "offset": 2, "max_chars": 1, "section": "", "binary": False},
     )]
@@ -128,7 +138,7 @@ def test_mcp_rejects_pages_above_configured_response_text_limit(monkeypatch) -> 
 
     assert result["success"] is False
     assert "MCP text limit of 100" in result["error"]
-    assert posts == []
+    assert _non_accounting_posts(posts) == []
 
 
 def test_mcp_rejects_slice_mixed_with_single_page_arguments(monkeypatch) -> None:
@@ -138,7 +148,7 @@ def test_mcp_rejects_slice_mixed_with_single_page_arguments(monkeypatch) -> None
         action="slice", artifact_id="artifact-1", slices=[{"offset": 0, "max_chars": 1}], offset=1,
     )
     assert result["success"] is False
-    assert posts == []
+    assert _non_accounting_posts(posts) == []
 
 
 @pytest.mark.parametrize("size, valid", [(511, False), (512, True), (12_000, True), (12_001, False)])

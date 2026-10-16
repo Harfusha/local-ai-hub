@@ -244,6 +244,6 @@ def test_completed_retry_uses_server_verifier_and_rejects_caller_rules(tasks, tm
     with pytest.raises(TypeError, match="verification_rules"):
         tasks.complete(completed.task_id, verification_rules={"review": True})
     tasks.set_verification_store(object())
-    with pytest.raises(CompletionGateError, match="no completion method"):
+    with pytest.raises(CompletionGateError, match="verification evaluator is unsupported"):
         tasks.complete(completed.task_id, actor="owner")
     assert tasks.state_store.events(f"task:{completed.task_id}") == before_events
