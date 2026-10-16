@@ -1045,21 +1045,44 @@ def _code_index_prefix_fitting(
     base: dict[str, Any], raw: dict[str, Any], symbols: list[Any], requested: int,
     *, wire_budget: bool,
 ) -> dict[str, Any] | None:
-    """Select the largest whole-symbol prefix fitting response and optional MCP wire budgets."""
-    for count in range(len(symbols), -1, -1):
-        candidate = _code_index_page_with_prefix(base, raw, symbols, count)
-        candidate = _normalize_deterministic(account_projection(raw, candidate))
-        if json_tokens(candidate) > requested:
+    """Fit a whole-symbol prefix, reducing optional symbol detail only as needed."""
+    minimal_keys = ("name", "kind", "path", "line", "end_line", "matched_terms")
+    minimal_symbols = [
+        {key: symbol[key] for key in minimal_keys if key in symbol}
+        if isinstance(symbol, dict) else symbol
+        for symbol in symbols
+    ]
+    for source_symbols, reduced in ((symbols, False), (minimal_symbols, True)):
+        if reduced and source_symbols == symbols:
             continue
-        if wire_budget:
-            wire = {
-                "content": [{"type": "text", "text": json_dumps(candidate)}],
-                "structuredContent": candidate,
-                "isError": False,
-            }
-            if json_tokens(wire) > requested:
+        min_count = 1 if source_symbols else 0
+        for count in range(len(source_symbols), min_count - 1, -1):
+            candidate = _code_index_page_with_prefix(base, raw, source_symbols, count)
+            if reduced:
+                omitted = sorted({
+                    f"symbols.{key}"
+                    for original, projected in zip(symbols[:count], source_symbols[:count])
+                    if isinstance(original, dict) and isinstance(projected, dict)
+                    for key in original
+                    if key not in projected
+                })
+                if omitted:
+                    candidate["omitted_fields"] = list(dict.fromkeys([
+                        *(candidate.get("omitted_fields") if isinstance(candidate.get("omitted_fields"), list) else []),
+                        *omitted,
+                    ]))
+            candidate = _normalize_deterministic(account_projection(raw, candidate))
+            if json_tokens(candidate) > requested:
                 continue
-        return candidate
+            if wire_budget:
+                wire = {
+                    "content": [{"type": "text", "text": json_dumps(candidate)}],
+                    "structuredContent": candidate,
+                    "isError": False,
+                }
+                if json_tokens(wire) > requested:
+                    continue
+            return candidate
     return None
 
 
