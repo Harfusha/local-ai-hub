@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 import os
 import re
 import subprocess
@@ -22,8 +23,14 @@ def parse_worktree_porcelain(payload: str) -> list[str]:
 
 def discover_worktree_roots(root: str | Path, timeout_seconds: float = 5.0) -> list[str]:
     """Discover existing sibling worktrees without reading repository content."""
-    root_path = Path(root)
-    if not root_path.is_dir():
+    if not isinstance(root, (str, Path)) or isinstance(root, bool) or not str(root).strip() or "\x00" in str(root):
+        return []
+    timeout = 5.0 if isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float)) or not math.isfinite(timeout_seconds) else timeout_seconds
+    try:
+        root_path = Path(root)
+        if not root_path.is_dir():
+            return []
+    except (TypeError, ValueError, OSError):
         return []
     try:
         result = subprocess.run(
@@ -32,7 +39,7 @@ def discover_worktree_roots(root: str | Path, timeout_seconds: float = 5.0) -> l
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True,
-            timeout=max(0.5, float(timeout_seconds)),
+            timeout=max(0.5, float(timeout)),
             check=False,
             **hidden_run_kwargs(),
         )
@@ -414,7 +421,7 @@ def remove_worktree_safe(
 
 def is_git_worktree(path: str | Path) -> bool:
     """Check if the directory is a git worktree or git repository."""
-    if not isinstance(path, (str, Path)) or "\x00" in str(path):
+    if not isinstance(path, (str, Path)) or isinstance(path, bool) or not str(path).strip() or "\x00" in str(path):
         return False
     try:
         target = Path(path).resolve(strict=False)
@@ -522,14 +529,14 @@ def get_worktree_status(
 
 def is_valid_worktree_name(name: Any) -> bool:
     """Return True if worktree name or branch identifier is safe and valid."""
-    if not isinstance(name, str):
+    if not isinstance(name, str) or isinstance(name, bool):
         return False
     clean = name.strip()
     if not clean or "\x00" in clean or len(clean) > 200:
         return False
     if clean.startswith("-") or clean.startswith("/") or clean.startswith("\\"):
         return False
-    if ".." in clean or clean.endswith("/"):
+    if ".." in clean or clean.endswith(("/", "\\", ".")):
         return False
     return bool(re.fullmatch(r"[A-Za-z0-9_./-]+", clean))
 
