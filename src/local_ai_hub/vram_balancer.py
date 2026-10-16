@@ -328,9 +328,10 @@ class VRAMBalancer:
                     return unknown_sample("sample_invalid")
                 pressure_percentages.append(100.0 * (total_mb - available_value) / total_mb)
 
-            policy_pressure_pct = max(pressure_percentages)
-            policy_headroom_mb = min(
-                total_mb * (1.0 - value / 100.0) for value in pressure_percentages
+            policy_pressure_pct = round(max(pressure_percentages), 4)
+            policy_headroom_mb = round(
+                min(total_mb * (1.0 - value / 100.0) for value in pressure_percentages),
+                4,
             )
             # Preserve telemetry as reported. Policy bounds above may combine
             # contradictory measurements conservatively, but are never raw readings.

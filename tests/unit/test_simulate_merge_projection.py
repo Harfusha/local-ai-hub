@@ -32,8 +32,8 @@ def test_simulate_merge_preserves_mergeability_and_conflicts_through_mcp(monkeyp
 
     wire_result = asyncio.run(mcp_server.mcp.call_tool("local_ai_coord", {
         "action": "simulate_merge",
-        "key": "feature/example",
-        "target_scope": "master",
+        "source_branch": "feature/example",
+        "target_branch": "master",
         "root": str(tmp_path),
         "response_profile": "compact",
         "max_response_tokens": 1024,
