@@ -444,3 +444,6 @@ The model-free claim validator now takes explicit manifest and receipt paths rat
 
 
 **2026-10-16 audit source disposition spot-check (F24):** Current `agent_tasks.py` validates nested `state_data.memory_audit`, reports actionable field paths, accepts either used IDs or a nonempty `not_used_reason`, and rejects unavailable IDs. The install/update prompts and `tests/test_task_memory_checkpoint_audit.py` describe and cover the contract, including ordinary checkpoints without injected memory. No tests ran in this continuation; retain integrated validation for the final bundle.
+
+
+**2026-10-16 audit source disposition (F20/F21 CI):** Current `.github/workflows/ci.yml` runs one primary full suite by default, targeted platform/interpreter cohorts on the remaining matrix cells, and publishes coverage JSON; `full_matrix` retains the full-suite opt-in. Release still runs the full suite. Commit `add10def` upgrades installed-wheel smoke from `--no-deps` import/version check to declared-dependency install, `pip check`, installed CLI version validation, and MCP server module import. This improves packaging evidence but does not yet prove an MCP protocol tool call, optional-backend cohorts, or measured coverage threshold. No workflow or test execution ran in this source phase; complete those only after source bundle closure.
