@@ -552,7 +552,7 @@ def test_mcp_delegate_autostarts_owned_daemon_and_preserves_http_payload(tmp_pat
             "changed_paths": [],
             "repository_revision": "",
             "evidence_ids": [],
-        }, "autostart-test")
+        }, "http-default")
         for task, context in tasks
     ]
     assert len(owned_children) == 1, f"duplicate daemon starts: {start_events!r}"
@@ -695,13 +695,15 @@ def test_local_ai_repo_non_context_actions_ignore_guard_fields(monkeypatch) -> N
         changed_paths=["src/app.py"],
         token_budget=777,
         approval=True,
+        limit=24,
+        offset=0,
         path_hints=[{"path": "src/auth.py", "purpose": "repository_search", "scope": "repo_search"}],
     )
 
     api_calls = [call for call in calls if call[0] != "/api/telemetry/tool-accounting"]
     assert api_calls == [(
         "/api/search",
-        {"root": str(Path("C:/repo")), "query": "route", "top_k": 12, "enrich": False},
+        {"root": str(Path("C:/repo")), "query": "route", "top_k": 12, "enrich": False, "limit": 24, "offset": 0},
         120.0,
         [{"path": "src/auth.py", "purpose": "repository_search", "scope": "repo_search"}],
     )]
@@ -919,7 +921,7 @@ def test_local_ai_repo_context_rejects_guard_fields_without_guard_trigger(monkey
     calls = _capture_client(monkeypatch, {"success": True})
 
     result = local_ai_mcp.local_ai_repo(
-        action="context", root="C:/repo", query="check context", changed_paths=["src/app.py"],
+        action="context", root="C:/repo", query="check context", guarded=False, base="HEAD~1",
     )
 
     assert result["success"] is False
@@ -959,7 +961,7 @@ def test_mcp_artifact_page_rejects_store_slice_larger_than_text_limit(monkeypatc
     result = asyncio.run(
         local_ai_mcp.mcp.call_tool(
             "local_ai_artifact",
-            {"action": "get", "artifact_id": artifact_id, "offset": 0, "max_chars": 512},
+            {"action": "get", "artifact_id": artifact_id, "offset": 0, "max_chars": 128},
         )
     )
     if isinstance(result, tuple):
