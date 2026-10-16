@@ -87,7 +87,7 @@ def test_workspace_memory_store_nan_inf_bool_surrogates_and_helpers(tmp_path: Pa
 
 def test_operational_mode_helpers_and_gate_error_resilience(tmp_path: Path) -> None:
     assert is_valid_operational_mode("active") is True
-    assert is_valid_operational_mode("  GAMING\x00 ") is True
+    assert is_valid_operational_mode("  GAMING\x00 ") is False
     assert is_valid_operational_mode("maintenance") is True
     assert is_valid_operational_mode("invalid") is False
     assert is_valid_operational_mode(True) is False
