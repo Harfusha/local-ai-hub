@@ -17,7 +17,7 @@ import time
 from contextlib import closing, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Callable, Iterator, Sequence
+from typing import Any, Callable, Iterator, Sequence
 from uuid import uuid4
 
 from .sqlite_support import connect_sqlite, initialize_wal, retry_busy
@@ -89,29 +89,40 @@ def _coordination_scope(
     return physical, f"project:{namespace}"
 
 
+def is_safe_lease_path(path: Any) -> bool:
+    """Return True if path is a safe relative lease path."""
+    if not isinstance(path, str):
+        return False
+    raw = path.replace("\\", "/")
+    if not raw or "\x00" in raw:
+        return False
+    windows = PureWindowsPath(raw)
+    posix = PurePosixPath(raw)
+    parts = raw.split("/")
+    if (
+        windows.drive
+        or windows.root
+        or posix.is_absolute()
+        or any(part in {"", ".", ".."} for part in parts)
+    ):
+        return False
+    return True
+
+
 def normalize_paths(
     paths: Sequence[str], *, root: str | Path | None = None
 ) -> tuple[str, ...]:
     if paths is None:
         raise ValueError("writer lease requires at least one exact path")
+    if isinstance(paths, (str, bytes)) or not isinstance(paths, (Sequence, set)):
+        raise ValueError("writer lease requires a sequence of exact path strings")
     normalized: set[str] = set()
     resolved_root = Path(root).resolve(strict=False) if root is not None else None
     for value in paths:
-        if not isinstance(value, str):
+        if not is_safe_lease_path(value):
             raise ValueError(f"unsafe lease path: {value!r}")
         raw = value.replace("\\", "/")
-        windows = PureWindowsPath(raw)
-        posix = PurePosixPath(raw)
         parts = raw.split("/")
-        if (
-            not raw
-            or "\x00" in raw
-            or windows.drive
-            or windows.root
-            or posix.is_absolute()
-            or any(part in {"", ".", ".."} for part in parts)
-        ):
-            raise ValueError(f"unsafe lease path: {value!r}")
         identity = "/".join(parts)
         if resolved_root is not None:
             target = (resolved_root / Path(*parts)).resolve(strict=False)
@@ -127,8 +138,10 @@ def normalize_paths(
 
 
 def _overlaps(left: Sequence[str], right: Sequence[str]) -> bool:
-    left_keys = tuple(os.path.normcase(path).replace("\\", "/") for path in left)
-    right_keys = tuple(os.path.normcase(path).replace("\\", "/") for path in right)
+    if not left or not right:
+        return False
+    left_keys = tuple(os.path.normcase(path).replace("\\", "/") for path in left if isinstance(path, str))
+    right_keys = tuple(os.path.normcase(path).replace("\\", "/") for path in right if isinstance(path, str))
     for first in left_keys:
         for second in right_keys:
             if (
@@ -138,6 +151,11 @@ def _overlaps(left: Sequence[str], right: Sequence[str]) -> bool:
             ):
                 return True
     return False
+
+
+def are_paths_disjoint(left: Sequence[str], right: Sequence[str]) -> bool:
+    """Return True if left and right path scopes do not overlap."""
+    return not _overlaps(left, right)
 
 
 class FencingLeaseStore:

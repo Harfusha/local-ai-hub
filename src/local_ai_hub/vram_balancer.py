@@ -146,6 +146,8 @@ class VRAMBalancer:
 
     @staticmethod
     def _safe_float(val: Any, default: float = 0.0) -> float:
+        if isinstance(val, bool):
+            return default
         try:
             res = float(val or 0)
             return res if math.isfinite(res) else default
@@ -246,7 +248,7 @@ class VRAMBalancer:
 
     def pin_model(self, model_name: str, ttl_seconds: float = 300.0) -> dict[str, Any]:
         """Pin a warm model in VRAM to prevent cache thrashing."""
-        clean_name = str(model_name).strip() if model_name is not None else ""
+        clean_name = str(model_name).replace("\x00", "").strip() if model_name is not None else ""
         if not clean_name:
             raise ValueError("model_name cannot be empty")
         try:
@@ -277,7 +279,7 @@ class VRAMBalancer:
 
     def is_model_pinned(self, model_name: str) -> bool:
         """Return True if model is currently warm-pinned and not expired."""
-        target = str(model_name).strip() if model_name is not None else ""
+        target = str(model_name).replace("\x00", "").strip() if model_name is not None else ""
         if not target:
             return False
         pinned = self.get_pinned_model()
@@ -311,10 +313,15 @@ class VRAMBalancer:
 
     def recommended_context_budget(self, base_tokens: int = 32768) -> int:
         """Compute dynamically scaled context tokens based on graphics memory headroom."""
-        try:
-            base = int(base_tokens)
-        except (TypeError, ValueError, OverflowError):
+        if isinstance(base_tokens, bool):
             base = 32768
+        else:
+            try:
+                base = int(base_tokens)
+                if not math.isfinite(base):
+                    base = 32768
+            except (TypeError, ValueError, OverflowError):
+                base = 32768
         if base < 4096:
             return 4096
         st = self.status()
@@ -330,3 +337,17 @@ class VRAMBalancer:
             "draft_model": spec.get("draft_model", "qwen2.5-coder:7b"),
             "strategy": spec.get("strategy", "full_capacity"),
         }
+
+    def is_sampling(self) -> bool:
+        """Return True if GPU telemetry sampling thread is currently active."""
+        with self._lock:
+            return bool(self._sampling)
+
+    def active_pinned_model(self) -> str | None:
+        """Return name of currently pinned model if any."""
+        return self.get_pinned_model()
+
+    def current_pressure_level(self) -> str:
+        """Return current pressure level string."""
+        st = self.status()
+        return str(st.get("pressure_level", "unknown"))
