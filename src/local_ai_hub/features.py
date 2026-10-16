@@ -14,6 +14,8 @@ from local_ai_hub.operation_contracts import OPERATION_CONTRACTS, operation_acti
 
 def rollout_feature_enabled(config: dict[str, Any], name: str) -> bool:
     """Enable a rollout capability only for an explicit TOML boolean true."""
+    if not isinstance(config, dict) or isinstance(name, bool) or not isinstance(name, str):
+        return False
     features = config.get("features", {})
     return isinstance(features, dict) and features.get(name) is True
 
@@ -93,21 +95,33 @@ class FeatureSet:
         self.local_diagnostic_dispatch: bool = rollout_feature_enabled(cfg, "local_diagnostic_dispatch")
         self.speculative_lint: bool = bool(speculative.get("enabled", False)) if isinstance(speculative, dict) else False
 
+        def _model_str(val: Any, default: str) -> str:
+            if val is None or isinstance(val, bool) or not str(val).strip():
+                return default
+            return str(val).strip()
+
         # Model names — used in descriptions and routing
-        self.fast_model: str = str(mdl.get("fast_code", "qwen2.5-coder:1.5b"))
-        self.smart_model: str = str(mdl.get("heavy_code", "qwen2.5-coder:3b"))
-        self.reasoning_model: str = str(mdl.get("reasoning", "qwen2.5-coder:7b"))
-        self.general_model: str = str(mdl.get("general", self.smart_model))
-        self.background_model: str = str(mdl.get("background_code", "qwen2.5-coder:0.5b"))
-        self.vision_model: str = str(mdl.get("vision", "qwen3-vl:4b")) if self.vision else ""
-        self.embedding_model: str = str(mdl.get("embedding", "BAAI/bge-small-en-v1.5"))
-        self.reranker_model: str = str(mdl.get("reranker", "BAAI/bge-reranker-v2-m3"))
+        self.fast_model: str = _model_str(mdl.get("fast_code"), "qwen2.5-coder:1.5b")
+        self.smart_model: str = _model_str(mdl.get("heavy_code"), "qwen2.5-coder:3b")
+        self.reasoning_model: str = _model_str(mdl.get("reasoning"), "qwen2.5-coder:7b")
+        self.general_model: str = _model_str(mdl.get("general"), self.smart_model)
+        self.background_model: str = _model_str(mdl.get("background_code"), "qwen2.5-coder:0.5b")
+        self.vision_model: str = _model_str(mdl.get("vision"), "qwen3-vl:4b") if self.vision else ""
+        self.embedding_model: str = _model_str(mdl.get("embedding"), "BAAI/bge-small-en-v1.5")
+        self.reranker_model: str = _model_str(mdl.get("reranker"), "BAAI/bge-reranker-v2-m3")
 
         # Named advisory subagent profiles defined in config
-        profiles_cfg = sub.get("profiles", {})
-        self.subagent_profiles: tuple[str, ...] = tuple(profiles_cfg.keys()) if profiles_cfg else (
-            "qwen-explorer", "qwen-drafter", "qwen-critic"
-        )
+        profiles_cfg = sub.get("profiles")
+        if isinstance(profiles_cfg, dict) and profiles_cfg:
+            self.subagent_profiles: tuple[str, ...] = tuple(
+                str(k) for k in profiles_cfg.keys() if k and not isinstance(k, bool)
+            )
+        elif isinstance(profiles_cfg, (list, tuple)) and profiles_cfg:
+            self.subagent_profiles = tuple(
+                str(k) for k in profiles_cfg if k and not isinstance(k, bool)
+            )
+        else:
+            self.subagent_profiles = ("qwen-explorer", "qwen-drafter", "qwen-critic")
 
     # ------------------------------------------------------------------
     # Convenience predicates & collections
