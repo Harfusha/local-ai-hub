@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import subprocess
 import threading
@@ -8,28 +7,15 @@ from pathlib import Path
 
 import pytest
 
-from local_ai_hub import process_utils, whisper_policy
+from local_ai_hub import process_utils
 from local_ai_hub.services import LocalAIServices
+from whisper_fixture_support import _verified_whisper_cache
 
 
 def _service() -> LocalAIServices:
     service = object.__new__(LocalAIServices)
     service.config = {"transcription": {"allow_model_downloads": False, "device": "cpu"}}
     return service
-
-
-@pytest.fixture(autouse=True)
-def _verified_whisper_cache(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Exercise real cache verification with task-owned bytes, never user models."""
-    cache_dir = tmp_path / "whisper-cache"
-    cache_dir.mkdir()
-    model_bytes = b"isolated transcription contract model fixture"
-    digest = hashlib.sha256(model_bytes).hexdigest()
-    for model, filename in whisper_policy.MODEL_FILENAMES.items():
-        (cache_dir / filename).write_bytes(model_bytes)
-        monkeypatch.setitem(whisper_policy.MODEL_SHA256, model, digest)
-    monkeypatch.setattr(whisper_policy, "default_cache_dir", lambda: cache_dir)
-    return cache_dir
 
 
 @pytest.mark.parametrize("payload", [None, [], "malformed"])
@@ -271,11 +257,14 @@ def test_transcribe_reports_cancellation_after_owned_output_cleanup(
     audio.write_bytes(b"test audio")
     output_directories: list[Path] = []
     cancel_event = threading.Event()
-    cancel_event.set()
 
     def cancelled_run(args: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-        output_directories.append(Path(args[args.index("--output_dir") + 1]))
+        output_dir = Path(args[args.index("--output_dir") + 1])
+        output_directories.append(output_dir)
+        assert output_dir.is_dir()
+        (output_dir / "sample.json").write_text('{"text": "partial"}', encoding="utf-8")
         assert kwargs["cancel_event"] is cancel_event
+        cancel_event.set()
         raise process_utils.ProcessCancelledError(args)
 
     monkeypatch.setattr("local_ai_hub.services.shutil.which", lambda _name: "whisper-cli")
@@ -286,6 +275,7 @@ def test_transcribe_reports_cancellation_after_owned_output_cleanup(
     assert result["success"] is False
     assert result["reason"] == "cancelled"
     assert result["cancelled"] is True
+    assert cancel_event.is_set()
     assert result["terminal"] is True
     assert result["retryable"] is False
     assert output_directories and not output_directories[0].exists()
