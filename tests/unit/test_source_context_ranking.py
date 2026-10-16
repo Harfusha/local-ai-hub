@@ -92,12 +92,15 @@ def test_targeted_pack_ranks_source_before_historical_noise_and_preserves_force_
     query = "audit source runtime implementation service stop behavior"
 
     result = _tools().context_pack_paths(
-        str(tmp_path), query, paths, top_k=5, max_tokens=1600,
+        # The window counts snippets, so multiple hits from a source file must
+        # not crowd out the two document classes whose ordering we compare.
+        str(tmp_path), query, paths, top_k=20, max_tokens=1600,
         force_include_paths=["docs/pinned-notes.md"],
     )
 
     assert result["success"] is True
     evidence_paths = [item["path"] for item in result["evidence"]]
+    assert len(evidence_paths) <= 20
     assert evidence_paths[0] == "docs/pinned-notes.md"
     assert evidence_paths.index("src/service.py") < evidence_paths.index("docs/plans/old-runtime-plan.md")
     assert evidence_paths.index("src/service.py") < evidence_paths.index("API_COVERAGE.md")
@@ -129,7 +132,7 @@ def test_source_context_expansion_never_shrinks_large_requested_top_k(monkeypatc
         return {"success": True, "root": ".", "results": [], "scanned_files": 0}
 
     def broad_search(_root, _query, **kwargs):
-        observed.append(kwargs["top_k"])
+        observed.append(kwargs["limit"])
         return {"success": True, "root": ".", "results": [], "scanned_files": 0}
 
     monkeypatch.setattr(tools, "search_paths", targeted_search)
