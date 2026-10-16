@@ -201,7 +201,10 @@ def test_root_inventory_resolves_imported_actions_and_redacted_pack_route():
 
     assert not any(item.startswith("missing MCP action handler local_ai_status:") for item in drift)
     assert not any(item.startswith("orphan client target POST /api/context/pack ") for item in drift)
-    assert {"status", "health", "check", "info"} <= set(ROOT_INVENTORY["mcp_actions"]["local_ai_status"])
+    status_details = set(ROOT_INVENTORY["mcp_actions"]["local_ai_status"])
+    assert {"brief", "full", "cache", "telemetry"} <= status_details
+    assert {"status", "health", "check", "info"}.isdisjoint(status_details)
+    assert ROOT_INVENTORY.get("mcp_action_aliases", {}) == {}
     assert any(
         route["method"] == "POST"
         and route["path"] == "/api/context/pack"
@@ -397,7 +400,7 @@ def test_inventory_extracts_surfaces_and_resolves_dynamic_route_registry(tmp_pat
     assert inventory["conditional_mcp_actions"]["local_ai_command"]["speculative_lint"] == (
         "speculative_lint"
     )
-    assert inventory.get("mcp_action_aliases", {}) == {}
+    assert inventory["mcp_action_aliases"] == {"local_ai_repo": {"ctx": "context"}}
     assert {"agent-state", "clean"} <= set(inventory["cli_operations"])
     assert set(inventory["generated_manifests"]) == {
         "generated/schemas/local_ai_repo.json",
@@ -812,7 +815,7 @@ def test_behavioral_links_only_reference_inventoried_operations():
         assert any(selector in item for item in links[key])
     assert any(
         "test_http_post_affected_tests_forwards_json_paths" in item
-        for item in links["HTTP POST::/api/affected_tests"]
+        for item in links["HTTP POST::/api/repo/affected_tests"]
     )
     assert "MCP action local_ai_repo::not_a_real_action" not in links
     assert "MCP action local_ai_task::not_a_real_action" not in links
@@ -2174,7 +2177,7 @@ def test_hubclient_target_links_match_the_client_method_handler():
         and finding["handler"] == "coord"
     ]
 
-    assert len(incident_coord_targets) == 2
+    assert len(incident_coord_targets) == 3
     assert all(
         incident_selector not in finding.get("behavioral_test_ids", [])
         for finding in incident_coord_targets
