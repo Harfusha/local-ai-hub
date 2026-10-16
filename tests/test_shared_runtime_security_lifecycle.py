@@ -1302,8 +1302,10 @@ def test_debug_trace_captures_prompt_source_and_complete_project_path():
     assert captured["context"]["repository_id"] == "C:/private/repository"
 
 
-@pytest.mark.parametrize("action", ["reap", "reap_expired", "zombie_reap", "recover_zombie_tasks"])
-def test_task_reaper_actions_forward_authenticated_root_scope(tmp_path, monkeypatch, action):
+@pytest.mark.parametrize(("action", "expected_status"), [
+    ("reap", 400), ("reap_expired", 200), ("zombie_reap", 400), ("recover_zombie_tasks", 400),
+])
+def test_task_reaper_canonical_action_is_scoped_and_retired_aliases_reject(tmp_path, monkeypatch, action, expected_status):
     root = tmp_path / "allowed"
     root.mkdir()
     calls = []
@@ -1318,6 +1320,9 @@ def test_task_reaper_actions_forward_authenticated_root_scope(tmp_path, monkeypa
         }},
         agent_tasks=SimpleNamespace(
             state_store=SimpleNamespace(enabled=True),
+            get=lambda task_id: SimpleNamespace(context=SimpleNamespace(
+                repository_id=canonical_root, session_id=tenant,
+            )) if task_id == "task-1" else None,
             reap_expired_heartbeats=lambda now=None, *, auto_recover=False, repo_root=None, tenant=None, task_id=None: calls.append((
                 "reap", {"auto_recover": auto_recover, "repo_root": repo_root, "tenant": tenant, "task_id": task_id}
             )) or ["task-1"],
@@ -1347,15 +1352,12 @@ def test_task_reaper_actions_forward_authenticated_root_scope(tmp_path, monkeypa
         authenticate=True,
     )
 
-    assert responses[0][0] == 200
-    assert responses[0][1]["reaped"] == ["task-1"]
-    if action == "recover_zombie_tasks":
-        assert calls == [("recover", {
-            "repo_root": canonical_root,
-            "tenant": tenant,
-            "task_id": "task-1",
-        })]
+    assert responses[0][0] == expected_status
+    if expected_status == 400:
+        assert responses[0][1]["success"] is False
+        assert calls == []
     else:
+        assert responses[0][1]["reaped"] == ["task-1"]
         assert calls == [("reap", {
             "auto_recover": True,
             "repo_root": canonical_root,
@@ -1379,6 +1381,9 @@ def test_task_reaper_accepts_authenticated_principal_header_but_derives_root_ten
         }},
         agent_tasks=SimpleNamespace(
             state_store=SimpleNamespace(enabled=True),
+            get=lambda task_id: SimpleNamespace(context=SimpleNamespace(
+                repository_id=canonical_root, session_id=expected_tenant,
+            )) if task_id == "task-1" else None,
             reap_expired_heartbeats=lambda **kwargs: calls.append(kwargs) or ["task-1"],
         ),
     )
@@ -1388,7 +1393,7 @@ def test_task_reaper_accepts_authenticated_principal_header_but_derives_root_ten
     responses = _dispatch_post(
         monkeypatch,
         "/api/agent-state/tasks",
-        {"root": str(root), "action": "reap", "task_id": "task-1"},
+        {"root": str(root), "action": "reap_expired", "task_id": "task-1"},
         app,
         headers={
             "X-LocalAI-Token": "a-long-test-token-value",
@@ -1400,6 +1405,126 @@ def test_task_reaper_accepts_authenticated_principal_header_but_derives_root_ten
     assert responses[0][0] == 200
     assert calls[0]["tenant"] == expected_tenant
     assert calls[0]["repo_root"] == canonical_root
+
+
+@pytest.fixture
+def scoped_reaper_store(tmp_path, monkeypatch):
+    from local_ai_hub import trace_context
+    from local_ai_hub.agent_events import AgentStateStore
+    from local_ai_hub.agent_identity import ScopeContext
+    from local_ai_hub.agent_tasks import GoalContract, TaskStatus, TaskStore
+
+    root, other_root = tmp_path / "allowed", tmp_path / "other"
+    root.mkdir()
+    other_root.mkdir()
+    key = "stable-test-derivation-secret-0123456789"
+    tenant = http_server._derive_root_tenant("principal", str(root.resolve()), key)
+    store = TaskStore(AgentStateStore(tmp_path / "agent-state.sqlite3"))
+
+    def create(task_id, task_root, task_tenant):
+        token = trace_context.set_context(tenant=task_tenant)
+        try:
+            store.create(GoalContract(goal="Recover scoped expired work"), ScopeContext(
+                repository_id=str(task_root.resolve()), session_id=task_tenant, task_id=task_id,
+            ), task_id=task_id, repo_root=str(task_root), actor="owner")
+            store.transition(task_id, TaskStatus.ACTIVE, reason="start", actor="owner", idempotency_key=f"start-{task_id}")
+        finally:
+            trace_context.reset_context(token)
+
+    old_time = time.time() - 1000
+    with monkeypatch.context() as clock:
+        clock.setattr("local_ai_hub.agent_tasks.time.time", lambda: old_time)
+        create("target", root, tenant)
+        create("sibling", root, tenant)
+        create("other-root", other_root, tenant)
+        create("other-tenant", root, "foreign-tenant")
+    create("fresh", root, tenant)
+    app = SimpleNamespace(config={"security": {
+        "api_token": "a-long-test-token-value", "api_token_principal": "principal",
+        "tenant_derivation_key": key, "allowed_roots": [str(root)],
+    }}, agent_tasks=store, recovery=None)
+    headers = {"X-LocalAI-Token": "a-long-test-token-value", "X-LocalAI-Tenant": tenant}
+
+    def post(task_id, **extra):
+        return _dispatch_post(monkeypatch, "/api/agent-state/tasks", {
+            "action": "reap_expired", "root": str(root), "task_id": task_id, **extra,
+        }, app, headers=headers, authenticate=True)[0]
+
+    return store, post
+
+
+@pytest.mark.parametrize("auto_recover", [False, True])
+def test_scoped_reaper_real_store_preserves_other_tasks_and_identities(scoped_reaper_store, auto_recover):
+    from local_ai_hub.agent_tasks import TaskStatus
+    store, post = scoped_reaper_store
+    before = {name: store.get(name) for name in ("sibling", "other-root", "other-tenant", "fresh")}
+    status, result = post("target", auto_recover=auto_recover)
+    assert status == 200 and result["reaped"] == ["target"]
+    assert store.get("target").status is (TaskStatus.WAITING if auto_recover else TaskStatus.ABANDONED)
+    assert {name: store.get(name) for name in before} == before
+
+
+@pytest.mark.parametrize("task_id", ["other-root", "other-tenant", "missing"])
+def test_scoped_reaper_hides_foreign_or_missing_tasks(scoped_reaper_store, task_id):
+    store, post = scoped_reaper_store
+    before = {name: store.get(name) for name in ("target", "sibling", "other-root", "other-tenant", "fresh")}
+    status, result = post(task_id, auto_recover=True)
+    assert status == 404 and result["success"] is False
+    assert {name: store.get(name) for name in before} == before
+
+
+@pytest.mark.parametrize(("task_id", "auto_recover"), [
+    ("", True), (None, True), (3, True), (True, True), (" target ", True),
+    ("target", "true"), ("target", 1), ("target", None),
+])
+def test_scoped_reaper_rejects_invalid_mutation_inputs(scoped_reaper_store, task_id, auto_recover):
+    store, post = scoped_reaper_store
+    before = store.get("target")
+    status, result = post(task_id, auto_recover=auto_recover)
+    assert status == 400 and result["success"] is False
+    assert store.get("target") == before
+
+
+def test_scoped_reaper_preserves_fresh_task(scoped_reaper_store):
+    store, post = scoped_reaper_store
+    before = store.get("fresh")
+    status, result = post("fresh", auto_recover=True)
+    assert status == 200 and result["reaped"] == []
+    assert store.get("fresh") == before
+
+
+def test_scoped_reaper_does_not_overwrite_concurrent_heartbeat(scoped_reaper_store, monkeypatch):
+    from local_ai_hub.agent_tasks import TaskStatus
+    store, post = scoped_reaper_store
+    transition = store.transition
+    renewed = []
+
+    def renew_before_transition(task_id, target, **kwargs):
+        renewed.append(store.heartbeat(task_id, actor="owner"))
+        return transition(task_id, target, **kwargs)
+
+    monkeypatch.setattr(store, "transition", renew_before_transition)
+    status, result = post("target", auto_recover=True)
+    assert status == 200 and result["reaped"] == []
+    assert len(renewed) == 1
+    assert store.get("target") == renewed[0]
+    assert store.get("target").status is TaskStatus.ACTIVE
+    assert store.get("target").heartbeat_expires_at > time.time()
+
+
+def test_scoped_reaper_does_not_report_store_failure_as_empty_success(scoped_reaper_store, monkeypatch):
+    store, _ = scoped_reaper_store
+    before = store.get("target")
+
+    def fail_transition(*args, **kwargs):
+        raise RuntimeError("transition persistence unavailable")
+
+    monkeypatch.setattr(store, "transition", fail_transition)
+    with pytest.raises(RuntimeError, match="transition persistence unavailable"):
+        store.reap_expired_heartbeats(
+            repo_root=before.context.repository_id, tenant=before.context.session_id, task_id="target",
+        )
+    assert store.get("target") == before
 
 
 def test_task_list_accepts_authenticated_principal_header_and_uses_derived_scope(tmp_path, monkeypatch):

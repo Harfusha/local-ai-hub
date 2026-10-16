@@ -6733,7 +6733,29 @@ class Handler(BaseHTTPRequestHandler):
                     del_br = bool(payload.get("delete_branch", True))
                     self._send(200, APP.agent_tasks.cleanup_worktree(t_id, delete_branch=del_br, actor=self._agent())); return
                 if action == "reap_expired":
-                    self._send(403, {"success": False, "error": "task reaping is unavailable without a scoped mutation contract", "terminal": True, "retryable": False}); return
+                    requested_task_id = payload.get("task_id")
+                    auto_recover = payload.get("auto_recover", False)
+                    if (
+                        not isinstance(requested_task_id, str)
+                        or not requested_task_id
+                        or requested_task_id != requested_task_id.strip()
+                        or type(auto_recover) is not bool
+                    ):
+                        self._send(400, {"success": False, "error": "reap_expired requires a nonempty canonical task_id and boolean auto_recover", "terminal": True, "retryable": False}); return
+                    if not repo_root or not tenant:
+                        self._send(403, {"success": False, "error": "task root scope is required", "terminal": True, "retryable": False}); return
+                    scoped_task = self._request_task(requested_task_id, repo_root, tenant)
+                    if scoped_task is None:
+                        return
+                    if not self._task_matches_request(scoped_task, repo_root, tenant):
+                        self._send(404, {"success": False, "error": "task not found", "terminal": True, "retryable": False}); return
+                    reaped = APP.agent_tasks.reap_expired_heartbeats(
+                        auto_recover=auto_recover,
+                        repo_root=repo_root,
+                        tenant=tenant,
+                        task_id=requested_task_id,
+                    )
+                    self._send(200, {"success": True, "reaped": reaped}); return
                 if action == "list":
                     status_filter = None
                     if payload.get("status"):

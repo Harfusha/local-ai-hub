@@ -714,6 +714,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "ask": ("root", "tenant", "session_id", "question_id", "question", "task_id"),
             "answer": ("root", "tenant", "question_id", "answer", "task_id"),
             "task_cleanup_worktree": ("root", "task_id"),
+            "task_zombie_reap": ("root", "task_id"),
             "context_compile": (
                 "root", "task_id", "since_hash", "max_tokens", "paths", "include_diagnostics",
                 "clone_id", "worktree_id", "branch", "repository_id", "session_id",
@@ -747,6 +748,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "ask": ("root", "session_id"),
             "answer": ("root", "question_id", "answer"),
             "task_cleanup_worktree": ("task_id",),
+            "task_zombie_reap": ("task_id",),
             "context_compile": ("task_id",),
             "verify_receipt": ("receipt",),
             "verify_completion": ("task_id",),
@@ -767,6 +769,7 @@ OPERATION_CONTRACTS: dict[str, dict[str, Any]] = {
             "ask": ("root", "session_id"),
             "answer": ("root", "question_id", "answer"),
             "task_cleanup_worktree": ("task_id",),
+            "task_zombie_reap": ("task_id",),
             "context_compile": ("task_id",),
             "verify_completion": ("task_id",),
             "verify_export": ("task_id",),
