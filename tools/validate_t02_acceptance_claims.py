@@ -1,13 +1,11 @@
-"""Reject completion claims that overstate the current model-free T02 evidence."""
+"""Reject completion claims that overstate explicitly supplied model-free evidence."""
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from pathlib import Path
-
-
-ROOT = Path(__file__).resolve().parents[1]
 
 
 def validate_claims(manifest: dict[str, object], receipt: dict[str, object]) -> list[str]:
@@ -25,12 +23,12 @@ def validate_claims(manifest: dict[str, object], receipt: dict[str, object]) -> 
     measured = len(cases)
     if matrix.get("matrix_measurement_status") != "unavailable":
         errors.append("T02 matrix must remain unavailable until its required runs exist")
-    if not isinstance(required, int) or required < 1:
+    if type(required) is not int or required < 1:
         errors.append("invalid required matrix case count")
     else:
-        if coverage.get("t02_required_cases") != required:
+        if type(coverage.get("t02_required_cases")) is not int or coverage["t02_required_cases"] != required:
             errors.append("receipt required-case count differs from manifest")
-        if coverage.get("measured_per_case") != measured:
+        if type(coverage.get("measured_per_case")) is not int or coverage["measured_per_case"] != measured:
             errors.append("receipt measured-case count differs from case rows")
         if measured < required and coverage.get("matrix_acceptance") != "unavailable":
             errors.append("incomplete matrix must remain unavailable")
@@ -70,8 +68,12 @@ def _read_json(path: Path) -> dict[str, object]:
 
 
 def main() -> int:
-    manifest = _read_json(ROOT / "handoff" / "T02-cross-task-dataset-manifest.json")
-    receipt = _read_json(ROOT / "handoff" / "T02-model-free-baseline-receipt-2026-10-01.json")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("manifest", type=Path)
+    parser.add_argument("receipt", type=Path)
+    args = parser.parse_args()
+    manifest = _read_json(args.manifest)
+    receipt = _read_json(args.receipt)
     errors = validate_claims(manifest, receipt)
     if errors:
         print("T02 acceptance claim guard: REJECTED")
