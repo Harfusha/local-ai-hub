@@ -445,7 +445,7 @@ def test_http_post_affected_tests_forwards_json_paths(running_http_hub, monkeypa
             "paths": ["src/agent_state.py"],
         }
     ).encode("utf-8")
-    url = f"{base_url}/api/affected_tests"
+    url = f"{base_url}/api/repo/affected_tests"
     request = urllib_request.Request(
         url,
         data=body,
@@ -461,7 +461,7 @@ def test_http_post_affected_tests_forwards_json_paths(running_http_hub, monkeypa
         result = json.loads(response.read().decode("utf-8"))
 
     assert request.get_method() == "POST"
-    assert url == f"{base_url}/api/affected_tests"
+    assert url == f"{base_url}/api/repo/affected_tests"
     assert status == 200
     assert calls == [(str(tmp_path), ["src/agent_state.py"])]
     assert result["success"] is True
