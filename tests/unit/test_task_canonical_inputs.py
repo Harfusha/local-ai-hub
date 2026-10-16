@@ -18,6 +18,9 @@ def _active_task_mode(monkeypatch):
     monkeypatch.setattr(mcp_server, "load_operational_mode", lambda _state_dir: snapshot)
     monkeypatch.setattr(mcp_server, "_record_tool_accounting", lambda **_kwargs: None)
     monkeypatch.setattr(mcp_server, "_record_adoption", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(mcp_server.mcp._tool_manager, "_tools", dict(mcp_server.mcp._tool_manager._tools))
+    if "local_ai_task" not in mcp_server.mcp._tool_manager._tools:
+        mcp_server.mcp.add_tool(mcp_server.local_ai_task, name="local_ai_task")
 
 
 class DummyClient:
