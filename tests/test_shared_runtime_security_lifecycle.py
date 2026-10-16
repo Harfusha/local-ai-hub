@@ -1605,8 +1605,11 @@ def test_root_agent_memory_fails_closed_without_configured_principal(tmp_path, m
     assert responses[0][0] == 403
 
 
-@pytest.mark.parametrize("action", ["curate_dataset", "curate_training_dataset"])
-def test_task_dataset_curation_forwards_authenticated_root_scope(tmp_path, monkeypatch, action):
+@pytest.mark.parametrize(("action", "expected_status"), [
+    ("curate_dataset", 200),
+    ("curate_training_dataset", 400),
+])
+def test_task_dataset_curation_forwards_authenticated_root_scope(tmp_path, monkeypatch, action, expected_status):
     root = tmp_path / "allowed"
     root.mkdir()
     calls = []
@@ -1661,7 +1664,12 @@ def test_task_dataset_curation_forwards_authenticated_root_scope(tmp_path, monke
         headers={"X-LocalAI-Tenant": tenant},
     )
 
-    assert responses[0][0] == 200
+    assert responses[0][0] == expected_status
+    if expected_status != 200:
+        assert responses[0][1]["success"] is False
+        assert calls == []
+        return
+    assert responses[0][1]["success"] is True
     assert calls == [(("dataset.jsonl",), {
         "min_receipts": 3,
         "format": "jsonl",
