@@ -156,3 +156,30 @@ def test_mcp_generate_types_rejects_diff_without_posting(monkeypatch: pytest.Mon
     assert result["terminal"] is True
     assert result["retryable"] is False
     assert "read-only" in result["error"]
+
+
+def test_mcp_generate_types_posts_with_writes_disabled(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from local_ai_hub import mcp_server
+
+    posted: dict[str, object] = {}
+    monkeypatch.setattr(
+        mcp_server, "FEATURES", SimpleNamespace(repo=True, supported_repo_actions=lambda: {"generate_types"})
+    )
+
+    def capture_post(route: str, payload: dict[str, object], **kwargs: object) -> dict[str, object]:
+        posted.update(route=route, payload=payload)
+        return {"success": True, "stub_content": "value: int", "stub_file": None}
+
+    monkeypatch.setattr(mcp_server.CLIENT, "post", capture_post)
+
+    result = mcp_server._local_ai_repo_impl(
+        "generate_types", root=str(tmp_path), path="sample.py"
+    )
+
+    assert result["success"] is True
+    assert posted["route"] == "/api/repo/generate_types"
+    assert posted["payload"] == {
+        "root": str(tmp_path.resolve()),
+        "file": "sample.py",
+        "write_stub": False,
+    }
