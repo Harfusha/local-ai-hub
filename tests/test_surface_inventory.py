@@ -446,7 +446,7 @@ def test_http_route_evidence_status_captures_dynamic_and_backend_gates(tmp_path)
         ("/api/browser/capability", "browser_bridge"),
     ):
         route = routes[("GET", path)]
-        row = rows_by_target[(f"HTTP GET", path)]
+        row = rows_by_target[("HTTP GET", path)]
         assert route["evidence_status"] == "conditional"
         assert any(gate in condition for condition in route["conditional_gates"])
         assert row["evidence_status"] == "conditional"
