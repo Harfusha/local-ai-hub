@@ -22,11 +22,20 @@ ROOT_CONFIG = ROOT / "config.toml"
 ACTIVITY_MODES = ("active", "gaming", "maintenance")
 
 
+def is_valid_activity_mode(mode: Any) -> bool:
+    """Return True if mode is a supported Local AI Hub activity mode."""
+    if not isinstance(mode, str):
+        return False
+    return mode.strip().lower() in ACTIVITY_MODES
+
+
 def _config_arg(explicit: Path | None = None) -> str | None:
     if explicit is not None:
-        return str(explicit.expanduser())
+        if not isinstance(explicit, (str, Path)) or "\x00" in str(explicit):
+            return None
+        return str(Path(explicit).expanduser())
     configured = os.environ.get("LOCAL_AI_CONFIG")
-    if configured:
+    if configured and "\x00" not in configured:
         return configured
     return str(ROOT_CONFIG) if ROOT_CONFIG.is_file() else None
 
@@ -109,6 +118,8 @@ def _activity_mode_error(result: dict[str, Any]) -> str:
 
 
 def _activity_mode_transition_failures(result: dict[str, Any], requested_mode: str | None) -> list[str]:
+    if not isinstance(result, dict):
+        return ["invalid result"]
     failures: list[str] = []
     if requested_mode == "gaming":
         unload = result.get("runtime_unload")
