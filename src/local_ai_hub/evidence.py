@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+from contextlib import closing
 import hashlib
 import logging
+from pathlib import Path
 import sqlite3
 import threading
 import time
-from contextlib import closing
-from pathlib import Path
 from typing import Any
 
 from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error
@@ -14,9 +15,28 @@ from .sqlite_support import connect_sqlite, initialize_wal, is_busy_error
 logger = logging.getLogger(__name__)
 
 
+def _clean_text(value: Any) -> str:
+    if value is None or isinstance(value, bool):
+        return ""
+    raw = str(value).replace("\x00", "")
+    return raw.encode("utf-8", errors="replace").decode("utf-8", errors="replace")
+
+
+def _safe_positive_int(value: Any, default: int, *, minimum: int = 1) -> int:
+    if value is None or isinstance(value, bool):
+        return max(minimum, default)
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return max(minimum, default)
+    return max(minimum, parsed)
+
+
 def is_evidence_id(value: Any) -> bool:
     """Check the syntactic shape of a content-addressed evidence reference."""
-    text = str(value or "")
+    if isinstance(value, bool) or value is None:
+        return False
+    text = str(value)
     return len(text) == 21 and text.startswith("E") and all(
         char in "0123456789abcdefABCDEF" for char in text[1:]
     )
@@ -45,7 +65,7 @@ class EvidenceStore:
 
     def __init__(self, state_dir: Path, max_entries: int = 100_000):
         self.db_path = state_dir / "evidence.sqlite3"
-        self.max_entries = max(1000, int(max_entries))
+        self.max_entries = _safe_positive_int(max_entries, 100_000, minimum=1000)
         self._lock = threading.RLock()
         self._touched_ids: set[str] = set()
         state_dir.mkdir(parents=True, exist_ok=True)
@@ -91,18 +111,21 @@ class EvidenceStore:
         return "E" + hashlib.sha256(raw).hexdigest()[:20]
 
     def put(self, root: str, item: dict[str, Any]) -> str | None:
-        path = str(item.get("path", ""))
-        text = str(item.get("text") or item.get("raw") or item.get("content") or "")
-        file_hash = str(item.get("file_sha256") or item.get("content_hash") or "")
+        if not isinstance(item, Mapping):
+            return None
+        clean_root = _clean_text(root)
+        path = _clean_text(item.get("path", ""))
+        text = _clean_text(item.get("text") or item.get("raw") or item.get("content") or "")
+        file_hash = _clean_text(item.get("file_sha256") or item.get("content_hash") or "")
         if not path or not text or not file_hash:
             return None
-        start = int(item.get("start_line", 1) or 1)
-        end = int(item.get("end_line", start) or start)
-        eid = self._id(root, path, file_hash, start, end, text)
+        start = _safe_positive_int(item.get("start_line", 1), 1, minimum=1)
+        end = _safe_positive_int(item.get("end_line", start), start, minimum=start)
+        eid = self._id(clean_root, path, file_hash, start, end, text)
         now = time.time()
         try:
             with self._lock, closing(self._connect()) as con:
-                con.execute("INSERT OR IGNORE INTO evidence(id,root,path,file_hash,start_line,end_line,text,created_at,accessed_at,hits) VALUES(?,?,?,?,?,?,?,?,?,0)", (eid, root, path, file_hash, start, end, text, now, now))
+                con.execute("INSERT OR IGNORE INTO evidence(id,root,path,file_hash,start_line,end_line,text,created_at,accessed_at,hits) VALUES(?,?,?,?,?,?,?,?,?,0)", (eid, clean_root, path, file_hash, start, end, text, now, now))
                 con.execute("UPDATE evidence SET accessed_at=?,hits=hits+1 WHERE id=?", (now, eid))
                 # Probabilistic count check (1 in 32 inserts) to prevent table scan on every write
                 if int(now * 1000) % 32 == 0:
@@ -115,25 +138,28 @@ class EvidenceStore:
         return eid
 
     def put_many(self, root: str, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        if not items:
+        if not items or not isinstance(items, (list, tuple)):
             return []
+        clean_root = _clean_text(root)
         now = time.time()
         inserts = []
         updates = []
         out: list[dict[str, Any]] = []
         for item in items:
+            if not isinstance(item, Mapping):
+                continue
             clone = dict(item)
-            path = str(item.get("path", ""))
-            text = str(item.get("text") or item.get("raw") or item.get("content") or "")
-            file_hash = str(item.get("file_sha256") or item.get("content_hash") or "")
+            path = _clean_text(item.get("path", ""))
+            text = _clean_text(item.get("text") or item.get("raw") or item.get("content") or "")
+            file_hash = _clean_text(item.get("file_sha256") or item.get("content_hash") or "")
             if not path or not text or not file_hash:
                 out.append(clone)
                 continue
-            start = int(item.get("start_line", 1) or 1)
-            end = int(item.get("end_line", start) or start)
-            eid = self._id(root, path, file_hash, start, end, text)
+            start = _safe_positive_int(item.get("start_line", 1), 1, minimum=1)
+            end = _safe_positive_int(item.get("end_line", start), start, minimum=start)
+            eid = self._id(clean_root, path, file_hash, start, end, text)
             clone["evidence_id"] = eid
-            inserts.append((eid, root, path, file_hash, start, end, text, now, now))
+            inserts.append((eid, clean_root, path, file_hash, start, end, text, now, now))
             updates.append((now, eid))
             out.append(clone)
 
@@ -158,20 +184,23 @@ class EvidenceStore:
         return out
 
     def get(self, evidence_id: str, *, verify: bool = True) -> dict[str, Any]:
+        eid = _clean_text(evidence_id).strip()
+        if not eid:
+            return {"success": False, "error": "evidence not found"}
         try:
             with self._lock, closing(self._connect()) as con:
-                row = con.execute("SELECT * FROM evidence WHERE id=?", (evidence_id,)).fetchone()
+                row = con.execute("SELECT * FROM evidence WHERE id=?", (eid,)).fetchone()
                 if not row:
                     return {"success": False, "error": "evidence not found"}
                 # A fetched evidence item is normally reused repeatedly within one
                 # agent turn. Persist recency only once per process/id to avoid a WAL
                 # write for every verification fetch.
-                if evidence_id not in self._touched_ids:
-                    con.execute("UPDATE evidence SET accessed_at=?,hits=hits+1 WHERE id=?", (time.time(), evidence_id))
+                if eid not in self._touched_ids:
+                    con.execute("UPDATE evidence SET accessed_at=?,hits=hits+1 WHERE id=?", (time.time(), eid))
                     con.commit()
-                    self._touched_ids.add(evidence_id)
+                    self._touched_ids.add(eid)
                     if len(self._touched_ids) > 8192:
-                        self._touched_ids.clear(); self._touched_ids.add(evidence_id)
+                        self._touched_ids.clear(); self._touched_ids.add(eid)
         except sqlite3.DatabaseError:
             return {"success": False, "error": "evidence store unavailable"}
         stale = False
@@ -184,7 +213,7 @@ class EvidenceStore:
                     stale = True
             except Exception:
                 stale = True
-        return {"success": True, "evidence_id": evidence_id, "root": row["root"], "path": row["path"], "file_sha256": row["file_hash"], "start_line": row["start_line"], "end_line": row["end_line"], "text": row["text"], "stale": stale}
+        return {"success": True, "evidence_id": eid, "root": row["root"], "path": row["path"], "file_sha256": row["file_hash"], "start_line": row["start_line"], "end_line": row["end_line"], "text": row["text"], "stale": stale}
 
     def validate_current(self, evidence_id: str) -> bool:
         """Prove an evidence ID still matches its stored row and current source."""
@@ -209,6 +238,29 @@ class EvidenceStore:
         except Exception:
             return False
         return expected == evidence_id
+
+    def count(self) -> int:
+        return int(self.stats().get("entries", 0))
+
+    def has(self, evidence_id: str) -> bool:
+        eid = _clean_text(evidence_id).strip()
+        if not is_evidence_id(eid):
+            return False
+        try:
+            with self._lock, closing(self._connect()) as con:
+                row = con.execute("SELECT 1 FROM evidence WHERE id=? LIMIT 1", (eid,)).fetchone()
+                return row is not None
+        except sqlite3.DatabaseError:
+            return False
+
+    def clear(self) -> None:
+        try:
+            with self._lock, closing(self._connect()) as con:
+                con.execute("DELETE FROM evidence")
+                con.commit()
+                self._touched_ids.clear()
+        except sqlite3.DatabaseError:
+            pass
 
     def stats(self) -> dict[str, Any]:
         try:
