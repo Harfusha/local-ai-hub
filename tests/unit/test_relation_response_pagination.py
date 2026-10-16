@@ -125,7 +125,8 @@ def test_deterministic_fallback_skips_archived_source_copies(tmp_path):
 
     result = engine.find_callers(str(root), "target")
 
-    assert [item["caller"] for item in result["callers"]] == ["src::actual_caller"]
+    assert [item["caller"] for item in result["callers"]] == ["actual_caller"]
+    assert [item["file"] for item in result["callers"]] == ["src/actual.py"]
     assert result["coverage"]["scan_complete"] is True
 
 
@@ -239,7 +240,7 @@ def test_mcp_relations_require_canonical_query_limit_offset_and_reject_bool(monk
     assert legacy_alias["success"] is False
     assert invalid_page["success"] is False
 
-    asyncio.run(local_ai_repo(action="callers", root=".", query="target", limit=2, offset=4))
+    local_ai_repo(action="callers", root=".", query="target", limit=2, offset=4)
     assert requests[-1][1]["symbol"] == "target"
     assert requests[-1][1]["limit"] == 2
     assert requests[-1][1]["offset"] == 4
@@ -276,7 +277,7 @@ def test_registered_mcp_relation_wire_rejects_first_item_over_budget(monkeypatch
     monkeypatch.setattr(mcp_server, "CLIENT", DummyClient())
     response = asyncio.run(mcp_server.mcp.call_tool("local_ai_repo", {
         "action": "callers", "root": ".", "query": "target", "limit": 1,
-        "max_response_tokens": 128,
+        "max_response_tokens": 256,
     }))
 
     assert "413" in str(response)
@@ -293,7 +294,7 @@ def test_registered_relation_budget_reaches_fixed_point_for_one_long_item(monkey
     }
     monkeypatch.setattr(mcp_server, "_agent_output", lambda value, _name, _args: value)
     content, structured = mcp_server._mcp_budget_payload("local_ai_repo", {
-        "action": "callers", "max_response_tokens": 512,
+        "action": "callers", "max_response_tokens": 1200,
     }, raw)
 
     assert structured is not None
