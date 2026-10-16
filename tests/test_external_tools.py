@@ -230,6 +230,14 @@ def test_mcp_stdio_soft_timeout_does_not_kill_process(tmp_path: Path):
         assert client._proc is not None
         assert client._proc.poll() is None
         assert client._proc == proc_before
+
+        # When soft_timeout is greater than hard timeout, clamp and still raise MCPSoftTimeoutError without killing process
+        with pytest.raises(MCPSoftTimeoutError):
+            client.call_tool("hang", {}, timeout=0.1, soft_timeout=0.5)
+
+        assert client._proc is not None
+        assert client._proc.poll() is None
+        assert client._proc == proc_before
     finally:
         client.close()
 

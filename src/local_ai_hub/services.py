@@ -154,7 +154,7 @@ def _review_text_error(value: Any) -> str | None:
     # Match SUMMARY: with tolerance for markdown headers (#, ##), bullet points (- , * ),
     # bolding (**SUMMARY:** or **SUMMARY**), backticks (`SUMMARY:`), or 1 introductory line.
     match = re.search(
-        r"(?:^|\n)(?:#{1,6}\s*)?(?:[-*+]\s+)?(?:\*{1,2}|`{1,3})?SUMMARY(?:\*{1,2}|`{1,3})?:?[ \t]*(.*)$",
+        r"(?:^|\n)(?:#{1,6}\s*)?(?:\*{1,2}|`{1,3})?(?:(?:\d+[\.\)]|[-*+])\s+)?(?:\*{1,2}|`{1,3})?SUMMARY(?:\*{1,2}|`{1,3})?:?[ \t]*(.*)$",
         text,
         re.IGNORECASE | re.DOTALL,
     )
@@ -5239,7 +5239,10 @@ class LocalAIServices:
                 call_kwargs: dict[str, Any] = {"backend": backend, "action": "search", "limit": 12}
                 try:
                     import inspect
-                    if "timeout" in inspect.signature(external.query).parameters:
+                    sig = inspect.signature(external.query).parameters
+                    if "soft_timeout" in sig:
+                        call_kwargs["soft_timeout"] = timeout
+                    elif "timeout" in sig:
                         call_kwargs["timeout"] = timeout
                 except Exception:
                     pass

@@ -327,6 +327,10 @@ class ReviewDiffChunkingTests(unittest.TestCase):
         self.assertIsNone(_review_text_error("```markdown\nSUMMARY: Clean diff.\n```"))
         self.assertIsNone(_review_text_error("Here is the review:\n\nSUMMARY: No defects."))
         self.assertIsNone(_review_text_error("SUMMARY: None."))
+        self.assertIsNone(_review_text_error("1. SUMMARY:\n   - No actionable defect was identified in the changed hunk."))
+        self.assertIsNone(_review_text_error("1. **SUMMARY:** No defect found."))
+        self.assertIsNone(_review_text_error("1) SUMMARY: Clean code."))
+        self.assertIsNone(_review_text_error("## 1. SUMMARY: No defect found."))
 
         # Invalid forms
         self.assertEqual(_review_text_error(""), "Model returned empty review output.")

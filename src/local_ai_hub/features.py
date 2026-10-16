@@ -198,7 +198,9 @@ class FeatureSet:
         if self.coord:
             lines.append("- shared findings or overlapping edits: `local_ai_coord`")
             if self.agent_os:
-                lines.append("- non-trivial multi-step, long-running, or acceptance-criteria work: `local_ai_coord` Agent OS task contracts, checkpoints, context, and verified completion")
+                lines.append("- Agent OS lifecycle (contracts, milestones, verification): `local_ai_coord(action=\"task_create\"|\"task_checkpoint\"|\"task_complete\"|\"verify_completion\")`. Default to initializing task contracts for coding, bugfixing, and refactoring tasks.")
+                lines.append("- durable project memory & architecture facts: `local_ai_coord(action=\"memory_record\"|\"memory_find\")`. Actively persist and consult project facts, conventions, and user preferences.")
+                lines.append("- anti-pattern & incident tracking: `local_ai_coord(action=\"negative_knowledge_record\"|\"negative_knowledge_find\")`. Record failed approaches, error classes, and root causes to avoid repeating mistakes.")
         if self.rag:
             lines.append("- semantic retrieval after indexed paths are insufficient: `local_ai_rag`")
         if self.tasks and self.has_any_model():
@@ -244,6 +246,16 @@ class FeatureSet:
         if command_actions & {"mock_server", "mock_server_start", "mock_server_stop", "mock_server_status", "record_mock", "replay_mock", "flaky_detect", "webhook_replay"}:
             lines.append("- local mock, replay, and flaky-test workflows: `local_ai_command` specialized actions")
 
+        coord_actions = set(self.supported_coord_actions())
+        if coord_actions & {"swarm_dispatch", "blackboard_update", "worktree_lease"}:
+            lines.append("- multi-agent swarms, shared blackboard, and isolated worktrees: `local_ai_coord` swarm, blackboard, and worktree actions")
+
+        repo_actions = set(self.supported_repo_actions())
+        if repo_actions & {"cross_project_graph", "cross_project_symbols", "cross_project_impact", "cross_repo_contract"}:
+            lines.append("- cross-project dependencies and contracts: `local_ai_repo` cross_project and cross_repo actions")
+        if repo_actions & {"security_audit", "dead_code", "secret_scan", "test_matrix"}:
+            lines.append("- repository audits, dead code, secret scanning, and test matrices: `local_ai_repo(action=\"security_audit\"|\"dead_code\"|\"secret_scan\"|\"test_matrix\")`")
+
         if self.dashboard:
             lines.append("- operator-facing live dashboard: `/dashboard` on the configured Hub server; use `local_ai_status` for bounded agent-side checks")
         return lines
@@ -255,13 +267,16 @@ class FeatureSet:
             prep_hint = "preprocess once, " if self.preprocessing else ""
             lines.append(f"- Recipe — Explore: {prep_hint}use the cheapest repository action, fetch only required evidence slices.")
             lease_hint = " claim `local_ai_coord` leases for overlapping paths," if self.coord else ""
-            lines.append(f'- Recipe — Change: gather indexed evidence, use `local_ai_repo(action="solve")` before edits,{lease_hint} then run indexed impact/review before validation.')
+            contract_hint = " initialize an Agent OS contract," if self.agent_os else ""
+            lines.append(f'- Recipe — Change: gather indexed evidence,{contract_hint} use `local_ai_repo(action="solve")` before edits,{lease_hint} then run indexed impact/review before validation.')
         if self.commands:
-            lines.append("- Recipe — Validate: route repeatable commands through `local_ai_command`, reuse cached results, use `review_diff` or `security_audit` when relevant.")
+            receipt_note = " (pass `task_id` for receipt minting)" if self.agent_os else ""
+            lines.append(f"- Recipe — Validate: route repeatable commands through `local_ai_command`{receipt_note}, reuse cached results, use `review_diff` or `security_audit` when relevant.")
         if self.tasks and self.has_any_model():
-            lines.append('- Recipe — Semantic work: use `local_ai_task(action="delegate"|"explore"|"reason"|"review"|"second_opinion"|"compress")` for bounded semantic tasks after needed evidence; deterministic/indexed tools remain for exact facts, symbols, diff and tests.')
+            lines.append('- Recipe — Semantic work: actively use `local_ai_task` for code review (`action="review"`), second opinion on non-trivial logic (`action="second_opinion"`), exploration (`action="explore"`), and compressing noisy test outputs (`action="compress"`).')
         if self.agent_os:
-            lines.append("- Recipe — Durable execution: create a task contract before substantial work, checkpoint phase changes, attach validation receipts, and complete only after `verify_completion` passes.")
+            receipt_part = "route tests via `local_ai_command(task_id=..., criterion=...)` to auto-mint receipts; " if self.commands else ""
+            lines.append(f"- Recipe — Agent OS Execution (Default for Non-Trivial Tasks): Initialize a task contract via `local_ai_coord(action=\"task_create\")` with concrete acceptance criteria; query existing memory via `memory_find`; checkpoint milestones via `task_checkpoint`; persist reusable findings via `memory_record`; record failures via `negative_knowledge_record`; {receipt_part}and verify completion (`verify_completion`) before closure.")
         elif self.repo:
             lines.append("- Recipe — Validate: run validation commands natively, review changes with `review_diff` or `security_audit`.")
         if self.rag:

@@ -179,8 +179,13 @@ class MCPStdioClient:
     def _request(self, method: str, params: dict[str, Any], *, timeout: float | None = None, soft_timeout: float | None = None, ensure_started: bool = True) -> Any:
         request_started = time.monotonic()
         hard_timeout = self.call_timeout if timeout is None else max(0.05, float(timeout))
+        soft_val = float(soft_timeout) if soft_timeout is not None else None
+        if soft_val is not None:
+            soft_val = min(soft_val, hard_timeout)
+            soft_deadline = request_started + max(0.05, soft_val)
+        else:
+            soft_deadline = None
         hard_deadline = request_started + hard_timeout
-        soft_deadline = (request_started + max(0.05, float(soft_timeout))) if soft_timeout is not None else None
         effective_deadline = min(hard_deadline, soft_deadline) if soft_deadline is not None else hard_deadline
         if ensure_started:
             self._spawn()
@@ -210,7 +215,7 @@ class MCPStdioClient:
                 raise MCPStdioError(f"MCP error: {item.get('error')}")
             return item.get("result")
 
-        if soft_deadline is not None and time.monotonic() >= soft_deadline and time.monotonic() < hard_deadline:
+        if soft_deadline is not None and time.monotonic() >= (soft_deadline - 0.05):
             raise MCPSoftTimeoutError(f"MCP soft timeout: {method}")
 
         self._stop_process(deadline=hard_deadline)
@@ -1030,6 +1035,8 @@ class ExternalCodeIntelligence:
     def query_serena(self, root: str, action: str, query: str = "", path: str = "", limit: int = 20, timeout: float | None = None, soft_timeout: float | None = None) -> dict[str, Any]:
         root = self._root(root)
         eff_soft_timeout = float(soft_timeout) if soft_timeout is not None else self.soft_timeout
+        if timeout is not None and eff_soft_timeout is not None:
+            eff_soft_timeout = min(eff_soft_timeout, float(timeout))
         lock_wait = min(eff_soft_timeout, 1.5) if eff_soft_timeout > 0 else (float(timeout) if timeout is not None else 60.0)
         try:
             with self._backend_operation("serena", root, timeout=lock_wait):
