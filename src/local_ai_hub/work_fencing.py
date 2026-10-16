@@ -68,6 +68,8 @@ class FencingLease:
 
 
 def canonical_resource(resource: str | Path) -> str:
+    if resource is None or isinstance(resource, bool):
+        raise ValueError("resource must be a non-empty filesystem root")
     value = str(resource).strip()
     if not value or "\x00" in value:
         raise ValueError("resource must be a non-empty filesystem root")
@@ -91,7 +93,7 @@ def _coordination_scope(
 
 def is_safe_lease_path(path: Any) -> bool:
     """Return True if path is a safe relative lease path."""
-    if not isinstance(path, str):
+    if not isinstance(path, str) or isinstance(path, bool):
         return False
     raw = path.replace("\\", "/")
     if not raw or "\x00" in raw:
@@ -116,6 +118,8 @@ def normalize_paths(
         raise ValueError("writer lease requires at least one exact path")
     if isinstance(paths, (str, bytes)) or not isinstance(paths, (Sequence, set)):
         raise ValueError("writer lease requires a sequence of exact path strings")
+    if root is not None and (not isinstance(root, (str, Path)) or "\x00" in str(root)):
+        raise ValueError("invalid root path")
     normalized: set[str] = set()
     resolved_root = Path(root).resolve(strict=False) if root is not None else None
     for value in paths:
@@ -470,7 +474,12 @@ class FencingLeaseStore:
 
     @staticmethod
     def _ttl(ttl_seconds: float) -> float:
-        ttl = float(ttl_seconds)
+        if isinstance(ttl_seconds, bool):
+            raise ValueError(f"ttl_seconds must be in (0, {MAX_TTL_SECONDS}]")
+        try:
+            ttl = float(ttl_seconds)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"ttl_seconds must be in (0, {MAX_TTL_SECONDS}]") from exc
         if not math.isfinite(ttl) or ttl <= 0 or ttl > MAX_TTL_SECONDS:
             raise ValueError(f"ttl_seconds must be in (0, {MAX_TTL_SECONDS}]")
         return ttl
