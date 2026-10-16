@@ -1732,12 +1732,6 @@ class HubClient:
             if not isinstance(topic, str):
                 return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
                         "error": "pubsub topic must be a string"}
-            if limit is not None and (type(limit) is not int or not 1 <= limit <= 1000):
-                return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
-                        "error": "pubsub limit must be an integer from 1 through 1000"}
-            if after_seq is not None and (type(after_seq) is not int or not 0 <= after_seq <= 2**63 - 1):
-                return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
-                        "error": "pubsub after_seq must be a nonnegative 64-bit integer"}
             if after_ts is not None and (
                 isinstance(after_ts, bool)
                 or not isinstance(after_ts, (int, float))
@@ -1746,6 +1740,12 @@ class HubClient:
             ):
                 return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
                         "error": "pubsub after_ts must be a finite number from 0 through 1e12"}
+            if after_seq is not None and (type(after_seq) is not int or not 0 <= after_seq <= 2**63 - 1):
+                return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
+                        "error": "pubsub after_seq must be a nonnegative 64-bit integer"}
+            if limit is not None and (type(limit) is not int or not 1 <= limit <= 1000):
+                return {"success": False, "status_code": 400, "terminal": True, "retryable": False,
+                        "error": "pubsub limit must be an integer from 1 through 1000"}
             payload = {
                 "root": kwargs.get("root", "."),
                 "topic": topic,

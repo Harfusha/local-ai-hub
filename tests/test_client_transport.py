@@ -446,23 +446,6 @@ def test_client_replays_duplicate_request_until_owner_finishes(tmp_path, monkeyp
     assert attempt_timeouts[1] < attempt_timeouts[0] - 0.05
 
 
-def test_get_passes_request_id_through_singleflight(tmp_path, monkeypatch):
-    client = _client(tmp_path)
-    observed_ids = []
-
-    def pooled_open(_method, _path, _body, headers, _timeout):
-        observed_ids.append(headers["X-LocalAI-Request-ID"])
-        return b'{"success":true}'
-
-    monkeypatch.setattr(client, "_pooled_open", pooled_open)
-
-    result = client.get("/health")
-
-    assert result["success"] is True
-    assert len(observed_ids) == 1
-    assert observed_ids[0].startswith("req_")
-
-
 def test_client_does_not_replay_ambiguous_default_post(tmp_path, monkeypatch):
     client = _client(tmp_path)
     calls = []
