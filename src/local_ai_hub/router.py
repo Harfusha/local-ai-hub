@@ -1,7 +1,19 @@
 from __future__ import annotations
 
+import math
 import re
 from typing import Any
+
+
+def _safe_int(val: Any, default: int = 0) -> int:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        if isinstance(val, float) and not math.isfinite(val):
+            return default
+        return int(val)
+    except (ValueError, TypeError, OverflowError):
+        return default
 
 
 DEFAULT_COMPLEX_TERMS = {
@@ -29,19 +41,24 @@ DEFAULT_SEMANTIC_TERMS = {
 
 
 def review_diff_complexity(
-    args: dict[str, Any], det_diff: dict[str, Any], diff: dict[str, Any]
+    args: dict[str, Any] | None, det_diff: dict[str, Any] | None, diff: dict[str, Any] | None
 ) -> str:
     """Escalate substantial or high-risk diff reviews to the heavy model tier."""
-    complexity = str(args.get("complexity", "auto"))
+    args_dict = args if isinstance(args, dict) else {}
+    det_dict = det_diff if isinstance(det_diff, dict) else {}
+    diff_dict = diff if isinstance(diff, dict) else {}
+
+    complexity = str(args_dict.get("complexity", "auto"))
     if complexity != "auto":
         return complexity
 
-    risk = det_diff.get("risk", {})
+    risk = det_dict.get("risk", {})
     risk = risk if isinstance(risk, dict) else {}
-    risk_score = int(risk.get("score") or det_diff.get("risk_score") or 0)
-    risk_level = str(risk.get("level") or det_diff.get("risk_level") or "").lower()
-    changed_file_count = len(diff.get("changed_files", []))
-    estimated_tokens = int(diff.get("estimated_tokens", 0) or 0)
+    risk_score = _safe_int(risk.get("score") or det_dict.get("risk_score"), 0)
+    risk_level = str(risk.get("level") or det_dict.get("risk_level") or "").lower()
+    changed_files = diff_dict.get("changed_files")
+    changed_file_count = len(changed_files) if isinstance(changed_files, list) else 0
+    estimated_tokens = _safe_int(diff_dict.get("estimated_tokens"), 0)
     if (
         risk_level in {"high", "critical"}
         or risk_score >= 60
@@ -53,23 +70,47 @@ def review_diff_complexity(
 
 
 class ModelRouter:
-    def __init__(self, config: dict[str, Any]):
-        self.config = config
-        self.models = config["models"]
-        self.routing = config.get("routing", {})
+    def __init__(self, config: dict[str, Any] | None = None):
+        cfg = config if isinstance(config, dict) else {}
+        self.config = cfg
+        models_cfg = cfg.get("models")
+        if isinstance(models_cfg, dict):
+            self.models = dict(models_cfg)
+        else:
+            self.models = {
+                "background_code": "qwen2.5-coder:1.5b",
+                "fast_code": "qwen2.5-coder:3b",
+                "heavy_code": "qwen2.5-coder:7b",
+                "reasoning": "qwen2.5-coder:7b",
+                "general": "qwen2.5-coder:3b",
+            }
+        self.routing = cfg.get("routing", {}) if isinstance(cfg.get("routing"), dict) else {}
         self.complex_terms = set(self.routing.get("complex_terms", DEFAULT_COMPLEX_TERMS))
         self.reason_terms = set(self.routing.get("reason_terms", DEFAULT_REASON_TERMS))
         self.code_terms = set(self.routing.get("code_terms", DEFAULT_CODE_TERMS))
         self.review_terms = set(self.routing.get("review_terms", DEFAULT_REVIEW_TERMS))
         self.semantic_terms = set(self.routing.get("semantic_terms", DEFAULT_SEMANTIC_TERMS))
 
+    def is_complex_term(self, term: str) -> bool:
+        return str(term or "").strip().lower() in self.complex_terms
+
+    def is_semantic_term(self, term: str) -> bool:
+        return str(term or "").strip().lower() in self.semantic_terms
+
+    def model_for_role(self, role: str) -> str:
+        clean_role = str(role or "").strip().lower()
+        return str(self.models.get(clean_role) or self.models.get("fast_code") or "qwen2.5-coder:3b")
+
     def complexity_score(self, task: str, context: str = "") -> int:
-        text = f"{task}\n{context}".lower()
+        task_str = str(task or "").replace("\x00", "")
+        ctx_str = str(context or "").replace("\x00", "")
+        text = f"{task_str}\n{ctx_str}".lower()
         score = 0
-        total_chars = len(task) + len(context)
+        total_chars = len(task_str) + len(ctx_str)
         if total_chars > 6000:
             score += 1
-        if total_chars > int(self.routing.get("max_fast_context_chars", 90000)):
+        max_fast = _safe_int(self.routing.get("max_fast_context_chars"), 90000)
+        if total_chars > max_fast:
             score += 2
         score += min(sum(1 for term in self.complex_terms if term in text), 3)
         if text.count("\n") > 160:
@@ -79,54 +120,57 @@ class ModelRouter:
         return score
 
     def classify(self, task: str, context: str = "", task_type: str = "auto", complexity: str = "auto") -> dict[str, Any]:
-        text = f"{task}\n{context}".lower()
-        task_text = str(task).lower()
-        score = self.complexity_score(task, context)
+        task_str = str(task or "").replace("\x00", "")
+        ctx_str = str(context or "").replace("\x00", "")
+        text = f"{task_str}\n{ctx_str}".lower()
+        task_text = task_str.lower()
+        score = self.complexity_score(task_str, ctx_str)
+        t_type = str(task_type or "auto").strip().lower()
+        c_type = str(complexity or "auto").strip().lower()
         semantic_request = (
-            task_type in {"general", "reasoning", "review"}
+            t_type in {"general", "reasoning", "review"}
             or any(term in task_text for term in self.semantic_terms | self.reason_terms | self.review_terms)
         )
 
-        if task_type == "auto":
+        if t_type == "auto":
             if any(term in task_text for term in self.review_terms):
-                task_type = "review"
+                t_type = "review"
             elif any(term in task_text for term in self.semantic_terms | self.reason_terms):
-                task_type = "reasoning"
+                t_type = "reasoning"
             elif any(term in text for term in self.code_terms):
-                task_type = "code"
+                t_type = "code"
             else:
-                task_type = "general"
+                t_type = "general"
 
-        heavy_threshold = int(self.routing.get(
-            "review_heavy_min_score" if task_type == "review" else "heavy_min_score",
-            self.routing.get("heavy_min_score", 5),
-        ))
-        if complexity == "heavy":
+        heavy_key = "review_heavy_min_score" if t_type == "review" else "heavy_min_score"
+        heavy_threshold = _safe_int(self.routing.get(heavy_key, self.routing.get("heavy_min_score", 5)), 5)
+        if c_type == "heavy":
             score = max(score, heavy_threshold)
-        elif complexity == "fast":
+        elif c_type == "fast":
             score = 0
 
         heavy = score >= heavy_threshold
-        if task_type in {"code", "review"}:
-            model = self.models["heavy_code"] if heavy else self.models["fast_code"]
-        elif task_type == "reasoning":
+        if t_type in {"code", "review"}:
+            model = self.models.get("heavy_code") if heavy else self.models.get("fast_code")
+        elif t_type == "reasoning":
             # Ordinary reasoning uses the complex tier; only heavy reasoning uses the reasoning tier.
-            model = (self.models.get("reasoning") or self.models["heavy_code"]) if heavy else self.models["heavy_code"]
+            model = (self.models.get("reasoning") or self.models.get("heavy_code")) if heavy else self.models.get("heavy_code")
         else:
-            model = self.models["general"]
+            model = self.models.get("general") or self.models.get("fast_code")
 
         return {
-            "task_type": task_type,
+            "task_type": t_type,
             "complexity_score": score,
             "complexity": "heavy" if heavy else "fast",
             "model": model,
             "semantic_required": semantic_request,
         }
 
-    def apply_model_override(self, route: dict[str, Any], requested_model: str = "") -> dict[str, Any]:
-        requested = str(requested_model or "").strip()
-        if not requested or requested == str(route.get("model", "")):
-            return route
+    def apply_model_override(self, route: dict[str, Any] | None, requested_model: str = "") -> dict[str, Any]:
+        route_dict = dict(route) if isinstance(route, dict) else {}
+        requested = str(requested_model or "").replace("\x00", "").strip()
+        if not requested or requested == str(route_dict.get("model", "")):
+            return route_dict
         configured = {
             str(self.models.get(role))
             for role in ("background_code", "fast_code", "heavy_code", "reasoning", "general")
@@ -135,18 +179,18 @@ class ModelRouter:
         if requested not in configured:
             raise ValueError("model override must match a configured model tier")
 
-        task_type = str(route.get("task_type", ""))
-        complexity = str(route.get("complexity", "fast"))
+        task_type = str(route_dict.get("task_type", ""))
+        complexity = str(route_dict.get("complexity", "fast"))
         if task_type == "reasoning":
             required_model = (
                 self.models.get("reasoning") or self.models.get("heavy_code")
                 if complexity == "heavy"
-                else self.models.get("heavy_code") or route.get("model")
+                else self.models.get("heavy_code") or route_dict.get("model")
             )
         elif task_type in {"code", "review"} and complexity == "heavy":
-            required_model = self.models.get("heavy_code") or route.get("model")
+            required_model = self.models.get("heavy_code") or route_dict.get("model")
         else:
-            required_model = route.get("model")
+            required_model = route_dict.get("model")
 
         role_ranks = {
             "background_code": -1,
@@ -165,8 +209,8 @@ class ModelRouter:
         if model_rank(requested) < model_rank(required_model):
             raise ValueError("model override would fall below the configured quality floor")
 
-        result = dict(route)
-        result["original_model"] = route.get("model")
+        result = dict(route_dict)
+        result["original_model"] = route_dict.get("model")
         result["model"] = requested
         result["model_override"] = True
         return result
