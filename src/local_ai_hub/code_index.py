@@ -2484,21 +2484,39 @@ class CodeIndex:
             "instr('/' || lower(path) || '/', ?) = 0" for _ in ignored_paths
         )
         root_archive_sql = _root_archive_path_sql()
-        filters_sql = (
-            "root=? AND " + score_sql + " > 0"
-            + " AND " + root_archive_sql
-            + (" AND " + ignored_path_sql if ignored_path_sql else "")
-        )
-        args: list[Any] = [resolved_root, *(f"/{name}/" for name in ignored_paths)]
-        count_sql = "SELECT COUNT(*) FROM symbols WHERE " + filters_sql
-        sql = (
-            "SELECT path,name,kind,line,end_line,container,name_path,signature,access,docstring,"
-            + score_sql + " AS _score FROM symbols WHERE " + filters_sql
-            + " ORDER BY _score DESC,path ASC,line ASC,name_path ASC LIMIT ? OFFSET ?"
-        )
+        base_filters_sql = " AND ".join((
+            "root=?",
+            root_archive_sql,
+            *([ignored_path_sql] if ignored_path_sql else []),
+        ))
+        base_args: list[Any] = [resolved_root, *(f"/{name}/" for name in ignored_paths)]
+        fuzzy_filters_sql = base_filters_sql + " AND " + score_sql + " > 0"
         with self._lock, closing(self._connect()) as con:
             con.create_function("hub_code_index_score", 4, score_match, deterministic=True)
-            total_matches = int(con.execute(count_sql, args).fetchone()[0])
+            exact_total = 0
+            exact_filters_sql = ""
+            exact_args: list[Any] = []
+            if exact_identifier is not None:
+                exact_filters_sql = base_filters_sql + " AND lower(name)=?"
+                exact_args = [*base_args, exact_identifier.lower()]
+                exact_total = int(con.execute(
+                    "SELECT COUNT(*) FROM symbols WHERE " + exact_filters_sql,
+                    exact_args,
+                ).fetchone()[0])
+            exact_route = exact_total > 0
+            filters_sql = exact_filters_sql if exact_route else fuzzy_filters_sql
+            args = exact_args if exact_route else base_args
+            count_sql = "SELECT COUNT(*) FROM symbols WHERE " + filters_sql
+            total_matches = exact_total if exact_route else int(
+                con.execute(count_sql, args).fetchone()[0]
+            )
+            score_projection = "0.0" if exact_route else score_sql
+            order_by = "path ASC,line ASC,name_path ASC" if exact_route else "_score DESC,path ASC,line ASC,name_path ASC"
+            sql = (
+                "SELECT path,name,kind,line,end_line,container,name_path,signature,access,docstring,"
+                + score_projection + " AS _score FROM symbols WHERE " + filters_sql
+                + " ORDER BY " + order_by + " LIMIT ? OFFSET ?"
+            )
             rows = con.execute(sql, [*args, limit, offset]).fetchall()
         candidate_truncated = False
         candidate_limit = None
@@ -2509,20 +2527,18 @@ class CodeIndex:
             name_l = name.lower()
             name_path = str(row["name_path"] or "")
             haystack = " ".join((name_l, name_path.lower(), str(row["container"] or "").lower(), str(row["path"]).lower()))
-            score = 0.0
+            score = _code_index_candidate_score(
+                name, name_path, row["container"], row["path"], terms, exact_identifier,
+            )
             matched_terms: list[str] = []
             for term in terms:
                 if name_l == term:
-                    score += 8.0
                     matched_terms.append(term)
                 elif name_l.startswith(term):
-                    score += 5.0
                     matched_terms.append(term)
                 elif term in name_l:
-                    score += 3.0
                     matched_terms.append(term)
                 elif term in haystack:
-                    score += 1.0
                     matched_terms.append(term)
             item = {
                 "name": name,
