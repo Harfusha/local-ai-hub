@@ -104,15 +104,19 @@ def test_operational_mode_helpers_and_gate_error_resilience(tmp_path: Path) -> N
     assert gaming_snap.is_active() is False
     assert gaming_snap.is_healthy() is True
 
-    # Null bytes and non-string action in operational_mode_gate_error
-    assert operational_mode_gate_error(gaming_snap, "  status\x00 ") is None
+    # Exact canonical safe action returns None; non-canonical or non-string actions return error
+    assert operational_mode_gate_error(gaming_snap, "status") is None
+    err_non_canonical = operational_mode_gate_error(gaming_snap, "  status\x00 ")
+    assert err_non_canonical is not None
+    assert err_non_canonical["error_code"] == "operational_mode_blocked"
+
     err = operational_mode_gate_error(gaming_snap, None)  # type: ignore[arg-type]
     assert err is not None
     assert err["action"] == ""
 
     err_null = operational_mode_gate_error(gaming_snap, "  heavy-task\x00 ")
     assert err_null is not None
-    assert err_null["action"] == "heavy_task"
+    assert err_null["action"] == "  heavy-task\x00 "
 
     degraded = OperationalModeSnapshot("maintenance", 0, None, degraded=True, error="bad")
     assert degraded.is_maintenance() is True
