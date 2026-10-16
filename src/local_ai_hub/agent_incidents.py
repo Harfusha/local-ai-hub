@@ -98,6 +98,9 @@ class ToolOutcome:
         meta = dict(self.metadata) if isinstance(self.metadata, Mapping) else {}
         rr = str(self.repository_root).replace("\x00", "").strip() if self.repository_root is not None else ""
         tnt = str(self.tenant).replace("\x00", "").strip() if self.tenant is not None else ""
+        pb = bool(self.policy_blocked)
+        canc = bool(self.cancelled)
+        to = bool(self.timed_out)
 
         object.__setattr__(self, "tool_name", tn or "command")
         object.__setattr__(self, "command", cmd)
@@ -109,6 +112,9 @@ class ToolOutcome:
         object.__setattr__(self, "metadata", meta)
         object.__setattr__(self, "repository_root", rr)
         object.__setattr__(self, "tenant", tnt)
+        object.__setattr__(self, "policy_blocked", pb)
+        object.__setattr__(self, "cancelled", canc)
+        object.__setattr__(self, "timed_out", to)
 
 
 @dataclass(frozen=True)
@@ -143,7 +149,7 @@ class IncidentRecord:
         sr = str(self.state_revision).replace("\x00", "").strip() if self.state_revision is not None else ""
         try:
             att = max(1, int(self.attempts))
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             att = 1
         try:
             conf = float(self.confidence)
@@ -151,7 +157,7 @@ class IncidentRecord:
                 conf = 0.0
             else:
                 conf = max(0.0, min(1.0, conf))
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             conf = 0.0
         try:
             ca = float(self.created_at)
@@ -159,7 +165,7 @@ class IncidentRecord:
                 ca = 0.0
             else:
                 ca = max(0.0, ca)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             ca = 0.0
         try:
             ua = float(self.updated_at)
@@ -167,7 +173,7 @@ class IncidentRecord:
                 ua = 0.0
             else:
                 ua = max(0.0, ua)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             ua = 0.0
 
         ea = self.expires_at
@@ -175,13 +181,16 @@ class IncidentRecord:
             try:
                 ea_val = float(ea)
                 ea = max(0.0, ea_val) if math.isfinite(ea_val) else None
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, OverflowError):
                 ea = None
 
         ev_raw = (self.evidence_ids,) if isinstance(self.evidence_ids, str) else (self.evidence_ids or ())
         ev_ids = tuple(str(x).replace("\x00", "").strip() for x in ev_raw if str(x).replace("\x00", "").strip())
         ap_raw = (self.affected_paths,) if isinstance(self.affected_paths, str) else (self.affected_paths or ())
         ap_paths = tuple(str(x).replace("\x00", "").strip() for x in ap_raw if str(x).replace("\x00", "").strip())
+
+        rk = str(self.repository_key).replace("\x00", "").strip() if self.repository_key is not None else ""
+        tk = str(self.tenant_key).replace("\x00", "").strip() if self.tenant_key is not None else ""
 
         object.__setattr__(self, "incident_id", iid)
         object.__setattr__(self, "operation_class", op or "command")
@@ -195,6 +204,10 @@ class IncidentRecord:
         object.__setattr__(self, "expires_at", ea)
         object.__setattr__(self, "evidence_ids", ev_ids)
         object.__setattr__(self, "affected_paths", ap_paths)
+        object.__setattr__(self, "resolved", bool(self.resolved))
+        object.__setattr__(self, "ignored", bool(self.ignored))
+        object.__setattr__(self, "repository_key", rk)
+        object.__setattr__(self, "tenant_key", tk)
 
     def is_resolved(self) -> bool:
         return self.resolved
@@ -240,6 +253,53 @@ class IncidentRecord:
             },
         }
 
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> IncidentRecord:
+        if not isinstance(data, Mapping):
+            return cls(
+                incident_id="",
+                fingerprint=IncidentFingerprint(error_class="unknown", operation_class="command", signature_hash=""),
+                operation_class="command",
+                error_class="unknown",
+                redacted_message="",
+                state_revision="",
+            )
+        fp_raw = data.get("fingerprint")
+        if isinstance(fp_raw, IncidentFingerprint):
+            fp = fp_raw
+        elif isinstance(fp_raw, Mapping):
+            fp = IncidentFingerprint.from_dict(fp_raw)
+        else:
+            fp = IncidentFingerprint(
+                error_class=str(data.get("error_class", "unknown")),
+                operation_class=str(data.get("operation_class", "command")),
+                signature_hash=str(data.get("signature_hash", "")),
+            )
+        prov = data.get("provenance") if isinstance(data.get("provenance"), Mapping) else {}
+        repo_k = prov.get("repository_key") or data.get("repository_key") or ""
+        ten_k = prov.get("tenant_key") or data.get("tenant_key") or ""
+        return cls(
+            incident_id=str(data.get("incident_id", "")),
+            fingerprint=fp,
+            operation_class=str(data.get("operation_class", "")),
+            error_class=str(data.get("error_class", "")),
+            redacted_message=str(data.get("redacted_message", "")),
+            state_revision=str(data.get("state_revision", "")),
+            attempts=data.get("attempts", 1),
+            evidence_ids=tuple(data.get("evidence_ids") or ()),
+            root_cause=data.get("root_cause"),
+            verified_fix=data.get("verified_fix"),
+            confidence=data.get("confidence", 0.0),
+            resolved=bool(data.get("resolved", False)),
+            ignored=bool(data.get("ignored", False)),
+            created_at=data.get("created_at", 0.0),
+            updated_at=data.get("updated_at", 0.0),
+            expires_at=data.get("expires_at"),
+            affected_paths=tuple(data.get("affected_paths") or ()),
+            repository_key=str(repo_k),
+            tenant_key=str(ten_k),
+        )
+
 
 @dataclass(frozen=True)
 class RetryDecision:
@@ -250,6 +310,8 @@ class RetryDecision:
 
     def __post_init__(self) -> None:
         act = str(self.action).replace("\x00", "").strip() if self.action is not None else ""
+        if act not in {"apply_verified_fix", "stop", "retry", "proceed"}:
+            act = "stop"
         rsn = str(self.reason).replace("\x00", "").strip() if self.reason is not None else ""
         try:
             conf = float(self.confidence)
@@ -257,9 +319,9 @@ class RetryDecision:
                 conf = 0.0
             else:
                 conf = max(0.0, min(1.0, conf))
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, OverflowError):
             conf = 0.0
-        object.__setattr__(self, "action", act or "stop")
+        object.__setattr__(self, "action", act)
         object.__setattr__(self, "reason", rsn)
         object.__setattr__(self, "confidence", conf)
 
@@ -276,6 +338,17 @@ class RetryDecision:
             "verified_fix": self.verified_fix,
             "confidence": self.confidence,
         }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> RetryDecision:
+        if not isinstance(data, Mapping):
+            return cls(action="stop", reason="invalid decision data")
+        return cls(
+            action=str(data.get("action", "stop")),
+            reason=str(data.get("reason", "")),
+            verified_fix=data.get("verified_fix"),
+            confidence=data.get("confidence", 0.0),
+        )
 
 
 def _redact_message(msg: str) -> str:
@@ -1049,29 +1122,36 @@ class IncidentStore:
         ignored_val = row[16] if len(row) > 16 else 0
         repository_key = str(row[17] or "") if len(row) > 17 else ""
         tenant_key = str(row[18] or "") if len(row) > 18 else ""
-        aff_paths = tuple(json.loads(affected_paths_raw) if affected_paths_raw else ())
+        try:
+            aff_paths = tuple(json.loads(affected_paths_raw) if affected_paths_raw else ())
+        except Exception:
+            aff_paths = ()
+        try:
+            ev_ids = tuple(json.loads(evidence_ids_raw) if evidence_ids_raw else ())
+        except Exception:
+            ev_ids = ()
         fp = IncidentFingerprint(
-            error_class=error_class,
-            operation_class=operation_class,
-            signature_hash=signature_hash,
+            error_class=str(error_class or "unknown"),
+            operation_class=str(operation_class or "command"),
+            signature_hash=str(signature_hash or ""),
         )
         return IncidentRecord(
-            incident_id=incident_id,
+            incident_id=str(incident_id or ""),
             fingerprint=fp,
-            operation_class=operation_class,
-            error_class=error_class,
-            redacted_message=redacted_message,
-            state_revision=state_revision,
-            attempts=int(attempts),
-            evidence_ids=tuple(json.loads(evidence_ids_raw) if evidence_ids_raw else ()),
+            operation_class=str(operation_class or "command"),
+            error_class=str(error_class or "unknown"),
+            redacted_message=str(redacted_message or ""),
+            state_revision=str(state_revision or ""),
+            attempts=attempts,
+            evidence_ids=ev_ids,
             root_cause=root_cause,
             verified_fix=verified_fix,
-            confidence=float(confidence),
+            confidence=confidence,
             resolved=bool(resolved_val),
             ignored=bool(ignored_val),
-            created_at=float(created_at),
-            updated_at=float(updated_at),
-            expires_at=float(expires_at) if expires_at is not None else None,
+            created_at=created_at,
+            updated_at=updated_at,
+            expires_at=expires_at,
             affected_paths=aff_paths,
             repository_key=repository_key,
             tenant_key=tenant_key,
