@@ -986,7 +986,6 @@ class TelemetryStore:
             "data_available": bool(history.get("data_available", self.enabled and "net_cloud_token_delta_est" in history)),
             "stale": bool(history.get("stale", False)),
             "writer": history.get("writer", {}),
-            "detail": history.get("detail", {}),
             "summary_cache_stale": bool(history.get("summary_cache_stale", False)),
             "scope": str(history.get("scope", scope) or scope),
             "process_started_at": history.get("process_started_at") if scope == "process" else None,
@@ -2585,7 +2584,6 @@ class TelemetryStore:
                    FROM events WHERE request_id=?""",
                 (request_id,),
             ).fetchone()
-        event_count = int(row[0] or 0)
         inference_events = int(row[1] or 0)
         cache_hits = int(row[2] or 0)
         return {

@@ -767,7 +767,6 @@ class AsyncJobManager:
             # submissions still coalesce onto one active job.
             request_hash_payload = dict(clean)
             clean["request_id"] = uuid.uuid4().hex
-        request_id = self._request_id(clean)
         stored_payload = dict(clean)
         stored_payload[self.REQUEST_ID_SUPPLIED_MARKER] = bool(caller_request_id)
         encoded = json_dumps(stored_payload, ensure_ascii=False, separators=(",", ":"))

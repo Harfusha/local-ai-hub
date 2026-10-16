@@ -2349,10 +2349,6 @@ class RAGStore:
                     if str(row[4] or "") != embedding_space
                 }
             old_files = {r[0]: {"mtime_ns": int(r[1]), "size": int(r[2]), "content_hash": r[3]} for r in old_rows}
-            old_chunks = {
-                (r[0], int(r[1]), r[2]): r[3]
-                for r in old_chunk_rows if str(r[4] or "") == embedding_space
-            }
 
             current_meta: dict[str, tuple[Path, int, int]] = {}
             for path in self._iter_files(root_path, project_context):

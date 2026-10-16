@@ -443,23 +443,6 @@ class TieredOllamaRuntime:
             },
         }
 
-
-    def run_benchmark_scenario(
-        self,
-        *,
-        name: str,
-        contract: dict[str, Any],
-        scheduler: Any,
-        resource_sampler: Any | None = None,
-    ) -> dict[str, Any]:
-        # Reuse the Ollama executor on this facade. Its scheduled callback resolves
-        # the selected tier through request_interruptible, so handoff/load stays
-        # inside the measured queue and deadline window.
-        return OllamaRuntime.run_benchmark_scenario(
-            cast(Any, self), name=name, contract=contract, scheduler=scheduler,
-            resource_sampler=resource_sampler,
-        )
-
     def stop_managed_server(self) -> bool:
         return bool(self.smart.stop_managed_server())
 

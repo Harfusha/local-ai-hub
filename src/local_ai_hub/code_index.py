@@ -1560,7 +1560,6 @@ class CodeIndex:
                     symbol["_body_close_position"] = close_position
 
         call_pattern = re.compile(r"\b([A-Za-z_$][A-Za-z0-9_$]{2,})\s*\(")
-        call_owners = self._call_owners_by_line(syms, len(lines))
         for i, line in enumerate(lines, 1):
             cleaned = line
             declaration_spans = _declaration_call_spans(cleaned)
@@ -1660,7 +1659,6 @@ class CodeIndex:
             syms.append(s)
 
         call_re = re.compile(r"\b([A-Za-z_$][A-Za-z0-9_$]{2,})\s*\(")
-        call_owners = self._call_owners_by_line(syms, len(lines))
         for i, line in enumerate(lines, 1):
             declaration_spans = _declaration_call_spans(line)
             for m in call_re.finditer(line):
@@ -3507,7 +3505,7 @@ class CodeIndex:
                                 if is_root_archive_path(path := str(row[0]))
                             ),
                         )
-                sql = f"""
+                sql = """
                 SELECT s.path, s.name, s.kind, s.line, s.end_line, s.container, s.name_path, s.access
                 FROM symbols s
                 LEFT JOIN refs r ON s.root = r.root AND s.name = r.name

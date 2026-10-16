@@ -561,7 +561,7 @@ class HubClient:
                 except Exception:
                     pass
                 return response.status == 200
-        except HTTPError as exc:
+        except HTTPError:
             # Readiness 503 means the app is still initializing; liveness alone
             # must not let MCP requests race partially initialized services.
             return False

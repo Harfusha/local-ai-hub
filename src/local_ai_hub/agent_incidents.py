@@ -1244,13 +1244,11 @@ class IncidentStore:
         tenant_key = _incident_scope_key("tenant", tenant)
         if not repository_key or not tenant_key:
             return []
-        scoped = True
-        scope_sql = "WHERE repository_key = ? AND tenant_key = ?"
         scope_params = (repository_key, tenant_key)
         con = connect_sqlite(self.state_store.db_path)
         try:
             cur = con.execute(
-                f"""
+                """
                 WITH ranked AS (
                     SELECT incident_id, operation_class, error_class, signature_hash, redacted_message,
                            state_revision, root_cause, verified_fix, confidence,

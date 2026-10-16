@@ -6233,7 +6233,7 @@ def test_{sym}_regression_edge_cases():
 
         fmt = format.lower()
         if fmt == "csv":
-            import io, csv
+            import csv
             out = io.StringIO()
             writer = csv.DictWriter(out, fieldnames=list(fields.keys()))
             writer.writeheader()
