@@ -13,41 +13,67 @@ from .state_paths import configured_state_dir
 from .model_lifecycle import acquire_locks, load_model, release_model, uses_torch_cuda
 
 
+def _safe_int(val: Any, default: int, min_val: int = 0) -> int:
+    if val is None or isinstance(val, bool):
+        return default
+    try:
+        if isinstance(val, float) and not math.isfinite(val):
+            return default
+        i = int(val)
+        return max(min_val, i)
+    except (ValueError, TypeError, OverflowError):
+        return default
+
+
 class Reranker:
-    def __init__(self, config: dict[str, Any]):
-        self.config = config
-        self.model_name = config.get("models", {}).get("reranker", "BAAI/bge-reranker-base")
-        self.device = str(config.get("models", {}).get("reranker_device", "cpu")).strip() or "cpu"
-        self.backend = str(config.get("models", {}).get("reranker_backend", "torch")).strip().lower()
+    def __init__(self, config: dict[str, Any] | None = None):
+        cfg = config if isinstance(config, dict) else {}
+        self.config = cfg
+        models_cfg = cfg.get("models", {}) if isinstance(cfg.get("models"), dict) else {}
+        features_cfg = cfg.get("features", {}) if isinstance(cfg.get("features"), dict) else {}
+        cpu_cfg = cfg.get("cpu_retrieval", {}) if isinstance(cfg.get("cpu_retrieval"), dict) else {}
+        cache_cfg = cfg.get("cache", {}) if isinstance(cfg.get("cache"), dict) else {}
+
+        raw_model = models_cfg.get("reranker")
+        self.model_name = str(raw_model or "BAAI/bge-reranker-base").replace("\x00", "").strip() or "BAAI/bge-reranker-base"
+        self.device = str(models_cfg.get("reranker_device", "cpu")).replace("\x00", "").strip() or "cpu"
+        self.backend = str(models_cfg.get("reranker_backend", "torch")).replace("\x00", "").strip().lower() or "torch"
         self.active_backend: str | None = None
         self.active_device: str | None = None
         self._candidates: list[tuple[str, str]] | None = None
         self._candidate_index = -1
-        self.enabled = bool(config.get("features", {}).get("reranker", True))
-        cpu_cfg = config.get("cpu_retrieval", {})
-        self.batch_size = max(1, int(cpu_cfg.get("reranker_batch_size", 16)))
-        self.max_length = max(128, int(cpu_cfg.get("reranker_max_length", 1024)))
+        self.enabled = bool(features_cfg.get("reranker", True))
+        self.batch_size = max(1, _safe_int(cpu_cfg.get("reranker_batch_size"), 16))
+        self.max_length = max(128, _safe_int(cpu_cfg.get("reranker_max_length"), 1024))
         self._model = None
         self._load_lock = threading.Lock()
         self._predict_lock = threading.Lock()
-        self._cpu_gate = CooperativePriorityGate(int(cpu_cfg.get("foreground_priority", 3)))
+        self._cpu_gate = CooperativePriorityGate(_safe_int(cpu_cfg.get("foreground_priority"), 3))
         self._load_error: str | None = None
         self._load_error_time: float = 0.0
         self.flight_group = SingleFlightGroup(shards=16, default_timeout_seconds=60.0)
-        cache_cfg = config.get("cache", {})
         self.cache_enabled = bool(cache_cfg.get("reranker", True))
         self.cache = TieredCache(
             SQLiteCache(
-                configured_state_dir(config) / "cache.sqlite",
+                configured_state_dir(cfg) / "cache.sqlite",
                 namespace=f"rerank:{self.model_name}",
-                ttl_seconds=int(cache_cfg.get("reranker_ttl_seconds", 14 * 86400)),
-                max_entries=int(cache_cfg.get("reranker_max_entries", 100_000)),
+                ttl_seconds=_safe_int(cache_cfg.get("reranker_ttl_seconds"), 14 * 86400),
+                max_entries=_safe_int(cache_cfg.get("reranker_max_entries"), 100_000),
             ),
-            l1_entries=int(cache_cfg.get("l1_reranker_entries", 4096)),
-            l1_ttl_seconds=int(cache_cfg.get("l1_reranker_ttl_seconds", 3600)),
+            l1_entries=_safe_int(cache_cfg.get("l1_reranker_entries"), 4096),
+            l1_ttl_seconds=_safe_int(cache_cfg.get("l1_reranker_ttl_seconds"), 3600),
         )
         self._cache_hits = 0
         self._computed = 0
+
+    def is_enabled(self) -> bool:
+        return self.enabled
+
+    def is_loaded(self) -> bool:
+        return self._model is not None
+
+    def active_model_name(self) -> str:
+        return self.model_name
 
     def _loaded_model_revision(self) -> str | None:
         model = self._model
@@ -224,27 +250,42 @@ class Reranker:
         priority: int = 3,
         allow_cpu_fallback: bool = True,
     ) -> dict[str, Any]:
-        if not documents:
+        if not documents or not isinstance(documents, (list, tuple)):
+            return {"success": True, "model": self.model_name, "results": []}
+        clean_docs = [str(d or "").replace("\x00", "") for d in documents if d is not None]
+        if not clean_docs:
             return {"success": True, "model": self.model_name, "results": []}
         if not self._ensure_model(allow_cpu_fallback=allow_cpu_fallback):
             return {"success": False, "error": self._load_error or "reranker disabled", "results": []}
         if not allow_cpu_fallback and str(self.active_device or "").strip().lower().startswith("cpu"):
             return {"success": False, "error": "CPU reranking disabled for this request", "results": []}
 
+        clean_query = str(query or "").replace("\x00", "").strip()
+        clean_priority = _safe_int(priority, 3)
+        clean_top_k: int | None = None
+        if top_k is not None and not isinstance(top_k, bool):
+            try:
+                if isinstance(top_k, float) and not math.isfinite(top_k):
+                    clean_top_k = len(clean_docs)
+                else:
+                    clean_top_k = max(1, int(top_k))
+            except (ValueError, TypeError, OverflowError):
+                clean_top_k = len(clean_docs)
+
         request_key = stable_hash({
             "execution": self._execution_identity(),
-            "query": query,
-            "documents": documents,
-            "top_k": top_k,
+            "query": clean_query,
+            "documents": clean_docs,
+            "top_k": clean_top_k,
             "allow_cpu_fallback": allow_cpu_fallback,
         })
         result, _coalesced = self.flight_group.do(
             request_key,
             lambda: self._rerank_uncached(
-                query,
-                documents,
-                top_k=top_k,
-                priority=priority,
+                clean_query,
+                clean_docs,
+                top_k=clean_top_k,
+                priority=clean_priority,
                 allow_cpu_fallback=allow_cpu_fallback,
             ),
         )
