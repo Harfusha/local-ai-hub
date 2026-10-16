@@ -176,6 +176,63 @@ def test_wait_clamps_to_ninety_seconds_without_polling(tmp_path):
     manager.close()
 
 
+def test_wait_rechecks_terminal_status_after_tick_evicts_old_event(tmp_path, monkeypatch):
+    manager, _scheduler = _manager(tmp_path)
+    job_id = "completed-between-status-and-event"
+    now = time.time()
+    with closing(manager._connect()) as con:
+        con.execute(
+            "INSERT INTO async_jobs(job_id,tenant,action,request_hash,payload_json,state,created_at,updated_at,expires_at) VALUES(?,?,?,?,?,'running',?,?,?)",
+            (job_id, "tenant-a", "reason", "interleaved-hash", '{"task":"interleaved"}', now, now, now + 600),
+        )
+        con.commit()
+
+    old_event = threading.Event()
+    manager._events[job_id] = old_event
+
+    class UnexpectedWaitEvent(threading.Event):
+        def wait(self, timeout=None):
+            raise AssertionError("wait blocked after the job became terminal")
+
+    class EventMap(dict):
+        def setdefault(self, key, default=None):
+            if key not in self:
+                event = UnexpectedWaitEvent()
+                self[key] = event
+                return event
+            return super().setdefault(key, default)
+
+    manager._events = EventMap(manager._events)
+    original_status = manager.status
+    status_calls = 0
+
+    def complete_after_running_snapshot(tenant, current_job_id):
+        nonlocal status_calls
+        status_calls += 1
+        if status_calls == 1:
+            running = original_status(tenant, current_job_id)
+            with closing(manager._connect()) as con:
+                con.execute(
+                    "UPDATE async_jobs SET state='done',updated_at=? WHERE job_id=? AND tenant=?",
+                    (time.time(), current_job_id, tenant),
+                )
+                con.commit()
+            manager.tick()
+            return running
+        return original_status(tenant, current_job_id)
+
+    monkeypatch.setattr(manager, "status", complete_after_running_snapshot)
+    try:
+        result = manager.wait("tenant-a", job_id, 10)
+
+        assert result["state"] == "done"
+        assert status_calls >= 2
+        assert old_event.is_set()
+        assert job_id not in manager._events
+    finally:
+        manager.close()
+
+
 def test_recovery_requeues_persisted_job_once(tmp_path):
     manager, scheduler = _manager(tmp_path)
     seen_request_ids = []

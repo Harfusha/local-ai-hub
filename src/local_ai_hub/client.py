@@ -1568,7 +1568,24 @@ class HubClient:
                 return self.post("/api/memory/delete", {"root": kwargs.get("root", "."), "key": kwargs.get("key", "")})
         if act.startswith("memory_") and act != "memory_reap":
             mem_action = act.replace("memory_", "")
-            payload = {**kwargs, "action": mem_action}
+            payload = dict(kwargs)
+            # Repository and tenant identity come from the authenticated HTTP
+            # principal and the server-resolved project context. Never let an
+            # MCP caller replace either identity in a memory request.
+            for identity_field in ("tenant", "repository_id", "coordination_id"):
+                payload.pop(identity_field, None)
+            record = payload.get("record")
+            repository_scope = payload.get("scope") == "repository"
+            if repository_scope:
+                payload.pop("scope_id", None)
+            if isinstance(record, dict):
+                record = dict(record)
+                for identity_field in ("tenant", "repository_id", "coordination_id"):
+                    record.pop(identity_field, None)
+                if repository_scope or record.get("scope") == "repository":
+                    record.pop("scope_id", None)
+                payload["record"] = record
+            payload["action"] = mem_action
             return self.post("/api/agent-state/memory", payload)
         if act in {"incident_decision", "negative_knowledge_record", "negative_knowledge_find"}:
             validation_error = validate_operation_arguments(
