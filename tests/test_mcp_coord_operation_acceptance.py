@@ -374,6 +374,11 @@ def test_local_ai_coord_feature_disabled_rejects_valid_action_before_backend_dis
 
 def _prepare_coord_api(monkeypatch):
     backend = ApiBackend({"success": True, "summary": "forwarded"})
+    # Forwarding fixtures own their mode; operator/background state is unrelated.
+    monkeypatch.setattr(
+        mcp_server, "load_operational_mode",
+        lambda *_args, **_kwargs: SimpleNamespace(mode="active", revision=1, degraded=False),
+    )
     monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
     monkeypatch.setattr(mcp_server, "CLIENT", backend)
     return backend
@@ -381,6 +386,10 @@ def _prepare_coord_api(monkeypatch):
 
 def _prepare_coord_rpc(monkeypatch):
     backend = CoordBackend({"success": True, "summary": "forwarded"})
+    monkeypatch.setattr(
+        mcp_server, "load_operational_mode",
+        lambda *_args, **_kwargs: SimpleNamespace(mode="active", revision=1, degraded=False),
+    )
     monkeypatch.setattr(mcp_server.FEATURES, "coord", True)
     monkeypatch.setattr(mcp_server, "CLIENT", backend)
     return backend
@@ -490,7 +499,7 @@ def test_local_ai_coord_negative_knowledge_find_forwards_query_and_limit(monkeyp
     root = str(tmp_path.resolve())
     backend = _prepare_coord_api(monkeypatch)
     result = mcp_server.local_ai_coord(action='negative_knowledge_find', root=root, query="retry exhausted", limit=12)
-    assert result["success"] is True
+    assert result["success"] is True, result
     calls = backend.calls
     assert calls == [(
         "/api/agent-state/incidents",
