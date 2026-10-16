@@ -12,7 +12,7 @@ def _safe_float(val: Any, default: float, min_val: float = 0.0, max_val: float =
         if not math.isfinite(f):
             return default
         return max(min_val, min(max_val, f))
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
         return default
 
 
@@ -22,7 +22,7 @@ def _safe_int(val: Any, default: int, min_val: int = 0) -> int:
     try:
         i = int(val)
         return max(min_val, i)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
         return default
 
 
@@ -67,7 +67,7 @@ class AdaptivePlanner:
                 try:
                     f = float(raw_conf)
                     graph_conf = max(0.0, min(1.0, f)) if math.isfinite(f) else 0.0
-                except (ValueError, TypeError):
+                except (ValueError, TypeError, OverflowError):
                     graph_conf = 0.0
         else:
             graph_conf = 0.0
@@ -112,7 +112,7 @@ class AdaptivePlanner:
 
         if not self.enabled:
             return {
-                "confidence": confidence,
+                "confidence": round(confidence, 4),
                 "confidence_components": components,
                 "explorer": True,
                 "worker": heavy,
@@ -122,7 +122,7 @@ class AdaptivePlanner:
 
         if mode_str == "quality":
             return {
-                "confidence": confidence,
+                "confidence": round(confidence, 4),
                 "confidence_components": components,
                 "explorer": True,
                 "worker": True,

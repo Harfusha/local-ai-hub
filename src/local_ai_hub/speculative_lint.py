@@ -41,8 +41,8 @@ def _safe_float(val: Any, default: float, min_val: float | None = None, max_val:
 
 def normalize_changed_paths(root: str | os.PathLike[str], paths: list[str] | tuple[str, ...]) -> list[str]:
     """Return unique project-relative paths, rejecting root escapes."""
-    if not isinstance(root, (str, os.PathLike)) or "\x00" in str(root):
-        raise ValueError("root directory cannot contain null bytes")
+    if isinstance(root, bool) or not isinstance(root, (str, os.PathLike)) or "\x00" in str(root):
+        raise ValueError("root directory cannot contain null bytes or invalid types")
     root_path = Path(root).expanduser().resolve(strict=False)
     if not root_path.is_dir():
         raise ValueError(f"root directory does not exist: {root}")
@@ -50,7 +50,9 @@ def normalize_changed_paths(root: str | os.PathLike[str], paths: list[str] | tup
         raise ValueError("changed paths must be a non-empty list")
     normalized: set[str] = set()
     for raw in paths:
-        value = str(raw or "").strip()
+        if raw is None or isinstance(raw, bool) or not isinstance(raw, (str, os.PathLike)):
+            continue
+        value = str(raw).strip()
         if not value:
             continue
         if "\x00" in value:
@@ -90,8 +92,23 @@ class SpeculativeLintQueue:
                 "terminal": True,
                 "retryable": False,
             }
-        normalized_root = str(Path(root).expanduser().resolve(strict=False))
-        normalized_paths = normalize_changed_paths(normalized_root, list(paths)[: self.max_paths])
+        if isinstance(root, bool) or not isinstance(root, (str, os.PathLike)) or "\x00" in str(root):
+            return {
+                "success": False,
+                "error": "invalid root directory: must be string or Path without null bytes",
+                "terminal": True,
+                "retryable": False,
+            }
+        try:
+            normalized_root = str(Path(root).expanduser().resolve(strict=False))
+            normalized_paths = normalize_changed_paths(normalized_root, list(paths)[: self.max_paths])
+        except Exception as exc:
+            return {
+                "success": False,
+                "error": f"invalid root or changed paths: {exc}",
+                "terminal": True,
+                "retryable": False,
+            }
         with self._lock:
             previous = self._root_jobs.get(normalized_root)
             if previous:
