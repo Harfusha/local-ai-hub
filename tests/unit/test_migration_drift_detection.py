@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 import sqlite3
 from pathlib import Path
 
@@ -7,12 +8,21 @@ import local_ai_hub.deterministic as deterministic
 from local_ai_hub.deterministic import DeterministicEngine
 
 
+@contextmanager
+def _connect(*args, **kwargs):
+    con = sqlite3.connect(*args, **kwargs)
+    try:
+        yield con
+    finally:
+        con.close()
+
+
 def _compare_schema(tmp_path, live_sql, migration_sql):
     migrations = tmp_path / "migrations"
     migrations.mkdir()
     (migrations / "001.sql").write_text(migration_sql, encoding="utf-8")
     db_file = tmp_path / "app.db"
-    with sqlite3.connect(db_file) as con:
+    with _connect(db_file) as con:
         con.executescript(live_sql)
     before = db_file.read_bytes()
     engine = DeterministicEngine({"server": {"state_dir": str(tmp_path / "state")}})
@@ -87,7 +97,7 @@ def test_migration_drift_detects_columns_missing_from_live_sqlite(tmp_path: Path
         encoding="utf-8",
     )
     db_file = tmp_path / "app.db"
-    with sqlite3.connect(db_file) as con:
+    with _connect(db_file) as con:
         con.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT NOT NULL)")
 
     engine = DeterministicEngine({"server": {"state_dir": str(tmp_path / "state")}})
@@ -110,7 +120,7 @@ def test_migration_drift_parses_multiple_statements_and_quoted_semicolons(tmp_pa
         encoding="utf-8",
     )
     db_file = tmp_path / "app.db"
-    with sqlite3.connect(db_file):
+    with _connect(db_file):
         pass
 
     engine = DeterministicEngine({"server": {"state_dir": str(tmp_path / "state")}})
@@ -129,7 +139,7 @@ def test_migration_drift_does_not_claim_sync_without_table_ddl(tmp_path: Path) -
         encoding="utf-8",
     )
     db_file = tmp_path / "app.db"
-    with sqlite3.connect(db_file) as con:
+    with _connect(db_file) as con:
         con.execute("CREATE TABLE users (id INTEGER PRIMARY KEY)")
 
     engine = DeterministicEngine({"server": {"state_dir": str(tmp_path / "state")}})
@@ -147,7 +157,7 @@ def test_migration_drift_reports_live_only_columns(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     db_file = tmp_path / "app.db"
-    with sqlite3.connect(db_file) as con:
+    with _connect(db_file) as con:
         con.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, email TEXT, legacy TEXT)")
 
     engine = DeterministicEngine({"server": {"state_dir": str(tmp_path / "state")}})
@@ -174,7 +184,7 @@ def test_migration_drift_does_not_report_sync_without_live_database(tmp_path: Pa
 
 def test_migration_drift_does_not_claim_sync_without_schema_source(tmp_path: Path) -> None:
     db_file = tmp_path / "app.db"
-    with sqlite3.connect(db_file) as con:
+    with _connect(db_file) as con:
         con.execute("CREATE TABLE users (id INTEGER PRIMARY KEY)")
 
     engine = DeterministicEngine({"server": {"state_dir": str(tmp_path / "state")}})
@@ -190,7 +200,7 @@ def test_migration_drift_rejects_database_outside_root(tmp_path: Path) -> None:
     root = tmp_path / "project"
     root.mkdir()
     outside_db = tmp_path / "outside.db"
-    with sqlite3.connect(outside_db) as con:
+    with _connect(outside_db) as con:
         con.execute("CREATE TABLE users (id INTEGER PRIMARY KEY)")
 
     engine = DeterministicEngine({"server": {"state_dir": str(tmp_path / "state")}})
@@ -206,7 +216,7 @@ def test_migration_drift_bounds_live_schema_column_metadata(
     tmp_path: Path, monkeypatch
 ) -> None:
     db_file = tmp_path / "app.db"
-    with sqlite3.connect(db_file) as con:
+    with _connect(db_file) as con:
         con.execute("CREATE TABLE users (id INTEGER PRIMARY KEY)")
     migration_dir = tmp_path / "migrations"
     migration_dir.mkdir()
@@ -228,7 +238,7 @@ def test_migration_drift_rejects_oversized_database_before_open(
     tmp_path: Path, monkeypatch
 ) -> None:
     db_file = tmp_path / "app.db"
-    with sqlite3.connect(db_file) as con:
+    with _connect(db_file) as con:
         con.execute("CREATE TABLE measured (id INTEGER)")
     monkeypatch.setattr(deterministic, "_MAX_SCHEMA_DB_BYTES", 0)
 
@@ -245,7 +255,7 @@ def test_migration_drift_bounds_directory_entry_scan(
     tmp_path: Path, monkeypatch
 ) -> None:
     db_file = tmp_path / "app.db"
-    with sqlite3.connect(db_file):
+    with _connect(db_file):
         pass
     (tmp_path / "models.py").write_text("class User: pass\n", encoding="utf-8")
     monkeypatch.setattr(deterministic, "_MAX_SCHEMA_SCAN_ENTRIES", 1)
@@ -263,7 +273,7 @@ def test_migration_drift_bounds_python_model_fallback_scan(
     tmp_path: Path, monkeypatch
 ) -> None:
     db_file = tmp_path / "app.db"
-    with sqlite3.connect(db_file) as con:
+    with _connect(db_file) as con:
         con.execute("CREATE TABLE users (id INTEGER PRIMARY KEY)")
     (tmp_path / "one.py").write_text("class One: pass\n", encoding="utf-8")
     (tmp_path / "two.py").write_text("class Two: pass\n", encoding="utf-8")
@@ -282,7 +292,7 @@ def test_migration_drift_does_not_claim_sync_when_python_source_cannot_be_parsed
     tmp_path: Path,
 ) -> None:
     db_file = tmp_path / "app.db"
-    with sqlite3.connect(db_file) as con:
+    with _connect(db_file) as con:
         con.execute("CREATE TABLE users (id INTEGER PRIMARY KEY)")
     (tmp_path / "models.py").write_text("class Broken(:\n", encoding="utf-8")
 
