@@ -33,6 +33,10 @@ class CompletionReceiptStore(Protocol):
 
 def project_command_environment_sha256(settings: object, criterion: str) -> str:
     """Hash the effective project command environment without persisting values."""
+    if settings is None:
+        raise CompletionGateError("project settings is required")
+    if not isinstance(criterion, str) or not criterion.strip() or "\x00" in criterion:
+        raise CompletionGateError("project command criterion is invalid")
     commands = getattr(settings, "commands", {})
     command = commands.get(criterion) if isinstance(commands, Mapping) else None
     environment = dict(getattr(settings, "env", {}) or {})
@@ -286,7 +290,33 @@ def _task_project_root(
 
 
 def _canonical_project_root(root: str | Path) -> str:
-    return os.path.normcase(str(Path(root).expanduser().resolve(strict=False)))
+    if not isinstance(root, (str, Path)):
+        return ""
+    clean = str(root).replace("\x00", "").strip()
+    if not clean:
+        return ""
+    try:
+        return os.path.normcase(str(Path(clean).expanduser().resolve(strict=False)))
+    except Exception:
+        return os.path.normcase(clean)
+
+
+def is_valid_project_root(root: Any) -> bool:
+    if not isinstance(root, (str, Path)):
+        return False
+    clean = str(root).strip()
+    if not clean or "\x00" in clean:
+        return False
+    return True
+
+
+def is_valid_task_id(task_id: Any) -> bool:
+    if not isinstance(task_id, str):
+        return False
+    clean = task_id.strip()
+    if not clean or "\x00" in clean:
+        return False
+    return any(ch >= " " for ch in clean)
 
 
 def _completion_mutation_generation(task: object) -> int:
