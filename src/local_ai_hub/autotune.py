@@ -57,7 +57,13 @@ class RuntimeTuner:
 
         server_cfg = clean_cfg.get("server") if isinstance(clean_cfg.get("server"), dict) else {}
         raw_state_dir = server_cfg.get("state_dir") if isinstance(server_cfg, dict) else None
-        state_dir = Path(str(raw_state_dir or "~/.local-ai-hub/state")).expanduser()
+        if isinstance(raw_state_dir, str) and "\0" not in raw_state_dir:
+            try:
+                state_dir = Path(raw_state_dir).expanduser()
+            except (ValueError, OSError):
+                state_dir = Path("~/.local-ai-hub/state").expanduser()
+        else:
+            state_dir = Path("~/.local-ai-hub/state").expanduser()
         self._state_path = state_dir / "runtime-tuner.json"
         self._last_persist_seconds = 0.0
         self._load_state()
@@ -67,13 +73,16 @@ class RuntimeTuner:
         if not isinstance(data, dict):
             return None
         try:
-            profile = {
-                key: float(data[key])
-                for key in ("latency_ms", "load_ms", "tps", "samples")
-            }
+            profile: dict[str, float] = {}
+            for key in ("latency_ms", "load_ms", "tps", "samples"):
+                val = data[key]
+                if isinstance(val, bool) or not isinstance(val, (int, float)):
+                    return None
+                fval = float(val)
+                if not math.isfinite(fval) or fval < 0:
+                    return None
+                profile[key] = fval
         except (KeyError, TypeError, ValueError):
-            return None
-        if any(not math.isfinite(value) or value < 0 for value in profile.values()):
             return None
         return profile
 
@@ -128,6 +137,8 @@ class RuntimeTuner:
             return
 
         def _safe_float(val: Any, default: float = 0.0) -> float:
+            if isinstance(val, bool) or val is None:
+                return default
             try:
                 res = float(val)
                 return res if math.isfinite(res) and res >= 0 else default
