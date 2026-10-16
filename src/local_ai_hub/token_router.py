@@ -44,6 +44,10 @@ def _safe_float(val: Any, default: float, min_val: float | None = None, max_val:
     return res
 
 
+def _strict_bool(val: Any, default: bool) -> bool:
+    return val if type(val) is bool else default
+
+
 class LosslessTokenRouter:
     """Route oversized text/file context into exact raw line slices.
 
@@ -58,7 +62,7 @@ class LosslessTokenRouter:
         self.config = config
         self.services = services
         cfg = config.get("lossless_router", {}) if isinstance(config.get("lossless_router"), dict) else {}
-        self.enabled = bool(cfg.get("enabled", True))
+        self.enabled = _strict_bool(cfg.get("enabled", True), False)
         self.max_ranges = _safe_int(cfg.get("max_ranges"), 8, min_val=1)
         self.context_lines = _safe_int(cfg.get("context_lines"), 4, min_val=0)
         self.max_output_tokens = _safe_int(cfg.get("selector_output_tokens"), 450, min_val=128)
