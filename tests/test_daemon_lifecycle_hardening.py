@@ -984,7 +984,7 @@ def test_stop_daemon_requires_policy_before_tree_cleanup(
 def test_stop_daemon_rejects_a_different_task_owner(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    broker = _broker(tmp_path)
+    broker = _broker(tmp_path, allow_unknown=True)
     daemon = broker.spawn_daemon(
         [sys.executable, "-c", "import time; time.sleep(30)"],
         str(tmp_path),
@@ -1045,7 +1045,7 @@ def test_daemon_stop_task_id_flows_through_service_and_http(
     assert calls == [(daemon_id, task_id)]
 
     handler = http_server.Handler.__new__(http_server.Handler)
-    handler.path = "/api/daemon"
+    handler.path = "/api/command/daemon"
     handler.headers = {"Content-Type": "application/json"}
     handler._begin_trace = lambda _path: None
     handler._require_authorized = lambda: True
@@ -1888,38 +1888,6 @@ def test_named_daemon_job_survives_restart_and_stops_descendants(
     assert_start_failure("duplicate")
 
 
-
-def test_stop_daemon_rejects_a_different_task_owner(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    broker = _broker(tmp_path, allow_unknown=True)
-    daemon = broker.spawn_daemon(
-        [sys.executable, "-c", "import time; time.sleep(30)"],
-        str(tmp_path),
-        task_id="daemon-test",
-    )
-    assert daemon["success"] is True
-    monkeypatch.setattr(
-        broker,
-        "authorize_auxiliary_action",
-        lambda *_args, **_kwargs: {"allowed": True},
-    )
-    cleanup_calls: list[str] = []
-    with monkeypatch.context() as patch:
-        patch.setattr(
-            commands_module,
-            "_stop_daemon_tree",
-            lambda info: cleanup_calls.append(str(info["daemon_id"])) or True,
-        )
-        result = broker.stop_daemon(daemon["daemon_id"], task_id="other-task")
-        missing_owner = broker.stop_daemon(daemon["daemon_id"])
-
-    assert result["policy_blocked"] is True
-    assert result["error"] == "daemon belongs to a different or unknown task"
-    assert missing_owner["policy_blocked"] is True
-    assert missing_owner["error"] == "daemon belongs to a different or unknown task"
-    assert cleanup_calls == []
-    assert broker.stop_daemon(daemon["daemon_id"], task_id="daemon-test")["success"] is True
 def test_live_daemon_is_reconciled_after_broker_restart(tmp_path: Path) -> None:
     first = _broker(tmp_path, allow_unknown=True)
     daemon = first.spawn_daemon(
@@ -2018,73 +1986,6 @@ def test_restart_recovers_and_stops_owned_group_after_leader_exits(
             recovered.stop_daemon(daemon["daemon_id"], task_id="daemon-test")
         if daemon["daemon_id"] in first._daemons:
             first.stop_daemon(daemon["daemon_id"], task_id="daemon-test")
-
-
-def test_daemon_stop_task_id_flows_through_service_and_http(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    from local_ai_hub import http_server
-    from local_ai_hub.services import LocalAIServices
-
-    calls: list[tuple[str, str]] = []
-
-    class BrokerStub:
-        def authorize_auxiliary_action(
-            self, action: str, *, endpoint: str = "", task_id: str = ""
-        ) -> dict[str, Any]:
-            return {"allowed": action == "stop_daemon" and task_id == "daemon-test"}
-
-        def stop_daemon(self, daemon_id: str, *, task_id: str = "") -> dict[str, Any]:
-            calls.append((daemon_id, task_id))
-            return {"success": True}
-
-    service = object.__new__(LocalAIServices)
-    service.commands = BrokerStub()
-
-    daemon_id = "dmn_" + "a" * 32
-    task_id = "daemon-test"
-    result = service.command(
-        {"action": "stop_daemon", "daemon_id": daemon_id, "task_id": task_id},
-        tenant="agent",
-    )
-    assert result["success"] is True
-    assert calls == [(daemon_id, task_id)]
-
-    handler = http_server.Handler.__new__(http_server.Handler)
-    handler.path = "/api/daemon"
-    handler.headers = {"Content-Type": "application/json"}
-    handler._begin_trace = lambda _path: None
-    handler._require_authorized = lambda: True
-    handler._read_json = lambda: {"action": "stop", "daemon_id": daemon_id, "task_id": task_id}
-    handler._validate_payload = lambda _path, _payload: None
-    handler._tenant = lambda: "agent"
-    handler._agent = lambda: "test-agent"
-    handler._trace_request_id = "daemon-stop-route-test"
-    responses: list[tuple[int, dict[str, Any]]] = []
-    handler._send = lambda status, body: responses.append((status, body))
-    monkeypatch.setattr(
-        http_server,
-        "load_operational_mode",
-        lambda _state_dir: SimpleNamespace(degraded=False, mode="active"),
-        raising=False,
-    )
-    recovery = SimpleNamespace(
-        begin=lambda *_args, **_kwargs: {"claimed": True, "state": "new", "payload_fingerprint": "test"}
-    )
-    monkeypatch.setattr(
-        http_server,
-        "APP",
-        SimpleNamespace(
-            config={"server": {"state_dir": str(tmp_path)}},
-            services=service,
-            recovery=recovery,
-        ),
-    )
-
-    handler.do_POST()
-
-    assert responses == [(200, {"success": True})]
-    assert calls == [(daemon_id, task_id), (daemon_id, task_id)]
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX process-group lifecycle")
